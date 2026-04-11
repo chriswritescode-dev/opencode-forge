@@ -1,0 +1,699 @@
+import { tool } from '@opencode-ai/plugin'
+import { execSync, spawnSync } from 'child_process'
+import { existsSync } from 'fs'
+import { resolve } from 'path'
+import type { ToolContext } from './types'
+
+import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
+import { slugify } from '../utils/logger'
+import { findPartialMatch } from '../utils/partial-match'
+import { formatSessionOutput, formatAuditResult } from '../utils/loop-format'
+import { fetchSessionOutput, MAX_RETRIES, LOOP_PERMISSION_RULESET, buildCompletionSignalInstructions, DEFAULT_COMPLETION_SIGNAL, type LoopState, type LoopSessionOutput } from '../services/loop'
+import { isSandboxEnabled } from '../sandbox/context'
+import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
+
+const z = tool.schema
+
+interface LoopSetupOptions {
+  prompt: string
+  sessionTitle: string
+  worktreeName: string
+  completionSignal: string | null
+  maxIterations: number
+  audit: boolean
+  agent?: string
+  model?: { providerID: string; modelID: string }
+  worktree?: boolean
+  onLoopStarted?: (worktreeName: string) => void
+}
+
+export async function setupLoop(
+  ctx: ToolContext,
+  options: LoopSetupOptions,
+): Promise<string> {
+  const { v2, directory, config, loopService, logger, sandboxManager } = ctx
+  const projectDir = directory
+  const maxIter = options.maxIterations ?? config.loop?.defaultMaxIterations ?? 0
+  
+  const uniqueWorktreeName = loopService.generateUniqueWorktreeName(options.worktreeName)
+
+  interface LoopContext {
+    sessionId: string
+    directory: string
+    branch?: string
+    worktree: boolean
+  }
+
+  let loopContext: LoopContext
+
+  if (!options.worktree) {
+    let currentBranch: string | undefined
+    try {
+      currentBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: projectDir, encoding: 'utf-8' }).trim()
+    } catch (_err) {
+      logger.log(`loop: no git branch detected, running without branch info`)
+    }
+
+    const createResult = await v2.session.create({
+      title: options.sessionTitle,
+      directory: projectDir,
+      permission: LOOP_PERMISSION_RULESET,
+    })
+
+    if (createResult.error || !createResult.data) {
+      logger.error(`loop: failed to create session`, createResult.error)
+      return 'Failed to create loop session.'
+    }
+
+    loopContext = {
+      sessionId: createResult.data.id,
+      directory: projectDir,
+      branch: currentBranch,
+      worktree: false,
+    }
+  } else {
+    const worktreeResult = await v2.worktree.create({
+      worktreeCreateInput: { name: uniqueWorktreeName },
+    })
+
+    if (worktreeResult.error || !worktreeResult.data) {
+      logger.error(`loop: failed to create worktree`, worktreeResult.error)
+      return 'Failed to create worktree.'
+    }
+
+    const worktreeInfo = worktreeResult.data
+    logger.log(`loop: worktree created at ${worktreeInfo.directory} (branch: ${worktreeInfo.branch})`)
+
+    const createResult = await v2.session.create({
+      title: options.sessionTitle,
+      directory: worktreeInfo.directory,
+      permission: LOOP_PERMISSION_RULESET,
+    })
+
+    if (createResult.error || !createResult.data) {
+      logger.error(`loop: failed to create session`, createResult.error)
+      try {
+        await v2.worktree.remove({ worktreeRemoveInput: { directory: worktreeInfo.directory } })
+      } catch (cleanupErr) {
+        logger.error(`loop: failed to cleanup worktree`, cleanupErr)
+      }
+      return 'Failed to create loop session.'
+    }
+
+    loopContext = {
+      sessionId: createResult.data.id,
+      directory: worktreeInfo.directory,
+      branch: worktreeInfo.branch,
+      worktree: true,
+    }
+  }
+
+  let sandboxContainerName: string | undefined
+  const sandboxEnabled = isSandboxEnabled(config, sandboxManager) && !!options.worktree
+
+  if (sandboxEnabled) {
+    try {
+      const result = await sandboxManager!.start(uniqueWorktreeName, loopContext.directory)
+      sandboxContainerName = result.containerName
+      logger.log(`Sandbox container ${sandboxContainerName} started for loop ${uniqueWorktreeName}`)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      logger.error(`loop: failed to start sandbox container`, err)
+      return `Failed to start sandbox container: ${message}`
+    }
+  }
+
+  const state: LoopState = {
+    active: true,
+    sessionId: loopContext.sessionId,
+    worktreeName: uniqueWorktreeName,
+    worktreeDir: loopContext.directory,
+    worktreeBranch: loopContext.branch,
+    iteration: 1,
+    maxIterations: maxIter,
+    completionSignal: options.completionSignal,
+    startedAt: new Date().toISOString(),
+    prompt: options.prompt,
+    phase: 'coding',
+    audit: options.audit,
+    errorCount: 0,
+    auditCount: 0,
+    worktree: options.worktree,
+    sandbox: sandboxEnabled,
+    sandboxContainerName,
+  }
+
+  loopService.setState(uniqueWorktreeName, state)
+  loopService.registerSession(loopContext.sessionId, uniqueWorktreeName)
+  logger.log(`loop: state stored for worktree=${uniqueWorktreeName}`)
+
+  let promptText = options.prompt
+  if (options.completionSignal) {
+    promptText += buildCompletionSignalInstructions(options.completionSignal)
+  }
+
+  const { result: promptResult, usedModel: actualModel } = await retryWithModelFallback(
+    () => v2.session.promptAsync({
+      sessionID: loopContext.sessionId,
+      directory: loopContext.directory,
+      parts: [{ type: 'text' as const, text: promptText }],
+      ...(options.agent && { agent: options.agent }),
+      model: options.model!,
+    }),
+    () => v2.session.promptAsync({
+      sessionID: loopContext.sessionId,
+      directory: loopContext.directory,
+      parts: [{ type: 'text' as const, text: promptText }],
+      ...(options.agent && { agent: options.agent }),
+    }),
+    options.model,
+    logger,
+  )
+
+  if (promptResult.error) {
+    logger.error(`loop: failed to send prompt`, promptResult.error)
+    loopService.deleteState(uniqueWorktreeName)
+    if (sandboxEnabled) {
+      try {
+        await sandboxManager!.stop(uniqueWorktreeName)
+      } catch (sbxErr) {
+        logger.error(`loop: failed to stop sandbox container on prompt failure`, sbxErr)
+      }
+    }
+    if (options.worktree) {
+      try {
+        await v2.worktree.remove({ worktreeRemoveInput: { directory: loopContext.directory } })
+      } catch (cleanupErr) {
+        logger.error(`loop: failed to cleanup worktree`, cleanupErr)
+      }
+    }
+    return !options.worktree
+      ? 'Loop session created but failed to send prompt.'
+      : 'Loop session created but failed to send prompt. Cleaned up.'
+  }
+
+  options.onLoopStarted?.(uniqueWorktreeName)
+
+  if (!options.worktree) {
+    v2.tui.selectSession({ sessionID: loopContext.sessionId }).catch((err) => {
+      logger.error('loop: failed to navigate TUI to new session', err)
+    })
+  }
+
+  const maxInfo = maxIter > 0 ? maxIter.toString() : 'unlimited'
+  const auditInfo = options.audit ? 'enabled' : 'disabled'
+  const modelInfo = actualModel ? `${actualModel.providerID}/${actualModel.modelID}` : 'default'
+
+  const lines: string[] = [
+    !options.worktree ? 'Memory loop activated! (in-place mode)' : 'Memory loop activated!',
+    '',
+    `Session: ${loopContext.sessionId}`,
+    `Title: ${options.sessionTitle}`,
+  ]
+
+  if (!options.worktree) {
+    lines.push(`Directory: ${loopContext.directory}`)
+    if (loopContext.branch) {
+      lines.push(`Branch: ${loopContext.branch} (in-place)`)
+    }
+  } else {
+    lines.push(`Worktree name: ${uniqueWorktreeName}`)
+    lines.push(`Worktree: ${loopContext.directory}`)
+    lines.push(`Branch: ${loopContext.branch}`)
+  }
+
+  lines.push(
+    `Model: ${modelInfo}`,
+    `Max iterations: ${maxInfo}`,
+    `Completion promise: ${options.completionSignal ?? 'none'}`,
+    `Audit: ${auditInfo}`,
+    '',
+    'The loop will automatically continue when the session goes idle.',
+    'Your job is done — just confirm to the user that the loop has been launched.',
+    'The user can run loop-status or loop-cancel later if needed.',
+  )
+
+  return lines.join('\n')
+}
+
+export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
+  const { v2, loopService, loopHandler, config, logger } = ctx
+
+  return {
+    loop: tool({
+      description: 'Execute a plan using an iterative development loop. Default runs in current directory. Set worktree to true for isolated git worktree.',
+      args: {
+        plan: z.string().optional().describe('The full implementation plan. If omitted, reads from the session plan store.'),
+        title: z.string().describe('Short title for the session (shown in session list)'),
+        worktree: z.boolean().optional().default(false).describe('Run in isolated git worktree instead of current directory'),
+        worktreeName: z.string().optional().describe('Name for the worktree (max 25 chars, auto-incremented if collision exists)'),
+      },
+      execute: async (args, context) => {
+        if (config.loop?.enabled === false) {
+          return 'Loops are disabled in plugin config. Use plan-execute instead.'
+        }
+
+        logger.log(`loop: creating worktree for plan="${args.title}"`)
+
+        let planText = args.plan
+        if (!planText) {
+          const planKey = `plan:${context.sessionID}`
+          const cached = ctx.kvService.get<string>(ctx.projectId, planKey)
+          if (!cached) {
+            return 'No plan found. Write the plan via plan-write before calling this tool, or pass it directly as the plan argument.'
+          }
+          planText = typeof cached === 'string' ? cached : JSON.stringify(cached, null, 2)
+          ctx.kvService.delete(ctx.projectId, planKey)
+        }
+
+        const sessionTitle = args.title.length > 60 ? `${args.title.substring(0, 57)}...` : args.title
+        const loopModel = parseModelString(config.loop?.model) ?? parseModelString(config.executionModel)
+        const audit = config.loop?.defaultAudit ?? true
+        
+        const worktreeName = args.worktreeName ? slugify(args.worktreeName) : slugify(sessionTitle)
+
+        return setupLoop(ctx, {
+          prompt: planText,
+          sessionTitle: `Loop: ${sessionTitle}`,
+          worktreeName,
+          completionSignal: DEFAULT_COMPLETION_SIGNAL,
+          maxIterations: config.loop?.defaultMaxIterations ?? 0,
+          audit: audit,
+          agent: 'code',
+          model: loopModel,
+          worktree: args.worktree,
+          onLoopStarted: (id) => loopHandler.startWatchdog(id),
+        })
+      },
+    }),
+
+    'loop-cancel': tool({
+      description: 'Cancels the only active loop when called with no arguments. Pass a name to cancel a specific loop.',
+      args: {
+        name: z.string().optional().describe('Worktree name of the loop to cancel'),
+      },
+      execute: async (args) => {
+        let state: LoopState
+
+        if (args.name) {
+          const name = args.name
+          const matchedState = loopService.findByWorktreeName(name)
+          if (!matchedState) {
+            const candidates = loopService.findCandidatesByPartialName(name)
+            if (candidates.length > 0) {
+              return `Multiple loops match "${name}":\n${candidates.map((s) => `- ${s.worktreeName}`).join('\n')}\n\nBe more specific.`
+            }
+            const recent = loopService.listRecent()
+            const foundRecent = recent.find((s) => s.worktreeName === name || (s.worktreeBranch && s.worktreeBranch.toLowerCase().includes(name.toLowerCase())))
+            if (foundRecent) {
+               return `Loop "${foundRecent.worktreeName}" has already completed.`
+            }
+             return `No active loop found for worktree "${name}".`
+          }
+          state = matchedState
+          if (!state.active) {
+             return `Loop "${state.worktreeName}" has already completed.`
+          }
+        } else {
+          const active = loopService.listActive()
+           if (active.length === 0) return 'No active loops.'
+          if (active.length === 1) {
+            state = active[0]
+          } else {
+             return `Multiple active loops. Specify a name:\n${active.map((s) => `- ${s.worktreeName} (iteration ${s.iteration})`).join('\n')}`
+          }
+        }
+
+        await loopHandler.cancelBySessionId(state.sessionId)
+        logger.log(`loop-cancel: cancelled loop for session=${state.sessionId} at iteration ${state.iteration}`)
+
+        if (config.loop?.cleanupWorktree && state.worktree && state.worktreeDir) {
+          try {
+            const gitCommonDir = execSync('git rev-parse --git-common-dir', { cwd: state.worktreeDir, encoding: 'utf-8' }).trim()
+            const gitRoot = resolve(state.worktreeDir, gitCommonDir, '..')
+            const removeResult = spawnSync('git', ['worktree', 'remove', '-f', state.worktreeDir], { cwd: gitRoot, encoding: 'utf-8' })
+            if (removeResult.status !== 0) {
+              throw new Error(removeResult.stderr || 'git worktree remove failed')
+            }
+            logger.log(`loop-cancel: removed worktree ${state.worktreeDir}`)
+          } catch (err) {
+            logger.error(`loop-cancel: failed to remove worktree`, err)
+          }
+        }
+
+        const modeInfo = !state.worktree ? ' (in-place)' : ''
+        const branchInfo = state.worktreeBranch ? `\nBranch: ${state.worktreeBranch}` : ''
+        return `Cancelled loop "${state.worktreeName}"${modeInfo} (was at iteration ${state.iteration}).\nDirectory: ${state.worktreeDir}${branchInfo}`
+      },
+    }),
+
+    'loop-status': tool({
+      description: 'Lists all active loops when called with no arguments. Pass a worktree name for detailed status of a specific loop. Use restart to resume an inactive loop. Use restart with force to force-restart a stuck active loop.',
+      args: {
+        name: z.string().optional().describe('Worktree name to check for detailed status'),
+        restart: z.boolean().optional().default(false).describe('Restart an inactive loop by name'),
+        force: z.boolean().optional().default(false).describe('Force restart an active/stuck loop'),
+      },
+      execute: async (args) => {
+        const active = loopService.listActive()
+
+        if (args.restart) {
+          if (!args.name) {
+            return 'Specify a loop name to restart. Use loop-status to see available loops.'
+          }
+
+          const recent = loopService.listRecent()
+          const allStates = [...active, ...recent]
+          const { match: stoppedState, candidates } = findPartialMatch(args.name, allStates, (s) => [s.worktreeName, s.worktreeBranch])
+          if (!stoppedState && candidates.length > 0) {
+            return `Multiple loops match "${args.name}":\n${candidates.map((s) => `- ${s.worktreeName}`).join('\n')}\n\nBe more specific.`
+          }
+          if (!stoppedState) {
+            const available = [...active, ...recent].map((s) => `- ${s.worktreeName}`).join('\n')
+             return `No loop found for "${args.name}".\n\nAvailable loops:\n${available}`
+          }
+
+          if (stoppedState.active) {
+            if (!args.force) {
+              return `Loop "${stoppedState.worktreeName}" is currently active. Use restart with force: true to force-restart a stuck loop.`
+            }
+            try { await v2.session.abort({ sessionID: stoppedState.sessionId }) } catch {}
+            loopService.unregisterSession(stoppedState.sessionId)
+          }
+
+          if (stoppedState.terminationReason === 'completed') {
+            return `Loop "${stoppedState.worktreeName}" completed successfully and cannot be restarted.`
+          }
+
+          if (!stoppedState.worktree && stoppedState.worktreeDir) {
+            if (!existsSync(stoppedState.worktreeDir)) {
+              return `Cannot restart "${stoppedState.worktreeName}": worktree directory no longer exists at ${stoppedState.worktreeDir}. The worktree may have been cleaned up.`
+            }
+          }
+
+          const createParams = {
+            title: stoppedState.worktreeName!,
+            directory: stoppedState.worktreeDir!,
+            permission: LOOP_PERMISSION_RULESET,
+          }
+
+          const createResult = await v2.session.create(createParams)
+
+          if (createResult.error || !createResult.data) {
+             logger.error(`loop-restart: failed to create session`, createResult.error)
+            return `Failed to create new session for restart.`
+          }
+
+          const newSessionId = createResult.data.id
+
+          loopService.deleteState(stoppedState.worktreeName!)
+
+          const restartSandbox = isSandboxEnabled(config, ctx.sandboxManager)
+          if (restartSandbox) {
+            try {
+              const sbxResult = await ctx.sandboxManager!.start(stoppedState.worktreeName!, stoppedState.worktreeDir!)
+               logger.log(`loop-restart: started sandbox container ${sbxResult.containerName}`)
+            } catch (err) {
+               logger.error(`loop-restart: failed to start sandbox container`, err)
+              return `Restart failed: could not start sandbox container.`
+            }
+          }
+
+          const newState: LoopState = {
+            active: true,
+            sessionId: newSessionId,
+            worktreeName: stoppedState.worktreeName!,
+            worktreeDir: stoppedState.worktreeDir!,
+            worktreeBranch: stoppedState.worktreeBranch,
+            iteration: stoppedState.iteration!,
+            maxIterations: stoppedState.maxIterations!,
+            completionSignal: stoppedState.completionSignal,
+            startedAt: new Date().toISOString(),
+            prompt: stoppedState.prompt,
+            phase: 'coding',
+            audit: stoppedState.audit,
+            errorCount: 0,
+            auditCount: 0,
+            worktree: stoppedState.worktree,
+            sandbox: restartSandbox,
+            sandboxContainerName: restartSandbox
+              ? ctx.sandboxManager?.docker.containerName(stoppedState.worktreeName!)
+              : undefined,
+          }
+
+          loopService.setState(stoppedState.worktreeName!, newState)
+          loopService.registerSession(newSessionId, stoppedState.worktreeName!)
+
+          let promptText = stoppedState.prompt ?? ''
+          if (stoppedState.completionSignal) {
+            promptText += buildCompletionSignalInstructions(stoppedState.completionSignal)
+          }
+
+          const loopModel = parseModelString(config.loop?.model) ?? parseModelString(config.executionModel)
+
+          const { result: promptResult } = await retryWithModelFallback(
+            () => v2.session.promptAsync({
+              sessionID: newSessionId,
+              directory: stoppedState.worktreeDir!,
+              parts: [{ type: 'text' as const, text: promptText }],
+              agent: 'code',
+              model: loopModel!,
+            }),
+            () => v2.session.promptAsync({
+              sessionID: newSessionId,
+              directory: stoppedState.worktreeDir!,
+              parts: [{ type: 'text' as const, text: promptText }],
+              agent: 'code',
+            }),
+            loopModel,
+            logger,
+          )
+
+          if (promptResult.error) {
+             logger.error(`loop-restart: failed to send prompt`, promptResult.error)
+            loopService.deleteState(stoppedState.worktreeName!)
+            if (restartSandbox) {
+              try {
+                await ctx.sandboxManager!.stop(stoppedState.worktreeName!)
+              } catch (sbxErr) {
+                 logger.error(`loop-restart: failed to stop sandbox on prompt failure`, sbxErr)
+              }
+            }
+            return `Restart failed: could not send prompt to new session.`
+          }
+
+          loopHandler.startWatchdog(stoppedState.worktreeName!)
+
+          const modeInfo = !stoppedState.worktree ? ' (in-place)' : ''
+          const branchInfo = stoppedState.worktreeBranch ? `\nBranch: ${stoppedState.worktreeBranch}` : ''
+          return [
+            `Restarted loop "${stoppedState.worktreeName}"${modeInfo}`,
+            '',
+            `New session: ${newSessionId}`,
+            `Continuing from iteration: ${stoppedState.iteration}`,
+            `Previous termination: ${stoppedState.terminationReason}`,
+            `Directory: ${stoppedState.worktreeDir}${branchInfo}`,
+            `Audit: ${stoppedState.audit ? 'enabled' : 'disabled'}`,
+          ].join('\n')
+        }
+
+        if (!args.name) {
+          const recent = loopService.listRecent()
+
+          if (active.length === 0) {
+            if (recent.length === 0) return 'No loops found.'
+
+            const lines: string[] = ['Recently Completed Loops', '']
+            recent.forEach((s, i) => {
+              const durationStr = formatDuration(computeElapsedSeconds(s.startedAt, s.completedAt))
+              lines.push(`${i + 1}. ${s.worktreeName}`)
+              lines.push(`   Reason: ${s.terminationReason ?? 'unknown'} | Iterations: ${s.iteration} | Duration: ${durationStr} | Completed: ${s.completedAt ?? 'unknown'}`)
+              lines.push('')
+            })
+            lines.push('Use loop-status <name> for detailed info.')
+            return lines.join('\n')
+          }
+
+          const statuses: Record<string, { type: string; attempt?: number; message?: string; next?: number }> = {}
+          try {
+            const uniqueDirs = [...new Set(active.map((s) => s.worktreeDir).filter(Boolean))]
+            const results = await Promise.allSettled(
+              uniqueDirs.map((dir) => v2.session.status({ directory: dir })),
+            )
+            for (const result of results) {
+              if (result.status === 'fulfilled' && result.value.data) {
+                Object.assign(statuses, result.value.data)
+              }
+            }
+          } catch {
+          }
+
+          const lines: string[] = [`Active Loops (${active.length})`, '']
+          active.forEach((s, i) => {
+            const duration = formatDuration(computeElapsedSeconds(s.startedAt))
+            const iterInfo = s.maxIterations && s.maxIterations > 0 ? `${s.iteration} / ${s.maxIterations}` : `${s.iteration} (unlimited)`
+            const sessionStatus = statuses[s.sessionId]?.type ?? 'unavailable'
+            const modeIndicator = !s.worktree ? ' (in-place)' : ''
+            const stallInfo = loopHandler.getStallInfo(s.worktreeName)
+            const stallCount = stallInfo?.consecutiveStalls ?? 0
+            const stallSuffix = stallCount > 0 ? ` | Stalls: ${stallCount}` : ''
+            lines.push(`${i + 1}. ${s.worktreeName}${modeIndicator}`)
+            lines.push(`   Phase: ${s.phase} | Iteration: ${iterInfo} | Duration: ${duration} | Status: ${sessionStatus}${stallSuffix}`)
+            lines.push('')
+          })
+
+          if (recent.length > 0) {
+            lines.push('Recently Completed:')
+            lines.push('')
+            const limitedRecent = recent.slice(0, 10)
+            limitedRecent.forEach((s, i) => {
+              const durationStr = formatDuration(computeElapsedSeconds(s.startedAt, s.completedAt))
+              lines.push(`${i + 1}. ${s.worktreeName}`)
+              lines.push(`   Reason: ${s.terminationReason ?? 'unknown'} | Iterations: ${s.iteration} | Duration: ${durationStr} | Completed: ${s.completedAt ?? 'unknown'}`)
+              lines.push('')
+            })
+            if (recent.length > 10) {
+              lines.push(`   ... and ${recent.length - 10} more. Use loop-status <name> for details.`)
+              lines.push('')
+            }
+          }
+
+          lines.push('Use loop-status <name> for detailed info, or loop-cancel <name> to stop a loop.')
+          return lines.join('\n')
+        }
+
+        const state = loopService.findByWorktreeName(args.name)
+        if (!state) {
+          const candidates = loopService.findCandidatesByPartialName(args.name)
+          if (candidates.length > 0) {
+            return `Multiple loops match "${args.name}":\n${candidates.map((s) => `- ${s.worktreeName}`).join('\n')}\n\nBe more specific.`
+          }
+          return `No loop found for worktree "${args.name}".`
+        }
+
+        if (!state.active) {
+          const maxInfo = state.maxIterations && state.maxIterations > 0 ? `${state.iteration} / ${state.maxIterations}` : `${state.iteration} (unlimited)`
+          const durationStr = formatDuration(computeElapsedSeconds(state.startedAt, state.completedAt))
+
+          const statusLines: string[] = [
+            'Loop Status (Inactive)',
+            '',
+            `Name: ${state.worktreeName}`,
+            `Session: ${state.sessionId}`,
+          ]
+          if (!state.worktree) {
+            statusLines.push(`Mode: in-place | Directory: ${state.worktreeDir}`)
+          } else {
+            statusLines.push(`Worktree: ${state.worktreeDir}`)
+          }
+          statusLines.push(
+            `Iteration: ${maxInfo}`,
+            `Duration: ${durationStr}`,
+            `Reason: ${state.terminationReason ?? 'unknown'}`,
+          )
+          if (state.worktreeBranch) {
+            statusLines.push(`Branch: ${state.worktreeBranch}`)
+          }
+          statusLines.push(
+            `Started: ${state.startedAt}`,
+            ...(state.completedAt ? [`Completed: ${state.completedAt}`] : []),
+          )
+
+          if (state.lastAuditResult) {
+            statusLines.push(...formatAuditResult(state.lastAuditResult))
+          }
+
+          const sessionOutput = state.worktreeDir ? await fetchSessionOutput(v2, state.sessionId, state.worktreeDir, logger) : null
+          if (sessionOutput) {
+            statusLines.push('')
+            statusLines.push('Session Output:')
+            statusLines.push(...formatSessionOutput(sessionOutput))
+          }
+
+          return statusLines.join('\n')
+        }
+
+        const maxInfo = state.maxIterations && state.maxIterations > 0 ? `${state.iteration} / ${state.maxIterations}` : `${state.iteration} (unlimited)`
+        const promptPreview = state.prompt && state.prompt.length > 100 ? `${state.prompt.substring(0, 97)}...` : (state.prompt ?? '')
+
+        let sessionStatus = 'unknown'
+        try {
+          const statusResult = await v2.session.status({ directory: state.worktreeDir })
+          const statuses = statusResult.data as Record<string, { type: string; attempt?: number; message?: string; next?: number }> | undefined
+          const status = statuses?.[state.sessionId]
+          if (status) {
+            sessionStatus = status.type === 'retry'
+              ? `retry (attempt ${status.attempt}, next in ${Math.round(((status.next ?? 0) - Date.now()) / 1000)}s)`
+              : status.type
+          }
+        } catch {
+          sessionStatus = 'unavailable'
+        }
+
+        const duration = formatDuration(computeElapsedSeconds(state.startedAt))
+
+        const stallInfo = loopHandler.getStallInfo(state.worktreeName)
+        const secondsSinceActivity = stallInfo
+          ? Math.round((Date.now() - stallInfo.lastActivityTime) / 1000)
+          : null
+        const stallCount = stallInfo?.consecutiveStalls ?? 0
+
+        const statusLines: string[] = [
+          'Loop Status',
+          '',
+          `Name: ${state.worktreeName}`,
+          `Session: ${state.sessionId}`,
+        ]
+        if (!state.worktree) {
+          statusLines.push(`Mode: in-place | Directory: ${state.worktreeDir}`)
+        } else {
+          statusLines.push(`Worktree: ${state.worktreeDir}`)
+        }
+        statusLines.push(
+          `Status: ${sessionStatus}`,
+          `Phase: ${state.phase}`,
+          `Iteration: ${maxInfo}`,
+          `Duration: ${duration}`,
+          `Audit: ${state.audit ? 'enabled' : 'disabled'}`,
+        )
+        if (state.worktreeBranch) {
+          statusLines.push(`Branch: ${state.worktreeBranch}`)
+        }
+
+        let sessionOutput: LoopSessionOutput | null = null
+        if (state.worktreeDir) {
+          try {
+            sessionOutput = await fetchSessionOutput(v2, state.sessionId, state.worktreeDir, logger)
+          } catch {
+            // Silently ignore fetch errors to avoid cluttering output
+          }
+        }
+        if (sessionOutput) {
+          statusLines.push('')
+          statusLines.push('Session Output:')
+          statusLines.push(...formatSessionOutput(sessionOutput))
+        }
+
+        if (state.lastAuditResult) {
+          statusLines.push(...formatAuditResult(state.lastAuditResult))
+        }
+
+        statusLines.push(
+          '',
+          `Completion promise: ${state.completionSignal ?? 'none'}`,
+          `Started: ${state.startedAt}`,
+          ...(state.errorCount && state.errorCount > 0 ? [`Error count: ${state.errorCount} (retries before termination: ${MAX_RETRIES})`] : []),
+          `Audit count: ${state.auditCount ?? 0}`,
+          `Model: ${config.loop?.model || config.executionModel || 'default'}`,
+          `Auditor model: ${config.auditorModel || 'default'}`,
+          ...(stallCount > 0 ? [`Stalls: ${stallCount}`] : []),
+          ...(secondsSinceActivity !== null ? [`Last activity: ${secondsSinceActivity}s ago`] : []),
+          '',
+          `Prompt: ${promptPreview}`,
+        )
+
+        return statusLines.join('\n')
+      },
+    }),
+  }
+}

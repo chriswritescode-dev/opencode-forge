@@ -1,0 +1,92 @@
+{
+  "name": "opencode-forge",
+  "version": "0.1.5",
+  "type": "module",
+  "oc-plugin": [
+    "server",
+    "tui"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./server": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./tui": {
+      "import": "./dist/tui.js",
+      "types": "./dist/tui.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "forge-config.jsonc",
+    "scripts",
+    "README.md",
+    "src/command/template"
+  ],
+  "bin": {
+    "oc-forge": "./dist/cli/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chriswritescode-dev/opencode-forge.git"
+  },
+  "author": "Chris Scott",
+  "description": "OpenCode Forge - autonomous dev loops, plan storage, code graph indexing, and sandboxing for OpenCode",
+  "keywords": [
+    "opencode",
+    "graph",
+    "iterative-loops",
+    "ai-agent",
+    "plugin",
+    "forge"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/chriswritescode-dev/opencode-forge",
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.4.2",
+    "@opencode-ai/sdk": "^1.4.2",
+    "web-tree-sitter": "0.25.10",
+    "tree-sitter-wasms": "0.1.13"
+  },
+  "peerDependencies": {
+    "@opentui/core": ">=0.1.92",
+    "@opentui/solid": ">=0.1.92"
+  },
+  "peerDependenciesMeta": {
+    "@opentui/core": {
+      "optional": true
+    },
+    "@opentui/solid": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@opentui/core": "0.1.97",
+    "@opentui/solid": "0.1.97",
+    "@typescript-eslint/eslint-plugin": "^8.58.0",
+    "@typescript-eslint/parser": "^8.58.0",
+    "bun-types": "latest",
+    "eslint": "^10.2.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-solid": "^0.14.5",
+    "prettier": "^3.8.1",
+    "solid-js": "^1.9.12",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.58.0"
+  },
+  "scripts": {
+    "build": "bun scripts/build.ts",
+    "lint": "eslint .",
+    "prepublishOnly": "pnpm build",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "cli": "bun src/cli/index.ts"
+  }
+}

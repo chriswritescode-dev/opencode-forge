@@ -1,0 +1,74 @@
+{
+  // Data directory for plugin storage (graph.db, KV store, logs)
+  // When empty, resolves to ~/.local/share/opencode/forge (or XDG_DATA_HOME equivalent)
+  "dataDir": "",
+
+  // Logging configuration
+  "logging": {
+    "enabled": false,
+    "debug": false,
+    "file": ""
+  },
+
+  // Session compaction settings
+  "compaction": {
+    "customPrompt": true,
+    "maxContextTokens": 0
+  },
+
+  // Messages transform hook for graph injection and read-only enforcement
+  "messagesTransform": {
+    "enabled": true,
+    "debug": false
+  },
+
+  // Model override for plan execution sessions (format: "provider/model")
+  "executionModel": "",
+
+  // Model override for the auditor agent (format: "provider/model")
+  "auditorModel": "",
+
+  // Iterative development loop settings
+  "loop": {
+    "enabled": true,
+    "defaultMaxIterations": 15,
+    "cleanupWorktree": false,
+    "defaultAudit": true,
+    "model": "",
+    "minAudits": 1,
+    "stallTimeoutMs": 60000
+  },
+
+  // Docker sandbox configuration for isolated loop execution
+  "sandbox": {
+    "mode": "off",
+    "image": "oc-forge-sandbox:latest"
+  },
+
+  // Graph indexing configuration
+  "graph": {
+    "enabled": true,
+    "autoScan": true,
+    "watch": true,
+    "debounceMs": 100,
+    "maxFiles": 1000
+  },
+
+  // TUI sidebar widget configuration
+  "tui": {
+    "sidebar": true,
+    "showLoops": true,
+    "showVersion": true
+  },
+
+  // Default TTL for KV store entries in milliseconds (default: 604800000 / 7 days)
+  "defaultKvTtlMs": 604800000,
+
+  // Per-agent overrides (temperature range: 0.0 - 2.0)
+  // Keys are agent display names (e.g., "code", "architect", "auditor")
+  // "agents": {
+  //   "architect": { "temperature": 0.0 },
+  //   "auditor": { "temperature": 0.0 },
+  //   "code": { "temperature": 0.7 }
+  // }
+}
