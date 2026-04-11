@@ -1,7 +1,7 @@
 import { GraphClient } from './client'
 import { initializeGraphDatabase, closeGraphDatabase } from './database'
+import { hashGraphCacheScope } from '../storage/graph-projects'
 import { join, relative } from 'path'
-import { createHash } from 'crypto'
 import { watch } from 'fs'
 import type { Logger } from '../types'
 import type {
@@ -385,12 +385,12 @@ export function createGraphService(config: GraphServiceConfig): GraphService {
       // Emit initializing status
       emitStatus('initializing')
 
-      // Calculate db path
-      const projectIdHash = createHash('sha256').update(projectId).digest('hex').substring(0, 16)
-      const graphDir = join(dataDir, 'graph', projectIdHash)
+      // Calculate db path using cwd-scoped cache identity
+      const cacheHash = hashGraphCacheScope(projectId, cwd)
+      const graphDir = join(dataDir, 'graph', cacheHash)
       dbPath = join(graphDir, 'graph.db')
       
-      initializeGraphDatabase(projectId, dataDir)
+      initializeGraphDatabase(projectId, dataDir, cwd)
 
       // Create worker with explicit path resolution
       const workerPath = resolveWorkerPath()

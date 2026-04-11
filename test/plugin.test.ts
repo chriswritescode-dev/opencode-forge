@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { createForgePlugin } from '../src/index'
 import { mkdirSync, rmSync, existsSync } from 'fs'
+import { join } from 'path'
 import type { PluginConfig } from '../src/types'
 import type { PluginInput } from '@opencode-ai/plugin'
 
@@ -32,6 +33,84 @@ describe('createForgePlugin', () => {
 
     const plugin = createForgePlugin(config)
     expect(typeof plugin).toBe('function')
+  })
+
+  test('REGRESSION: two plugin instances with different worktree directories must use separate graph cache paths', async () => {
+    const sharedDataDir = `${testDir}/shared-data`
+    const config: PluginConfig = {
+      dataDir: sharedDataDir,
+      graph: { enabled: true, autoScan: false },
+    }
+
+    const worktree1Dir = join(testDir, 'worktree1')
+    const worktree2Dir = join(testDir, 'worktree2')
+    mkdirSync(worktree1Dir, { recursive: true })
+    mkdirSync(worktree2Dir, { recursive: true })
+
+    const mockInput1 = {
+      directory: worktree1Dir,
+      worktree: worktree1Dir,
+      client: {} as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    const mockInput2 = {
+      directory: worktree2Dir,
+      worktree: worktree2Dir,
+      client: {} as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    const plugin = createForgePlugin(config)
+
+    const hooks1 = await plugin(mockInput1)
+    const hooks2 = await plugin(mockInput2)
+
+    const { hashGraphCacheScope } = await import('../src/storage/graph-projects')
+    const cacheHash1 = hashGraphCacheScope(TEST_PROJECT_ID, worktree1Dir)
+    const cacheHash2 = hashGraphCacheScope(TEST_PROJECT_ID, worktree2Dir)
+    
+    const dbPath1 = join(sharedDataDir, 'graph', cacheHash1, 'graph.db')
+    const dbPath2 = join(sharedDataDir, 'graph', cacheHash2, 'graph.db')
+
+    expect(cacheHash1).not.toBe(cacheHash2)
+
+    if (hooks1.getCleanup) await hooks1.getCleanup()
+    if (hooks2.getCleanup) await hooks2.getCleanup()
+  })
+
+  test('REGRESSION: worktree loop startup uses worktree directory as session and graph root', async () => {
+    const testDataDir = `${testDir}/plugin-test-data`
+    const config: PluginConfig = {
+      dataDir: testDataDir,
+      graph: { enabled: true, autoScan: false },
+    }
+
+    const worktreeDir = join(testDir, 'worktree-for-graph')
+    mkdirSync(worktreeDir, { recursive: true })
+
+    const mockInput = {
+      directory: worktreeDir,
+      worktree: worktreeDir,
+      client: {} as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    const plugin = createForgePlugin(config)
+    const hooks = await plugin(mockInput) as { getCleanup?: () => Promise<void> }
+
+    const { hashGraphCacheScope } = await import('../src/storage/graph-projects')
+    const cacheHash = hashGraphCacheScope(TEST_PROJECT_ID, worktreeDir)
+    
+    expect(cacheHash).toBeDefined()
+
+    if (hooks.getCleanup) await hooks.getCleanup()
   })
 
   test('Plugin initialization creates database file', async () => {

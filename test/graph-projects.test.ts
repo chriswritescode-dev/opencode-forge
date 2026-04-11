@@ -1,7 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { 
   hashProjectId, 
-  resolveGraphCacheDir, 
+  resolveGraphCacheDir,
+  resolveGraphCacheDirLegacy,
   hasGraphCache, 
   enumerateGraphCache,
   findGraphCacheEntry,
@@ -57,15 +58,35 @@ describe('graph-projects helpers', () => {
   })
 
   describe('resolveGraphCacheDir', () => {
-    test('should resolve to correct path structure', () => {
-      const expectedPath = join(testDataDir, 'graph', testHashDir)
-      const actualPath = resolveGraphCacheDir(testProjectId, testDataDir)
+    test('should resolve to correct path structure with cwd', () => {
+      const testCwd = join(testDataDir, 'test-cwd')
+      const expectedPath = join(testDataDir, 'graph', hashProjectId(`${testProjectId}::${testCwd}`))
+      const actualPath = resolveGraphCacheDir(testProjectId, testCwd, testDataDir)
       
       expect(actualPath).toBe(expectedPath)
     })
 
-    test('should use resolved data dir when not provided', () => {
-      const pathWithExplicit = resolveGraphCacheDir(testProjectId, testDataDir)
+    test('should use different cache dirs for different cwd values with same projectId', () => {
+      const cwd1 = '/path/to/worktree1'
+      const cwd2 = '/path/to/worktree2'
+      
+      const cacheDir1 = resolveGraphCacheDir(testProjectId, cwd1, testDataDir)
+      const cacheDir2 = resolveGraphCacheDir(testProjectId, cwd2, testDataDir)
+      
+      expect(cacheDir1).not.toBe(cacheDir2)
+    })
+  })
+
+  describe('resolveGraphCacheDirLegacy', () => {
+    test('should resolve to correct path structure (legacy)', () => {
+      const expectedPath = join(testDataDir, 'graph', testHashDir)
+      const actualPath = resolveGraphCacheDirLegacy(testProjectId, testDataDir)
+      
+      expect(actualPath).toBe(expectedPath)
+    })
+
+    test('should use resolved data dir when not provided (legacy)', () => {
+      const pathWithExplicit = resolveGraphCacheDirLegacy(testProjectId, testDataDir)
       expect(pathWithExplicit).toContain(testDataDir)
     })
   })
@@ -76,7 +97,7 @@ describe('graph-projects helpers', () => {
     })
 
     test('should return true when cache exists', () => {
-      const cacheDir = resolveGraphCacheDir(testProjectId, testDataDir)
+      const cacheDir = resolveGraphCacheDirLegacy(testProjectId, testDataDir)
       mkdirSync(cacheDir, { recursive: true })
       
       expect(hasGraphCache(testProjectId, testDataDir)).toBe(true)
@@ -98,7 +119,7 @@ describe('graph-projects helpers', () => {
     })
 
     test('should discover graph cache entries', () => {
-      const cacheDir = resolveGraphCacheDir(testProjectId, testDataDir)
+      const cacheDir = resolveGraphCacheDirLegacy(testProjectId, testDataDir)
       mkdirSync(cacheDir, { recursive: true })
       
       const dbPath = join(cacheDir, 'graph.db')
@@ -123,7 +144,7 @@ describe('graph-projects helpers', () => {
       mkdirSync(join(graphDir, 'not-a-hash'), { recursive: true })
       mkdirSync(join(graphDir, 'abc123'), { recursive: true })
       
-      const cacheDir = resolveGraphCacheDir(testProjectId, testDataDir)
+      const cacheDir = resolveGraphCacheDirLegacy(testProjectId, testDataDir)
       mkdirSync(cacheDir, { recursive: true })
       
       const entries = enumerateGraphCache(testDataDir)
@@ -132,7 +153,7 @@ describe('graph-projects helpers', () => {
     })
 
     test('should include file metadata', () => {
-      const cacheDir = resolveGraphCacheDir(testProjectId, testDataDir)
+      const cacheDir = resolveGraphCacheDirLegacy(testProjectId, testDataDir)
       mkdirSync(cacheDir, { recursive: true })
       
       const dbPath = join(cacheDir, 'graph.db')
@@ -154,7 +175,7 @@ describe('graph-projects helpers', () => {
     })
 
     test('should find entry by hash directory', () => {
-      const cacheDir = resolveGraphCacheDir(testProjectId, testDataDir)
+      const cacheDir = resolveGraphCacheDirLegacy(testProjectId, testDataDir)
       mkdirSync(cacheDir, { recursive: true })
       
       const dbPath = join(cacheDir, 'graph.db')
@@ -174,7 +195,7 @@ describe('graph-projects helpers', () => {
     })
 
     test('should delete graph cache directory', () => {
-      const cacheDir = resolveGraphCacheDir(testProjectId, testDataDir)
+      const cacheDir = resolveGraphCacheDirLegacy(testProjectId, testDataDir)
       mkdirSync(cacheDir, { recursive: true })
       
       const dbPath = join(cacheDir, 'graph.db')
@@ -191,7 +212,7 @@ describe('graph-projects helpers', () => {
     })
 
     test('should only delete target hash directory', () => {
-      const cacheDir1 = resolveGraphCacheDir(testProjectId, testDataDir)
+      const cacheDir1 = resolveGraphCacheDirLegacy(testProjectId, testDataDir)
       mkdirSync(cacheDir1, { recursive: true })
       new Database(join(cacheDir1, 'graph.db')).close()
       
@@ -248,10 +269,18 @@ describe('graph-projects with opencode.db mapping', () => {
   })
 
   test('should resolve project identity from opencode.db', () => {
-    const cacheDir = resolveGraphCacheDir(testProjectId, testDataDir)
+    const cacheDir = resolveGraphCacheDirLegacy(testProjectId, testDataDir)
     mkdirSync(cacheDir, { recursive: true })
     const dbPath = join(cacheDir, 'graph.db')
     new Database(dbPath).close()
+    
+    // Write metadata file to enable identity resolution
+    const metadataPath = join(cacheDir, 'graph-metadata.json')
+    writeFileSync(metadataPath, JSON.stringify({
+      projectId: testProjectId,
+      cwd: '',
+      createdAt: Date.now(),
+    }))
     
     const entries = enumerateGraphCache(testDataDir)
     
@@ -259,5 +288,16 @@ describe('graph-projects with opencode.db mapping', () => {
     expect(entries[0].projectId).toBe(testProjectId)
     expect(entries[0].projectName).toBe(testProjectId)
     expect(entries[0].resolutionStatus).toBe('known')
+  })
+
+  test('REGRESSION: graph cache identity must include cwd scope, not just project ID', () => {
+    const sharedProjectId = 'shared-project-' + Date.now()
+    const cwd1 = '/fake/path/worktree1'
+    const cwd2 = '/fake/path/worktree2'
+
+    const cacheDir1 = resolveGraphCacheDir(sharedProjectId, cwd1, testDataDir)
+    const cacheDir2 = resolveGraphCacheDir(sharedProjectId, cwd2, testDataDir)
+
+    expect(cacheDir1).not.toBe(cacheDir2)
   })
 })

@@ -1,8 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { Database } from 'bun:sqlite'
 import { existsSync, mkdirSync, rmSync } from 'fs'
 import { join } from 'path'
-import { Database } from 'bun:sqlite'
-import { hashProjectId, resolveGraphCacheDir } from '../src/storage/graph-projects'
+import { hashProjectId, resolveGraphCacheDirLegacy } from '../src/storage/graph-projects'
 import { resolveDataDir } from '../src/storage/database'
 
 const TEST_DATA_DIR = '/tmp/opencode-graph-cli-test-' + Date.now()
@@ -61,7 +61,7 @@ describe('graph CLI cleanup commands', () => {
   test('graph list should display cache entries', () => {
     const { spawnSync } = require('child_process')
     
-    const cacheDir = resolveGraphCacheDir(testProjectId, resolvedDataDir)
+    const cacheDir = resolveGraphCacheDirLegacy(testProjectId, resolvedDataDir)
     mkdirSync(cacheDir, { recursive: true })
     const dbPath = join(cacheDir, 'graph.db')
     new Database(dbPath).close()
@@ -83,7 +83,7 @@ describe('graph CLI cleanup commands', () => {
   test('graph remove should delete cache directory', () => {
     const { spawnSync } = require('child_process')
     
-    const cacheDir = resolveGraphCacheDir(testProjectId, resolvedDataDir)
+    const cacheDir = resolveGraphCacheDirLegacy(testProjectId, resolvedDataDir)
     mkdirSync(cacheDir, { recursive: true })
     const dbPath = join(cacheDir, 'graph.db')
     new Database(dbPath).close()
@@ -126,7 +126,7 @@ describe('graph CLI cleanup commands', () => {
   test('graph remove with --yes should skip confirmation', () => {
     const { spawnSync } = require('child_process')
     
-    const cacheDir = resolveGraphCacheDir(testProjectId, resolvedDataDir)
+    const cacheDir = resolveGraphCacheDirLegacy(testProjectId, resolvedDataDir)
     mkdirSync(cacheDir, { recursive: true })
     const dbPath = join(cacheDir, 'graph.db')
     new Database(dbPath).close()
@@ -172,7 +172,7 @@ describe('graph CLI cleanup commands', () => {
       'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(project_id, key) DO UPDATE SET data = excluded.data'
     ).run(testProjectId, 'test:key', kvData, expiresAt, now, now)
     
-    const cacheDir = resolveGraphCacheDir(testProjectId, resolvedDataDir)
+    const cacheDir = resolveGraphCacheDirLegacy(testProjectId, resolvedDataDir)
     mkdirSync(cacheDir, { recursive: true })
     const graphDbPath = join(cacheDir, 'graph.db')
     new Database(graphDbPath).close()

@@ -1,22 +1,48 @@
 import { Database } from 'bun:sqlite'
-import { existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
 import { join } from 'path'
-import { hashProjectId } from '../storage/graph-projects'
+import { hashProjectId, hashGraphCacheScope } from '../storage/graph-projects'
 
 // Track database instances for cleanup
 const databaseInstances: Map<string, Database> = new Map()
 
 /**
- * Initialize the graph database with the full schema
- * Database location: <dataDir>/graph/<projectId-hash>/graph.db
+ * Metadata file name stored alongside graph.db to enable cache identity resolution
  */
-export function initializeGraphDatabase(projectId: string, dataDir: string): Database {
-  // Create project-specific subdirectory using hash
-  const projectIdHash = hashProjectId(projectId)
+const GRAPH_METADATA_FILE = 'graph-metadata.json'
+
+/**
+ * Graph cache metadata structure stored in the metadata file
+ */
+export interface GraphCacheMetadata {
+  projectId: string
+  cwd: string
+  createdAt: number
+}
+
+/**
+ * Initialize the graph database with the full schema
+ * Database location: <dataDir>/graph/<projectId::cwd-hash>/graph.db
+ */
+export function initializeGraphDatabase(projectId: string, dataDir: string, cwd?: string): Database {
+  const projectIdHash = cwd 
+    ? hashGraphCacheScope(projectId, cwd)
+    : hashProjectId(projectId)
   const graphDir = join(dataDir, 'graph', projectIdHash)
   
   if (!existsSync(graphDir)) {
     mkdirSync(graphDir, { recursive: true })
+  }
+
+  // Write metadata file to enable cache identity resolution
+  const metadataPath = join(graphDir, GRAPH_METADATA_FILE)
+  if (!existsSync(metadataPath)) {
+    const metadata: GraphCacheMetadata = {
+      projectId,
+      cwd: cwd ?? '',
+      createdAt: Date.now(),
+    }
+    writeFileSync(metadataPath, JSON.stringify(metadata, null, 2))
   }
 
   const dbPath = join(graphDir, 'graph.db')
@@ -35,6 +61,27 @@ export function initializeGraphDatabase(projectId: string, dataDir: string): Dat
   databaseInstances.set(dbPath, db)
 
   return db
+}
+
+/**
+ * Reads graph cache metadata from a graph directory.
+ * 
+ * @param graphDir - The graph cache directory path
+ * @returns The metadata object or null if not found/readable
+ */
+export function readGraphCacheMetadata(graphDir: string): GraphCacheMetadata | null {
+  const metadataPath = join(graphDir, GRAPH_METADATA_FILE)
+  
+  if (!existsSync(metadataPath)) {
+    return null
+  }
+  
+  try {
+    const content = readFileSync(metadataPath, 'utf-8')
+    return JSON.parse(content) as GraphCacheMetadata
+  } catch {
+    return null
+  }
 }
 
 /**

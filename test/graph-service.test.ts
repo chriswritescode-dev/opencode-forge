@@ -294,4 +294,61 @@ describe('GraphService status emission', () => {
 
     await service.close()
   })
+
+  test('REGRESSION: two graph services with same projectId but different cwd must not share graph cache', async () => {
+    const logger = createTestLogger()
+    const sharedDataDir = join(testDir, 'shared-data')
+    mkdirSync(sharedDataDir, { recursive: true })
+
+    const rootDir = join(testDir, 'repo-root')
+    const worktreeDir = join(testDir, 'worktree')
+    mkdirSync(rootDir, { recursive: true })
+    mkdirSync(worktreeDir, { recursive: true })
+
+    const rootFile = join(rootDir, 'root-file.ts')
+    const worktreeFile = join(worktreeDir, 'worktree-file.ts')
+    writeFileSync(rootFile, 'export const root = 1')
+    writeFileSync(worktreeFile, 'export const worktree = 2')
+
+    const sharedProjectId = 'shared-project-' + Date.now()
+
+    const service1 = createGraphService({
+      projectId: sharedProjectId,
+      dataDir: sharedDataDir,
+      cwd: rootDir,
+      logger,
+      watch: false,
+      debounceMs: 100,
+    })
+
+    const service2 = createGraphService({
+      projectId: sharedProjectId,
+      dataDir: sharedDataDir,
+      cwd: worktreeDir,
+      logger,
+      watch: false,
+      debounceMs: 100,
+    })
+
+    await service1.scan()
+    await service2.scan()
+
+    const stats1 = await service1.getStats()
+    const stats2 = await service2.getStats()
+
+    expect(stats1.files).toBeGreaterThanOrEqual(1)
+    expect(stats2.files).toBeGreaterThanOrEqual(1)
+
+    const allFiles1 = await service1.render({ maxFiles: 100 })
+    const allFiles2 = await service2.render({ maxFiles: 100 })
+
+    expect(allFiles1.paths.some(p => p.includes('root-file.ts'))).toBe(true)
+    expect(allFiles1.paths.some(p => p.includes('worktree-file.ts'))).toBe(false)
+
+    expect(allFiles2.paths.some(p => p.includes('worktree-file.ts'))).toBe(true)
+    expect(allFiles2.paths.some(p => p.includes('root-file.ts'))).toBe(false)
+
+    await service1.close()
+    await service2.close()
+  })
 })
