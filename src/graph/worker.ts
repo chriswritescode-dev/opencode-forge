@@ -1,4 +1,5 @@
 import { Database } from 'bun:sqlite'
+import { openGraphDatabase } from './database'
 import { RpcServer } from './rpc'
 import { RepoMap } from './repo-map'
 
@@ -132,11 +133,7 @@ rpcServer.register('onFileChanged', async (args: unknown[]) => {
   return repoMap.onFileChanged(path)
 })
 
-// Open database with WAL mode
-const db = new Database(dbPath)
-db.run('PRAGMA journal_mode=WAL')
-db.run('PRAGMA busy_timeout=5000')
-db.run('PRAGMA synchronous=NORMAL')
+const db: Database = openGraphDatabase(dbPath)
 
 // Instantiate RepoMap
 const repoMap = new RepoMap({ cwd, db })

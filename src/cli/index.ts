@@ -80,6 +80,16 @@ const graphCommands: Record<string, CommandModule> = {
       help()
     },
   },
+  cleanup: {
+    cli: async (args, globalOpts) => {
+      const { cli } = await import('./commands/graph')
+      await cli(['cleanup', ...args], globalOpts)
+    },
+    help: async () => {
+      const { help } = await import('./commands/graph')
+      help()
+    },
+  },
 }
 
 const commands: Record<string, CommandModule> = {
@@ -177,6 +187,7 @@ Commands:
   scan      Trigger a graph scan
   list      List all persisted graph cache entries
   remove    Remove a graph cache entry
+  cleanup   Remove graph cache entries older than N days
   `.trim())
 }
 

@@ -12,9 +12,10 @@ export interface GraphArgs {
   dbPath?: string
   resolvedProjectId?: string
   dir?: string
-  action: 'status' | 'scan' | 'list' | 'remove'
+  action: 'status' | 'scan' | 'list' | 'remove' | 'cleanup'
   target?: string
   yes?: boolean
+  days?: number
 }
 
 function formatScope(entry: GraphCacheEntry): string {
@@ -127,6 +128,68 @@ async function printRemove(identifier: string, dataDir?: string, requireConfirm:
   }
 }
 
+function printCleanup(days: number, dataDir?: string): GraphCacheEntry[] {
+  const entries = enumerateGraphCache(dataDir)
+  const now = Date.now()
+  const ageMs = days * 24 * 60 * 60 * 1000
+  
+  const filteredEntries = entries.filter(entry => now - entry.mtimeMs > ageMs)
+  
+  if (filteredEntries.length === 0) {
+    console.log(`No graph cache entries older than ${days} days.`)
+    return []
+  }
+
+  console.log(`Graph cache entries older than ${days} days:`)
+  console.log('')
+  
+  for (const entry of filteredEntries) {
+    const displayName = entry.projectName || entry.projectId || 'unknown'
+    const statusLabel = entry.resolutionStatus === 'known' ? 'known' : 'unknown'
+    const sizeKb = Math.round(entry.sizeBytes / 1024)
+    const ageDays = Math.floor((now - entry.mtimeMs) / (24 * 60 * 60 * 1000))
+    
+    console.log(`  ${entry.hashDir}`)
+    console.log(`    Project: ${displayName} (${statusLabel})`)
+    console.log(`    Scope: ${formatScope(entry)}`)
+    console.log(`    Size: ${sizeKb} KB`)
+    console.log(`    Age: ${ageDays} days`)
+    console.log('')
+  }
+  
+  return filteredEntries
+}
+
+async function runCleanup(days: number, dataDir?: string, requireConfirm: boolean = true): Promise<void> {
+  const targetEntries = printCleanup(days, dataDir)
+  
+  if (targetEntries.length === 0) {
+    return
+  }
+  
+  if (requireConfirm) {
+    const confirmed = await confirm(`Delete ${targetEntries.length} graph cache ${targetEntries.length === 1 ? 'entry' : 'entries'} older than ${days} days?`)
+    if (!confirmed) {
+      console.log('Deletion cancelled.')
+      return
+    }
+  }
+  
+  let successCount = 0
+  let failCount = 0
+  
+  for (const entry of targetEntries) {
+    const success = deleteGraphCacheDir(entry.hashDir, dataDir)
+    if (success) {
+      successCount++
+    } else {
+      failCount++
+    }
+  }
+  
+  console.log(`Cleanup complete: ${successCount} deleted, ${failCount} failed.`)
+}
+
 export async function run(argv: GraphArgs): Promise<void> {
   const dataDir = argv.dbPath ? dirname(argv.dbPath) : resolveDataDir()
 
@@ -191,6 +254,16 @@ export async function run(argv: GraphArgs): Promise<void> {
       break
     }
 
+    case 'cleanup': {
+      const days = argv.days
+      if (days === undefined) {
+        console.error('Number of days required. Use --days <n>.')
+        process.exit(1)
+      }
+      await runCleanup(days, dataDir, !argv.yes)
+      break
+    }
+
     default: {
       console.error(`Unknown graph action: ${argv.action}`)
       help()
@@ -208,19 +281,22 @@ Usage:
   oc-forge graph scan [options]
   oc-forge graph list [options]
   oc-forge graph remove <target> [options]
+  oc-forge graph cleanup --days <n> [options]
 
 Actions:
   status    Show graph indexing status for current project
   scan      Trigger a graph scan for current project
   list      List all persisted graph cache entries
   remove    Remove a graph cache entry by project ID or hash
+  cleanup   Remove graph cache entries older than N days
 
 Options:
   --project, -p <id>    Project ID (auto-detected from git if not provided)
   --dir, -d <path>      Project directory for graph scanning
   --db-path <path>      Path to forge database
   --target, -t <id>     Target for removal (project ID or hash directory)
-  --yes, -y             Skip confirmation prompt for removal
+  --days <n>            Number of days for cleanup (required for cleanup action)
+  --yes, -y             Skip confirmation prompt for removal/cleanup
   --help, -h            Show this help message
   `.trim())
 }
@@ -232,7 +308,7 @@ export async function cli(args: string[], globalOpts: { dbPath?: string; resolve
     process.exit(0)
   }
 
-  const validActions = ['status', 'scan', 'list', 'remove']
+  const validActions = ['status', 'scan', 'list', 'remove', 'cleanup']
   if (!validActions.includes(action)) {
     console.error(`Unknown graph action: ${action}`)
     help()
@@ -246,12 +322,19 @@ export async function cli(args: string[], globalOpts: { dbPath?: string; resolve
 
   let target: string | undefined
   let yes = false
+  let days: number | undefined
 
   for (let i = 1; i < args.length; i++) {
     if (args[i] === '--target' || args[i] === '-t') {
       target = args[++i]
     } else if (args[i] === '--yes' || args[i] === '-y') {
       yes = true
+    } else if (args[i] === '--days') {
+      days = parseInt(args[++i], 10)
+      if (isNaN(days) || days < 0) {
+        console.error('Days must be a non-negative integer.')
+        process.exit(1)
+      }
     }
   }
 
@@ -260,11 +343,12 @@ export async function cli(args: string[], globalOpts: { dbPath?: string; resolve
   }
 
   await run({
-    action: action as 'status' | 'scan' | 'list' | 'remove',
+    action: action as 'status' | 'scan' | 'list' | 'remove' | 'cleanup',
     dbPath: globalOpts.dbPath,
     resolvedProjectId: globalOpts.resolvedProjectId,
     dir: globalOpts.dir,
     target,
     yes,
+    days,
   })
 }

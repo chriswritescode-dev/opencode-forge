@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite'
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { hashProjectId, hashGraphCacheScope } from '../storage/graph-projects'
 
@@ -18,6 +18,38 @@ export interface GraphCacheMetadata {
   projectId: string
   cwd: string
   createdAt: number
+}
+
+function deleteGraphDatabaseFiles(dbPath: string): void {
+  try {
+    unlinkSync(dbPath)
+  } catch {}
+  try {
+    unlinkSync(dbPath + '-wal')
+  } catch {}
+  try {
+    unlinkSync(dbPath + '-shm')
+  } catch {}
+}
+
+export function openGraphDatabase(dbPath: string): Database {
+  const db = new Database(dbPath)
+
+  db.run('PRAGMA journal_mode=WAL')
+  db.run('PRAGMA busy_timeout=5000')
+  db.run('PRAGMA synchronous=NORMAL')
+  db.run('PRAGMA foreign_keys=ON')
+
+  const integrityResult = db.prepare('PRAGMA integrity_check').get() as { integrity_check: string }
+  if (integrityResult.integrity_check !== 'ok') {
+    db.close()
+    console.error(`Graph database corruption detected at ${dbPath}: ${integrityResult.integrity_check}`)
+    deleteGraphDatabaseFiles(dbPath)
+    return openGraphDatabase(dbPath)
+  }
+
+  createTables(db)
+  return db
 }
 
 /**
@@ -46,16 +78,7 @@ export function initializeGraphDatabase(projectId: string, dataDir: string, cwd?
   }
 
   const dbPath = join(graphDir, 'graph.db')
-  const db = new Database(dbPath)
-
-  // SQLite optimizations
-  db.run('PRAGMA journal_mode=WAL')
-  db.run('PRAGMA busy_timeout=5000')
-  db.run('PRAGMA synchronous=NORMAL')
-  db.run('PRAGMA foreign_keys=ON')
-
-  // Create all tables
-  createTables(db)
+  const db = openGraphDatabase(dbPath)
 
   // Track instance for later cleanup
   databaseInstances.set(dbPath, db)
