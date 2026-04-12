@@ -103,11 +103,8 @@ export interface AgentOverrideConfig {
 export interface GraphConfig {
   enabled?: boolean
   autoScan?: boolean
-  maxFiles?: number
   watch?: boolean
   debounceMs?: number
-  /** RPC timeout in milliseconds. Default: 120000 (120 seconds) */
-  rpcTimeoutMs?: number
 }
 
 export interface PluginConfig {

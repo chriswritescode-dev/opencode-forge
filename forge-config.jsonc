@@ -50,8 +50,7 @@
     "enabled": true,
     "autoScan": true,
     "watch": true,
-    "debounceMs": 100,
-    "maxFiles": 1000
+    "debounceMs": 100
   },
 
   // TUI sidebar widget configuration

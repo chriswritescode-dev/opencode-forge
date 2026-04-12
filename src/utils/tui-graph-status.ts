@@ -108,7 +108,7 @@ export function formatGraphStatus(status: GraphStatusPayload | null): {
       }
     
     case 'indexing':
-      return { text: 'indexing', color: 'warning' }
+      return { text: status.message || 'indexing', color: 'warning' }
     
     case 'initializing':
       return { text: 'initializing', color: 'info' }

@@ -328,3 +328,17 @@ export interface ExternalPackageResult {
   fileCount: number
   specifiers: string[]
 }
+
+/** Scan preparation result */
+export interface PrepareScanResult {
+  totalFiles: number
+  batchSize: number
+}
+
+/** Scan batch result */
+export interface ScanBatchResult {
+  processed: number
+  completed: boolean
+  nextOffset: number
+  totalFiles: number
+}

@@ -545,4 +545,5 @@ export const GIT_LOG_COMMITS = 300
 
 export const MAX_COCHANGE_FILES_PER_COMMIT = 20
 
-export const MAX_INDEXED_FILES = 10000
+/** Batch size for graph scan operations - controls how many files are processed per RPC call */
+export const GRAPH_SCAN_BATCH_SIZE = 500

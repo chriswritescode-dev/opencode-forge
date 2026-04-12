@@ -322,8 +322,7 @@ You can edit this file to customize settings. The file is created only if it doe
     "enabled": true,               // Enable graph indexing
     "autoScan": true,              // Auto-scan on startup
     "watch": true,                 // Watch for file changes
-    "debounceMs": 100,             // Debounce delay for file watches
-    "maxFiles": 1000               // Maximum files to index
+    "debounceMs": 100              // Debounce delay for file watches
   },
 
   // TUI sidebar widget configuration
@@ -387,8 +386,8 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 - `graph.autoScan` - Auto-scan codebase on startup (default: `true`)
 - `graph.watch` - Watch for file changes (default: `true`)
 - `graph.debounceMs` - Debounce delay for file watch events (default: `100`)
-- `graph.maxFiles` - Maximum files to index (default: `1000`)
-- `graph.rpcTimeoutMs` - RPC timeout in milliseconds for graph worker communication (default: `120000`)
+
+**Note:** Graph indexing runs in batches and processes all files without a fixed file-count cap. Progress is reported during indexing via status updates.
 
 #### TUI
 - `tui.sidebar` - Show the forge sidebar widget in OpenCode TUI (default: `true`)

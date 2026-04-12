@@ -11,7 +11,7 @@ import {
   INDEXABLE_EXTENSIONS,
   PAGERANK_ITERATIONS,
   PAGERANK_DAMPING,
-  MAX_INDEXED_FILES,
+  GRAPH_SCAN_BATCH_SIZE,
 } from './constants'
 import { isBarrelFile, kindTag, collectFilesAsync, extractSignature } from './utils'
 import type {
@@ -31,6 +31,8 @@ import type {
   ExternalPackageResult,
   GraphStats,
   SymbolKind,
+  PrepareScanResult,
+  ScanBatchResult,
 } from './types'
 
 interface IndexedFile {
@@ -62,7 +64,6 @@ interface Ref {
 interface RepoMapConfig {
   cwd: string
   db: Database
-  maxFiles?: number
 }
 
 export class RepoMap {
@@ -71,12 +72,13 @@ export class RepoMap {
   private treeSitter: TreeSitterBackend
   private cache: FileCache
   private stmts: Record<string, Statement> = {}
-  private maxFiles: number
+  // Scan state for batch operations
+  private scanFiles: string[] = []
+  private scanTotalFiles: number = 0
 
   constructor(config: RepoMapConfig) {
     this.cwd = resolve(config.cwd)
     this.db = config.db
-    this.maxFiles = config.maxFiles ?? MAX_INDEXED_FILES
     this.treeSitter = new TreeSitterBackend()
     this.cache = new FileCache(200)
     this.treeSitter.setCache(this.cache)
@@ -259,24 +261,128 @@ export class RepoMap {
   }
 
   async scan(): Promise<void> {
+    // For backward compatibility, use the staged scan approach
+    await this.prepareScan()
+    let offset = 0
+    let completed = false
+    while (!completed) {
+      const result = await this.scanBatch(offset, GRAPH_SCAN_BATCH_SIZE)
+      offset = result.nextOffset
+      completed = result.completed
+    }
+    await this.finalizeScan()
+  }
+
+  /**
+   * Prepare for a full scan by collecting all indexable files and resetting scan state.
+   * Returns the total number of files to process and the batch size to use.
+   */
+  async prepareScan(): Promise<PrepareScanResult> {
+    // Collect all indexable files without any cap
     const result = await collectFilesAsync(this.cwd)
-    const files = result.files.slice(0, this.maxFiles)
-    
-    for (const file of files) {
+    this.scanFiles = result.files.map(f => relative(this.cwd, f.path))
+    this.scanTotalFiles = this.scanFiles.length
+
+    // Reset derived state tables before fresh scan to avoid stale data
+    this.resetGraphDataForFullScan()
+
+    return {
+      totalFiles: this.scanTotalFiles,
+      batchSize: GRAPH_SCAN_BATCH_SIZE,
+    }
+  }
+
+  /**
+   * Scan a batch of files starting at the given offset.
+   * Returns progress info including whether scanning is complete.
+   */
+  async scanBatch(offset: number, batchSize: number): Promise<ScanBatchResult> {
+    const filesToProcess = this.scanFiles.slice(offset, offset + batchSize)
+    const processedCount = filesToProcess.length
+
+    for (const filePath of filesToProcess) {
       try {
-        const relPath = relative(this.cwd, file.path)
-        await this.indexFile(relPath)
+        await this.indexFile(filePath)
       } catch (err) {
-        console.error(`Error indexing ${file.path}:`, err)
+        console.error(`Error indexing ${filePath}:`, err)
       }
     }
 
+    const nextOffset = offset + processedCount
+    const completed = nextOffset >= this.scanTotalFiles
+
+    return {
+      processed: processedCount,
+      completed,
+      nextOffset,
+      totalFiles: this.scanTotalFiles,
+    }
+  }
+
+  /**
+   * Finalize the scan by building all derived state (refs, edges, PageRank, etc).
+   * Should be called once after all file batches have been processed.
+   */
+  async finalizeScan(): Promise<void> {
     await this.resolveUnresolvedRefs()
     await this.buildEdges()
     await this.computePageRank()
     this.linkTestFiles()
     await this.buildCallGraph()
     await this.buildCoChanges()
+  }
+
+  /**
+   * Reset graph data tables before a fresh full scan.
+   * This ensures stale file entries and derived data from previous scans are removed.
+   */
+  private resetGraphDataForFullScan(): void {
+    // Clear all derived state tables
+    this.db.run('DELETE FROM refs')
+    this.db.run('DELETE FROM edges')
+    this.db.run('DELETE FROM calls')
+    this.db.run('DELETE FROM cochanges')
+    this.db.run('DELETE FROM shape_hashes')
+    this.db.run('DELETE FROM token_signatures')
+    this.db.run('DELETE FROM token_fragments')
+    this.db.run('DELETE FROM external_imports')
+    this.db.run('DELETE FROM semantic_summaries')
+    // Clear symbols content - FTS entries will be rebuilt via triggers during re-indexing
+    // Note: We cannot use DELETE FROM symbols directly with FTS5 external content tables
+    // because the FTS delete triggers try to insert 'delete' entries that fail on empty tables.
+    // Instead we drop and recreate the FTS table to clear it cleanly, then recreate the FTS triggers.
+    this.db.run('DROP TABLE IF EXISTS symbols_fts')
+    this.db.run(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
+        name,
+        path,
+        kind,
+        content='symbols',
+        content_rowid='id'
+      )
+    `)
+    // Recreate the FTS sync triggers after recreating the FTS table
+    this.db.run(`
+      CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
+        INSERT INTO symbols_fts(rowid, name, path, kind)
+        VALUES (new.id, new.name, (SELECT path FROM files WHERE id = new.file_id), new.kind);
+      END
+    `)
+    this.db.run(`
+      CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
+        INSERT INTO symbols_fts(symbols_fts, rowid, name, path, kind) VALUES('delete', old.id, old.name, '', old.kind);
+      END
+    `)
+    this.db.run(`
+      CREATE TRIGGER IF NOT EXISTS symbols_au AFTER UPDATE ON symbols BEGIN
+        INSERT INTO symbols_fts(symbols_fts, rowid, name, path, kind) VALUES('delete', old.id, old.name, '', old.kind);
+        INSERT INTO symbols_fts(rowid, name, path, kind)
+        VALUES (new.id, new.name, (SELECT path FROM files WHERE id = new.file_id), new.kind);
+      END
+    `)
+    this.db.run('DELETE FROM symbols')
+    // Clear files table - will be repopulated during scan
+    this.db.run('DELETE FROM files')
   }
 
 

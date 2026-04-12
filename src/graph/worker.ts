@@ -4,8 +4,6 @@ import { RepoMap } from './repo-map'
 
 const dbPath = process.env['GRAPH_DB_PATH'] || ''
 const cwd = process.env['GRAPH_CWD'] || '.'
-const maxFilesEnv = process.env['GRAPH_MAX_FILES']
-const maxFiles = maxFilesEnv && maxFilesEnv.length > 0 ? parseInt(maxFilesEnv, 10) : undefined
 
 const rpcServer = new RpcServer()
 
@@ -23,6 +21,20 @@ self.onmessage = (event) => {
 // Register RPC handlers before initialization
 rpcServer.register('scan', async () => {
   await repoMap.scan()
+})
+
+rpcServer.register('prepareScan', async () => {
+  return repoMap.prepareScan()
+})
+
+rpcServer.register('scanBatch', async (args: unknown[]) => {
+  const offset = (args[0] as number) || 0
+  const batchSize = (args[1] as number) || 500
+  return repoMap.scanBatch(offset, batchSize)
+})
+
+rpcServer.register('finalizeScan', async () => {
+  await repoMap.finalizeScan()
 })
 
 rpcServer.register('getStats', async () => {
@@ -127,7 +139,7 @@ db.run('PRAGMA busy_timeout=5000')
 db.run('PRAGMA synchronous=NORMAL')
 
 // Instantiate RepoMap
-const repoMap = new RepoMap({ cwd, db, maxFiles })
+const repoMap = new RepoMap({ cwd, db })
 
 // Initialize after handlers are registered
 try {

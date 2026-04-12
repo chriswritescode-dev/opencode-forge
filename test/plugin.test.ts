@@ -305,7 +305,7 @@ describe('PluginConfig', () => {
     const config: PluginConfig = {
       graph: {
         enabled: true,
-        maxFiles: 500,
+        watch: true,
       },
     }
 

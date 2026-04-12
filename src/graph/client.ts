@@ -14,6 +14,8 @@ import type {
   DuplicateStructureResult,
   NearDuplicateResult,
   ExternalPackageResult,
+  PrepareScanResult,
+  ScanBatchResult,
 } from './types'
 import type { Logger } from '../types'
 
@@ -69,6 +71,21 @@ export class GraphClient extends EventEmitter {
   async scan(): Promise<void> {
     if (!this.client) throw new Error('Graph client not initialized')
     await this.client.call<void>('scan', [])
+  }
+
+  async prepareScan(): Promise<PrepareScanResult> {
+    if (!this.client) throw new Error('Graph client not initialized')
+    return this.client.call<PrepareScanResult>('prepareScan', [])
+  }
+
+  async scanBatch(offset: number, batchSize: number): Promise<ScanBatchResult> {
+    if (!this.client) throw new Error('Graph client not initialized')
+    return this.client.call<ScanBatchResult>('scanBatch', [offset, batchSize])
+  }
+
+  async finalizeScan(): Promise<void> {
+    if (!this.client) throw new Error('Graph client not initialized')
+    await this.client.call<void>('finalizeScan', [])
   }
 
   async getStats(): Promise<GraphStats> {

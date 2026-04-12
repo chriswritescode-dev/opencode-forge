@@ -76,7 +76,6 @@ describe('loadPluginConfig', () => {
     const graphConfig = {
       graph: {
         enabled: true,
-        maxFiles: 500,
         watch: true,
       },
     }
@@ -85,7 +84,6 @@ describe('loadPluginConfig', () => {
 
     const config = loadPluginConfig()
     expect(config.graph?.enabled).toBe(true)
-    expect(config.graph?.maxFiles).toBe(500)
   })
 
   test('loads config with sandbox settings', () => {

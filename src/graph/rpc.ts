@@ -3,7 +3,8 @@
 import { EventEmitter } from 'events'
 
 /**
- * RPC timeout in milliseconds.
+ * Per-call RPC timeout in milliseconds.
+ * This timeout applies to individual RPC method calls, not to multi-step operations like batch scans.
  * Configure via GRAPH_RPC_TIMEOUT_MS environment variable.
  * Default: 120000 (120 seconds)
  */

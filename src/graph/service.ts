@@ -56,8 +56,6 @@ interface GraphServiceConfig {
   logger: Logger
   watch?: boolean
   debounceMs?: number
-  maxFiles?: number
-  rpcTimeoutMs?: number
   onStatusChange?: GraphStatusCallback
 }
 
@@ -70,7 +68,7 @@ interface PendingChange {
 const DEFAULT_DEBOUNCE_MS = 500
 
 export function createGraphService(config: GraphServiceConfig): GraphService {
-  const { projectId, dataDir, cwd, logger, watch: watchEnabled, debounceMs, maxFiles, rpcTimeoutMs, onStatusChange } = config
+  const { projectId, dataDir, cwd, logger, watch: watchEnabled, debounceMs, onStatusChange } = config
   const client = new GraphClient()
   let dbPath: string | null = null
   let initialized = false
@@ -79,6 +77,7 @@ export function createGraphService(config: GraphServiceConfig): GraphService {
   const pendingQueue = new Map<string, PendingChange>()
   let isFlushing = false
   let watcherInitialized = false
+  let scanInFlight: Promise<void> | null = null
 
   const effectiveDebounceMs = debounceMs ?? DEFAULT_DEBOUNCE_MS
 
@@ -237,27 +236,57 @@ export function createGraphService(config: GraphServiceConfig): GraphService {
     },
 
     async scan(): Promise<void> {
+      // If a scan is already in flight, return the same promise (serialize concurrent requests)
+      if (scanInFlight) {
+        return scanInFlight
+      }
+
       if (!initialized) {
         await initialize()
       }
 
       emitStatus('indexing')
 
-      try {
-        await client.scan()
+      // Capture the scan promise for concurrent request handling
+      scanInFlight = (async () => {
+        try {
+          // Prepare scan - collect files and get batch info
+          const prepResult = await client.prepareScan()
+          
+          // Process files in batches with progress updates
+          let offset = 0
+          let completed = false
+          
+          while (!completed) {
+            const batchResult = await client.scanBatch(offset, prepResult.batchSize)
+            offset = batchResult.nextOffset
+            completed = batchResult.completed
+            
+            // Emit progress during indexing
+            const progressMessage = `Indexing graph: ${offset}/${prepResult.totalFiles} files`
+            emitStatus('indexing', undefined, progressMessage)
+          }
 
-        const stats = await client.getStats()
-        emitStatus('ready', {
-          files: stats.files,
-          symbols: stats.symbols,
-          edges: stats.edges,
-          calls: stats.calls,
-        })
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        emitStatus('error', undefined, msg)
-        throw err
-      }
+          // Finalize - build derived state (PageRank, edges, call graph, etc.)
+          await client.finalizeScan()
+
+          const stats = await client.getStats()
+          emitStatus('ready', {
+            files: stats.files,
+            symbols: stats.symbols,
+            edges: stats.edges,
+            calls: stats.calls,
+          })
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          emitStatus('error', undefined, msg)
+          throw err
+        } finally {
+          scanInFlight = null
+        }
+      })()
+
+      return scanInFlight
     },
 
     async close(): Promise<void> {
@@ -401,8 +430,6 @@ export function createGraphService(config: GraphServiceConfig): GraphService {
         env: {
           GRAPH_DB_PATH: dbPath,
           GRAPH_CWD: cwd,
-          GRAPH_MAX_FILES: maxFiles?.toString() ?? '',
-          GRAPH_RPC_TIMEOUT_MS: (rpcTimeoutMs ?? 120000).toString(),
         },
       })
 
