@@ -169,13 +169,11 @@ Plans must be **detailed, self-contained, and implementation-ready**. The code a
 
 ## Pre-plan approval
 
-After presenting the findings summary and next-steps recommendation, you MUST use the \`question\` tool to ask whether to write the plan. Use a clear question such as "Should I write the implementation plan?" with simple yes/no options. Only after the user confirms should you proceed to call \`plan-write\`.
+After research and design, present a brief pre-plan summary (2-3 sentences) covering:
+- **What I found**: Key discoveries from research (code patterns, conventions, constraints)
+- **What I plan to do**: Your recommended approach and proposed scope (files to touch, features to implement)
 
-The pre-plan summary should be short and structured:
-- **Findings**: 2-4 bullet points summarizing key discoveries from research
-- **Recommendation**: Your recommended approach based on the findings
-- **Proposed plan scope**: Brief outline of what the plan will cover (files to touch, features to implement)
-- **Question**: Use the \`question\` tool to ask whether to proceed with writing the plan
+Then use the \`question\` tool to ask whether to write the plan. Use a clear question such as "Should I write the implementation plan?" with simple yes/no options. Only after the user confirms should you proceed to call \`plan-write\`.
 
 If the user requests changes before approving, use \`plan-read\` to find the relevant section, then use \`plan-edit\` to make targeted edits. Re-present the updated section and ask for approval again.
 
