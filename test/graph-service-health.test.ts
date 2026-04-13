@@ -282,10 +282,10 @@ describe('GraphService status callback', () => {
     })
 
     // Create enough files and symbols to trigger the conservative health check.
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 60; i++) {
       writeFileSync(
         join(testDir, `test${i}.ts`),
-        Array.from({ length: 5 }, (_, j) => `export const value${i}_${j} = ${i + j}`).join('\n')
+        Array.from({ length: 10 }, (_, j) => `export const value${i}_${j} = ${i + j}`).join('\n')
       )
     }
     

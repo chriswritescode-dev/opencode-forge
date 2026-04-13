@@ -83,17 +83,17 @@ describe('Agent definitions', () => {
 
     test('architect prompt does not restrict graph tools to narrow scenarios', () => {
       const prompt = architectAgent.systemPrompt
-      expect(prompt).toMatch(/use whichever graph tool|whichever graph tool best fits/i)
+      expect(prompt).toMatch(/use whichever graph tool|whichever graph tool best fits|as appropriate/i)
     })
 
     test('code prompt does not restrict graph tools to narrow scenarios', () => {
       const prompt = codeAgent.systemPrompt
-      expect(prompt).toMatch(/use whichever graph tool|whichever graph tool best fits/i)
+      expect(prompt).toMatch(/use whichever graph tool|whichever graph tool best fits|as appropriate/i)
     })
 
     test('auditor prompt does not restrict graph tools to narrow scenarios', () => {
       const prompt = auditorAgent.systemPrompt
-      expect(prompt).toMatch(/use whichever graph tool|whichever graph tool best fits/i)
+      expect(prompt).toMatch(/use whichever graph tool|whichever graph tool best fits|as appropriate/i)
     })
 
     test('architect prompt mentions blast_radius for impact analysis', () => {

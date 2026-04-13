@@ -167,5 +167,78 @@ describe('createConfigHandler', () => {
       expect(agentConfigs.plan).toBeDefined()
       expect((agentConfigs.plan as Record<string, unknown>).hidden).toBe(true)
     })
+
+    test('code agent tools include review-delete: false by default', async () => {
+      const configHandler = createConfigHandler(agents)
+      const config: Record<string, unknown> = {}
+      
+      await configHandler(config)
+      
+      const agentConfigs = config.agent as Record<string, unknown>
+      const code = agentConfigs.code as Record<string, unknown>
+      const tools = code.tools as Record<string, boolean>
+      
+      expect(tools).toBeDefined()
+      expect(tools['review-delete']).toBe(false)
+    })
+
+    test('user tool override preserves built-in excludes during merge', async () => {
+      const configHandler = createConfigHandler(agents)
+      const config: Record<string, unknown> = {
+        agent: {
+          code: {
+            tools: {
+              bash: true,
+            },
+          },
+        },
+      }
+      
+      await configHandler(config)
+      
+      const agentConfigs = config.agent as Record<string, unknown>
+      const code = agentConfigs.code as Record<string, unknown>
+      const tools = code.tools as Record<string, boolean>
+      
+      expect(tools['review-delete']).toBe(false)
+      expect(tools.bash).toBe(true)
+    })
+
+    test('explicit user override can override built-in tool denies', async () => {
+      const configHandler = createConfigHandler(agents)
+      const config: Record<string, unknown> = {
+        agent: {
+          code: {
+            tools: {
+              'review-delete': true,
+            },
+          },
+        },
+      }
+      
+      await configHandler(config)
+      
+      const agentConfigs = config.agent as Record<string, unknown>
+      const code = agentConfigs.code as Record<string, unknown>
+      const tools = code.tools as Record<string, boolean>
+      
+      expect(tools['review-delete']).toBe(true)
+    })
+
+    test('auditor agent retains review-delete access', async () => {
+      const configHandler = createConfigHandler(agents)
+      const config: Record<string, unknown> = {}
+      
+      await configHandler(config)
+      
+      const agentConfigs = config.agent as Record<string, unknown>
+      const auditor = agentConfigs.auditor as Record<string, unknown>
+      
+      expect(auditor).toBeDefined()
+      const tools = auditor.tools as Record<string, boolean> | undefined
+      if (tools) {
+        expect(tools['review-delete']).not.toBe(false)
+      }
+    })
   })
 })

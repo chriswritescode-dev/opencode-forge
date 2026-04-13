@@ -135,7 +135,13 @@ export function createConfigHandler(
     if (userAgentConfigs) {
       for (const [name, userConfig] of Object.entries(userAgentConfigs)) {
         if (mergedAgents[name]) {
-          mergedAgents[name] = { ...mergedAgents[name], ...userConfig }
+          const existing = mergedAgents[name]
+          const mergedTools = { ...(existing?.tools ?? {}), ...(userConfig.tools ?? {}) }
+          mergedAgents[name] = {
+            ...existing,
+            ...userConfig,
+            ...(Object.keys(mergedTools).length ? { tools: mergedTools } : {}),
+          }
         } else {
           mergedAgents[name] = userConfig
         }
