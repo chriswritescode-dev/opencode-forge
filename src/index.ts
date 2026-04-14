@@ -2,7 +2,7 @@ import type { Plugin, PluginInput, Hooks } from '@opencode-ai/plugin'
 import { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2'
 import { agents } from './agents'
 import { createConfigHandler } from './config'
-import { createSessionHooks, createLoopEventHandler, createGraphToolAfterHook } from './hooks'
+import { createSessionHooks, createLoopEventHandler } from './hooks'
 import { initializeDatabase, resolveDataDir, closeDatabase } from './storage'
 import { createKvService } from './services/kv'
 import { createLoopService, migrateRalphKeys } from './services/loop'
@@ -16,6 +16,7 @@ import type { PluginConfig, CompactionConfig } from './types'
 import { createTools, createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from './tools'
 import { createSandboxToolBeforeHook, createSandboxToolAfterHook } from './hooks/sandbox-tools'
 import { createGraphCommandEventHook } from './hooks/graph-command'
+import { createGraphToolBeforeHook, createGraphToolAfterHook } from './hooks/graph-tools'
 import type { ToolContext } from './tools'
 import type { GraphService } from './graph'
 import { createGraphStatusCallback, writeGraphStatus, UNAVAILABLE_STATUS } from './utils/graph-status-store'
@@ -228,6 +229,11 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       sandboxManager,
       logger,
     })
+    const graphBeforeHook = createGraphToolBeforeHook({
+      graphService: graphService || null,
+      logger,
+      cwd: directory,
+    })
     const graphAfterHook = createGraphToolAfterHook({
       graphService: graphService || null,
       logger,
@@ -263,6 +269,9 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         if (loopName) {
           logger.log(`[tool-before] ${input.tool} callID=${input.callID} session=${input.sessionID} loop=${loopName}`)
         }
+        // Graph hook must run BEFORE sandbox hook to inspect original command
+        // Graph hook must also run BEFORE toolExecuteBeforeHook to capture original args
+        await graphBeforeHook!(input, output)
         await toolExecuteBeforeHook!(input, output)
         await sandboxBeforeHook!(input, output)
       },
