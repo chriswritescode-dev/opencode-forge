@@ -48,6 +48,63 @@ interface CollectResult {
 }
 
 /**
+ * Collects a lightweight fingerprint of the repository for startup freshness checks.
+ * Returns file count and max mtime without reading file contents.
+ * Excludes the graph cache directory to avoid counting the metadata file itself.
+ * 
+ * @param dir - Directory to fingerprint (usually cwd)
+ * @param graphCacheDir - Optional graph cache directory to exclude. If not provided, 
+ *                        excludes common graph cache locations.
+ * @returns Object with fileCount and maxMtimeMs
+ */
+export async function collectIndexFingerprint(
+  dir: string,
+  graphCacheDir?: string,
+): Promise<{ fileCount: number; maxMtimeMs: number }> {
+  // Try git ls-files first
+  const gitFiles = await collectFilesViaGit(dir)
+  if (gitFiles) {
+    let maxMtimeMs = 0
+    let filteredCount = 0
+    for (const file of gitFiles) {
+      // Skip graph cache files if graphCacheDir is provided
+      if (graphCacheDir && file.path.startsWith(graphCacheDir)) {
+        continue
+      }
+      filteredCount++
+      if (file.mtimeMs > maxMtimeMs) {
+        maxMtimeMs = file.mtimeMs
+      }
+    }
+    return {
+      fileCount: filteredCount,
+      maxMtimeMs: maxMtimeMs,
+    }
+  }
+
+  // Fallback walk - collect only mtime, not full file data
+  const collected: CollectedFile[] = []
+  await collectFilesWalk(dir, 0, undefined, collected)
+  
+  // Filter out graph cache files if graphCacheDir is provided
+  const filtered = graphCacheDir 
+    ? collected.filter(file => !file.path.startsWith(graphCacheDir))
+    : collected
+  
+  let maxMtimeMs = 0
+  for (const file of filtered) {
+    if (file.mtimeMs > maxMtimeMs) {
+      maxMtimeMs = file.mtimeMs
+    }
+  }
+  
+  return {
+    fileCount: filtered.length,
+    maxMtimeMs: maxMtimeMs,
+  }
+}
+
+/**
  * Collect files from a directory - async version using git ls-files first
  */
 export async function collectFilesAsync(

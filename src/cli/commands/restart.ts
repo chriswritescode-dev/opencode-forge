@@ -1,8 +1,12 @@
 import type { LoopState } from '../../services/loop'
-import { buildCompletionSignalInstructions, LOOP_PERMISSION_RULESET } from '../../services/loop'
+import { buildCompletionSignalInstructions } from '../../services/loop'
+import { buildLoopPermissionRuleset } from '../../constants/loop'
+import { agents } from '../../agents'
 import { openDatabase, confirm } from '../utils'
 import { findPartialMatch } from '../../utils/partial-match'
 import { createOpencodeClient } from '@opencode-ai/sdk/v2'
+import { loadPluginConfig } from '../../setup'
+import { resolveWorktreeLogTarget } from '../../services/worktree-log'
 
 export interface RestartArgs {
   dbPath?: string
@@ -192,10 +196,28 @@ export async function run(argv: RestartArgs): Promise<void> {
       }
     }
 
+    // Load config and resolve log target for permission ruleset
+    // For worktree mode, use the host project directory for path resolution
+    // Use resolved runtime data dir instead of config.dataDir
+    const config = loadPluginConfig()
+    const { resolveDataDir } = await import('../../storage')
+    const dataDir = resolveDataDir()
+    const logTarget = resolveWorktreeLogTarget(config, {
+      projectDir: state.projectDir || state.worktreeDir,
+      sandboxHostDir: state.worktreeDir,
+      sandbox: state.sandbox,
+      dataDir,
+    }, console)
+    const agentExclusions = agents.code.tools?.exclude
+    const permissionRuleset = buildLoopPermissionRuleset(config, logTarget?.permissionPath ?? null, {
+      isWorktree: !!state.worktree,
+      agentExclusions,
+    })
+
     const createResult = await client.session.create({
       title: state.loopName,
       directory,
-      permission: LOOP_PERMISSION_RULESET,
+      permission: permissionRuleset,
     })
 
     if (createResult.error || !createResult.data) {
@@ -224,6 +246,7 @@ export async function run(argv: RestartArgs): Promise<void> {
       startedAt: new Date().toISOString(),
       completedAt: undefined,
       terminationReason: undefined,
+      projectDir: state.projectDir || state.worktreeDir,
     }
     db.prepare('UPDATE project_kv SET data = ?, updated_at = ? WHERE project_id = ? AND key = ?').run(
       JSON.stringify(newState),

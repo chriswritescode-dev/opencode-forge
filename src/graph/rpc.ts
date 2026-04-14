@@ -104,6 +104,7 @@ export class RpcClient extends EventEmitter {
         this.pendingCalls.delete(callId)
         this.workerTerminated = true
         const postError = error instanceof Error ? error : new Error(String(error))
+        this.workerError = postError // Set error for consistent state tracking
         this.logger?.error('Failed to post message to worker', postError)
         this.rejectAllPending(postError)
         reject(postError)

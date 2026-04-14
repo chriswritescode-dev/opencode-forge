@@ -1,8 +1,9 @@
 import { GraphClient } from './client'
-import { ensureGraphDirectory } from './database'
-import { join, relative } from 'path'
-import { watch } from 'fs'
+import { ensureGraphDirectory, readGraphCacheMetadata, writeGraphCacheMetadata } from './database'
+import { join, relative, dirname, isAbsolute } from 'path'
+import { watch, existsSync } from 'fs'
 import type { Logger } from '../types'
+import { collectIndexFingerprint } from './utils'
 import type {
   GraphStats,
   TopFileResult,
@@ -129,6 +130,17 @@ export interface GraphService {
    * @param absPath - Absolute path to the changed file.
    */
   onFileChanged(absPath: string): void
+  /**
+   * Determines whether a full scan is needed on startup based on cache freshness.
+   * Returns a decision with reason for logging purposes.
+   */
+  shouldScanOnStartup(): Promise<{ shouldScan: boolean; reason: string }>
+  /**
+   * Ensures the graph index is ready for queries on startup.
+   * Scans only when cache is missing, stale, or unhealthy; otherwise skips.
+   * @returns 'scanned' if a full scan was performed, 'skipped' if cache was reused
+   */
+  ensureStartupIndex(): Promise<'scanned' | 'skipped'>
 }
 
 export type GraphStatusCallback = (state: GraphState, stats?: GraphStatsPayload, message?: string) => void
@@ -154,6 +166,12 @@ interface PendingChange {
 
 const DEFAULT_DEBOUNCE_MS = 500
 
+/** Minimum number of files required to consider the graph for health check */
+const MIN_FILES_FOR_HEALTH_CHECK = 50
+
+/** Minimum number of symbols required to consider the graph for health check */
+const MIN_SYMBOLS_FOR_HEALTH_CHECK = 500
+
 /**
  * Evaluates graph health based on stats to detect obviously incomplete indexes.
  * Returns a description of the health issue if found, or null if healthy.
@@ -165,11 +183,101 @@ const DEFAULT_DEBOUNCE_MS = 500
 function evaluateGraphHealth(stats: { files: number; symbols: number; edges: number; calls: number }): string | null {
   // Only flag as incomplete for large, symbol-dense indexes with zero edges.
   // Smaller repos or those with standalone files can validly have no dependencies.
-  if (stats.files >= 50 && stats.symbols >= 500 && stats.edges === 0 && stats.calls === 0) {
+  if (
+    stats.files >= MIN_FILES_FOR_HEALTH_CHECK &&
+    stats.symbols >= MIN_SYMBOLS_FOR_HEALTH_CHECK &&
+    stats.edges === 0 &&
+    stats.calls === 0
+  ) {
     return `${stats.files} files and ${stats.symbols} symbols indexed but 0 dependency edges or call edges generated`
   }
   
   return null
+}
+
+/**
+ * Determines whether a startup scan is needed based on cache freshness and health.
+ */
+async function determineStartupScan(
+  dbPath: string | null,
+  cwd: string,
+  client: GraphClient
+): Promise<{ shouldScan: boolean; reason: string }> {
+  if (!dbPath) {
+    return { shouldScan: true, reason: 'Graph database path not set' }
+  }
+  const graphDir = dirname(dbPath)
+  
+  // 1. Check if metadata exists
+  const metadata = readGraphCacheMetadata(graphDir)
+  if (!metadata) {
+    return { shouldScan: true, reason: 'Graph cache metadata missing' }
+  }
+  
+  // 2. Check if graph DB has any indexed files
+  try {
+    const stats = await client.getStats()
+    const hasIndexedFiles = stats.files > 0
+    
+    // If metadata exists but graph has no files, scan is needed
+    if (!hasIndexedFiles) {
+      // Check if repo is non-empty
+      const currentFingerprint = await collectIndexFingerprint(cwd, graphDir)
+      if (currentFingerprint.fileCount > 0) {
+        return { shouldScan: true, reason: 'Graph database empty but repository has files' }
+      }
+      // Empty repo - no scan needed
+      return { shouldScan: false, reason: 'Repository is empty' }
+    }
+    
+    // 3. Check persisted status for this scope
+    // Note: We can't directly check KV here, so we rely on metadata and stats
+    
+    // 4. Compare current fingerprint to last successful scan
+    const currentFingerprint = await collectIndexFingerprint(cwd, graphDir)
+    
+    // If fingerprint fields are missing from metadata (old format), scan to update
+    if (metadata.indexedFileCount === undefined || metadata.indexedMaxMtimeMs === undefined) {
+      return { 
+        shouldScan: true, 
+        reason: 'Graph metadata missing fingerprint fields - scanning to update' 
+      }
+    }
+    
+    // If file count changed, scan is needed
+    if (currentFingerprint.fileCount !== metadata.indexedFileCount) {
+      return { 
+        shouldScan: true, 
+        reason: `File count changed: ${metadata.indexedFileCount} -> ${currentFingerprint.fileCount}` 
+      }
+    }
+    
+    // If max mtime increased (files modified), scan is needed
+    if (currentFingerprint.maxMtimeMs > metadata.indexedMaxMtimeMs) {
+      return { 
+        shouldScan: true, 
+        reason: `Files modified since last index (mtime: ${metadata.indexedMaxMtimeMs} -> ${currentFingerprint.maxMtimeMs})` 
+      }
+    }
+    
+    // 5. Check graph health - unhealthy graphs should be rescanned
+    const healthIssue = evaluateGraphHealth(stats)
+    if (healthIssue) {
+      return { 
+        shouldScan: true, 
+        reason: `Graph cache unhealthy: ${healthIssue}` 
+      }
+    }
+    
+    // 6. Cache is fresh and healthy - skip scan
+    return { 
+      shouldScan: false, 
+      reason: `Graph cache fresh: ${stats.files} files, fingerprint matches last scan` 
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { shouldScan: true, reason: `Graph stats unavailable: ${msg}` }
+  }
 }
 
 /**
@@ -302,6 +410,7 @@ export function createGraphService(config: GraphServiceConfig): GraphService {
     if (closing || flushTimer) {
       if (!closing && flushTimer) {
         clearTimeout(flushTimer)
+        flushTimer = null // Nullify immediately to prevent race conditions
       }
     }
     if (closing) return
@@ -419,6 +528,17 @@ export function createGraphService(config: GraphServiceConfig): GraphService {
             throw new Error(errorMsg)
           }
           
+          // Persist fingerprint metadata for future startup freshness checks
+          if (dbPath) {
+            const graphDir = dirname(dbPath)
+            const currentFingerprint = await collectIndexFingerprint(cwd, graphDir)
+            writeGraphCacheMetadata(graphDir, {
+              lastIndexedAt: Date.now(),
+              indexedFileCount: currentFingerprint.fileCount,
+              indexedMaxMtimeMs: currentFingerprint.maxMtimeMs,
+            })
+          }
+          
           workerHealthy = true
           emitStatus('ready', {
             files: stats.files,
@@ -473,27 +593,35 @@ export function createGraphService(config: GraphServiceConfig): GraphService {
 
     async getFileDependents(relPath: string): Promise<FileDepResult[]> {
       if (!initialized) await initialize()
-      return client.getFileDependents(relPath)
+      const validatedPath = validateRelativePath(relPath)
+      if (!validatedPath) {
+        throw new Error(`Invalid path for getFileDependents: ${relPath}`)
+      }
+      return client.getFileDependents(validatedPath)
     },
 
     async getFileDependencies(relPath: string): Promise<FileDepResult[]> {
       if (!initialized) await initialize()
-      return client.getFileDependencies(relPath)
+      const validatedPath = validateRelativePath(relPath)
+      return client.getFileDependencies(validatedPath)
     },
 
     async getFileCoChanges(relPath: string): Promise<FileCoChangeResult[]> {
       if (!initialized) await initialize()
-      return client.getFileCoChanges(relPath)
+      const validatedPath = validateRelativePath(relPath)
+      return client.getFileCoChanges(validatedPath)
     },
 
     async getFileBlastRadius(relPath: string): Promise<number> {
       if (!initialized) await initialize()
-      return client.getFileBlastRadius(relPath)
+      const validatedPath = validateRelativePath(relPath)
+      return client.getFileBlastRadius(validatedPath)
     },
 
     async getFileSymbols(relPath: string): Promise<FileSymbolResult[]> {
       if (!initialized) await initialize()
-      return client.getFileSymbols(relPath)
+      const validatedPath = validateRelativePath(relPath)
+      return client.getFileSymbols(validatedPath)
     },
 
     async findSymbols(name: string, limit = 50): Promise<SymbolSearchResult[]> {
@@ -553,13 +681,69 @@ export function createGraphService(config: GraphServiceConfig): GraphService {
       }
       enqueueChange(absPath)
     },
+
+    async shouldScanOnStartup(): Promise<{ shouldScan: boolean; reason: string }> {
+      // Ensure initialization first (needed for client.getStats())
+      if (!initialized) {
+        await initialize()
+      }
+      
+      if (!dbPath) {
+        return { shouldScan: true, reason: 'Graph database path not set' }
+      }
+      return determineStartupScan(dbPath, cwd, client)
+    },
+
+    async ensureStartupIndex(): Promise<'scanned' | 'skipped'> {
+      // Ensure initialization first (sets dbPath and initializes client)
+      if (!initialized) {
+        await initialize()
+      }
+
+      // Client is already initialized by this point (initialize() called at line 666-671 or 677-682)
+      const decision = await determineStartupScan(dbPath, cwd, client)
+      
+      if (decision.shouldScan) {
+        logger.log(`Graph startup: ${decision.reason} - performing full scan`)
+        await service.scan()
+        return 'scanned'
+      } else {
+        logger.log(`Graph startup: ${decision.reason} - skipping scan`)
+        // Refresh ready status with current stats
+        const stats = await client.getStats()
+        emitStatus('ready', {
+          files: stats.files,
+          symbols: stats.symbols,
+          edges: stats.edges,
+          calls: stats.calls,
+        }, decision.reason)
+        return 'skipped'
+      }
+    },
   }
 
   function resolveWorkerPath(): string {
     const isDev = import.meta.url.endsWith('.ts')
     const workerFile = isDev ? 'worker.ts' : 'worker.js'
     const workerUrl = new URL(`./${workerFile}`, import.meta.url)
+    if (!existsSync(workerUrl.pathname)) {
+      throw new Error(`Graph worker file not found: ${workerUrl.pathname}`)
+    }
     return workerUrl.pathname
+  }
+
+  function validateRelativePath(relPath: string): string {
+    const normalized = relPath.trim().replace(/\\/g, '/')
+    if (!normalized) {
+      throw new Error('Graph file path must be non-empty')
+    }
+    if (isAbsolute(normalized)) {
+      throw new Error(`Graph file path must be relative: ${relPath}`)
+    }
+    if (normalized === '.' || normalized === '..' || normalized.startsWith('../') || normalized.includes('/../')) {
+      throw new Error(`Graph file path must stay within project root: ${relPath}`)
+    }
+    return normalized
   }
 
   async function initialize(): Promise<void> {

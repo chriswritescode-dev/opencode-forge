@@ -385,11 +385,11 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 
 #### Graph
 - `graph.enabled` - Enable graph indexing (default: `true`)
-- `graph.autoScan` - Auto-scan codebase on startup (default: `true`)
+- `graph.autoScan` - Auto-check existing graph cache on startup and scan only when missing/stale (default: `true`)
 - `graph.watch` - Watch for file changes (default: `true`)
 - `graph.debounceMs` - Debounce delay for file watch events (default: `100`)
 
-**Note:** Graph indexing runs in batches and processes all files without a fixed file-count cap. Progress is reported during indexing via status updates.
+**Note:** Graph indexing runs in batches and processes all files without a fixed file-count cap. Progress is reported during indexing via status updates. On startup, the graph service performs a lightweight freshness check using file count and modification times - a full scan runs only when the cache is missing, stale, or unhealthy. Watcher-driven incremental updates handle post-startup file changes.
 
 #### TUI
 - `tui.sidebar` - Show the forge sidebar widget in OpenCode TUI (default: `true`)

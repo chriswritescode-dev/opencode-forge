@@ -20,30 +20,25 @@ graph TD
 
 ### 1. Scan Initialization
 
-When `graph.autoScan` is enabled, `GraphService.scan()` is called on plugin startup:
+When `graph.autoScan` is enabled, `GraphService.ensureStartupIndex()` is called on plugin startup. This performs a lightweight freshness check before deciding whether to scan:
 
 ```typescript
-async scan(): Promise<void> {
-  emitStatus('indexing')
+async ensureStartupIndex(): Promise<'scanned' | 'skipped'> {
+  const decision = await determineStartupScan(dbPath, cwd, client)
   
-  // Prepare scan - collect files and get batch info
-  const prepResult = await client.prepareScan()
-  
-  // Process files in batches
-  let offset = 0
-  let completed = false
-  
-  while (!completed) {
-    const batchResult = await client.scanBatch(offset, prepResult.batchSize)
-    offset = batchResult.nextOffset
-    completed = batchResult.completed
-    emitStatus('indexing', undefined, `Indexing: ${offset}/${prepResult.totalFiles} files`)
+  if (decision.shouldScan) {
+    // Cache missing/stale - perform full scan
+    await service.scan()
+    return 'scanned'
+  } else {
+    // Cache fresh - skip scan, emit ready status
+    emitStatus('ready', stats, decision.reason)
+    return 'skipped'
   }
-  
-  // Finalize - build PageRank, edges, call graph
-  await client.finalizeScan()
 }
 ```
+
+The freshness check compares the current repository fingerprint (file count + max mtime) against the last successful scan metadata stored in the graph cache.
 
 ### 2. File Processing
 

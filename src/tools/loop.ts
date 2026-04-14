@@ -1,16 +1,20 @@
 import { tool } from '@opencode-ai/plugin'
 import { execSync, spawnSync } from 'child_process'
 import { existsSync } from 'fs'
-import { resolve } from 'path'
+import { join, resolve } from 'path'
 import type { ToolContext } from './types'
 
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
 import { slugify } from '../utils/logger'
 import { findPartialMatch } from '../utils/partial-match'
 import { formatSessionOutput, formatAuditResult } from '../utils/loop-format'
-import { fetchSessionOutput, MAX_RETRIES, LOOP_PERMISSION_RULESET, buildCompletionSignalInstructions, DEFAULT_COMPLETION_SIGNAL, type LoopState, type LoopSessionOutput } from '../services/loop'
+import { fetchSessionOutput, MAX_RETRIES, buildCompletionSignalInstructions, DEFAULT_COMPLETION_SIGNAL, type LoopState, type LoopSessionOutput } from '../services/loop'
+import { buildLoopPermissionRuleset } from '../constants/loop'
+import { resolveWorktreeLogTarget } from '../services/worktree-log'
+import { agents } from '../agents'
 import { isSandboxEnabled } from '../sandbox/context'
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
+import { waitForGraphReady } from '../utils/tui-graph-status'
 
 const z = tool.schema
 
@@ -48,6 +52,19 @@ export async function setupLoop(
   let loopContext: LoopContext
 
   if (!options.worktree) {
+    // Non-worktree: resolve log target using project directory
+    const logTarget = resolveWorktreeLogTarget(config, {
+      projectDir: projectDir,
+      sandboxHostDir: undefined,
+      sandbox: false,
+      dataDir: ctx.dataDir,
+    }, ctx.logger)
+    const agentExclusions = agents.code.tools?.exclude
+    const permissionRuleset = buildLoopPermissionRuleset(config, logTarget?.permissionPath ?? null, {
+      isWorktree: false,
+      agentExclusions,
+    })
+
     let currentBranch: string | undefined
     try {
       currentBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: projectDir, encoding: 'utf-8' }).trim()
@@ -58,7 +75,7 @@ export async function setupLoop(
     const createResult = await v2.session.create({
       title: options.sessionTitle,
       directory: projectDir,
-      permission: LOOP_PERMISSION_RULESET,
+      permission: permissionRuleset,
     })
 
     if (createResult.error || !createResult.data) {
@@ -73,6 +90,7 @@ export async function setupLoop(
       worktree: false,
     }
   } else {
+    // Worktree mode: create worktree first to get the actual directory
     const worktreeResult = await v2.worktree.create({
       worktreeCreateInput: { name: uniqueLoopName },
     })
@@ -85,16 +103,36 @@ export async function setupLoop(
     const worktreeInfo = worktreeResult.data
     logger.log(`loop: worktree created at ${worktreeInfo.directory} (branch: ${worktreeInfo.branch})`)
 
+    // Now resolve log target using the host project directory for path resolution
+    const sandboxEnabled = isSandboxEnabled(config, sandboxManager) && !!options.worktree
+    const logTarget = resolveWorktreeLogTarget(config, {
+      projectDir: projectDir,
+      sandboxHostDir: worktreeInfo.directory,
+      sandbox: sandboxEnabled,
+      dataDir: ctx.dataDir,
+    }, ctx.logger)
+    const agentExclusions = agents.code.tools?.exclude
+    const permissionRuleset = buildLoopPermissionRuleset(config, logTarget?.permissionPath ?? null, {
+      isWorktree: true,
+      agentExclusions,
+    })
+
     const createResult = await v2.session.create({
       title: options.sessionTitle,
       directory: worktreeInfo.directory,
-      permission: LOOP_PERMISSION_RULESET,
+      permission: permissionRuleset,
     })
 
     if (createResult.error || !createResult.data) {
       logger.error(`loop: failed to create session`, createResult.error)
       try {
         await v2.worktree.remove({ worktreeRemoveInput: { directory: worktreeInfo.directory } })
+        // Delete graph cache for this worktree scope on startup failure
+        const { deleteGraphCacheScope } = await import('../storage/graph-projects')
+        const deleted = deleteGraphCacheScope(ctx.projectId, worktreeInfo.directory, ctx.dataDir)
+        if (deleted) {
+          logger.log(`loop: deleted graph cache for worktree ${worktreeInfo.directory}`)
+        }
       } catch (cleanupErr) {
         logger.error(`loop: failed to cleanup worktree`, cleanupErr)
       }
@@ -129,6 +167,7 @@ export async function setupLoop(
     sessionId: loopContext.sessionId,
     loopName: uniqueLoopName,
     worktreeDir: loopContext.directory,
+    projectDir: projectDir,
     worktreeBranch: loopContext.branch,
     iteration: 1,
     maxIterations: maxIter,
@@ -152,6 +191,29 @@ export async function setupLoop(
   loopService.setState(uniqueLoopName, state)
   loopService.registerLoopSession(loopContext.sessionId, uniqueLoopName)
   logger.log(`loop: state stored for loop=${uniqueLoopName}`)
+
+  // Wait for worktree graph to be ready before first prompt (only for worktree mode)
+  if (options.worktree) {
+    try {
+      const waitResult = await waitForGraphReady(projectId, {
+        cwd: loopContext.directory,
+        dbPathOverride: ctx.dataDir ? join(ctx.dataDir, 'graph.db') : undefined,
+        pollMs: 100,
+        timeoutMs: 5000,
+      })
+      
+      if (waitResult === 'timeout') {
+        logger.log(`setupLoop: graph readiness timeout for worktree ${loopContext.directory}`)
+      } else if (waitResult === null) {
+        logger.log(`setupLoop: graph status unavailable for worktree ${loopContext.directory}`)
+      } else {
+        logger.log(`setupLoop: graph ready (${waitResult.state}) for worktree ${loopContext.directory}`)
+      }
+    } catch (err) {
+      // Non-fatal: continue even if wait fails
+      logger.log(`setupLoop: graph wait error (non-fatal)`, err)
+    }
+  }
 
   let promptText = options.prompt
   if (options.completionSignal) {
@@ -189,6 +251,12 @@ export async function setupLoop(
     if (options.worktree) {
       try {
         await v2.worktree.remove({ worktreeRemoveInput: { directory: loopContext.directory } })
+        // Delete graph cache for this worktree scope on startup failure
+        const { deleteGraphCacheScope } = await import('../storage/graph-projects')
+        const deleted = deleteGraphCacheScope(ctx.projectId, loopContext.directory, ctx.dataDir)
+        if (deleted) {
+          logger.log(`loop: deleted graph cache for worktree ${loopContext.directory}`)
+        }
       } catch (cleanupErr) {
         logger.error(`loop: failed to cleanup worktree`, cleanupErr)
       }
@@ -344,6 +412,13 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
               throw new Error(removeResult.stderr || 'git worktree remove failed')
             }
             logger.log(`loop-cancel: removed worktree ${state.worktreeDir}`)
+            
+            // Delete graph cache for this worktree scope
+            const { deleteGraphCacheScope } = await import('../storage/graph-projects')
+            const deleted = deleteGraphCacheScope(ctx.projectId, state.worktreeDir, ctx.dataDir)
+            if (deleted) {
+              logger.log(`loop-cancel: deleted graph cache for worktree ${state.worktreeDir}`)
+            }
           } catch (err) {
             logger.error(`loop-cancel: failed to remove worktree`, err)
           }
@@ -399,10 +474,24 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             }
           }
 
+          // Resolve log target for permission ruleset (pure, no filesystem mutation)
+          // Use host project directory for path resolution, worktree for sandbox mapping
+          const logTarget = resolveWorktreeLogTarget(config, {
+            projectDir: stoppedState.projectDir,
+            sandboxHostDir: stoppedState.worktreeDir,
+            sandbox: stoppedState.sandbox,
+            dataDir: ctx.dataDir,
+          }, ctx.logger)
+          const agentExclusions = agents.code.tools?.exclude
+          const permissionRuleset = buildLoopPermissionRuleset(config, logTarget?.permissionPath ?? null, {
+            isWorktree: !!stoppedState.worktree,
+            agentExclusions,
+          })
+
           const createParams = {
             title: stoppedState.loopName,
             directory: stoppedState.worktreeDir!,
-            permission: LOOP_PERMISSION_RULESET,
+            permission: permissionRuleset,
           }
 
           const createResult = await v2.session.create(createParams)
@@ -432,6 +521,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             sessionId: newSessionId,
             loopName: stoppedState.loopName,
             worktreeDir: stoppedState.worktreeDir!,
+            projectDir: stoppedState.projectDir || stoppedState.worktreeDir!,
             worktreeBranch: stoppedState.worktreeBranch,
             iteration: stoppedState.iteration!,
             maxIterations: stoppedState.maxIterations!,

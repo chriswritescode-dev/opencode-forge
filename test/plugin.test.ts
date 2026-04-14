@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { createForgePlugin } from '../src/index'
-import { mkdirSync, rmSync, existsSync } from 'fs'
+import { mkdirSync, rmSync, existsSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import type { PluginConfig } from '../src/types'
 import type { PluginInput } from '@opencode-ai/plugin'
@@ -83,6 +83,112 @@ describe('createForgePlugin', () => {
     const typedHooks2 = hooks2 as { getCleanup?: () => Promise<void> }
     if (typedHooks1.getCleanup) await typedHooks1.getCleanup()
     if (typedHooks2.getCleanup) await typedHooks2.getCleanup()
+  })
+
+  test('REGRESSION: plugin startup with autoScan reuses existing cache when files unchanged', async () => {
+    const sharedDataDir = `${testDir}/shared-data`
+    const config: PluginConfig = {
+      dataDir: sharedDataDir,
+      graph: { enabled: true, autoScan: true },
+    }
+
+    const worktreeDir = join(testDir, 'worktree-for-reuse')
+    mkdirSync(worktreeDir, { recursive: true })
+
+    // Create a test file
+    const testFile = join(worktreeDir, 'index.ts')
+    writeFileSync(testFile, 'export const value = 1')
+
+    const mockInput = {
+      directory: worktreeDir,
+      worktree: worktreeDir,
+      client: {} as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    const plugin = createForgePlugin(config)
+
+    // First initialization - builds the cache
+    const hooks1 = await plugin(mockInput)
+    const typedHooks1 = hooks1 as { getCleanup?: () => Promise<void> }
+    
+    // Wait for scan to complete
+    await new Promise(resolve => setTimeout(resolve, 500))
+    
+    if (typedHooks1.getCleanup) await typedHooks1.getCleanup()
+
+    // Second initialization - should reuse cache
+    const hooks2 = await plugin(mockInput)
+    const typedHooks2 = hooks2 as { getCleanup?: () => Promise<void> }
+    
+    // Wait for startup check to complete
+    await new Promise(resolve => setTimeout(resolve, 500))
+    
+    if (typedHooks2.getCleanup) await typedHooks2.getCleanup()
+
+    // Verify cache exists and was not recreated
+    const { hashGraphCacheScope } = await import('../src/storage/graph-projects')
+    const cacheHash = hashGraphCacheScope(TEST_PROJECT_ID, worktreeDir)
+    const cachePath = join(sharedDataDir, 'graph', cacheHash)
+    
+    expect(existsSync(cachePath)).toBe(true)
+  })
+
+  test('REGRESSION: plugin startup rescans when files change', async () => {
+    const sharedDataDir = `${testDir}/shared-data`
+    const config: PluginConfig = {
+      dataDir: sharedDataDir,
+      graph: { enabled: true, autoScan: true },
+    }
+
+    const worktreeDir = join(testDir, 'worktree-for-rescan')
+    mkdirSync(worktreeDir, { recursive: true })
+
+    // Create initial test file
+    const testFile = join(worktreeDir, 'index.ts')
+    writeFileSync(testFile, 'export const value = 1')
+
+    const mockInput = {
+      directory: worktreeDir,
+      worktree: worktreeDir,
+      client: {} as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    const plugin = createForgePlugin(config)
+
+    // First initialization - builds the cache
+    const hooks1 = await plugin(mockInput)
+    const typedHooks1 = hooks1 as { getCleanup?: () => Promise<void> }
+    
+    // Wait for scan to complete
+    await new Promise(resolve => setTimeout(resolve, 500))
+    
+    if (typedHooks1.getCleanup) await typedHooks1.getCleanup()
+
+    // Modify the file
+    await new Promise(resolve => setTimeout(resolve, 10))
+    writeFileSync(testFile, 'export const value = 2')
+
+    // Second initialization - should detect change and rescan
+    const hooks2 = await plugin(mockInput)
+    const typedHooks2 = hooks2 as { getCleanup?: () => Promise<void> }
+    
+    // Wait for startup check and potential rescan
+    await new Promise(resolve => setTimeout(resolve, 500))
+    
+    if (typedHooks2.getCleanup) await typedHooks2.getCleanup()
+
+    // Verify cache still exists
+    const { hashGraphCacheScope } = await import('../src/storage/graph-projects')
+    const cacheHash = hashGraphCacheScope(TEST_PROJECT_ID, worktreeDir)
+    const cachePath = join(sharedDataDir, 'graph', cacheHash)
+    
+    expect(existsSync(cachePath)).toBe(true)
   })
 
   test('REGRESSION: worktree loop startup uses worktree directory as session and graph root', async () => {

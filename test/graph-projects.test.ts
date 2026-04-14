@@ -1,12 +1,14 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { 
   hashProjectId, 
+  hashGraphCacheScope,
   resolveGraphCacheDir,
   resolveGraphCacheDirLegacy,
   hasGraphCache, 
   enumerateGraphCache,
   findGraphCacheEntry,
   deleteGraphCacheDir,
+  deleteGraphCacheScope,
 } from '../src/storage/graph-projects'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
@@ -315,5 +317,105 @@ describe('graph-projects with opencode.db mapping', () => {
     const cacheDir2 = resolveGraphCacheDir(sharedProjectId, cwd2, testDataDir)
 
     expect(cacheDir1).not.toBe(cacheDir2)
+  })
+})
+
+describe('deleteGraphCacheScope', () => {
+  let testDataDir: string
+
+  beforeEach(() => {
+    testDataDir = join(TEST_DATA_DIR, Math.random().toString(36).slice(2))
+    mkdirSync(testDataDir, { recursive: true })
+  })
+
+  afterEach(() => {
+    if (existsSync(testDataDir)) {
+      rmSync(testDataDir, { recursive: true, force: true })
+    }
+  })
+
+  test('should delete graph cache by projectId and cwd scope', () => {
+    const projectId = 'test-project-' + Date.now()
+    const cwd = '/fake/path/worktree'
+    
+    // Create cache directory
+    const cacheDir = resolveGraphCacheDir(projectId, cwd, testDataDir)
+    mkdirSync(cacheDir, { recursive: true })
+    const dbPath = join(cacheDir, 'graph.db')
+    new Database(dbPath).close()
+    
+    expect(existsSync(cacheDir)).toBe(true)
+    
+    // Delete by scope
+    const result = deleteGraphCacheScope(projectId, cwd, testDataDir)
+    
+    expect(result).toBe(true)
+    expect(existsSync(cacheDir)).toBe(false)
+  })
+
+  test('should return false when cache does not exist', () => {
+    const projectId = 'nonexistent-project'
+    const cwd = '/nonexistent/cwd'
+    
+    const result = deleteGraphCacheScope(projectId, cwd, testDataDir)
+    
+    expect(result).toBe(false)
+  })
+
+  test('should delete only targeted worktree cache, preserving sibling caches', () => {
+    const sharedProjectId = 'shared-project-' + Date.now()
+    const cwd1 = '/fake/path/worktree1'
+    const cwd2 = '/fake/path/worktree2'
+    
+    // Create two worktree caches
+    const cacheDir1 = resolveGraphCacheDir(sharedProjectId, cwd1, testDataDir)
+    const cacheDir2 = resolveGraphCacheDir(sharedProjectId, cwd2, testDataDir)
+    mkdirSync(cacheDir1, { recursive: true })
+    mkdirSync(cacheDir2, { recursive: true })
+    new Database(join(cacheDir1, 'graph.db')).close()
+    new Database(join(cacheDir2, 'graph.db')).close()
+    
+    expect(existsSync(cacheDir1)).toBe(true)
+    expect(existsSync(cacheDir2)).toBe(true)
+    
+    // Delete only first worktree cache
+    const result = deleteGraphCacheScope(sharedProjectId, cwd1, testDataDir)
+    
+    expect(result).toBe(true)
+    expect(existsSync(cacheDir1)).toBe(false)
+    expect(existsSync(cacheDir2)).toBe(true)
+  })
+
+  test('should preserve shared KV DB data when deleting worktree cache', () => {
+    const projectId = 'test-project-' + Date.now()
+    const cwd = '/fake/path/worktree'
+    
+    // Create graph cache
+    const cacheDir = resolveGraphCacheDir(projectId, cwd, testDataDir)
+    mkdirSync(cacheDir, { recursive: true })
+    const dbPath = join(cacheDir, 'graph.db')
+    new Database(dbPath).close()
+    
+    // Create shared KV DB
+    const kvDbPath = join(testDataDir, 'graph.db')
+    const kvDb = new Database(kvDbPath)
+    kvDb.run('CREATE TABLE IF NOT EXISTS project_kv (project_id TEXT, key TEXT, data TEXT)')
+    kvDb.prepare('INSERT INTO project_kv (project_id, key, data) VALUES (?, ?, ?)').run(
+      projectId,
+      'test-key',
+      'test-data'
+    )
+    kvDb.close()
+    
+    expect(existsSync(cacheDir)).toBe(true)
+    expect(existsSync(kvDbPath)).toBe(true)
+    
+    // Delete worktree cache
+    deleteGraphCacheScope(projectId, cwd, testDataDir)
+    
+    // Graph cache should be deleted
+    expect(existsSync(cacheDir)).toBe(false)
+    // KV DB should still exist
+    expect(existsSync(kvDbPath)).toBe(true)
   })
 })

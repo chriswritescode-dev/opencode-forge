@@ -77,6 +77,16 @@ export interface Logger {
 }
 
 /**
+ * Configuration for worktree loop completion logging.
+ */
+export interface WorktreeLoggingConfig {
+  /** Enable worktree loop completion logging. Defaults to false. */
+  enabled?: boolean
+  /** Directory to write completion logs. Defaults to platform data dir. */
+  directory?: string
+}
+
+/**
  * Configuration for autonomous loop behavior.
  */
 export interface LoopConfig {
@@ -94,6 +104,8 @@ export interface LoopConfig {
   stallTimeoutMs?: number
   /** Minimum number of audits before a loop can complete. */
   minAudits?: number
+  /** Worktree loop completion logging configuration. */
+  worktreeLogging?: WorktreeLoggingConfig
 }
 
 /**
@@ -180,7 +192,7 @@ export interface AgentOverrideConfig {
 export interface GraphConfig {
   /** Enable graph indexing. Defaults to true. */
   enabled?: boolean
-  /** Automatically scan on startup. */
+  /** Auto-check existing graph cache on startup and scan only when missing/stale. Defaults to true. */
   autoScan?: boolean
   /** Watch filesystem for changes. */
   watch?: boolean

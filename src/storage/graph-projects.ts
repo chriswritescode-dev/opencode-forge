@@ -262,3 +262,22 @@ export function deleteGraphCacheDir(
     return false
   }
 }
+
+/**
+ * Deletes a graph cache directory by project ID and cwd scope.
+ * This is a convenience wrapper that computes the hash from projectId + cwd
+ * and delegates to deleteGraphCacheDir.
+ * 
+ * @param projectId - The project ID
+ * @param cwd - The working directory scope
+ * @param dataDir - Optional data directory (defaults to resolved data dir)
+ * @returns true if deletion was successful, false otherwise
+ */
+export function deleteGraphCacheScope(
+  projectId: string,
+  cwd: string,
+  dataDir?: string
+): boolean {
+  const hashDir = hashGraphCacheScope(projectId, cwd)
+  return deleteGraphCacheDir(hashDir, dataDir)
+}

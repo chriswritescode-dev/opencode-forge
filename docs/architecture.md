@@ -45,15 +45,16 @@ The graph system provides code structure indexing and querying capabilities.
 
 ### Flow
 
-1. On startup, `GraphService.scan()` is called if `graph.autoScan` is enabled
-2. The service batches files and sends them to the worker
-3. The worker uses tree-sitter to parse files and extract:
+1. On startup with `graph.autoScan` enabled, `GraphService.ensureStartupIndex()` performs a freshness check
+2. If the graph cache is missing, stale, or unhealthy, a full scan is triggered; otherwise the existing cache is reused
+3. The service batches files and sends them to the worker
+4. The worker uses tree-sitter to parse files and extract:
    - Symbols (functions, classes, interfaces, etc.)
    - Imports and exports
    - Call relationships between symbols
-4. Results are stored in a SQLite database per project
-5. The filesystem watcher monitors for changes and triggers re-indexing
-6. PageRank and other derived metrics are computed after initial scan
+5. Results are stored in a SQLite database per project
+6. The filesystem watcher monitors for changes and triggers re-indexing
+7. PageRank and other derived metrics are computed after initial scan
 
 ### Query Tools
 

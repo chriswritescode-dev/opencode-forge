@@ -13,18 +13,62 @@ import {
   detectLanguageFromPath,
 } from "./types";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type TSParser = any;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type TSLanguage = any;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type TSTree = any;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type TSQuery = any;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type TSQueryCapture = any;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type TSNode = any;
+// Minimal tree-sitter type definitions
+interface TSParser {
+  parse(source: string, oldTree?: TSTree): TSTree
+  setLanguage(language: TSLanguage): void
+  delete(): void
+}
+
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+interface TSLanguage {
+  // Opaque language object from tree-sitter
+}
+
+interface TSTree {
+  root: TSNode
+  rootNode: TSNode
+  edit(edit: { startIndex: number; oldEndIndex: number; newEndIndex: number }): void
+  delete(): void
+  copy(): TSTree
+}
+
+interface TSNode {
+  type: string
+  text: string
+  startPosition: { row: number; column: number }
+  endPosition: { row: number; column: number }
+  startIndex: number
+  endIndex: number
+  children: TSNode[]
+  namedChildren: TSNode[]
+  childCount: number
+  namedChildCount: number
+  child(index: number): TSNode | null
+  namedChild(index: number): TSNode | null
+  childForFieldName(fieldName: string): TSNode | null
+  parent: TSNode | null
+  nextSibling: TSNode | null
+  previousSibling: TSNode | null
+  descendantForIndex(startIndex: number, endIndex?: number): TSNode
+  namedDescendantForIndex(startIndex: number, endIndex?: number): TSNode
+  descendantsOfType(types: string | string[], startPosition?: { row: number; column: number }, endPosition?: { row: number; column: number }): TSNode[]
+}
+
+interface TSQueryMatch {
+  captures: TSQueryCapture[]
+}
+
+interface TSQuery {
+  matches(node: TSNode): TSQueryMatch[]
+  captures(node: TSNode): TSQueryCapture[]
+  delete(): void
+}
+
+interface TSQueryCapture {
+  name: string
+  node: TSNode
+}
 
 // Tree-sitter query patterns per language
 const QUERIES: Record<string, string> = {

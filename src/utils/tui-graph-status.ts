@@ -10,6 +10,7 @@ import { Database } from 'bun:sqlite'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import type { GraphStatusPayload } from './graph-status-store'
+import { isGraphReady, isGraphTransient } from './graph-status-store'
 import { resolveDataDir } from '../storage'
 
 /**
@@ -33,10 +34,12 @@ export function getDbPathForDataDir(dataDir: string): string {
  * 
  * @param projectId - The project ID (git commit hash)
  * @param dbPathOverride - Optional database path override (for testing)
+ * @param cwd - Optional working directory scope for worktree sessions
  * @returns The graph status payload or null if not found
  */
-export function readGraphStatus(projectId: string, dbPathOverride?: string): GraphStatusPayload | null {
+export function readGraphStatus(projectId: string, dbPathOverride?: string, cwd?: string): GraphStatusPayload | null {
   const dbPath = dbPathOverride || getDbPath()
+  const statusKey = cwd ? `graph:status:${cwd.replace(/\/$/, '')}` : 'graph:status'
 
   if (!existsSync(dbPath)) return null
 
@@ -47,7 +50,7 @@ export function readGraphStatus(projectId: string, dbPathOverride?: string): Gra
     
     const row = db.prepare(
       'SELECT data FROM project_kv WHERE project_id = ? AND key = ? AND expires_at > ?'
-    ).get(projectId, 'graph:status', now) as { data: string } | null
+    ).get(projectId, statusKey, now) as { data: string } | null
 
     if (!row) return null
     
@@ -75,8 +78,66 @@ export function readGraphStatus(projectId: string, dbPathOverride?: string): Gra
  * @returns true if status is initializing or indexing, false otherwise
  */
 export function isTransient(status: GraphStatusPayload | null): boolean {
-  if (!status) return false
-  return status.state === 'initializing' || status.state === 'indexing'
+  return isGraphTransient(status)
+}
+
+/**
+ * Waits for graph readiness with a bounded timeout.
+ * 
+ * This function polls the graph status for a specific scope (projectId + cwd)
+ * and resolves when the graph becomes ready or times out. It handles transient
+ * states (initializing/indexing) by continuing to poll, but will not block
+ * forever on missing/error/unavailable status.
+ * 
+ * @param projectId - The project ID
+ * @param options - Wait options including db path, cwd scope, and timing
+ * @returns Promise resolving to the final status or 'timeout'
+ */
+export async function waitForGraphReady(
+  projectId: string,
+  options?: {
+    dbPathOverride?: string
+    cwd?: string
+    pollMs?: number
+    timeoutMs?: number
+  }
+): Promise<GraphStatusPayload | 'timeout' | null> {
+  const pollMs = options?.pollMs ?? 100
+  const timeoutMs = options?.timeoutMs ?? 30000
+  const startTime = Date.now()
+  const missingStatusTimeout = 2000 // Short timeout for missing status (graph service may not have initialized yet)
+  
+  while (true) {
+    const status = readGraphStatus(projectId, options?.dbPathOverride, options?.cwd)
+    
+    // Return immediately if ready
+    if (isGraphReady(status)) {
+      return status
+    }
+    
+    // If status is missing, use a shorter timeout to avoid waiting forever
+    // This handles the case where graph service hasn't written status yet
+    if (!status) {
+      if (Date.now() - startTime > missingStatusTimeout) {
+        return null
+      }
+      await new Promise(resolve => setTimeout(resolve, pollMs))
+      continue
+    }
+    
+    // Check overall timeout after handling missing status
+    if (Date.now() - startTime > timeoutMs) {
+      return 'timeout'
+    }
+    
+    // Stop polling if status is error or unavailable (not transient)
+    if (status.state === 'error' || status.state === 'unavailable') {
+      return status
+    }
+    
+    // Continue polling while in transient state
+    await new Promise(resolve => setTimeout(resolve, pollMs))
+  }
 }
 
 /**

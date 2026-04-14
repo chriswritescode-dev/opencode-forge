@@ -40,9 +40,14 @@ export class FileCache {
   /** Manually set a cache entry */
   set(filePath: string, content: string, mtime?: number): void {
     if (this.entries.size >= this.maxSize) {
-      // Evict oldest entry
-      const firstKey = this.entries.keys().next().value;
-      if (firstKey) this.entries.delete(firstKey);
+      // Evict 10% of oldest entries for better batch performance
+      const toEvict = Math.max(1, Math.floor(this.maxSize * 0.1));
+      const iterator = this.entries.keys();
+      for (let i = 0; i < toEvict && this.entries.size >= this.maxSize; i++) {
+        const result = iterator.next();
+        if (result.done) break;
+        this.entries.delete(result.value);
+      }
     }
     const mt = mtime ?? Date.now();
     this.entries.set(filePath, { content, mtime: mt });

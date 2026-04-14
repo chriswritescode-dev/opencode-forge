@@ -17,7 +17,8 @@ import { readPlan, writePlan, deletePlan } from './utils/tui-plan-store'
 import { readGraphStatus, formatGraphStatus } from './utils/tui-graph-status'
 import { readLoopStates, readLoopByName, shouldPollSidebar, type LoopInfo } from './utils/tui-refresh-helpers'
 
-import { LOOP_PERMISSION_RULESET } from './constants/loop'
+import { buildLoopPermissionRuleset } from './constants/loop'
+import { agents } from './agents'
 
 type TuiOptions = {
   sidebar: boolean
@@ -131,7 +132,24 @@ async function restartLoop(projectId: string, loopName: string, api: TuiPluginAp
 
     const directory = state.worktreeDir
     if (!directory) return null
-    const createResult = await api.client.session.create({ directory, title: loopName, permission: LOOP_PERMISSION_RULESET })
+    
+    // Load config and resolve log target for permission ruleset
+    const { loadPluginConfig } = await import('./setup')
+    const { resolveWorktreeLogTarget } = await import('./services/worktree-log')
+    const config = loadPluginConfig()
+    const dataDir = resolveDataDir()
+    const logTarget = resolveWorktreeLogTarget(config, {
+      projectDir: state.projectDir || state.worktreeDir,
+      sandboxHostDir: directory,
+      sandbox: state.sandbox,
+      dataDir,
+    })
+    const agentExclusions = agents.code.tools?.exclude
+    const permissionRuleset = buildLoopPermissionRuleset(config, logTarget?.permissionPath ?? null, {
+      isWorktree: !!state.worktree,
+      agentExclusions,
+    })
+    const createResult = await api.client.session.create({ directory, title: loopName, permission: permissionRuleset })
     if (createResult.error || !createResult.data) return null
     
     const newSessionId = createResult.data.id
@@ -152,6 +170,7 @@ async function restartLoop(projectId: string, loopName: string, api: TuiPluginAp
       startedAt: new Date().toISOString(),
       completedAt: undefined,
       terminationReason: undefined,
+      projectDir: state.projectDir || state.worktreeDir,
     }
     db.prepare('UPDATE project_kv SET data = ?, updated_at = ? WHERE project_id = ? AND key = ?').run(
       JSON.stringify(newState), now, projectId, key
@@ -803,8 +822,8 @@ function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: strin
       setHasPlan(plan !== null)
     }
     
-    // Refresh graph status from KV
-    const status = readGraphStatus(pid)
+    // Refresh graph status from KV (scoped to current directory)
+    const status = readGraphStatus(pid, undefined, directory)
     setGraphStatusRaw(status)
     setGraphStatusFormatted(formatGraphStatus(status))
   }

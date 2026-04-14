@@ -141,7 +141,7 @@ describe('Agent definitions', () => {
     test('architect prompt includes pre-plan approval section', () => {
       const prompt = architectAgent.systemPrompt
       expect(prompt).toContain('## Pre-plan approval')
-      expect(prompt).toContain('findings summary and next-steps recommendation')
+      expect(prompt).toContain('present a brief findings/next-steps summary')
       expect(prompt).toContain('Should I write the implementation plan?')
     })
   })

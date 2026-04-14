@@ -1,5 +1,4 @@
 import { RpcClient } from './rpc'
-import { EventEmitter } from 'events'
 import type {
   GraphStats,
   TopFileResult,
@@ -29,7 +28,7 @@ interface GraphWorkerConfig {
  * GraphClient communicates with the graph worker via RPC
  * All tree-sitter parsing and SQLite queries run in worker thread
  */
-export class GraphClient extends EventEmitter {
+export class GraphClient {
   private client: RpcClient | null = null
   private worker: Worker | null = null
   private ready = false

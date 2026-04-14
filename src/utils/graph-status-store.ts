@@ -49,9 +49,22 @@ export const UNAVAILABLE_STATUS: GraphStatusPayload = {
 }
 
 /**
- * Key used for storing graph status in the project KV store
+ * Base key used for storing graph status in the project KV store
  */
 export const GRAPH_STATUS_KEY = 'graph:status'
+
+/**
+ * Creates a scoped graph status key by combining the base key with an optional cwd.
+ * This allows separate graph status tracking for worktree sessions vs root sessions.
+ * 
+ * @param cwd - Optional working directory scope
+ * @returns The scoped status key
+ */
+export function getGraphStatusKey(cwd?: string): string {
+  if (!cwd) return GRAPH_STATUS_KEY
+  const normalizedCwd = cwd.replace(/\/$/, '')
+  return `${GRAPH_STATUS_KEY}:${normalizedCwd}`
+}
 
 /**
  * Writes graph status to the project KV store.
@@ -59,13 +72,16 @@ export const GRAPH_STATUS_KEY = 'graph:status'
  * @param kvService - The KV service instance
  * @param projectId - The project ID
  * @param status - The status payload to persist
+ * @param cwd - Optional working directory scope for worktree sessions
  */
 export function writeGraphStatus(
   kvService: KvService,
   projectId: string,
-  status: GraphStatusPayload
+  status: GraphStatusPayload,
+  cwd?: string
 ): void {
-  kvService.set(projectId, GRAPH_STATUS_KEY, status)
+  const key = getGraphStatusKey(cwd)
+  kvService.set(projectId, key, status)
 }
 
 /**
@@ -73,13 +89,16 @@ export function writeGraphStatus(
  * 
  * @param kvService - The KV service instance
  * @param projectId - The project ID
+ * @param cwd - Optional working directory scope for worktree sessions
  * @returns The status payload or null if not found
  */
 export function readGraphStatus(
   kvService: KvService,
-  projectId: string
+  projectId: string,
+  cwd?: string
 ): GraphStatusPayload | null {
-  return kvService.get<GraphStatusPayload>(projectId, GRAPH_STATUS_KEY)
+  const key = getGraphStatusKey(cwd)
+  return kvService.get<GraphStatusPayload>(projectId, key)
 }
 
 /**
@@ -90,11 +109,13 @@ export function readGraphStatus(
  * 
  * @param kvService - The KV service instance
  * @param projectId - The project ID
+ * @param cwd - Optional working directory scope for worktree sessions
  * @returns A callback function for status updates
  */
 export function createGraphStatusCallback(
   kvService: KvService,
-  projectId: string
+  projectId: string,
+  cwd?: string
 ): (state: GraphState, stats?: GraphStatsPayload, message?: string) => void {
   return (state: GraphState, stats?: GraphStatsPayload, message?: string) => {
     const status: GraphStatusPayload = {
@@ -104,6 +125,30 @@ export function createGraphStatusCallback(
       message,
       updatedAt: Date.now(),
     }
-    writeGraphStatus(kvService, projectId, status)
+    writeGraphStatus(kvService, projectId, status, cwd)
   }
+}
+
+/**
+ * Determines if a graph status is transient (still being built).
+ * Transient states indicate the graph is still being built and should
+ * trigger continued waiting or polling.
+ * 
+ * @param status - The graph status payload or null
+ * @returns true if status is initializing or indexing, false otherwise
+ */
+export function isGraphTransient(status: GraphStatusPayload | null): boolean {
+  if (!status) return false
+  return status.state === 'initializing' || status.state === 'indexing'
+}
+
+/**
+ * Determines if a graph status is ready for queries.
+ * 
+ * @param status - The graph status payload or null
+ * @returns true if status is ready, false otherwise
+ */
+export function isGraphReady(status: GraphStatusPayload | null): boolean {
+  if (!status) return false
+  return status.state === 'ready'
 }

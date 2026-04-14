@@ -254,6 +254,7 @@ describe('LoopService', () => {
       active: true,
       sessionId: 'session-audit',
       loopName: 'test-worktree',
+      projectDir: '/path/to/project',
       worktreeDir: '/path/to/worktree',
       worktreeBranch: 'opencode/loop-test',
       iteration: 1,
@@ -267,11 +268,28 @@ describe('LoopService', () => {
       auditCount: 0,
     }
 
+    kvService.set(projectId, 'plan:test-worktree', 'Phase 1\n- Do the thing\n\nAcceptance Criteria\n- It works')
+    kvService.set(projectId, 'review-finding:src/example.ts:12', {
+      severity: 'bug',
+      file: 'src/example.ts',
+      line: 12,
+      description: 'Example bug',
+      scenario: 'When example input is used',
+      status: 'open',
+      branch: 'opencode/loop-test',
+    })
+
     const prompt = loopService.buildAuditPrompt(state)
+    expect(prompt).toContain('Implementation plan:')
+    expect(prompt).toContain('Phase 1')
+    expect(prompt).toContain('Existing review findings:')
+    expect(prompt).toContain('review-finding:src/example.ts:12')
     expect(prompt).toContain('Review the code changes')
     expect(prompt).toContain('bugs, logic errors, missing error handling')
     expect(prompt).toContain('No issues found')
     expect(prompt).toContain('do not direct the agent to')
+    expect(prompt).not.toContain('Retrieve it by calling plan-read')
+    expect(prompt).not.toContain('retrieve all existing review findings by calling the review-read tool')
   })
 
   test('buildContinuationPrompt appends audit findings when provided', () => {

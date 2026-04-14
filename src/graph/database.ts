@@ -18,6 +18,12 @@ export interface GraphCacheMetadata {
   projectId: string
   cwd: string
   createdAt: number
+  /** Timestamp of the last successful full scan */
+  lastIndexedAt?: number
+  /** Number of files indexed in the last successful full scan */
+  indexedFileCount?: number
+  /** Maximum mtime of indexed files in the last successful full scan */
+  indexedMaxMtimeMs?: number
 }
 
 function deleteGraphDatabaseFiles(dbPath: string): void {
@@ -201,6 +207,37 @@ export function readGraphCacheMetadata(graphDir: string): GraphCacheMetadata | n
     return JSON.parse(content) as GraphCacheMetadata
   } catch {
     return null
+  }
+}
+
+/**
+ * Writes graph cache metadata to a graph directory.
+ * Updates the metadata file with the provided fields, preserving existing data.
+ * 
+ * @param graphDir - The graph cache directory path
+ * @param metadata - The metadata fields to update
+ * @returns true if successful, false otherwise
+ */
+export function writeGraphCacheMetadata(
+  graphDir: string,
+  metadata: Partial<GraphCacheMetadata>
+): boolean {
+  const metadataPath = join(graphDir, GRAPH_METADATA_FILE)
+  
+  try {
+    const existing = readGraphCacheMetadata(graphDir)
+    const updated: GraphCacheMetadata = {
+      ...(existing ?? {
+        projectId: '',
+        cwd: '',
+        createdAt: Date.now(),
+      }),
+      ...metadata,
+    }
+    writeFileSync(metadataPath, JSON.stringify(updated, null, 2))
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -414,7 +451,18 @@ function createTables(db: Database): void {
   // 'path' is derived from the files table via JOIN, not stored in symbols directly)
   // Migration: drop old external-content FTS table that references non-existent symbols.path
   const ftsInfo = db.prepare("SELECT sql FROM sqlite_master WHERE name='symbols_fts'").get() as { sql: string } | undefined
-  if (ftsInfo?.sql?.includes("content='symbols'")) {
+  let shouldRebuildFts = ftsInfo?.sql?.includes("content='symbols'") ?? false
+  
+  // Also rebuild FTS if schema is correct but data may be stale (count mismatch)
+  if (!shouldRebuildFts && ftsInfo) {
+    const symbolCount = db.prepare('SELECT COUNT(*) as count FROM symbols').get() as { count: number }
+    const ftsCount = db.prepare('SELECT COUNT(*) as count FROM symbols_fts').get() as { count: number }
+    if (symbolCount.count !== ftsCount.count) {
+      shouldRebuildFts = true
+    }
+  }
+  
+  if (shouldRebuildFts) {
     db.run('DROP TABLE IF EXISTS symbols_fts')
   }
   db.run(`

@@ -135,6 +135,20 @@ describe('resolveConfigPath', () => {
 })
 
 describe('bundled sample config', () => {
+  let testConfigDir: string
+
+  beforeEach(() => {
+    testConfigDir = TEST_DIR + '-configpath-' + Math.random().toString(36).slice(2)
+    mkdirSync(testConfigDir, { recursive: true })
+  })
+
+  afterEach(() => {
+    delete process.env['XDG_CONFIG_HOME']
+    if (existsSync(testConfigDir)) {
+      rmSync(testConfigDir, { recursive: true, force: true })
+    }
+  })
+
   test('bundled forge-config.jsonc is valid JSONC and parses successfully', () => {
     const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
     expect(existsSync(bundledConfigPath)).toBe(true)
@@ -231,5 +245,54 @@ describe('bundled sample config', () => {
     
     expect(parsed.dataDir).toBeDefined()
     expect(parsed.defaultKvTtlMs).toBe(604800000)
+  })
+
+  test('bundled config includes loop.worktreeLogging and is disabled by default', () => {
+    const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
+    const content = readFileSync(bundledConfigPath, 'utf-8')
+    
+    const stripComments = (text: string): string => {
+      let result = text
+      result = result.replace(/\/\*[\s\S]*?\*\//g, '')
+      result = result.replace(/(^|[^:])(\/\/.*$)/gm, '$1')
+      return result
+    }
+    
+    const stripTrailingCommas = (text: string): string => {
+      let result = text
+      result = result.replace(/,(\s*}[ \t\n\r]*)/g, '$1')
+      result = result.replace(/,(\s*][ \t\n\r]*)/g, '$1')
+      return result
+    }
+    
+    const cleaned = stripComments(content)
+    const normalized = stripTrailingCommas(cleaned)
+    const parsed = JSON.parse(normalized)
+    
+    expect(parsed.loop?.worktreeLogging).toBeDefined()
+    expect(parsed.loop?.worktreeLogging?.enabled).toBe(false)
+  })
+
+  test('JSONC parsing preserves worktreeLogging config', () => {
+    const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
+    mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
+    process.env['XDG_CONFIG_HOME'] = testConfigDir
+
+    const configWithWorktreeLogging = {
+      loop: {
+        enabled: true,
+        worktreeLogging: {
+          enabled: true,
+          directory: '/tmp/loop-logs',
+        },
+      },
+    }
+
+    writeFileSync(configPath, JSON.stringify(configWithWorktreeLogging))
+
+    const config = loadPluginConfig()
+    expect(config.loop?.worktreeLogging).toBeDefined()
+    expect(config.loop?.worktreeLogging?.enabled).toBe(true)
+    expect(config.loop?.worktreeLogging?.directory).toBe('/tmp/loop-logs')
   })
 })

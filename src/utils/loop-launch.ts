@@ -13,6 +13,11 @@ import { DEFAULT_COMPLETION_SIGNAL, generateUniqueName, buildCompletionSignalIns
 import { extractLoopNames } from './plan-execution'
 import { createKvQuery } from '../storage/kv-queries'
 import { resolveDataDir } from '../storage'
+import { buildLoopPermissionRuleset } from '../constants/loop'
+import { resolveWorktreeLogTarget } from '../services/worktree-log'
+import { loadPluginConfig } from '../setup'
+import { agents } from '../agents'
+import { waitForGraphReady } from './tui-graph-status'
 
 export interface FreshLoopOptions {
   planText: string
@@ -81,8 +86,13 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
   let sessionDirectory: string
   let worktreeBranch: string | undefined
   
+  // Load config early to determine sandbox state for loop state persistence
+  const config = loadPluginConfig()
+  const dataDir = resolveDataDir()
+  const isSandboxEnabled = config.sandbox?.mode === 'docker'
+  
   if (isWorktree) {
-    // Create worktree and session
+    // Create worktree first to get the actual directory
     const worktreeResult = await api.client.worktree.create({
       worktreeCreateInput: { name: uniqueWorktreeName },
     })
@@ -94,10 +104,24 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
     sessionDirectory = worktreeResult.data.directory
     worktreeBranch = worktreeResult.data.branch
     
+    // Get config for permission ruleset
+    // Load actual config to respect worktreeLogging settings
+    const logTarget = resolveWorktreeLogTarget(config, {
+      projectDir: directory,
+      sandboxHostDir: sessionDirectory,
+      sandbox: isSandboxEnabled,
+      dataDir,
+    })
+    const agentExclusions = agents.code.tools?.exclude
+    const permissionRuleset = buildLoopPermissionRuleset(config, logTarget?.permissionPath ?? null, {
+      isWorktree: isWorktree,
+      agentExclusions,
+    })
+    
     const createResult = await api.client.session.create({
       title: `Loop: ${title}`,
       directory: sessionDirectory,
-      // Note: Cannot set permission ruleset from TUI - handled by loop service
+      permission: permissionRuleset,
     })
     
     if (createResult.error || !createResult.data) {
@@ -106,10 +130,23 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
     
     sessionId = createResult.data.id
   } else {
-    // In-place loop
+    // In-place loop - compute permission ruleset with project directory context
+    const logTarget = resolveWorktreeLogTarget(config, {
+      projectDir: directory,
+      sandboxHostDir: undefined,
+      sandbox: isSandboxEnabled,
+      dataDir,
+    })
+    const agentExclusions = agents.code.tools?.exclude
+    const permissionRuleset = buildLoopPermissionRuleset(config, logTarget?.permissionPath ?? null, {
+      isWorktree: isWorktree,
+      agentExclusions,
+    })
+    
     const createResult = await api.client.session.create({
       title: `Loop: ${title}`,
       directory,
+      permission: permissionRuleset,
     })
     
     if (createResult.error || !createResult.data) {
@@ -139,6 +176,7 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
         active: true,
         sessionId,
         loopName: uniqueWorktreeName,
+        projectDir: directory,
         worktreeDir: sessionDirectory,
         worktreeBranch,
         iteration: 1,
@@ -151,6 +189,7 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
         errorCount: 0,
         auditCount: 0,
         worktree: isWorktree,
+        sandbox: isSandboxEnabled,
       }
       
       queries.set(projectId, `loop:${uniqueWorktreeName}`, JSON.stringify(loopState), now + TTL_MS)
@@ -168,6 +207,20 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
   let promptText = planText
   if (DEFAULT_COMPLETION_SIGNAL) {
     promptText += buildCompletionSignalInstructions(DEFAULT_COMPLETION_SIGNAL)
+  }
+  
+  // Wait for worktree graph to be ready before first prompt (only for worktree mode)
+  if (isWorktree) {
+    try {
+      await waitForGraphReady(projectId, {
+        dbPathOverride: dbPath,
+        cwd: sessionDirectory,
+        pollMs: 100,
+        timeoutMs: 5000,
+      })
+    } catch {
+      // Non-fatal: continue even if wait fails
+    }
   }
   
   // Send prompt to code agent

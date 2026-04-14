@@ -102,7 +102,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       }).catch((err) => logger.error('Failed to cleanup orphaned containers', err))
     }
 
-    const loopHandler = createLoopEventHandler(loopService, client, v2, logger, () => config, sandboxManager || undefined)
+    const loopHandler = createLoopEventHandler(loopService, client, v2, logger, () => config, sandboxManager || undefined, projectId, dataDir)
 
     // Initialize graph service if enabled
     const graphEnabled = config.graph?.enabled ?? true
@@ -110,8 +110,8 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     
     if (graphEnabled) {
       try {
-        // Create status callback for persisting graph state
-        const graphStatusCallback = createGraphStatusCallback(kvService, projectId)
+        // Create status callback for persisting graph state (scoped to cwd for worktree sessions)
+        const graphStatusCallback = createGraphStatusCallback(kvService, projectId, directory)
         
         graphService = createGraphService({
           projectId,
@@ -123,11 +123,11 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           onStatusChange: graphStatusCallback,
         })
         
-        // Fire-and-forget auto-scan if enabled
+        // Guarded auto-scan if enabled - checks cache freshness before scanning
         const autoScan = config.graph?.autoScan ?? true
         if (autoScan) {
-          graphService.scan().catch((err) => {
-            logger.error('Graph auto-scan failed', err)
+          graphService.ensureStartupIndex().catch((err) => {
+            logger.error('Graph startup index check failed', err)
           })
         }
       } catch (err) {

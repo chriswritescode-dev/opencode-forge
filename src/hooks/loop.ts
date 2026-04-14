@@ -1,13 +1,16 @@
 import type { PluginInput } from '@opencode-ai/plugin'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import type { LoopService, LoopState } from '../services/loop'
-import { MAX_RETRIES, MAX_CONSECUTIVE_STALLS, LOOP_PERMISSION_RULESET } from '../services/loop'
+import { MAX_RETRIES, MAX_CONSECUTIVE_STALLS, fetchSessionOutput } from '../services/loop'
 import type { Logger, PluginConfig } from '../types'
 import { retryWithModelFallback } from '../utils/model-fallback'
 import { resolveLoopModel } from '../utils/loop-helpers'
 import { execSync, spawnSync } from 'child_process'
 import { resolve } from 'path'
 import type { createSandboxManager } from '../sandbox/manager'
+import { logWorktreeCompletion, resolveWorktreeLogTarget } from '../services/worktree-log'
+import { buildLoopPermissionRuleset } from '../constants/loop'
+import { agents } from '../agents'
 
 export interface LoopEventHandler {
   onEvent(input: { event: { type: string; properties?: Record<string, unknown> } }): Promise<void>
@@ -25,6 +28,8 @@ export function createLoopEventHandler(
   logger: Logger,
   getConfig: () => PluginConfig,
   sandboxManager?: ReturnType<typeof createSandboxManager>,
+  projectId?: string,
+  dataDir?: string,
 ): LoopEventHandler {
   const minAudits = loopService.getMinAudits()
   const retryTimeouts = new Map<string, NodeJS.Timeout>()
@@ -91,6 +96,19 @@ export function createLoopEventHandler(
         }
         cleaned = true
         logger.log(`Loop: removed worktree ${state.worktreeDir}, branch ${state.worktreeBranch} preserved`)
+        
+        // Delete graph cache for this worktree scope after successful worktree removal
+        if (state.worktreeDir && projectId && dataDir) {
+          try {
+            const { deleteGraphCacheScope } = await import('../storage/graph-projects')
+            const deleted = deleteGraphCacheScope(projectId, state.worktreeDir, dataDir)
+            if (deleted) {
+              logger.log(`Loop: deleted graph cache for worktree ${state.worktreeDir}`)
+            }
+          } catch (err) {
+            logger.error(`Loop: failed to delete graph cache for worktree ${state.worktreeDir}`, err)
+          }
+        }
       } catch (err) {
         logger.error(`Loop: failed to remove worktree ${state.worktreeDir}`, err)
       }
@@ -215,6 +233,38 @@ export function createLoopEventHandler(
       terminationReason: reason,
     })
 
+    // Request a summary of what was accomplished before terminating the session
+    let summaryPromptResult: string | null = null
+    if (reason === 'completed' && state.worktree) {
+      try {
+        logger.log(`Loop: requesting completion summary for ${state.loopName}`)
+        const summaryPrompt = 'Please provide a concise summary of what you accomplished in this session. Focus on: (1) what changes were made, (2) what objectives were achieved, and (3) any verification steps that confirm success. Keep it to 2-3 sentences.'
+        
+        const summaryResult = await v2Client.session.promptAsync({
+          sessionID: sessionId,
+          directory: state.worktreeDir,
+          parts: [{ type: 'text' as const, text: summaryPrompt }],
+        })
+        
+        // Extract the summary from the response
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const resultData = summaryResult.data as any
+        const messages = (resultData?.messages ?? []) as Array<{
+          info: { role: string }
+          parts: Array<{ type: string; text?: string }>
+        }>
+        const lastAssistantMsg = [...messages].reverse().find((m) => m.info.role === 'assistant')
+        if (lastAssistantMsg) {
+          summaryPromptResult = lastAssistantMsg.parts
+            .filter((p) => p.type === 'text' && typeof p.text === 'string')
+            .map((p) => p.text as string)
+            .join('\n')
+        }
+      } catch (err) {
+        logger.error(`Loop: failed to request completion summary`, err)
+      }
+    }
+
     try {
       await v2Client.session.abort({ sessionID: sessionId })
     } catch {
@@ -223,10 +273,33 @@ export function createLoopEventHandler(
 
     logger.log(`Loop terminated: reason="${reason}", loop="${state.loopName}", iteration=${state.iteration}`)
 
+    // Log worktree completion if configured and loop completed successfully
+    if (reason === 'completed' && state.worktree) {
+      const sessionOutput = await fetchSessionOutput(v2Client, sessionId, state.worktreeDir, logger)
+      const completionTimestamp = new Date()
+      
+      logWorktreeCompletion(
+        getConfig(),
+        {
+          projectDir: state.projectDir,
+          loopName: state.loopName,
+          completionTimestamp,
+          sessionOutput,
+          iteration: state.iteration,
+          worktreeBranch: state.worktreeBranch,
+          summary: summaryPromptResult || undefined,
+          dataDir,
+          sandboxHostDir: state.worktreeDir,
+        },
+        logger,
+      )
+    }
+
     if (v2Client.tui) {
       const toastVariant = reason === 'completed' ? 'success'
         : reason === 'cancelled' || reason === 'user_aborted' ? 'info'
         : reason === 'max_iterations' ? 'warning'
+        : reason === 'stall_timeout' ? 'error'
         : 'error'
 
       const toastMessage = reason === 'completed' ? `Completed after ${state.iteration} iteration${state.iteration !== 1 ? 's' : ''}`
@@ -339,10 +412,24 @@ export function createLoopEventHandler(
   async function rotateSession(loopName: string, state: LoopState): Promise<string> {
     const oldSessionId = state.sessionId
 
+    // Resolve log target for permission ruleset (pure, no filesystem mutation)
+    // Use host project directory for path resolution, worktree for sandbox mapping
+    const logTarget = resolveWorktreeLogTarget(getConfig(), {
+      projectDir: state.projectDir,
+      sandboxHostDir: state.worktreeDir,
+      sandbox: state.sandbox,
+      dataDir,
+    }, logger)
+    const agentExclusions = agents.code.tools?.exclude
+    const permissionRuleset = buildLoopPermissionRuleset(getConfig(), logTarget?.permissionPath ?? null, {
+      isWorktree: !!state.worktree,
+      agentExclusions,
+    })
+
     const createParams = {
       title: state.loopName,
       directory: state.worktreeDir,
-      permission: LOOP_PERMISSION_RULESET,
+      permission: permissionRuleset,
     }
 
     const createResult = await v2Client.session.create(createParams)

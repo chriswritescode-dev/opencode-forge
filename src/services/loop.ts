@@ -52,6 +52,7 @@ export interface LoopState {
   sessionId: string
   loopName: string
   worktreeDir: string
+  projectDir: string
   worktreeBranch?: string
   iteration: number
   maxIterations: number
@@ -212,7 +213,12 @@ export function createLoopService(
 
   function normalizeLoopState(state: LoopState | null): LoopState | null {
     if (!state) return null
-    return state.loopName ? state : null
+    if (!state.loopName) return null
+    // Backfill projectDir from worktreeDir for older KV records
+    if (!state.projectDir && state.worktreeDir) {
+      state.projectDir = state.worktreeDir
+    }
+    return state
   }
 
   function getAnyState(name: string): LoopState | null {
@@ -291,18 +297,50 @@ export function createLoopService(
     return prompt
   }
 
+  function getPlanText(state: LoopState): string | null {
+    return kvService.get<string>(projectId, `plan:${state.loopName}`)
+      ?? kvService.get<string>(projectId, `plan:${state.sessionId}`)
+      ?? null
+  }
+
+  function formatReviewFindings(branch?: string): string {
+    const findings = getOutstandingFindings(branch)
+    if (findings.length === 0) {
+      return 'No existing review findings.'
+    }
+
+    return findings.map((finding) => {
+      const data = finding.data as Record<string, unknown>
+      return [
+        `- ${finding.key}`,
+        `  - Severity: ${String(data.severity ?? 'unknown')}`,
+        `  - File: ${String(data.file ?? 'unknown')}:${String(data.line ?? 'unknown')}`,
+        `  - Description: ${String(data.description ?? '')}`,
+        `  - Scenario: ${String(data.scenario ?? '')}`,
+        `  - Status: ${String(data.status ?? 'open')}`,
+      ].join('\n')
+    }).join('\n\n')
+  }
+
   function buildAuditPrompt(state: LoopState): string {
     const branchInfo = state.worktreeBranch ? ` (branch: ${state.worktreeBranch})` : ''
+    const planText = getPlanText(state) ?? 'Plan not found in plan store.'
+    const reviewFindings = formatReviewFindings(state.worktreeBranch)
+
     return [
       `Post-iteration ${String(state.iteration)} code review${branchInfo}.`,
       '',
-      `The full implementation plan is stored in the plan store. Retrieve it by calling plan-read. Review the code changes against the plan phases and verify per-phase acceptance criteria are met.`,
+      'Implementation plan:',
+      planText,
       '',
+      'Existing review findings:',
+      reviewFindings,
+      '',
+      'Review the code changes against the plan phases and verify per-phase acceptance criteria are met.',
       'Review the code changes in this worktree. Focus on bugs, logic errors, missing error handling, and convention violations.',
       'If you find bugs in related code that affect the correctness of this task, report them — even if the buggy code was not directly modified.',
+      'For each existing finding above, verify whether it has been resolved. Delete resolved findings with review-delete and report any unresolved findings that still apply.',
       'If everything looks good, state "No issues found." clearly.',
-      '',
-      'Before reviewing, retrieve all existing review findings by calling the review-read tool. For each existing finding, verify whether the issue has been resolved in the current code. Delete resolved findings by calling the review-delete tool. Report any unresolved findings that still apply.',
       '',
       'This is an automated loop — do not direct the agent to "create a plan" or "present for approval." Just report findings directly.',
     ].join('\n')
