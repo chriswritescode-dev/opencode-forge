@@ -24,6 +24,8 @@ export interface GraphCacheMetadata {
   indexedFileCount?: number
   /** Maximum mtime of indexed files in the last successful full scan */
   indexedMaxMtimeMs?: number
+  /** Branch name at last successful index or branch switch */
+  lastBranch?: string
 }
 
 function deleteGraphDatabaseFiles(dbPath: string): void {

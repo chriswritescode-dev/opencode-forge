@@ -2,7 +2,7 @@ import type { Hooks } from '@opencode-ai/plugin'
 import type { Logger } from '../types'
 import type { GraphService } from '../graph/service'
 import { join, isAbsolute, normalize, resolve, sep } from 'path'
-import { execFileSync, execSync } from 'child_process'
+import { execFileSync } from 'child_process'
 
 interface GraphToolHookDeps {
   graphService: GraphService | null
@@ -11,11 +11,11 @@ interface GraphToolHookDeps {
 }
 
 /**
- * Map storing pre-command branch snapshots keyed by callID.
+ * Map storing pre-command git revision snapshots keyed by callID.
  * Only populated for bash commands that are branch-change candidates.
  * Exported for testing purposes.
  */
-export const pendingBranchSnapshots = new Map<string, { cwd: string; branch: string | null }>()
+export const pendingBranchSnapshots = new Map<string, { cwd: string; branch: string | null; headRef: string | null }>()
 
 /**
  * Resolves the effective git working directory for a bash tool call.
@@ -136,12 +136,12 @@ export function extractCheckoutPaths(args: unknown, workdir: string): string[] {
 }
 
 /**
- * Reads the current branch name from the resolved working directory using git.
- * Returns null when the directory is not a repo or the branch cannot be determined.
+ * Reads the current git HEAD revision (commit hash) from the resolved working directory using git.
+ * Returns null when the directory is not a repo or the revision cannot be determined.
  */
-export function getCurrentBranch(workdir: string): string | null {
+export function getCurrentHeadRef(workdir: string): string | null {
   try {
-    const result = execSync('git rev-parse --abbrev-ref HEAD', {
+    const result = execFileSync('git', ['rev-parse', '--verify', 'HEAD'], {
       cwd: workdir,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -150,6 +150,54 @@ export function getCurrentBranch(workdir: string): string | null {
   } catch {
     // Not a git repo, or git command failed
     return null
+  }
+}
+
+/**
+ * Reads the current branch name from the resolved working directory using git.
+ * Returns null when the directory is not a repo or the branch cannot be determined.
+ */
+export function getCurrentBranch(workdir: string): string | null {
+  try {
+    const result = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: workdir,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    return result.trim()
+  } catch {
+    // Not a git repo, or git command failed
+    return null
+  }
+}
+
+/**
+ * Gets the list of changed file paths between two git revisions.
+ * Uses git diff --name-only with the specified diff filter to detect additions, deletions, and modifications.
+ * Returns an empty array if the refs are equal, invalid, or if git command fails.
+ */
+export function getChangedPathsBetweenRefs(workdir: string, prevRef: string, nextRef: string): string[] {
+  if (prevRef === nextRef) {
+    return []
+  }
+  
+  try {
+    const result = execFileSync('git', ['diff', '--name-only', '--diff-filter=ACDMRT', prevRef, nextRef], {
+      cwd: workdir,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    
+    const output = result.trim()
+    if (!output) {
+      return []
+    }
+    
+    // Split by newlines and filter out empty entries
+    return output.split('\n').filter((p: string) => p.length > 0)
+  } catch {
+    // Git command failed (e.g., invalid refs, not a repo)
+    return []
   }
 }
 
@@ -319,16 +367,18 @@ export function createGraphToolBeforeHook(deps: GraphToolHookDeps): Hooks['tool.
       return
     }
     
-    // Capture the pre-command branch name (may be null if not in a repo)
+    // Capture the pre-command branch name and HEAD revision (may be null if not in a repo)
     const branch = getCurrentBranch(workdir)
-    
+    const headRef = getCurrentHeadRef(workdir)
+
     // Store the snapshot keyed by callID
     pendingBranchSnapshots.set(input.callID, {
       cwd: workdir,
       branch,
+      headRef,
     })
-    
-    deps.logger.debug(`Graph hook: captured pre-command branch snapshot for ${input.callID}: branch=${branch ?? 'null'}, cwd=${workdir}`)
+
+    deps.logger.debug(`Graph hook: captured pre-command branch snapshot for ${input.callID}: branch=${branch ?? 'null'}, headRef=${headRef ?? 'null'}, cwd=${workdir}`)
   }
 }
 
@@ -349,18 +399,30 @@ export function createGraphToolAfterHook(deps: GraphToolHookDeps): Hooks['tool.e
     pendingBranchSnapshots.delete(input.callID)
     
     if (snapshot) {
-      // This was a branch-change candidate - check if branch actually changed
+      // This was a branch-change candidate - check if branch name actually changed
       const nextBranch = getCurrentBranch(snapshot.cwd)
-      
-      if (snapshot.branch !== nextBranch) {
-        // Branch changed - trigger full rescan
-        deps.logger.log(`Graph hook: branch switch detected (${snapshot.branch ?? 'null'} -> ${nextBranch ?? 'null'}), triggering full graph rescan in background`)
-        void deps.graphService.scan().catch((err) => {
-          deps.logger.error('Graph hook: background graph rescan failed', err)
-        })
+      const branchChanged = snapshot.branch !== null
+        && nextBranch !== null
+        && snapshot.branch !== nextBranch
+
+      if (branchChanged) {
+        // Branch changed - use commit hashes to compute the diff for incremental update
+        const nextHeadRef = getCurrentHeadRef(snapshot.cwd)
+        if (snapshot.headRef && nextHeadRef && snapshot.headRef !== nextHeadRef) {
+          deps.logger.log(`Graph hook: branch switch detected (${snapshot.branch} -> ${nextBranch}), enqueuing changed files`)
+          const changedPaths = getChangedPathsBetweenRefs(snapshot.cwd, snapshot.headRef, nextHeadRef)
+          for (const relPath of changedPaths) {
+            const absPath = resolve(snapshot.cwd, relPath)
+            if (isPathInProject(absPath, deps.cwd)) {
+              deps.graphService.onFileChanged(absPath)
+            }
+          }
+        } else {
+          deps.logger.debug(`Graph hook: branch switch detected (${snapshot.branch} -> ${nextBranch}) but commits are identical, no files to update`)
+        }
         return
       }
-      
+
       // Branch did not change - check for file restoration commands first, then fall through to per-file mutation path
       deps.logger.debug(`Graph hook: no branch change for ${input.callID}, checking file mutations`)
       

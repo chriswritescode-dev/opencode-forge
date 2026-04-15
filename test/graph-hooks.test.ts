@@ -571,17 +571,24 @@ describe('branch-change detection', () => {
     expect(mockService.scanCount).toBe(0)
   })
 
-  test('branch switch triggers full scan via before/after hooks', async () => {
+  test('branch switch enqueues changed files via git diff', async () => {
     const mockService = createMockGraphService()
     const logger = createTestLogger()
     
-    // Create a test git repo with an initial commit
+    // Create a test git repo with an initial commit and a file
     const { execSync } = await import('child_process')
     execSync('git init', { cwd: testDir, stdio: 'pipe' })
     execSync('git config user.email "test@test.com"', { cwd: testDir })
     execSync('git config user.name "Test"', { cwd: testDir })
     execSync('git checkout -b main', { cwd: testDir, stdio: 'pipe' })
     execSync('git commit --allow-empty -m "Initial commit"', { cwd: testDir, stdio: 'pipe' })
+    
+    // Create a file on main branch
+    const testFilePath = join(testDir, 'src', 'test.ts')
+    mkdirSync(join(testDir, 'src'), { recursive: true })
+    writeFileSync(testFilePath, 'export const x = 1')
+    execSync('git add .', { cwd: testDir, stdio: 'pipe' })
+    execSync('git commit -m "Add test file"', { cwd: testDir, stdio: 'pipe' })
     
     const beforeHook = createGraphToolBeforeHook({
       graphService: mockService,
@@ -598,12 +605,15 @@ describe('branch-change detection', () => {
       },
     }
     
-    // Run before hook - should capture pre-command branch (main)
+    // Run before hook - should capture pre-command HEAD ref
     const beforeOutput = { args: input.args }
     await (beforeHook! as any)(input as any, beforeOutput as any)
     
-    // Simulate branch change
+    // Create new branch with a changed file
     execSync('git switch -c feature-x', { cwd: testDir, stdio: 'pipe' })
+    writeFileSync(testFilePath, 'export const x = 2')
+    execSync('git add .', { cwd: testDir, stdio: 'pipe' })
+    execSync('git commit -m "Modify test file"', { cwd: testDir, stdio: 'pipe' })
     
     const afterHook = createGraphToolAfterHook({
       graphService: mockService,
@@ -616,22 +626,18 @@ describe('branch-change detection', () => {
       metadata: {},
     }
     
-    // Run after hook - should detect branch change and call scan()
+    // Run after hook - should detect git revision change and enqueue changed files
     await (afterHook! as any)(input as any, afterOutput as any)
     
-    // Should have called scan() exactly once
-    expect(mockService.scanCount).toBe(1)
+    // Should NOT have called scan() - uses incremental file enqueue instead
+    expect(mockService.scanCount).toBe(0)
+    // Should have called onFileChanged for the changed file
+    expect(mockService.onFileChangedCount).toBe(1)
+    expect(mockService.callLog[0]).toContain('src/test.ts')
   })
 
-  test('branch switch starts rescan without blocking the tool call', async () => {
-    let resolveScan: (() => void) | undefined
-    const scanStarted = new Promise<void>((resolve) => {
-      resolveScan = resolve
-    })
-
-    const mockService = createMockGraphService({
-      scanImpl: () => scanStarted,
-    })
+  test('branch switch enqueues files without blocking the tool call', async () => {
+    const mockService = createMockGraphService()
     const logger = createTestLogger()
 
     const { execSync } = await import('child_process')
@@ -640,6 +646,13 @@ describe('branch-change detection', () => {
     execSync('git config user.name "Test"', { cwd: testDir })
     execSync('git checkout -b main', { cwd: testDir, stdio: 'pipe' })
     execSync('git commit --allow-empty -m "Initial commit"', { cwd: testDir, stdio: 'pipe' })
+
+    // Create a file on main branch
+    const testFilePath = join(testDir, 'src', 'test.ts')
+    mkdirSync(join(testDir, 'src'), { recursive: true })
+    writeFileSync(testFilePath, 'export const x = 1')
+    execSync('git add .', { cwd: testDir, stdio: 'pipe' })
+    execSync('git commit -m "Add test file"', { cwd: testDir, stdio: 'pipe' })
 
     const beforeHook = createGraphToolBeforeHook({
       graphService: mockService,
@@ -657,7 +670,12 @@ describe('branch-change detection', () => {
     }
 
     await (beforeHook! as any)(input as any, { args: input.args } as any)
+    
+    // Create new branch with a changed file
     execSync('git switch -c feature-x', { cwd: testDir, stdio: 'pipe' })
+    writeFileSync(testFilePath, 'export const x = 2')
+    execSync('git add .', { cwd: testDir, stdio: 'pipe' })
+    execSync('git commit -m "Modify test file"', { cwd: testDir, stdio: 'pipe' })
 
     const afterHook = createGraphToolAfterHook({
       graphService: mockService,
@@ -673,9 +691,11 @@ describe('branch-change detection', () => {
 
     await hookPromise
 
-    expect(mockService.scanCount).toBe(1)
-
-    resolveScan?.()
+    // Should NOT have called scan() - uses incremental file enqueue
+    expect(mockService.scanCount).toBe(0)
+    // Should have enqueued the changed file
+    expect(mockService.onFileChangedCount).toBe(1)
+    expect(mockService.callLog[0]).toContain('src/test.ts')
   })
 
   test('checkout without branch change does not trigger scan', async () => {
@@ -878,11 +898,12 @@ describe('branch-change detection', () => {
       },
     }
     
-    // Manually set a null branch snapshot to simulate pre-command failure
+    // Manually set a null branch/headRef snapshot to simulate pre-command failure
     // (e.g., git command failed or directory wasn't a repo at pre-command time)
     pendingBranchSnapshots.set(input.callID, {
       cwd: testDir,
       branch: null, // Pre-command: not a repo or branch lookup failed
+      headRef: null, // Pre-command: not a repo or HEAD lookup failed
     })
     
     const afterHook = createGraphToolAfterHook({
@@ -896,11 +917,11 @@ describe('branch-change detection', () => {
       metadata: {},
     }
     
-    // Run after hook - pre was null, post is 'main', should trigger scan
+    // Run after hook - pre was null, post is valid HEAD, should use fallback (no scan)
     await (afterHook! as any)(input as any, afterOutput as any)
     
-    // Should have called scan() because branch state changed (null -> 'main')
-    expect(mockService.scanCount).toBe(1)
+    // Should NOT have called scan() - null headRef means we can't compute diff
+    expect(mockService.scanCount).toBe(0)
   })
 
   test('both pre and post branch null does not trigger scan', async () => {
@@ -910,10 +931,11 @@ describe('branch-change detection', () => {
     const nonGitDir = join(testDir, 'non-git-dir')
     mkdirSync(nonGitDir, { recursive: true })
     
-    // Manually set a null branch snapshot
+    // Manually set a null branch/headRef snapshot
     pendingBranchSnapshots.set('test-call-2', {
       cwd: nonGitDir,
       branch: null, // Pre-command: not a repo
+      headRef: null, // Pre-command: not a repo
     })
     
     const input = {
@@ -1048,11 +1070,18 @@ describe('branch-change detection', () => {
       args: input.args,
     }
     
-    // Run before hook - should capture pre-command branch (main)
+    // Run before hook - should capture pre-command HEAD ref (main)
     await (beforeHook! as any)(input as any, beforeOutput as any)
     
     // Create the branch and switch to it
     execSync('git checkout -b release/1.2.3', { cwd: testDir, stdio: 'pipe' })
+    
+    // Create a file on the new branch to ensure git diff detects a change
+    const testFilePath = join(testDir, 'src', 'test.ts')
+    mkdirSync(join(testDir, 'src'), { recursive: true })
+    writeFileSync(testFilePath, 'export const x = 1')
+    execSync('git add .', { cwd: testDir, stdio: 'pipe' })
+    execSync('git commit -m "Add test file"', { cwd: testDir, stdio: 'pipe' })
     
     const afterHook = createGraphToolAfterHook({
       graphService: mockService,
@@ -1065,11 +1094,14 @@ describe('branch-change detection', () => {
       metadata: {},
     }
     
-    // Run after hook - should detect branch change and call scan()
+    // Run after hook - should detect git revision change and enqueue changed files
     await (afterHook! as any)(input as any, afterOutput as any)
     
-    // Should have called scan() - branch changed from main to release/1.2.3
-    expect(mockService.scanCount).toBe(1)
+    // Should NOT have called scan() - uses incremental file enqueue instead
+    expect(mockService.scanCount).toBe(0)
+    // Should have enqueued the changed file
+    expect(mockService.onFileChangedCount).toBe(1)
+    expect(mockService.callLog[0]).toContain('src/test.ts')
   })
 
   test('git checkout with shell metacharacters is treated as a file path without executing shell input', async () => {
@@ -1124,5 +1156,127 @@ describe('branch-change detection', () => {
     // git checkout -- <path> is explicitly file restoration
     expect(isBranchChangeCommand({ command: 'git checkout -- src/file.ts' })).toBe(false)
     expect(isBranchChangeCommand({ command: 'git checkout HEAD -- src/file.ts' })).toBe(false)
+  })
+
+  test('new branch at same commit does not trigger file re-indexing', async () => {
+    const mockService = createMockGraphService()
+    const logger = createTestLogger()
+
+    const { execSync } = await import('child_process')
+    execSync('git init', { cwd: testDir, stdio: 'pipe' })
+    execSync('git config user.email "test@test.com"', { cwd: testDir })
+    execSync('git config user.name "Test"', { cwd: testDir })
+    execSync('git checkout -b main', { cwd: testDir, stdio: 'pipe' })
+    mkdirSync(join(testDir, 'src'), { recursive: true })
+    writeFileSync(join(testDir, 'src', 'test.ts'), 'export const x = 1')
+    execSync('git add .', { cwd: testDir, stdio: 'pipe' })
+    execSync('git commit -m "Add file"', { cwd: testDir, stdio: 'pipe' })
+
+    const beforeHook = createGraphToolBeforeHook({
+      graphService: mockService,
+      logger,
+      cwd: testDir,
+    })
+
+    const input = {
+      tool: 'bash',
+      sessionID: 'test-session',
+      callID: 'test-call',
+      args: {
+        command: 'git switch -c feature-x',
+      },
+    }
+
+    const beforeOutput = { args: input.args }
+    await (beforeHook! as any)(input as any, beforeOutput as any)
+
+    // Create new branch at same commit (no file changes)
+    execSync('git switch -c feature-x', { cwd: testDir, stdio: 'pipe' })
+
+    const afterHook = createGraphToolAfterHook({
+      graphService: mockService,
+      logger,
+      cwd: testDir,
+    })
+    const afterOutput = {
+      title: 'Command executed',
+      output: 'Switched to feature-x',
+      metadata: {},
+    }
+
+    await (afterHook! as any)(input as any, afterOutput as any)
+
+    // Branch changed but commits are identical - no files to re-index
+    expect(mockService.scanCount).toBe(0)
+    expect(mockService.onFileChangedCount).toBe(0)
+  })
+
+  test('branch switch with multiple changed files enqueues all via git diff', async () => {
+    const mockService = createMockGraphService()
+    const logger = createTestLogger()
+    
+    // Create a test git repo with an initial commit and files
+    const { execSync } = await import('child_process')
+    execSync('git init', { cwd: testDir, stdio: 'pipe' })
+    execSync('git config user.email "test@test.com"', { cwd: testDir })
+    execSync('git config user.name "Test"', { cwd: testDir })
+    execSync('git checkout -b main', { cwd: testDir, stdio: 'pipe' })
+    execSync('git commit --allow-empty -m "Initial commit"', { cwd: testDir, stdio: 'pipe' })
+    
+    // Create multiple files on main branch
+    const file1Path = join(testDir, 'src', 'file1.ts')
+    const file2Path = join(testDir, 'src', 'file2.ts')
+    mkdirSync(join(testDir, 'src'), { recursive: true })
+    writeFileSync(file1Path, 'export const x = 1')
+    writeFileSync(file2Path, 'export const y = 1')
+    execSync('git add .', { cwd: testDir, stdio: 'pipe' })
+    execSync('git commit -m "Add files"', { cwd: testDir, stdio: 'pipe' })
+    
+    const beforeHook = createGraphToolBeforeHook({
+      graphService: mockService,
+      logger,
+      cwd: testDir,
+    })
+    
+    const input = {
+      tool: 'bash',
+      sessionID: 'test-session',
+      callID: 'test-call',
+      args: { 
+        command: 'git switch feature-x',
+      },
+    }
+    
+    // Run before hook - should capture pre-command HEAD ref
+    const beforeOutput = { args: input.args }
+    await (beforeHook! as any)(input as any, beforeOutput as any)
+    
+    // Create new branch with changed files
+    execSync('git switch -c feature-x', { cwd: testDir, stdio: 'pipe' })
+    writeFileSync(file1Path, 'export const x = 2')
+    writeFileSync(file2Path, 'export const y = 2')
+    execSync('git add .', { cwd: testDir, stdio: 'pipe' })
+    execSync('git commit -m "Modify files"', { cwd: testDir, stdio: 'pipe' })
+    
+    const afterHook = createGraphToolAfterHook({
+      graphService: mockService,
+      logger,
+      cwd: testDir,
+    })
+    const afterOutput = {
+      title: 'Command executed',
+      output: 'Switched to feature-x',
+      metadata: {},
+    }
+    
+    // Run after hook - should detect git revision change and enqueue changed files
+    await (afterHook! as any)(input as any, afterOutput as any)
+    
+    // Should NOT have called scan() - uses incremental file enqueue instead
+    expect(mockService.scanCount).toBe(0)
+    // Should have called onFileChanged for both changed files
+    expect(mockService.onFileChangedCount).toBe(2)
+    expect(mockService.callLog.some(p => p.includes('file1.ts'))).toBe(true)
+    expect(mockService.callLog.some(p => p.includes('file2.ts'))).toBe(true)
   })
 })
