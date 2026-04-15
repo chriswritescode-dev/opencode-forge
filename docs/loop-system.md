@@ -123,8 +123,8 @@ graph TD
     B -->|true| D[Create worktree]
     D --> E[Create new branch]
     E --> F[Start coding session]
-    F --> G[Auto-commit on each iteration]
-    G --> H[Loop completes]
+    F --> G[Iterate until completion]
+    G --> H[Loop completes or is cancelled]
     H --> I[Cleanup worktree]
     I --> J[Branch preserved]
 ```
@@ -159,7 +159,7 @@ A loop completes when ALL of these are true:
 Loops can be cancelled via:
 - `loop-cancel` tool
 - `/loop-cancel` slash command
-- CLI: `opencode-forge loop cancel <name>`
+- CLI: `oc-forge loop cancel <name>`
 
 Cancellation:
 1. Marks loop as inactive

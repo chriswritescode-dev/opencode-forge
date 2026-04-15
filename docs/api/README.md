@@ -179,10 +179,10 @@ graph-analyze {
 
 ## CLI
 
-Manage loops and graph operations using the `opencode-forge` CLI. The CLI auto-detects the project ID from git.
+Manage loops and graph operations using the `oc-forge` CLI. The CLI auto-detects the project ID from git.
 
 ```bash
-opencode-forge <command> [options]
+oc-forge <command> [options]
 ```
 
 **Global options** (apply to all commands):
@@ -191,6 +191,7 @@ opencode-forge <command> [options]
 |------|-------------|
 | `--project, -p <name>` | Project name or SHA (auto-detected from git) |
 | `--dir, -d <path>` | Git repo path for project detection |
+| `--db-path <path>` | Path to forge database |
 | `--help, -h` | Show help |
 
 ### Commands
@@ -200,7 +201,7 @@ opencode-forge <command> [options]
 Check for plugin updates and install the latest version.
 
 ```bash
-opencode-forge upgrade
+oc-forge upgrade
 ```
 
 #### status
@@ -208,8 +209,8 @@ opencode-forge upgrade
 Show loop status for the current project.
 
 ```bash
-opencode-forge loop status
-opencode-forge loop status --project my-project
+oc-forge loop status
+oc-forge loop status --project my-project
 ```
 
 | Flag | Description |
@@ -221,8 +222,8 @@ opencode-forge loop status --project my-project
 Cancel a loop by worktree name.
 
 ```bash
-opencode-forge loop cancel my-worktree-name
-opencode-forge loop cancel --project my-project my-worktree-name
+oc-forge loop cancel my-worktree-name
+oc-forge loop cancel --project my-project my-worktree-name
 ```
 
 | Flag | Description |
@@ -234,8 +235,8 @@ opencode-forge loop cancel --project my-project my-worktree-name
 Restart a loop by worktree name.
 
 ```bash
-opencode-forge loop restart my-worktree-name
-opencode-forge loop restart --project my-project my-worktree-name
+oc-forge loop restart my-worktree-name
+oc-forge loop restart --project my-project my-worktree-name
 ```
 
 | Flag | Description |
@@ -246,13 +247,14 @@ opencode-forge loop restart --project my-project my-worktree-name
 
 #### graph
 
-Check graph status, trigger a scan, list cache entries, or remove entries.
+Check graph status, trigger a scan, list cache entries, remove entries, or clean up old entries.
 
 ```bash
-opencode-forge graph status
-opencode-forge graph scan
-opencode-forge graph list
-opencode-forge graph remove <key>
+oc-forge graph status
+oc-forge graph scan
+oc-forge graph list
+oc-forge graph remove <target>
+oc-forge graph cleanup --days <n>
 ```
 
 | Flag | Description |
@@ -260,7 +262,8 @@ opencode-forge graph remove <key>
 | `--project, -p <name>` | Project name or SHA (auto-detected from git) |
 | `--dir, -d <path>` | Project directory for graph scanning |
 | `--target, -t <id>` | Target for removal (project ID or hash directory) |
-| `--yes, -y` | Skip confirmation prompt for removal |
+| `--days <n>` | Number of days for cleanup (required for cleanup) |
+| `--yes, -y` | Skip confirmation prompt for removal/cleanup |
 
 ## Configuration
 
@@ -550,7 +553,7 @@ Loops use `loop.model` if set, falling back to `executionModel`, then the platfo
 
 - **Slash commands**: `/loop` to start, `/loop-cancel` to cancel
 - **Tools**: `loop` to start with parameters, `loop-status` for checking progress (with restart capability), `loop-cancel` to cancel
-- **CLI**: `opencode-forge loop status` and `opencode-forge loop cancel` for loop management
+- **CLI**: `oc-forge loop status` and `oc-forge loop cancel` for loop management
 
 ### Completion and Termination
 
