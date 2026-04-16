@@ -594,4 +594,178 @@ describe('Fresh Loop Launch', () => {
     // Verify prompt was sent
     expect(mockApi.client.session.promptAsync).toHaveBeenCalled()
   })
+
+  test('Persists executionModel and auditorModel on loop state when provided', async () => {
+    const mockApi = createMockApi()
+    const executionModel = 'anthropic/claude-sonnet-4-20250514'
+    const auditorModel = 'anthropic/claude-3-5-sonnet-20241022'
+    
+    await launchFreshLoop({
+      planText,
+      title,
+      directory: TEST_DIR,
+      projectId,
+      isWorktree: false,
+      api: mockApi,
+      dbPath,
+      executionModel,
+      auditorModel,
+    })
+
+    const loopStateRow = db.prepare(
+      'SELECT data FROM project_kv WHERE project_id = ? AND key LIKE ?'
+    ).get(projectId, 'loop:%') as { data: string } | null
+
+    expect(loopStateRow).toBeDefined()
+    if (loopStateRow) {
+      const state = JSON.parse(loopStateRow.data)
+      expect(state.executionModel).toBe(executionModel)
+      expect(state.auditorModel).toBe(auditorModel)
+    }
+  })
+
+  test('Persists only executionModel when auditorModel is not provided', async () => {
+    const mockApi = createMockApi()
+    const executionModel = 'anthropic/claude-sonnet-4-20250514'
+    
+    await launchFreshLoop({
+      planText,
+      title,
+      directory: TEST_DIR,
+      projectId,
+      isWorktree: false,
+      api: mockApi,
+      dbPath,
+      executionModel,
+    })
+
+    const loopStateRow = db.prepare(
+      'SELECT data FROM project_kv WHERE project_id = ? AND key LIKE ?'
+    ).get(projectId, 'loop:%') as { data: string } | null
+
+    expect(loopStateRow).toBeDefined()
+    if (loopStateRow) {
+      const state = JSON.parse(loopStateRow.data)
+      expect(state.executionModel).toBe(executionModel)
+      expect(state.auditorModel).toBeUndefined()
+    }
+  })
+
+  test('Uses executionModel for first prompt with retryWithModelFallback', async () => {
+    const mockApi = createMockApi()
+    const executionModel = 'anthropic/test-model'
+    const promptAsyncSpy = mock(async () => ({ data: {} }))
+    mockApi.client.session.promptAsync = promptAsyncSpy as any
+    
+    await launchFreshLoop({
+      planText,
+      title,
+      directory: TEST_DIR,
+      projectId,
+      isWorktree: false,
+      api: mockApi,
+      dbPath,
+      executionModel,
+    })
+
+    expect(promptAsyncSpy).toHaveBeenCalled()
+  })
+
+  test('First prompt includes model field when executionModel is provided', async () => {
+    const mockApi = createMockApi()
+    const executionModel = 'anthropic/claude-sonnet-4-20250514'
+    
+    await launchFreshLoop({
+      planText,
+      title,
+      directory: TEST_DIR,
+      projectId,
+      isWorktree: false,
+      api: mockApi,
+      dbPath,
+      executionModel,
+    })
+
+    expect(mockApi.client.session.promptAsync).toHaveBeenCalled()
+    const call = (mockApi.client.session.promptAsync as any).mock.calls[0][0]
+    // parseModelString converts 'anthropic/claude-sonnet-4-20250514' to { providerID: 'anthropic', modelID: 'claude-sonnet-4-20250514' }
+    expect(call.model).toEqual({ providerID: 'anthropic', modelID: 'claude-sonnet-4-20250514' })
+  })
+
+  test('Persists both executionModel and auditorModel and uses executionModel for first prompt', async () => {
+    const mockApi = createMockApi()
+    const executionModel = 'anthropic/claude-sonnet-4-20250514'
+    const auditorModel = 'anthropic/claude-3-5-sonnet-20241022'
+    const promptAsyncSpy = mock(async () => ({ data: {} }))
+    mockApi.client.session.promptAsync = promptAsyncSpy as any
+    
+    await launchFreshLoop({
+      planText,
+      title,
+      directory: TEST_DIR,
+      projectId,
+      isWorktree: false,
+      api: mockApi,
+      dbPath,
+      executionModel,
+      auditorModel,
+    })
+
+    // Verify models were persisted
+    const loopStateRow = db.prepare(
+      'SELECT data FROM project_kv WHERE project_id = ? AND key LIKE ?'
+    ).get(projectId, 'loop:%') as { data: string } | null
+
+    expect(loopStateRow).toBeDefined()
+    if (loopStateRow) {
+      const state = JSON.parse(loopStateRow.data)
+      expect(state.executionModel).toBe(executionModel)
+      expect(state.auditorModel).toBe(auditorModel)
+    }
+
+    // Verify first prompt was sent
+    expect(promptAsyncSpy).toHaveBeenCalled()
+  })
+  
+  test('retryWithModelFallback retries and falls back to default model', async () => {
+    const mockApi = createMockApi()
+    const executionModel = 'anthropic/unavailable-model'
+    let callCount = 0
+    
+    const promptAsyncSpy = mock(async (params: any) => {
+      callCount++
+      if (callCount <= 2) {
+        // First two calls with model fail (maxRetries=2)
+        return { data: undefined, error: { name: 'ProviderError', message: 'Model not found' } }
+      }
+      // Third call without model (fallback) succeeds
+      return { data: {} }
+    })
+    mockApi.client.session.promptAsync = promptAsyncSpy as any
+    
+    await launchFreshLoop({
+      planText,
+      title,
+      directory: TEST_DIR,
+      projectId,
+      isWorktree: false,
+      api: mockApi,
+      dbPath,
+      executionModel,
+    })
+
+    // Should have been called 3 times: twice with model (failed), once without (succeeded)
+    expect(promptAsyncSpy).toHaveBeenCalledTimes(3)
+    
+    // First two calls should have included the model
+    const firstCall = (mockApi.client.session.promptAsync as any).mock.calls[0][0]
+    expect(firstCall.model).toEqual({ providerID: 'anthropic', modelID: 'unavailable-model' })
+    
+    const secondCall = (mockApi.client.session.promptAsync as any).mock.calls[1][0]
+    expect(secondCall.model).toEqual({ providerID: 'anthropic', modelID: 'unavailable-model' })
+    
+    // Third call should not have included the model (fallback)
+    const thirdCall = (mockApi.client.session.promptAsync as any).mock.calls[2][0]
+    expect(thirdCall.model).toBeUndefined()
+  })
 })

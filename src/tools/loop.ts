@@ -29,6 +29,8 @@ interface LoopSetupOptions {
   agent?: string
   model?: { providerID: string; modelID: string }
   worktree?: boolean
+  executionModel?: string
+  auditorModel?: string
   onLoopStarted?: (loopName: string) => void
 }
 
@@ -196,6 +198,8 @@ export async function setupLoop(
     worktree: options.worktree,
     sandbox: sandboxEnabled,
     sandboxContainerName,
+    executionModel: options.executionModel,
+    auditorModel: options.auditorModel,
   }
 
   kvService.set(projectId, `plan:${uniqueLoopName}`, options.prompt)
@@ -359,6 +363,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         const sessionTitle = args.title.length > 60 ? `${args.title.substring(0, 57)}...` : args.title
         const loopModel = parseModelString(config.loop?.model) ?? parseModelString(config.executionModel)
         const audit = config.loop?.defaultAudit ?? true
+        const executionModel = config.loop?.model ?? config.executionModel
+        const auditorModel = config.auditorModel ?? config.loop?.model ?? config.executionModel
         
         const loopName = args.loopName ? slugify(args.loopName) : slugify(sessionTitle)
 
@@ -373,6 +379,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           agent: 'code',
           model: loopModel,
           worktree: args.worktree,
+          executionModel: executionModel,
+          auditorModel: auditorModel,
           onLoopStarted: (id) => loopHandler.startWatchdog(id),
         })
       },
@@ -545,6 +553,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             sandboxContainerName: restartSandbox
                 ? ctx.sandboxManager?.docker.containerName(stoppedState.loopName!)
                 : undefined,
+            executionModel: stoppedState.executionModel,
+            auditorModel: stoppedState.auditorModel,
           }
 
           loopService.setState(stoppedState.loopName!, newState)
@@ -555,7 +565,9 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             promptText += buildCompletionSignalInstructions(stoppedState.completionSignal)
           }
 
-          const loopModel = parseModelString(config.loop?.model) ?? parseModelString(config.executionModel)
+          const loopModel = parseModelString(stoppedState.executionModel)
+            ?? parseModelString(config.loop?.model)
+            ?? parseModelString(config.executionModel)
 
           const { result: promptResult } = await retryWithModelFallback(
             () => v2.session.promptAsync({
@@ -704,6 +716,10 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             `Started: ${state.startedAt}`,
             ...(state.completedAt ? [`Completed: ${state.completedAt}`] : []),
           )
+          statusLines.push(
+            `Model: ${state.executionModel ?? config.loop?.model ?? config.executionModel ?? 'default'}`,
+            `Auditor model: ${state.auditorModel ?? config.auditorModel ?? state.executionModel ?? config.loop?.model ?? config.executionModel ?? 'default'}`,
+          )
 
           if (state.lastAuditResult) {
             statusLines.push(...formatAuditResult(state.lastAuditResult))
@@ -790,8 +806,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           `Started: ${state.startedAt}`,
           ...(state.errorCount && state.errorCount > 0 ? [`Error count: ${state.errorCount} (retries before termination: ${MAX_RETRIES})`] : []),
           `Audit count: ${state.auditCount ?? 0}`,
-          `Model: ${config.loop?.model || config.executionModel || 'default'}`,
-          `Auditor model: ${config.auditorModel || 'default'}`,
+          `Model: ${state.executionModel ?? config.loop?.model ?? config.executionModel ?? 'default'}`,
+          `Auditor model: ${state.auditorModel ?? config.auditorModel ?? state.executionModel ?? config.loop?.model ?? config.executionModel ?? 'default'}`,
           ...(stallCount > 0 ? [`Stalls: ${stallCount}`] : []),
           ...(secondsSinceActivity !== null ? [`Last activity: ${secondsSinceActivity}s ago`] : []),
           '',

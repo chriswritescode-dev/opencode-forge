@@ -4,7 +4,7 @@ import type { LoopService, LoopState } from '../services/loop'
 import { MAX_RETRIES, MAX_CONSECUTIVE_STALLS } from '../services/loop'
 import type { Logger, PluginConfig } from '../types'
 import { retryWithModelFallback } from '../utils/model-fallback'
-import { resolveLoopModel } from '../utils/loop-helpers'
+import { resolveLoopModel, resolveLoopAuditorModel } from '../utils/loop-helpers'
 import { execSync, spawnSync } from 'child_process'
 import { resolve } from 'path'
 import type { createSandboxManager } from '../sandbox/manager'
@@ -646,6 +646,9 @@ export function createLoopEventHandler(
       loopService.setState(loopName, { ...currentState, phase: 'auditing', errorCount: 0 })
       logger.log(`Loop iteration ${currentState.iteration ?? 0} complete, running auditor for session ${currentState.sessionId}`)
 
+      const currentConfig = getConfig()
+      const auditorModel = resolveLoopAuditorModel(currentConfig, loopService, loopName, logger)
+      
       const auditPrompt = {
         sessionID: currentState.sessionId,
         directory: currentState.worktreeDir,
@@ -654,6 +657,7 @@ export function createLoopEventHandler(
           agent: 'auditor',
           description: `Post-iteration ${currentState.iteration} code review`,
           prompt: loopService.buildAuditPrompt(currentState),
+          ...(auditorModel ? { model: auditorModel } : {}),
         }],
       }
 
@@ -670,9 +674,12 @@ export function createLoopEventHandler(
         return
       }
 
-      const currentConfig = getConfig()
-      const configuredModel = currentConfig.auditorModel ?? currentConfig.loop?.model ?? currentConfig.executionModel
-      logger.log(`auditor using agent-configured model: ${configuredModel ?? 'default'}`)
+      const modelSource = currentState.auditorModel
+        ? `loop state override: ${currentState.auditorModel}`
+        : currentConfig.auditorModel
+          ? `config.auditorModel: ${currentConfig.auditorModel}`
+          : 'default fallback'
+      logger.log(`auditor using model: ${modelSource}`)
 
       consecutiveStalls.set(loopName, 0)
       return

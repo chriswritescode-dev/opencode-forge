@@ -15,9 +15,10 @@ import { createKvQuery } from '../storage/kv-queries'
 import { resolveDataDir } from '../storage'
 import { buildLoopPermissionRuleset } from '../constants/loop'
 import { resolveWorktreeLogTarget } from '../services/worktree-log'
-import { loadPluginConfig } from '../setup'
 import { agents } from '../agents'
 import { waitForGraphReady } from './tui-graph-status'
+import { retryWithModelFallback, parseModelString } from './model-fallback'
+import { loadPluginConfig } from '../setup'
 
 export interface FreshLoopOptions {
   planText: string
@@ -27,6 +28,8 @@ export interface FreshLoopOptions {
   isWorktree: boolean
   api: TuiPluginApi
   dbPath?: string
+  executionModel?: string
+  auditorModel?: string
 }
 
 export interface LaunchResult {
@@ -203,8 +206,11 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
         auditCount: 0,
         worktree: isWorktree,
         sandbox: isSandboxEnabled,
+        executionModel: options.executionModel,
+        auditorModel: options.auditorModel,
       }
       
+      console.log(`[forge] loop-launch: storing loop state executionModel=${loopState.executionModel || '(default)'} auditorModel=${loopState.auditorModel || '(default)'}`)
       queries.set(projectId, `loop:${uniqueWorktreeName}`, JSON.stringify(loopState), now + TTL_MS)
       
       // Store session mapping
@@ -236,15 +242,20 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
     }
   }
   
-  // Send prompt to code agent
-  try {
-    await api.client.session.promptAsync({
-      sessionID: sessionId,
-      directory: sessionDirectory,
-      parts: [{ type: 'text' as const, text: promptText }],
-      agent: 'code',
-    })
-  } catch {
+  // Send prompt to code agent with model fallback
+  const loopModel = parseModelString(options.executionModel) ?? parseModelString(config.loop?.model) ?? parseModelString(config.executionModel)
+  
+  const promptParts = [{ type: 'text' as const, text: promptText }]
+  const { result: promptResult } = await retryWithModelFallback(
+    () => loopModel
+      ? api.client.session.promptAsync({ sessionID: sessionId, directory: sessionDirectory, agent: 'code', model: loopModel, parts: promptParts })
+      : api.client.session.promptAsync({ sessionID: sessionId, directory: sessionDirectory, agent: 'code', parts: promptParts }),
+    () => api.client.session.promptAsync({ sessionID: sessionId, directory: sessionDirectory, agent: 'code', parts: promptParts }),
+    loopModel,
+    console,
+  )
+  
+  if (promptResult.error) {
     return null
   }
   

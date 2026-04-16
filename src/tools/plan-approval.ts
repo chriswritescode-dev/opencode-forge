@@ -169,6 +169,8 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
             kvService.delete(projectId, `plan:${input.sessionID}`)
             
             const loopModel = parseModelString(config.loop?.model) ?? parseModelString(config.executionModel)
+            const executionModel = config.loop?.model ?? config.executionModel
+            const auditorModel = config.auditorModel ?? config.loop?.model ?? config.executionModel
             
             setupLoop(ctx, {
               prompt: planText,
@@ -180,6 +182,8 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
               agent: 'code',
               model: loopModel,
               worktree: isWorktree,
+              executionModel: executionModel,
+              auditorModel: auditorModel,
               onLoopStarted: (id) => ctx.loopHandler.startWatchdog(id),
             }).catch((err) => {
               logger.error('Plan approval: failed to start loop', err)

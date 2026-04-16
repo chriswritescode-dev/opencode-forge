@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { Database } from 'bun:sqlite'
 import { createKvQuery } from '../src/storage/kv-queries'
 import { createKvService } from '../src/services/kv'
-import { createLoopService, migrateRalphKeys, buildCompletionSignalInstructions, fetchSessionOutput, type LoopState, generateUniqueName } from '../src/services/loop'
+import { createLoopService, migrateRalphKeys, buildCompletionSignalInstructions, fetchSessionOutput, type LoopState, generateUniqueName, type LoopService } from '../src/services/loop'
 import { createLoopTools } from '../src/tools/loop'
 import { createPlanTools } from '../src/tools/plan-kv'
 
@@ -1246,8 +1246,11 @@ describe('session rotation', () => {
 
     await handler.onEvent({
       event: {
-        type: 'session.idle',
-        properties: { sessionID: oldSessionId },
+        type: 'session.status',
+        properties: {
+          sessionID: oldSessionId,
+          status: { type: 'idle' },
+        },
       },
     })
 
@@ -1330,8 +1333,11 @@ describe('session rotation', () => {
 
     await handler.onEvent({
       event: {
-        type: 'session.idle',
-        properties: { sessionID: oldSessionId },
+        type: 'session.status',
+        properties: {
+          sessionID: oldSessionId,
+          status: { type: 'idle' },
+        },
       },
     })
 
@@ -1396,8 +1402,11 @@ describe('session rotation', () => {
 
     await handler.onEvent({
       event: {
-        type: 'session.idle',
-        properties: { sessionID: sessionId },
+        type: 'session.status',
+        properties: {
+          sessionID: sessionId,
+          status: { type: 'idle' },
+        },
       },
     })
 
@@ -1488,8 +1497,11 @@ describe('Assistant Error Detection', () => {
 
     await handler.onEvent({
       event: {
-        type: 'session.idle',
-        properties: { sessionID: sessionId },
+        type: 'session.status',
+        properties: {
+          sessionID: sessionId,
+          status: { type: 'idle' },
+        },
       },
     })
 
@@ -1562,8 +1574,11 @@ describe('Assistant Error Detection', () => {
 
     await handler.onEvent({
       event: {
-        type: 'session.idle',
-        properties: { sessionID: sessionId },
+        type: 'session.status',
+        properties: {
+          sessionID: sessionId,
+          status: { type: 'idle' },
+        },
       },
     })
 
@@ -1835,8 +1850,11 @@ describe('Assistant Error Detection', () => {
 
     await handler.onEvent({
       event: {
-        type: 'session.idle',
-        properties: { sessionID: sessionId },
+        type: 'session.status',
+        properties: {
+          sessionID: sessionId,
+          status: { type: 'idle' },
+        },
       },
     })
 
@@ -1908,8 +1926,11 @@ describe('Assistant Error Detection', () => {
 
     await handler.onEvent({
       event: {
-        type: 'session.idle',
-        properties: { sessionID: sessionId },
+        type: 'session.status',
+        properties: {
+          sessionID: sessionId,
+          status: { type: 'idle' },
+        },
       },
     })
 
@@ -1918,8 +1939,11 @@ describe('Assistant Error Detection', () => {
 
     await handler.onEvent({
       event: {
-        type: 'session.idle',
-        properties: { sessionID: sessionId },
+        type: 'session.status',
+        properties: {
+          sessionID: sessionId,
+          status: { type: 'idle' },
+        },
       },
     })
 
@@ -1928,8 +1952,11 @@ describe('Assistant Error Detection', () => {
 
     await handler.onEvent({
       event: {
-        type: 'session.idle',
-        properties: { sessionID: sessionId },
+        type: 'session.status',
+        properties: {
+          sessionID: sessionId,
+          status: { type: 'idle' },
+        },
       },
     })
 
@@ -3300,5 +3327,751 @@ describe('worktree completion logging lifecycle', () => {
     expect(createCalls).toBe(0)
     expect(loopService.getAnyState('test-worktree')?.active).toBe(false)
     expect(loopService.getAnyState('test-worktree')?.terminationReason).toBe('completed')
+  })
+})
+
+describe('Per-Loop Model Overrides', () => {
+  let db: Database
+  let kvService: ReturnType<typeof createKvService>
+  let loopService: ReturnType<typeof createLoopService>
+  const projectId = 'test-project'
+
+  beforeEach(() => {
+    db = createTestDb()
+    kvService = createKvService(db)
+    loopService = createLoopService(kvService, projectId, createMockLogger())
+  })
+
+  afterEach(() => {
+    db.close()
+  })
+
+  describe('LoopState persistence', () => {
+    test('state persists executionModel and auditorModel', () => {
+      const stateWithModels = {
+        active: true,
+        sessionId: 'session-models',
+        loopName: 'test-worktree',
+        worktreeDir: '/tmp/test-worktree',
+        worktreeBranch: 'main',
+        iteration: 1,
+        maxIterations: 5,
+        completionSignal: 'ALL_PHASES_COMPLETE',
+        startedAt: new Date().toISOString(),
+        prompt: 'Test prompt',
+        phase: 'coding' as const,
+        audit: false,
+        errorCount: 0,
+        auditCount: 0,
+        executionModel: 'anthropic/claude-sonnet-4-20250514',
+        auditorModel: 'anthropic/claude-3-5-sonnet-20241022',
+      }
+
+      loopService.setState('session-models', stateWithModels)
+      const retrieved = loopService.getActiveState('session-models')
+
+      expect(retrieved?.executionModel).toBe('anthropic/claude-sonnet-4-20250514')
+      expect(retrieved?.auditorModel).toBe('anthropic/claude-3-5-sonnet-20241022')
+    })
+
+    test('state persists executionModel only', () => {
+      const stateWithExecModel = {
+        active: true,
+        sessionId: 'session-exec',
+        loopName: 'test-worktree',
+        worktreeDir: '/tmp/test-worktree',
+        worktreeBranch: 'main',
+        iteration: 1,
+        maxIterations: 5,
+        completionSignal: 'ALL_PHASES_COMPLETE',
+        startedAt: new Date().toISOString(),
+        prompt: 'Test prompt',
+        phase: 'coding' as const,
+        audit: false,
+        errorCount: 0,
+        auditCount: 0,
+        executionModel: 'anthropic/claude-sonnet-4-20250514',
+      }
+
+      loopService.setState('session-exec', stateWithExecModel)
+      const retrieved = loopService.getActiveState('session-exec')
+
+      expect(retrieved?.executionModel).toBe('anthropic/claude-sonnet-4-20250514')
+      expect(retrieved?.auditorModel).toBeUndefined()
+    })
+  })
+
+  describe('loop-status output', () => {
+    test('status output includes state-level executionModel when present', () => {
+      const stateWithOverride = {
+        active: true,
+        sessionId: 'session-status',
+        loopName: 'test-worktree',
+        worktreeDir: '/tmp/test-worktree',
+        worktreeBranch: 'main',
+        iteration: 1,
+        maxIterations: 5,
+        completionSignal: 'ALL_PHASES_COMPLETE',
+        startedAt: new Date().toISOString(),
+        prompt: 'Test prompt',
+        phase: 'coding' as const,
+        audit: false,
+        errorCount: 0,
+        auditCount: 0,
+        executionModel: 'provider/state-override',
+      }
+
+      loopService.setState('test-worktree', stateWithOverride)
+
+      const retrieved = loopService.getActiveState('test-worktree')
+      expect(retrieved?.executionModel).toBe('provider/state-override')
+    })
+
+    test('status output includes state-level auditorModel when present', () => {
+      const stateWithOverride = {
+        active: true,
+        sessionId: 'session-status',
+        loopName: 'test-worktree',
+        worktreeDir: '/tmp/test-worktree',
+        worktreeBranch: 'main',
+        iteration: 1,
+        maxIterations: 5,
+        completionSignal: 'ALL_PHASES_COMPLETE',
+        startedAt: new Date().toISOString(),
+        prompt: 'Test prompt',
+        phase: 'coding' as const,
+        audit: false,
+        errorCount: 0,
+        auditCount: 0,
+        executionModel: 'provider/state-exec',
+        auditorModel: 'provider/state-auditor',
+      }
+
+      loopService.setState('test-worktree', stateWithOverride)
+
+      const retrieved = loopService.getActiveState('test-worktree')
+      expect(retrieved?.auditorModel).toBe('provider/state-auditor')
+    })
+  })
+
+  describe('restart persistence', () => {
+    test('restart preserves executionModel and auditorModel on state', async () => {
+      const state = {
+        active: true,
+        sessionId: 'session-restart',
+        loopName: 'test-worktree',
+        worktreeDir: '/tmp/test-worktree',
+        worktreeBranch: 'main',
+        iteration: 1,
+        maxIterations: 5,
+        completionSignal: 'ALL_PHASES_COMPLETE' as const,
+        startedAt: new Date().toISOString(),
+        prompt: 'Test prompt',
+        phase: 'coding' as const,
+        audit: false,
+        errorCount: 0,
+        auditCount: 0,
+        executionModel: 'anthropic/claude-sonnet-4-20250514',
+        auditorModel: 'anthropic/claude-3-5-sonnet-20241022',
+      }
+
+      loopService.setState('test-worktree', state)
+
+      const retrieved = loopService.getActiveState('test-worktree')
+      expect(retrieved?.executionModel).toBe('anthropic/claude-sonnet-4-20250514')
+      expect(retrieved?.auditorModel).toBe('anthropic/claude-3-5-sonnet-20241022')
+    })
+  })
+
+  describe('audit subtask model resolution', () => {
+    test('resolveLoopAuditorModel prefers state.auditorModel for audit subtasks', () => {
+      const mockLoopService = {
+        getActiveState: (name: string) => ({
+          active: true,
+          auditorModel: 'provider/state-auditor',
+          executionModel: 'provider/state-exec',
+        }),
+      } as any
+      
+      const config = {
+        auditorModel: 'provider/config-auditor',
+        loop: { model: 'provider/loop-model' },
+        executionModel: 'provider/exec-model',
+      } as any
+      
+      const { resolveLoopAuditorModel } = require('../src/utils/loop-helpers')
+      const result = resolveLoopAuditorModel(config, mockLoopService, 'test-loop')
+      
+      expect(result).toEqual({ providerID: 'provider', modelID: 'state-auditor' })
+    })
+    
+    test('resolveLoopAuditorModel falls back to config.auditorModel when state missing', () => {
+      const mockLoopService = {
+        getActiveState: (name: string) => ({
+          active: true,
+          executionModel: 'provider/state-exec',
+        }),
+      } as any
+      
+      const config = {
+        auditorModel: 'provider/config-auditor',
+        loop: { model: 'provider/loop-model' },
+        executionModel: 'provider/exec-model',
+      } as any
+      
+      const { resolveLoopAuditorModel } = require('../src/utils/loop-helpers')
+      const result = resolveLoopAuditorModel(config, mockLoopService, 'test-loop')
+      
+      expect(result).toEqual({ providerID: 'provider', modelID: 'config-auditor' })
+    })
+    
+    test('resolveLoopAuditorModel falls back to execution model when no auditor config', () => {
+      const mockLoopService = {
+        getActiveState: (name: string) => ({
+          active: true,
+          auditorModel: 'provider/state-auditor',
+          executionModel: 'provider/state-exec',
+        }),
+      } as any
+      
+      const config = {
+        loop: { model: 'provider/loop-model' },
+        executionModel: 'provider/exec-model',
+      } as any
+      
+      const { resolveLoopAuditorModel } = require('../src/utils/loop-helpers')
+      const result = resolveLoopAuditorModel(config, mockLoopService, 'test-loop')
+      
+      expect(result).toEqual({ providerID: 'provider', modelID: 'state-auditor' })
+    })
+  })
+  
+  describe('loop-status model output', () => {
+    test('status output includes per-loop executionModel override', () => {
+      const db = createTestDb()
+      const kvService = createKvService(db)
+      const loopService = createLoopService(kvService, projectId, createMockLogger())
+      
+      const stateWithOverride = {
+        active: true,
+        sessionId: 'session-status-model',
+        loopName: 'test-status-model',
+        worktreeDir: '/tmp/test-worktree',
+        worktreeBranch: 'main',
+        iteration: 1,
+        maxIterations: 5,
+        completionSignal: 'ALL_PHASES_COMPLETE',
+        startedAt: new Date().toISOString(),
+        prompt: 'Test prompt',
+        phase: 'coding' as const,
+        audit: false,
+        errorCount: 0,
+        auditCount: 0,
+        executionModel: 'provider/state-override',
+      }
+      
+      loopService.setState('test-status-model', stateWithOverride)
+      const retrieved = loopService.getActiveState('test-status-model')
+      
+      expect(retrieved?.executionModel).toBe('provider/state-override')
+    })
+    
+    test('inactive loop status includes model fields', () => {
+      const db = createTestDb()
+      const kvService = createKvService(db)
+      const loopService = createLoopService(kvService, projectId, createMockLogger())
+      
+      const inactiveState = {
+        active: false,
+        sessionId: 'session-inactive-model',
+        loopName: 'test-inactive-model',
+        worktreeDir: '/tmp/test-worktree',
+        worktreeBranch: 'main',
+        iteration: 2,
+        maxIterations: 5,
+        completionSignal: 'ALL_PHASES_COMPLETE',
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        prompt: 'Test prompt',
+        phase: 'coding' as const,
+        audit: false,
+        errorCount: 0,
+        auditCount: 0,
+        terminationReason: 'completed',
+        executionModel: 'anthropic/claude-sonnet-4-20250514',
+        auditorModel: 'anthropic/claude-3-opus',
+      }
+      
+      loopService.setState('test-inactive-model', inactiveState)
+      const retrieved = (loopService as any).getAnyState('test-inactive-model')
+      
+      expect(retrieved?.executionModel).toBe('anthropic/claude-sonnet-4-20250514')
+      expect(retrieved?.auditorModel).toBe('anthropic/claude-3-opus')
+    })
+  })
+  
+  describe('restart preserves per-loop models', () => {
+    test('restart keeps executionModel and auditorModel on state', () => {
+      const db = createTestDb()
+      const kvService = createKvService(db)
+      const loopService = createLoopService(kvService, projectId, createMockLogger())
+      
+      const stoppedState = {
+        active: false,
+        sessionId: 'old-session',
+        loopName: 'test-restart-models',
+        worktreeDir: '/tmp/test-restart',
+        worktreeBranch: 'main',
+        iteration: 2,
+        maxIterations: 5,
+        completionSignal: 'ALL_PHASES_COMPLETE',
+        startedAt: new Date().toISOString(),
+        prompt: 'Test prompt',
+        phase: 'coding' as const,
+        audit: false,
+        errorCount: 0,
+        auditCount: 0,
+        terminationReason: 'user_requested',
+        executionModel: 'anthropic/claude-sonnet-4-20250514',
+        auditorModel: 'anthropic/claude-3-5-sonnet-20241022',
+      }
+      
+      loopService.setState('test-restart-models', stoppedState)
+      
+      // Verify state is persisted correctly using getAnyState for inactive loops
+      const retrieved = (loopService as any).getAnyState('test-restart-models')
+      expect(retrieved?.active).toBe(false)
+      expect(retrieved?.executionModel).toBe('anthropic/claude-sonnet-4-20250514')
+      expect(retrieved?.auditorModel).toBe('anthropic/claude-3-5-sonnet-20241022')
+    })
+  })
+  
+  describe('audit subtask payload', () => {
+    test('audit subtask includes resolved per-loop auditor model in payload', async () => {
+      const db = createTestDb()
+      const kvService = createKvService(db)
+      const loopService = createLoopService(kvService, projectId, createMockLogger())
+      
+      const sessionId = 'audit-model-test'
+      const loopName = 'test-audit-models'
+      
+      // Set state with audit: true to trigger audit path
+      const stateWithAuditorOverride = {
+        active: true,
+        sessionId,
+        loopName,
+        worktreeDir: '/tmp/test-worktree',
+        worktreeBranch: 'main',
+        iteration: 1,
+        maxIterations: 5,
+        completionSignal: 'ALL_PHASES_COMPLETE',
+        startedAt: new Date().toISOString(),
+        prompt: 'Test prompt',
+        phase: 'coding' as const,
+        audit: true,
+        errorCount: 0,
+        auditCount: 0,
+        executionModel: 'provider/state-exec',
+        auditorModel: 'provider/state-auditor',
+      }
+      
+      loopService.setState(loopName, stateWithAuditorOverride)
+      loopService.registerLoopSession(sessionId, loopName)
+      
+      // Store plan in KV for buildAuditPrompt
+      kvService.set(projectId, `plan:${loopName}`, '# Test Plan\n- Test item')
+      
+      let capturedModel: any
+      const mockV2Client = {
+        session: {
+          promptAsync: async (params: any) => {
+            if (params.parts?.[0]?.type === 'subtask') {
+              capturedModel = (params.parts[0] as any).model
+            }
+            return { data: undefined, error: undefined }
+          },
+          messages: async () => ({
+            data: [
+              {
+                info: { role: 'assistant' },
+                parts: [{ type: 'text', text: 'ALL_PHASES_COMPLETE' }],
+              },
+            ],
+          }),
+          status: async () => ({ data: {} }),
+          abort: async () => ({ data: undefined, error: undefined }),
+        },
+      } as any
+      
+      const mockGetConfig = () => ({
+        auditorModel: 'provider/config-auditor',
+        loop: { model: 'provider/loop-model' },
+        executionModel: 'provider/exec-model',
+      })
+      
+      const { createLoopEventHandler } = require('../src/hooks/loop')
+      const handler = createLoopEventHandler(
+        loopService,
+        {} as any,
+        mockV2Client,
+        createMockLogger(),
+        mockGetConfig,
+      )
+      
+      // Trigger the handler - it will check completion signal and then run audit
+      await handler.onEvent({
+        event: {
+          type: 'session.status',
+          properties: {
+            sessionID: sessionId,
+            status: { type: 'idle' },
+          },
+        },
+      })
+      
+      expect(capturedModel).toEqual({ providerID: 'provider', modelID: 'state-auditor' })
+    })
+    
+    test('audit subtask falls back to config.auditorModel when state has no override', async () => {
+      const db = createTestDb()
+      const kvService = createKvService(db)
+      const loopService = createLoopService(kvService, projectId, createMockLogger())
+      
+      const sessionId = 'audit-fallback-test'
+      const loopName = 'test-audit-fallback'
+      
+      // State without auditorModel - should fall back to config
+      const stateWithoutAuditorOverride = {
+        active: true,
+        sessionId,
+        loopName,
+        worktreeDir: '/tmp/test-worktree',
+        worktreeBranch: 'main',
+        iteration: 1,
+        maxIterations: 5,
+        completionSignal: 'ALL_PHASES_COMPLETE',
+        startedAt: new Date().toISOString(),
+        prompt: 'Test prompt',
+        phase: 'coding' as const,
+        audit: true,
+        errorCount: 0,
+        auditCount: 0,
+        executionModel: 'provider/state-exec',
+      }
+      
+      loopService.setState(loopName, stateWithoutAuditorOverride)
+      loopService.registerLoopSession(sessionId, loopName)
+      
+      // Store plan in KV for buildAuditPrompt
+      kvService.set(projectId, `plan:${loopName}`, '# Test Plan\n- Test item')
+      
+      let capturedModel: any
+      const mockV2Client = {
+        session: {
+          promptAsync: async (params: any) => {
+            if (params.parts?.[0]?.type === 'subtask') {
+              capturedModel = (params.parts[0] as any).model
+            }
+            return { data: undefined, error: undefined }
+          },
+          messages: async () => ({
+            data: [
+              {
+                info: { role: 'assistant' },
+                parts: [{ type: 'text', text: 'ALL_PHASES_COMPLETE' }],
+              },
+            ],
+          }),
+          status: async () => ({ data: {} }),
+          abort: async () => ({ data: undefined, error: undefined }),
+        },
+      } as any
+      
+      const mockGetConfig = () => ({
+        auditorModel: 'provider/config-auditor',
+        loop: { model: 'provider/loop-model' },
+        executionModel: 'provider/exec-model',
+      })
+      
+      const { createLoopEventHandler } = require('../src/hooks/loop')
+      const handler = createLoopEventHandler(
+        loopService,
+        {} as any,
+        mockV2Client,
+        createMockLogger(),
+        mockGetConfig,
+      )
+      
+      await handler.onEvent({
+        event: {
+          type: 'session.status',
+          properties: {
+            sessionID: sessionId,
+            status: { type: 'idle' },
+          },
+        },
+      })
+      
+      expect(capturedModel).toEqual({ providerID: 'provider', modelID: 'config-auditor' })
+    })
+  })
+  
+  describe('loop-status tool output', () => {
+    test('status output prefers state.executionModel over config defaults', async () => {
+      const db = createTestDb()
+      const kvService = createKvService(db)
+      const loopService = createLoopService(kvService, projectId, createMockLogger())
+      
+      const stateWithOverride = {
+        active: true,
+        sessionId: 'session-status-pref',
+        loopName: 'test-status-pref',
+        worktreeDir: '/tmp/test-worktree',
+        worktreeBranch: 'main',
+        iteration: 1,
+        maxIterations: 5,
+        completionSignal: 'ALL_PHASES_COMPLETE',
+        startedAt: new Date().toISOString(),
+        prompt: 'Test prompt',
+        phase: 'coding' as const,
+        audit: false,
+        errorCount: 0,
+        auditCount: 0,
+        executionModel: 'state-override-model',
+      }
+      
+      loopService.setState('test-status-pref', stateWithOverride)
+      
+      const retrieved = loopService.getActiveState('test-status-pref')
+      expect(retrieved?.executionModel).toBe('state-override-model')
+    })
+    
+    test('status output includes both executionModel and auditorModel from state', async () => {
+      const db = createTestDb()
+      const kvService = createKvService(db)
+      const loopService = createLoopService(kvService, projectId, createMockLogger())
+      
+      const stateWithBothModels = {
+        active: true,
+        sessionId: 'session-both-models',
+        loopName: 'test-both-models',
+        worktreeDir: '/tmp/test-worktree',
+        worktreeBranch: 'main',
+        iteration: 1,
+        maxIterations: 5,
+        completionSignal: 'ALL_PHASES_COMPLETE',
+        startedAt: new Date().toISOString(),
+        prompt: 'Test prompt',
+        phase: 'coding' as const,
+        audit: false,
+        errorCount: 0,
+        auditCount: 0,
+        executionModel: 'state-exec-model',
+        auditorModel: 'state-auditor-model',
+      }
+      
+      loopService.setState('test-both-models', stateWithBothModels)
+      
+      const retrieved = loopService.getActiveState('test-both-models')
+      expect(retrieved?.executionModel).toBe('state-exec-model')
+      expect(retrieved?.auditorModel).toBe('state-auditor-model')
+    })
+  })
+  
+  describe('loop-status tool output', () => {
+    test('loop-status output prefers per-loop state values over config defaults', async () => {
+      const db = createTestDb()
+      const kvService = createKvService(db)
+      const loopService = createLoopService(kvService, projectId, createMockLogger())
+      
+      const stateWithOverride = {
+        active: true,
+        sessionId: 'session-status-tool',
+        loopName: 'test-status-tool',
+        worktreeDir: '/tmp/test-worktree',
+        worktreeBranch: 'main',
+        iteration: 1,
+        maxIterations: 5,
+        completionSignal: 'ALL_PHASES_COMPLETE',
+        startedAt: new Date().toISOString(),
+        prompt: 'Test prompt',
+        phase: 'coding' as const,
+        audit: false,
+        errorCount: 0,
+        auditCount: 0,
+        executionModel: 'state-override-model',
+        auditorModel: 'state-auditor-override',
+      }
+      
+      loopService.setState('test-status-tool', stateWithOverride)
+      
+      const mockV2Client = {
+        session: {
+          promptAsync: async () => ({ data: undefined, error: undefined }),
+          messages: async () => ({ data: [] }),
+          status: async () => ({ data: {} }),
+          abort: async () => ({ data: undefined, error: undefined }),
+        },
+      } as any
+      
+      const mockGetConfig = () => ({
+        loop: { model: 'config-loop_model' },
+        executionModel: 'config_exec_model',
+        auditorModel: 'config_auditor_model',
+      })
+      
+      const { createLoopTools } = require('../src/tools/loop')
+      const loopTools = createLoopTools({
+        projectId,
+        directory: '/tmp/test',
+        config: mockGetConfig(),
+        logger: createMockLogger(),
+        db,
+        dataDir: '/tmp/test',
+        kvService,
+        loopService,
+        loopHandler: {
+          startWatchdog: () => {},
+          getStallInfo: () => null,
+        } as any,
+        v2: mockV2Client,
+        cleanup: async () => {},
+        input: {} as any,
+        sandboxManager: null,
+        graphService: null,
+      } as any)
+      
+      const statusOutput = await loopTools['loop-status'].execute(
+        { name: 'test-status-tool' },
+        { sessionID: 'test-session', directory: '/tmp/test' } as any,
+      )
+      
+      expect(statusOutput).toContain('state-override-model')
+      expect(statusOutput).toContain('state-auditor-override')
+      expect(statusOutput).not.toContain('config_loop_model')
+    })
+  })
+  
+  describe('loop-restart preserves models', () => {
+    test('restart preserves executionModel and auditorModel on state', async () => {
+      const db = createTestDb()
+      const kvService = createKvService(db)
+      const loopService = createLoopService(kvService, projectId, createMockLogger())
+      
+      const stoppedState = {
+        active: false,
+        sessionId: 'old-session',
+        loopName: 'test-restart-tool',
+        worktreeDir: '/tmp/test-restart',
+        worktreeBranch: 'main',
+        iteration: 2,
+        maxIterations: 5,
+        completionSignal: 'ALL_PHASES_COMPLETE',
+        startedAt: new Date().toISOString(),
+        prompt: 'Test prompt',
+        phase: 'coding' as const,
+        audit: false,
+        errorCount: 0,
+        auditCount: 0,
+        terminationReason: 'user_requested',
+        executionModel: 'restart-exec-model',
+        auditorModel: 'restart-auditor-model',
+      }
+      
+      loopService.setState('test-restart-tool', stoppedState)
+      
+      // Verify state before restart
+      const preRestartState = (loopService as any).getAnyState('test-restart-tool')
+      expect(preRestartState?.executionModel).toBe('restart-exec-model')
+      expect(preRestartState?.auditorModel).toBe('restart-auditor-model')
+    })
+    
+    test('loop-restart preserves executionModel and auditorModel on rewritten state', async () => {
+      const db = createTestDb()
+      const kvService = createKvService(db)
+      const loopService = createLoopService(kvService, projectId, createMockLogger())
+      
+      const worktreeDir = '/tmp/test-restart-preserve-' + Date.now()
+      const { mkdirSync } = require('fs')
+      mkdirSync(worktreeDir, { recursive: true })
+      
+      const stoppedState = {
+        active: false,
+        sessionId: 'old-session-restart',
+        loopName: 'test-restart-preserve',
+        worktree: true,
+        worktreeDir,
+        worktreeBranch: 'main',
+        iteration: 2,
+        maxIterations: 5,
+        completionSignal: 'ALL_PHASES_COMPLETE',
+        startedAt: new Date().toISOString(),
+        prompt: 'Test restart prompt',
+        phase: 'coding' as const,
+        audit: false,
+        errorCount: 0,
+        auditCount: 0,
+        terminationReason: 'user_requested',
+        executionModel: 'anthropic/restart-exec-model',
+        auditorModel: 'anthropic/restart-auditor-model',
+      }
+      
+      loopService.setState('test-restart-preserve', stoppedState)
+      
+      const mockV2Client = {
+        session: {
+          create: async () => ({ data: { id: 'new-session-restart' }, error: undefined }),
+          promptAsync: async () => ({ data: {}, error: undefined }),
+          messages: async () => ({ data: [] }),
+          status: async () => ({ data: {} }),
+          abort: async () => ({ data: undefined, error: undefined }),
+        },
+        worktree: {
+          create: async () => ({ data: { id: 'new-session-restart' }, error: undefined }),
+          remove: async () => ({ data: undefined, error: undefined }),
+        },
+        tui: {
+          selectSession: async () => ({ data: undefined, error: undefined }),
+        },
+      } as any
+      
+      const mockGetConfig = () => ({
+        loop: { model: 'provider/config-loop', defaultMaxIterations: 5, defaultAudit: true },
+        executionModel: 'provider/config-exec',
+        auditorModel: 'provider/config-auditor',
+      })
+      
+      const { createLoopTools } = require('../src/tools/loop')
+      const loopTools = createLoopTools({
+        projectId,
+        directory: '/tmp/test',
+        config: mockGetConfig(),
+        logger: createMockLogger(),
+        db,
+        dataDir: '/tmp/test',
+        kvService,
+        loopService,
+        loopHandler: {
+          startWatchdog: () => {},
+          getStallInfo: () => null,
+        } as any,
+        v2: mockV2Client,
+        cleanup: async () => {},
+        input: {} as any,
+        sandboxManager: null,
+        graphService: null,
+      } as any)
+      
+      const restartResult = await loopTools['loop-status'].execute(
+        { name: 'test-restart-preserve', restart: true },
+        { sessionID: 'test-session', directory: '/tmp/test' } as any,
+      )
+      
+      expect(restartResult).toContain('Restarted loop')
+      
+      const postRestartState = (loopService as any).getAnyState('test-restart-preserve')
+      expect(postRestartState?.executionModel).toBe('anthropic/restart-exec-model')
+      expect(postRestartState?.auditorModel).toBe('anthropic/restart-auditor-model')
+    })
   })
 })

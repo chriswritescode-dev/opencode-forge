@@ -11,25 +11,41 @@ import { VERSION } from './version'
 import { resolveDataDir } from './storage'
 import { fetchSessionStats, type SessionStats } from './utils/session-stats'
 import { slugify } from './utils/logger'
-import { extractPlanTitle, PLAN_EXECUTION_LABELS, matchExecutionLabel } from './utils/plan-execution'
+import { extractPlanTitle, PLAN_EXECUTION_LABELS, matchExecutionLabel, type PlanExecutionLabel } from './utils/plan-execution'
 import { launchFreshLoop } from './utils/loop-launch'
 import { readPlan, writePlan, deletePlan } from './utils/tui-plan-store'
 import { readGraphStatus, formatGraphStatus } from './utils/tui-graph-status'
 import { readLoopStates, readLoopByName, shouldPollSidebar, type LoopInfo } from './utils/tui-refresh-helpers'
+import { readExecutionPreferences, writeExecutionPreferences, resolveExecutionDialogDefaults } from './utils/tui-execution-preferences'
+import { fetchAvailableModels, flattenProviders, buildDialogSelectOptions, getModelDisplayLabel, getFavoriteModels, getRecentModels, recordRecentModel, sortModelsByPriority, type ModelInfo } from './utils/tui-models'
 
 import { buildLoopPermissionRuleset } from './constants/loop'
 import { agents } from './agents'
+
+type TuiKeybinds = {
+  viewPlan: string
+  executePlan: string
+  showLoops: string
+}
+
+const DEFAULT_KEYBINDS: TuiKeybinds = {
+  viewPlan: '<leader>v',
+  executePlan: '<leader>e',
+  showLoops: '<leader>w',
+}
 
 type TuiOptions = {
   sidebar: boolean
   showLoops: boolean
   showVersion: boolean
+  keybinds: TuiKeybinds
 }
 
 type TuiConfig = {
   sidebar?: boolean
   showLoops?: boolean
   showVersion?: boolean
+  keybinds?: Partial<TuiKeybinds>
 }
 
 
@@ -165,6 +181,8 @@ async function restartLoop(projectId: string, loopName: string, api: TuiPluginAp
       completedAt: undefined,
       terminationReason: undefined,
       projectDir: state.projectDir || state.worktreeDir,
+      executionModel: state.executionModel,
+      auditorModel: state.auditorModel,
     }
     db.prepare('UPDATE project_kv SET data = ?, updated_at = ? WHERE project_id = ? AND key = ?').run(
       JSON.stringify(newState), now, projectId, key
@@ -176,12 +194,26 @@ async function restartLoop(projectId: string, loopName: string, api: TuiPluginAp
       promptText += completionInstructions
     }
 
-    await api.client.session.promptAsync({
-      sessionID: newSessionId,
-      directory,
-      parts: [{ type: 'text' as const, text: promptText }],
-      agent: 'code',
-    })
+    // Use stored execution model with fallback
+    const { parseModelString, retryWithModelFallback } = await import('./utils/model-fallback')
+    const loopModel = parseModelString(state.executionModel)
+      ?? parseModelString(config.loop?.model)
+      ?? parseModelString(config.executionModel)
+
+    const promptParts: Array<{ type: 'text'; text: string }> = [{ type: 'text' as const, text: promptText }]
+    
+    const { result: promptResult } = await retryWithModelFallback(
+      () => loopModel
+        ? api.client.session.promptAsync({ sessionID: newSessionId, directory, agent: 'code', model: loopModel, parts: promptParts })
+        : api.client.session.promptAsync({ sessionID: newSessionId, directory, agent: 'code', parts: promptParts }),
+      () => api.client.session.promptAsync({ sessionID: newSessionId, directory, agent: 'code', parts: promptParts }),
+      loopModel,
+      console,
+    )
+    
+    if (promptResult.error) {
+      throw new Error('Failed to prompt restarted loop')
+    }
 
     return newSessionId
   } catch {
@@ -227,12 +259,67 @@ function PlanViewerDialog(props: {
   projectId: string
   sessionId: string
   onRefresh?: () => void
+  startInExecuteMode?: boolean
+  initialExecutionModel?: string
+  initialAuditorModel?: string
 }) {
   const theme = () => props.api.theme.current
   const [editing, setEditing] = createSignal(false)
-  const [executing, setExecuting] = createSignal(false)
+  const [executing, setExecuting] = createSignal(props.startInExecuteMode ?? false)
   const [content, setContent] = createSignal(props.planContent)
+  const [defaultsLoaded, setDefaultsLoaded] = createSignal(false)
+  const [allModels, setAllModels] = createSignal<ModelInfo[]>([])
+  const [modelsLoaded, setModelsLoaded] = createSignal(false)
+  const [modelsError, setModelsError] = createSignal<string | undefined>(undefined)
+  const [executionModel, setExecutionModel] = createSignal<string>(props.initialExecutionModel ?? '')
+  const [auditorModel, setAuditorModel] = createSignal<string>(props.initialAuditorModel ?? '')
+  const [favoriteModelIds, setFavoriteModelIds] = createSignal<string[]>([])
+  const [recentModelIds, setRecentModelIds] = createSignal<string[]>([])
   let textareaRef: TextareaRenderable | undefined
+
+  const hasInitialOverrides = props.initialExecutionModel !== undefined || props.initialAuditorModel !== undefined
+
+  // Load last-used preferences for dialog defaults
+  const directory = props.api.state.path.directory
+  const pid = resolveProjectId(directory)
+  const loadDefaults = async () => {
+    if (pid) {
+      const storedPrefs = readExecutionPreferences(pid)
+      const { loadPluginConfig } = await import('./setup')
+      const config = loadPluginConfig()
+      const defaults = resolveExecutionDialogDefaults(config, storedPrefs)
+      if (!hasInitialOverrides) {
+        setExecutionModel(defaults.executionModel)
+        setAuditorModel(defaults.auditorModel)
+      }
+      setDefaultsLoaded(true)
+    } else {
+      setDefaultsLoaded(true)
+    }
+  }
+
+  // Load available models from API (also loads favorites/recents for categorization)
+  const loadModels = async () => {
+    const result = await fetchAvailableModels(props.api)
+    if (result.error) {
+      setModelsError(result.error)
+      setModelsLoaded(true)
+      return
+    }
+    const allModelList = flattenProviders(result.providers)
+    const recents = pid ? getRecentModels(pid) : []
+    setRecentModelIds(recents)
+    const { loadPluginConfig } = await import('./setup')
+    const config = loadPluginConfig()
+    const favorites = getFavoriteModels(config)
+    setFavoriteModelIds(favorites)
+    const sorted = sortModelsByPriority(allModelList, favorites, recents)
+    setAllModels(sorted)
+    setModelsLoaded(true)
+  }
+
+  loadDefaults()
+  loadModels()
 
   const handleSave = () => {
     const text = textareaRef?.plainText ?? content()
@@ -272,6 +359,45 @@ function PlanViewerDialog(props: {
     }
   }
 
+  const openModelDialog = (target: 'execution' | 'auditor') => {
+    if (!modelsLoaded()) return
+
+    const models = allModels()
+    if (modelsError() || models.length === 0) {
+      props.api.ui.toast({ message: modelsError() || 'No models available', variant: 'error', duration: 3000 })
+      return
+    }
+
+    const options = buildDialogSelectOptions(models, favoriteModelIds(), recentModelIds())
+    const title = target === 'execution' ? 'Execution Model' : 'Auditor Model'
+    const currentValue = target === 'execution' ? executionModel() : auditorModel()
+
+    props.api.ui.dialog.setSize('large')
+    props.api.ui.dialog.replace(() => (
+      <props.api.ui.DialogSelect
+        title={title}
+        options={options}
+        current={currentValue || ''}
+        onSelect={(opt) => {
+          const selectedModel = typeof opt.value === 'string' ? opt.value : ''
+          props.api.ui.dialog.setSize('xlarge')
+          props.api.ui.dialog.replace(() => (
+            <PlanViewerDialog
+              api={props.api}
+              planContent={content()}
+              projectId={props.projectId}
+              sessionId={props.sessionId}
+              onRefresh={props.onRefresh}
+              startInExecuteMode={true}
+              initialExecutionModel={target === 'execution' ? selectedModel : executionModel()}
+              initialAuditorModel={target === 'auditor' ? selectedModel : auditorModel()}
+            />
+          ))
+        }}
+      />
+    ))
+  }
+
   function getModeDescription(label: string): string {
     switch (label) {
       case 'New session':
@@ -287,7 +413,7 @@ function PlanViewerDialog(props: {
     }
   }
 
-  const handleExecuteMode = async (mode: string) => {
+  const handleExecuteMode = async (mode: string, executionModel?: string, auditorModel?: string) => {
     const planText = content()
     const title = extractPlanTitle(planText)
     const directory = props.api.state.path.directory
@@ -336,12 +462,25 @@ function PlanViewerDialog(props: {
             deletePlan(pid, props.sessionId)
           }
           
-          await props.api.client.session.promptAsync({
-            sessionID: newSessionId,
-            directory,
-            agent: 'code',
-            parts: [{ type: 'text' as const, text: planText }],
-          })
+          // Use execution model with retryWithModelFallback pattern
+          const { parseModelString, retryWithModelFallback } = await import('./utils/model-fallback')
+          const { loadPluginConfig } = await import('./setup')
+          const config = loadPluginConfig()
+          const model = parseModelString(executionModel) ?? parseModelString(config.loop?.model) ?? parseModelString(config.executionModel)
+          
+          const promptParts = [{ type: 'text' as const, text: planText }]
+          const { result: promptResult } = await retryWithModelFallback(
+            () => model
+              ? props.api.client.session.promptAsync({ sessionID: newSessionId, directory, agent: 'code', model, parts: promptParts })
+              : props.api.client.session.promptAsync({ sessionID: newSessionId, directory, agent: 'code', parts: promptParts }),
+            () => props.api.client.session.promptAsync({ sessionID: newSessionId, directory, agent: 'code', parts: promptParts }),
+            model,
+            console,
+          )
+          
+          if (promptResult.error) {
+            throw new Error('Failed to prompt session')
+          }
           
           props.api.ui.toast({
             message: `New session created: ${title}`,
@@ -349,6 +488,15 @@ function PlanViewerDialog(props: {
             duration: 3000,
           })
           
+          // Save execution preferences and record recent models
+          writeExecutionPreferences(pid, {
+            mode: matchedLabel as PlanExecutionLabel,
+            executionModel,
+            auditorModel,
+          })
+          if (executionModel) recordRecentModel(pid, executionModel)
+          if (auditorModel) recordRecentModel(pid, auditorModel)
+
           // Refresh sidebar immediately after mutation is issued
           props.onRefresh?.()
           
@@ -376,18 +524,40 @@ function PlanViewerDialog(props: {
         const inPlacePrompt = `The architect agent has created an implementation plan. You are now the code agent taking over this session. Your job is to execute the plan — edit files, run commands, create tests, and implement every phase. Do NOT just describe or summarize the changes. Actually make them.\n\nImplementation Plan:\n${planText}`
         
         try {
-          await props.api.client.session.promptAsync({
-            sessionID: props.sessionId,
-            directory,
-            agent: 'code',
-            parts: [{ type: 'text' as const, text: inPlacePrompt }],
-          })
+          const { parseModelString, retryWithModelFallback } = await import('./utils/model-fallback')
+          const { loadPluginConfig } = await import('./setup')
+          const config = loadPluginConfig()
+          const model = parseModelString(executionModel) ?? parseModelString(config.loop?.model) ?? parseModelString(config.executionModel)
+          
+          const promptParts = [{ type: 'text' as const, text: inPlacePrompt }]
+          const { result: promptResult } = await retryWithModelFallback(
+            () => model
+              ? props.api.client.session.promptAsync({ sessionID: props.sessionId, directory, agent: 'code', model, parts: promptParts })
+              : props.api.client.session.promptAsync({ sessionID: props.sessionId, directory, agent: 'code', parts: promptParts }),
+            () => props.api.client.session.promptAsync({ sessionID: props.sessionId, directory, agent: 'code', parts: promptParts }),
+            model,
+            console,
+          )
+          
+          if (promptResult.error) {
+            throw new Error('Failed to prompt session')
+          }
           
           props.api.ui.toast({
             message: 'Executing plan in current session',
             variant: 'success',
             duration: 3000,
           })
+          
+          // Save execution preferences and record recent models
+          writeExecutionPreferences(pid, {
+            mode: matchedLabel as PlanExecutionLabel,
+            executionModel,
+            auditorModel,
+          })
+          if (executionModel) recordRecentModel(pid, executionModel)
+          if (auditorModel) recordRecentModel(pid, auditorModel)
+
           // Refresh sidebar immediately after mutation is issued
           props.onRefresh?.()
         } catch {
@@ -421,6 +591,8 @@ function PlanViewerDialog(props: {
             projectId: pid,
             isWorktree,
             api: props.api,
+            executionModel,
+            auditorModel,
           })
           
           if (launchResult) {
@@ -429,6 +601,15 @@ function PlanViewerDialog(props: {
               deletePlan(pid, props.sessionId)
             }
             
+            // Save execution preferences after successful launch
+            writeExecutionPreferences(pid, {
+              mode: matchedLabel as PlanExecutionLabel,
+              executionModel,
+              auditorModel,
+            })
+            if (executionModel) recordRecentModel(pid, executionModel)
+            if (auditorModel) recordRecentModel(pid, auditorModel)
+
             // Use the actual loop name returned by the launcher
             props.api.ui.toast({
               message: isWorktree ? `Loop started in worktree: ${launchResult.loopName}` : `Loop started: ${launchResult.loopName}`,
@@ -460,34 +641,44 @@ function PlanViewerDialog(props: {
 
 
 
+  const tabIndex = () => executing() ? 2 : editing() ? 1 : 0
+  let tabRef: import('@opentui/core').TabSelectRenderable | undefined
+
+  createEffect(() => {
+    const idx = tabIndex()
+    tabRef?.setSelectedIndex(idx)
+  })
+
   return (
     <box flexDirection="column" paddingX={2}>
-      <box flexShrink={0} paddingBottom={1} flexDirection="row" gap={2}>
-        <text fg={theme().text}><b>Plan</b></text>
-        <text 
-          fg={executing() ? theme().textMuted : editing() ? theme().text : theme().info} 
-          onMouseUp={() => { setEditing(false); setExecuting(false) }}
-        >
-          [view]
-        </text>
-        <text 
-          fg={editing() ? theme().text : theme().textMuted} 
-          onMouseUp={() => { setEditing(true); setExecuting(false) }}
-        >
-          [edit]
-        </text>
-        <text 
-          fg={executing() ? theme().text : theme().textMuted} 
-          onMouseUp={() => { setEditing(false); setExecuting(true) }}
-        >
-          [execute]
-        </text>
-        <text 
-          fg={theme().textMuted} 
-          onMouseUp={handleExport}
-        >
-          [export]
-        </text>
+      <box flexShrink={0} paddingBottom={1}>
+        <tab_select
+          ref={(el: import('@opentui/core').TabSelectRenderable) => { tabRef = el }}
+          focused={!editing() && !executing()}
+          options={[
+            { name: 'View', description: 'View plan', value: 'view' },
+            { name: 'Edit', description: 'Edit plan', value: 'edit' },
+            { name: 'Execute', description: 'Execute plan', value: 'execute' },
+            { name: 'Export', description: 'Export to file', value: 'export' },
+          ]}
+          onSelect={(_, option) => {
+            if (!option) return
+            switch (option.value) {
+              case 'view': setEditing(false); setExecuting(false); break
+              case 'edit': setEditing(true); setExecuting(false); break
+              case 'execute': setEditing(false); setExecuting(true); break
+              case 'export': handleExport(); break
+            }
+          }}
+          showUnderline={false}
+          showDescription={false}
+          wrapSelection={true}
+          tabWidth={10}
+          textColor={theme().textMuted}
+          focusedTextColor={theme().text}
+          selectedTextColor="#ffffff"
+          selectedBackgroundColor={theme().borderActive}
+        />
       </box>
       
       <Show when={!editing() && !executing()}>
@@ -516,30 +707,59 @@ function PlanViewerDialog(props: {
       <Show when={executing()}>
         <box flexDirection="column" paddingBottom={1} gap={1} minHeight={20} maxHeight="75%">
           <box paddingBottom={1}>
-            <text fg={theme().text}><b>Select Execution Mode</b></text>
+            <text fg={theme().text}><b>Configure and Run Plan</b></text>
           </box>
+          <Show when={defaultsLoaded()} fallback={
+            <box flexDirection="column" gap={1} paddingBottom={1}>
+              <text fg={theme().textMuted}>Loading...</text>
+            </box>
+          }>
             <select
               focused={true}
-              options={PLAN_EXECUTION_LABELS.map(label => ({
-                name: label,
-                description: getModeDescription(label),
-                value: label,
-              }))}
+              selectedIndex={0}
+              options={[
+                {
+                  name: `Execution model: ${modelsLoaded() ? getModelDisplayLabel(executionModel(), allModels()) : 'loading...'}`,
+                  description: 'Press enter to change',
+                  value: 'model:execution',
+                },
+                {
+                  name: `Auditor model: ${modelsLoaded() ? getModelDisplayLabel(auditorModel(), allModels()) : 'loading...'}`,
+                  description: 'Press enter to change',
+                  value: 'model:auditor',
+                },
+                ...PLAN_EXECUTION_LABELS.map(label => ({
+                  name: label,
+                  description: getModeDescription(label),
+                  value: `mode:${label}`,
+                })),
+              ]}
               onSelect={(_, option) => {
                 if (option?.value) {
-                  handleExecuteMode(option.value)
+                  if (option.value === 'model:execution') {
+                    openModelDialog('execution')
+                    return
+                  }
+                  if (option.value === 'model:auditor') {
+                    openModelDialog('auditor')
+                    return
+                  }
+                  if (typeof option.value === 'string' && option.value.startsWith('mode:')) {
+                    handleExecuteMode(option.value.slice(5), executionModel(), auditorModel())
+                  }
                 }
               }}
-              showDescription={false}
+              showDescription={true}
               itemSpacing={1}
               wrapSelection={true}
               textColor={theme().text}
               focusedTextColor={theme().text}
               selectedTextColor="#ffffff"
               selectedBackgroundColor={theme().borderActive}
-              minHeight={12}
+              minHeight={16}
               flexGrow={1}
             />
+          </Show>
         </box>
       </Show>
       
@@ -681,6 +901,22 @@ function LoopDetailsDialog(props: { api: TuiPluginApi; loop: LoopInfo; onBack?: 
                   {currentLoop().phase}
                 </text>
               </box>
+              <Show when={currentLoop().executionModel}>
+                <box>
+                  <text fg={theme().text}>
+                    <span style={{ fg: theme().textMuted }}>Execution model: </span>
+                    {currentLoop().executionModel}
+                  </text>
+                </box>
+              </Show>
+              <Show when={currentLoop().auditorModel}>
+                <box>
+                  <text fg={theme().text}>
+                    <span style={{ fg: theme().textMuted }}>Auditor model: </span>
+                    {currentLoop().auditorModel}
+                  </text>
+                </box>
+              </Show>
               <box>
                 <text fg={theme().text}>
                   <span style={{ fg: theme().textMuted }}>Messages: </span>
@@ -970,6 +1206,7 @@ const tui: TuiPlugin = async (api) => {
     sidebar: tuiConfig?.sidebar ?? true,
     showLoops: tuiConfig?.showLoops ?? true,
     showVersion: tuiConfig?.showVersion ?? true,
+    keybinds: { ...DEFAULT_KEYBINDS, ...tuiConfig?.keybinds },
   }
 
   if (!opts.sidebar) return
@@ -988,6 +1225,7 @@ const tui: TuiPlugin = async (api) => {
         value: 'forge.loops.show',
         description: `${states.length} loop${states.length !== 1 ? 's' : ''}`,
         category: 'Forge',
+        keybind: opts.keybinds.showLoops,
         onSelect: () => {
           const worktreeLoops = states.filter(l => l.worktree)
           const loopOptions = worktreeLoops.map(l => {
@@ -1040,26 +1278,44 @@ const tui: TuiPlugin = async (api) => {
     const pid = resolveProjectId(directory)
     if (!pid) return []
 
-    const sessionID = (route.params as { sessionID?: string })?.sessionID
-    if (!sessionID) return []
+    const sessionID = (route as { params: { sessionID: string } }).params.sessionID
 
-    const plan = readPlan(pid, sessionID)
-    if (!plan) return []
+    const refreshSidebar = () => {
+      // Trigger sidebar refresh via session status event
+    }
 
     return [{
       title: 'Forge: View plan',
       value: 'forge.plan.view',
       description: 'View cached plan for this session',
       category: 'Forge',
+      keybind: opts.keybinds.viewPlan,
       onSelect: () => {
         const freshPlan = readPlan(pid, sessionID)
         if (!freshPlan) {
           api.ui.toast({ message: 'No plan found for this session', variant: 'info', duration: 3000 })
           return
         }
-        api.ui.dialog.setSize("large")
+        api.ui.dialog.setSize("xlarge")
         api.ui.dialog.replace(() => (
-          <PlanViewerDialog api={api} planContent={freshPlan} projectId={pid} sessionId={sessionID} />
+          <PlanViewerDialog api={api} planContent={freshPlan} projectId={pid} sessionId={sessionID} onRefresh={refreshSidebar} />
+        ))
+      },
+    }, {
+      title: 'Forge: Execute plan',
+      value: 'forge.plan.execute',
+      description: 'Execute cached plan',
+      category: 'Forge',
+      keybind: opts.keybinds.executePlan,
+      onSelect: () => {
+        const freshPlan = readPlan(pid, sessionID)
+        if (!freshPlan) {
+          api.ui.toast({ message: 'No plan found for this session', variant: 'info', duration: 3000 })
+          return
+        }
+        api.ui.dialog.setSize("xlarge")
+        api.ui.dialog.replace(() => (
+          <PlanViewerDialog api={api} planContent={freshPlan} projectId={pid} sessionId={sessionID} onRefresh={refreshSidebar} startInExecuteMode={true} />
         ))
       },
     }]

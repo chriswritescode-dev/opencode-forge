@@ -24,6 +24,8 @@ export type LoopInfo = {
   worktreeBranch?: string
   worktree?: boolean
   worktreeDir?: string
+  executionModel?: string
+  auditorModel?: string
 }
 
 /**
@@ -71,6 +73,8 @@ export function readLoopStates(projectId: string, dbPathOverride?: string): Loop
           worktreeBranch: state.worktreeBranch,
           worktree: state.worktree ?? false,
           worktreeDir: state.worktreeDir,
+          executionModel: state.executionModel,
+          auditorModel: state.auditorModel,
         })
       } catch {}
     }
@@ -122,6 +126,8 @@ export function readLoopByName(projectId: string, loopName: string, dbPathOverri
       worktreeBranch: state.worktreeBranch,
       worktree: state.worktree ?? false,
       worktreeDir: state.worktreeDir,
+      executionModel: state.executionModel,
+      auditorModel: state.auditorModel,
     }
   } catch {
     return null

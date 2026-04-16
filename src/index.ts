@@ -244,12 +244,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     return {
       getCleanup,
       tool: tools,
-      config: createConfigHandler(
-        config.auditorModel
-          ? { ...agents, auditor: { ...agents.auditor, defaultModel: config.auditorModel } }
-          : agents,
-        config.agents
-      ),
+      config: createConfigHandler(agents, config.agents),
       'chat.message': async (input, output) => {
         await sessionHooks.onMessage(input, output)
       },

@@ -71,6 +71,8 @@ export interface LoopState {
   sandbox?: boolean
   sandboxContainerName?: string
   completionSummary?: string
+  executionModel?: string
+  auditorModel?: string
 }
 
 export interface LoopService {
