@@ -38,7 +38,15 @@ export interface ProviderInfo {
  */
 export interface FetchModelsResult {
   providers: ProviderInfo[]
+  connectedProviderIds: string[]
+  configuredProviderIds: string[]
   error?: string
+}
+
+export interface ModelSortOptions {
+  recents?: string[]
+  connectedProviderIds?: string[]
+  configuredProviderIds?: string[]
 }
 
 /**
@@ -50,15 +58,27 @@ export interface FetchModelsResult {
 export async function fetchAvailableModels(api: TuiPluginApi): Promise<FetchModelsResult> {
   try {
     const directory = api.state.path.directory
+    const configuredProviderIds = Object.keys(api.state.config?.provider ?? {})
     const result = await api.client.provider.list({ directory })
     
     if (result.error) {
       const errorMsg = (result.error as { message?: string })?.message || 'Failed to fetch providers'
-      return { providers: [], error: errorMsg }
+      const nestedErrorMsg = (result.error as { data?: { message?: string } })?.data?.message
+      return {
+        providers: [],
+        connectedProviderIds: [],
+        configuredProviderIds,
+        error: nestedErrorMsg || errorMsg,
+      }
     }
     
     if (!result.data) {
-      return { providers: [], error: 'No provider data returned' }
+      return {
+        providers: [],
+        connectedProviderIds: [],
+        configuredProviderIds,
+        error: 'No provider data returned',
+      }
     }
     
     const providers: ProviderInfo[] = []
@@ -94,10 +114,16 @@ export async function fetchAvailableModels(api: TuiPluginApi): Promise<FetchMode
       })
     }
     
-    return { providers }
+    return {
+      providers,
+      connectedProviderIds: result.data.connected || [],
+      configuredProviderIds,
+    }
   } catch (err) {
     return { 
       providers: [], 
+      connectedProviderIds: [],
+      configuredProviderIds: Object.keys(api.state.config?.provider ?? {}),
       error: err instanceof Error ? err.message : 'Failed to fetch providers' 
     }
   }
@@ -112,8 +138,8 @@ export function flattenProviders(providers: ProviderInfo[]): ModelInfo[] {
   for (const provider of providers) {
     allModels.push(...provider.models)
   }
-  // Sort alphabetically by name (favorites/recents not used here)
-  return sortModelsByPriority(allModels, [], [])
+  // Sort alphabetically by name (recents not used here)
+  return sortModelsByPriority(allModels, {})
 }
 
 /**
@@ -138,12 +164,11 @@ export function buildModelOptions(
 }
 
 /**
- * Builds DialogSelect-compatible options with Favorites and Recent sections
+ * Builds DialogSelect-compatible options with a Recent section
  * at the top, followed by all models grouped by provider.
  */
 export function buildDialogSelectOptions(
   models: ModelInfo[],
-  favorites: string[] = [],
   recents: string[] = [],
 ): Array<{ title: string; value: string; description?: string; category?: string }> {
   const defaultOption = {
@@ -154,19 +179,6 @@ export function buildDialogSelectOptions(
 
   const modelMap = new Map(models.map(m => [m.fullName, m]))
   const usedInSections = new Set<string>()
-
-  const favoriteOptions = favorites
-    .map(fn => modelMap.get(fn))
-    .filter((m): m is ModelInfo => !!m)
-    .map(m => {
-      usedInSections.add(m.fullName)
-      return {
-        title: m.name,
-        value: m.fullName,
-        description: m.providerName,
-        category: 'Favorites',
-      }
-    })
 
   const recentOptions = recents
     .filter(fn => !usedInSections.has(fn))
@@ -191,7 +203,7 @@ export function buildDialogSelectOptions(
       category: m.providerName,
     }))
 
-  return [defaultOption, ...favoriteOptions, ...recentOptions, ...providerOptions]
+  return [defaultOption, ...recentOptions, ...providerOptions]
 }
 
 /**
@@ -281,36 +293,37 @@ export function recordRecentModel(projectId: string, modelFullName: string, dbPa
 }
 
 /**
- * Gets favorite/pinned models from plugin config.
- */
-export function getFavoriteModels(config?: { favoriteModels?: string[] }): string[] {
-  return config?.favoriteModels ?? []
-}
-
-/**
- * Sorts models by priority: favorites first, then recent, then alphabetically.
+ * Sorts models by priority: recent first, then alphabetically.
  */
 export function sortModelsByPriority(
   models: ModelInfo[],
-  favorites: string[],
-  recents: string[]
+  options: ModelSortOptions = {}
 ): ModelInfo[] {
-  const favoriteSet = new Set(favorites)
-  const recentSet = new Set(recents)
+  const recentSet = new Set(options.recents ?? [])
+  const connectedProviderSet = new Set(options.connectedProviderIds ?? [])
+  const configuredProviderSet = new Set(options.configuredProviderIds ?? [])
+
+  const getProviderPriority = (model: ModelInfo) => {
+    if (connectedProviderSet.has(model.providerID)) return 0
+    if (configuredProviderSet.has(model.providerID)) return 1
+    return 2
+  }
   
   return models.sort((a, b) => {
-    const aIsFavorite = favoriteSet.has(a.fullName)
-    const bIsFavorite = favoriteSet.has(b.fullName)
     const aIsRecent = recentSet.has(a.fullName)
     const bIsRecent = recentSet.has(b.fullName)
-    
-    // Favorites first
-    if (aIsFavorite && !bIsFavorite) return -1
-    if (!aIsFavorite && bIsFavorite) return 1
-    
-    // Then recent
+
+    // Recents first
     if (aIsRecent && !bIsRecent) return -1
     if (!aIsRecent && bIsRecent) return 1
+
+    // Then connected providers, then configured providers
+    const providerPriorityDiff = getProviderPriority(a) - getProviderPriority(b)
+    if (providerPriorityDiff !== 0) return providerPriorityDiff
+
+    // Then group providers alphabetically
+    const providerNameDiff = a.providerName.localeCompare(b.providerName)
+    if (providerNameDiff !== 0) return providerNameDiff
     
     // Then alphabetically by name
     return a.name.localeCompare(b.name)

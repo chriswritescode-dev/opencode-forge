@@ -17,7 +17,7 @@ import { readPlan, writePlan, deletePlan } from './utils/tui-plan-store'
 import { readGraphStatus, formatGraphStatus } from './utils/tui-graph-status'
 import { readLoopStates, readLoopByName, shouldPollSidebar, type LoopInfo } from './utils/tui-refresh-helpers'
 import { readExecutionPreferences, writeExecutionPreferences, resolveExecutionDialogDefaults } from './utils/tui-execution-preferences'
-import { fetchAvailableModels, flattenProviders, buildDialogSelectOptions, getModelDisplayLabel, getFavoriteModels, getRecentModels, recordRecentModel, sortModelsByPriority, type ModelInfo } from './utils/tui-models'
+import { fetchAvailableModels, flattenProviders, buildDialogSelectOptions, getModelDisplayLabel, getRecentModels, recordRecentModel, sortModelsByPriority, type ModelInfo } from './utils/tui-models'
 
 import { buildLoopPermissionRuleset } from './constants/loop'
 import { agents } from './agents'
@@ -273,7 +273,6 @@ function PlanViewerDialog(props: {
   const [modelsError, setModelsError] = createSignal<string | undefined>(undefined)
   const [executionModel, setExecutionModel] = createSignal<string>(props.initialExecutionModel ?? '')
   const [auditorModel, setAuditorModel] = createSignal<string>(props.initialAuditorModel ?? '')
-  const [favoriteModelIds, setFavoriteModelIds] = createSignal<string[]>([])
   const [recentModelIds, setRecentModelIds] = createSignal<string[]>([])
   let textareaRef: TextareaRenderable | undefined
 
@@ -298,7 +297,7 @@ function PlanViewerDialog(props: {
     }
   }
 
-  // Load available models from API (also loads favorites/recents for categorization)
+  // Load available models from API (also loads recents for categorization)
   const loadModels = async () => {
     const result = await fetchAvailableModels(props.api)
     if (result.error) {
@@ -309,11 +308,11 @@ function PlanViewerDialog(props: {
     const allModelList = flattenProviders(result.providers)
     const recents = pid ? getRecentModels(pid) : []
     setRecentModelIds(recents)
-    const { loadPluginConfig } = await import('./setup')
-    const config = loadPluginConfig()
-    const favorites = getFavoriteModels(config)
-    setFavoriteModelIds(favorites)
-    const sorted = sortModelsByPriority(allModelList, favorites, recents)
+    const sorted = sortModelsByPriority(allModelList, {
+      recents,
+      connectedProviderIds: result.connectedProviderIds,
+      configuredProviderIds: result.configuredProviderIds,
+    })
     setAllModels(sorted)
     setModelsLoaded(true)
   }
@@ -368,7 +367,7 @@ function PlanViewerDialog(props: {
       return
     }
 
-    const options = buildDialogSelectOptions(models, favoriteModelIds(), recentModelIds())
+    const options = buildDialogSelectOptions(models, recentModelIds())
     const title = target === 'execution' ? 'Execution Model' : 'Auditor Model'
     const currentValue = target === 'execution' ? executionModel() : auditorModel()
 

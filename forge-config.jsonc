@@ -39,7 +39,7 @@
     "stallTimeoutMs": 60000,
     // Worktree loop completion logging (off by default)
     "worktreeLogging": {
-      "enabled": true,
+      "enabled": false,
       "directory": ""
     }
   },

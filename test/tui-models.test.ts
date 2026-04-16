@@ -7,13 +7,17 @@ import {
   resolveModelSelectedIndex,
   buildDialogSelectOptions,
   getModelDisplayLabel,
+  sortModelsByPriority,
   type ProviderInfo,
   type ModelInfo,
 } from '../src/utils/tui-models'
 
-function createMockApi(listFn: any): TuiPluginApi {
+function createMockApi(listFn: any, configProviders?: string[]): TuiPluginApi {
   return {
     state: {
+      config: {
+        provider: Object.fromEntries((configProviders ?? []).map(id => [id, {}])),
+      },
       path: {
         directory: '/test/project',
       },
@@ -82,7 +86,7 @@ describe('fetchAvailableModels', () => {
       },
     ]
 
-    const mockApi = createMockApi(mock(() => Promise.resolve({ data: { all: mockProviders } })))
+    const mockApi = createMockApi(mock(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } })), ['openai'])
 
     const result = await fetchAvailableModels(mockApi)
 
@@ -93,15 +97,18 @@ describe('fetchAvailableModels', () => {
     expect(result.providers[0].models).toHaveLength(1)
     expect(result.providers[0].models[0].fullName).toBe('anthropic/claude-sonnet-4-20250514')
     expect(result.providers[1].id).toBe('openai')
+    expect(result.connectedProviderIds).toEqual(['anthropic'])
+    expect(result.configuredProviderIds).toEqual(['openai'])
   })
 
   test('returns empty providers array when no providers exist', async () => {
-    const mockApi = createMockApi(mock(() => Promise.resolve({ data: { all: [] } })))
+    const mockApi = createMockApi(mock(() => Promise.resolve({ data: { all: [], connected: [] } })))
 
     const result = await fetchAvailableModels(mockApi)
 
     expect(result.error).toBeUndefined()
     expect(result.providers).toHaveLength(0)
+    expect(result.connectedProviderIds).toEqual([])
   })
 
   test('returns error when API returns error', async () => {
@@ -110,30 +117,33 @@ describe('fetchAvailableModels', () => {
         data: { message: 'Authentication failed' },
         name: 'APIError',
       } 
-    })))
+    })), ['anthropic'])
 
     const result = await fetchAvailableModels(mockApi)
 
     expect(result.providers).toHaveLength(0)
     expect(result.error).toBe('Authentication failed')
+    expect(result.configuredProviderIds).toEqual(['anthropic'])
   })
 
   test('returns error when API throws', async () => {
-    const mockApi = createMockApi(mock(() => Promise.reject(new Error('Network error'))))
+    const mockApi = createMockApi(mock(() => Promise.reject(new Error('Network error'))), ['openai'])
 
     const result = await fetchAvailableModels(mockApi)
 
     expect(result.providers).toHaveLength(0)
     expect(result.error).toBe('Network error')
+    expect(result.configuredProviderIds).toEqual(['openai'])
   })
 
   test('returns error when no data returned', async () => {
-    const mockApi = createMockApi(mock(() => Promise.resolve({ data: null } as any)))
+    const mockApi = createMockApi(mock(() => Promise.resolve({ data: null } as any)), ['google'])
 
     const result = await fetchAvailableModels(mockApi)
 
     expect(result.providers).toHaveLength(0)
     expect(result.error).toBe('No provider data returned')
+    expect(result.configuredProviderIds).toEqual(['google'])
   })
 
   test('handles providers with no models', async () => {
@@ -145,7 +155,7 @@ describe('fetchAvailableModels', () => {
       },
     ]
 
-    const mockApi = createMockApi(mock(() => Promise.resolve({ data: { all: mockProviders } })))
+    const mockApi = createMockApi(mock(() => Promise.resolve({ data: { all: mockProviders, connected: [] } })))
 
     const result = await fetchAvailableModels(mockApi)
 
@@ -405,34 +415,7 @@ describe('buildDialogSelectOptions', () => {
     expect(result[0].title).toBe('Use default')
   })
 
-  test('shows favorites at top with Favorites category', () => {
-    const models: ModelInfo[] = [
-      {
-        id: 'claude',
-        name: 'Claude',
-        providerID: 'anthropic',
-        providerName: 'Anthropic',
-        fullName: 'anthropic/claude',
-      },
-      {
-        id: 'gpt-4',
-        name: 'GPT-4',
-        providerID: 'openai',
-        providerName: 'OpenAI',
-        fullName: 'openai/gpt-4',
-      },
-    ]
-
-    const result = buildDialogSelectOptions(models, ['openai/gpt-4'])
-
-    expect(result[0].title).toBe('Use default')
-    expect(result[1].title).toBe('GPT-4')
-    expect(result[1].category).toBe('Favorites')
-    expect(result[2].title).toBe('Claude')
-    expect(result[2].category).toBe('Anthropic')
-  })
-
-  test('shows recents after favorites with Recent category', () => {
+  test('shows recents at top with Recent category', () => {
     const models: ModelInfo[] = [
       {
         id: 'claude',
@@ -457,35 +440,18 @@ describe('buildDialogSelectOptions', () => {
       },
     ]
 
-    const result = buildDialogSelectOptions(models, ['anthropic/claude'], ['openai/gpt-4'])
+    const result = buildDialogSelectOptions(models, ['openai/gpt-4'])
 
     expect(result[0].title).toBe('Use default')
-    expect(result[1].title).toBe('Claude')
-    expect(result[1].category).toBe('Favorites')
-    expect(result[2].title).toBe('GPT-4')
-    expect(result[2].category).toBe('Recent')
+    expect(result[1].title).toBe('GPT-4')
+    expect(result[1].category).toBe('Recent')
+    expect(result[2].title).toBe('Claude')
+    expect(result[2].category).toBe('Anthropic')
     expect(result[3].title).toBe('Gemini')
     expect(result[3].category).toBe('Google')
   })
 
-  test('does not duplicate model in both favorites and recents', () => {
-    const models: ModelInfo[] = [
-      {
-        id: 'claude',
-        name: 'Claude',
-        providerID: 'anthropic',
-        providerName: 'Anthropic',
-        fullName: 'anthropic/claude',
-      },
-    ]
-
-    const result = buildDialogSelectOptions(models, ['anthropic/claude'], ['anthropic/claude'])
-
-    expect(result).toHaveLength(2)
-    expect(result[1].category).toBe('Favorites')
-  })
-
-  test('does not duplicate model in provider section when in favorites or recents', () => {
+  test('does not duplicate model in provider section when in recents', () => {
     const models: ModelInfo[] = [
       {
         id: 'claude',
@@ -503,12 +469,89 @@ describe('buildDialogSelectOptions', () => {
       },
     ]
 
-    const result = buildDialogSelectOptions(models, ['anthropic/claude'], ['openai/gpt-4'])
+    const result = buildDialogSelectOptions(models, ['openai/gpt-4'])
 
-    // default + favorite + recent = 3, no duplicates in provider section
+    // default + recent + provider = 3, no duplicates in provider section
     expect(result).toHaveLength(3)
     expect(result.filter(r => r.value === 'anthropic/claude')).toHaveLength(1)
     expect(result.filter(r => r.value === 'openai/gpt-4')).toHaveLength(1)
+  })
+})
+
+describe('sortModelsByPriority', () => {
+  test('prioritizes recents before provider priority', () => {
+    const models: ModelInfo[] = [
+      {
+        id: 'claude',
+        name: 'Claude',
+        providerID: 'anthropic',
+        providerName: 'Anthropic',
+        fullName: 'anthropic/claude',
+      },
+      {
+        id: 'gpt-4',
+        name: 'GPT-4',
+        providerID: 'openai',
+        providerName: 'OpenAI',
+        fullName: 'openai/gpt-4',
+      },
+      {
+        id: 'gemini',
+        name: 'Gemini',
+        providerID: 'google',
+        providerName: 'Google',
+        fullName: 'google/gemini',
+      },
+    ]
+
+    const result = sortModelsByPriority(models, {
+      recents: ['google/gemini'],
+      connectedProviderIds: ['anthropic'],
+      configuredProviderIds: ['openai'],
+    })
+
+    expect(result.map(model => model.fullName)).toEqual([
+      'google/gemini',
+      'anthropic/claude',
+      'openai/gpt-4',
+    ])
+  })
+
+  test('prioritizes connected providers before configured providers', () => {
+    const models: ModelInfo[] = [
+      {
+        id: 'gpt-4',
+        name: 'GPT-4',
+        providerID: 'openai',
+        providerName: 'OpenAI',
+        fullName: 'openai/gpt-4',
+      },
+      {
+        id: 'claude',
+        name: 'Claude',
+        providerID: 'anthropic',
+        providerName: 'Anthropic',
+        fullName: 'anthropic/claude',
+      },
+      {
+        id: 'gemini',
+        name: 'Gemini',
+        providerID: 'google',
+        providerName: 'Google',
+        fullName: 'google/gemini',
+      },
+    ]
+
+    const result = sortModelsByPriority(models, {
+      connectedProviderIds: ['anthropic'],
+      configuredProviderIds: ['openai'],
+    })
+
+    expect(result.map(model => model.fullName)).toEqual([
+      'anthropic/claude',
+      'openai/gpt-4',
+      'google/gemini',
+    ])
   })
 })
 

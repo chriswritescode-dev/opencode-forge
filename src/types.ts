@@ -233,8 +233,6 @@ export interface PluginConfig {
   defaultKvTtlMs?: number
   /** TUI display configuration. */
   tui?: TuiConfig
-  /** Favorite models to pin at top of model selection dialogs (e.g., ["anthropic/claude-sonnet-4-20250514"]). */
-  favoriteModels?: string[]
   /** Per-agent configuration overrides. */
   agents?: Record<string, AgentOverrideConfig>
   /** Sandbox execution configuration. */

@@ -355,8 +355,9 @@ You can edit this file to customize settings. The file is created only if it doe
 #### Top-level
 - `dataDir` - Data directory for plugin storage (graph.db, KV store, logs). When empty, resolves to `~/.local/share/opencode/forge` (or `XDG_DATA_HOME` equivalent) (default: `""`)
 - `defaultKvTtlMs` - Default TTL for KV store entries in milliseconds (default: `604800000` / 7 days)
-- `executionModel` - Model override for plan execution sessions, format: `provider/model` (e.g. `anthropic/claude-hautilus-3-5-20241022`). When set, `plan-execute` uses this model for the new Code session. When empty or omitted, OpenCode's default model is used (typically the `model` field from `opencode.json`). **Recommended:** Set this to a fast, cheap model (e.g. Haiku or MiniMax) and use a smart model (e.g. Opus) for the Architect session — planning needs reasoning, execution needs speed.
-- `auditorModel` - Model override for the auditor agent (`provider/model`). When set, overrides the auditor agent's default model. When not set, uses platform default (default: `""`)
+- `executionModel` - Model override for plan execution sessions, format: `provider/model` (e.g. `anthropic/claude-sonnet-4-20250514`). When set, `plan-execute` uses this model for the new Code session. When empty or omitted, OpenCode's default model is used (typically the `model` field from `opencode.json`). **Recommended:** Set this to a fast, cheap model (e.g. Haiku or MiniMax) and use a smart model (e.g. Opus) for the Architect session — planning needs reasoning, execution needs speed. This value is used as a fallback when no per-launch selection is made.
+- `auditorModel` - Model override for the auditor agent (`provider/model`). When set, overrides the auditor agent's default model. When not set, uses platform default (default: `""`). This value is used as a fallback when no per-launch selection is made.
+- `agents` - Per-agent temperature overrides keyed by display name (e.g., `"code"`, `"architect"`, `"auditor"`). Temperature range: `0.0` - `2.0` (default: `undefined`)
 
 #### Logging
 - `logging.enabled` - Enable file logging (default: `false`)
@@ -399,9 +400,6 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 - `tui.showLoops` - Display active and recent loop status in the sidebar (default: `true`)
 - `tui.showVersion` - Show plugin version number in the sidebar title (default: `true`)
 
-#### Agents
-- `agents` - Per-agent temperature overrides keyed by display name (e.g., `"code"`, `"architect"`, `"auditor"`). Temperature range: `0.0` - `2.0` (default: `undefined`)
-
 ## TUI Plugin
 
 The plugin includes a TUI sidebar widget and dialog system for monitoring and managing loops directly in the OpenCode terminal interface.
@@ -422,7 +420,44 @@ When an architect session produces a plan, it is cached in the project KV store.
 
 The plan viewer dialog renders the full plan as GitHub-flavored markdown with syntax highlighting:
 
-Click `[edit]` to switch to edit mode, where you can modify the plan text directly in a textarea. Click **Save** to write changes back to the KV store, or `[view]` to return to the rendered view without saving.
+- **View tab** — Rendered markdown view with full formatting
+- **Edit tab** — Raw text editor for direct plan modification. Click **Save** to write changes back to the KV store
+- **Execute tab** — Opens the execution dialog with mode and model selection
+- **Export** — Exports the plan to a markdown file in the project directory
+
+### Execution Dialog
+
+The Execute tab provides a comprehensive dialog for launching plans with full control over execution parameters:
+
+#### Execution Mode Selection
+
+Choose from four execution modes:
+
+1. **New session** — Creates a fresh Code session and sends the plan as the initial prompt
+2. **Execute here** — Takes over the current session immediately with the plan
+3. **Loop (worktree)** — Launches an iterative coding/auditing loop in an isolated git worktree
+4. **Loop** — Launches an iterative coding/auditing loop in the current directory
+
+#### Model Selection
+
+Two model selectors are available:
+
+**Execution Model:**
+- Opens a full model selection dialog with all available providers
+- Shows recently used models (last 10, 90-day TTL) for quick access
+- Displays model capabilities (reasoning, tools support) in descriptions
+- Defaults to last-used selection, falling back to `config.loop.model` → `config.executionModel`
+
+**Auditor Model:**
+- Same model selection interface
+- Defaults to last-used selection, falling back to `config.auditorModel` → `config.loop.model` → `config.executionModel`
+
+#### Persistence
+
+Your selections are automatically saved to the project KV store after launch:
+- Last-used mode and models are persisted per-project (30-day TTL)
+- Subsequent plan executions pre-fill with your previous choices
+- Recent models are tracked across all dialog interactions
 
 ### Loop Details Dialog
 
@@ -454,16 +489,31 @@ Add to your `~/.config/opencode/tui.json` or project-level `tui.json`:
 }
 ```
 
-For local development, reference the built TUI file directly:
+### Model Selection Dialog
 
-```json
-{
-  "$schema": "https://opencode.ai/tui.json",
-  "plugin": [
-    "/path/to/opencode-forge/dist/tui.js"
-  ]
-}
-```
+The TUI provides a comprehensive model selection dialog when executing plans. The dialog features:
+
+#### Model Organization
+
+Models are displayed in priority order:
+
+1. **Recent** — Last 10 models used across all dialogs (90-day TTL)
+2. **Connected providers** — Models from currently connected providers
+3. **Configured providers** — Models from providers defined in your OpenCode config
+4. **All models** — Remaining models sorted alphabetically by provider and model name
+
+Each model shows:
+- Model name and provider
+- Capabilities (reasoning, tools support)
+- Full identifier (e.g., `anthropic/claude-sonnet-4-20250514`)
+
+#### Quick Access
+
+- **"Use default"** option at the top to use config defaults
+- Recently used models are tracked automatically
+- Last-used selections are persisted per-project (30-day TTL)
+
+### Configuration
 
 TUI options are configured in `~/.config/opencode/forge-config.jsonc` under the `tui` key:
 
@@ -479,6 +529,17 @@ TUI options are configured in `~/.config/opencode/forge-config.jsonc` under the 
 
 Set `sidebar` to `false` to completely disable the widget.
 
+For local development, reference the built TUI file directly:
+
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": [
+    "/path/to/opencode-forge/dist/tui.js"
+  ]
+}
+```
+
 ## architect → code Workflow
 
 Plan with a smart model, execute with a fast model. The architect agent researches the codebase and designs an implementation plan; the code agent implements it.
@@ -491,16 +552,33 @@ The user can view the cached plan at any time from the **sidebar** (📋 Plan li
 
 ### Execution
 
-After the architect presents a summary, the user approves via one of four execution modes:
+After the architect presents a summary, the user chooses an execution mode from the execution dialog:
 
 - **New session** — Creates a new Code session and sends the plan as the initial prompt. The architect session is aborted and the TUI navigates to the new session.
 - **Execute here** — The architect session is aborted and the code agent takes over the same session immediately with the plan.
 - **Loop (worktree)** — Creates an isolated git worktree and launches an iterative coding/auditing loop. When `config.sandbox.mode` is `"docker"`, the loop automatically uses Docker sandbox.
-- **Loop (in-place)** — Runs an iterative coding/auditing loop in the current directory without worktree isolation.
+- **Loop** — Runs an iterative coding/auditing loop in the current directory without worktree isolation.
+
+The dialog also lets you pick the execution model and auditor model at launch time. Those selections are remembered per project and pre-filled on later launches.
 
 Execution is immediate — there are no additional LLM calls between approval and execution. The system intercepts the user's approval answer, reads the cached plan from KV, and dispatches it programmatically to the code agent. The architect never processes the approval response.
 
-Set `executionModel` in your config to a fast model (e.g., Haiku) and use a smart model (e.g., Opus) for the architect session.
+### Configuration Fallbacks
+
+Model selection follows this priority order:
+
+**For execution model:**
+1. Dialog selection (last-used, persisted per-project)
+2. `config.loop.model`
+3. `config.executionModel`
+4. Platform default
+
+**For auditor model:**
+1. Dialog selection (last-used, persisted per-project)
+2. `config.auditorModel`
+3. `config.loop.model`
+4. `config.executionModel`
+5. Platform default
 
 ## Loop
 
@@ -537,7 +615,16 @@ A watchdog monitors loop activity. If no progress is detected within `stallTimeo
 
 ### Model Configuration
 
-Loops use `loop.model` if set, falling back to `executionModel`, then the platform default. On model errors, automatic fallback to the default model kicks in.
+Loops use the following priority order for model selection:
+
+1. **Dialog selection** — Model chosen in the execution dialog (persisted per-project)
+2. `loop.model` — Config override for all loops
+3. `executionModel` — Global execution model fallback
+4. Platform default — OpenCode's default model
+
+When launching from the TUI dialog, your selection is remembered and pre-filled on subsequent launches. The dialog also allows selecting a separate model for the auditor phase.
+
+On model errors during execution, automatic fallback to the default model kicks in.
 
 ### Safety
 
