@@ -1,5 +1,4 @@
 import type { LoopState } from '../../services/loop'
-import { buildCompletionSignalInstructions } from '../../services/loop'
 import { buildLoopPermissionRuleset } from '../../constants/loop'
 import { agents } from '../../agents'
 import {
@@ -217,10 +216,7 @@ export async function run(argv: RestartArgs): Promise<void> {
       }
     }
 
-    let promptText = state.prompt ?? ''
-    if (state.completionSignal) {
-      promptText += buildCompletionSignalInstructions(state.completionSignal)
-    }
+    const promptText = state.prompt ?? ''
 
     try {
       await client.session.promptAsync({

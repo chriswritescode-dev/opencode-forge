@@ -25,7 +25,6 @@ function createTestDb(tempDir: string): Database {
       error_count          INTEGER NOT NULL DEFAULT 0,
       phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing')),
       audit                INTEGER NOT NULL DEFAULT 0,
-      completion_signal    TEXT,
       execution_model      TEXT,
       auditor_model        TEXT,
       model_failed         INTEGER NOT NULL DEFAULT 0,
@@ -67,7 +66,6 @@ interface InsertLoopOptions {
   worktree?: boolean
   errorCount?: number
   auditCount?: number
-  completionSignal?: string | null
   completedAt?: number | null
   terminationReason?: string | null
 }
@@ -84,13 +82,12 @@ function insertLoopState(db: Database, projectId: string, loopName: string, opts
   const worktree = opts.worktree !== undefined ? (opts.worktree ? 1 : 0) : 1
   const errorCount = opts.errorCount ?? 0
   const auditCount = opts.auditCount ?? 0
-  const completionSignal = opts.completionSignal ?? null
   const completedAt = opts.completedAt ?? null
   const terminationReason = opts.terminationReason ?? null
 
   db.run(
-    'INSERT OR REPLACE INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, worktree_branch, project_dir, max_iterations, iteration, audit_count, error_count, phase, audit, completion_signal, execution_model, auditor_model, model_failed, sandbox, sandbox_container, started_at, completed_at, termination_reason, completion_summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [projectId, loopName, status, sessionId, worktree, worktreeDir, worktreeBranch, worktreeDir, maxIterations, iteration, auditCount, errorCount, phase, 0, completionSignal, null, null, 0, 0, null, now, completedAt, terminationReason, null]
+    'INSERT OR REPLACE INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, worktree_branch, project_dir, max_iterations, iteration, audit_count, error_count, phase, audit, execution_model, auditor_model, model_failed, sandbox, sandbox_container, started_at, completed_at, termination_reason, completion_summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [projectId, loopName, status, sessionId, worktree, worktreeDir, worktreeBranch, worktreeDir, maxIterations, iteration, auditCount, errorCount, phase, 0, null, null, 0, 0, null, now, completedAt, terminationReason, null]
   )
 }
 

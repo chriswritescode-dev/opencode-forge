@@ -237,7 +237,6 @@ function loopRowToState(row: ReturnType<typeof listLoopsFromDbNew>[number]['row'
     worktreeBranch: row.worktreeBranch ?? undefined,
     iteration: row.iteration,
     maxIterations: row.maxIterations,
-    completionSignal: row.completionSignal ?? null,
     startedAt: new Date(row.startedAt).toISOString(),
     prompt: large?.prompt ?? undefined,
     phase: row.phase,

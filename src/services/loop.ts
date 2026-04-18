@@ -8,11 +8,6 @@ export const MAX_RETRIES = 3
 export const STALL_TIMEOUT_MS = 60_000
 export const MAX_CONSECUTIVE_STALLS = 5
 export const RECENT_MESSAGES_COUNT = 5
-export const DEFAULT_COMPLETION_SIGNAL = 'ALL_PHASES_COMPLETE'
-
-export function buildCompletionSignalInstructions(signal: string): string {
-  return `\n\n---\n\n**IMPORTANT - Completion Signal:** When you have completed ALL phases of this plan successfully, you MUST output the following phrase exactly: ${signal}\n\nBefore outputting the completion signal, you MUST:\n1. Verify each phase's acceptance criteria are met\n2. Run all verification commands listed in the plan and confirm they pass\n3. If tests were required, confirm they exist AND pass\n\nDo NOT output this phrase until every phase is truly complete and all verification steps pass. The loop will continue until this signal is detected.`
-}
 
 /**
  * Represents the runtime state of an autonomous loop.
@@ -26,7 +21,6 @@ export interface LoopState {
   worktreeBranch?: string
   iteration: number
   maxIterations: number
-  completionSignal: string | null
   startedAt: string
   prompt?: string
   phase: 'coding' | 'auditing'
@@ -97,7 +91,6 @@ export function createLoopService(
       worktreeBranch: row.worktreeBranch ?? undefined,
       iteration: row.iteration,
       maxIterations: row.maxIterations,
-      completionSignal: row.completionSignal,
       startedAt: new Date(row.startedAt).toISOString(),
       prompt: large?.prompt ?? undefined,
       phase: row.phase,
@@ -134,7 +127,6 @@ export function createLoopService(
       errorCount: state.errorCount,
       phase: state.phase,
       audit: state.audit,
-      completionSignal: state.completionSignal ?? null,
       executionModel: state.executionModel ?? null,
       auditorModel: state.auditorModel ?? null,
       modelFailed: state.modelFailed ?? false,

@@ -46,7 +46,6 @@ describe('waitForSandboxReady', () => {
         error_count INTEGER NOT NULL,
         phase TEXT NOT NULL,
         audit INTEGER NOT NULL,
-        completion_signal TEXT,
         execution_model TEXT,
         auditor_model TEXT,
         model_failed INTEGER NOT NULL,
@@ -84,7 +83,6 @@ describe('waitForSandboxReady', () => {
       projectDir: '/test/dir',
       iteration: 1,
       maxIterations: 0,
-      completionSignal: null,
       startedAt: Date.now(),
       phase: 'coding',
       errorCount: 0,
@@ -107,10 +105,10 @@ describe('waitForSandboxReady', () => {
       `INSERT OR REPLACE INTO loops (
         project_id, loop_name, status, current_session_id, worktree, worktree_dir,
         worktree_branch, project_dir, max_iterations, iteration, audit_count,
-        error_count, phase, audit, completion_signal, execution_model, auditor_model,
+        error_count, phase, audit, execution_model, auditor_model,
         model_failed, sandbox, sandbox_container, started_at, completed_at,
         termination_reason, completion_summary
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       row.projectId,
       row.loopName,
@@ -126,7 +124,6 @@ describe('waitForSandboxReady', () => {
       row.errorCount,
       row.phase,
       row.audit ? 1 : 0,
-      row.completionSignal,
       row.executionModel,
       row.auditorModel,
       row.modelFailed ? 1 : 0,

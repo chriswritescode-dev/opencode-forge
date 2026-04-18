@@ -9,7 +9,7 @@ import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 import { Database } from 'bun:sqlite'
 import { existsSync } from 'fs'
 import { join } from 'path'
-import { DEFAULT_COMPLETION_SIGNAL, generateUniqueName, buildCompletionSignalInstructions } from '../services/loop'
+import { generateUniqueName } from '../services/loop'
 import { extractLoopNames } from './plan-execution'
 import { resolveDataDir } from '../storage'
 import { buildLoopPermissionRuleset } from '../constants/loop'
@@ -204,7 +204,6 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
     worktreeBranch,
     iteration: 1,
     maxIterations: 0,
-    completionSignal: DEFAULT_COMPLETION_SIGNAL,
     startedAt: new Date().toISOString(),
     prompt: planText,
     phase: 'coding' as const,
@@ -242,7 +241,6 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
         errorCount: loopState.errorCount,
         phase: loopState.phase,
         audit: loopState.audit,
-        completionSignal: loopState.completionSignal,
         executionModel: loopState.executionModel ?? null,
         auditorModel: loopState.auditorModel ?? null,
         modelFailed: false,
@@ -280,11 +278,8 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
     }
   }
   
-  // Build prompt with completion signal
-  let promptText = planText
-  if (DEFAULT_COMPLETION_SIGNAL) {
-    promptText += buildCompletionSignalInstructions(DEFAULT_COMPLETION_SIGNAL)
-  }
+  // Build prompt
+  const promptText = planText
   
   // Wait for worktree graph to be ready before first prompt (only for worktree mode)
   if (isWorktree) {

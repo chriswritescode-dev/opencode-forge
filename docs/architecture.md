@@ -83,7 +83,7 @@ The loop system provides autonomous iterative development with automatic auditin
 3. Coding phase: Code agent works on the task
 4. Audit phase (if enabled): Auditor agent reviews changes
 5. Session rotation: Fresh session created with continuation prompt
-6. Repeat until completion signal detected or max iterations reached
+6. Repeat until max iterations reached, error threshold exceeded, or loop cancelled
 
 See [loop-system.md](loop-system.md) for detailed documentation.
 

@@ -2,7 +2,6 @@ import type { ToolContext } from './types'
 import type { Hooks } from '@opencode-ai/plugin'
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
 import { setupLoop } from './loop'
-import { DEFAULT_COMPLETION_SIGNAL } from '../services/loop'
 import { extractPlanTitle, extractLoopNames, PLAN_EXECUTION_LABELS } from '../utils/plan-execution'
 
 const LOOP_BLOCKED_TOOLS: Record<string, string> = {
@@ -172,7 +171,6 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
               prompt: planText,
               sessionTitle: `Loop: ${title}`,
               loopName: uniqueLoopName,
-              completionSignal: DEFAULT_COMPLETION_SIGNAL,
               maxIterations: config.loop?.defaultMaxIterations ?? 0,
               audit: true,
               agent: 'code',

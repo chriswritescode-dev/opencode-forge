@@ -25,7 +25,6 @@ function createTestDb(): { db: Database; path: string } {
       error_count INTEGER NOT NULL DEFAULT 0,
       phase TEXT NOT NULL CHECK(phase IN ('coding','auditing')),
       audit INTEGER NOT NULL,
-      completion_signal TEXT,
       execution_model TEXT,
       auditor_model TEXT,
       model_failed INTEGER NOT NULL DEFAULT 0,
@@ -353,7 +352,6 @@ describe('Fresh Loop Launch', () => {
 
     expect(mockApi.client.session.promptAsync).toHaveBeenCalled()
     const callArgs = (mockApi.client.session.promptAsync as any).mock.calls[0][0]
-    expect(callArgs.parts[0].text).toContain('ALL_PHASES_COMPLETE')
     expect(callArgs.parts[0].text).toContain(planText)
   })
 

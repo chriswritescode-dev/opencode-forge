@@ -27,7 +27,6 @@ function createTestDb(): { db: Database; dbPath: string } {
       error_count INTEGER NOT NULL DEFAULT 0,
       phase TEXT NOT NULL CHECK(phase IN ('coding','auditing')),
       audit INTEGER NOT NULL,
-      completion_signal TEXT,
       execution_model TEXT,
       auditor_model TEXT,
       model_failed INTEGER NOT NULL DEFAULT 0,
@@ -85,10 +84,10 @@ function insertLoopData(
     INSERT INTO loops (
       project_id, loop_name, status, current_session_id, worktree, worktree_dir,
       worktree_branch, project_dir, max_iterations, iteration, audit_count,
-      error_count, phase, audit, completion_signal, execution_model, auditor_model,
+      error_count, phase, audit, execution_model, auditor_model,
       model_failed, sandbox, sandbox_container, started_at, completed_at,
       termination_reason, completion_summary
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     projectId,
     loopName,
@@ -104,7 +103,6 @@ function insertLoopData(
     0,
     options.phase ?? 'coding',
     0,
-    null,
     options.executionModel ?? null,
     options.auditorModel ?? null,
     0,

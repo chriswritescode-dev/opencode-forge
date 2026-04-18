@@ -8,7 +8,7 @@ import { parseModelString, retryWithModelFallback } from '../utils/model-fallbac
 import { slugify } from '../utils/logger'
 import { findPartialMatch } from '../utils/partial-match'
 import { formatSessionOutput, formatAuditResult } from '../utils/loop-format'
-import { fetchSessionOutput, MAX_RETRIES, buildCompletionSignalInstructions, DEFAULT_COMPLETION_SIGNAL, type LoopState, type LoopSessionOutput } from '../services/loop'
+import { fetchSessionOutput, MAX_RETRIES, type LoopState, type LoopSessionOutput } from '../services/loop'
 import { buildLoopPermissionRuleset } from '../constants/loop'
 import { resolveWorktreeLogTarget } from '../services/worktree-log'
 import { agents } from '../agents'
@@ -24,7 +24,6 @@ interface LoopSetupOptions {
   sessionTitle: string
   loopName: string
   sourcePlanSessionID?: string
-  completionSignal: string | null
   maxIterations: number
   audit: boolean
   agent?: string
@@ -213,7 +212,6 @@ export async function setupLoop(
     worktreeBranch: loopContext.branch,
     iteration: 1,
     maxIterations: maxIter,
-    completionSignal: options.completionSignal,
     startedAt: new Date().toISOString(),
     prompt: options.prompt,
     phase: 'coding',
@@ -261,10 +259,7 @@ export async function setupLoop(
     }
   }
 
-  let promptText = options.prompt
-  if (options.completionSignal) {
-    promptText += buildCompletionSignalInstructions(options.completionSignal)
-  }
+  const promptText = options.prompt
 
   const { result: promptResult, usedModel: actualModel } = await retryWithModelFallback(
     () => v2.session.promptAsync({
@@ -343,9 +338,14 @@ export async function setupLoop(
   }
 
   lines.push(
+    `Loop name: ${uniqueLoopName}`,
+    `Worktree: ${loopContext.directory}`,
+    `Branch: ${loopContext.branch}`,
+  )
+
+  lines.push(
     `Model: ${modelInfo}`,
     `Max iterations: ${maxInfo}`,
-    `Completion promise: ${options.completionSignal ?? 'none'}`,
     `Audit: ${auditInfo}`,
     '',
     'The loop will automatically continue when the session goes idle.',
@@ -399,7 +399,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           sessionTitle: `Loop: ${sessionTitle}`,
           loopName,
           sourcePlanSessionID,
-          completionSignal: DEFAULT_COMPLETION_SIGNAL,
           maxIterations: config.loop?.defaultMaxIterations ?? 0,
           audit: audit,
           agent: 'code',
@@ -566,7 +565,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             worktreeBranch: stoppedState.worktreeBranch,
             iteration: stoppedState.iteration!,
             maxIterations: stoppedState.maxIterations!,
-            completionSignal: stoppedState.completionSignal,
             startedAt: new Date().toISOString(),
             prompt: stoppedState.prompt,
             phase: 'coding',
@@ -585,10 +583,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           loopService.setState(stoppedState.loopName!, newState)
           loopService.registerLoopSession(newSessionId, stoppedState.loopName!)
 
-          let promptText = stoppedState.prompt ?? ''
-          if (stoppedState.completionSignal) {
-            promptText += buildCompletionSignalInstructions(stoppedState.completionSignal)
-          }
+          const promptText = stoppedState.prompt ?? ''
 
           const loopModel = parseModelString(stoppedState.executionModel)
             ?? parseModelString(config.loop?.model)
@@ -826,9 +821,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
         statusLines.push(
           '',
-          `Completion promise: ${state.completionSignal ?? 'none'}`,
           `Started: ${state.startedAt}`,
-          ...(state.errorCount && state.errorCount > 0 ? [`Error count: ${state.errorCount} (retries before termination: ${MAX_RETRIES})`] : []),
+          `Error count: ${state.errorCount} (retries before termination: ${MAX_RETRIES})`,
           `Audit count: ${state.auditCount ?? 0}`,
           `Model: ${state.executionModel ?? config.loop?.model ?? config.executionModel ?? 'default'}`,
           `Auditor model: ${state.auditorModel ?? config.auditorModel ?? state.executionModel ?? config.loop?.model ?? config.executionModel ?? 'default'}`,

@@ -89,9 +89,6 @@ function printActiveLoopDetails(
   return (async () => {
     const sessionStatus = await tryFetchSessionStatus(serverUrl, state.sessionId, state.worktreeDir)
     console.log(`  Status:          ${sessionStatus}`)
-    if (state.completionSignal) {
-      console.log(`  Completion:      ${state.completionSignal}`)
-    }
     if (state.lastAuditResult) {
       for (const line of formatAuditResult(state.lastAuditResult)) {
         console.log(line)

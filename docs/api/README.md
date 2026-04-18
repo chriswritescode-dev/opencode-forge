@@ -555,7 +555,7 @@ Loops use `loop.model` if set, falling back to `executionModel`, then the platfo
 
 ### Completion and Termination
 
-The loop completes when the Code agent outputs the completion promise. It auto-terminates after `maxIterations` (if set) or after 3 consecutive errors.
+The loop auto-terminates after `maxIterations` (if set) or after 3 consecutive errors. Outstanding `bug` findings in the review system block termination.
 
 By default, loops run in the current directory. Set `worktree: true` to run in an isolated git worktree instead (enables worktree creation, auto-commit, and cleanup on completion).
 

@@ -55,7 +55,7 @@ export function readLoopStates(projectId: string, dbPathOverride?: string): Loop
     const stmt = db.prepare(`
       SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir,
              worktree_branch, project_dir, max_iterations, iteration, audit_count,
-             error_count, phase, audit, completion_signal, execution_model, auditor_model,
+             error_count, phase, audit, execution_model, auditor_model,
              model_failed, sandbox, sandbox_container, started_at, completed_at,
              termination_reason, completion_summary, workspace_id
       FROM loops
@@ -77,7 +77,6 @@ export function readLoopStates(projectId: string, dbPathOverride?: string): Loop
       error_count: number
       phase: string
       audit: number
-      completion_signal: string | null
       execution_model: string | null
       auditor_model: string | null
       model_failed: number
@@ -138,7 +137,7 @@ export function readLoopByName(projectId: string, loopName: string, dbPathOverri
     const row = db.prepare(`
       SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir,
              worktree_branch, project_dir, max_iterations, iteration, audit_count,
-             error_count, phase, audit, completion_signal, execution_model, auditor_model,
+             error_count, phase, audit, execution_model, auditor_model,
              model_failed, sandbox, sandbox_container, started_at, completed_at,
              termination_reason, completion_summary, workspace_id
       FROM loops
@@ -158,7 +157,6 @@ export function readLoopByName(projectId: string, loopName: string, dbPathOverri
       error_count: number
       phase: string
       audit: number
-      completion_signal: string | null
       execution_model: string | null
       auditor_model: string | null
       model_failed: number

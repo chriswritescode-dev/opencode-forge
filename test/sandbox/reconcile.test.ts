@@ -50,7 +50,6 @@ describe('reconcileSandboxes', () => {
       projectDir: '/test/dir',
       iteration: 1,
       maxIterations: 0,
-      completionSignal: null,
       startedAt: Date.now(),
       phase: 'coding',
       errorCount: 0,

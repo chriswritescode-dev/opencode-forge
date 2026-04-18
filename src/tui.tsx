@@ -137,7 +137,7 @@ async function restartLoop(projectId: string, loopName: string, api: TuiPluginAp
     const now = Date.now()
     const row = db.prepare(`
       SELECT status, current_session_id, worktree_dir, worktree, project_dir, execution_model,
-             auditor_model, completion_signal, prompt, iteration, phase, audit, sandbox,
+             auditor_model, prompt, iteration, phase, audit, sandbox,
              worktree_branch, workspace_id
       FROM loops
       LEFT JOIN loop_large_fields USING (project_id, loop_name)
@@ -150,7 +150,6 @@ async function restartLoop(projectId: string, loopName: string, api: TuiPluginAp
       project_dir: string
       execution_model: string | null
       auditor_model: string | null
-      completion_signal: string | null
       prompt: string | null
       iteration: number
       phase: string
@@ -239,11 +238,7 @@ async function restartLoop(projectId: string, loopName: string, api: TuiPluginAp
       loopName
     )
 
-    let promptText = row.prompt ?? ''
-    if (row.completion_signal) {
-      const completionInstructions = `\n\n---\n\n**IMPORTANT - Completion Signal:** When you have completed ALL phases of this plan successfully, you MUST output the following phrase exactly: ${row.completion_signal}\n\nBefore outputting the completion signal, you MUST:\n1. Verify each phase's acceptance criteria are met\n2. Run all verification commands listed in the plan and confirm they pass\n3. If tests were required, confirm they exist AND pass\n\nDo NOT output this phrase until every phase is truly complete and all verification steps pass. The loop will continue until this signal is detected.`
-      promptText += completionInstructions
-    }
+    const promptText = row.prompt ?? ''
 
     const { parseModelString, retryWithModelFallback } = await import('./utils/model-fallback')
     const loopModel = parseModelString(row.execution_model ?? undefined)

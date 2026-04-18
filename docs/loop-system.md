@@ -9,7 +9,7 @@ stateDiagram-v2
     [*] --> Coding: loop tool invoked
     Coding --> Auditing: iteration complete
     Auditing --> Coding: findings addressed
-    Auditing --> [*]: completion signal detected
+    Auditing --> [*]: outstanding findings resolved
     Coding --> [*]: max iterations reached
     Coding --> [*]: error limit exceeded
     Coding --> [*]: stall timeout exceeded
@@ -55,17 +55,16 @@ Each iteration runs in a **fresh session** to keep context small and prioritize 
 4. Continuation prompt is injected with:
    - Original task prompt
    - Current iteration number
-   - Completion signal instructions
    - Audit findings (if any)
 
 ```typescript
 function buildContinuationPrompt(state: LoopState, auditFindings?: string): string {
   let systemLine = `Loop iteration ${state.iteration}`
 
-  if (state.completionSignal) {
-    systemLine += ` | To stop: output ${state.completionSignal}`
-  } else if (state.maxIterations > 0) {
+  if (state.maxIterations > 0) {
     systemLine += ` / ${state.maxIterations}`
+  } else {
+    systemLine += ` | No max iterations set - loop runs until auditor all-clear or cancelled`
   }
 
   let prompt = `[${systemLine}]\n\n${state.prompt ?? ''}`
