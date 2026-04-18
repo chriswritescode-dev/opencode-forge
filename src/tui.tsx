@@ -5,7 +5,6 @@ import { SyntaxStyle, type TextareaRenderable } from '@opentui/core'
 import { readFileSync, existsSync, writeFileSync } from 'fs'
 import { homedir, platform } from 'os'
 import { join } from 'path'
-import { execSync } from 'child_process'
 import { Database } from 'bun:sqlite'
 import { VERSION } from './version'
 import { resolveDataDir } from './storage'
@@ -18,6 +17,7 @@ import { readGraphStatus, formatGraphStatus } from './utils/tui-graph-status'
 import { readLoopStates, readLoopByName, shouldPollSidebar, type LoopInfo } from './utils/tui-refresh-helpers'
 import { readExecutionPreferences, writeExecutionPreferences, resolveExecutionDialogDefaults } from './utils/tui-execution-preferences'
 import { fetchAvailableModels, flattenProviders, buildDialogSelectOptions, getModelDisplayLabel, getRecentModels, recordRecentModel, sortModelsByPriority, type ModelInfo } from './utils/tui-models'
+import { getGitProjectId } from './utils/project-id'
 
 import { buildLoopPermissionRuleset } from './constants/loop'
 import { agents } from './agents'
@@ -67,22 +67,6 @@ function loadTuiConfig(): TuiConfig | undefined {
   } catch {
     return undefined
   }
-}
-
-function resolveProjectId(directory: string): string | null {
-  const cachePath = join(directory, '.git', 'opencode')
-  if (existsSync(cachePath)) {
-    try {
-      const id = readFileSync(cachePath, 'utf-8').trim()
-      if (id) return id
-    } catch {}
-  }
-  try {
-    const output = execSync('git rev-list --max-parents=0 --all', { cwd: directory, encoding: 'utf-8' }).trim()
-    const commits = output.split('\n').filter(Boolean).sort()
-    if (commits[0]) return commits[0]
-  } catch {}
-  return null
 }
 
 
@@ -364,7 +348,7 @@ function PlanViewerDialog(props: {
 
   // Load last-used preferences for dialog defaults
   const directory = props.api.state.path.directory
-  const pid = resolveProjectId(directory)
+  const pid = getGitProjectId(directory)
   const loadDefaults = async () => {
     if (pid) {
       const storedPrefs = readExecutionPreferences(pid)
@@ -500,7 +484,7 @@ function PlanViewerDialog(props: {
     const planText = content()
     const title = extractPlanTitle(planText)
     const directory = props.api.state.path.directory
-    const pid = resolveProjectId(directory)
+    const pid = getGitProjectId(directory)
     
     if (!pid) {
       props.api.ui.toast({
@@ -874,7 +858,7 @@ function LoopDetailsDialog(props: { api: TuiPluginApi; loop: LoopInfo; onBack?: 
   const [loading, setLoading] = createSignal(true)
 
   const directory = props.api.state.path.directory
-  const pid = resolveProjectId(directory)
+  const pid = getGitProjectId(directory)
 
   // Re-read loop state when dialog opens and on refresh requests
   // This ensures the dialog shows fresh data, not a stale snapshot
@@ -909,7 +893,7 @@ function LoopDetailsDialog(props: { api: TuiPluginApi; loop: LoopInfo; onBack?: 
   const handleCancel = () => {
     props.api.ui.dialog.clear()
     const directory = props.api.state.path.directory
-    const pid = resolveProjectId(directory)
+    const pid = getGitProjectId(directory)
     if (!pid) return
     const sessionId = cancelLoop(pid, currentLoop().name)
     if (sessionId) {
@@ -927,7 +911,7 @@ function LoopDetailsDialog(props: { api: TuiPluginApi; loop: LoopInfo; onBack?: 
   const handleRestart = async () => {
     props.api.ui.dialog.clear()
     const directory = props.api.state.path.directory
-    const pid = resolveProjectId(directory)
+    const pid = getGitProjectId(directory)
     if (!pid) return
     const newSessionId = await restartLoop(pid, currentLoop().name, props.api)
     const label = currentLoop().active ? 'Force restarting' : 'Restarting'
@@ -1090,7 +1074,7 @@ function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: strin
   const [graphStatusRaw, setGraphStatusRaw] = createSignal<ReturnType<typeof readGraphStatus> | null>(null)
   const theme = () => props.api.theme.current
   const directory = props.api.state.path.directory
-  const pid = resolveProjectId(directory)
+  const pid = getGitProjectId(directory)
 
   const title = createMemo(() => {
     return props.opts.showVersion ? `Forge v${VERSION}` : 'Forge'
@@ -1314,7 +1298,7 @@ const tui: TuiPlugin = async (api) => {
 
   api.command.register(() => {
     const directory = api.state.path.directory
-    const pid = resolveProjectId(directory)
+    const pid = getGitProjectId(directory)
     if (!pid) return []
 
     const states = readLoopStates(pid)
@@ -1376,7 +1360,7 @@ const tui: TuiPlugin = async (api) => {
     if (route.name !== 'session') return []
 
     const directory = api.state.path.directory
-    const pid = resolveProjectId(directory)
+    const pid = getGitProjectId(directory)
     if (!pid) return []
 
     const sessionID = (route as { params: { sessionID: string } }).params.sessionID

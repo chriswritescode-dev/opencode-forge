@@ -1,8 +1,7 @@
 import { Database } from 'bun:sqlite'
-import { existsSync, readFileSync } from 'fs'
+import { existsSync } from 'fs'
 import { homedir, platform } from 'os'
 import { join, basename } from 'path'
-import { execSync } from 'child_process'
 import { createInterface } from 'readline'
 import { createOpencodeClient } from '@opencode-ai/sdk/v2'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
@@ -10,6 +9,7 @@ import { openForgeDatabase } from '../storage/database'
 import type { LoopState } from '../services/loop'
 import { findPartialMatch } from '../utils/partial-match'
 import { listLoopsFromDb as listLoopsFromDbNew } from '../storage/cli-helpers'
+import { getGitProjectId as sharedGetGitProjectId } from '../utils/project-id'
 
 function resolveDefaultDbPath(): string {
   const localForgePath = join(process.cwd(), '.opencode', 'state', 'opencode', 'forge', 'graph.db')
@@ -33,25 +33,7 @@ function resolveDefaultDbPath(): string {
 }
 
 export function getGitProjectId(dir?: string): string | null {
-  try {
-    const execOpts = dir ? { encoding: 'utf-8' as const, cwd: dir } : { encoding: 'utf-8' as const }
-    const repoRoot = execSync('git rev-parse --show-toplevel', execOpts).trim()
-    if (!repoRoot) return null
-
-    const cacheFile = join(repoRoot, '.git', 'opencode')
-    if (existsSync(cacheFile)) {
-      const cachedId = readFileSync(cacheFile, 'utf-8').trim()
-      if (cachedId) return cachedId
-    }
-
-    const output = execSync('git rev-list --max-parents=0 --all', execOpts).trim()
-    if (!output) return null
-
-    const commits = output.split('\n').filter(Boolean).sort()
-    return commits[0] || null
-  } catch {
-    return null
-  }
+  return sharedGetGitProjectId(dir)
 }
 
 
