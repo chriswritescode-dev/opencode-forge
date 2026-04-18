@@ -55,8 +55,9 @@ describe('waitForSandboxReady', () => {
         completed_at INTEGER,
         termination_reason TEXT,
         completion_summary TEXT,
-        workspace_id TEXT,
-        host_session_id TEXT,
+        workspace_id         TEXT,
+        host_session_id      TEXT,
+        session_directory    TEXT,
         PRIMARY KEY (project_id, loop_name)
       )
     `)
@@ -94,6 +95,7 @@ describe('waitForSandboxReady', () => {
       audit: true,
       completionSummary: null,
       workspaceId: null,
+      hostSessionId: null,
       executionModel: null,
       auditorModel: null,
       modelFailed: false,
@@ -108,8 +110,8 @@ describe('waitForSandboxReady', () => {
         worktree_branch, project_dir, max_iterations, iteration, audit_count,
         error_count, phase, audit, execution_model, auditor_model,
         model_failed, sandbox, sandbox_container, started_at, completed_at,
-        termination_reason, completion_summary
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        termination_reason, completion_summary, workspace_id, host_session_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       row.projectId,
       row.loopName,
@@ -133,7 +135,9 @@ describe('waitForSandboxReady', () => {
       row.startedAt,
       row.completedAt,
       row.terminationReason,
-      row.completionSummary
+      row.completionSummary,
+      row.workspaceId,
+      row.hostSessionId
     )
   }
 

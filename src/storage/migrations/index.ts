@@ -87,4 +87,13 @@ export const migrations: Migration[] = [
       db.run(loadSql('108_add_host_session_id_to_loops.sql'))
     },
   },
+  {
+    id: '110',
+    description: 'Drop completion_signal column from loops table (dead mechanism removal)',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      if (!cols.some((c) => c.name === 'completion_signal')) return
+      db.run(loadSql('110_drop_completion_signal_from_loops.sql'))
+    },
+  },
 ]

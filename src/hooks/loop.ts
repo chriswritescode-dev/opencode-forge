@@ -422,6 +422,7 @@ export function createLoopEventHandler(
 
   async function rotateSession(loopName: string, state: LoopState): Promise<string> {
     const oldSessionId = state.sessionId
+    const sessionDir = state.worktreeDir
 
     // Worktree sessions no longer need log directory access since logging is dispatched via host session
     // Only resolve log target for non-worktree sessions
@@ -433,7 +434,7 @@ export function createLoopEventHandler(
 
     const createParams = {
       title: state.loopName,
-      directory: state.worktreeDir,
+      directory: sessionDir,
       permission: permissionRuleset,
     }
 
@@ -457,7 +458,7 @@ export function createLoopEventHandler(
     stopWatchdog(loopName)
     startWatchdog(loopName)
 
-    v2Client.session.delete({ sessionID: oldSessionId, directory: state.worktreeDir }).catch((err) => {
+    v2Client.session.delete({ sessionID: oldSessionId, directory: sessionDir }).catch((err) => {
       logger.error(`Loop: failed to delete old session ${oldSessionId}`, err)
     })
 
@@ -581,9 +582,11 @@ export function createLoopEventHandler(
       if (!freshState?.active) {
         throw new Error('loop_cancelled')
       }
+      const sessionDir = freshState.worktreeDir
+      logger.debug(`loop prompt: sessionID=${activeSessionId} dir=${sessionDir} agent=code model=${loopModel ? `${loopModel.providerID}/${loopModel.modelID}` : '(session default)'}`)
       const result = await v2Client.session.promptAsync({
         sessionID: activeSessionId,
-        directory: freshState.worktreeDir,
+        directory: sessionDir,
         parts: [{ type: 'text' as const, text: continuationPrompt }],
         model: loopModel,
       })
@@ -595,9 +598,11 @@ export function createLoopEventHandler(
       if (!freshState?.active) {
         throw new Error('loop_cancelled')
       }
+      const sessionDir = freshState.worktreeDir
+      logger.debug(`loop prompt: sessionID=${activeSessionId} dir=${sessionDir} agent=code model=(default)`)
       const result = await v2Client.session.promptAsync({
         sessionID: activeSessionId,
-        directory: freshState.worktreeDir,
+        directory: sessionDir,
         parts: [{ type: 'text' as const, text: continuationPrompt }],
       })
       return { data: result.data, error: result.error }
@@ -672,10 +677,11 @@ export function createLoopEventHandler(
 
     const currentConfig = getConfig()
     const auditorModel = resolveLoopAuditorModel(currentConfig, loopService, loopName, logger)
+    const sessionDir = currentState.worktreeDir
     
     const auditPrompt = {
       sessionID: currentState.sessionId,
-      directory: currentState.worktreeDir,
+      directory: sessionDir,
       parts: [{
         type: 'subtask' as const,
         agent: 'auditor',
@@ -685,6 +691,8 @@ export function createLoopEventHandler(
       }],
     }
 
+    logger.debug(`loop audit: sessionID=${currentState.sessionId} dir=${sessionDir} agent=auditor model=${auditorModel ? `${auditorModel.providerID}/${auditorModel.modelID}` : '(session default)'}`)
+    
     const promptResult = await v2Client.session.promptAsync(auditPrompt)
 
     if (promptResult.error) {

@@ -34,6 +34,8 @@ export interface FreshLoopOptions {
   auditorModel?: string
   /** Optional override for sandbox enabled state (for testing) */
   sandboxEnabled?: boolean
+  /** Skip sandbox wait (for testing - sandbox reconciliation won't occur) */
+  skipSandboxWait?: boolean
   hostSessionId?: string
 }
 
@@ -86,9 +88,9 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
   
   // Create session based on worktree mode
   let sessionId: string
-  let sessionDirectory: string
   let worktreeBranch: string | undefined
   let workspaceId: string | undefined
+  let hostWorktreeDir: string | undefined
   
   // Load config early to determine sandbox state for loop state persistence
   const config = loadPluginConfig()
@@ -105,7 +107,7 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
       return null
     }
     
-    sessionDirectory = worktreeResult.data.directory
+    hostWorktreeDir = worktreeResult.data.directory
     worktreeBranch = worktreeResult.data.branch
     
     // Seed graph cache from source repo to worktree scope before session creation
@@ -115,7 +117,7 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
         return await seedWorktreeGraphScope({
           projectId: options.projectId,
           sourceCwd: directory,
-          targetCwd: sessionDirectory,
+          targetCwd: hostWorktreeDir,
           dataDir: resolveDataDir(),
         })
       } catch (err) {
@@ -132,9 +134,11 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
       agentExclusions,
     })
     
+    console.log(`loop-launch: creating session with directory=${hostWorktreeDir} (sandbox: ${isSandboxEnabled})`)
+    
     const createResult = await api.client.session.create({
       title: `Loop: ${title}`,
-      directory: sessionDirectory,
+      directory: hostWorktreeDir,
       permission: permissionRuleset,
     })
     
@@ -150,7 +154,7 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
     // backing — the user just can't switch via the workspace UI.
     const workspace = await createLoopWorkspace(api.client, {
       loopName: uniqueWorktreeName,
-      directory: sessionDirectory,
+      directory: hostWorktreeDir,
       branch: worktreeBranch,
     })
 
@@ -190,7 +194,6 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
     }
     
     sessionId = createResult.data.id
-    sessionDirectory = directory
   }
   
   // Store plan and loop state in KV if database exists
@@ -202,7 +205,7 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
     sessionId,
     loopName: uniqueWorktreeName,
     projectDir: directory,
-    worktreeDir: sessionDirectory,
+    worktreeDir: hostWorktreeDir ?? directory,
     worktreeBranch,
     iteration: 1,
     maxIterations: 0,
@@ -234,7 +237,7 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
         status: 'running',
         currentSessionId: sessionId,
         worktree: isWorktree,
-        worktreeDir: sessionDirectory,
+        worktreeDir: hostWorktreeDir ?? directory,
         worktreeBranch: worktreeBranch ?? null,
         projectDir: directory,
         maxIterations: loopState.maxIterations,
@@ -285,11 +288,11 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
   const promptText = planText
   
   // Wait for worktree graph to be ready before first prompt (only for worktree mode)
-  if (isWorktree) {
+  if (isWorktree && hostWorktreeDir) {
     try {
       await waitForGraphReady(projectId, {
         dbPathOverride: dbPath,
-        cwd: sessionDirectory,
+        cwd: hostWorktreeDir,
         pollMs: 100,
         timeoutMs: 5000,
       })
@@ -299,8 +302,8 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
   }
 
   // Wait for sandbox to be ready before first prompt (only for worktree + sandbox mode)
-  // Skip if db doesn't exist (no reconciliation can occur)
-  if (isWorktree && isSandboxEnabled && dbExists) {
+  // Skip if db doesn't exist (no reconciliation can occur) or if skipSandboxWait is set (for testing)
+  if (isWorktree && isSandboxEnabled && dbExists && !options.skipSandboxWait) {
     const { waitForSandboxReady } = await import('./sandbox-ready')
     const waitResult = await waitForSandboxReady({
       projectId,
@@ -356,13 +359,16 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
 
   // Send prompt to code agent with model fallback
   const loopModel = parseModelString(options.executionModel) ?? parseModelString(config.loop?.model) ?? parseModelString(config.executionModel)
+  const sessionDir = loopState.worktreeDir
+  
+  console.log(`loop-launch: initial prompt sessionID=${sessionId} dir=${sessionDir} model=${loopModel ? `${loopModel.providerID}/${loopModel.modelID}` : '(default)'}`)
   
   const promptParts = [{ type: 'text' as const, text: promptText }]
   const { result: promptResult } = await retryWithModelFallback(
     () => loopModel
-      ? api.client.session.promptAsync({ sessionID: sessionId, directory: sessionDirectory, agent: 'code', model: loopModel, parts: promptParts })
-      : api.client.session.promptAsync({ sessionID: sessionId, directory: sessionDirectory, agent: 'code', parts: promptParts }),
-    () => api.client.session.promptAsync({ sessionID: sessionId, directory: sessionDirectory, agent: 'code', parts: promptParts }),
+      ? api.client.session.promptAsync({ sessionID: sessionId, directory: sessionDir, agent: 'code', model: loopModel, parts: promptParts })
+      : api.client.session.promptAsync({ sessionID: sessionId, directory: sessionDir, agent: 'code', parts: promptParts }),
+    () => api.client.session.promptAsync({ sessionID: sessionId, directory: sessionDir, agent: 'code', parts: promptParts }),
     loopModel,
     console,
   )
@@ -376,7 +382,7 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
     loopName: displayName,
     executionName: uniqueWorktreeName,
     isWorktree,
-    worktreeDir: sessionDirectory,
+    worktreeDir: hostWorktreeDir ?? directory,
     worktreeBranch,
     workspaceId,
     hostSessionId: options.hostSessionId,

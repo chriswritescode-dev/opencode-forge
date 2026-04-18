@@ -96,9 +96,9 @@ export async function run(argv: RestartArgs): Promise<void> {
     }
 
     const serverUrl = argv.server ?? 'http://localhost:5551'
-    const directory = state.worktreeDir
+    const sessionDir = state.worktreeDir
 
-    const client = createOpencodeClientFromServer(serverUrl, directory)
+    const client = createOpencodeClientFromServer(serverUrl, sessionDir)
 
     if (state.active) {
       try {
@@ -117,9 +117,11 @@ export async function run(argv: RestartArgs): Promise<void> {
       agentExclusions,
     })
 
+    console.log(`restart: creating session with directory=${sessionDir} (sandbox: ${!!state.sandbox})`)
+
     const createResult = await client.session.create({
       title: state.loopName,
-      directory,
+      directory: sessionDir,
       permission: permissionRuleset,
     })
 
@@ -218,10 +220,12 @@ export async function run(argv: RestartArgs): Promise<void> {
 
     const promptText = state.prompt ?? ''
 
+    console.log(`restart: initial prompt sessionID=${newSessionId} dir=${sessionDir} model=(default)`)
+
     try {
       await client.session.promptAsync({
         sessionID: newSessionId,
-        directory,
+        directory: sessionDir,
         parts: [{ type: 'text', text: promptText }],
         agent: 'code',
       })

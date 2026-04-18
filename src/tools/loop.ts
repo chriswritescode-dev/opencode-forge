@@ -48,6 +48,7 @@ export async function setupLoop(
   interface LoopContext {
     sessionId: string
     directory: string
+    hostDirectory?: string
     branch?: string
     worktree: boolean
     workspaceId?: string
@@ -105,8 +106,14 @@ export async function setupLoop(
       return 'Failed to create worktree.'
     }
 
+    const hostWorktreeDir = worktreeResult.data.directory
     const worktreeInfo = worktreeResult.data
-    logger.log(`loop: worktree created at ${worktreeInfo.directory} (branch: ${worktreeInfo.branch})`)
+    logger.log(`loop: worktree created at ${hostWorktreeDir} (branch: ${worktreeInfo.branch})`)
+
+    // Always use the host worktree path as session.directory
+    // The bind mount makes host and container paths interchangeable for the same files
+    const sandboxEnabled = isSandboxEnabled(config, ctx.sandboxManager)
+    const sessionDirectory = hostWorktreeDir
 
     // Seed graph cache from source repo to worktree scope before session creation
     const seedResult = await (async () => {
@@ -115,7 +122,7 @@ export async function setupLoop(
         return await seedWorktreeGraphScope({
           projectId: ctx.projectId,
           sourceCwd: projectDir,
-          targetCwd: worktreeInfo.directory,
+          targetCwd: hostWorktreeDir,
           dataDir: ctx.dataDir,
           graphStatusRepo: ctx.graphStatusRepo,
           logger,
@@ -136,21 +143,23 @@ export async function setupLoop(
       agentExclusions,
     })
 
+    logger.log(`loop: creating session with directory=${sessionDirectory} (host: ${hostWorktreeDir}, sandbox: ${sandboxEnabled})`)
+
     const createResult = await v2.session.create({
       title: options.sessionTitle,
-      directory: worktreeInfo.directory,
+      directory: sessionDirectory,
       permission: permissionRuleset,
     })
 
     if (createResult.error || !createResult.data) {
       logger.error(`loop: failed to create session`, createResult.error)
       try {
-        await v2.worktree.remove({ worktreeRemoveInput: { directory: worktreeInfo.directory } })
+        await v2.worktree.remove({ worktreeRemoveInput: { directory: hostWorktreeDir } })
         // Delete graph cache for this worktree scope on startup failure
         const { deleteGraphCacheScope } = await import('../storage/graph-projects')
-        const deleted = deleteGraphCacheScope(ctx.projectId, worktreeInfo.directory, ctx.dataDir)
+        const deleted = deleteGraphCacheScope(ctx.projectId, hostWorktreeDir, ctx.dataDir)
         if (deleted) {
-          logger.log(`loop: deleted graph cache for worktree ${worktreeInfo.directory}`)
+          logger.log(`loop: deleted graph cache for worktree ${hostWorktreeDir}`)
         }
       } catch (cleanupErr) {
         logger.error(`loop: failed to cleanup worktree`, cleanupErr)
@@ -160,9 +169,10 @@ export async function setupLoop(
 
     loopContext = {
       sessionId: createResult.data.id,
-      directory: worktreeInfo.directory,
+      directory: sessionDirectory,
       branch: worktreeInfo.branch,
       worktree: true,
+      hostDirectory: hostWorktreeDir,
     }
 
     // Optionally create a workspace and bind the session so the worktree loop
@@ -171,7 +181,7 @@ export async function setupLoop(
     // backing — the user just can't switch via the workspace UI.
     const workspace = await createLoopWorkspace(v2, {
       loopName: uniqueLoopName,
-      directory: worktreeInfo.directory,
+      directory: hostWorktreeDir,
       branch: worktreeInfo.branch,
     })
 
@@ -192,11 +202,11 @@ export async function setupLoop(
   let sandboxContainer: string | undefined
   const sandboxEnabled = isSandboxEnabled(config, sandboxManager) && !!options.worktree
 
-  if (sandboxEnabled) {
+  if (sandboxEnabled && options.worktree) {
     try {
-      const result = await sandboxManager!.start(uniqueLoopName, loopContext.directory)
+      const result = await sandboxManager!.start(uniqueLoopName, loopContext.hostDirectory!)
       sandboxContainer = result.containerName
-      logger.log(`Sandbox container ${sandboxContainer} started for loop ${uniqueLoopName}`)
+      logger.log(`Sandbox container ${sandboxContainer} started for loop ${uniqueLoopName} (host dir: ${loopContext.hostDirectory})`)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       logger.error(`loop: failed to start sandbox container`, err)
@@ -208,7 +218,7 @@ export async function setupLoop(
     active: true,
     sessionId: loopContext.sessionId,
     loopName: uniqueLoopName,
-    worktreeDir: loopContext.directory,
+    worktreeDir: loopContext.hostDirectory!,
     projectDir: projectDir,
     worktreeBranch: loopContext.branch,
     iteration: 1,
@@ -242,18 +252,18 @@ export async function setupLoop(
   if (options.worktree) {
     try {
       const waitResult = await waitForGraphReady(projectId, {
-        cwd: loopContext.directory,
+        cwd: loopContext.hostDirectory!,
         dbPathOverride: ctx.dataDir ? join(ctx.dataDir, 'graph.db') : undefined,
         pollMs: 100,
         timeoutMs: 5000,
       })
       
       if (waitResult === 'timeout') {
-        logger.log(`setupLoop: graph readiness timeout for worktree ${loopContext.directory}`)
+        logger.log(`setupLoop: graph readiness timeout for worktree ${loopContext.hostDirectory}`)
       } else if (waitResult === null) {
-        logger.log(`setupLoop: graph status unavailable for worktree ${loopContext.directory}`)
+        logger.log(`setupLoop: graph status unavailable for worktree ${loopContext.hostDirectory}`)
       } else {
-        logger.log(`setupLoop: graph ready (${waitResult.state}) for worktree ${loopContext.directory}`)
+        logger.log(`setupLoop: graph ready (${waitResult.state}) for worktree ${loopContext.hostDirectory}`)
       }
     } catch (err) {
       // Non-fatal: continue even if wait fails
@@ -262,18 +272,21 @@ export async function setupLoop(
   }
 
   const promptText = options.prompt
+  const sessionDir = state.worktreeDir
+
+  logger.log(`setupLoop: initial prompt sessionID=${loopContext.sessionId} dir=${sessionDir} model=${options.model ? `${options.model.providerID}/${options.model.modelID}` : '(default)'}`)
 
   const { result: promptResult, usedModel: actualModel } = await retryWithModelFallback(
     () => v2.session.promptAsync({
       sessionID: loopContext.sessionId,
-      directory: loopContext.directory,
+      directory: sessionDir,
       parts: [{ type: 'text' as const, text: promptText }],
       ...(options.agent && { agent: options.agent }),
       model: options.model!,
     }),
     () => v2.session.promptAsync({
       sessionID: loopContext.sessionId,
-      directory: loopContext.directory,
+      directory: sessionDir,
       parts: [{ type: 'text' as const, text: promptText }],
       ...(options.agent && { agent: options.agent }),
     }),
@@ -293,12 +306,12 @@ export async function setupLoop(
     }
     if (options.worktree) {
       try {
-        await v2.worktree.remove({ worktreeRemoveInput: { directory: loopContext.directory } })
+        await v2.worktree.remove({ worktreeRemoveInput: { directory: loopContext.hostDirectory! } })
         // Delete graph cache for this worktree scope on startup failure
         const { deleteGraphCacheScope } = await import('../storage/graph-projects')
-        const deleted = deleteGraphCacheScope(ctx.projectId, loopContext.directory, ctx.dataDir)
+        const deleted = deleteGraphCacheScope(ctx.projectId, loopContext.hostDirectory!, ctx.dataDir)
         if (deleted) {
-          logger.log(`loop: deleted graph cache for worktree ${loopContext.directory}`)
+          logger.log(`loop: deleted graph cache for worktree ${loopContext.hostDirectory}`)
         }
       } catch (cleanupErr) {
         logger.error(`loop: failed to cleanup worktree`, cleanupErr)
@@ -338,12 +351,6 @@ export async function setupLoop(
     lines.push(`Worktree: ${loopContext.directory}`)
     lines.push(`Branch: ${loopContext.branch}`)
   }
-
-  lines.push(
-    `Loop name: ${uniqueLoopName}`,
-    `Worktree: ${loopContext.directory}`,
-    `Branch: ${loopContext.branch}`,
-  )
 
   lines.push(
     `Model: ${modelInfo}`,

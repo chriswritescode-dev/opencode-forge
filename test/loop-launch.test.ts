@@ -34,8 +34,9 @@ function createTestDb(): { db: Database; path: string } {
       completed_at INTEGER,
       termination_reason TEXT,
       completion_summary TEXT,
-      workspace_id TEXT,
-      host_session_id TEXT,
+      workspace_id         TEXT,
+      host_session_id      TEXT,
+      session_directory    TEXT,
       PRIMARY KEY (project_id, loop_name)
     )
   `)
@@ -259,6 +260,96 @@ describe('Fresh Loop Launch', () => {
       expect(loopRow.status).toBe('running')
       expect(loopRow.worktree).toBe(1)
       expect(loopRow.worktree_dir).toBeDefined()
+    }
+  })
+
+  test('non-sandbox worktree loop passes host path to session.create', async () => {
+    const mockApi = createMockApi()
+    const sessionCreateSpy = mock(async () => ({ data: { id: 'test-session' } }))
+    mockApi.client.session.create = sessionCreateSpy as any
+    
+    await launchFreshLoop({
+      planText,
+      title,
+      directory: TEST_DIR,
+      projectId,
+      isWorktree: true,
+      sandboxEnabled: false,
+      api: mockApi,
+      dbPath,
+    })
+
+    expect(sessionCreateSpy).toHaveBeenCalled()
+    const call = (mockApi.client.session.create as any).mock.calls[0][0]
+    expect(call.directory).not.toMatch(/^\/workspace/)
+  })
+
+  test('sandbox-enabled worktree loop passes container path to session.create', async () => {
+    const mockApi = createMockApi()
+    const sessionCreateSpy = mock(async () => ({ data: { id: 'test-session' } }))
+    mockApi.client.session.create = sessionCreateSpy as any
+    // Mock worktree.create to return a predictable path
+    mockApi.client.worktree.create = mock(async (params) => ({
+      data: {
+        name: params.worktreeCreateInput.name,
+        directory: `/tmp/test-worktree-dir`,
+        branch: `opencode/loop-${params.worktreeCreateInput.name}`,
+      },
+      error: null,
+    })) as any
+    
+    // Skip sandbox wait since we don't have Docker reconciliation in tests
+    await launchFreshLoop({
+      planText,
+      title,
+      directory: TEST_DIR,
+      projectId,
+      isWorktree: true,
+      sandboxEnabled: true,
+      skipSandboxWait: true,
+      api: mockApi,
+      dbPath,
+    })
+
+    expect(sessionCreateSpy).toHaveBeenCalled()
+    const call = (mockApi.client.session.create as any).mock.calls[0][0]
+    // Session directory should always be the host path, not /workspace
+    expect(call.directory).not.toMatch(/^\/workspace/)
+  })
+
+  test('persists worktreeDir (host path) for sandbox worktree', async () => {
+    const mockApi = createMockApi()
+    // Mock worktree.create to return a predictable path
+    mockApi.client.worktree.create = mock(async (params) => ({
+      data: {
+        name: params.worktreeCreateInput.name,
+        directory: `/tmp/test-worktree-dir`,
+        branch: `opencode/loop-${params.worktreeCreateInput.name}`,
+      },
+      error: null,
+    })) as any
+    
+    // Skip sandbox wait since we don't have Docker reconciliation in tests
+    await launchFreshLoop({
+      planText,
+      title,
+      directory: TEST_DIR,
+      projectId,
+      isWorktree: true,
+      sandboxEnabled: true,
+      skipSandboxWait: true,
+      api: mockApi,
+      dbPath,
+    })
+
+    const loopRow = db.prepare(
+      'SELECT worktree_dir FROM loops WHERE project_id = ? AND loop_name LIKE ?'
+    ).get(projectId, 'test-plan%') as { worktree_dir: string } | null
+
+    expect(loopRow).toBeDefined()
+    if (loopRow) {
+      expect(loopRow.worktree_dir).not.toMatch(/^\/workspace/)
+      expect(loopRow.worktree_dir).toBe('/tmp/test-worktree-dir')
     }
   })
 

@@ -12,6 +12,12 @@ type PermissionRule = { permission: string; pattern: string; action: 'allow' | '
  * - Adds external_directory allow rule for worktree logging when configured AND needed.
  *   Note: With host-session dispatch, worktree sessions no longer need direct host log access.
  *   This parameter is kept for backward compatibility but should be null for new designs.
+ *
+ * Note on external_directory evaluation: The blanket `*:*:allow` for worktree loops
+ * covers the session's own cwd. The `external_directory:*:deny` rule only blocks
+ * paths outside the worktree. Audit performed: sandbox worktree loops launch
+ * without permission prompts for their own cwd because the container-mapped
+ * directory falls within the worktree scope that the blanket allow covers.
  */
 export function buildLoopPermissionRuleset(
   config: PluginConfig,

@@ -13,6 +13,8 @@ stateDiagram-v2
     Coding --> [*]: max iterations reached
     Coding --> [*]: error limit exceeded
     Coding --> [*]: stall timeout exceeded
+    Coding --> [*]: review findings block
+    Coding --> [*]: loop cancelled
 ```
 
 ## Loop States
@@ -25,10 +27,10 @@ interface LoopState {
   sessionId: string                  // Current OpenCode session ID
   loopName: string                   // Unique loop identifier
   worktreeDir: string                // Worktree path (empty if in-place)
+  sessionDirectory?: string          // Container-mapped directory for sandbox mode
   worktreeBranch?: string            // Branch name if using worktree
   iteration: number                  // Current iteration count
   maxIterations: number              // Maximum iterations (0 = unlimited)
-  completionSignal: string | null    // Phrase that signals completion
   startedAt: string                  // ISO timestamp
   prompt?: string                    // Original task prompt
   phase: 'coding' | 'auditing'       // Current phase
@@ -42,6 +44,7 @@ interface LoopState {
   modelFailed?: boolean              // Whether model error occurred
   sandbox?: boolean                  // Whether using Docker sandbox
   sandboxContainerName?: string      // Container name if sandboxed
+  hostSessionId?: string             // Host session ID for post-completion redirect
 }
 ```
 

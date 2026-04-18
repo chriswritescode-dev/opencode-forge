@@ -25,6 +25,7 @@ describe('LoopsRepo', () => {
         current_session_id   TEXT NOT NULL,
         worktree             INTEGER NOT NULL,
         worktree_dir         TEXT NOT NULL,
+        session_directory    TEXT,
         worktree_branch      TEXT,
         project_dir          TEXT NOT NULL,
         max_iterations       INTEGER NOT NULL,

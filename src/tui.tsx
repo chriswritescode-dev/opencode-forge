@@ -1167,7 +1167,16 @@ function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: strin
   
 
   
-  const unsub = props.api.event.on('session.status', () => {
+  const unsubStatus = props.api.event.on('session.status', () => {
+    refreshSidebarData()
+  })
+  // session.deleted fires when terminateLoop cleans up a completed worktree loop's session,
+  // session.updated fires on status transitions. Both should refresh the sidebar immediately
+  // so completed loops don't keep their stale sessionId/workspaceId in the list.
+  const unsubDeleted = props.api.event.on('session.deleted', () => {
+    refreshSidebarData()
+  })
+  const unsubUpdated = props.api.event.on('session.updated', () => {
     refreshSidebarData()
   })
 
@@ -1205,7 +1214,9 @@ function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: strin
   })
 
   onCleanup(() => {
-    unsub()
+    unsubStatus()
+    unsubDeleted()
+    unsubUpdated()
     stopPolling()
     clearTimeout(initTimer)
   })
@@ -1276,10 +1287,18 @@ function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: strin
                   flexDirection="row"
                   gap={1}
                   onMouseUp={() => {
-                    // Workspace-backed worktree loop: navigate directly to its session.
-                    // Legacy worktree loop (no workspaceId): open the details dialog.
-                    // In-place loop: navigate directly.
-                    if (loop.worktree && loop.workspaceId && loop.sessionId) {
+                    // Completed/terminated loops: always show the details dialog.
+                    // Their session and workspace may have been deleted during cleanup,
+                    // so navigating to loop.sessionId would land on a dead session.
+                    // Workspace-backed active worktree loop: navigate directly to its session.
+                    // Legacy active worktree loop (no workspaceId): open the details dialog.
+                    // Active in-place loop: navigate directly.
+                    if (!loop.active) {
+                      props.api.ui.dialog.setSize("medium")
+                      props.api.ui.dialog.replace(() => (
+                        <LoopDetailsDialog api={props.api} loop={loop} onRefresh={refreshSidebarData} />
+                      ))
+                    } else if (loop.worktree && loop.workspaceId && loop.sessionId) {
                       props.api.route.navigate('session', { sessionID: loop.sessionId })
                     } else if (loop.worktree) {
                       props.api.ui.dialog.setSize("medium")
