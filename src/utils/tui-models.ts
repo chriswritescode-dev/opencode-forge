@@ -6,7 +6,7 @@ import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 import { Database } from 'bun:sqlite'
 import { existsSync } from 'fs'
 import { join } from 'path'
-import { resolveDataDir } from '../storage'
+import { resolveDataDir, createTuiPrefsRepo } from '../storage'
 
 export interface ModelInfo {
   id: string
@@ -241,7 +241,7 @@ function getDbPath(): string {
 }
 
 /**
- * Gets recently used models from project KV.
+ * Gets recently used models from TUI preferences.
  */
 export function getRecentModels(projectId: string, dbPathOverride?: string): string[] {
   const dbPath = dbPathOverride || getDbPath()
@@ -250,14 +250,9 @@ export function getRecentModels(projectId: string, dbPathOverride?: string): str
   let db: Database | null = null
   try {
     db = new Database(dbPath, { readonly: true })
-    const now = Date.now()
-    const row = db.prepare(
-      'SELECT data FROM project_kv WHERE project_id = ? AND key = ? AND expires_at > ?'
-    ).get(projectId, RECENT_MODELS_KEY, now) as { data: string } | null
-
-    if (!row) return []
-    const parsed = JSON.parse(row.data)
-    return Array.isArray(parsed) ? parsed : []
+    const repo = createTuiPrefsRepo(db)
+    const stored = repo.get<string[]>(projectId, RECENT_MODELS_KEY)
+    return stored && Array.isArray(stored) ? stored : []
   } catch {
     return []
   } finally {
@@ -277,14 +272,12 @@ export function recordRecentModel(projectId: string, modelFullName: string, dbPa
   try {
     db = new Database(dbPath)
     db.run('PRAGMA busy_timeout=5000')
-    const now = Date.now()
+    const repo = createTuiPrefsRepo(db)
 
     const existing = getRecentModels(projectId, dbPath)
     const updated = [modelFullName, ...existing.filter(m => m !== modelFullName)].slice(0, RECENT_MODELS_MAX)
 
-    db.prepare(
-      'INSERT OR REPLACE INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(projectId, RECENT_MODELS_KEY, JSON.stringify(updated), now + RECENT_MODELS_TTL_MS, now, now)
+    repo.set(projectId, RECENT_MODELS_KEY, updated, RECENT_MODELS_TTL_MS)
   } catch {
     // silent
   } finally {

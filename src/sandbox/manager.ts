@@ -66,13 +66,17 @@ export function createSandboxManager(
 
     const containerName = docker.containerName(worktreeName)
 
+    const absoluteProjectDir = resolve(projectDir)
     const running = await docker.isRunning(containerName)
     if (running) {
       logger.log(`Sandbox container ${containerName} already running`)
+      activeSandboxes.set(worktreeName, {
+        containerName,
+        projectDir: absoluteProjectDir,
+        startedAt: startedAt ?? new Date().toISOString(),
+      })
       return { containerName }
     }
-
-    const absoluteProjectDir = resolve(projectDir)
     const extraMounts = detectGitMount(absoluteProjectDir)
     if (extraMounts.length > 0) {
       logger.log(`Sandbox: mounting git common dir: ${extraMounts[0]}`)

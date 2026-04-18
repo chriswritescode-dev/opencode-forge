@@ -1,7 +1,8 @@
 import { Database } from 'bun:sqlite'
-import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { hashProjectId, hashGraphCacheScope } from '../storage/graph-projects'
+import { openSqliteWithIntegrityGuard, cleanupOrphanedShmFile } from '../storage/sqlite-open'
 
 // Track database instances for cleanup
 const databaseInstances: Map<string, Database> = new Map()
@@ -28,126 +29,41 @@ export interface GraphCacheMetadata {
   lastBranch?: string
 }
 
-function deleteGraphDatabaseFiles(dbPath: string): void {
-  try {
-    unlinkSync(dbPath)
-  } catch {}
-  try {
-    unlinkSync(dbPath + '-wal')
-  } catch {}
-  try {
-    unlinkSync(dbPath + '-shm')
-  } catch {}
+const GRAPH_PRAGMAS = [
+  'PRAGMA journal_mode=WAL',
+  'PRAGMA busy_timeout=5000',
+  'PRAGMA synchronous=NORMAL',
+  'PRAGMA foreign_keys=ON',
+]
+
+/**
+ * Validates the graph DB by exercising data pages — PRAGMA integrity_check can
+ * miss WAL-level corruption. Throwing here triggers corruption recovery.
+ */
+function validateGraphDatabase(db: Database): void {
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
+  if (tables.some(t => t.name === 'files')) {
+    db.prepare('SELECT COUNT(*) as c FROM files').get()
+  }
 }
 
 /**
  * Opens a managed graph database with integrity verification.
- * If integrity check fails or opening throws a corruption error, deletes the corrupted DB files
- * and recreates a fresh database.
- * 
- * @param dbPath - Path to the database file
- * @returns A fresh or recovered Database instance
+ * If integrity check fails or opening throws a corruption error, deletes the
+ * corrupted DB files and recreates a fresh database.
  */
 export function openGraphDatabase(dbPath: string): Database {
-  let db: Database | null = null
-  let needsBootstrap = false
-
-  // Clean up orphaned SHM files when the WAL file is completely missing.
-  // This state indicates the previous process crashed without checkpointing, and
-  // opening with a stale SHM but no WAL can trigger "malformed" errors.
-  // Note: empty WAL + SHM is normal after a TRUNCATE checkpoint — don't touch that.
-  try {
-    const shmPath = dbPath + '-shm'
-    const walPath = dbPath + '-wal'
-    if (existsSync(shmPath) && !existsSync(walPath)) {
-      console.debug(`Removing orphaned SHM file for ${dbPath}`)
-      try { unlinkSync(shmPath) } catch {}
-    }
-  } catch {}
-
-  try {
-    db = new Database(dbPath)
-    db.run('PRAGMA journal_mode=WAL')
-    db.run('PRAGMA busy_timeout=5000')
-    db.run('PRAGMA synchronous=NORMAL')
-    db.run('PRAGMA foreign_keys=ON')
-
-    // Run integrity check
-    const integrityResult = db.prepare('PRAGMA integrity_check').get() as { integrity_check: string }
-    if (integrityResult.integrity_check !== 'ok') {
-      db.close()
-      console.error(`Graph database corruption detected at ${dbPath}: ${integrityResult.integrity_check}`)
-      deleteGraphDatabaseFiles(dbPath)
-      needsBootstrap = true
-      db = null
-    }
-
-    // Validate with a real data query — PRAGMA integrity_check can miss WAL-level corruption
-    if (db) {
-      try {
-        const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
-        // If tables exist, read from one to exercise data pages
-        if (tables.some(t => t.name === 'files')) {
-          db.prepare('SELECT COUNT(*) as c FROM files').get()
-        }
-      } catch (validateErr) {
-        db.close()
-        console.error(`Graph database validation failed at ${dbPath}: ${validateErr instanceof Error ? validateErr.message : String(validateErr)}`)
-        deleteGraphDatabaseFiles(dbPath)
-        needsBootstrap = true
-        db = null
-      }
-    }
-  } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : String(err)
-    console.error(`Graph database open failed at ${dbPath}: ${errorMsg}`)
-    
-    // Close db handle if it was opened before attempting deletion
-    if (db) {
-      try {
-        db.close()
-      } catch {}
-      db = null
-    }
-    
-    // Only delete database files if the error indicates corruption or invalid format
-    // Don't delete for transient issues unrelated to corruption
-    const isCorruptionError = 
-      errorMsg.includes('database disk image is malformed') ||
-      errorMsg.includes('corrupt') ||
-      errorMsg.includes('SQLITE_CORRUPT') ||
-      errorMsg.includes('file is not a database')
-    
-    if (isCorruptionError) {
-      deleteGraphDatabaseFiles(dbPath)
-      needsBootstrap = true
-    }
-    // For transient errors, re-throw to let the caller handle
-    if (!isCorruptionError) {
-      throw err
-    }
-  }
-
-  if (needsBootstrap || db === null) {
-    return createFreshGraphDatabase(dbPath)
-  }
-
-  // Bootstrap schema on first open (idempotent - uses IF NOT EXISTS)
-  createTables(db)
-  return db
-}
-
-/**
- * Creates a fresh graph database and runs schema initialization.
- */
-function createFreshGraphDatabase(dbPath: string): Database {
-  const freshDb = new Database(dbPath)
-  freshDb.run('PRAGMA journal_mode=WAL')
-  freshDb.run('PRAGMA busy_timeout=5000')
-  freshDb.run('PRAGMA synchronous=NORMAL')
-  freshDb.run('PRAGMA foreign_keys=ON')
-  createTables(freshDb)
-  return freshDb
+  return openSqliteWithIntegrityGuard(dbPath, {
+    label: 'Graph database',
+    pragmas: GRAPH_PRAGMAS,
+    bootstrap: createTables,
+    validate: validateGraphDatabase,
+    // Clean up orphaned SHM files when the WAL file is completely missing.
+    // This state indicates the previous process crashed without checkpointing,
+    // and opening with a stale SHM but no WAL can trigger "malformed" errors.
+    // Note: empty WAL + SHM is normal after a TRUNCATE checkpoint — don't touch that.
+    preOpenCleanup: cleanupOrphanedShmFile,
+  })
 }
 
 /**
@@ -316,7 +232,12 @@ function createTables(db: Database): void {
   db.run(`CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_file_id)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_file_id)`)
 
-  // Refs table (imports)
+  // Refs table (imports) - migrate if is_dynamic column is missing
+  const refsInfo = db.prepare("PRAGMA table_info(refs)").all() as Array<{ name: string }>
+  const hasIsDynamic = refsInfo.some(col => col.name === 'is_dynamic')
+  if (!hasIsDynamic) {
+    db.run('DROP TABLE IF EXISTS refs')
+  }
   db.run(`
     CREATE TABLE IF NOT EXISTS refs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -324,6 +245,7 @@ function createTables(db: Database): void {
       name TEXT NOT NULL,
       source_file_id INTEGER,
       import_source TEXT NOT NULL,
+      is_dynamic INTEGER NOT NULL DEFAULT 0,
       FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
       FOREIGN KEY (source_file_id) REFERENCES files(id) ON DELETE SET NULL
     )
@@ -332,6 +254,15 @@ function createTables(db: Database): void {
   db.run(`CREATE INDEX IF NOT EXISTS idx_refs_source_file_id ON refs(source_file_id)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_refs_import_source ON refs(import_source)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_refs_name ON refs(name)`)
+
+  // Entrypoints table - files that are entry points (bin, scripts)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS entrypoints (
+      file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+      reason TEXT NOT NULL
+    )
+  `)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_entrypoints_file_id ON entrypoints(file_id)`)
 
   // Calls table (call graph)
   db.run(`

@@ -8,12 +8,12 @@
 
 import { existsSync, mkdirSync, cpSync } from 'fs'
 import { join } from 'path'
-import type { KvService } from '../services/kv'
 import type { Logger } from '../types'
 import { resolveGraphCacheDir } from '../storage/graph-projects'
 import { readGraphCacheMetadata, writeGraphCacheMetadata, type GraphCacheMetadata } from '../graph/database'
 import { collectIndexFingerprint } from '../graph/utils'
-import { getGraphStatusKey, type GraphStatusPayload, readGraphStatus, writeGraphStatus } from '../utils/graph-status-store'
+import { readGraphStatus, writeGraphStatus } from '../utils/graph-status-store'
+import type { GraphStatusRepo } from '../storage/repos/graph-status-repo'
 import { Database } from 'bun:sqlite'
 
 /**
@@ -28,10 +28,8 @@ export interface SeedWorktreeGraphScopeOptions {
   targetCwd: string
   /** Data directory for graph cache storage */
   dataDir: string
-  /** KV service for status copy (optional, for tool-side path) */
-  kvService?: KvService
-  /** Database path for status copy (optional, for TUI path) */
-  dbPath?: string
+  /** Graph status repo for status copy (optional, for tool-side path) */
+  graphStatusRepo?: GraphStatusRepo
   /** Optional logger for logging seed operations */
   logger?: Logger
 }
@@ -112,8 +110,7 @@ export async function seedWorktreeGraphScope(options: SeedWorktreeGraphScopeOpti
     sourceCwd,
     targetCwd,
     dataDir,
-    kvService,
-    dbPath,
+    graphStatusRepo,
     logger,
   } = options
 
@@ -215,56 +212,17 @@ export async function seedWorktreeGraphScope(options: SeedWorktreeGraphScopeOpti
   // Source graph health was already validated before copying the cache
   // Reuse the sourceGraphHealthy value from earlier in this function
   
-  if (kvService) {
-    const sourceStatus = readGraphStatus(kvService, projectId, sourceCwd)
+  if (graphStatusRepo) {
+    const sourceStatus = readGraphStatus(graphStatusRepo, projectId, sourceCwd)
     if (sourceStatus && sourceStatus.state === 'ready' && sourceGraphHealthy) {
-      const targetStatus: GraphStatusPayload = {
+      writeGraphStatus(graphStatusRepo, projectId, {
         ...sourceStatus,
         updatedAt: Date.now(),
-      }
-      writeGraphStatus(kvService, projectId, targetStatus, targetCwd)
+      }, targetCwd)
       statusCopied = true
       log(`graph seed: copied ready status to worktree scope`)
     } else if (sourceStatus && sourceStatus.state === 'ready' && !sourceGraphHealthy) {
       log(`graph seed: skipped status copy - source graph unhealthy`)
-    }
-  } else if (dbPath && existsSync(dbPath)) {
-    // TUI path: read/write status directly via database
-    try {
-      const db = new Database(dbPath, { readonly: false })
-      const now = Date.now()
-      const ttl = 7 * 24 * 60 * 60 * 1000 // 7 days
-
-      // Read source status
-      const sourceKey = getGraphStatusKey(sourceCwd)
-      const sourceRow = db.prepare(
-        'SELECT data FROM project_kv WHERE project_id = ? AND key = ? AND expires_at > ?'
-      ).get(projectId, sourceKey, now) as { data: string } | undefined
-
-      if (sourceRow) {
-        try {
-          const sourceStatus = JSON.parse(sourceRow.data) as GraphStatusPayload
-          if (sourceStatus.state === 'ready' && sourceGraphHealthy) {
-            const targetKey = getGraphStatusKey(targetCwd)
-            const targetStatus: GraphStatusPayload = {
-              ...sourceStatus,
-              updatedAt: Date.now(),
-            }
-            db.prepare(
-              'INSERT OR REPLACE INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-            ).run(projectId, targetKey, JSON.stringify(targetStatus), now + ttl, now, now)
-            statusCopied = true
-            log(`graph seed: copied ready status to worktree scope (TUI path)`)
-          } else if (sourceStatus.state === 'ready' && !sourceGraphHealthy) {
-            log(`graph seed: skipped status copy - source graph unhealthy (TUI path)`)
-          }
-        } catch {
-          // Skip status copy on parse error
-        }
-      }
-      db.close()
-    } catch {
-      // Skip status copy on DB error - non-fatal
     }
   }
 

@@ -1,15 +1,17 @@
 /**
  * TUI plan store helper for resolving plan keys with loop-session awareness.
  * 
- * This module provides plan key resolution that mirrors the tool-side
- * convention in src/tools/plan-kv.ts:9-15, ensuring TUI plan access
- * honors loop worktree-scoped plan keys.
+ * This module provides plan reading/writing with session → loop resolution.
+ * Reads prefer loop_large_fields.prompt (execution store), then fall back to
+ * the plans table. Writes update both stores to stay in sync.
  */
 
 import { Database } from 'bun:sqlite'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import { resolveDataDir } from '../storage'
+import { createPlansRepo } from '../storage/repos/plans-repo'
+import { createLoopsRepo } from '../storage/repos/loops-repo'
 
 /**
  * Gets the database path used by the memory plugin.
@@ -20,56 +22,21 @@ export function getDbPath(): string {
 }
 
 /**
- * Resolves the plan key for a session, checking for loop-session mapping first.
+ * Resolves the loop name for a session by checking the loops table.
  * 
- * Loop sessions store their plan under plan:{loopName}, while normal
- * sessions use plan:{sessionId}. This function checks for a loop-session
- * mapping and returns the appropriate plan key.
- * 
- * @param projectId - The project ID (git commit hash)
+ * @param db - Database instance
+ * @param projectId - The project ID
  * @param sessionID - The session ID to resolve
- * @param dbPathOverride - Optional database path override (for testing)
- * @returns The resolved plan key (either plan:{loopName} or plan:{sessionID})
+ * @returns The loop name or null if not found
  */
-export function resolvePlanKey(projectId: string, sessionID: string, dbPathOverride?: string): string {
-  const dbPath = dbPathOverride || getDbPath()
-
-  if (!existsSync(dbPath)) {
-    return `plan:${sessionID}`
-  }
-
-  let db: Database | null = null
-  try {
-    db = new Database(dbPath, { readonly: true })
-    const now = Date.now()
-    
-    // Check for loop-session mapping first
-    const mappingRow = db.prepare(
-      'SELECT data FROM project_kv WHERE project_id = ? AND key = ? AND expires_at > ?'
-    ).get(projectId, `loop-session:${sessionID}`, now) as { data: string } | null
-
-    if (mappingRow) {
-      try {
-        const loopName = JSON.parse(mappingRow.data)
-        if (typeof loopName === 'string' && loopName) {
-          return `plan:${loopName}`
-        }
-      } catch {
-        // Fall through to default if JSON parse fails
-      }
-    }
-  } catch {
-    // Fall through to default on DB errors
-  } finally {
-    try { db?.close() } catch {}
-  }
-
-  // Default to session-based key for non-loop sessions
-  return `plan:${sessionID}`
+function resolveLoopNameForSession(db: Database, projectId: string, sessionID: string): string | null {
+  const loopsRepo = createLoopsRepo(db)
+  const row = loopsRepo.getBySessionId(projectId, sessionID)
+  return row?.loopName ?? null
 }
 
 /**
- * Reads plan content from the KV store for a session.
+ * Reads plan content from the plans table for a session.
  * 
  * @param projectId - The project ID (git commit hash)
  * @param sessionID - The session ID to read plan for
@@ -84,19 +51,23 @@ export function readPlan(projectId: string, sessionID: string, dbPathOverride?: 
   let db: Database | null = null
   try {
     db = new Database(dbPath, { readonly: true })
-    const now = Date.now()
+    const plansRepo = createPlansRepo(db)
+    const loopsRepo = createLoopsRepo(db)
     
-    const planKey = resolvePlanKey(projectId, sessionID, dbPath)
-    const row = db.prepare(
-      'SELECT data FROM project_kv WHERE project_id = ? AND key = ? AND expires_at > ?'
-    ).get(projectId, planKey, now) as { data: string } | null
-
-    if (!row) return null
-    const data = row.data
-    if (typeof data === 'string' && data.startsWith('"')) {
-      try { return JSON.parse(data) } catch { return data }
+    // Try loop-bound plan first (if session maps to a loop)
+    const loopName = resolveLoopNameForSession(db, projectId, sessionID)
+    if (loopName) {
+      // Check loop_large_fields.prompt first (execution store), then plans table
+      const fromExecution = loopsRepo.getLarge(projectId, loopName)?.prompt
+      if (fromExecution) return fromExecution
+      
+      const planRow = plansRepo.getForLoop(projectId, loopName)
+      if (planRow) return planRow.content
     }
-    return data
+    
+    // Fall back to session-scoped plan
+    const planRow = plansRepo.getForSession(projectId, sessionID)
+    return planRow?.content ?? null
   } catch {
     return null
   } finally {
@@ -105,7 +76,7 @@ export function readPlan(projectId: string, sessionID: string, dbPathOverride?: 
 }
 
 /**
- * Writes plan content to the KV store for a session.
+ * Writes plan content to the plans table for a session.
  * 
  * @param projectId - The project ID (git commit hash)
  * @param sessionID - The session ID to write plan for
@@ -122,13 +93,17 @@ export function writePlan(projectId: string, sessionID: string, content: string,
   try {
     db = new Database(dbPath)
     db.run('PRAGMA busy_timeout=5000')
-    const now = Date.now()
-    const ttl = 7 * 24 * 60 * 60 * 1000
-
-    const planKey = resolvePlanKey(projectId, sessionID, dbPath)
-    db.prepare(
-      'INSERT OR REPLACE INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(projectId, planKey, JSON.stringify(content), now + ttl, now, now)
+    const plansRepo = createPlansRepo(db)
+    const loopsRepo = createLoopsRepo(db)
+    
+    // Check if session maps to a loop - if so, write only to execution store (loop_large_fields.prompt)
+    // Otherwise write to session-scoped draft store
+    const loopName = resolveLoopNameForSession(db, projectId, sessionID)
+    if (loopName) {
+      loopsRepo.updatePrompt(projectId, loopName, content)
+    } else {
+      plansRepo.writeForSession(projectId, sessionID, content)
+    }
     return true
   } catch {
     return false
@@ -138,7 +113,7 @@ export function writePlan(projectId: string, sessionID: string, content: string,
 }
 
 /**
- * Deletes plan content from the KV store for a session.
+ * Deletes plan content from the plans table for a session.
  * 
  * @param projectId - The project ID (git commit hash)
  * @param sessionID - The session ID to delete plan for
@@ -154,13 +129,19 @@ export function deletePlan(projectId: string, sessionID: string, dbPathOverride?
   try {
     db = new Database(dbPath)
     db.run('PRAGMA busy_timeout=5000')
-
-    const planKey = resolvePlanKey(projectId, sessionID, dbPath)
-    const result = db.prepare(
-      'DELETE FROM project_kv WHERE project_id = ? AND key = ?'
-    ).run(projectId, planKey)
+    const plansRepo = createPlansRepo(db)
+    const loopsRepo = createLoopsRepo(db)
     
-    return (result.changes || 0) > 0
+    // Check if session maps to a loop - if so, delete only from execution store (loop_large_fields.prompt)
+    // Otherwise delete from session-scoped draft store
+    const loopName = resolveLoopNameForSession(db, projectId, sessionID)
+    if (loopName) {
+      loopsRepo.updatePrompt(projectId, loopName, '')
+      return true
+    } else {
+      plansRepo.deleteForSession(projectId, sessionID)
+      return true
+    }
   } catch {
     return false
   } finally {

@@ -217,20 +217,19 @@ describe('graph CLI cleanup commands', () => {
     expect(existsSync(cacheDirB)).toBe(true)
   })
 
-  test('graph remove should preserve shared KV data', () => {
+  test('graph remove should preserve shared TUI preferences data', () => {
     const { spawnSync } = require('child_process')
     
     const sharedDbPath = join(resolvedDataDir, 'graph.db')
     const sharedDb = new Database(sharedDbPath)
     
     sharedDb.run(`
-      CREATE TABLE IF NOT EXISTS project_kv (
-        project_id TEXT NOT NULL,
-        key TEXT NOT NULL,
-        data TEXT NOT NULL,
-        expires_at INTEGER NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
+      CREATE TABLE IF NOT EXISTS tui_preferences (
+        project_id   TEXT NOT NULL,
+        key          TEXT NOT NULL,
+        data         TEXT NOT NULL,
+        expires_at   INTEGER,
+        updated_at   INTEGER NOT NULL,
         PRIMARY KEY (project_id, key)
       )
     `)
@@ -239,8 +238,8 @@ describe('graph CLI cleanup commands', () => {
     const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000
     const now = Date.now()
     sharedDb.prepare(
-      'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(project_id, key) DO UPDATE SET data = excluded.data'
-    ).run(testProjectId, 'test:key', kvData, expiresAt, now, now)
+      'INSERT OR REPLACE INTO tui_preferences (project_id, key, data, expires_at, updated_at) VALUES (?, ?, ?, ?, ?)'
+    ).run(testProjectId, 'test:key', kvData, expiresAt, now)
     
     const cacheDir = resolveGraphCacheDirLegacy(testProjectId, resolvedDataDir)
     mkdirSync(cacheDir, { recursive: true })
@@ -249,7 +248,7 @@ describe('graph CLI cleanup commands', () => {
     
     expect(existsSync(cacheDir)).toBe(true)
     
-    const beforeCount = sharedDb.prepare('SELECT COUNT(*) as count FROM project_kv').get() as { count: number }
+    const beforeCount = sharedDb.prepare('SELECT COUNT(*) as count FROM tui_preferences').get() as { count: number }
     expect(beforeCount.count).toBe(1)
     
     const removeResult = spawnSync('bun', [
@@ -266,11 +265,11 @@ describe('graph CLI cleanup commands', () => {
     expect(removeResult.status).toBe(0)
     expect(existsSync(cacheDir)).toBe(false)
     
-    const afterCount = sharedDb.prepare('SELECT COUNT(*) as count FROM project_kv').get() as { count: number }
+    const afterCount = sharedDb.prepare('SELECT COUNT(*) as count FROM tui_preferences').get() as { count: number }
     expect(afterCount.count).toBe(1)
     
     const kvEntry = sharedDb.prepare(
-      'SELECT data FROM project_kv WHERE project_id = ? AND key = ?'
+      'SELECT data FROM tui_preferences WHERE project_id = ? AND key = ?'
     ).get(testProjectId, 'test:key') as { data: string } | undefined
     expect(kvEntry).toBeDefined()
     expect(JSON.parse(kvEntry!.data)).toEqual({ test: 'value' })

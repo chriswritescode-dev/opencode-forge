@@ -3,52 +3,104 @@ import { Database } from 'bun:sqlite'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import { mkdtempSync, rmSync } from 'fs'
-import { type LoopState } from '../src/services/loop'
+import { tmpdir } from 'os'
 
-function createTestKvDb(tempDir: string): Database {
+function createTestDb(tempDir: string): Database {
   const dbPath = join(tempDir, 'memory.db')
   const db = new Database(dbPath)
 
   db.run(`
-    CREATE TABLE IF NOT EXISTS project_kv (
+    CREATE TABLE IF NOT EXISTS loops (
       project_id TEXT NOT NULL,
-      key TEXT NOT NULL,
-      data TEXT NOT NULL,
-      expires_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (project_id, key)
+      loop_name TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('running','completed','cancelled','errored','stalled')),
+      current_session_id TEXT NOT NULL,
+      worktree INTEGER NOT NULL,
+      worktree_dir TEXT NOT NULL,
+      worktree_branch TEXT,
+      project_dir TEXT NOT NULL,
+      max_iterations INTEGER NOT NULL,
+      iteration INTEGER NOT NULL DEFAULT 0,
+      audit_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      phase TEXT NOT NULL CHECK(phase IN ('coding','auditing')),
+      audit INTEGER NOT NULL,
+      completion_signal TEXT,
+      execution_model TEXT,
+      auditor_model TEXT,
+      model_failed INTEGER NOT NULL DEFAULT 0,
+      sandbox INTEGER NOT NULL DEFAULT 0,
+      sandbox_container TEXT,
+      started_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      termination_reason TEXT,
+      completion_summary TEXT,
+      workspace_id TEXT,
+      PRIMARY KEY (project_id, loop_name)
+    )
+  `)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS loop_large_fields (
+      project_id TEXT NOT NULL,
+      loop_name TEXT NOT NULL,
+      prompt TEXT,
+      last_audit_result TEXT,
+      PRIMARY KEY (project_id, loop_name),
+      FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
     )
   `)
 
   return db
 }
 
-function insertLoopState(db: Database, projectId: string, loopName: string, state: Partial<LoopState>): void {
-  const defaultState: LoopState = {
-    sessionId: 'test-session-id',
-    loopName,
-    worktreeBranch: 'main',
-    worktreeDir: '/tmp/test-worktree',
-    worktree: true,
-    iteration: 1,
-    maxIterations: 10,
-    phase: 'coding',
-    startedAt: new Date().toISOString(),
-    active: true,
-    audit: false,
-    errorCount: 0,
-    auditCount: 0,
-    completionSignal: null,
-    ...state,
-  }
-
-  const now = Date.now()
-  const expiresAt = state.completedAt ? now + 86400000 : now + 86400000
-  const data = JSON.stringify(defaultState)
-
+function insertLoopState(db: Database, projectId: string, loopName: string, state: {
+  sessionId?: string
+  worktreeBranch?: string | null
+  worktreeDir?: string
+  worktree?: boolean
+  iteration?: number
+  maxIterations?: number
+  phase?: 'coding' | 'auditing'
+  status?: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'
+  startedAt?: number
+  completedAt?: number | null
+  terminationReason?: string | null
+} = {}): void {
+  const now = state.startedAt ?? Date.now()
   db.run(
-    'INSERT OR REPLACE INTO project_kv (project_id, key, data, expires_at, updated_at) VALUES (?, ?, ?, ?, ?)',
-    [projectId, `loop:${loopName}`, data, expiresAt, now]
+    `INSERT INTO loops (
+      project_id, loop_name, status, current_session_id, worktree, worktree_dir,
+      worktree_branch, project_dir, max_iterations, iteration, audit_count,
+      error_count, phase, audit, completion_signal, execution_model, auditor_model,
+      model_failed, sandbox, sandbox_container, started_at, completed_at,
+      termination_reason, completion_summary
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      projectId,
+      loopName,
+      state.status ?? 'running',
+      state.sessionId ?? 'test-session-id',
+      state.worktree ? 1 : 0,
+      state.worktreeDir ?? '/tmp/test-worktree',
+      state.worktreeBranch ?? null,
+      state.worktreeDir ?? '/tmp/test-worktree',
+      state.maxIterations ?? 10,
+      state.iteration ?? 1,
+      0,
+      0,
+      state.phase ?? 'coding',
+      0,
+      null,
+      null,
+      null,
+      0,
+      0,
+      null,
+      now,
+      state.completedAt ?? null,
+      state.terminationReason ?? null,
+      null,
+    ]
   )
 }
 
@@ -57,7 +109,7 @@ describe('CLI Status - list-worktrees', () => {
   let originalLog: typeof console.log
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join('.', 'temp-status-test-'))
+    tempDir = mkdtempSync(join(tmpdir(), 'temp-status-test-'))
     originalLog = console.log
   })
 
@@ -69,7 +121,7 @@ describe('CLI Status - list-worktrees', () => {
   })
 
   test('lists active worktree names', async () => {
-    const db = createTestKvDb(tempDir)
+    const db = createTestDb(tempDir)
     insertLoopState(db, 'test-project', 'worktree-one', {})
     insertLoopState(db, 'test-project', 'worktree-two', {})
     db.close()
@@ -89,52 +141,9 @@ describe('CLI Status - list-worktrees', () => {
     expect(outputLines).toContain('worktree-two')
   })
 
-  test('skips expired entries', async () => {
-    const db = createTestKvDb(tempDir)
-    const db2 = new Database(join(tempDir, 'memory.db'))
-    const now = Date.now()
-    const expiredAt = now - 86400000
-
-    const expiredState: LoopState = {
-      sessionId: 'test-session',
-      loopName: 'expired-worktree',
-      worktreeBranch: 'main',
-      worktreeDir: '/tmp/test',
-      worktree: true,
-      iteration: 1,
-      maxIterations: 10,
-      phase: 'coding',
-      startedAt: new Date().toISOString(),
-      active: true,
-      audit: false,
-      errorCount: 0,
-      auditCount: 0,
-      completionSignal: null,
-    }
-
-    db2.run(
-      'INSERT INTO project_kv (project_id, key, data, expires_at, updated_at) VALUES (?, ?, ?, ?, ?)',
-      ['test-project', 'loop:expired-worktree', JSON.stringify(expiredState), expiredAt, now]
-    )
-    db2.close()
-
-    const outputLines: string[] = []
-    console.log = (msg: string) => outputLines.push(msg)
-
-    const { run } = await import('../src/cli/commands/status')
-    await run({
-      dbPath: join(tempDir, 'memory.db'),
-      resolvedProjectId: 'test-project',
-      server: 'http://localhost:5551',
-      listWorktrees: true,
-    })
-
-    expect(outputLines).not.toContain('expired-worktree')
-  })
-
   test('includes inactive loops in list', async () => {
-    const db = createTestKvDb(tempDir)
-    insertLoopState(db, 'test-project', 'inactive-worktree', { active: false, completedAt: new Date().toISOString() })
+    const db = createTestDb(tempDir)
+    insertLoopState(db, 'test-project', 'inactive-worktree', { status: 'cancelled', completedAt: Date.now() })
     db.close()
 
     const outputLines: string[] = []
@@ -158,7 +167,7 @@ describe('CLI Status - summary', () => {
   let originalError: typeof console.error
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join('.', 'temp-status-summary-'))
+    tempDir = mkdtempSync(join(tmpdir(), 'temp-status-summary-'))
     originalLog = console.log
     originalError = console.error
   })
@@ -172,9 +181,9 @@ describe('CLI Status - summary', () => {
   })
 
   test('shows active loops when no name given', async () => {
-    const db = createTestKvDb(tempDir)
-    insertLoopState(db, 'test-project', 'active-one', { startedAt: new Date(Date.now() - 3600000).toISOString() })
-    insertLoopState(db, 'test-project', 'active-two', { startedAt: new Date(Date.now() - 1800000).toISOString() })
+    const db = createTestDb(tempDir)
+    insertLoopState(db, 'test-project', 'active-one', { startedAt: Date.now() - 3600000 })
+    insertLoopState(db, 'test-project', 'active-two', { startedAt: Date.now() - 1800000 })
     db.close()
 
     const outputLines: string[] = []
@@ -194,7 +203,7 @@ describe('CLI Status - summary', () => {
   })
 
   test('shows no loops message when empty', async () => {
-    const db = createTestKvDb(tempDir)
+    const db = createTestDb(tempDir)
     db.close()
 
     const outputLines: string[] = []
@@ -212,10 +221,10 @@ describe('CLI Status - summary', () => {
   })
 
   test('shows recently completed loops', async () => {
-    const db = createTestKvDb(tempDir)
+    const db = createTestDb(tempDir)
     insertLoopState(db, 'test-project', 'completed-one', {
-      active: false,
-      completedAt: new Date().toISOString(),
+      status: 'completed',
+      completedAt: Date.now(),
       terminationReason: 'success',
     })
     db.close()
@@ -243,7 +252,7 @@ describe('CLI Status - partial matching', () => {
   let originalError: typeof console.error
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join('.', 'temp-status-partial-'))
+    tempDir = mkdtempSync(join(tmpdir(), 'temp-status-partial-'))
     originalLog = console.log
     originalError = console.error
   })
@@ -257,12 +266,12 @@ describe('CLI Status - partial matching', () => {
   })
 
   test('partial name matches single active loop', async () => {
-    const db = createTestKvDb(tempDir)
+    const db = createTestDb(tempDir)
     insertLoopState(db, 'test-project', 'loop-feat-auth', {
-      startedAt: new Date(Date.now() - 3600000).toISOString(),
+      startedAt: Date.now() - 3600000,
     })
     insertLoopState(db, 'test-project', 'loop-fix-bug', {
-      startedAt: new Date(Date.now() - 1800000).toISOString(),
+      startedAt: Date.now() - 1800000,
     })
     db.close()
 
@@ -282,15 +291,14 @@ describe('CLI Status - partial matching', () => {
   })
 
   test('partial name matches single recent loop', async () => {
-    const db = createTestKvDb(tempDir)
+    const db = createTestDb(tempDir)
     insertLoopState(db, 'test-project', 'loop-completed-auth', {
-      active: false,
-      completedAt: new Date().toISOString(),
+      status: 'completed',
+      completedAt: Date.now(),
       terminationReason: 'success',
     })
     insertLoopState(db, 'test-project', 'loop-fix-bug', {
-      active: true,
-      startedAt: new Date(Date.now() - 1800000).toISOString(),
+      startedAt: Date.now() - 1800000,
     })
     db.close()
 
@@ -310,7 +318,7 @@ describe('CLI Status - partial matching', () => {
   })
 
   test('partial name matches multiple loops lists ambiguous', async () => {
-    const db = createTestKvDb(tempDir)
+    const db = createTestDb(tempDir)
     insertLoopState(db, 'test-project', 'loop-feat-auth', {})
     insertLoopState(db, 'test-project', 'loop-auth-fix', {})
     db.close()
@@ -346,14 +354,14 @@ describe('CLI Status - partial matching', () => {
   })
 
   test('partial name matches via worktreeBranch field', async () => {
-    const db = createTestKvDb(tempDir)
+    const db = createTestDb(tempDir)
     insertLoopState(db, 'test-project', 'loop-feat-auth', {
       worktreeBranch: 'feat/auth',
-      startedAt: new Date(Date.now() - 3600000).toISOString(),
+      startedAt: Date.now() - 3600000,
     })
     insertLoopState(db, 'test-project', 'loop-fix-bug', {
       worktreeBranch: 'fix/bug',
-      startedAt: new Date(Date.now() - 1800000).toISOString(),
+      startedAt: Date.now() - 1800000,
     })
     db.close()
 
@@ -374,9 +382,9 @@ describe('CLI Status - partial matching', () => {
   })
 
   test('case-insensitive matching works', async () => {
-    const db = createTestKvDb(tempDir)
+    const db = createTestDb(tempDir)
     insertLoopState(db, 'test-project', 'loop-feat-auth', {
-      startedAt: new Date(Date.now() - 3600000).toISOString(),
+      startedAt: Date.now() - 3600000,
     })
     db.close()
 
@@ -396,12 +404,12 @@ describe('CLI Status - partial matching', () => {
   })
 
   test('exact match takes priority over partial', async () => {
-    const db = createTestKvDb(tempDir)
+    const db = createTestDb(tempDir)
     insertLoopState(db, 'test-project', 'auth', {
-      startedAt: new Date(Date.now() - 3600000).toISOString(),
+      startedAt: Date.now() - 3600000,
     })
     insertLoopState(db, 'test-project', 'loop-auth', {
-      startedAt: new Date(Date.now() - 1800000).toISOString(),
+      startedAt: Date.now() - 1800000,
     })
     db.close()
 
@@ -422,7 +430,7 @@ describe('CLI Status - partial matching', () => {
   })
 
   test('--list-worktrees with filter returns filtered results', async () => {
-    const db = createTestKvDb(tempDir)
+    const db = createTestDb(tempDir)
     insertLoopState(db, 'test-project', 'loop-feat-auth', { worktreeBranch: 'feat/auth' })
     insertLoopState(db, 'test-project', 'loop-fix-bug', { worktreeBranch: 'fix/bug' })
     insertLoopState(db, 'test-project', 'loop-update-deps', {})
@@ -447,7 +455,7 @@ describe('CLI Status - partial matching', () => {
   })
 
   test('--list-worktrees without filter returns all', async () => {
-    const db = createTestKvDb(tempDir)
+    const db = createTestDb(tempDir)
     insertLoopState(db, 'test-project', 'loop-feat-auth', {})
     insertLoopState(db, 'test-project', 'loop-fix-bug', {})
     db.close()

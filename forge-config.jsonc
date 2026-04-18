@@ -33,9 +33,7 @@
     "enabled": true,
     "defaultMaxIterations": 15,
     "cleanupWorktree": false,
-    "defaultAudit": true,
     "model": "",
-    "minAudits": 1,
     "stallTimeoutMs": 60000,
     // Worktree loop completion logging (off by default)
     "worktreeLogging": {
@@ -65,8 +63,8 @@
     "showVersion": true
   },
 
-  // Default TTL for KV store entries in milliseconds (default: 604800000 / 7 days)
-  "defaultKvTtlMs": 604800000,
+  // TTL in ms for completed/cancelled loops before cleanup. Default: 604800000 (7 days)
+  "completedLoopTtlMs": 604800000,
 
   // Per-agent overrides (temperature range: 0.0 - 2.0)
   // Keys are agent display names (e.g., "code", "architect", "auditor")

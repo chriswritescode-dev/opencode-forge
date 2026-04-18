@@ -1,61 +1,4 @@
 /**
- * Scope for memory entries used in RAG-style memory injection.
- */
-export type MemoryScope = 'convention' | 'decision' | 'context'
-
-/**
- * A memory entry stored for retrieval-augmented generation.
- */
-export interface Memory {
-  id: number
-  projectId: string
-  scope: MemoryScope
-  content: string
-  filePath: string | null
-  accessCount: number
-  lastAccessedAt: number | null
-  createdAt: number
-  updatedAt: number
-}
-
-/**
- * Input for creating a new memory entry.
- */
-export interface CreateMemoryInput {
-  projectId: string
-  scope: MemoryScope
-  content: string
-  filePath?: string
-}
-
-/**
- * Input for updating an existing memory entry.
- */
-export interface UpdateMemoryInput {
-  content?: string
-  scope?: MemoryScope
-}
-
-/**
- * A memory entry with its similarity distance from a query.
- */
-export interface MemorySearchResult {
-  memory: Memory
-  distance: number
-}
-
-/**
- * Statistics about memory usage for a project.
- */
-export interface MemoryStats {
-  projectId: string
-  total: number
-  byScope: Record<MemoryScope, number>
-}
-
-
-
-/**
  * Configuration for plugin logging.
  */
 export interface LoggingConfig {
@@ -96,14 +39,11 @@ export interface LoopConfig {
   defaultMaxIterations?: number
   /** Clean up worktrees when loops complete. */
   cleanupWorktree?: boolean
-  /** Enable automatic code auditing after each iteration. */
-  defaultAudit?: boolean
+
   /** Model to use for loop iterations. */
   model?: string
   /** Timeout in ms before considering a loop stalled. */
   stallTimeoutMs?: number
-  /** Minimum number of audits before a loop can complete. */
-  minAudits?: number
   /** Worktree loop completion logging configuration. */
   worktreeLogging?: WorktreeLoggingConfig
 }
@@ -119,15 +59,6 @@ export interface SandboxConfig {
 }
 
 /**
- * Filter options for listing memories.
- */
-export interface ListMemoriesFilter {
-  scope?: MemoryScope
-  limit?: number
-  offset?: number
-}
-
-/**
  * Configuration for session compaction behavior.
  */
 export interface CompactionConfig {
@@ -135,25 +66,6 @@ export interface CompactionConfig {
   customPrompt?: boolean
   /** Maximum context tokens for compaction. */
   maxContextTokens?: number
-}
-
-/**
- * Configuration for memory injection into context.
- * @deprecated Use defaultKvTtlMs in root config instead
- */
-export interface MemoryInjectionConfig {
-  /** Enable memory injection. */
-  enabled?: boolean
-  /** Maximum number of memory results to inject. */
-  maxResults?: number
-  /** Maximum similarity distance threshold. */
-  distanceThreshold?: number
-  /** Maximum tokens to inject. */
-  maxTokens?: number
-  /** @deprecated Use defaultKvTtlMs in root config instead */
-  cacheTtlMs?: number
-  /** Enable debug logging for memory injection. */
-  debug?: boolean
 }
 
 /**
@@ -229,7 +141,9 @@ export interface PluginConfig {
   loop?: LoopConfig
   /** @deprecated Use `loop` instead */
   ralph?: LoopConfig
-  /** Default TTL for KV entries in milliseconds. */
+  /** TTL for completed/cancelled/errored/stalled loops before sweep. Default 7 days. */
+  completedLoopTtlMs?: number
+  /** @deprecated Use completedLoopTtlMs instead */
   defaultKvTtlMs?: number
   /** TUI display configuration. */
   tui?: TuiConfig
@@ -241,43 +155,3 @@ export interface PluginConfig {
   graph?: GraphConfig
 }
 
-
-
-/**
- * Export format for memories and data.
- */
-export type ExportFormat = 'json' | 'markdown'
-
-/**
- * Options for exporting memories or other data.
- */
-export interface ExportOptions {
-  /** Export format. Defaults to 'json'. */
-  format?: ExportFormat
-  /** Output file path. */
-  output?: string
-  /** Project ID to export from. */
-  projectId?: string
-  /** Filter by memory scope. */
-  scope?: MemoryScope
-  /** Maximum number of entries to export. */
-  limit?: number
-  /** Offset for pagination. */
-  offset?: number
-  /** Path to database file. */
-  dbPath?: string
-}
-
-/**
- * Options for importing data.
- */
-export interface ImportOptions {
-  /** Import format. Defaults to 'json'. */
-  format?: ExportFormat
-  /** Target project ID. */
-  projectId: string
-  /** Overwrite existing entries. */
-  force?: boolean
-  /** Path to database file. */
-  dbPath?: string
-}

@@ -8,7 +8,7 @@
 import { Database } from 'bun:sqlite'
 import { existsSync } from 'fs'
 import { join } from 'path'
-import { resolveDataDir } from '../storage'
+import { resolveDataDir, createTuiPrefsRepo } from '../storage'
 import type { PluginConfig } from '../types'
 
 export interface ExecutionPreferences {
@@ -28,7 +28,7 @@ function getDbPath(): string {
 }
 
 /**
- * Reads last-used execution preferences from project KV.
+ * Reads last-used execution preferences from TUI preferences.
  * 
  * @param projectId - The project ID (git commit hash)
  * @param dbPathOverride - Optional database path override (for testing)
@@ -42,18 +42,15 @@ export function readExecutionPreferences(projectId: string, dbPathOverride?: str
   let db: Database | null = null
   try {
     db = new Database(dbPath, { readonly: true })
-    const now = Date.now()
-    const row = db.prepare(
-      'SELECT data FROM project_kv WHERE project_id = ? AND key = ? AND expires_at > ?'
-    ).get(projectId, PREFERENCES_KEY, now) as { data: string } | null
-
-    if (!row) return null
+    const repo = createTuiPrefsRepo(db)
+    const stored = repo.get<ExecutionPreferences>(projectId, PREFERENCES_KEY)
     
-    const parsed = JSON.parse(row.data)
+    if (!stored) return null
+    
     return {
-      mode: parsed.mode ?? 'Loop (worktree)',
-      executionModel: parsed.executionModel,
-      auditorModel: parsed.auditorModel,
+      mode: stored.mode ?? 'Loop (worktree)',
+      executionModel: stored.executionModel,
+      auditorModel: stored.auditorModel,
     }
   } catch {
     return null
@@ -63,7 +60,7 @@ export function readExecutionPreferences(projectId: string, dbPathOverride?: str
 }
 
 /**
- * Writes execution preferences to project KV after successful launch.
+ * Writes execution preferences to TUI preferences after successful launch.
  * 
  * @param projectId - The project ID (git commit hash)
  * @param prefs - The preferences to persist
@@ -83,18 +80,9 @@ export function writeExecutionPreferences(
   try {
     db = new Database(dbPath)
     db.run('PRAGMA busy_timeout=5000')
-    const now = Date.now()
+    const repo = createTuiPrefsRepo(db)
 
-    db.prepare(
-      'INSERT OR REPLACE INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(
-      projectId,
-      PREFERENCES_KEY,
-      JSON.stringify(prefs),
-      now + TTL_MS,
-      now,
-      now
-    )
+    repo.set(projectId, PREFERENCES_KEY, prefs, TTL_MS)
     return true
   } catch {
     return false

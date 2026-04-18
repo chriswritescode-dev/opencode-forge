@@ -10,6 +10,15 @@
   <a href="https://github.com/chriswritescode-dev/opencode-forge/blob/main/LICENSE"><img src="https://img.shields.io/github/license/chriswritescode-dev/opencode-forge" alt="License" /></a>
 </p>
 
+## Breaking change (v0.2.0)
+
+Forge has replaced its generic key-value store with dedicated typed tables for loops, plans, review findings, graph status, and TUI preferences. On upgrade:
+
+- Existing loops, plans, review findings, graph-status entries, and TUI preferences stored in the old `project_kv` table are dropped.
+- Active loops from the previous version will not be resumed (they are already effectively dead due to the schema change and should be considered cancelled).
+- No user action required other than restarting opencode.
+- The config key `defaultKvTtlMs` has been renamed to `completedLoopTtlMs`. The old name still works with a deprecation warning for one release cycle.
+
 ## Quick Start
 
 ```bash
@@ -328,9 +337,7 @@ You can edit this file to customize settings. The file is created only if it doe
     "enabled": true,               // Enable iterative loops
     "defaultMaxIterations": 15,    // Max iterations (0 = unlimited)
     "cleanupWorktree": false,      // Auto-remove worktree on cancel
-    "defaultAudit": true,          // Run auditor after each coding iteration
     "model": "",                   // Model override for loop sessions
-    "minAudits": 1,                // Minimum audit iterations before completion
     "stallTimeoutMs": 60000        // Stall detection timeout (60s)
   },
 
@@ -355,8 +362,8 @@ You can edit this file to customize settings. The file is created only if it doe
     "showVersion": true            // Show plugin version in sidebar title
   },
 
-  // Default TTL for KV store entries in milliseconds (default: 604800000 / 7 days)
-  "defaultKvTtlMs": 604800000,
+  // TTL in ms for completed/cancelled loops before cleanup. Default: 604800000 (7 days)
+  "completedLoopTtlMs": 604800000,
 
   // Per-agent overrides (temperature range: 0.0 - 2.0)
   // Keys are agent display names (e.g., "code", "architect", "auditor")
@@ -371,8 +378,8 @@ You can edit this file to customize settings. The file is created only if it doe
 ### Options
 
 #### Top-level
-- `dataDir` - Data directory for plugin storage (graph.db, KV store, logs). When empty, resolves to `~/.local/share/opencode/forge` (or `XDG_DATA_HOME` equivalent) (default: `""`)
-- `defaultKvTtlMs` - Default TTL for KV store entries in milliseconds (default: `604800000` / 7 days)
+- `dataDir` - Data directory for plugin storage (graph.db, logs). When empty, resolves to `~/.local/share/opencode/forge` (or `XDG_DATA_HOME` equivalent) (default: `""`)
+- `completedLoopTtlMs` - TTL for completed/cancelled/errored/stalled loops before sweep (default: `604800000` / 7 days). Deprecated alias `defaultKvTtlMs` still works for backward compatibility.
 - `executionModel` - Model override for plan execution sessions, format: `provider/model` (e.g. `anthropic/claude-sonnet-4-20250514`). When set, `plan-execute` uses this model for the new Code session. When empty or omitted, OpenCode's default model is used (typically the `model` field from `opencode.json`). **Recommended:** Set this to a fast, cheap model (e.g. Haiku or MiniMax) and use a smart model (e.g. Opus) for the Architect session — planning needs reasoning, execution needs speed. This value is used as a fallback when no per-launch selection is made.
 - `auditorModel` - Model override for the auditor agent (`provider/model`). When set, overrides the auditor agent's default model. When not set, uses platform default (default: `""`). This value is used as a fallback when no per-launch selection is made.
 - `agents` - Per-agent temperature overrides keyed by display name (e.g., `"code"`, `"architect"`, `"auditor"`). Temperature range: `0.0` - `2.0` (default: `undefined`)
@@ -396,10 +403,10 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 - `loop.enabled` - Enable iterative development loops (default: `true`)
 - `loop.defaultMaxIterations` - Default max iterations for loops, 0 = unlimited (default: `15`)
 - `loop.cleanupWorktree` - Auto-remove worktree on cancel (default: `false`)
-- `loop.defaultAudit` - Run auditor after each coding iteration by default (default: `true`)
 - `loop.model` - Model override for loop sessions (`provider/model`), falls back to `executionModel` (default: `""`)
 - `loop.stallTimeoutMs` - Watchdog stall detection timeout in milliseconds (default: `60000`)
-- `loop.minAudits` - Minimum audit iterations required before completion (default: `1`)
+
+**Migration note:** As of v0.2.0, auditing runs unconditionally after each coding iteration. The `loop.defaultAudit` option was removed and audit is now always enabled. If you previously had `"defaultAudit": false` in your config, audits will now run on every iteration regardless of that setting.
 
 #### Sandbox
 - `sandbox.mode` - Sandbox mode: `"off"` or `"docker"` (default: `"off"`)
@@ -625,7 +632,7 @@ Loops default to current directory execution. Set `worktree: true` to run in an 
 
 ### Auditor Integration
 
-After each coding iteration, the auditor agent reviews changes against project conventions and stored review findings. Findings are persisted via `review-write` scoped to the loop's branch. Outstanding findings block completion, and a minimum audit count (`minAudits`, default: `1`) must be met before the completion promise is honored.
+After each coding iteration, the auditor agent reviews changes against project conventions and stored review findings. Findings are persisted via `review-write` scoped to the loop's branch. Outstanding `severity: 'bug'` findings block completion — the loop terminates only when the auditor has run at least once and zero bug-severity findings remain.
 
 ### Stall Detection
 
@@ -738,6 +745,27 @@ pnpm test       # Run tests
 pnpm typecheck  # Type check without emitting
 ```
 
+## Breaking Changes
+
+### v0.2.0 - Typed Storage Schema
+
+Forge has replaced its generic key-value store (`project_kv` table) with typed SQL-schema tables for loops, plans, review findings, and graph status. This eliminates whole-object read-modify-write concurrency bugs, adds real indexes for branch-scoped and status-scoped queries, and removes the silent 7-day TTL on all persisted data.
+
+**What changed:**
+- `loops` table - stores loop state with atomic updates for counters (error_count, audit_count, iteration)
+- `loop_large_fields` table - stores prompt and last_audit_result (lazy-loaded)
+- `plans` table - supports both session-staged and loop-bound plans with explicit promotion
+- `review_findings` table - write-once per (file, line), existence = open
+- `graph_status` table - graph indexing status with last-write-wins semantics
+
+**Upgrade impact:**
+- Existing `project_kv` data is dropped on upgrade
+- Active loops are preserved via the stale-reconciliation path
+- Completed loops and their plans will not be recoverable
+- No action required from users other than restarting opencode
+
+**Configuration change:**
+- `defaultKvTtlMs` renamed to `completedLoopTtlMs` (backward-compatible, falls back with deprecation warning)
 
 ## License
 

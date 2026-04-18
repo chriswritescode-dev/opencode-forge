@@ -110,7 +110,7 @@ At the start of each audit:
 2. Resolved findings are deleted via `review-delete`
 3. Unresolved findings are carried forward
 
-Outstanding findings block loop completion until `minAudits` is reached.
+Outstanding `severity: 'bug'` findings block loop completion — the loop terminates only when the auditor has run at least once and zero bug-severity findings remain.
 
 ## Worktree Isolation
 
@@ -149,10 +149,9 @@ See [sandbox documentation](#) in architecture.md for details.
 
 A loop completes when ALL of these are true:
 
-1. Code agent outputs the completion signal phrase
-2. Minimum audit count (`minAudits`) is reached
-3. No outstanding unresolved findings
-4. All verification commands in the plan pass (if using plan-execute)
+1. The auditor has run at least once (`auditCount >= 1`)
+2. Zero outstanding `severity: 'bug'` findings remain
+3. All verification commands in the plan pass (if using plan-execute)
 
 ## Cancellation
 

@@ -42,7 +42,7 @@ export function createToolExecuteBeforeHook(ctx: ToolContext): Hooks['tool.execu
 }
 
 export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execute.after'] {
-  const { loopService, logger, kvService, projectId, v2, config } = ctx
+  const { loopService, logger, plansRepo, projectId, v2, config } = ctx
 
   return async (
     input: { tool: string; sessionID: string; callID: string; args: unknown },
@@ -62,18 +62,17 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
           const matchedLabel = PLAN_EXECUTION_LABELS.find((l) => answerLower === l.toLowerCase() || answerLower.startsWith(l.toLowerCase()))
           
           if (matchedLabel?.toLowerCase() === 'execute here') {
-            // Read plan from KV (same as "New session" path)
-            const planKey = `plan:${input.sessionID}`
-            const planCached = kvService.get<string>(projectId, planKey)
-            if (!planCached) {
+            // Read plan from plans repo (same as "New session" path)
+            const planRow = plansRepo.getForSession(projectId, input.sessionID)
+            if (!planRow) {
               output.output = `${output.output}\n\nError: No cached plan found. Please ensure the plan is written via plan-write before approval.`
               logger.error('Plan approval: plan not found for "Execute here"')
               return
             }
-            const planText = typeof planCached === 'string' ? planCached : JSON.stringify(planCached, null, 2)
+            const planText = planRow.content
             
-            // Delete from KV after reading (consistent with other paths)
-            kvService.delete(projectId, planKey)
+            // Delete from plans repo after reading (consistent with other paths)
+            plansRepo.deleteForSession(projectId, input.sessionID)
             
             pendingExecutions.set(input.sessionID, {
               directory: ctx.directory,
@@ -91,15 +90,14 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
           }
           
           // Programmatic dispatch for "New session" and "Loop" paths
-          const planKey = `plan:${input.sessionID}`
-          const planCached = kvService.get<string>(projectId, planKey)
-          if (!planCached) {
+          const planRow = plansRepo.getForSession(projectId, input.sessionID)
+          if (!planRow) {
             output.output = `${output.output}\n\nError: No cached plan found. Please ensure the plan is written via plan-write before approval.`
             logger.error('Plan approval: plan not found')
             return
           }
           
-          const planText = typeof planCached === 'string' ? planCached : JSON.stringify(planCached, null, 2)
+          const planText = planRow.content
           const title = extractPlanTitle(planText)
           
           if (matchedLabel === 'New session') {
@@ -115,7 +113,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
               }
               const newSessionId = createResult.data.id
               
-              kvService.delete(projectId, `plan:${input.sessionID}`)
+              plansRepo.deleteForSession(projectId, input.sessionID)
               
               retryWithModelFallback(
                 () => v2.session.promptAsync({
@@ -164,33 +162,46 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
               : 'Starting loop in-place...'
             logger.log(`Plan approval: "${matchedLabel}" — starting loop with loop name "${uniqueLoopName}"`)
             
-            // Store plan under the unique worktree name (same name that setupLoop will use)
-            kvService.set(projectId, `plan:${uniqueLoopName}`, planText)
-            kvService.delete(projectId, `plan:${input.sessionID}`)
-            
             const loopModel = parseModelString(config.loop?.model) ?? parseModelString(config.executionModel)
             const executionModel = config.loop?.model ?? config.executionModel
             const auditorModel = config.auditorModel ?? config.loop?.model ?? config.executionModel
             
+            // Defer architect session abort until setupLoop completes, so we can roll back on failure.
+            // The plan row in plansRepo is kept until success — if setupLoop fails the user can retry.
             setupLoop(ctx, {
               prompt: planText,
               sessionTitle: `Loop: ${title}`,
               loopName: uniqueLoopName,
               completionSignal: DEFAULT_COMPLETION_SIGNAL,
               maxIterations: config.loop?.defaultMaxIterations ?? 0,
-              audit: config.loop?.defaultAudit ?? true,
+              audit: true,
               agent: 'code',
               model: loopModel,
               worktree: isWorktree,
               executionModel: executionModel,
               auditorModel: auditorModel,
               onLoopStarted: (id) => ctx.loopHandler.startWatchdog(id),
+            }).then((result) => {
+              // setupLoop returns a multi-line success string starting with "Memory loop activated!".
+              // Any other non-empty string indicates a failure (e.g. "Failed to create worktree.",
+              // "Loop session created but failed to send prompt.", etc.).
+              const isSuccess = typeof result === 'string' && result.startsWith('Memory loop activated')
+              if (!isSuccess) {
+                logger.error('Plan approval: loop setup failed, keeping architect session active', result)
+                // Plan row stays in plansRepo so the user can retry from the same architect session.
+                return
+              }
+              logger.log('Plan approval: loop setup complete, aborting architect session')
+              plansRepo.deleteForSession(projectId, input.sessionID)
+              v2.session.abort({ sessionID: input.sessionID }).catch((err) => {
+                logger.error('Plan approval: failed to abort architect session', err)
+              })
             }).catch((err) => {
-              logger.error('Plan approval: failed to start loop', err)
-            })
-            
-            v2.session.abort({ sessionID: input.sessionID }).catch((err) => {
-              logger.error('Plan approval: failed to abort architect session', err)
+              logger.error('Plan approval: setupLoop threw unexpectedly', err)
+              // Unexpected throw — abort the architect session but leave the plan row so the user can retry.
+              v2.session.abort({ sessionID: input.sessionID }).catch((abortErr) => {
+                logger.error('Plan approval: failed to abort architect session', abortErr)
+              })
             })
             return
           }

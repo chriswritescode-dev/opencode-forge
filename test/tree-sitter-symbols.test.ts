@@ -137,3 +137,107 @@ test('non-exported function declaration produces one symbol', async () => {
   expect(outline!.symbols).toHaveLength(1)
   expect(outline!.symbols[0].name).toBe('internalFunc')
 })
+
+test('static value import sets isTypeOnly=false, isDynamic=false', async () => {
+  const testFile = join(testDir, 'imports.ts')
+  writeFileSync(testFile, `import { foo } from './foo'`)
+  execSync('git add .', { cwd: testDir })
+  
+  const outline = await treeSitter.getFileOutline(testFile)
+  
+  expect(outline).not.toBeNull()
+  expect(outline!.imports).toHaveLength(1)
+  const imp = outline!.imports[0]
+  expect(imp.source).toBe('./foo')
+  expect(imp.specifiers).toEqual(['foo'])
+  expect(imp.isTypeOnly).toBe(false)
+  expect(imp.isDynamic).toBe(false)
+})
+
+test('top-level import type sets isTypeOnly=true', async () => {
+  const testFile = join(testDir, 'type-import.ts')
+  writeFileSync(testFile, `import type { Foo } from './types'`)
+  execSync('git add .', { cwd: testDir })
+  
+  const outline = await treeSitter.getFileOutline(testFile)
+  
+  expect(outline).not.toBeNull()
+  expect(outline!.imports).toHaveLength(1)
+  const imp = outline!.imports[0]
+  expect(imp.source).toBe('./types')
+  expect(imp.specifiers).toEqual(['Foo'])
+  expect(imp.isTypeOnly).toBe(true)
+  expect(imp.isDynamic).toBe(false)
+})
+
+test('per-specifier type imports are stripped from specifiers', async () => {
+  const testFile = join(testDir, 'mixed-import.ts')
+  writeFileSync(testFile, `import { type Foo, bar } from './mixed'`)
+  execSync('git add .', { cwd: testDir })
+  
+  const outline = await treeSitter.getFileOutline(testFile)
+  
+  expect(outline).not.toBeNull()
+  expect(outline!.imports).toHaveLength(1)
+  const imp = outline!.imports[0]
+  expect(imp.source).toBe('./mixed')
+  expect(imp.specifiers).toEqual(['bar'])
+  expect(imp.isTypeOnly).toBe(false)
+  expect(imp.isDynamic).toBe(false)
+})
+
+test('all per-specifier type imports sets isTypeOnly=true', async () => {
+  const testFile = join(testDir, 'all-type-import.ts')
+  writeFileSync(testFile, `import { type Foo, type Bar } from './types'`)
+  execSync('git add .', { cwd: testDir })
+  
+  const outline = await treeSitter.getFileOutline(testFile)
+  
+  expect(outline).not.toBeNull()
+  expect(outline!.imports).toHaveLength(1)
+  const imp = outline!.imports[0]
+  expect(imp.source).toBe('./types')
+  expect(imp.specifiers).toEqual([])
+  expect(imp.isTypeOnly).toBe(true)
+  expect(imp.isDynamic).toBe(false)
+})
+
+test('dynamic await import produces an ImportInfo with isDynamic=true and source', async () => {
+  const testFile = join(testDir, 'dynamic.ts')
+  writeFileSync(testFile, `async function load() {
+  await import('./dynamic-module')
+}`)
+  execSync('git add .', { cwd: testDir })
+  
+  const outline = await treeSitter.getFileOutline(testFile)
+  
+  expect(outline).not.toBeNull()
+  expect(outline!.imports).toHaveLength(1)
+  const imp = outline!.imports[0]
+  expect(imp.source).toBe('./dynamic-module')
+  expect(imp.specifiers).toEqual([])
+  expect(imp.isTypeOnly).toBe(false)
+  expect(imp.isDynamic).toBe(true)
+})
+
+test('static + dynamic import in same file produces 2 imports', async () => {
+  const testFile = join(testDir, 'both.ts')
+  writeFileSync(testFile, `import { foo } from './foo'
+async function load() {
+  await import('./dynamic')
+}`)
+  execSync('git add .', { cwd: testDir })
+  
+  const outline = await treeSitter.getFileOutline(testFile)
+  
+  expect(outline).not.toBeNull()
+  expect(outline!.imports).toHaveLength(2)
+  const staticImp = outline!.imports.find(i => !i.isDynamic)
+  const dynamicImp = outline!.imports.find(i => i.isDynamic)
+  expect(staticImp).toBeDefined()
+  expect(staticImp!.source).toBe('./foo')
+  expect(staticImp!.specifiers).toEqual(['foo'])
+  expect(dynamicImp).toBeDefined()
+  expect(dynamicImp!.source).toBe('./dynamic')
+  expect(dynamicImp!.specifiers).toEqual([])
+})

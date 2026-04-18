@@ -193,7 +193,7 @@ describe('bundled sample config', () => {
     expect(parsed.sandbox).toBeDefined()
     expect(parsed.graph).toBeDefined()
     expect(parsed.tui).toBeDefined()
-    expect(parsed.defaultKvTtlMs).toBeDefined()
+    expect(parsed.completedLoopTtlMs).toBeDefined()
   })
 
   test('bundled config compaction includes maxContextTokens', () => {
@@ -221,7 +221,7 @@ describe('bundled sample config', () => {
     expect(parsed.compaction?.maxContextTokens).toBeDefined()
   })
 
-  test('bundled config includes dataDir and defaultKvTtlMs', () => {
+  test('bundled config includes dataDir and completedLoopTtlMs', () => {
     const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
     const content = readFileSync(bundledConfigPath, 'utf-8')
     
@@ -244,7 +244,7 @@ describe('bundled sample config', () => {
     const parsed = JSON.parse(normalized)
     
     expect(parsed.dataDir).toBeDefined()
-    expect(parsed.defaultKvTtlMs).toBe(604800000)
+    expect(parsed.completedLoopTtlMs).toBe(604800000)
   })
 
   test('bundled config includes loop.worktreeLogging and is disabled by default', () => {

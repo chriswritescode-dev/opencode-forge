@@ -28,8 +28,8 @@ describe('Storage database corruption recovery', () => {
     const tablesBefore = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
     const tableNames = tablesBefore.map(t => t.name)
     expect(tableNames).toContain('migrations')
-    expect(tableNames).toContain('plugin_metadata')
-    expect(tableNames).toContain('project_kv')
+    expect(tableNames).toContain('loops')
+    expect(tableNames).toContain('tui_preferences')
     
     closeDatabase(db)
 
@@ -44,8 +44,8 @@ describe('Storage database corruption recovery', () => {
     const tablesAfter = recoveredDb.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
     const tableNamesAfter = tablesAfter.map(t => t.name)
     expect(tableNamesAfter).toContain('migrations')
-    expect(tableNamesAfter).toContain('plugin_metadata')
-    expect(tableNamesAfter).toContain('project_kv')
+    expect(tableNamesAfter).toContain('loops')
+    expect(tableNamesAfter).toContain('tui_preferences')
 
     closeDatabase(recoveredDb)
   })
@@ -61,20 +61,20 @@ describe('Storage database corruption recovery', () => {
     // Recover
     const recoveredDb = initializeDatabase(testDataDir)
     
-    // Insert a test row
+    // Insert a test row using tui_preferences table
     const testProjectId = 'test-project'
-    const testKey = 'test-key'
+    const testKey = 'test:key'
     const testData = JSON.stringify({ value: 'test-value' })
     const now = Date.now()
     
     recoveredDb.run(
-      'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-      [testProjectId, testKey, testData, now + 86400000, now, now]
+      'INSERT OR REPLACE INTO tui_preferences (project_id, key, data, expires_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      [testProjectId, testKey, testData, now + 86400000, now]
     )
 
     // Read it back
     const result = recoveredDb.prepare(
-      'SELECT data FROM project_kv WHERE project_id = ? AND key = ?'
+      'SELECT data FROM tui_preferences WHERE project_id = ? AND key = ?'
     ).get(testProjectId, testKey) as { data: string }
     
     expect(result).toBeDefined()

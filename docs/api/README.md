@@ -313,9 +313,7 @@ You can edit this file to customize settings. The file is created only if it doe
     "enabled": true,               // Enable iterative loops
     "defaultMaxIterations": 15,    // Max iterations (0 = unlimited)
     "cleanupWorktree": false,      // Auto-remove worktree on cancel
-    "defaultAudit": true,          // Run auditor after each coding iteration
     "model": "",                   // Model override for loop sessions
-    "minAudits": 1,                // Minimum audit iterations before completion
     "stallTimeoutMs": 60000        // Stall detection timeout (60s)
   },
 
@@ -340,8 +338,8 @@ You can edit this file to customize settings. The file is created only if it doe
     "showVersion": true            // Show plugin version in sidebar title
   },
 
-  // Default TTL for KV store entries in milliseconds (default: 604800000 / 7 days)
-  "defaultKvTtlMs": 604800000,
+  // TTL for completed/cancelled/errored/stalled loops before sweep (default: 604800000 / 7 days)
+  "completedLoopTtlMs": 604800000,
 
   // Per-agent overrides (temperature range: 0.0 - 2.0)
   // Keys are agent display names (e.g., "code", "architect", "auditor")
@@ -357,7 +355,7 @@ You can edit this file to customize settings. The file is created only if it doe
 
 #### Top-level
 - `dataDir` - Data directory for plugin storage (graph.db, KV store, logs). When empty, resolves to `~/.local/share/opencode/forge` (or `XDG_DATA_HOME` equivalent) (default: `""`)
-- `defaultKvTtlMs` - Default TTL for KV store entries in milliseconds (default: `604800000` / 7 days)
+- `completedLoopTtlMs` - TTL for completed/cancelled/errored/stalled loops before sweep (default: `604800000` / 7 days). Deprecated alias `defaultKvTtlMs` still works for backward compatibility.
 - `executionModel` - Model override for plan execution sessions, format: `provider/model` (e.g. `anthropic/claude-hautilus-3-5-20241022`). When set, `plan-execute` uses this model for the new Code session. When empty or omitted, OpenCode's default model is used (typically the `model` field from `opencode.json`). **Recommended:** Set this to a fast, cheap model (e.g. Haiku or MiniMax) and use a smart model (e.g. Opus) for the Architect session — planning needs reasoning, execution needs speed.
 - `auditorModel` - Model override for the auditor agent (`provider/model`). When set, overrides the auditor agent's default model. When not set, uses platform default (default: `""`)
 
@@ -380,10 +378,10 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 - `loop.enabled` - Enable iterative development loops (default: `true`)
 - `loop.defaultMaxIterations` - Default max iterations for loops, 0 = unlimited (default: `15`)
 - `loop.cleanupWorktree` - Auto-remove worktree on cancel (default: `false`)
-- `loop.defaultAudit` - Run auditor after each coding iteration by default (default: `true`)
 - `loop.model` - Model override for loop sessions (`provider/model`), falls back to `executionModel` (default: `""`)
 - `loop.stallTimeoutMs` - Watchdog stall detection timeout in milliseconds (default: `60000`)
-- `loop.minAudits` - Minimum audit iterations required before completion (default: `1`)
+
+**Migration note:** As of v0.2.0, auditing runs unconditionally after each coding iteration. The `loop.defaultAudit` option was removed.
 
 #### Sandbox
 - `sandbox.mode` - Sandbox mode: `"off"` or `"docker"` (default: `"off"`)
@@ -534,7 +532,7 @@ Loops default to current directory execution. Set `worktree: true` to run in an 
 
 ### Auditor Integration
 
-After each coding iteration, the auditor agent reviews changes against project conventions and stored review findings. Findings are persisted via `review-write` scoped to the loop's branch. Outstanding findings block completion, and a minimum audit count (`minAudits`, default: `1`) must be met before the completion promise is honored.
+After each coding iteration, the auditor agent reviews changes against project conventions and stored review findings. Findings are persisted via `review-write` scoped to the loop's branch. Outstanding `severity: 'bug'` findings block completion — the loop terminates only when the auditor has run at least once and zero bug-severity findings remain.
 
 ### Stall Detection
 

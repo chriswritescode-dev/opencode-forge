@@ -107,7 +107,7 @@ export interface GraphService {
    * Returns exported symbols that appear unused.
    * @param limit - Maximum number of results. Defaults to 50.
    */
-  getUnusedExports(limit?: number): Promise<UnusedExportResult[]>
+  getUnusedExports(limit?: number, includeInternalOnly?: boolean): Promise<UnusedExportResult[]>
   /**
    * Returns groups of files with duplicate code structures.
    * @param limit - Maximum number of result groups. Defaults to 20.
@@ -369,6 +369,10 @@ export function createGraphService(config: GraphServiceConfig): GraphService {
 
   let workerHealthy = true
 
+  async function ensureInit(): Promise<void> {
+    if (!initialized) await initialize()
+  }
+
   async function flushQueue(): Promise<void> {
     if (closing || isFlushing || pendingQueue.size === 0 || !workerHealthy) {
       if (!closing && !workerHealthy && pendingQueue.size > 0) {
@@ -509,9 +513,7 @@ export function createGraphService(config: GraphServiceConfig): GraphService {
         return scanInFlight
       }
 
-      if (!initialized) {
-        await initialize()
-      }
+      await ensureInit()
 
       emitStatus('indexing')
 
@@ -608,115 +610,107 @@ export function createGraphService(config: GraphServiceConfig): GraphService {
     },
 
     async getStats(): Promise<GraphStats> {
-      if (!initialized) await initialize()
+      await ensureInit()
       return client.getStats()
     },
 
     async getTopFiles(limit = 20): Promise<TopFileResult[]> {
-      if (!initialized) await initialize()
+      await ensureInit()
       return client.getTopFiles(limit)
     },
 
     async getFileDependents(relPath: string): Promise<FileDepResult[]> {
-      if (!initialized) await initialize()
-      const validatedPath = validateRelativePath(relPath)
-      if (!validatedPath) {
-        throw new Error(`Invalid path for getFileDependents: ${relPath}`)
-      }
-      return client.getFileDependents(validatedPath)
+      await ensureInit()
+      return client.getFileDependents(validateRelativePath(relPath))
     },
 
     async getFileDependencies(relPath: string): Promise<FileDepResult[]> {
-      if (!initialized) await initialize()
-      const validatedPath = validateRelativePath(relPath)
-      return client.getFileDependencies(validatedPath)
+      await ensureInit()
+      return client.getFileDependencies(validateRelativePath(relPath))
     },
 
     async getFileCoChanges(relPath: string): Promise<FileCoChangeResult[]> {
-      if (!initialized) await initialize()
-      const validatedPath = validateRelativePath(relPath)
-      return client.getFileCoChanges(validatedPath)
+      await ensureInit()
+      return client.getFileCoChanges(validateRelativePath(relPath))
     },
 
     async getFileBlastRadius(relPath: string): Promise<number> {
-      if (!initialized) await initialize()
-      const validatedPath = validateRelativePath(relPath)
-      return client.getFileBlastRadius(validatedPath)
+      await ensureInit()
+      return client.getFileBlastRadius(validateRelativePath(relPath))
     },
 
     async getFileSymbols(relPath: string): Promise<FileSymbolResult[]> {
-      if (!initialized) await initialize()
-      const validatedPath = validateRelativePath(relPath)
-      return client.getFileSymbols(validatedPath)
+      await ensureInit()
+      return client.getFileSymbols(validateRelativePath(relPath))
     },
 
     async findSymbols(name: string, limit = 50): Promise<SymbolSearchResult[]> {
-      if (!initialized) await initialize()
+      await ensureInit()
       return client.findSymbols(name, limit)
     },
 
     async searchSymbolsFts(query: string, limit = 20): Promise<SymbolSearchResult[]> {
-      if (!initialized) await initialize()
+      await ensureInit()
       return client.searchSymbolsFts(query, limit)
     },
 
     async getSymbolSignature(path: string, line: number): Promise<SymbolSignatureResult | null> {
-      if (!initialized) await initialize()
+      await ensureInit()
       return client.getSymbolSignature(path, line)
     },
 
     async getCallers(path: string, line: number): Promise<CallerResult[]> {
-      if (!initialized) await initialize()
+      await ensureInit()
       return client.getCallers(path, line)
     },
 
     async getCallees(path: string, line: number): Promise<CalleeResult[]> {
-      if (!initialized) await initialize()
+      await ensureInit()
       return client.getCallees(path, line)
     },
 
-    async getUnusedExports(limit = 50): Promise<UnusedExportResult[]> {
-      if (!initialized) await initialize()
-      return client.getUnusedExports(limit)
+    async getUnusedExports(limit = 50, includeInternalOnly = false): Promise<UnusedExportResult[]> {
+      await ensureInit()
+      return client.getUnusedExports(limit, includeInternalOnly)
     },
 
     async getDuplicateStructures(limit = 20): Promise<DuplicateStructureResult[]> {
-      if (!initialized) await initialize()
+      await ensureInit()
       return client.getDuplicateStructures(limit)
     },
 
     async getNearDuplicates(threshold = 0.8, limit = 50): Promise<NearDuplicateResult[]> {
-      if (!initialized) await initialize()
+      await ensureInit()
       return client.getNearDuplicates(threshold, limit)
     },
 
     async getExternalPackages(limit = 50): Promise<ExternalPackageResult[]> {
-      if (!initialized) await initialize()
+      await ensureInit()
       return client.getExternalPackages(limit)
     },
 
     async getOrphanFiles(limit = 50): Promise<OrphanFileResult[]> {
-      if (!initialized) await initialize()
+      await ensureInit()
       return client.getOrphanFiles(limit)
     },
 
     async getCircularDependencies(limit = 20): Promise<CircularDependencyResult[]> {
-      if (!initialized) await initialize()
+      await ensureInit()
       return client.getCircularDependencies(limit)
     },
 
     async getChangeImpact(paths: string[], maxDepth = 5): Promise<ChangeImpactResult> {
-      if (!initialized) await initialize()
+      await ensureInit()
       return client.getChangeImpact(paths, maxDepth)
     },
 
     async getSymbolReferences(name: string, limit = 50): Promise<SymbolReferenceResult[]> {
-      if (!initialized) await initialize()
+      await ensureInit()
       return client.getSymbolReferences(name, limit)
     },
 
     async render(opts?: { maxFiles?: number; maxSymbols?: number }): Promise<{ content: string; paths: string[] }> {
-      if (!initialized) await initialize()
+      await ensureInit()
       return client.render(opts)
     },
 
@@ -730,10 +724,8 @@ export function createGraphService(config: GraphServiceConfig): GraphService {
 
     async shouldScanOnStartup(): Promise<{ shouldScan: boolean; reason: string }> {
       // Ensure initialization first (needed for client.getStats())
-      if (!initialized) {
-        await initialize()
-      }
-      
+      await ensureInit()
+
       if (!dbPath) {
         return { shouldScan: true, reason: 'Graph database path not set' }
       }
@@ -742,11 +734,9 @@ export function createGraphService(config: GraphServiceConfig): GraphService {
 
     async ensureStartupIndex(): Promise<'scanned' | 'skipped'> {
       // Ensure initialization first (sets dbPath and initializes client)
-      if (!initialized) {
-        await initialize()
-      }
+      await ensureInit()
 
-      // Client is already initialized by this point (initialize() called at line 666-671 or 677-682)
+      // Client is already initialized by this point
       const decision = await determineStartupScan(dbPath, cwd, client)
       
       if (decision.shouldScan) {

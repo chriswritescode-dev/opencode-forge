@@ -6,7 +6,7 @@ const z = tool.schema
 
 interface GraphToolContext {
   graphService: GraphService | null
-  kvService: ToolContext['kvService']
+  graphStatusRepo: ToolContext['graphStatusRepo']
 }
 
 export function createGraphTools(ctx: ToolContext & GraphToolContext): Record<string, ReturnType<typeof tool>> {
@@ -35,9 +35,9 @@ export function createGraphTools(ctx: ToolContext & GraphToolContext): Record<st
 - Ready: ${graphService.ready}`
         }
 
-        // For status action, check KV store when not ready
+        // For status action, check graph_status table when not ready
         if (!graphService || !graphService.ready) {
-          const status = ctx.kvService.get<{ state: string; message?: string; stats?: { files: number; symbols: number; edges: number; calls: number } }>(ctx.projectId, 'graph:status')
+          const status = ctx.graphStatusRepo.read(ctx.projectId, ctx.directory)
           if (status) {
             if (status.state === 'error' && status.message) {
               const statsMsg = status.stats
@@ -84,8 +84,8 @@ export function createGraphTools(ctx: ToolContext & GraphToolContext): Record<st
       },
       execute: async (args) => {
         if (!graphService || !graphService.ready) {
-          // Check for error state in KV store
-          const status = ctx.kvService.get<{ state: string; message?: string }>(ctx.projectId, 'graph:status')
+          // Check for error state in graph_status table
+          const status = ctx.graphStatusRepo.read(ctx.projectId, ctx.directory)
           if (status?.state === 'error' && status.message) {
             return `Graph index unavailable: ${status.message}`
           }
@@ -170,9 +170,11 @@ export function createGraphTools(ctx: ToolContext & GraphToolContext): Record<st
     }),
 
     'graph-symbols': tool({
-      description: 'Query symbol-level graph information (find, search, callers, callees, etc.)',
+      description: 'Query symbol-level graph information (find, search, signature, callers, callees, etc.)',
       args: {
-        action: z.enum(['find', 'search', 'signature', 'callers', 'callees', 'references']).describe('Query type'),
+        action: z
+          .enum(['find', 'search', 'signature', 'callers', 'callees', 'references'])
+          .describe('Query type'),
         name: z.string().optional().describe('Symbol name'),
         file: z.string().optional().describe('File path'),
         kind: z.string().optional().describe('Symbol kind filter'),
@@ -180,8 +182,8 @@ export function createGraphTools(ctx: ToolContext & GraphToolContext): Record<st
       },
       execute: async (args) => {
         if (!graphService || !graphService.ready) {
-          // Check for error state in KV store
-          const status = ctx.kvService.get<{ state: string; message?: string }>(ctx.projectId, 'graph:status')
+          // Check for error state in graph_status table
+          const status = ctx.graphStatusRepo.read(ctx.projectId, ctx.directory)
           if (status?.state === 'error' && status.message) {
             return `Graph index unavailable: ${status.message}`
           }
@@ -274,11 +276,12 @@ export function createGraphTools(ctx: ToolContext & GraphToolContext): Record<st
         file: z.string().optional().describe('File path (optional)'),
         limit: z.number().optional().default(20).describe('Maximum results'),
         threshold: z.number().optional().default(0.8).describe('Similarity threshold (for near_duplicates)'),
+        includeInternalOnly: z.boolean().optional().default(false).describe('Include exports used only internally (default: false)'),
       },
       execute: async (args) => {
         if (!graphService || !graphService.ready) {
-          // Check for error state in KV store
-          const status = ctx.kvService.get<{ state: string; message?: string }>(ctx.projectId, 'graph:status')
+          // Check for error state in graph_status table
+          const status = ctx.graphStatusRepo.read(ctx.projectId, ctx.directory)
           if (status?.state === 'error' && status.message) {
             return `Graph index unavailable: ${status.message}`
           }
@@ -288,10 +291,13 @@ export function createGraphTools(ctx: ToolContext & GraphToolContext): Record<st
         try {
           switch (args.action) {
             case 'unused_exports': {
-              const results = await graphService.getUnusedExports(args.limit)
+              const results = await graphService.getUnusedExports(args.limit, args.includeInternalOnly)
               if (results.length === 0) return 'No unused exports found.'
               return results
-                .map((r) => `- **${r.name}** in ${r.path}:${r.line} (${r.kind})`)
+                .map((r) => {
+                  const suffix = r.usedInternally ? ' (used internally only)' : ''
+                  return `- **${r.name}** in ${r.path}:${r.line} (${r.kind})${suffix}`
+                })
                 .join('\n')
             }
 

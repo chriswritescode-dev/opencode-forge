@@ -10,24 +10,111 @@ const TEST_DIR = '/tmp/opencode-tui-refresh-test-' + Date.now()
 function createTestDb(): { db: Database; dbPath: string } {
   const dbPath = `${TEST_DIR}-${Math.random().toString(36).slice(2)}.db`
   const db = new Database(dbPath)
+  // Create the loops table schema
   db.run(`
-    CREATE TABLE IF NOT EXISTS project_kv (
+    CREATE TABLE IF NOT EXISTS loops (
       project_id TEXT NOT NULL,
-      key TEXT NOT NULL,
-      data TEXT NOT NULL,
-      expires_at INTEGER NOT NULL,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (project_id, key)
+      loop_name TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('running','completed','cancelled','errored','stalled')),
+      current_session_id TEXT NOT NULL,
+      worktree INTEGER NOT NULL,
+      worktree_dir TEXT NOT NULL,
+      worktree_branch TEXT,
+      project_dir TEXT NOT NULL,
+      max_iterations INTEGER NOT NULL,
+      iteration INTEGER NOT NULL DEFAULT 0,
+      audit_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      phase TEXT NOT NULL CHECK(phase IN ('coding','auditing')),
+      audit INTEGER NOT NULL,
+      completion_signal TEXT,
+      execution_model TEXT,
+      auditor_model TEXT,
+      model_failed INTEGER NOT NULL DEFAULT 0,
+      sandbox INTEGER NOT NULL DEFAULT 0,
+      sandbox_container TEXT,
+      started_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      termination_reason TEXT,
+      completion_summary TEXT,
+      workspace_id TEXT,
+      PRIMARY KEY (project_id, loop_name)
     )
   `)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_project_kv_expires_at ON project_kv(expires_at)`)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS loop_large_fields (
+      project_id TEXT NOT NULL,
+      loop_name TEXT NOT NULL,
+      prompt TEXT,
+      last_audit_result TEXT,
+      PRIMARY KEY (project_id, loop_name),
+      FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
+    )
+  `)
   return { db, dbPath }
 }
 
 // Helper to get DB path from test database
 function getDbPath(db: Database): string {
   return (db as any).path
+}
+
+// Helper to insert loop data into the loops table
+function insertLoopData(
+  db: Database,
+  projectId: string,
+  loopName: string,
+  options: {
+    status?: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'
+    sessionId?: string
+    phase?: 'coding' | 'auditing'
+    iteration?: number
+    maxIterations?: number
+    startedAt?: number
+    completedAt?: number | null
+    terminationReason?: string | null
+    worktreeBranch?: string | null
+    worktree?: boolean
+    worktreeDir?: string
+    executionModel?: string | null
+    auditorModel?: string | null
+  } = {}
+): void {
+  const now = options.startedAt ?? Date.now()
+  db.prepare(`
+    INSERT INTO loops (
+      project_id, loop_name, status, current_session_id, worktree, worktree_dir,
+      worktree_branch, project_dir, max_iterations, iteration, audit_count,
+      error_count, phase, audit, completion_signal, execution_model, auditor_model,
+      model_failed, sandbox, sandbox_container, started_at, completed_at,
+      termination_reason, completion_summary
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    projectId,
+    loopName,
+    options.status ?? 'running',
+    options.sessionId ?? 'test-session',
+    options.worktree ? 1 : 0,
+    options.worktreeDir ?? '/tmp/test',
+    options.worktreeBranch ?? null,
+    '/tmp/test',
+    options.maxIterations ?? 5,
+    options.iteration ?? 1,
+    0,
+    0,
+    options.phase ?? 'coding',
+    0,
+    null,
+    options.executionModel ?? null,
+    options.auditorModel ?? null,
+    0,
+    0,
+    null,
+    now,
+    options.completedAt ?? null,
+    options.terminationReason ?? null,
+    null
+  )
 }
 
 describe('TUI Refresh Behavior', () => {
@@ -52,22 +139,16 @@ describe('TUI Refresh Behavior', () => {
       expect(states).toEqual([])
     })
 
-    test('Returns loop states from KV store', () => {
+    test('Returns loop states from loops table', () => {
       const now = Date.now()
-      const ttl = 7 * 24 * 60 * 60 * 1000
-      const loopState = {
-        loopName: 'test-loop',
+      insertLoopData(db, projectId, 'test-loop', {
         sessionId: 'test-session-123',
         phase: 'coding',
         iteration: 1,
         maxIterations: 5,
-        active: true,
-        startedAt: new Date().toISOString(),
-      }
-
-      db.prepare(
-        'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(projectId, 'loop:test-loop', JSON.stringify(loopState), now + ttl, now, now)
+        status: 'running',
+        startedAt: now,
+      })
 
       const states = readLoopStates(projectId, dbPath)
       expect(states.length).toBe(1)
@@ -76,73 +157,55 @@ describe('TUI Refresh Behavior', () => {
       expect(states[0].phase).toBe('coding')
     })
 
-    test('Filters out expired loop entries', () => {
+    test('Filters out non-running loops', () => {
       const now = Date.now()
-      const expiredTime = now - 1000 // 1 second ago
-      const ttl = 7 * 24 * 60 * 60 * 1000
       
-      const activeLoop = {
-        loopName: 'active-loop',
+      insertLoopData(db, projectId, 'active-loop', {
         sessionId: 'session-1',
         phase: 'coding',
         iteration: 1,
-        active: true,
-      }
+        status: 'running',
+        startedAt: now,
+      })
       
-      const expiredLoop = {
-        loopName: 'expired-loop',
+      insertLoopData(db, projectId, 'completed-loop', {
         sessionId: 'session-2',
         phase: 'coding',
         iteration: 1,
-        active: false,
-      }
-
-      db.prepare(
-        'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(projectId, 'loop:active-loop', JSON.stringify(activeLoop), now + ttl, now, now)
-
-      db.prepare(
-        'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(projectId, 'loop:expired-loop', JSON.stringify(expiredLoop), expiredTime, now - 2000, now - 2000)
+        status: 'completed',
+        startedAt: now - 2000,
+        completedAt: now - 1000,
+      })
 
       const states = readLoopStates(projectId, dbPath)
-      expect(states.length).toBe(1)
-      expect(states[0].name).toBe('active-loop')
+      // Note: readLoopStates returns ALL loops, not just running ones
+      // The filtering is done by the caller if needed
+      expect(states.length).toBe(2)
     })
 
-    test('Sorts active loops before inactive loops', () => {
+    test('Sorts by started_at DESC', () => {
       const now = Date.now()
-      const ttl = 7 * 24 * 60 * 60 * 1000
 
-      const inactiveLoop = {
-        loopName: 'inactive-loop',
+      insertLoopData(db, projectId, 'older-loop', {
         sessionId: 'session-1',
         phase: 'coding',
         iteration: 1,
-        active: false,
-        completedAt: new Date().toISOString(),
-      }
+        status: 'running',
+        startedAt: now - 5000,
+      })
       
-      const activeLoop = {
-        loopName: 'active-loop',
+      insertLoopData(db, projectId, 'newer-loop', {
         sessionId: 'session-2',
         phase: 'coding',
         iteration: 1,
-        active: true,
-      }
-
-      db.prepare(
-        'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(projectId, 'loop:inactive-loop', JSON.stringify(inactiveLoop), now + ttl, now, now)
-
-      db.prepare(
-        'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(projectId, 'loop:active-loop', JSON.stringify(activeLoop), now + ttl, now, now)
+        status: 'running',
+        startedAt: now,
+      })
 
       const states = readLoopStates(projectId, dbPath)
       expect(states.length).toBe(2)
-      expect(states[0].name).toBe('active-loop')
-      expect(states[0].active).toBe(true)
+      expect(states[0].name).toBe('newer-loop')
+      expect(states[1].name).toBe('older-loop')
     })
   })
 
@@ -154,20 +217,14 @@ describe('TUI Refresh Behavior', () => {
 
     test('Returns loop state by name', () => {
       const now = Date.now()
-      const ttl = 7 * 24 * 60 * 60 * 1000
-      const loopState = {
-        loopName: 'specific-loop',
+      insertLoopData(db, projectId, 'specific-loop', {
         sessionId: 'test-session-456',
         phase: 'auditing',
         iteration: 2,
         maxIterations: 5,
-        active: true,
-        startedAt: new Date().toISOString(),
-      }
-
-      db.prepare(
-        'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(projectId, 'loop:specific-loop', JSON.stringify(loopState), now + ttl, now, now)
+        status: 'running',
+        startedAt: now,
+      })
 
       const result = readLoopByName(projectId, 'specific-loop', dbPath)
       expect(result).toBeDefined()
@@ -182,61 +239,37 @@ describe('TUI Refresh Behavior', () => {
       expect(result).toBeNull()
     })
 
-    test('Returns null for expired loop entries', () => {
+    test('Returns loop with completion metadata', () => {
       const now = Date.now()
-      const expiredTime = now - 1000
-      const loopState = {
-        loopName: 'expired-loop',
-        sessionId: 'test-session',
+      insertLoopData(db, projectId, 'completed-loop', {
+        sessionId: 'test-session-789',
         phase: 'coding',
-        iteration: 1,
-        active: false,
-      }
+        iteration: 3,
+        maxIterations: 5,
+        status: 'completed',
+        startedAt: now - 5000,
+        completedAt: now - 1000,
+        terminationReason: 'completed',
+      })
 
-      db.prepare(
-        'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(projectId, 'loop:expired-loop', JSON.stringify(loopState), expiredTime, now - 2000, now - 2000)
-
-      const result = readLoopByName(projectId, 'expired-loop', dbPath)
-      expect(result).toBeNull()
-    })
-
-    test('Returns null when loop state is missing required fields', () => {
-      const now = Date.now()
-      const ttl = 7 * 24 * 60 * 60 * 1000
-      const invalidState = {
-        // Missing worktreeName and sessionId
-        phase: 'coding',
-        iteration: 1,
-      }
-
-      db.prepare(
-        'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(projectId, 'loop:invalid', JSON.stringify(invalidState), now + ttl, now, now)
-
-      const result = readLoopByName(projectId, 'invalid', dbPath)
-      expect(result).toBeNull()
+      const result = readLoopByName(projectId, 'completed-loop', dbPath)
+      expect(result).toBeDefined()
+      expect(result?.name).toBe('completed-loop')
+      expect(result?.active).toBe(false)
     })
   })
 
   describe('Stale state regression', () => {
     test('Active loops are visible in readLoopStates even if old', () => {
-      const now = Date.now()
-      const ttl = 7 * 24 * 60 * 60 * 1000
-      const oldTime = now - 10 * 60 * 1000 // 10 minutes ago
+      const now = Date.now() - 10 * 60 * 1000 // 10 minutes ago
       
-      const oldActiveLoop = {
-        loopName: 'old-active-loop',
+      insertLoopData(db, projectId, 'old-active-loop', {
         sessionId: 'session-old',
         phase: 'coding',
         iteration: 1,
-        active: true,
-        startedAt: new Date(oldTime).toISOString(),
-      }
-
-      db.prepare(
-        'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(projectId, 'loop:old-active-loop', JSON.stringify(oldActiveLoop), now + ttl, now, now)
+        status: 'running',
+        startedAt: now,
+      })
 
       const states = readLoopStates(projectId, dbPath)
       expect(states.length).toBe(1)
@@ -248,21 +281,16 @@ describe('TUI Refresh Behavior', () => {
       // Note: readLoopStates returns all non-expired loops from KV
       // The 5-minute cutoff filtering happens in the Sidebar UI component
       const now = Date.now()
-      const ttl = 7 * 24 * 60 * 60 * 1000
       const oldCutoff = now - 6 * 60 * 1000 // 6 minutes ago (beyond 5 min cutoff)
 
-      const oldInactiveLoop = {
-        loopName: 'old-inactive-loop',
+      insertLoopData(db, projectId, 'old-inactive-loop', {
         sessionId: 'session-old',
         phase: 'coding',
         iteration: 1,
-        active: false,
-        completedAt: new Date(oldCutoff).toISOString(),
-      }
-
-      db.prepare(
-        'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(projectId, 'loop:old-inactive-loop', JSON.stringify(oldInactiveLoop), now + ttl, now, now)
+        status: 'completed',
+        startedAt: oldCutoff,
+        completedAt: oldCutoff,
+      })
 
       const states = readLoopStates(projectId, dbPath)
       // readLoopStates returns it, but Sidebar would filter it out

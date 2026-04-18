@@ -104,7 +104,8 @@ rpcServer.register('getCallees', async (args: unknown[]) => {
 
 rpcServer.register('getUnusedExports', async (args: unknown[]) => {
   const limit = (args[0] as number) || 50
-  return repoMap.getUnusedExports(limit)
+  const includeInternalOnly = (args[1] as boolean) || false
+  return repoMap.getUnusedExports(limit, includeInternalOnly)
 })
 
 rpcServer.register('getDuplicateStructures', async (args: unknown[]) => {

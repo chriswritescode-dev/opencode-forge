@@ -1,7 +1,9 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { Database } from 'bun:sqlite'
-import { createKvService } from '../src/services/kv'
 import { createLoopService, generateUniqueName } from '../src/services/loop'
+import { createPlansRepo } from '../src/storage/repos/plans-repo'
+import { createLoopsRepo } from '../src/storage/repos/loops-repo'
+import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
 import type { Logger } from '../src/types'
 import { createToolExecuteAfterHook, createPlanApprovalEventHook } from '../src/tools/plan-approval'
 import type { ToolContext } from '../src/tools/types'
@@ -12,17 +14,77 @@ const TEST_DIR = '/tmp/opencode-manager-plan-approval-test-' + Date.now()
 function createTestDb(): Database {
   const db = new Database(`${TEST_DIR}-${Math.random().toString(36).slice(2)}.db`)
   db.run(`
-    CREATE TABLE IF NOT EXISTS project_kv (
-      project_id TEXT NOT NULL,
-      key TEXT NOT NULL,
-      data TEXT NOT NULL,
-      expires_at INTEGER NOT NULL,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (project_id, key)
+    CREATE TABLE IF NOT EXISTS loops (
+      project_id           TEXT NOT NULL,
+      loop_name            TEXT NOT NULL,
+      status               TEXT NOT NULL CHECK(status IN ('running','completed','cancelled','errored','stalled')),
+      current_session_id   TEXT NOT NULL,
+      worktree             INTEGER NOT NULL,
+      worktree_dir         TEXT NOT NULL,
+      worktree_branch      TEXT,
+      project_dir          TEXT NOT NULL,
+      max_iterations       INTEGER NOT NULL,
+      iteration            INTEGER NOT NULL DEFAULT 0,
+      audit_count          INTEGER NOT NULL DEFAULT 0,
+      error_count          INTEGER NOT NULL DEFAULT 0,
+      phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing')),
+      audit                INTEGER NOT NULL DEFAULT 0,
+      completion_signal    TEXT,
+      execution_model      TEXT,
+      auditor_model        TEXT,
+      model_failed         INTEGER NOT NULL DEFAULT 0,
+      sandbox              INTEGER NOT NULL DEFAULT 0,
+      sandbox_container    TEXT,
+      started_at           INTEGER NOT NULL,
+      completed_at         INTEGER,
+      termination_reason   TEXT,
+      completion_summary   TEXT,
+      workspace_id   TEXT,
+      PRIMARY KEY (project_id, loop_name)
     )
   `)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_project_kv_expires_at ON project_kv(expires_at)`)
+  db.run(`CREATE UNIQUE INDEX idx_loops_session ON loops(project_id, current_session_id)`)
+  
+  db.run(`
+    CREATE TABLE IF NOT EXISTS loop_large_fields (
+      project_id          TEXT NOT NULL,
+      loop_name           TEXT NOT NULL,
+      prompt              TEXT,
+      last_audit_result   TEXT,
+      PRIMARY KEY (project_id, loop_name),
+      FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
+    )
+  `)
+  
+  db.run(`
+    CREATE TABLE IF NOT EXISTS plans (
+      project_id   TEXT NOT NULL,
+      loop_name    TEXT,
+      session_id   TEXT,
+      content      TEXT NOT NULL,
+      updated_at   INTEGER NOT NULL,
+      CHECK (loop_name IS NOT NULL OR session_id IS NOT NULL),
+      CHECK (NOT (loop_name IS NOT NULL AND session_id IS NOT NULL)),
+      UNIQUE (project_id, loop_name),
+      UNIQUE (project_id, session_id)
+    )
+  `)
+  
+  db.run(`
+    CREATE TABLE IF NOT EXISTS review_findings (
+      project_id   TEXT NOT NULL,
+      file         TEXT NOT NULL,
+      line         INTEGER NOT NULL,
+      severity     TEXT NOT NULL CHECK(severity IN ('bug','warning')),
+      description  TEXT NOT NULL,
+      scenario     TEXT NOT NULL,
+      branch       TEXT,
+      created_at   INTEGER NOT NULL,
+      PRIMARY KEY (project_id, file, line)
+    )
+  `)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_branch ON review_findings(project_id, branch)`)
+  
   return db
 }
 
@@ -37,6 +99,7 @@ function createMockLogger(): Logger {
 describe('Plan Approval Tool Interception', () => {
   let db: Database
   let loopService: ReturnType<typeof createLoopService>
+  let plansRepo: ReturnType<typeof createPlansRepo>
   const projectId = 'test-project'
   const sessionID = 'test-session-123'
 
@@ -44,8 +107,10 @@ describe('Plan Approval Tool Interception', () => {
 
   beforeEach(() => {
     db = createTestDb()
-    const kvService = createKvService(db)
-    loopService = createLoopService(kvService, projectId, createMockLogger())
+    const loopsRepo = createLoopsRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    plansRepo = createPlansRepo(db)
+    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
   })
 
   afterEach(() => {
@@ -59,10 +124,11 @@ describe('Plan Approval Tool Interception', () => {
     sessionActive = false
   ) {
     if (sessionActive) {
+      const loopName = 'test-loop'
       const state = {
         active: true,
         sessionId: sessionID,
-        worktreeName: 'test-worktree',
+        loopName,
         worktreeDir: '/test/worktree',
         worktreeBranch: 'opencode/loop-test',
         iteration: 1,
@@ -71,12 +137,12 @@ describe('Plan Approval Tool Interception', () => {
         startedAt: new Date().toISOString(),
         prompt: 'Test prompt',
         phase: 'coding' as const,
-        audit: false,
+        audit: true,
         errorCount: 0,
         auditCount: 0,
         worktree: true,
       }
-      loopService.setState(sessionID, state)
+      loopService.setState(loopName, state)
     }
 
     if (tool === 'question') {
@@ -391,8 +457,10 @@ describe('Execute here bypass', () => {
 
     const db = createTestDb()
     openDbs.push(db)
-    const kvService = createKvService(db)
-    const loopService = createLoopService(kvService, projectId, mockLogger)
+    const loopsRepo = createLoopsRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger)
 
     return {
       projectId,
@@ -401,7 +469,7 @@ describe('Execute here bypass', () => {
       logger: mockLogger,
       db,
       loopService,
-      kvService,
+      plansRepo,
       v2: mockV2,
       ...overrides,
     } as ToolContext
@@ -422,7 +490,7 @@ describe('Execute here bypass', () => {
       } as unknown as ToolContext['v2'],
     })
 
-    ctx.kvService.set(projectId, `plan:${sessionID}`, '# Test Plan\n\nThis is a test plan.')
+    ctx.plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
 
     const hook = createToolExecuteAfterHook(ctx)
 
@@ -469,7 +537,7 @@ describe('Execute here bypass', () => {
       config: { executionModel: 'test-provider/test-model' } as PluginConfig,
     })
 
-    ctx.kvService.set(projectId, `plan:${sessionID}`, '# Test Plan\n\nThis is a test plan.')
+    ctx.plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
 
     const afterHook = createToolExecuteAfterHook(ctx)
     const eventHook = createPlanApprovalEventHook(ctx)
@@ -592,26 +660,31 @@ describe('Execute here bypass', () => {
     expect(promptSpy).not.toHaveBeenCalled()
   })
 
-  test('New session path reads plan from session-scoped KV and deletes after dispatch', async () => {
+  test('New session path reads plan from session-scoped repo and deletes after dispatch', async () => {
     const db = createTestDb()
     openDbs.push(db)
-    const kvService = createKvService(db)
     const testSessionID = 'test-session-abc'
     
-    // Store a plan in session-scoped KV
-    kvService.set(projectId, `plan:${testSessionID}`, '# Test Plan\n\nThis is a test plan.')
+    const plansRepo = createPlansRepo(db)
+    
+    // Store a plan in session-scoped repo
+    plansRepo.writeForSession(projectId, testSessionID, '# Test Plan\n\nThis is a test plan.')
     
     const createSpy = mock(() => Promise.resolve({ data: { id: 'new-session-123' } }))
     const promptSpy = mock(() => Promise.resolve({ data: {} }))
     const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    
+    const loopsRepo = createLoopsRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
     
     const ctx = {
       projectId,
       directory: testDir,
       config: { executionModel: 'test-provider/test-model' } as PluginConfig,
       logger: createMockLogger(),
-      kvService,
-      loopService: createLoopService(kvService, projectId, createMockLogger()),
+      plansRepo,
+      loopService,
       v2: {
         session: {
           abort: abortSpy,
@@ -652,14 +725,14 @@ describe('Execute here bypass', () => {
     await new Promise(resolve => setTimeout(resolve, 100))
 
     // Verify plan was deleted from session-scoped key
-    const planAfter = kvService.get(projectId, `plan:${testSessionID}`)
+    const planAfter = plansRepo.getForSession(projectId, testSessionID)
     expect(planAfter).toBeNull()
   })
 
   test('Two different sessions can store plans independently without collision', async () => {
     const db = createTestDb()
     openDbs.push(db)
-    const kvService = createKvService(db)
+    const plansRepo = createPlansRepo(db)
     
     const session1 = 'session-1'
     const session2 = 'session-2'
@@ -667,17 +740,17 @@ describe('Execute here bypass', () => {
     const plan2 = '# Plan for Session 2'
     
     // Store different plans for different sessions
-    kvService.set(projectId, `plan:${session1}`, plan1)
-    kvService.set(projectId, `plan:${session2}`, plan2)
+    plansRepo.writeForSession(projectId, session1, plan1)
+    plansRepo.writeForSession(projectId, session2, plan2)
     
     // Verify each session can read its own plan
-    const retrieved1 = kvService.get(projectId, `plan:${session1}`)
-    const retrieved2 = kvService.get(projectId, `plan:${session2}`)
+    const retrieved1 = plansRepo.getForSession(projectId, session1)
+    const retrieved2 = plansRepo.getForSession(projectId, session2)
     
-    expect(retrieved1).toBe(plan1)
-    expect(retrieved2).toBe(plan2)
-    expect(retrieved1).not.toBe(plan2)
-    expect(retrieved2).not.toBe(plan1)
+    expect(retrieved1?.content).toBe(plan1)
+    expect(retrieved2?.content).toBe(plan2)
+    expect(retrieved1?.content).not.toBe(plan2)
+    expect(retrieved2?.content).not.toBe(plan1)
   })
 })
 

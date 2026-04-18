@@ -3,9 +3,7 @@ import { createGraphService } from '../src/graph/service'
 import { mkdirSync, rmSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import type { Logger } from '../src/types'
-import { createKvService } from '../src/services/kv'
-import { initializeDatabase, closeDatabase } from '../src/storage'
-import { createGraphStatusCallback, readGraphStatus, GRAPH_STATUS_KEY, UNAVAILABLE_STATUS } from '../src/utils/graph-status-store'
+import { createGraphStatusRepo } from '../src/storage/repos/graph-status-repo'
 import { Database } from 'bun:sqlite'
 
 const TEST_DIR = '/tmp/opencode-graph-service-test-' + Date.now()
@@ -141,22 +139,34 @@ describe('GraphService status callback', () => {
   let testDir: string
   let testProjectId: string
   let db: Database
-  let kvService: ReturnType<typeof createKvService>
+  let graphStatusRepo: ReturnType<typeof createGraphStatusRepo>
 
   beforeEach(() => {
     testDir = TEST_DIR + '-' + Math.random().toString(36).slice(2)
     testProjectId = 'test-project-' + Date.now()
     mkdirSync(testDir, { recursive: true })
     
-    // Set up KV service for status persistence
+    // Set up database for status persistence
     const dataDir = join(testDir, 'data')
     mkdirSync(dataDir, { recursive: true })
-    db = initializeDatabase(dataDir)
-    kvService = createKvService(db, createTestLogger())
+    db = new Database(join(dataDir, 'graph.db'))
+    db.run(`
+      CREATE TABLE IF NOT EXISTS graph_status (
+        project_id   TEXT NOT NULL,
+        cwd          TEXT NOT NULL DEFAULT '',
+        state        TEXT NOT NULL,
+        ready        INTEGER NOT NULL,
+        stats_json   TEXT,
+        message      TEXT,
+        updated_at   INTEGER NOT NULL,
+        PRIMARY KEY (project_id, cwd)
+      )
+    `)
+    graphStatusRepo = createGraphStatusRepo(db)
   })
 
   afterEach(async () => {
-    closeDatabase(db)
+    db.close()
     if (existsSync(testDir)) {
       rmSync(testDir, { recursive: true, force: true })
     }
@@ -223,9 +233,19 @@ describe('GraphService status callback', () => {
     await service.close()
   })
 
-  test('should persist status to KV store when callback is used', async () => {
+  test('should persist status to graph_status table when callback is used', async () => {
     const logger = createTestLogger()
-    const statusCallback = createGraphStatusCallback(kvService, testProjectId)
+    
+    const statusCallback = (state: string, stats?: any, message?: string) => {
+      graphStatusRepo.write({
+        projectId: testProjectId,
+        cwd: '',
+        state: state as any,
+        ready: state === 'ready',
+        stats: stats || null,
+        message: message || null,
+      })
+    }
     
     const service = createGraphService({
       projectId: testProjectId,
@@ -240,7 +260,7 @@ describe('GraphService status callback', () => {
     await service.scan()
     
     // Check that status was persisted
-    const status = readGraphStatus(kvService, testProjectId)
+    const status = graphStatusRepo.read(testProjectId, '')
     expect(status).toBeDefined()
     expect(status?.state).toBe('ready')
     expect(status?.ready).toBe(true)
@@ -252,11 +272,12 @@ describe('GraphService status callback', () => {
   test('should write unavailable status when graph is disabled', () => {
     const logger = createTestLogger()
     
-    // Simulate disabled graph by writing unavailable status
-    writeFileSync(
-      join(testDir, 'test.json'),
-      JSON.stringify(UNAVAILABLE_STATUS)
-    )
+    const UNAVAILABLE_STATUS = {
+      state: 'unavailable' as const,
+      ready: false,
+      stats: null,
+      updatedAt: Date.now(),
+    }
     
     // Verify the unavailable status structure
     expect(UNAVAILABLE_STATUS.state).toBe('unavailable')

@@ -111,8 +111,8 @@ export class RepoMap {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `),
       insertRef: this.db.prepare(`
-        INSERT INTO refs (file_id, name, source_file_id, import_source)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO refs (file_id, name, source_file_id, import_source, is_dynamic)
+        VALUES (?, ?, ?, ?, ?)
       `),
       insertEdge: this.db.prepare(`
         INSERT OR REPLACE INTO edges (source_file_id, target_file_id, weight, confidence)
@@ -197,11 +197,12 @@ export class RepoMap {
       getFilesWithImports: this.db.prepare(`
         SELECT DISTINCT f.id, f.path FROM files f
         WHERE EXISTS (SELECT 1 FROM symbols s WHERE s.file_id = f.id AND s.kind IN ('function', 'method'))
-          AND EXISTS (SELECT 1 FROM refs r WHERE r.file_id = f.id AND r.name != '*')
+          AND EXISTS (SELECT 1 FROM refs r WHERE r.file_id = f.id AND r.name != '*' AND r.import_source != '<self>')
       `),
       getImportsForFile: this.db.prepare<{ name: string; source_file_id: number }, [number]>(`
         SELECT DISTINCT r.name, r.source_file_id FROM refs r
         WHERE r.file_id = ? AND r.source_file_id IS NOT NULL AND r.name != '*'
+          AND r.import_source != '<self>'
       `),
       getFunctionsForFile: this.db.prepare<
         { id: number; name: string; line: number; end_line: number },
@@ -217,23 +218,61 @@ export class RepoMap {
         INSERT INTO calls (caller_symbol_id, callee_name, callee_symbol_id, callee_file_id, line)
         VALUES (?, ?, ?, ?, ?)
       `),
-      // Unused exports - single anti-join query
+      // Unused exports - excludes external refs, self-refs, barrel re-exports, and dynamic imports
       getUnusedExportsQuery: this.db.prepare(`
-        SELECT s.id, s.name, s.kind, s.line, s.end_line, f.path, f.line_count
+        SELECT 
+          s.id, 
+          s.name, 
+          s.kind, 
+          s.line, 
+          s.end_line, 
+          f.path, 
+          f.line_count,
+          EXISTS (
+            SELECT 1 FROM refs r 
+            WHERE r.name = s.name 
+              AND r.source_file_id = s.file_id 
+              AND r.import_source = '<self>'
+          ) AS has_self
         FROM symbols s
         JOIN files f ON s.file_id = f.id
         WHERE s.is_exported = 1
           AND NOT EXISTS (
-            SELECT 1 FROM refs r WHERE r.name = s.name AND r.source_file_id IS NOT NULL
+            SELECT 1 FROM refs r 
+            WHERE r.name = s.name 
+              AND r.source_file_id = s.file_id
+              AND r.file_id != s.file_id
+              AND r.is_dynamic = 0
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM refs rbarrel
+            JOIN files fb ON rbarrel.file_id = fb.id
+            WHERE rbarrel.name = s.name
+              AND fb.is_barrel = 1
+              AND rbarrel.source_file_id != fb.id
+              AND EXISTS (
+                SELECT 1 FROM refs rimport
+                WHERE rimport.name = s.name
+                  AND rimport.source_file_id = fb.id
+                  AND rimport.file_id != fb.id
+                  AND rimport.is_dynamic = 0
+              )
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM refs rdynamic
+            WHERE rdynamic.source_file_id = s.file_id
+              AND rdynamic.is_dynamic = 1
           )
         LIMIT ?
       `),
-      // Orphan files - files with no incoming edges
+      // Orphan files - files with no incoming edges (excludes entrypoints)
       getOrphanFilesQuery: this.db.prepare(`
         SELECT f.path, f.language, f.line_count, f.symbol_count
         FROM files f
         LEFT JOIN edges e ON e.target_file_id = f.id
+        LEFT JOIN entrypoints ep ON ep.file_id = f.id
         WHERE e.target_file_id IS NULL
+          AND ep.file_id IS NULL
           AND f.is_barrel = 0
           AND f.path NOT LIKE '%.test.%'
           AND f.path NOT LIKE '%.spec.%'
@@ -251,6 +290,7 @@ export class RepoMap {
         FROM refs r
         JOIN files f ON r.file_id = f.id
         WHERE r.name = ?
+          AND r.import_source != '<self>'
       `),
       getCallsByCalleeName: this.db.prepare(`
         SELECT c.line, s.name as caller_name, f.path
@@ -377,6 +417,7 @@ export class RepoMap {
    * Should be called once after all file batches have been processed.
    */
   async finalizeScan(): Promise<void> {
+    await this.collectEntrypoints()
     await this.resolveUnresolvedRefs()
     await this.buildEdges()
     await this.computePageRank()
@@ -396,6 +437,7 @@ export class RepoMap {
       this.db.run('DELETE FROM edges')
       this.db.run('DELETE FROM calls')
       this.db.run('DELETE FROM cochanges')
+      this.db.run('DELETE FROM entrypoints')
       this.db.run('DELETE FROM shape_hashes')
       this.db.run('DELETE FROM token_signatures')
       this.db.run('DELETE FROM token_fragments')
@@ -473,11 +515,16 @@ export class RepoMap {
     const lines = content.split('\n')
 
     // Pre-resolve imports
-    const resolvedImports: Array<{ specifiers: string[]; sourceFileId: number | null; importSource: string }> = []
+    const resolvedImports: Array<{ specifiers: string[]; sourceFileId: number | null; importSource: string; isDynamic: boolean }> = []
     const externalImports: Array<{ package: string; specifiers: string[] }> = []
 
     for (const imp of outline.imports) {
       const isRelative = imp.source.startsWith('.') || imp.source.startsWith('/')
+
+      // Type-only imports don't create runtime edges, but we still track external packages
+      if (imp.isTypeOnly && isRelative) {
+        continue
+      }
 
       if (isRelative) {
         const resolvedSource = await this.resolveImportSource(imp.source, absPath)
@@ -488,8 +535,12 @@ export class RepoMap {
             sourceFileId = resolvedFile.id
           }
         }
-        resolvedImports.push({ specifiers: imp.specifiers, sourceFileId, importSource: imp.source })
+        // Only add to resolvedImports if not type-only (type-only imports don't create edges)
+        if (!imp.isTypeOnly) {
+          resolvedImports.push({ specifiers: imp.specifiers, sourceFileId, importSource: imp.source, isDynamic: imp.isDynamic })
+        }
       } else {
+        // External packages - track even type-only imports for inventory purposes
         let packageName: string
         if (imp.source.startsWith('@')) {
           const parts = imp.source.split('/')
@@ -550,6 +601,10 @@ export class RepoMap {
       ).lastInsertRowid as number
 
       const seenSymbols = new Set<string>()
+      const exportedSymbols = outline.symbols.filter(sym => 
+        outline.exports.some(e => e.name === sym.name)
+      )
+      
       for (const sym of outline.symbols) {
         const key = `${sym.location.line}-${sym.name}-${sym.kind}`
         if (seenSymbols.has(key)) continue
@@ -568,9 +623,45 @@ export class RepoMap {
         ])
       }
 
+      // Detect same-file references to exported symbols
+      if (exportedSymbols.length > 0) {
+        const exportedNames = new Set(exportedSymbols.map(s => s.name))
+        const seenSelfRefs = new Set<string>()
+        
+        for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+          const line = lines[lineIdx]
+          for (const exportedName of exportedNames) {
+            // Skip the declaration line itself
+            const declaringSymbol = exportedSymbols.find(s => s.name === exportedName)
+            if (declaringSymbol && lineIdx + 1 === declaringSymbol.location.line) continue
+            
+            // Use word boundary regex to find references
+            // Escape regex special characters in identifier names (e.g., $ in $state)
+            const escapedName = exportedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+            // Use negative lookbehind/lookahead for word boundaries to handle $ prefixes
+            const regex = new RegExp(`(?<![a-zA-Z0-9_$])${escapedName}(?![a-zA-Z0-9_$])`, 'g')
+            if (regex.test(line)) {
+              const refKey = `${exportedName}-${lineIdx}`
+              if (!seenSelfRefs.has(refKey)) {
+                seenSelfRefs.add(refKey)
+                this.stmts.insertRef.run([fileId, exportedName, fileId, '<self>', 0])
+              }
+            }
+          }
+        }
+      }
+
       for (const ref of resolvedImports) {
-        for (const specifier of ref.specifiers) {
-          this.stmts.insertRef.run([fileId, specifier, ref.sourceFileId, ref.importSource])
+        if (ref.isDynamic) {
+          // Dynamic import: insert a synthetic ref with specifier '*' and mark as dynamic
+          // This prevents the target's exports from being flagged as unused
+          this.stmts.insertRef.run([fileId, '*', ref.sourceFileId, ref.importSource, 1])
+        } else {
+          for (const specifier of ref.specifiers) {
+            // Insert refs - use fileId (the importing file) as file_id
+            // source_file_id will be filled in by resolveUnresolvedRefs if the source is found
+            this.stmts.insertRef.run([fileId, specifier, ref.sourceFileId, ref.importSource, 0])
+          }
         }
       }
 
@@ -672,7 +763,7 @@ export class RepoMap {
     const edgeMap = new Map<string, { weight: number; confidence: number }>()
 
     for (const ref of refs) {
-      if (ref.source_file_id) {
+      if (ref.source_file_id && ref.import_source !== '<self>') {
         const key = `${ref.file_id}-${ref.source_file_id}`
         const existing = edgeMap.get(key)
         if (existing) {
@@ -996,7 +1087,7 @@ export class RepoMap {
     }))
   }
 
-  getUnusedExports(limit = 50): UnusedExportResult[] {
+  getUnusedExports(limit = 50, includeInternalOnly = false): UnusedExportResult[] {
     const results = this.stmts.getUnusedExportsQuery.all(limit) as Array<{
       id: number
       name: string
@@ -1005,16 +1096,20 @@ export class RepoMap {
       end_line: number
       path: string
       line_count: number
+      has_self: number
     }>
 
-    return results.map(r => ({
+    // Filter out symbols used internally unless explicitly requested
+    const filtered = results.filter(r => includeInternalOnly || r.has_self === 0)
+
+    return filtered.map(r => ({
       name: r.name,
       path: r.path,
       kind: r.kind,
       line: r.line,
       endLine: r.end_line,
       lineCount: r.line_count,
-      usedInternally: false,
+      usedInternally: r.has_self === 1,
     }))
   }
 
@@ -1551,6 +1646,69 @@ export class RepoMap {
       }
     })
     tx()
+  }
+
+  async collectEntrypoints(): Promise<void> {
+    const { readFile } = await import('fs/promises')
+    const { existsSync } = await import('fs')
+    
+    const packageJsonPath = join(this.cwd, 'package.json')
+    if (!existsSync(packageJsonPath)) return
+
+    try {
+      const content = await readFile(packageJsonPath, 'utf-8')
+      const pkg = JSON.parse(content)
+      
+      const entrypoints: Array<{ path: string; reason: string }> = []
+      
+      // Collect bin entrypoints
+      if (pkg.bin) {
+        const binEntries = typeof pkg.bin === 'object' ? Object.values(pkg.bin) : [pkg.bin]
+        for (const binPath of binEntries) {
+          if (typeof binPath === 'string' && binPath.startsWith('./dist/')) {
+            // Map dist path to src path
+            const srcPath = binPath.replace(/^\.\/dist\//, './src/').replace(/\.js$/, '.ts')
+            // Normalize path to match stored format (without leading ./)
+            const normalizedPath = srcPath.startsWith('./') ? srcPath.slice(2) : srcPath
+            entrypoints.push({ path: normalizedPath, reason: 'bin' })
+          }
+        }
+      }
+      
+      // Collect script entrypoints that look like bun/node invocations
+      if (pkg.scripts) {
+        for (const script of Object.values(pkg.scripts)) {
+          if (typeof script === 'string') {
+            const match = script.match(/(?:bun|node)\s+(.+?)(?:\s|$)/)
+            if (match) {
+              const scriptPath = match[1]
+              if (scriptPath.endsWith('.ts')) {
+                // Normalize path to match stored format (without leading ./)
+                const normalizedPath = scriptPath.startsWith('./') ? scriptPath.slice(2) : scriptPath
+                entrypoints.push({ path: normalizedPath, reason: 'script' })
+              }
+            }
+          }
+        }
+      }
+      
+      // Insert entrypoints into database
+      const insertEntrypoint = this.db.prepare(`
+        INSERT OR REPLACE INTO entrypoints (file_id, reason)
+        VALUES (?, ?)
+      `)
+      
+      this.db.transaction(() => {
+        for (const entrypoint of entrypoints) {
+          const file = this.stmts.getFileByPath.get(entrypoint.path) as IndexedFile | undefined
+          if (file) {
+            insertEntrypoint.run(file.id, entrypoint.reason)
+          }
+        }
+      })()
+    } catch {
+      // package.json parsing failed - skip entrypoints
+    }
   }
 
   linkTestFiles(): void {

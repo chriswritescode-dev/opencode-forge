@@ -1,14 +1,13 @@
 import { dirname } from 'path'
-import { closeDatabase, initializeDatabase, resolveDataDir } from '../../storage'
+import { closeDatabase, initializeDatabase, resolveDataDir, createGraphStatusRepo } from '../../storage'
 import { createGraphService } from '../../graph'
-import { createKvService } from '../../services/kv'
 import { createLogger } from '../../utils/logger'
 import { createGraphStatusCallback } from '../../utils/graph-status-store'
 import { readGraphStatus } from '../../utils/tui-graph-status'
 import { confirm } from '../utils'
 import { enumerateGraphCache, deleteGraphCacheDir, type GraphCacheEntry } from '../../storage/graph-projects'
 
-export interface GraphArgs {
+interface GraphArgs {
   dbPath?: string
   resolvedProjectId?: string
   dir?: string
@@ -214,14 +213,14 @@ export async function run(argv: GraphArgs): Promise<void> {
       const directory = argv.dir || process.cwd()
       const logger = createLogger({ enabled: false, file: '' })
       const db = initializeDatabase(dataDir)
-      const kvService = createKvService(db, logger)
+      const graphStatusRepo = createGraphStatusRepo(db)
       const graphService = createGraphService({
         projectId,
         dataDir,
         cwd: directory,
         logger,
         watch: false,
-        onStatusChange: createGraphStatusCallback(kvService, projectId),
+        onStatusChange: createGraphStatusCallback(graphStatusRepo, projectId),
       })
 
       try {

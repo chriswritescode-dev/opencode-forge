@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'fs'
+import { readdirSync } from 'fs'
 import { stat } from 'fs/promises'
 import { join, extname } from 'path'
 import type { SymbolKind } from './types'
@@ -210,63 +210,6 @@ async function collectFilesWalk(
 }
 
 /**
- * Collect files from a directory recursively (sync version)
- */
-export function collectFiles(
-  dir: string,
-  maxFiles = 5000,
-  extensions?: string[],
-): string[] {
-  const files: string[] = []
-  
-  function walk(currentDir: string): void {
-    if (!existsSync(currentDir)) return
-    
-    const entries = readdirSync(currentDir, { withFileTypes: true })
-    
-    for (const entry of entries) {
-      if (files.length >= maxFiles) return
-      
-      const fullPath = join(currentDir, entry.name)
-      
-      if (entry.isDirectory()) {
-        if (IGNORED_DIRS.has(entry.name)) continue
-        if (entry.name.startsWith('.')) continue
-        
-        walk(fullPath)
-      } else if (entry.isFile()) {
-        if (extensions && !extensions.some(ext => entry.name.endsWith(ext))) {
-          continue
-        }
-        
-        const ext = extname(entry.name).toLowerCase()
-        if (IGNORED_EXTS.has(ext)) continue
-        if (entry.name.endsWith('.min.js') || entry.name.endsWith('.bundle.js')) continue
-        
-        files.push(fullPath)
-      }
-    }
-  }
-  
-  walk(dir)
-  return files.slice(0, maxFiles)
-}
-
-/**
- * Estimate token count for a string
- */
-export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 3.5)
-}
-
-/**
- * Get file extension from path
- */
-export function getExtension(path: string): string {
-  return extname(path).toLowerCase()
-}
-
-/**
  * Check if file is a barrel file
  */
 export function isBarrelFile(path: string): boolean {
@@ -277,121 +220,6 @@ export function isBarrelFile(path: string): boolean {
          name === 'mod.rs' ||
          name === 'index.py' ||
          name === '__init__.py'
-}
-
-/**
- * Normalize path separators
- */
-export function normalizePath(path: string): string {
-  return path.replace(/\\/g, '/')
-}
-
-/**
- * Make path relative to a base directory
- */
-export function makeRelative(path: string, baseDir: string): string {
-  const normalized = normalizePath(path)
-  const normalizedBase = normalizePath(baseDir)
-  
-  if (normalized.startsWith(normalizedBase)) {
-    return normalized.slice(normalizedBase.length).replace(/^\/+/, '')
-  }
-  
-  return normalized
-}
-
-/**
- * Extract a doc comment immediately above the symbol line
- */
-export function extractDocComment(lines: string[], symbolLineIdx: number): string | null {
-  const symbolLine = lines[symbolLineIdx]
-  if (symbolLine && /^\s*(def |class |async def )/.test(symbolLine)) {
-    for (let k = symbolLineIdx + 1; k < Math.min(symbolLineIdx + 3, lines.length); k++) {
-      const trimmed = lines[k]?.trim() ?? ''
-      const tripleMatch = /^("""|''')(.*)/.exec(trimmed)
-      if (tripleMatch) {
-        const quote = tripleMatch[1] as string
-        const rest = tripleMatch[2] ?? ''
-        if (rest.includes(quote)) {
-          return trimDocLine(rest.slice(0, rest.indexOf(quote)))
-        }
-        const docLines = [rest]
-        for (let j = k + 1; j < Math.min(k + 10, lines.length); j++) {
-          const dl = lines[j]?.trim() ?? ''
-          if (dl.includes(quote)) {
-            docLines.push(dl.slice(0, dl.indexOf(quote)))
-            break
-          }
-          docLines.push(dl)
-        }
-        return trimDocLine(docLines.filter(Boolean).join(' '))
-      }
-      if (trimmed) break
-    }
-  }
-
-  for (let k = symbolLineIdx - 1; k >= Math.max(0, symbolLineIdx - 2); k--) {
-    const trimmed = lines[k]?.trim() ?? ''
-    if (trimmed === '' || trimmed === '*/' || trimmed.startsWith('*/')) continue
-    if (trimmed.endsWith('*/')) {
-      const m = /^\/\*\*?\s*(.*?)\s*\*\/$/.exec(trimmed)
-      if (m?.[1]) return trimDocLine(m[1])
-    }
-    if (trimmed.startsWith('/**') || trimmed.startsWith('/*')) {
-      const collected: string[] = []
-      const firstContent = trimmed
-        .replace(/^\/\*\*?\s*/, '')
-        .replace(/\*\/\s*$/, '')
-        .trim()
-      if (firstContent) collected.push(firstContent)
-      for (let j = k + 1; j < symbolLineIdx; j++) {
-        const cl = (lines[j]?.trim() ?? '')
-          .replace(/^\*\s?/, '')
-          .replace(/\*\/\s*$/, '')
-          .trim()
-        if (cl.startsWith('@')) break
-        if (cl) collected.push(cl)
-      }
-      if (collected.length > 0) return trimDocLine(collected.join(' '))
-    }
-    break
-  }
-
-  let commentEnd = symbolLineIdx - 1
-  if (commentEnd >= 0 && (lines[commentEnd]?.trim() ?? '') === '') commentEnd--
-  if (commentEnd >= 0) {
-    const first = lines[commentEnd]?.trim() ?? ''
-    if (first.startsWith('///') || first.startsWith('//')) {
-      const isTriple = first.startsWith('///')
-      const prefix = isTriple ? '///' : '//'
-      const collected: string[] = []
-      let k = commentEnd
-      while (k >= 0 && (lines[k]?.trim() ?? '').startsWith(prefix)) {
-        collected.unshift((lines[k]?.trim() ?? '').slice(prefix.length).trim())
-        k--
-      }
-      if (collected.length > 0) return trimDocLine(collected.join(' '))
-    }
-
-    if (first.startsWith('#') && !first.startsWith('#!')) {
-      const collected: string[] = []
-      let k = commentEnd
-      while (k >= 0 && (lines[k]?.trim() ?? '').startsWith('#')) {
-        collected.unshift((lines[k]?.trim() ?? '').slice(1).trim())
-        k--
-      }
-      if (collected.length > 0) return trimDocLine(collected.join(' '))
-    }
-  }
-
-  return null
-}
-
-function trimDocLine(text: string): string | null {
-  let s = text.replace(/\s+/g, ' ').trim()
-  if (!s || s.length < 5) return null
-  if (s.length > 80) s = `${s.slice(0, 77)}...`
-  return s
 }
 
 /**
@@ -448,45 +276,4 @@ export function kindTag(kind: SymbolKind): string {
   }
 }
 
-/**
- * Generate synthetic summary for a symbol
- */
-export function generateSyntheticSummary(name: string, kind: string, filePath: string): string {
-  const words = splitIdentifier(name)
-  const parts = filePath.split('/')
-  const dir = parts.length >= 2 ? parts[parts.length - 2] : ''
-  const kindLabel = kind === 'function' || kind === 'method' ? kind : kind
-  const summary = `${dir ? `[${dir}] ` : ''}${kindLabel}: ${words.join(' ')}`
-  return summary.length > 80 ? `${summary.slice(0, 77)}...` : summary
-}
 
-function splitIdentifier(name: string): string[] {
-  if (name.includes('_'))
-    return name
-      .split('_')
-      .filter(Boolean)
-      .map((w) => w.toLowerCase())
-  return name
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
-    .split(' ')
-    .map((w) => w.toLowerCase())
-}
-
-/**
- * Get directory group for a file path
- */
-export function getDirGroup(filePath: string): string | null {
-  const parts = filePath.split('/')
-  if (parts.length < 2) return null
-  return parts.length >= 3 ? `${parts[0]}/${parts[1]}` : (parts[0] ?? null)
-}
-
-/**
- * Convert barrel file path to directory path
- */
-const BARREL_RE = /\/(index\.(ts|js|tsx|mts|mjs)|__init__\.py|mod\.rs)$/
-
-export function barrelToDir(barrelPath: string): string {
-  return barrelPath.replace(BARREL_RE, '')
-}

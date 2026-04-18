@@ -5,8 +5,7 @@ import { Database } from 'bun:sqlite'
 import { seedWorktreeGraphScope } from '../src/utils/worktree-graph-seed'
 import { resolveGraphCacheDir } from '../src/storage/graph-projects'
 import { readGraphCacheMetadata } from '../src/graph/database'
-import { initializeDatabase, closeDatabase } from '../src/storage'
-import { createKvService } from '../src/services/kv'
+import { createGraphStatusRepo } from '../src/storage/repos/graph-status-repo'
 import type { Logger } from '../src/types'
 
 const TEST_DATA_DIR = '/tmp/opencode-worktree-seed-test-' + Date.now()
@@ -17,8 +16,7 @@ interface TestContext {
   targetCwd: string
   projectId: string
   dataDir: string
-  kvService: ReturnType<typeof createKvService>
-  dbPath: string
+  db: Database
 }
 
 function createTestContext(): TestContext {
@@ -36,12 +34,20 @@ function createTestContext(): TestContext {
   
   const projectId = 'test-project-' + Date.now()
   
-  // Initialize database first
-  const db = initializeDatabase(dataDir)
-  const dbPath = join(dataDir, 'graph.db')
-  
-  // Create KV service with the database instance
-  const kvService = createKvService(db, { log: () => {}, error: () => {}, debug: () => {} })
+  // Initialize database
+  const db = new Database(join(dataDir, 'graph.db'))
+  db.run(`
+    CREATE TABLE IF NOT EXISTS graph_status (
+      project_id   TEXT NOT NULL,
+      cwd          TEXT NOT NULL DEFAULT '',
+      state        TEXT NOT NULL,
+      ready        INTEGER NOT NULL,
+      stats_json   TEXT,
+      message      TEXT,
+      updated_at   INTEGER NOT NULL,
+      PRIMARY KEY (project_id, cwd)
+    )
+  `)
   
   return {
     testDataDir,
@@ -49,14 +55,13 @@ function createTestContext(): TestContext {
     targetCwd,
     projectId,
     dataDir,
-    kvService,
-    dbPath,
+    db,
   }
 }
 
 function cleanupTestContext(ctx: TestContext) {
   try {
-    closeDatabase()
+    ctx.db.close()
   } catch {}
   if (existsSync(ctx.testDataDir)) {
     rmSync(ctx.testDataDir, { recursive: true, force: true })
@@ -125,13 +130,16 @@ describe('seedWorktreeGraphScope', () => {
     // Create matching target files
     createTestFiles(ctx.targetCwd, fileCount, maxMtimeMs)
     
+    // Create graph status repo for the test
+    const graphStatusRepo = createGraphStatusRepo(ctx.db)
+    
     // Seed
     const result = await seedWorktreeGraphScope({
       projectId: ctx.projectId,
       sourceCwd: ctx.sourceCwd,
       targetCwd: ctx.targetCwd,
       dataDir: ctx.dataDir,
-      kvService: ctx.kvService,
+      graphStatusRepo,
       logger: { log: () => {}, error: () => {}, debug: () => {} },
     })
     
@@ -153,12 +161,14 @@ describe('seedWorktreeGraphScope', () => {
   })
 
   test('should skip when source cache directory is missing', async () => {
+    const graphStatusRepo = createGraphStatusRepo(ctx.db)
+    
     const result = await seedWorktreeGraphScope({
       projectId: ctx.projectId,
       sourceCwd: ctx.sourceCwd,
       targetCwd: ctx.targetCwd,
       dataDir: ctx.dataDir,
-      kvService: ctx.kvService,
+      graphStatusRepo,
       logger: { log: () => {}, error: () => {}, debug: () => {} },
     })
     
@@ -175,12 +185,14 @@ describe('seedWorktreeGraphScope', () => {
     const sourceCacheDir = resolveGraphCacheDir(ctx.projectId, ctx.sourceCwd, ctx.dataDir)
     mkdirSync(sourceCacheDir, { recursive: true })
     
+    const graphStatusRepo = createGraphStatusRepo(ctx.db)
+    
     const result = await seedWorktreeGraphScope({
       projectId: ctx.projectId,
       sourceCwd: ctx.sourceCwd,
       targetCwd: ctx.targetCwd,
       dataDir: ctx.dataDir,
-      kvService: ctx.kvService,
+      graphStatusRepo,
       logger: { log: () => {}, error: () => {}, debug: () => {} },
     })
     
@@ -203,12 +215,14 @@ describe('seedWorktreeGraphScope', () => {
       indexedMaxMtimeMs: Date.now(),
     }))
     
+    const graphStatusRepo = createGraphStatusRepo(ctx.db)
+    
     const result = await seedWorktreeGraphScope({
       projectId: ctx.projectId,
       sourceCwd: ctx.sourceCwd,
       targetCwd: ctx.targetCwd,
       dataDir: ctx.dataDir,
-      kvService: ctx.kvService,
+      graphStatusRepo,
       logger: { log: () => {}, error: () => {}, debug: () => {} },
     })
     
@@ -239,12 +253,14 @@ describe('seedWorktreeGraphScope', () => {
       // Missing indexedFileCount and indexedMaxMtimeMs
     }))
     
+    const graphStatusRepo = createGraphStatusRepo(ctx.db)
+    
     const result = await seedWorktreeGraphScope({
       projectId: ctx.projectId,
       sourceCwd: ctx.sourceCwd,
       targetCwd: ctx.targetCwd,
       dataDir: ctx.dataDir,
-      kvService: ctx.kvService,
+      graphStatusRepo,
       logger: { log: () => {}, error: () => {}, debug: () => {} },
     })
     
@@ -262,12 +278,14 @@ describe('seedWorktreeGraphScope', () => {
     // Create different target files (mismatch)
     createTestFiles(ctx.targetCwd, 5, Date.now() - 1000)
     
+    const graphStatusRepo = createGraphStatusRepo(ctx.db)
+    
     const result = await seedWorktreeGraphScope({
       projectId: ctx.projectId,
       sourceCwd: ctx.sourceCwd,
       targetCwd: ctx.targetCwd,
       dataDir: ctx.dataDir,
-      kvService: ctx.kvService,
+      graphStatusRepo,
       logger: { log: () => {}, error: () => {}, debug: () => {} },
     })
     
@@ -290,12 +308,14 @@ describe('seedWorktreeGraphScope', () => {
     mkdirSync(targetCacheDir, { recursive: true })
     writeFileSync(join(targetCacheDir, 'graph.db'), '')
     
+    const graphStatusRepo = createGraphStatusRepo(ctx.db)
+    
     const result = await seedWorktreeGraphScope({
       projectId: ctx.projectId,
       sourceCwd: ctx.sourceCwd,
       targetCwd: ctx.targetCwd,
       dataDir: ctx.dataDir,
-      kvService: ctx.kvService,
+      graphStatusRepo,
       logger: { log: () => {}, error: () => {}, debug: () => {} },
     })
     
@@ -314,14 +334,18 @@ describe('seedWorktreeGraphScope', () => {
     createTestFiles(ctx.targetCwd, fileCount, maxMtimeMs)
     
     // Write ready status to source scope
-    const { writeGraphStatus, getGraphStatusKey } = await import('../src/utils/graph-status-store')
+    const graphStatusRepo = createGraphStatusRepo(ctx.db)
     const sourceStatus = {
       state: 'ready' as const,
       ready: true,
       stats: { files: 10, symbols: 50, edges: 100, calls: 25 },
       updatedAt: Date.now() - 1000,
     }
-    writeGraphStatus(ctx.kvService, ctx.projectId, sourceStatus, ctx.sourceCwd)
+    graphStatusRepo.write({
+      projectId: ctx.projectId,
+      cwd: ctx.sourceCwd,
+      ...sourceStatus,
+    })
     
     // Seed
     const result = await seedWorktreeGraphScope({
@@ -329,21 +353,20 @@ describe('seedWorktreeGraphScope', () => {
       sourceCwd: ctx.sourceCwd,
       targetCwd: ctx.targetCwd,
       dataDir: ctx.dataDir,
-      kvService: ctx.kvService,
+      graphStatusRepo,
       logger: { log: () => {}, error: () => {}, debug: () => {} },
     })
     
     expect(result.seeded).toBe(true)
     
     // Verify status was copied to target scope
-    const { readGraphStatus } = await import('../src/utils/graph-status-store')
-    const targetStatus = readGraphStatus(ctx.kvService, ctx.projectId, ctx.targetCwd)
+    const targetStatus = graphStatusRepo.read(ctx.projectId, ctx.targetCwd)
     expect(targetStatus).not.toBeNull()
     expect(targetStatus?.state).toBe('ready')
     expect(targetStatus?.updatedAt).toBeGreaterThan(sourceStatus.updatedAt)
     
     // Verify root/unrelated scope was not affected
-    const rootStatus = readGraphStatus(ctx.kvService, ctx.projectId)
+    const rootStatus = graphStatusRepo.read(ctx.projectId, '')
     expect(rootStatus).toBeNull()
   })
 
@@ -358,13 +381,17 @@ describe('seedWorktreeGraphScope', () => {
     createTestFiles(ctx.targetCwd, fileCount, maxMtimeMs)
     
     // Write indexing status to source scope
-    const { writeGraphStatus } = await import('../src/utils/graph-status-store')
+    const graphStatusRepo = createGraphStatusRepo(ctx.db)
     const sourceStatus = {
       state: 'indexing' as const,
       ready: false,
       updatedAt: Date.now(),
     }
-    writeGraphStatus(ctx.kvService, ctx.projectId, sourceStatus, ctx.sourceCwd)
+    graphStatusRepo.write({
+      projectId: ctx.projectId,
+      cwd: ctx.sourceCwd,
+      ...sourceStatus,
+    })
     
     // Seed
     const result = await seedWorktreeGraphScope({
@@ -372,19 +399,18 @@ describe('seedWorktreeGraphScope', () => {
       sourceCwd: ctx.sourceCwd,
       targetCwd: ctx.targetCwd,
       dataDir: ctx.dataDir,
-      kvService: ctx.kvService,
+      graphStatusRepo,
       logger: { log: () => {}, error: () => {}, debug: () => {} },
     })
     
     expect(result.seeded).toBe(true)
     
     // Verify status was NOT copied to target scope
-    const { readGraphStatus } = await import('../src/utils/graph-status-store')
-    const targetStatus = readGraphStatus(ctx.kvService, ctx.projectId, ctx.targetCwd)
+    const targetStatus = graphStatusRepo.read(ctx.projectId, ctx.targetCwd)
     expect(targetStatus).toBeNull()
   })
 
-  test('should not copy ready status when source graph database is unhealthy', async () => {
+  test('should not copy ready status when source graph database is unhealthy (corrupt)', async () => {
     const fileCount = 10
     const maxMtimeMs = Date.now()
     
@@ -395,14 +421,18 @@ describe('seedWorktreeGraphScope', () => {
     createTestFiles(ctx.targetCwd, fileCount, maxMtimeMs)
     
     // Write ready status to source scope
-    const { writeGraphStatus } = await import('../src/utils/graph-status-store')
+    const graphStatusRepo = createGraphStatusRepo(ctx.db)
     const sourceStatus = {
       state: 'ready' as const,
       ready: true,
       stats: { files: 10, symbols: 50, edges: 100, calls: 25 },
       updatedAt: Date.now() - 1000,
     }
-    writeGraphStatus(ctx.kvService, ctx.projectId, sourceStatus, ctx.sourceCwd)
+    graphStatusRepo.write({
+      projectId: ctx.projectId,
+      cwd: ctx.sourceCwd,
+      ...sourceStatus,
+    })
     
     // Corrupt the source graph database by overwriting with garbage
     const sourceCacheDir = resolveGraphCacheDir(ctx.projectId, ctx.sourceCwd, ctx.dataDir)
@@ -415,7 +445,7 @@ describe('seedWorktreeGraphScope', () => {
       sourceCwd: ctx.sourceCwd,
       targetCwd: ctx.targetCwd,
       dataDir: ctx.dataDir,
-      kvService: ctx.kvService,
+      graphStatusRepo,
       logger: { log: () => {}, error: () => {}, debug: () => {} },
     })
     
@@ -439,19 +469,22 @@ describe('seedWorktreeGraphScope', () => {
     createTestFiles(ctx.targetCwd, fileCount, maxMtimeMs)
     
     // Write ready status to source scope
-    const { writeGraphStatus } = await import('../src/utils/graph-status-store')
+    const graphStatusRepo = createGraphStatusRepo(ctx.db)
     const sourceStatus = {
       state: 'ready' as const,
       ready: true,
       stats: { files: 10, symbols: 50, edges: 100, calls: 25 },
       updatedAt: Date.now() - 1000,
     }
-    writeGraphStatus(ctx.kvService, ctx.projectId, sourceStatus, ctx.sourceCwd)
+    graphStatusRepo.write({
+      projectId: ctx.projectId,
+      cwd: ctx.sourceCwd,
+      ...sourceStatus,
+    })
     
     // Replace source graph database with empty schema-only database
     const sourceCacheDir = resolveGraphCacheDir(ctx.projectId, ctx.sourceCwd, ctx.dataDir)
     const sourceGraphDbPath = join(sourceCacheDir, 'graph.db')
-    const { Database } = await import('bun:sqlite')
     // Delete existing DB and recreate with schema only
     rmSync(sourceGraphDbPath)
     const emptyDb = new Database(sourceGraphDbPath)
@@ -465,7 +498,7 @@ describe('seedWorktreeGraphScope', () => {
       sourceCwd: ctx.sourceCwd,
       targetCwd: ctx.targetCwd,
       dataDir: ctx.dataDir,
-      kvService: ctx.kvService,
+      graphStatusRepo,
       logger: { log: () => {}, error: () => {}, debug: () => {} },
     })
     
@@ -489,19 +522,22 @@ describe('seedWorktreeGraphScope', () => {
     createTestFiles(ctx.targetCwd, fileCount, maxMtimeMs)
     
     // Write ready status to source scope
-    const { writeGraphStatus } = await import('../src/utils/graph-status-store')
+    const graphStatusRepo = createGraphStatusRepo(ctx.db)
     const sourceStatus = {
       state: 'ready' as const,
       ready: true,
       stats: { files: 10, symbols: 50, edges: 100, calls: 25 },
       updatedAt: Date.now() - 1000,
     }
-    writeGraphStatus(ctx.kvService, ctx.projectId, sourceStatus, ctx.sourceCwd)
+    graphStatusRepo.write({
+      projectId: ctx.projectId,
+      cwd: ctx.sourceCwd,
+      ...sourceStatus,
+    })
     
     // Truncate the source graph to only have 5 rows (mismatch with metadata)
     const sourceCacheDir = resolveGraphCacheDir(ctx.projectId, ctx.sourceCwd, ctx.dataDir)
     const sourceGraphDbPath = join(sourceCacheDir, 'graph.db')
-    const { Database } = await import('bun:sqlite')
     const db = new Database(sourceGraphDbPath)
     db.run('DELETE FROM files LIMIT 5') // Delete 5 rows, leaving only 5
     db.close()
@@ -512,7 +548,7 @@ describe('seedWorktreeGraphScope', () => {
       sourceCwd: ctx.sourceCwd,
       targetCwd: ctx.targetCwd,
       dataDir: ctx.dataDir,
-      kvService: ctx.kvService,
+      graphStatusRepo,
       logger: { log: () => {}, error: () => {}, debug: () => {} },
     })
     

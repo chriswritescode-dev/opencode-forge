@@ -3,15 +3,15 @@ import { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2'
 import { agents } from './agents'
 import { createConfigHandler } from './config'
 import { createSessionHooks, createLoopEventHandler } from './hooks'
-import { initializeDatabase, resolveDataDir, closeDatabase } from './storage'
-import { createKvService } from './services/kv'
-import { createLoopService, migrateRalphKeys } from './services/loop'
+import { initializeDatabase, resolveDataDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo } from './storage'
+import { createLoopService } from './services/loop'
 import { createGraphService } from './graph'
 import { loadPluginConfig } from './setup'
 import { resolveLogPath } from './storage'
 import { createLogger } from './utils/logger'
 import { createDockerService } from './sandbox/docker'
 import { createSandboxManager } from './sandbox/manager'
+import { reconcileSandboxes } from './sandbox/reconcile'
 import type { PluginConfig, CompactionConfig } from './types'
 import { createTools, createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from './tools'
 import { createSandboxToolBeforeHook, createSandboxToolAfterHook } from './hooks/sandbox-tools'
@@ -20,6 +20,8 @@ import { createGraphToolBeforeHook, createGraphToolAfterHook } from './hooks/gra
 import type { ToolContext } from './tools'
 import type { GraphService } from './graph'
 import { createGraphStatusCallback, writeGraphStatus, UNAVAILABLE_STATUS } from './utils/graph-status-store'
+import { createGraphStatusRepo } from './storage'
+import { FORGE_WORKTREE_WORKSPACE_TYPE, createForgeWorktreeAdaptor } from './workspace/forge-worktree'
 
 
 /**
@@ -56,16 +58,13 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 
     const dataDir = config.dataDir || resolveDataDir()
     
-    const db = initializeDatabase(dataDir)
+    const db = initializeDatabase(dataDir, { completedLoopTtlMs: config.completedLoopTtlMs })
 
-    const kvService = createKvService(db, logger, config.defaultKvTtlMs)
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
 
-    const loopService = createLoopService(kvService, projectId, logger, config.loop)
-    try {
-      migrateRalphKeys(kvService, projectId, logger)
-    } catch (err) {
-      logger.error('Failed to migrate ralph: KV entries', err)
-    }
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, config.loop)
 
     const activeSandboxLoops = loopService.listActive().filter(s => s.sandbox && s.loopName)
 
@@ -87,20 +86,35 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       }
     }
 
+    // Sandbox reconciliation interval handle
+    let sandboxReconcileInterval: ReturnType<typeof setInterval> | null = null
+
     if (sandboxManager) {
       const preserveLoops = activeSandboxLoops.map(s => s.loopName!).filter(Boolean)
-      sandboxManager.cleanupOrphans(preserveLoops).then(async (count) => {
-        if (count > 0) logger.log(`Cleaned up ${count} orphaned sandbox container(s)`)
-        for (const loop of activeSandboxLoops) {
-          try {
-            await sandboxManager!.restore(loop.loopName!, loop.worktreeDir, loop.startedAt)
-            loopService.setState(loop.loopName!, { ...loop, active: true })
-            logger.log(`Restored sandbox and reactivated loop for ${loop.loopName}`)
-          } catch (err) {
-            logger.error(`Failed to restore sandbox for ${loop.loopName}`, err)
-          }
+      await sandboxManager.cleanupOrphans(preserveLoops)
+      
+      // Initial restore for active sandbox loops
+      for (const loop of activeSandboxLoops) {
+        try {
+          await sandboxManager.restore(loop.loopName!, loop.worktreeDir, loop.startedAt)
+          loopService.setStatus(loop.loopName!, 'running')
+          logger.log(`Restored sandbox and reactivated loop for ${loop.loopName}`)
+        } catch (err) {
+          logger.error(`Failed to restore sandbox for ${loop.loopName}`, err)
         }
-      }).catch((err) => logger.error('Failed to cleanup orphaned containers', err))
+      }
+
+      // Run initial reconciliation
+      const reconcileDeps = { sandboxManager, loopService, logger }
+      await reconcileSandboxes(reconcileDeps)
+
+      // Start periodic reconciliation (every 2 seconds).
+      // Reuse the same deps object so reconcile.ts's WeakMap-based re-entrancy guard works across ticks.
+      sandboxReconcileInterval = setInterval(() => {
+        reconcileSandboxes(reconcileDeps).catch((err) => {
+          logger.error('Sandbox reconciliation failed', err)
+        })
+      }, 2000)
     }
 
     const loopHandler = createLoopEventHandler(loopService, client, v2, logger, () => config, sandboxManager || undefined, projectId, dataDir)
@@ -108,11 +122,12 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     // Initialize graph service if enabled
     const graphEnabled = config.graph?.enabled ?? true
     let graphService: GraphService | null = null
+    const graphStatusRepo = createGraphStatusRepo(db)
     
     if (graphEnabled) {
       try {
         // Create status callback for persisting graph state (scoped to cwd for worktree sessions)
-        const graphStatusCallback = createGraphStatusCallback(kvService, projectId, directory)
+        const graphStatusCallback = createGraphStatusCallback(graphStatusRepo, projectId, directory)
         
         graphService = createGraphService({
           projectId,
@@ -137,7 +152,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       }
     } else {
       // Graph is disabled - persist unavailable status
-      writeGraphStatus(kvService, projectId, UNAVAILABLE_STATUS)
+      writeGraphStatus(graphStatusRepo, projectId, UNAVAILABLE_STATUS)
     }
 
     const compactionConfig: CompactionConfig | undefined = config.compaction
@@ -157,6 +172,12 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         process.removeListener('exit', handleExit)
         process.removeListener('SIGINT', handleSigint)
         process.removeListener('SIGTERM', handleSigterm)
+
+        // Clear sandbox reconciliation interval
+        if (sandboxReconcileInterval) {
+          clearInterval(sandboxReconcileInterval)
+          sandboxReconcileInterval = null
+        }
 
         if (sandboxManager) {
           const activeLoops = loopService.listActive()
@@ -205,7 +226,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       logger,
       db,
       dataDir,
-      kvService,
       loopService,
       loopHandler,
       v2,
@@ -213,6 +233,10 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       input,
       sandboxManager,
       graphService: graphService || null,
+      plansRepo,
+      reviewFindingsRepo,
+      graphStatusRepo,
+      loopsRepo,
     }
 
     const tools = createTools(ctx)
@@ -353,7 +377,23 @@ Never execute a plan without both a written plan and explicit approval via the q
 const plugin: Plugin = async (input: PluginInput): Promise<Hooks> => {
   const config = loadPluginConfig()
   const factory = createForgePlugin(config)
-  return factory(input)
+  const hooks = await factory(input)
+
+  // Register the forge worktree workspace adaptor so worktree-backed loops can be
+  // switched to directly from the TUI as workspaces.
+  // Guarded in case the host runtime is older than the type declarations.
+  const workspaceApi = (input as PluginInput & {
+    experimental_workspace?: PluginInput['experimental_workspace']
+  }).experimental_workspace
+  if (workspaceApi) {
+    try {
+      workspaceApi.register(FORGE_WORKTREE_WORKSPACE_TYPE, createForgeWorktreeAdaptor())
+    } catch (err) {
+      console.error('Failed to register forge worktree workspace adaptor', err)
+    }
+  }
+
+  return hooks
 }
 
 const pluginModule = {

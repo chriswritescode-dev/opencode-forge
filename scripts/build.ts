@@ -64,4 +64,13 @@ const distTemplateDir = join(__dirname, '..', 'dist', 'command', 'template')
 mkdirSync(distTemplateDir, { recursive: true })
 cpSync(srcTemplateDir, distTemplateDir, { recursive: true })
 
+console.log('Copying migration SQL files...')
+const srcMigrationsDir = join(__dirname, '..', 'src', 'storage', 'migrations')
+const distMigrationsDir = join(__dirname, '..', 'dist', 'storage', 'migrations')
+mkdirSync(distMigrationsDir, { recursive: true })
+cpSync(srcMigrationsDir, distMigrationsDir, {
+  recursive: true,
+  filter: (src) => !src.endsWith('.ts') && !src.endsWith('.md')
+})
+
 console.log('Build complete!')

@@ -177,6 +177,8 @@ export interface ImportInfo {
   specifiers: string[]
   isDefault: boolean
   isNamespace: boolean
+  isTypeOnly: boolean   // true for `import type { ... }` or all specifiers are `type`
+  isDynamic: boolean    // true for `await import(...)` / `import(...)`
   location: SourceLocation
 }
 

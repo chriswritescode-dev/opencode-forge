@@ -8,18 +8,50 @@ const TEST_DIR = '/tmp/opencode-manager-loop-launch-test-' + Date.now()
 function createTestDb(): { db: Database; path: string } {
   const path = `${TEST_DIR}-${Math.random().toString(36).slice(2)}.db`
   const db = new Database(path)
+  // Create the new loops schema
   db.run(`
-    CREATE TABLE IF NOT EXISTS project_kv (
+    CREATE TABLE IF NOT EXISTS loops (
       project_id TEXT NOT NULL,
-      key TEXT NOT NULL,
-      data TEXT NOT NULL,
-      expires_at INTEGER NOT NULL,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (project_id, key)
+      loop_name TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('running','completed','cancelled','errored','stalled')),
+      current_session_id TEXT NOT NULL,
+      worktree INTEGER NOT NULL,
+      worktree_dir TEXT NOT NULL,
+      worktree_branch TEXT,
+      project_dir TEXT NOT NULL,
+      max_iterations INTEGER NOT NULL,
+      iteration INTEGER NOT NULL DEFAULT 0,
+      audit_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      phase TEXT NOT NULL CHECK(phase IN ('coding','auditing')),
+      audit INTEGER NOT NULL,
+      completion_signal TEXT,
+      execution_model TEXT,
+      auditor_model TEXT,
+      model_failed INTEGER NOT NULL DEFAULT 0,
+      sandbox INTEGER NOT NULL DEFAULT 0,
+      sandbox_container TEXT,
+      started_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      termination_reason TEXT,
+      completion_summary TEXT,
+      workspace_id TEXT,
+      PRIMARY KEY (project_id, loop_name)
     )
   `)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_project_kv_expires_at ON project_kv(expires_at)`)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS loop_large_fields (
+      project_id TEXT NOT NULL,
+      loop_name TEXT NOT NULL,
+      prompt TEXT,
+      last_audit_result TEXT,
+      PRIMARY KEY (project_id, loop_name),
+      FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
+    )
+  `)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_loops_status ON loops(project_id, status)`)
+  db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_loops_session ON loops(project_id, current_session_id)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_loops_completed_at ON loops(status, completed_at) WHERE status != 'running'`)
   return { db, path }
 }
 
@@ -47,6 +79,16 @@ function createMockApi(overrides?: Partial<TuiPluginApi>): TuiPluginApi {
             error: null,
           }
         }),
+        remove: mock(async () => ({ data: {}, error: null })),
+      },
+      experimental: {
+        workspace: {
+          create: mock(async () => ({
+            data: { id: 'mock-workspace-' + Date.now() },
+            error: null,
+          })),
+          sessionRestore: mock(async () => ({ data: {}, error: null })),
+        },
       },
     },
     state: {
@@ -142,6 +184,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: true,
+      sandboxEnabled: false,
       api: mockApi,
       dbPath,
     })
@@ -154,7 +197,7 @@ describe('Fresh Loop Launch', () => {
     expect(mockApi.client.session.create).toHaveBeenCalled()
   })
 
-  test('Persists loop state to KV for in-place loop', async () => {
+  test('Persists loop state to loops table for in-place loop', async () => {
     const mockApi = createMockApi()
     
     const result = await launchFreshLoop({
@@ -169,23 +212,27 @@ describe('Fresh Loop Launch', () => {
 
     expect(result).toBeDefined()
     
-    // Verify loop state was written to KV
-    const loopStateRow = db.prepare(
-      'SELECT data FROM project_kv WHERE project_id = ? AND key LIKE ?'
-    ).get(projectId, 'loop:%') as { data: string } | null
+    // Verify loop state was written to loops table
+    const loopRow = db.prepare(
+      'SELECT * FROM loops WHERE project_id = ? AND loop_name LIKE ?'
+    ).get(projectId, 'test-plan%') as any | null
 
-    expect(loopStateRow).toBeDefined()
-    if (loopStateRow) {
-      const state = JSON.parse(loopStateRow.data)
-      expect(state.active).toBe(true)
-      expect(state.worktree).toBe(false)
-      expect(state.phase).toBe('coding')
-      expect(state.prompt).toBe(planText)
-      expect(state.loopName).toBe('test-plan') // Falls back to title
+    expect(loopRow).toBeDefined()
+    if (loopRow) {
+      expect(loopRow.status).toBe('running')
+      expect(loopRow.worktree).toBe(0)
+      expect(loopRow.phase).toBe('coding')
+      expect(loopRow.loop_name).toBe('test-plan') // Falls back to title
+      
+      // Verify prompt in loop_large_fields
+      const largeFieldsRow = db.prepare(
+        'SELECT prompt FROM loop_large_fields WHERE project_id = ? AND loop_name = ?'
+      ).get(projectId, loopRow.loop_name) as { prompt: string } | null
+      expect(largeFieldsRow?.prompt).toBe(planText)
     }
   })
 
-  test('Persists loop state to KV for worktree loop', async () => {
+  test('Persists loop state to loops table for worktree loop', async () => {
     const mockApi = createMockApi()
     
     const result = await launchFreshLoop({
@@ -194,6 +241,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: true,
+      sandboxEnabled: false,
       api: mockApi,
       dbPath,
     })
@@ -202,20 +250,19 @@ describe('Fresh Loop Launch', () => {
     expect(result?.isWorktree).toBe(true)
     expect(result?.executionName).toBe('test-plan')
     
-    const loopStateRow = db.prepare(
-      'SELECT data FROM project_kv WHERE project_id = ? AND key LIKE ?'
-    ).get(projectId, 'loop:%') as { data: string } | null
+    const loopRow = db.prepare(
+      'SELECT * FROM loops WHERE project_id = ? AND loop_name LIKE ?'
+    ).get(projectId, 'test-plan%') as any | null
 
-    expect(loopStateRow).toBeDefined()
-    if (loopStateRow) {
-      const state = JSON.parse(loopStateRow.data)
-      expect(state.active).toBe(true)
-      expect(state.worktree).toBe(true)
-      expect(state.worktreeDir).toBeDefined()
+    expect(loopRow).toBeDefined()
+    if (loopRow) {
+      expect(loopRow.status).toBe('running')
+      expect(loopRow.worktree).toBe(1)
+      expect(loopRow.worktree_dir).toBeDefined()
     }
   })
 
-  test('Persists session mapping to KV', async () => {
+  test('Persists session mapping to loops.current_session_id', async () => {
     const mockApi = createMockApi()
     
     const result = await launchFreshLoop({
@@ -230,18 +277,18 @@ describe('Fresh Loop Launch', () => {
 
     expect(result).toBeDefined()
     
-    const sessionRow = db.prepare(
-      'SELECT data FROM project_kv WHERE project_id = ? AND key = ?'
-    ).get(projectId, `loop-session:${result!.sessionId}`) as { data: string } | null
+    const loopRow = db.prepare(
+      'SELECT current_session_id, loop_name FROM loops WHERE project_id = ? AND current_session_id = ?'
+    ).get(projectId, result!.sessionId) as { current_session_id: string; loop_name: string } | null
 
-    expect(sessionRow).toBeDefined()
-    if (sessionRow) {
-      const loopName = JSON.parse(sessionRow.data)
-      expect(loopName).toBe('test-plan')
+    expect(loopRow).toBeDefined()
+    if (loopRow) {
+      expect(loopRow.current_session_id).toBe(result!.sessionId)
+      expect(loopRow.loop_name).toBe('test-plan')
     }
   })
 
-  test('Stores plan with worktree name key', async () => {
+  test('Stores plan in loop_large_fields', async () => {
     const mockApi = createMockApi()
     
     await launchFreshLoop({
@@ -255,13 +302,12 @@ describe('Fresh Loop Launch', () => {
     })
 
     const planRow = db.prepare(
-      'SELECT data FROM project_kv WHERE project_id = ? AND key LIKE ?'
-    ).get(projectId, 'plan:%') as { data: string } | null
+      'SELECT prompt FROM loop_large_fields WHERE project_id = ? AND loop_name LIKE ?'
+    ).get(projectId, 'test-plan%') as { prompt: string } | null
 
     expect(planRow).toBeDefined()
     if (planRow) {
-      const storedPlan = JSON.parse(planRow.data)
-      expect(storedPlan).toBe(planText)
+      expect(planRow.prompt).toBe(planText)
     }
   })
 
@@ -339,6 +385,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: true,
+      sandboxEnabled: false,
       api: mockApi,
       dbPath,
     })
@@ -367,26 +414,27 @@ describe('Fresh Loop Launch', () => {
 
     expect(result).toBeDefined()
     
-    // Verify loop: key exists immediately after launch
-    const loopKey = `loop:${result!.executionName}`
+    // Verify loops table row exists immediately after launch
     const loopRow = db.prepare(
-      'SELECT data, expires_at, created_at, updated_at FROM project_kv WHERE project_id = ? AND key = ?'
-    ).get(projectId, loopKey) as { data: string; expires_at: number; created_at: number; updated_at: number } | null
+      'SELECT * FROM loops WHERE project_id = ? AND loop_name = ?'
+    ).get(projectId, result!.executionName) as any | null
 
     expect(loopRow).toBeDefined()
     if (loopRow) {
-      const state = JSON.parse(loopRow.data)
-      // Verify schema-required fields
-      expect(state.active).toBe(true)
-      expect(state.sessionId).toBe(result?.sessionId)
-      expect(state.loopName).toBe(result?.executionName)
-      expect(state.worktreeDir).toBeDefined()
-      expect(state.iteration).toBe(1)
-      expect(state.phase).toBe('coding')
-      expect(state.prompt).toBe(planText)
-      expect(state.worktree).toBe(false)
-      expect(state.startedAt).toBeDefined()
-      expect(loopRow.expires_at).toBeDefined()
+      expect(loopRow.status).toBe('running')
+      expect(loopRow.current_session_id).toBe(result?.sessionId)
+      expect(loopRow.loop_name).toBe(result!.executionName)
+      expect(loopRow.worktree_dir).toBeDefined()
+      expect(loopRow.iteration).toBe(1)
+      expect(loopRow.phase).toBe('coding')
+      expect(loopRow.worktree).toBe(0)
+      expect(loopRow.started_at).toBeDefined()
+      
+      // Verify prompt in loop_large_fields
+      const largeFieldsRow = db.prepare(
+        'SELECT prompt FROM loop_large_fields WHERE project_id = ? AND loop_name = ?'
+      ).get(projectId, loopRow.loop_name) as { prompt: string } | null
+      expect(largeFieldsRow?.prompt).toBe(planText)
     }
   })
 
@@ -407,16 +455,15 @@ describe('Fresh Loop Launch', () => {
 
     expect(result).toBeDefined()
     
-    // Verify loop-session: key exists immediately after launch
-    const sessionKey = `loop-session:${result!.sessionId}`
-    const sessionRow = db.prepare(
-      'SELECT data FROM project_kv WHERE project_id = ? AND key = ?'
-    ).get(projectId, sessionKey) as { data: string } | null
+    // Verify current_session_id in loops table
+    const loopRow = db.prepare(
+      'SELECT current_session_id, loop_name FROM loops WHERE project_id = ? AND current_session_id = ?'
+    ).get(projectId, result!.sessionId) as { current_session_id: string; loop_name: string } | null
 
-    expect(sessionRow).toBeDefined()
-    if (sessionRow) {
-      const storedLoopName = JSON.parse(sessionRow.data)
-      expect(storedLoopName).toBe(result?.executionName)
+    expect(loopRow).toBeDefined()
+    if (loopRow && result?.executionName) {
+      expect(loopRow.current_session_id).toBe(result!.sessionId)
+      expect(loopRow.loop_name).toBe(result.executionName)
     }
   })
 
@@ -557,6 +604,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: true,
+      sandboxEnabled: false,
       api: mockApi,
       dbPath,
     })
@@ -612,15 +660,14 @@ describe('Fresh Loop Launch', () => {
       auditorModel,
     })
 
-    const loopStateRow = db.prepare(
-      'SELECT data FROM project_kv WHERE project_id = ? AND key LIKE ?'
-    ).get(projectId, 'loop:%') as { data: string } | null
+    const loopRow = db.prepare(
+      'SELECT execution_model, auditor_model FROM loops WHERE project_id = ? AND loop_name LIKE ?'
+    ).get(projectId, 'test-plan%') as { execution_model: string; auditor_model: string } | null
 
-    expect(loopStateRow).toBeDefined()
-    if (loopStateRow) {
-      const state = JSON.parse(loopStateRow.data)
-      expect(state.executionModel).toBe(executionModel)
-      expect(state.auditorModel).toBe(auditorModel)
+    expect(loopRow).toBeDefined()
+    if (loopRow) {
+      expect(loopRow.execution_model).toBe(executionModel)
+      expect(loopRow.auditor_model).toBe(auditorModel)
     }
   })
 
@@ -639,15 +686,14 @@ describe('Fresh Loop Launch', () => {
       executionModel,
     })
 
-    const loopStateRow = db.prepare(
-      'SELECT data FROM project_kv WHERE project_id = ? AND key LIKE ?'
-    ).get(projectId, 'loop:%') as { data: string } | null
+    const loopRow = db.prepare(
+      'SELECT execution_model, auditor_model FROM loops WHERE project_id = ? AND loop_name LIKE ?'
+    ).get(projectId, 'test-plan%') as { execution_model: string; auditor_model: string } | null
 
-    expect(loopStateRow).toBeDefined()
-    if (loopStateRow) {
-      const state = JSON.parse(loopStateRow.data)
-      expect(state.executionModel).toBe(executionModel)
-      expect(state.auditorModel).toBeUndefined()
+    expect(loopRow).toBeDefined()
+    if (loopRow) {
+      expect(loopRow.execution_model).toBe(executionModel)
+      expect(loopRow.auditor_model).toBeNull()
     }
   })
 
@@ -712,15 +758,14 @@ describe('Fresh Loop Launch', () => {
     })
 
     // Verify models were persisted
-    const loopStateRow = db.prepare(
-      'SELECT data FROM project_kv WHERE project_id = ? AND key LIKE ?'
-    ).get(projectId, 'loop:%') as { data: string } | null
+    const loopRow = db.prepare(
+      'SELECT execution_model, auditor_model FROM loops WHERE project_id = ? AND loop_name LIKE ?'
+    ).get(projectId, 'test-plan%') as { execution_model: string; auditor_model: string } | null
 
-    expect(loopStateRow).toBeDefined()
-    if (loopStateRow) {
-      const state = JSON.parse(loopStateRow.data)
-      expect(state.executionModel).toBe(executionModel)
-      expect(state.auditorModel).toBe(auditorModel)
+    expect(loopRow).toBeDefined()
+    if (loopRow) {
+      expect(loopRow.execution_model).toBe(executionModel)
+      expect(loopRow.auditor_model).toBe(auditorModel)
     }
 
     // Verify first prompt was sent

@@ -1,6 +1,9 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { Database } from 'bun:sqlite'
-import { createKvService } from '../src/services/kv'
+import { createPlansRepo } from '../src/storage/repos/plans-repo'
+import { createLoopsRepo } from '../src/storage/repos/loops-repo'
+import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
+import { createLoopService } from '../src/services/loop'
 import { createPlanTools } from '../src/tools/plan-kv'
 import type { Logger } from '../src/types'
 
@@ -9,17 +12,77 @@ const TEST_DIR = '/tmp/opencode-manager-plan-kv-test-' + Date.now()
 function createTestDb(): Database {
   const db = new Database(`${TEST_DIR}-${Math.random().toString(36).slice(2)}.db`)
   db.run(`
-    CREATE TABLE IF NOT EXISTS project_kv (
-      project_id TEXT NOT NULL,
-      key TEXT NOT NULL,
-      data TEXT NOT NULL,
-      expires_at INTEGER NOT NULL,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (project_id, key)
+    CREATE TABLE IF NOT EXISTS loops (
+      project_id           TEXT NOT NULL,
+      loop_name            TEXT NOT NULL,
+      status               TEXT NOT NULL CHECK(status IN ('running','completed','cancelled','errored','stalled')),
+      current_session_id   TEXT NOT NULL,
+      worktree             INTEGER NOT NULL,
+      worktree_dir         TEXT NOT NULL,
+      worktree_branch      TEXT,
+      project_dir          TEXT NOT NULL,
+      max_iterations       INTEGER NOT NULL,
+      iteration            INTEGER NOT NULL DEFAULT 0,
+      audit_count          INTEGER NOT NULL DEFAULT 0,
+      error_count          INTEGER NOT NULL DEFAULT 0,
+      phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing')),
+      audit                INTEGER NOT NULL DEFAULT 0,
+      completion_signal    TEXT,
+      execution_model      TEXT,
+      auditor_model        TEXT,
+      model_failed         INTEGER NOT NULL DEFAULT 0,
+      sandbox              INTEGER NOT NULL DEFAULT 0,
+      sandbox_container    TEXT,
+      started_at           INTEGER NOT NULL,
+      completed_at         INTEGER,
+      termination_reason   TEXT,
+      completion_summary   TEXT,
+      workspace_id   TEXT,
+      PRIMARY KEY (project_id, loop_name)
     )
   `)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_project_kv_expires_at ON project_kv(expires_at)`)
+  db.run(`CREATE UNIQUE INDEX idx_loops_session ON loops(project_id, current_session_id)`)
+  
+  db.run(`
+    CREATE TABLE IF NOT EXISTS loop_large_fields (
+      project_id          TEXT NOT NULL,
+      loop_name           TEXT NOT NULL,
+      prompt              TEXT,
+      last_audit_result   TEXT,
+      PRIMARY KEY (project_id, loop_name),
+      FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
+    )
+  `)
+  
+  db.run(`
+    CREATE TABLE IF NOT EXISTS plans (
+      project_id   TEXT NOT NULL,
+      loop_name    TEXT,
+      session_id   TEXT,
+      content      TEXT NOT NULL,
+      updated_at   INTEGER NOT NULL,
+      CHECK (loop_name IS NOT NULL OR session_id IS NOT NULL),
+      CHECK (NOT (loop_name IS NOT NULL AND session_id IS NOT NULL))
+    )
+  `)
+  db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_plans_loop ON plans(project_id, loop_name) WHERE loop_name IS NOT NULL`)
+  db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_plans_session ON plans(project_id, session_id) WHERE session_id IS NOT NULL`)
+  
+  db.run(`
+    CREATE TABLE IF NOT EXISTS review_findings (
+      project_id   TEXT NOT NULL,
+      file         TEXT NOT NULL,
+      line         INTEGER NOT NULL,
+      severity     TEXT NOT NULL CHECK(severity IN ('bug','warning')),
+      description  TEXT NOT NULL,
+      scenario     TEXT NOT NULL,
+      branch       TEXT,
+      created_at   INTEGER NOT NULL,
+      PRIMARY KEY (project_id, file, line)
+    )
+  `)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_branch ON review_findings(project_id, branch)`)
+  
   return db
 }
 
@@ -31,22 +94,37 @@ const mockLogger: Logger = {
 
 describe('plan-write', () => {
   let db: Database
-  let kvService: ReturnType<typeof createKvService>
+  let plansRepo: ReturnType<typeof createPlansRepo>
+  let loopsRepo: ReturnType<typeof createLoopsRepo>
+  let loopService: ReturnType<typeof createLoopService>
   let tools: ReturnType<typeof createPlanTools>
 
   beforeEach(() => {
     db = createTestDb()
-    kvService = createKvService(db, mockLogger)
-    tools = createPlanTools({
-      kvService,
+    loopsRepo = createLoopsRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    plansRepo = createPlansRepo(db)
+    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
+    const ctx = {
+      plansRepo,
+      loopsRepo,
       projectId: 'test-project',
       logger: mockLogger,
-      loopService: { resolveLoopName: () => null } as any,
+      loopService,
       directory: TEST_DIR,
-      sessionID: 'test-session',
       config: {} as any,
-      sandboxManager: {} as any,
-    } as any)
+      db,
+      dataDir: TEST_DIR,
+      cleanup: async () => {},
+      input: {} as any,
+      sandboxManager: null,
+      graphService: null,
+      v2: {} as any,
+      loopHandler: {} as any,
+      reviewFindingsRepo,
+      graphStatusRepo: {} as any,
+    }
+    tools = createPlanTools(ctx)
   })
 
   afterEach(() => {
@@ -77,13 +155,13 @@ describe('plan-write', () => {
     expect(result).toContain('Plan stored')
     expect(result).toContain('lines')
 
-    const stored = kvService.get('test-project', 'plan:test-session')
-    expect(stored).toBe(planContent)
+    const stored = plansRepo.getForSession('test-project', 'test-session')
+    expect(stored?.content).toBe(planContent)
   })
 
   test('overwrites existing plan', async () => {
     const initialPlan = '# Old Plan\n\nContent here'
-    kvService.set('test-project', 'plan:test-session', initialPlan)
+    plansRepo.writeForSession('test-project', 'test-session', initialPlan)
 
     const newPlan = '# New Plan\n\nNew content'
     await tools['plan-write'].execute(
@@ -91,24 +169,28 @@ describe('plan-write', () => {
       { sessionID: 'test-session', directory: TEST_DIR } as any
     )
 
-    const stored = kvService.get('test-project', 'plan:test-session')
-    expect(stored).toBe(newPlan)
+    const stored = plansRepo.getForSession('test-project', 'test-session')
+    expect(stored?.content).toBe(newPlan)
   })
 })
 
 describe('plan-edit', () => {
   let db: Database
-  let kvService: ReturnType<typeof createKvService>
+  let plansRepo: ReturnType<typeof createPlansRepo>
+  let loopService: ReturnType<typeof createLoopService>
   let tools: ReturnType<typeof createPlanTools>
 
   beforeEach(() => {
     db = createTestDb()
-    kvService = createKvService(db, mockLogger)
+    const loopsRepo = createLoopsRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    plansRepo = createPlansRepo(db)
+    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
     tools = createPlanTools({
-      kvService,
+      plansRepo,
       projectId: 'test-project',
       logger: mockLogger,
-      loopService: { resolveLoopName: () => null } as any,
+      loopService,
       directory: TEST_DIR,
       sessionID: 'test-session',
       config: {} as any,
@@ -126,7 +208,7 @@ describe('plan-edit', () => {
 - Write core logic
 - Add tests
 `
-    kvService.set('test-project', 'plan:test-session', initialPlan)
+    plansRepo.writeForSession('test-project', 'test-session', initialPlan)
   })
 
   afterEach(() => {
@@ -144,9 +226,9 @@ describe('plan-edit', () => {
 
     expect(result).toContain('Plan updated')
 
-    const stored = kvService.get<string>('test-project', 'plan:test-session')
-    expect(stored).toContain('- Create directory structure')
-    expect(stored).toContain('- Set up TypeScript')
+    const stored = plansRepo.getForSession('test-project', 'test-session')
+    expect(stored?.content).toContain('- Create directory structure')
+    expect(stored?.content).toContain('- Set up TypeScript')
   })
 
   test('fails if old_string is not found', async () => {
@@ -170,7 +252,7 @@ describe('plan-edit', () => {
 ## Phase 2
 - Item 1
 `
-    kvService.set('test-project', 'plan:test-session', duplicatePlan)
+    plansRepo.writeForSession('test-project', 'test-session', duplicatePlan)
 
     const result = await tools['plan-edit'].execute(
       {
@@ -185,7 +267,7 @@ describe('plan-edit', () => {
   })
 
   test('fails if no plan exists', async () => {
-    kvService.delete('test-project', 'plan:test-session')
+    plansRepo.deleteForSession('test-project', 'test-session')
 
     const result = await tools['plan-edit'].execute(
       {
@@ -201,17 +283,23 @@ describe('plan-edit', () => {
 
 describe('plan-read', () => {
   let db: Database
-  let kvService: ReturnType<typeof createKvService>
+  let plansRepo: ReturnType<typeof createPlansRepo>
+  let loopsRepo: ReturnType<typeof createLoopsRepo>
+  let loopService: ReturnType<typeof createLoopService>
   let tools: ReturnType<typeof createPlanTools>
 
   beforeEach(() => {
     db = createTestDb()
-    kvService = createKvService(db, mockLogger)
+    loopsRepo = createLoopsRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    plansRepo = createPlansRepo(db)
+    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
     tools = createPlanTools({
-      kvService,
+      plansRepo,
+      loopsRepo,
       projectId: 'test-project',
       logger: mockLogger,
-      loopService: { resolveLoopName: () => null } as any,
+      loopService,
       directory: TEST_DIR,
       sessionID: 'test-session',
       config: {} as any,
@@ -233,7 +321,7 @@ describe('plan-read', () => {
 - Run tests
 - Check types
 `
-    kvService.set('test-project', 'plan:test-session', planContent)
+    plansRepo.writeForSession('test-project', 'test-session', planContent)
   })
 
   afterEach(() => {
@@ -283,7 +371,7 @@ describe('plan-read', () => {
   })
 
   test('returns message when no plan exists', async () => {
-    kvService.delete('test-project', 'plan:test-session')
+    plansRepo.deleteForSession('test-project', 'test-session')
 
     const result = await tools['plan-read'].execute(
       {},
@@ -312,7 +400,32 @@ describe('plan-read', () => {
   })
 
   test('reads plan by explicit loop name', async () => {
-    kvService.set('test-project', 'plan:explicit-loop', '# Explicit Loop Plan\n\n## Phase 1\n- Read by loop name')
+    // Write to loop_large_fields (primary storage for loops)
+    // First create the loop row, then update the prompt
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const testLoopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
+    const state = {
+      active: true,
+      sessionId: 'explicit-loop-session',
+      loopName: 'explicit-loop',
+      worktreeDir: '/tmp/test',
+      projectDir: '/tmp/test',
+      worktreeBranch: 'test-branch',
+      iteration: 1,
+      maxIterations: 5,
+      completionSignal: 'TEST',
+      startedAt: new Date().toISOString(),
+      prompt: '# Explicit Loop Plan\n\n## Phase 1\n- Read by loop name',
+      phase: 'coding' as const,
+      audit: true,
+      errorCount: 0,
+      auditCount: 0,
+      worktree: true,
+      sandbox: false,
+      executionModel: undefined,
+      auditorModel: undefined,
+    }
+    testLoopService.setState('explicit-loop', state)
 
     const result = await tools['plan-read'].execute(
       { loop_name: 'explicit-loop' },
@@ -326,14 +439,20 @@ describe('plan-read', () => {
 
 describe('plan-read with loop session', () => {
   let db: Database
-  let kvService: ReturnType<typeof createKvService>
+  let plansRepo: ReturnType<typeof createPlansRepo>
+  let loopsRepo: ReturnType<typeof createLoopsRepo>
+  let loopService: ReturnType<typeof createLoopService>
   let tools: ReturnType<typeof createPlanTools>
 
   beforeEach(() => {
     db = createTestDb()
-    kvService = createKvService(db, mockLogger)
+    loopsRepo = createLoopsRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    plansRepo = createPlansRepo(db)
+    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
     tools = createPlanTools({
-      kvService,
+      plansRepo,
+      loopsRepo,
       projectId: 'test-project',
       logger: mockLogger,
       loopService: {
@@ -346,7 +465,7 @@ describe('plan-read with loop session', () => {
       sandboxManager: {} as any,
     } as any)
 
-    kvService.set('test-project', 'plan:my-loop', '# Loop Plan\n\n## Phase 1\n- Do the thing')
+    plansRepo.writeForLoop('test-project', 'my-loop', '# Loop Plan\n\n## Phase 1\n- Do the thing')
   })
 
   afterEach(() => {
@@ -354,6 +473,9 @@ describe('plan-read with loop session', () => {
   })
 
   test('resolves plan key to worktree name for loop sessions', async () => {
+    // Write to loop_large_fields instead of plans table
+    loopsRepo.updatePrompt('test-project', 'my-loop', '# Loop Plan\n\n## Phase 1\n- Do the thing')
+
     const result = await tools['plan-read'].execute(
       {},
       { sessionID: 'loop-session-123', directory: TEST_DIR } as any
@@ -364,7 +486,7 @@ describe('plan-read with loop session', () => {
   })
 
   test('falls back to session ID when not in a loop', async () => {
-    kvService.set('test-project', 'plan:non-loop-session', '# Regular Plan')
+    plansRepo.writeForSession('test-project', 'non-loop-session', '# Regular Plan')
 
     const result = await tools['plan-read'].execute(
       {},
@@ -375,22 +497,76 @@ describe('plan-read with loop session', () => {
   })
 
   test('plan-write stores under worktree name for loop sessions', async () => {
+    // First create the loop row so updatePrompt can work
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const testLoopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
+    const state = {
+      active: true,
+      sessionId: 'loop-session-123',
+      loopName: 'my-loop',
+      worktreeDir: '/tmp/test',
+      projectDir: '/tmp/test',
+      worktreeBranch: 'test-branch',
+      iteration: 1,
+      maxIterations: 5,
+      completionSignal: 'TEST',
+      startedAt: new Date().toISOString(),
+      prompt: '# Initial Plan',
+      phase: 'coding' as const,
+      audit: true,
+      errorCount: 0,
+      auditCount: 0,
+      worktree: true,
+      sandbox: false,
+      executionModel: undefined,
+      auditorModel: undefined,
+    }
+    testLoopService.setState('my-loop', state)
+
     await tools['plan-write'].execute(
       { content: '# Updated Loop Plan' },
       { sessionID: 'loop-session-123', directory: TEST_DIR } as any
     )
 
-    const stored = kvService.get('test-project', 'plan:my-loop')
-    expect(stored).toBe('# Updated Loop Plan')
+    // Check loop_large_fields first (primary storage for loops)
+    const stored = loopsRepo.getLarge('test-project', 'my-loop')
+    expect(stored?.prompt).toBe('# Updated Loop Plan')
   })
 
   test('plan-edit edits plan under worktree name for loop sessions', async () => {
+    // First create the loop row so updatePrompt can work
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const testLoopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
+    const state = {
+      active: true,
+      sessionId: 'loop-session-123',
+      loopName: 'my-loop',
+      worktreeDir: '/tmp/test',
+      projectDir: '/tmp/test',
+      worktreeBranch: 'test-branch',
+      iteration: 1,
+      maxIterations: 5,
+      completionSignal: 'TEST',
+      startedAt: new Date().toISOString(),
+      prompt: '# Loop Plan\n\n## Phase 1\n- Do the thing',
+      phase: 'coding' as const,
+      audit: true,
+      errorCount: 0,
+      auditCount: 0,
+      worktree: true,
+      sandbox: false,
+      executionModel: undefined,
+      auditorModel: undefined,
+    }
+    testLoopService.setState('my-loop', state)
+
     await tools['plan-edit'].execute(
       { old_string: '- Do the thing', new_string: '- Do the updated thing' },
       { sessionID: 'loop-session-123', directory: TEST_DIR } as any
     )
 
-    const stored = kvService.get<string>('test-project', 'plan:my-loop')
-    expect(stored).toContain('- Do the updated thing')
+    // Check loop_large_fields first (primary storage for loops)
+    const stored = loopsRepo.getLarge('test-project', 'my-loop')
+    expect(stored?.prompt).toContain('- Do the updated thing')
   })
 })

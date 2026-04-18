@@ -396,26 +396,37 @@ describe('deleteGraphCacheScope', () => {
     const dbPath = join(cacheDir, 'graph.db')
     new Database(dbPath).close()
     
-    // Create shared KV DB
-    const kvDbPath = join(testDataDir, 'graph.db')
-    const kvDb = new Database(kvDbPath)
-    kvDb.run('CREATE TABLE IF NOT EXISTS project_kv (project_id TEXT, key TEXT, data TEXT)')
-    kvDb.prepare('INSERT INTO project_kv (project_id, key, data) VALUES (?, ?, ?)').run(
+    // Create shared DB with tui_preferences table
+    const sharedDbPath = join(testDataDir, 'graph.db')
+    const sharedDb = new Database(sharedDbPath)
+    sharedDb.run(`
+      CREATE TABLE IF NOT EXISTS tui_preferences (
+        project_id   TEXT NOT NULL,
+        key          TEXT NOT NULL,
+        data         TEXT NOT NULL,
+        expires_at   INTEGER,
+        updated_at   INTEGER NOT NULL,
+        PRIMARY KEY (project_id, key)
+      )
+    `)
+    sharedDb.prepare('INSERT OR REPLACE INTO tui_preferences (project_id, key, data, expires_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(
       projectId,
-      'test-key',
-      'test-data'
+      'test:key',
+      'test-data',
+      null,
+      Date.now()
     )
-    kvDb.close()
+    sharedDb.close()
     
     expect(existsSync(cacheDir)).toBe(true)
-    expect(existsSync(kvDbPath)).toBe(true)
+    expect(existsSync(sharedDbPath)).toBe(true)
     
     // Delete worktree cache
     deleteGraphCacheScope(projectId, cwd, testDataDir)
     
     // Graph cache should be deleted
     expect(existsSync(cacheDir)).toBe(false)
-    // KV DB should still exist
-    expect(existsSync(kvDbPath)).toBe(true)
+    // Shared DB should still exist
+    expect(existsSync(sharedDbPath)).toBe(true)
   })
 })

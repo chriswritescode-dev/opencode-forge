@@ -1,48 +1,18 @@
-import type { KvService, KvEntry } from './kv'
 import type { Logger, LoopConfig } from '../types'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
-import { findPartialMatch } from '../utils/partial-match'
-
-export function migrateRalphKeys(kvService: KvService, projectId: string, logger: Logger): void {
-  const oldEntries = kvService.listByPrefix(projectId, 'ralph:')
-  if (oldEntries.length === 0) return
-  
-  logger.log(`Migrating ${String(oldEntries.length)} ralph: KV entries to loop: prefix`)
-  for (const entry of oldEntries) {
-    const newKey = entry.key.replace(/^ralph:/, 'loop:')
-    const data = (typeof entry.data === 'string' ? JSON.parse(entry.data) : entry.data) as Record<string, unknown>
-    if ('inPlace' in data) {
-      data.worktree = !(data.inPlace as boolean)
-      delete data.inPlace
-    }
-    kvService.set(projectId, newKey, data)
-    kvService.delete(projectId, entry.key)
-  }
-  
-  const oldSessions = kvService.listByPrefix(projectId, 'ralph-session:')
-  for (const entry of oldSessions) {
-    const newKey = entry.key.replace(/^ralph-session:/, 'loop-session:')
-    kvService.set(projectId, newKey, entry.data)
-    kvService.delete(projectId, entry.key)
-  }
-  
-  if (oldSessions.length > 0) {
-    logger.log(`Migrated ${String(oldSessions.length)} ralph-session: KV entries to loop-session: prefix`)
-  }
-}
+import type { LoopsRepo, LoopRow, LoopLargeFields } from '../storage/repos/loops-repo'
+import type { PlansRepo } from '../storage/repos/plans-repo'
+import type { ReviewFindingsRepo, ReviewFindingRow } from '../storage/repos/review-findings-repo'
 
 export const MAX_RETRIES = 3
 export const STALL_TIMEOUT_MS = 60_000
 export const MAX_CONSECUTIVE_STALLS = 5
-export const DEFAULT_MIN_AUDITS = 1
 export const RECENT_MESSAGES_COUNT = 5
 export const DEFAULT_COMPLETION_SIGNAL = 'ALL_PHASES_COMPLETE'
 
 export function buildCompletionSignalInstructions(signal: string): string {
   return `\n\n---\n\n**IMPORTANT - Completion Signal:** When you have completed ALL phases of this plan successfully, you MUST output the following phrase exactly: ${signal}\n\nBefore outputting the completion signal, you MUST:\n1. Verify each phase's acceptance criteria are met\n2. Run all verification commands listed in the plan and confirm they pass\n3. If tests were required, confirm they exist AND pass\n\nDo NOT output this phrase until every phase is truly complete and all verification steps pass. The loop will continue until this signal is detected.`
 }
-
-export { LOOP_PERMISSION_RULESET } from '../constants/loop'
 
 /**
  * Represents the runtime state of an autonomous loop.
@@ -60,7 +30,7 @@ export interface LoopState {
   startedAt: string
   prompt?: string
   phase: 'coding' | 'auditing'
-  audit?: boolean
+  audit: boolean
   lastAuditResult?: string
   errorCount: number
   auditCount: number
@@ -69,174 +39,124 @@ export interface LoopState {
   worktree?: boolean
   modelFailed?: boolean
   sandbox?: boolean
-  sandboxContainerName?: string
+  sandboxContainer?: string
   completionSummary?: string
   executionModel?: string
   auditorModel?: string
+  workspaceId?: string
 }
 
 export interface LoopService {
-  /**
-   * Gets the active state for a loop by name.
-   * @param name - The loop name.
-   * @returns The loop state if active, null otherwise.
-   */
   getActiveState(name: string): LoopState | null
-  /**
-   * Gets any state (active or completed) for a loop by name.
-   * @param name - The loop name.
-   * @returns The loop state if found, null otherwise.
-   */
   getAnyState(name: string): LoopState | null
-  /**
-   * Updates the state for a loop.
-   * @param name - The loop name.
-   * @param state - The new state to persist.
-   */
   setState(name: string, state: LoopState): void
-  /**
-   * Deletes the state for a loop.
-   * @param name - The loop name.
-   */
   deleteState(name: string): void
-  /**
-   * Registers a session as belonging to a loop.
-   * @param sessionId - The OpenCode session ID.
-   * @param loopName - The loop name to associate.
-   */
   registerLoopSession(sessionId: string, loopName: string): void
-  /**
-   * Resolves the loop name for a session.
-   * @param sessionId - The OpenCode session ID.
-   * @returns The loop name if found, null otherwise.
-   */
   resolveLoopName(sessionId: string): string | null
-  /**
-   * Unregisters a session from its loop.
-   * @param sessionId - The OpenCode session ID.
-   */
   unregisterLoopSession(sessionId: string): void
-  /**
-   * Checks if text contains the completion signal.
-   * @param text - The text to check.
-   * @param promise - The completion signal phrase.
-   * @returns True if the signal is present.
-   */
-  checkCompletionSignal(text: string, promise: string): boolean
-  /**
-   * Builds the prompt for continuing a loop iteration.
-   * @param state - The current loop state.
-   * @param auditFindings - Optional audit findings to include.
-   * @returns The continuation prompt string.
-   */
   buildContinuationPrompt(state: LoopState, auditFindings?: string): string
-  /**
-   * Builds the prompt for the auditor agent.
-   * @param state - The current loop state.
-   * @returns The audit prompt string.
-   */
   buildAuditPrompt(state: LoopState): string
-  /**
-   * Lists all currently active loops.
-   * @returns Array of active loop states.
-   */
   listActive(): LoopState[]
-  /**
-   * Lists recently completed loops.
-   * @returns Array of completed loop states.
-   */
   listRecent(): LoopState[]
-  /**
-   * Finds a loop by exact or partial name match.
-   * @param name - The loop name to search for.
-   * @returns The matching loop state or null.
-   */
-  findByLoopName(name: string): LoopState | null
-  /**
-   * Finds candidate loops matching a partial name.
-   * @param name - The partial name to search for.
-   * @returns Array of matching loop states.
-   */
-  findCandidatesByPartialName(name: string): LoopState[]
-  /**
-   * Gets the configured stall timeout in milliseconds.
-   * @returns Stall timeout value.
-   */
+  findMatchByName(name: string): { match: LoopState | null; candidates: LoopState[] }
   getStallTimeoutMs(): number
-  /**
-   * Gets the minimum number of audits required.
-   * @returns Minimum audit count.
-   */
-  getMinAudits(): number
-  /**
-   * Terminates all active loops.
-   */
   terminateAll(): void
-  /**
-   * Reconciles loops that were active but are now stale.
-   * @returns Number of loops reconciled.
-   */
   reconcileStale(): number
-  /**
-   * Checks if there are outstanding review findings.
-   * @param branch - Optional branch to filter by.
-   * @returns True if findings exist.
-   */
-  hasOutstandingFindings(branch?: string): boolean
-  /**
-   * Gets all outstanding review findings.
-   * @param branch - Optional branch to filter by.
-   * @returns Array of KV entries with findings.
-   */
-  getOutstandingFindings(branch?: string): KvEntry[]
-  /**
-   * Generates a unique loop name based on a base name.
-   * @param baseName - The desired base name.
-   * @returns A unique loop name.
-   */
+  hasOutstandingFindings(branch?: string, severity?: 'bug' | 'warning'): boolean
+  getOutstandingFindings(branch?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[]
   generateUniqueLoopName(baseName: string): string
-  /**
-   * Gets the plan text for a loop by name or session ID.
-   * @param loopName - The loop name.
-   * @param sessionId - The session ID.
-   * @returns The plan text or null.
-   */
   getPlanText(loopName: string, sessionId: string): string | null
+  incrementError(name: string): number
+  resetError(name: string): void
+  incrementAudit(name: string): number
+  setPhase(name: string, phase: 'coding' | 'auditing'): void
+  setPhaseAndResetError(name: string, phase: 'coding' | 'auditing'): void
+  setModelFailed(name: string, failed: boolean): void
+  setLastAuditResult(name: string, text: string | null): void
+  setSandboxContainer(name: string, containerName: string | null): void
+  setStatus(name: string, status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'): void
+  applyRotation(name: string, opts: { sessionId: string; iteration: number; phase?: 'coding' | 'auditing'; auditCount?: number; lastAuditResult?: string | null; resetError?: boolean }): void
+  terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
 }
 
-/**
- * Creates a loop service instance for managing autonomous dev loops.
- * 
- * @param kvService - KV service for persistence.
- * @param projectId - The current project ID.
- * @param logger - Logger instance.
- * @param loopConfig - Optional loop configuration.
- * @returns A LoopService instance.
- */
 export function createLoopService(
-  kvService: KvService,
+  loopsRepo: LoopsRepo,
+  plansRepo: PlansRepo,
+  reviewFindingsRepo: ReviewFindingsRepo,
   projectId: string,
   logger: Logger,
   loopConfig?: LoopConfig,
 ): LoopService {
-  const stateKey = (name: string) => `loop:${name}`
-
-  function normalizeLoopState(state: LoopState | null): LoopState | null {
-    if (!state) return null
-    if (!state.loopName) return null
-    // Backfill projectDir from worktreeDir for older KV records
-    if (!state.projectDir && state.worktreeDir) {
-      state.projectDir = state.worktreeDir
+  function rowToState(row: LoopRow, large: LoopLargeFields | null): LoopState {
+    return {
+      active: row.status === 'running',
+      sessionId: row.currentSessionId,
+      loopName: row.loopName,
+      worktreeDir: row.worktreeDir,
+      projectDir: row.projectDir,
+      worktreeBranch: row.worktreeBranch ?? undefined,
+      iteration: row.iteration,
+      maxIterations: row.maxIterations,
+      completionSignal: row.completionSignal,
+      startedAt: new Date(row.startedAt).toISOString(),
+      prompt: large?.prompt ?? undefined,
+      phase: row.phase,
+      audit: row.audit,
+      lastAuditResult: large?.lastAuditResult ?? undefined,
+      errorCount: row.errorCount,
+      auditCount: row.auditCount,
+      terminationReason: row.terminationReason ?? undefined,
+      completedAt: row.completedAt ? new Date(row.completedAt).toISOString() : undefined,
+      worktree: row.worktree,
+      modelFailed: row.modelFailed,
+      sandbox: row.sandbox,
+      sandboxContainer: row.sandboxContainer ?? undefined,
+      completionSummary: row.completionSummary ?? undefined,
+      executionModel: row.executionModel ?? undefined,
+      auditorModel: row.auditorModel ?? undefined,
+      workspaceId: row.workspaceId ?? undefined,
     }
-    return state
+  }
+
+  function stateToRow(state: LoopState): LoopRow {
+    return {
+      projectId,
+      loopName: state.loopName,
+      status: state.active ? 'running' : 'completed',
+      currentSessionId: state.sessionId,
+      worktree: state.worktree ?? false,
+      worktreeDir: state.worktreeDir,
+      worktreeBranch: state.worktreeBranch ?? null,
+      projectDir: state.projectDir ?? state.worktreeDir,
+      maxIterations: state.maxIterations,
+      iteration: state.iteration,
+      auditCount: state.auditCount,
+      errorCount: state.errorCount,
+      phase: state.phase,
+      audit: state.audit,
+      completionSignal: state.completionSignal ?? null,
+      executionModel: state.executionModel ?? null,
+      auditorModel: state.auditorModel ?? null,
+      modelFailed: state.modelFailed ?? false,
+      sandbox: state.sandbox ?? false,
+      sandboxContainer: state.sandboxContainer ?? null,
+      startedAt: new Date(state.startedAt).getTime(),
+      completedAt: state.completedAt ? new Date(state.completedAt).getTime() : null,
+      terminationReason: state.terminationReason ?? null,
+      completionSummary: state.completionSummary ?? null,
+      workspaceId: state.workspaceId ?? null,
+    }
   }
 
   function getAnyState(name: string): LoopState | null {
-    return normalizeLoopState(kvService.get<LoopState>(projectId, stateKey(name)))
+    const row = loopsRepo.get(projectId, name)
+    if (!row) return null
+    const large = loopsRepo.getLarge(projectId, name)
+    return rowToState(row, large)
   }
 
   function getActiveState(name: string): LoopState | null {
-    const state = normalizeLoopState(kvService.get<LoopState>(projectId, stateKey(name)))
+    const state = getAnyState(name)
     if (!state?.active) {
       return null
     }
@@ -244,63 +164,61 @@ export function createLoopService(
   }
 
   function setState(name: string, state: LoopState): void {
-    const normalized = normalizeLoopState(state)
-    if (!normalized) return
-    kvService.set(projectId, stateKey(name), normalized)
+    // Assert that the name parameter matches state.loopName to prevent silent data corruption
+    if (state.loopName !== name) {
+      throw new Error(`setState: name parameter "${name}" does not match state.loopName "${state.loopName}"`)
+    }
+    const row = stateToRow(state)
+    const large: LoopLargeFields = {
+      prompt: state.prompt ?? null,
+      lastAuditResult: state.lastAuditResult ?? null,
+    }
+    // Use insert which errors on conflict - should never happen for setState
+    const ok = loopsRepo.insert(row, large)
+    if (!ok) {
+      throw new Error(`setState: loop "${name}" already exists`)
+    }
   }
 
   function deleteState(name: string): void {
-    kvService.delete(projectId, stateKey(name))
+    loopsRepo.delete(projectId, name)
+  }
+
+  function setStatus(name: string, status: LoopRow['status']): void {
+    loopsRepo.setStatus(projectId, name, status)
   }
 
   function registerLoopSession(sessionId: string, loopName: string): void {
-    kvService.set(projectId, `loop-session:${sessionId}`, loopName)
+    loopsRepo.setCurrentSessionId(projectId, loopName, sessionId)
   }
 
   function resolveLoopName(sessionId: string): string | null {
-    return kvService.get<string>(projectId, `loop-session:${sessionId}`)
+    return loopsRepo.getBySessionId(projectId, sessionId)?.loopName ?? null
   }
 
-  function unregisterLoopSession(sessionId: string): void {
-    kvService.delete(projectId, `loop-session:${sessionId}`)
-  }
-
-  function checkCompletionSignal(text: string, completionSignal: string): boolean {
-    return text.toLowerCase().includes(completionSignal.toLowerCase())
-  }
-
-
-  function redactCompletionSignal(text: string, promise: string): string {
-    const regex = new RegExp(promise.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
-    return text.replace(regex, '[SIGNAL_REDACTED]')
+  function unregisterLoopSession(_sessionId: string): void {
+    // No-op: the only caller is rotateSession, which immediately calls registerLoopSession
+    // The old session has no row pointing to it — nothing to unregister
   }
 
   function buildContinuationPrompt(state: LoopState, auditFindings?: string): string {
     let systemLine = `Loop iteration ${String(state.iteration)}`
 
-    if (state.completionSignal) {
-      systemLine += ` | To stop: output ${state.completionSignal} (ONLY after all verification commands pass AND all phase acceptance criteria are met)`
-    } else if (state.maxIterations > 0) {
+    if (state.maxIterations > 0) {
       systemLine += ` / ${String(state.maxIterations)}`
     } else {
-      systemLine += ` | No completion promise set - loop runs until cancelled`
+      systemLine += ` | No max iterations set - loop runs until auditor all-clear or cancelled`
     }
 
     let prompt = `[${systemLine}]\n\n${state.prompt ?? ''}`
 
     if (auditFindings) {
-      const cleanedFindings = state.completionSignal
-        ? redactCompletionSignal(auditFindings, state.completionSignal)
-        : auditFindings
-      const completionInstruction = state.completionSignal
-        ? '\n\nAfter fixing all issues, output the completion signal.'
-        : ''
-      prompt += `\n\n---\nThe code auditor reviewed your changes. You MUST address all bugs and convention violations below — do not dismiss findings as unrelated to the task. Fix them directly without creating a plan or asking for approval.\n\n${cleanedFindings}${completionInstruction}`
+      prompt += `\n\n---\nThe code auditor reviewed your changes. You MUST address all bugs and convention violations below — do not dismiss findings as unrelated to the task. Fix them directly without creating a plan or asking for approval.\n\n${auditFindings}`
     }
 
     const outstandingFindings = getOutstandingFindings(state.worktreeBranch)
     if (outstandingFindings.length > 0) {
-      const findingKeys = outstandingFindings.map((f) => `- \`${f.key}\``).join('\n')
+      const findingKeys = outstandingFindings.map((f) => `- \`${f.file}:${f.line}\``).join('\n')
       prompt += `\n\n---\n⚠️ Outstanding Review Findings (${String(outstandingFindings.length)})\n\nThese review findings are blocking loop completion. Fix these issues so they pass the next audit review.\n\n${findingKeys}`
     }
 
@@ -308,15 +226,15 @@ export function createLoopService(
   }
 
   function getPlanTextForState(state: LoopState): string | null {
-    return kvService.get<string>(projectId, `plan:${state.loopName}`)
-      ?? kvService.get<string>(projectId, `plan:${state.sessionId}`)
-      ?? null
+    const fromExecution = loopsRepo.getLarge(projectId, state.loopName)?.prompt
+    if (fromExecution) return fromExecution
+    return plansRepo.getForLoopOrSession(projectId, state.loopName, state.sessionId)?.content ?? null
   }
 
   function getPlanText(loopName: string, sessionId: string): string | null {
-    return kvService.get<string>(projectId, `plan:${loopName}`)
-      ?? kvService.get<string>(projectId, `plan:${sessionId}`)
-      ?? null
+    const fromExecution = loopsRepo.getLarge(projectId, loopName)?.prompt
+    if (fromExecution) return fromExecution
+    return plansRepo.getForLoopOrSession(projectId, loopName, sessionId)?.content ?? null
   }
 
   function formatReviewFindings(branch?: string): string {
@@ -326,14 +244,11 @@ export function createLoopService(
     }
 
     return findings.map((finding) => {
-      const data = finding.data as Record<string, unknown>
       return [
-        `- ${finding.key}`,
-        `  - Severity: ${String(data.severity ?? 'unknown')}`,
-        `  - File: ${String(data.file ?? 'unknown')}:${String(data.line ?? 'unknown')}`,
-        `  - Description: ${String(data.description ?? '')}`,
-        `  - Scenario: ${String(data.scenario ?? '')}`,
-        `  - Status: ${String(data.status ?? 'open')}`,
+        `- ${finding.file}:${finding.line}`,
+        `  - Severity: ${finding.severity}`,
+        `  - Description: ${finding.description}`,
+        `  - Scenario: ${finding.scenario}`,
       ].join('\n')
     }).join('\n\n')
   }
@@ -358,93 +273,86 @@ export function createLoopService(
       'For each existing finding above, verify whether it has been resolved. Delete resolved findings with review-delete and report any unresolved findings that still apply.',
       'If everything looks good, state "No issues found." clearly.',
       '',
+      'Plan completeness check:',
+      '- For every plan phase, verify it is fully implemented and its acceptance criteria are met.',
+      '- If any phase is unimplemented, partially implemented, or its acceptance criteria are not met, you MUST write a `severity: "bug"` finding describing exactly which phase and what is missing. Use `file` = the phase\'s target file when possible, otherwise use a stable pseudo-path such as `PLAN:phase-<N>`. Use `line` = 1 when no specific line applies.',
+      '- When a previously reported "phase incomplete" finding is now resolved, delete it with review-delete.',
+      '- Outstanding `bug` findings block loop termination. The loop cannot complete while any `bug` finding remains.',
+      '',
       'This is an automated loop — do not direct the agent to "create a plan" or "present for approval." Just report findings directly.',
     ].join('\n')
   }
 
   function listActive(): LoopState[] {
-    const entries = kvService.listByPrefix(projectId, 'loop:')
-    return entries
-      .map((entry) => normalizeLoopState(entry.data as LoopState | null))
-      .filter((data): data is LoopState =>
-        data !== null && typeof data === 'object' && 'active' in data && (data as LoopState).active
-      )
+    const rows = loopsRepo.listByStatus(projectId, ['running'])
+    return rows.map((row) => {
+      const large = loopsRepo.getLarge(projectId, row.loopName)
+      return rowToState(row, large)
+    })
   }
 
   function listRecent(): LoopState[] {
-    const entries = kvService.listByPrefix(projectId, 'loop:')
-    return entries
-      .map((entry) => normalizeLoopState(entry.data as LoopState | null))
-      .filter((data): data is LoopState =>
-        data !== null && typeof data === 'object' && 'active' in data && !(data as LoopState).active
-      )
+    const rows = loopsRepo.listByStatus(projectId, ['completed', 'cancelled', 'errored', 'stalled'])
+    return rows.map((row) => {
+      const large = loopsRepo.getLarge(projectId, row.loopName)
+      return rowToState(row, large)
+    })
   }
 
-  function findByLoopName(name: string): LoopState | null {
-    const active = listActive()
-    const recent = listRecent()
-    const allStates = [...active, ...recent]
-
-    const { match } = findPartialMatch(name, allStates, (s) => [s.loopName, s.worktreeBranch])
-    return match
-  }
-
-  function findCandidatesByPartialName(name: string): LoopState[] {
-    const active = listActive()
-    const recent = listRecent()
-    const allStates = [...active, ...recent]
-
-    const { candidates } = findPartialMatch(name, allStates, (s) => [s.loopName, s.worktreeBranch])
-    return candidates
+  function findMatchByName(name: string): { match: LoopState | null; candidates: LoopState[] } {
+    const result = loopsRepo.findPartial(projectId, name)
+    const mapResult = (row: LoopRow | null): LoopState | null => {
+      if (!row) return null
+      const large = loopsRepo.getLarge(projectId, row.loopName)
+      return rowToState(row, large)
+    }
+    return {
+      match: mapResult(result.match),
+      candidates: result.candidates.map((row) => {
+        const large = loopsRepo.getLarge(projectId, row.loopName)
+        return rowToState(row, large)
+      }),
+    }
   }
 
   function getStallTimeoutMs(): number {
     return loopConfig?.stallTimeoutMs ?? STALL_TIMEOUT_MS
   }
 
-  function getMinAudits(): number {
-    return loopConfig?.minAudits ?? DEFAULT_MIN_AUDITS
-  }
-
   function terminateAll(): void {
     const active = listActive()
+    const now = Date.now()
     for (const state of active) {
-      const updated: LoopState = {
-        ...state,
-        active: false,
-        completedAt: new Date().toISOString(),
-        terminationReason: 'shutdown',
-      }
-      setState(state.loopName, updated)
+      loopsRepo.terminate(projectId, state.loopName, {
+        status: 'cancelled',
+        reason: 'shutdown',
+        completedAt: now,
+      })
     }
     logger.log(`Loop: terminated ${String(active.length)} active loop(s)`)
   }
 
   function reconcileStale(): number {
     const active = listActive()
+    const now = Date.now()
     for (const state of active) {
-      setState(state.loopName, {
-        ...state,
-        active: false,
-        completedAt: new Date().toISOString(),
-        terminationReason: 'shutdown',
+      loopsRepo.terminate(projectId, state.loopName, {
+        status: 'cancelled',
+        reason: 'shutdown',
+        completedAt: now,
       })
       logger.log(`Reconciled stale active loop: ${state.loopName} (was at iteration ${String(state.iteration)})`)
     }
     return active.length
   }
 
-  function getOutstandingFindings(branch?: string): KvEntry[] {
-    const findings = kvService.listByPrefix(projectId, 'review-finding:')
-    if (!branch) return findings
-    return findings.filter((f) => {
-      const data = f.data as Record<string, unknown> | null
-      return data?.branch === branch
-    })
+  function getOutstandingFindings(branch?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[] {
+    const rows = branch ? reviewFindingsRepo.listByBranch(projectId, branch) : reviewFindingsRepo.listAll(projectId)
+    return severity ? rows.filter((r) => r.severity === severity) : rows
   }
 
-  function hasOutstandingFindings(branch?: string): boolean {
-    return getOutstandingFindings(branch).length > 0
+  function hasOutstandingFindings(branch?: string, severity?: 'bug' | 'warning'): boolean {
+    return getOutstandingFindings(branch, severity).length > 0
   }
 
   function generateUniqueLoopName(baseName: string): string {
@@ -455,6 +363,46 @@ export function createLoopService(
     return generateUniqueName(baseName, allNames)
   }
 
+  function incrementError(name: string): number {
+    return loopsRepo.incrementError(projectId, name)
+  }
+
+  function resetError(name: string): void {
+    loopsRepo.resetError(projectId, name)
+  }
+
+  function incrementAudit(name: string): number {
+    return loopsRepo.incrementAudit(projectId, name)
+  }
+
+  function setPhase(name: string, phase: 'coding' | 'auditing'): void {
+    loopsRepo.updatePhase(projectId, name, phase)
+  }
+
+  function setPhaseAndResetError(name: string, phase: 'coding' | 'auditing'): void {
+    loopsRepo.setPhaseAndResetError(projectId, name, phase)
+  }
+
+  function setModelFailed(name: string, failed: boolean): void {
+    loopsRepo.setModelFailed(projectId, name, failed)
+  }
+
+  function setLastAuditResult(name: string, text: string | null): void {
+    loopsRepo.setLastAuditResult(projectId, name, text)
+  }
+
+  function applyRotation(name: string, opts: { sessionId: string; iteration: number; phase?: 'coding' | 'auditing'; auditCount?: number; lastAuditResult?: string | null; resetError?: boolean }): void {
+    loopsRepo.applyRotation(projectId, name, opts)
+  }
+
+  function terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void {
+    loopsRepo.terminate(projectId, name, opts)
+  }
+
+  function setSandboxContainer(name: string, containerName: string | null): void {
+    loopsRepo.setSandboxContainer(projectId, name, containerName)
+  }
+
   return {
     getActiveState,
     getAnyState,
@@ -463,32 +411,32 @@ export function createLoopService(
     registerLoopSession,
     resolveLoopName,
     unregisterLoopSession,
-    checkCompletionSignal,
+    setStatus,
     buildContinuationPrompt,
     buildAuditPrompt,
     listActive,
     listRecent,
-    findByLoopName,
-    findCandidatesByPartialName,
+    findMatchByName,
     getStallTimeoutMs,
-    getMinAudits,
     terminateAll,
     reconcileStale,
     hasOutstandingFindings,
     getOutstandingFindings,
     generateUniqueLoopName,
     getPlanText,
+    incrementError,
+    resetError,
+    incrementAudit,
+    setPhase,
+    setPhaseAndResetError,
+    setModelFailed,
+    setLastAuditResult,
+    setSandboxContainer,
+    applyRotation,
+    terminate,
   }
 }
 
-/**
- * Generates a unique worktree name by checking against existing names and appending a numeric suffix if needed.
- * This is exported for use by TUI and other modules that need to generate unique names without direct loop service access.
- * 
- * @param baseName - The base name to uniquify
- * @param existingNames - Array of existing worktree names to check against
- * @returns A unique name (either the base name or with -1, -2, etc. suffix)
- */
 export function generateUniqueName(baseName: string, existingNames: readonly string[]): string {
   const maxLength = 25
   const truncated = baseName.length > maxLength ? baseName.substring(0, maxLength) : baseName
@@ -515,15 +463,6 @@ export interface LoopSessionOutput {
   fileChanges: { additions: number; deletions: number; files: number } | null
 }
 
-/**
- * Fetches the output and statistics for a completed loop session.
- * 
- * @param v2Client - OpenCode v2 API client.
- * @param sessionId - The session ID to fetch.
- * @param directory - The working directory.
- * @param logger - Optional logger for debugging.
- * @returns Session output including messages, costs, and file changes.
- */
 export async function fetchSessionOutput(
   v2Client: OpencodeClient,
   sessionId: string,

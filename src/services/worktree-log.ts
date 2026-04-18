@@ -177,46 +177,6 @@ export function ensureWorktreeLogDirectory(hostPath: string, logger?: Logger): b
 }
 
 /**
- * Resolves and validates the configured worktree logging directory.
- * Returns null if logging is disabled or directory cannot be resolved.
- * Logs warnings when validation fails.
- * @deprecated Use resolveWorktreeLogTarget + ensureWorktreeLogDirectory instead
- */
-export function resolveWorktreeLogDirectory(config: PluginConfig, logger?: Logger): string | null {
-  const worktreeLogging = config.loop?.worktreeLogging
-  if (!worktreeLogging?.enabled) {
-    return null
-  }
-
-  const directory = worktreeLogging.directory
-  if (!directory || directory.trim() === '') {
-    logger?.error('Worktree logging: enabled but directory is not configured')
-    return null
-  }
-
-  try {
-    // Resolve to absolute path if relative (use isAbsolute for cross-platform support)
-    const resolvedPath = isAbsolute(directory) ? directory : join(process.cwd(), directory)
-    
-    // Create directory recursively if it doesn't exist
-    if (!existsSync(resolvedPath)) {
-      mkdirSync(resolvedPath, { recursive: true })
-    }
-
-    // Verify we can write to the directory
-    const testFile = join(resolvedPath, '.write-test')
-    appendFileSync(testFile, '')
-    return resolvedPath
-  } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : String(err)
-    logger?.error(`Worktree logging: failed to validate directory "${directory}": ${errorMsg}`)
-    return null
-  }
-}
-
-
-
-/**
  * Formats a date as YYYY-MM-DD in local timezone.
  */
 export function formatDateKey(date: Date): string {
@@ -373,57 +333,4 @@ export function writeWorktreeCompletionLog(
   )
 }
 
-/**
- * Main entry point: logs a completed worktree loop.
- * Validates config, resolves directory, and appends the log entry.
- * Returns true on success, false on failure (fails closed).
- * 
- * @deprecated Use buildWorktreeCompletionPayload + writeWorktreeCompletionLog for host-session dispatch
- */
-export function logWorktreeCompletion(
-  config: PluginConfig,
-  options: {
-    projectDir: string
-    loopName: string
-    completionTimestamp: Date
-    iteration: number
-    worktreeBranch?: string
-    dataDir?: string
-    sandboxHostDir?: string
-  },
-  logger?: Logger,
-): boolean {
-  // Use the new context-aware resolver
-  const logTarget = resolveWorktreeLogTarget(config, {
-    projectDir: options.projectDir,
-    dataDir: options.dataDir,
-    sandboxHostDir: options.sandboxHostDir,
-    sandbox: !!options.sandboxHostDir,
-  }, logger)
-  
-  if (!logTarget) {
-    // Error already logged by resolveWorktreeLogTarget if enabled but misconfigured
-    if (!config.loop?.worktreeLogging?.enabled) {
-      logger?.debug('Worktree logging: disabled, skipping')
-    }
-    return false
-  }
 
-  // Validate and initialize the host path before writing
-  if (!ensureWorktreeLogDirectory(logTarget.hostPath, logger)) {
-    return false
-  }
-
-  return appendWorktreeLogEntry(
-    logTarget.hostPath,
-    {
-      projectDir: options.projectDir,
-      loopName: options.loopName,
-      completionTimestamp: options.completionTimestamp,
-      iteration: options.iteration,
-      worktreeBranch: options.worktreeBranch,
-    },
-    null,
-    logger,
-  )
-}

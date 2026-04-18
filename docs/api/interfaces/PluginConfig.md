@@ -52,13 +52,23 @@ Custom data directory for plugin storage. Defaults to platform data dir.
 
 ***
 
+### completedLoopTtlMs?
+
+> `optional` **completedLoopTtlMs?**: `number`
+
+Defined in: [types.ts:212](https://github.com/chriswritescode-dev/opencode-forge/blob/6db8e4a6ec8811794b8bc2667f3f22f569a5ce99/src/types.ts#L212)
+
+TTL for completed/cancelled/errored/stalled loops before sweep. Default 604800000 (7 days).
+
+***
+
 ### defaultKvTtlMs?
 
 > `optional` **defaultKvTtlMs?**: `number`
 
 Defined in: [types.ts:212](https://github.com/chriswritescode-dev/opencode-forge/blob/6db8e4a6ec8811794b8bc2667f3f22f569a5ce99/src/types.ts#L212)
 
-Default TTL for KV entries in milliseconds.
+@deprecated Use `completedLoopTtlMs` instead. Default TTL for KV entries in milliseconds.
 
 ***
 

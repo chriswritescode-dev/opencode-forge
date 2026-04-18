@@ -1,6 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { Database } from 'bun:sqlite'
-import { createKvService } from '../src/services/kv'
+import { createLoopsRepo } from '../src/storage/repos/loops-repo'
+import { createPlansRepo } from '../src/storage/repos/plans-repo'
+import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
 import { createLoopService } from '../src/services/loop'
 import type { Logger } from '../src/types'
 
@@ -8,18 +10,73 @@ const TEST_DIR = '/tmp/opencode-manager-tool-blocking-test-' + Date.now()
 
 function createTestDb(): Database {
   const db = new Database(`${TEST_DIR}-${Math.random().toString(36).slice(2)}.db`)
+  // Create the loops table schema
   db.run(`
-    CREATE TABLE IF NOT EXISTS project_kv (
+    CREATE TABLE IF NOT EXISTS loops (
       project_id TEXT NOT NULL,
-      key TEXT NOT NULL,
-      data TEXT NOT NULL,
-      expires_at INTEGER NOT NULL,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (project_id, key)
+      loop_name TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('running','completed','cancelled','errored','stalled')),
+      current_session_id TEXT NOT NULL,
+      worktree INTEGER NOT NULL,
+      worktree_dir TEXT NOT NULL,
+      worktree_branch TEXT,
+      project_dir TEXT NOT NULL,
+      max_iterations INTEGER NOT NULL,
+      iteration INTEGER NOT NULL DEFAULT 0,
+      audit_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      phase TEXT NOT NULL CHECK(phase IN ('coding','auditing')),
+      audit INTEGER NOT NULL,
+      completion_signal TEXT,
+      execution_model TEXT,
+      auditor_model TEXT,
+      model_failed INTEGER NOT NULL DEFAULT 0,
+      sandbox INTEGER NOT NULL DEFAULT 0,
+      sandbox_container TEXT,
+      started_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      termination_reason TEXT,
+      completion_summary TEXT,
+      workspace_id TEXT,
+      PRIMARY KEY (project_id, loop_name)
     )
   `)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_project_kv_expires_at ON project_kv(expires_at)`)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS loop_large_fields (
+      project_id TEXT NOT NULL,
+      loop_name TEXT NOT NULL,
+      prompt TEXT,
+      last_audit_result TEXT,
+      PRIMARY KEY (project_id, loop_name),
+      FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
+    )
+  `)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS plans (
+      project_id TEXT NOT NULL,
+      loop_name TEXT,
+      session_id TEXT,
+      content TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      CHECK (loop_name IS NOT NULL OR session_id IS NOT NULL),
+      CHECK (NOT (loop_name IS NOT NULL AND session_id IS NOT NULL)),
+      UNIQUE (project_id, loop_name),
+      UNIQUE (project_id, session_id)
+    )
+  `)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS review_findings (
+      project_id TEXT NOT NULL,
+      file TEXT NOT NULL,
+      line INTEGER NOT NULL,
+      severity TEXT NOT NULL CHECK(severity IN ('bug','warning')),
+      description TEXT NOT NULL,
+      scenario TEXT NOT NULL,
+      branch TEXT,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (project_id, file, line)
+    )
+  `)
   return db
 }
 
@@ -39,8 +96,10 @@ describe('Tool Blocking Logic', () => {
 
   beforeEach(() => {
     db = createTestDb()
-    const kvService = createKvService(db)
-    loopService = createLoopService(kvService, projectId, createMockLogger())
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
   })
 
   afterEach(() => {
@@ -49,10 +108,11 @@ describe('Tool Blocking Logic', () => {
 
   describe('Loop state lookup', () => {
     test('getActiveState returns active state when loop is active', () => {
+      const loopName = 'test-worktree'
       const state = {
         active: true,
         sessionId: sessionID,
-        loopName: 'test-worktree',
+        loopName,
         worktreeDir: '/test/worktree',
         worktreeBranch: 'opencode/loop-test',
         iteration: 1,
@@ -61,28 +121,29 @@ describe('Tool Blocking Logic', () => {
         startedAt: new Date().toISOString(),
         prompt: 'Test prompt',
         phase: 'coding' as const,
-        audit: false,
+        audit: true,
         errorCount: 0,
         auditCount: 0,
         worktree: true,
       }
-      loopService.setState(sessionID, state)
+      loopService.setState(loopName, state)
 
-      const retrieved = loopService.getActiveState(sessionID)
-      expect(retrieved).toEqual(state)
+      const retrieved = loopService.getActiveState(loopName)
+      expect(retrieved).toMatchObject(state)
       expect(retrieved?.active).toBe(true)
     })
 
     test('getActiveState returns null when no loop exists', () => {
-      const retrieved = loopService.getActiveState('non-existent-session')
+      const retrieved = loopService.getActiveState('non-existent-loop')
       expect(retrieved).toBeNull()
     })
 
     test('getActiveState returns null when loop is inactive', () => {
+      const loopName = 'test-worktree-inactive'
       const inactiveState = {
         active: false,
         sessionId: sessionID,
-        loopName: 'test-worktree',
+        loopName,
         worktreeDir: '/test/worktree',
         worktreeBranch: 'opencode/loop-test',
         iteration: 1,
@@ -91,14 +152,14 @@ describe('Tool Blocking Logic', () => {
         startedAt: new Date().toISOString(),
         prompt: 'Test prompt',
         phase: 'coding' as const,
-        audit: false,
+        audit: true,
         errorCount: 0,
         auditCount: 0,
         worktree: true,
       }
-      loopService.setState(sessionID, inactiveState)
+      loopService.setState(loopName, inactiveState)
 
-      const retrieved = loopService.getActiveState(sessionID)
+      const retrieved = loopService.getActiveState(loopName)
       expect(retrieved).toBeNull()
     })
   })

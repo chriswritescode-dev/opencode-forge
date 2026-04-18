@@ -1,11 +1,15 @@
-import type { LoopState } from '../../services/loop'
-import { openDatabase, confirm } from '../utils'
+import {
+  openDatabase,
+  confirm,
+  listLoopsFromDb,
+  resolveLoopByNameOrExit,
+  printBlock,
+} from '../utils'
 import { execSync, spawnSync } from 'child_process'
 import { existsSync } from 'fs'
 import { resolve } from 'path'
-import { findPartialMatch } from '../../utils/partial-match'
 
-export interface CancelArgs {
+interface CancelArgs {
   dbPath?: string
   resolvedProjectId?: string
   name?: string
@@ -17,84 +21,18 @@ export async function run(argv: CancelArgs): Promise<void> {
   const db = openDatabase(argv.dbPath)
 
   try {
-    const projectId = argv.resolvedProjectId
-
-    const now = Date.now()
-    let query: string
-    let params: (string | number)[]
-
-    if (projectId) {
-      query = 'SELECT project_id, key, data FROM project_kv WHERE project_id = ? AND key LIKE ? AND expires_at > ?'
-      params = [projectId, 'loop:%', now]
-    } else {
-      query = 'SELECT project_id, key, data FROM project_kv WHERE key LIKE ? AND expires_at > ?'
-      params = ['loop:%', now]
-    }
-
-    let rows: Array<{ project_id: string; key: string; data: string }>
-    try {
-      rows = db.prepare(query).all(...params) as Array<{ project_id: string; key: string; data: string }>
-    } catch {
-      rows = []
-    }
-
-    if (rows.length === 0) {
-      console.log('')
-      console.log('No active loops.')
-      console.log('')
-      return
-    }
-
-    const loops: Array<{ state: LoopState; row: { project_id: string; key: string; data: string } }> = []
-
-    for (const row of rows) {
-      try {
-        const state = JSON.parse(row.data) as LoopState
-        if (state.active) {
-          loops.push({ state, row })
-        }
-      } catch (err) {
-        console.error(`Failed to parse loop state for key ${row.key}:`, err)
-      }
-    }
+    const loops = listLoopsFromDb(db, argv.resolvedProjectId, { activeOnly: true })
 
     if (loops.length === 0) {
-      console.log('')
-      console.log('No active loops.')
-      console.log('')
+      printBlock('No active loops.')
       return
     }
 
-    let loopToCancel: { state: LoopState; row: { project_id: string; key: string; data: string } } | undefined
+    let loopToCancel = argv.name
+      ? resolveLoopByNameOrExit(argv.name, loops)
+      : undefined
 
-    if (argv.name) {
-      const { match, candidates } = findPartialMatch(argv.name, loops, (l) => [
-        l.state.loopName,
-        l.state.worktreeBranch,
-      ])
-
-      if (!match && candidates.length > 0) {
-        console.error(`Multiple loops match '${argv.name}':`)
-        for (const c of candidates) {
-          console.error(`  - ${c.state.loopName}`)
-        }
-        console.error('')
-        process.exit(1)
-      }
-
-      if (!match && candidates.length === 0) {
-        console.error(`Loop not found: ${argv.name}`)
-        console.error('')
-        console.error('Active loops:')
-        for (const l of loops) {
-          console.error(`  - ${l.state.loopName}`)
-        }
-        console.error('')
-        process.exit(1)
-      }
-
-      loopToCancel = match!
-    } else {
+    if (!loopToCancel) {
       if (loops.length === 1) {
         loopToCancel = loops[0]
       } else {
@@ -109,11 +47,6 @@ export async function run(argv: CancelArgs): Promise<void> {
         console.log('')
         process.exit(1)
       }
-    }
-
-    if (!loopToCancel) {
-      console.error('Internal error: loop not found')
-      process.exit(1)
     }
 
     const { state } = loopToCancel
@@ -142,11 +75,23 @@ export async function run(argv: CancelArgs): Promise<void> {
       completedAt: new Date().toISOString(),
       terminationReason: 'cancelled',
     }
-    db.prepare('UPDATE project_kv SET data = ?, updated_at = ? WHERE project_id = ? AND key = ?').run(
-      JSON.stringify(updatedState),
-      Date.now(),
+    const now = Date.now()
+    
+    // Update the loop in the new loops table
+    db.prepare(`
+      UPDATE loops SET
+        status = ?,
+        completed_at = ?,
+        termination_reason = ?,
+        completion_summary = ?
+      WHERE project_id = ? AND loop_name = ?
+    `).run(
+      'cancelled',
+      now,
+      updatedState.terminationReason,
+      null,
       loopToCancel.row.project_id,
-      loopToCancel.row.key,
+      loopToCancel.row.loop_name,
     )
 
     console.log(`Cancelled loop: ${state.loopName}`)

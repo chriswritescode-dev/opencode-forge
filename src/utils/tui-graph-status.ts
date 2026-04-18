@@ -2,8 +2,7 @@
  * TUI graph status helper for reading persisted graph state.
  * 
  * This module provides read helpers for accessing graph service status
- * from the shared project KV store, following the same pattern as
- * src/utils/tui-plan-store.ts.
+ * from the graph_status table via GraphStatusRepo.
  */
 
 import { Database } from 'bun:sqlite'
@@ -12,6 +11,7 @@ import { join } from 'path'
 import type { GraphStatusPayload } from './graph-status-store'
 import { isGraphReady, isGraphTransient } from './graph-status-store'
 import { resolveDataDir } from '../storage'
+import { createGraphStatusRepo } from '../storage/repos/graph-status-repo'
 
 /**
  * Gets the database path used by the memory plugin.
@@ -30,7 +30,7 @@ export function getDbPathForDataDir(dataDir: string): string {
 }
 
 /**
- * Reads graph status from the shared KV store.
+ * Reads graph status from the graph_status table.
  * 
  * @param projectId - The project ID (git commit hash)
  * @param dbPathOverride - Optional database path override (for testing)
@@ -39,25 +39,23 @@ export function getDbPathForDataDir(dataDir: string): string {
  */
 export function readGraphStatus(projectId: string, dbPathOverride?: string, cwd?: string): GraphStatusPayload | null {
   const dbPath = dbPathOverride || getDbPath()
-  const statusKey = cwd ? `graph:status:${cwd.replace(/\/$/, '')}` : 'graph:status'
 
   if (!existsSync(dbPath)) return null
 
   let db: Database | null = null
   try {
     db = new Database(dbPath, { readonly: true })
-    const now = Date.now()
+    const repo = createGraphStatusRepo(db)
+    const row = repo.read(projectId, cwd ?? '')
     
-    const row = db.prepare(
-      'SELECT data FROM project_kv WHERE project_id = ? AND key = ? AND expires_at > ?'
-    ).get(projectId, statusKey, now) as { data: string } | null
-
     if (!row) return null
     
-    try {
-      return JSON.parse(row.data) as GraphStatusPayload
-    } catch {
-      return null
+    return {
+      state: row.state,
+      ready: row.ready,
+      stats: row.stats ?? undefined,
+      message: row.message ?? undefined,
+      updatedAt: row.updatedAt,
     }
   } catch {
     return null

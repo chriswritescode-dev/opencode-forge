@@ -98,27 +98,26 @@ function cancelLoop(projectId: string, loopName: string): string | null {
   try {
     db = new Database(dbPath)
     db.run('PRAGMA busy_timeout=5000')
-    const key = `loop:${loopName}`
-    const now = Date.now()
-    const row = db.prepare('SELECT data, project_id FROM project_kv WHERE project_id = ? AND key = ? AND expires_at > ?').get(projectId, key, now) as { data: string; project_id: string } | null
+    const row = db.prepare(`
+      SELECT status, current_session_id
+      FROM loops
+      WHERE project_id = ? AND loop_name = ?
+    `).get(projectId, loopName) as { status: string; current_session_id: string } | null
+    
     if (!row) return null
+    if (row.status !== 'running') return null
 
-    const state = JSON.parse(row.data)
-    if (!state.active) return null
-
-    const updatedState = {
-      ...state,
-      active: false,
-      completedAt: new Date().toISOString(),
-      terminationReason: 'cancelled',
-    }
-    db.prepare('UPDATE project_kv SET data = ?, updated_at = ? WHERE project_id = ? AND key = ?').run(
-      JSON.stringify(updatedState),
-      now,
-      projectId,
-      key,
-    )
-    return state.sessionId ?? null
+    const now = Date.now()
+    db.prepare(`
+      UPDATE loops SET
+        status = ?,
+        completed_at = ?,
+        termination_reason = ?,
+        completion_summary = ?
+      WHERE project_id = ? AND loop_name = ?
+    `).run('cancelled', now, 'cancelled', null, projectId, loopName)
+    
+    return row.current_session_id
   } catch {
     return null
   } finally {
@@ -135,70 +134,160 @@ async function restartLoop(projectId: string, loopName: string, api: TuiPluginAp
   try {
     db = new Database(dbPath)
     db.run('PRAGMA busy_timeout=5000')
-    const key = `loop:${loopName}`
     const now = Date.now()
-    const row = db.prepare('SELECT data, project_id FROM project_kv WHERE project_id = ? AND key = ? AND expires_at > ?').get(projectId, key, now) as { data: string; project_id: string } | null
+    const row = db.prepare(`
+      SELECT status, current_session_id, worktree_dir, worktree, project_dir, execution_model,
+             auditor_model, completion_signal, prompt, iteration, phase, audit, sandbox,
+             worktree_branch, workspace_id
+      FROM loops
+      LEFT JOIN loop_large_fields USING (project_id, loop_name)
+      WHERE project_id = ? AND loop_name = ?
+    `).get(projectId, loopName) as {
+      status: string
+      current_session_id: string
+      worktree_dir: string
+      worktree: number
+      project_dir: string
+      execution_model: string | null
+      auditor_model: string | null
+      completion_signal: string | null
+      prompt: string | null
+      iteration: number
+      phase: string
+      audit: number
+      sandbox: number
+      worktree_branch: string | null
+      workspace_id: string | null
+    } | null
+    
     if (!row) return null
 
-    const state = JSON.parse(row.data)
-
-    if (state.active) {
-      try { await api.client.session.abort({ sessionID: state.sessionId }) } catch {}
-      const oldSessionKey = `loop-session:${state.sessionId}`
-      db.prepare('DELETE FROM project_kv WHERE project_id = ? AND key = ?').run(projectId, oldSessionKey)
+    const oldSessionId = row.current_session_id
+    if (row.status === 'running') {
+      try { await api.client.session.abort({ sessionID: oldSessionId }) } catch {}
     }
 
-    const directory = state.worktreeDir
+    const directory = row.worktree_dir
     if (!directory) return null
     
-    // Worktree sessions no longer need log directory access since logging is dispatched via host session
     const { loadPluginConfig } = await import('./setup')
     const config = loadPluginConfig()
     const agentExclusions = agents.code.tools?.exclude
     const permissionRuleset = buildLoopPermissionRuleset(config, null, {
-      isWorktree: !!state.worktree,
+      isWorktree: !!row.worktree,
       agentExclusions,
     })
-    const createResult = await api.client.session.create({ directory, title: loopName, permission: permissionRuleset })
+
+    // Resolve the workspace ID for worktree loops.
+    // - If the loop already has workspace_id, use it.
+    // - If it's a legacy worktree loop (no workspace_id), create a workspace record now
+    //   and persist it back to the row for future restarts.
+    let workspaceId: string | null = row.workspace_id ?? null
+    if (row.worktree === 1 && !workspaceId) {
+      const { createLoopWorkspace } = await import('./workspace/forge-worktree')
+      const ws = await createLoopWorkspace(api.client, {
+        loopName,
+        directory,
+        branch: row.worktree_branch ?? null,
+      })
+      if (!ws) {
+        console.error(`[forge] restartLoop: failed to create workspace for legacy worktree loop ${loopName}`)
+        return null
+      }
+      workspaceId = ws.workspaceId
+      db.prepare('UPDATE loops SET workspace_id = ? WHERE project_id = ? AND loop_name = ?').run(
+        workspaceId, projectId, loopName
+      )
+    }
+
+    const createResult = await api.client.session.create({
+      directory,
+      title: loopName,
+      permission: permissionRuleset,
+      ...(workspaceId ? { workspaceID: workspaceId } : {}),
+    })
     if (createResult.error || !createResult.data) return null
-    
+
     const newSessionId = createResult.data.id
 
-    const sessionKey = `loop-session:${newSessionId}`
-    const ttl = 30 * 24 * 60 * 60 * 1000
-    db.prepare('INSERT OR REPLACE INTO project_kv (project_id, key, data, expires_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(
-      projectId, sessionKey, JSON.stringify(loopName), now + ttl, now
+    // Update loops table FIRST before sending prompt so resolveLoopName works immediately
+    db.prepare(`
+      UPDATE loops SET
+        status = ?,
+        current_session_id = ?,
+        phase = ?,
+        iteration = ?,
+        error_count = ?,
+        audit_count = ?,
+        started_at = ?,
+        completed_at = ?,
+        termination_reason = ?,
+        completion_summary = ?
+      WHERE project_id = ? AND loop_name = ?
+    `).run(
+      'running',
+      newSessionId,
+      row.phase,
+      row.iteration,
+      0,
+      0,
+      now,
+      null,
+      null,
+      null,
+      projectId,
+      loopName
     )
 
-    const newState = {
-      ...state,
-      active: true,
-      sessionId: newSessionId,
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 0,
-      startedAt: new Date().toISOString(),
-      completedAt: undefined,
-      terminationReason: undefined,
-      projectDir: state.projectDir || state.worktreeDir,
-      executionModel: state.executionModel,
-      auditorModel: state.auditorModel,
-    }
-    db.prepare('UPDATE project_kv SET data = ?, updated_at = ? WHERE project_id = ? AND key = ?').run(
-      JSON.stringify(newState), now, projectId, key
-    )
-
-    let promptText = state.prompt ?? ''
-    if (state.completionSignal) {
-      const completionInstructions = `\n\n---\n\n**IMPORTANT - Completion Signal:** When you have completed ALL phases of this plan successfully, you MUST output the following phrase exactly: ${state.completionSignal}\n\nBefore outputting the completion signal, you MUST:\n1. Verify each phase's acceptance criteria are met\n2. Run all verification commands listed in the plan and confirm they pass\n3. If tests were required, confirm they exist AND pass\n\nDo NOT output this phrase until every phase is truly complete and all verification steps pass. The loop will continue until this signal is detected.`
+    let promptText = row.prompt ?? ''
+    if (row.completion_signal) {
+      const completionInstructions = `\n\n---\n\n**IMPORTANT - Completion Signal:** When you have completed ALL phases of this plan successfully, you MUST output the following phrase exactly: ${row.completion_signal}\n\nBefore outputting the completion signal, you MUST:\n1. Verify each phase's acceptance criteria are met\n2. Run all verification commands listed in the plan and confirm they pass\n3. If tests were required, confirm they exist AND pass\n\nDo NOT output this phrase until every phase is truly complete and all verification steps pass. The loop will continue until this signal is detected.`
       promptText += completionInstructions
     }
 
-    // Use stored execution model with fallback
     const { parseModelString, retryWithModelFallback } = await import('./utils/model-fallback')
-    const loopModel = parseModelString(state.executionModel)
+    const loopModel = parseModelString(row.execution_model ?? undefined)
       ?? parseModelString(config.loop?.model)
       ?? parseModelString(config.executionModel)
+
+    const { waitForSandboxReady } = await import('./utils/sandbox-ready')
+    const waitResult = await waitForSandboxReady({
+      projectId,
+      loopName,
+      dbPath,
+      pollMs: 200,
+      timeoutMs: 15_000,
+    })
+    if (!waitResult.ready) {
+      console.error(`[forge] restartLoop: sandbox not ready (${waitResult.reason}); aborting restart`)
+
+      try {
+        const { createDockerService } = await import('./sandbox/docker')
+        const docker = createDockerService(console)
+        const containerName = docker.containerName(loopName)
+        if (await docker.isRunning(containerName)) {
+          await docker.removeContainer(containerName)
+          console.log(`[forge] restartLoop: removed sandbox container ${containerName} after aborted restart`)
+        }
+      } catch (err) {
+        console.error('[forge] restartLoop: failed to remove sandbox container after abort', err)
+      }
+
+      try {
+        db.prepare(`
+          UPDATE loops SET
+            status = ?,
+            completed_at = ?,
+            termination_reason = ?,
+            completion_summary = ?
+          WHERE project_id = ? AND loop_name = ?
+        `).run('errored', now, 'sandbox_start_failed: ' + waitResult.reason, null, projectId, loopName)
+      } catch (err) {
+        console.error('[forge] restartLoop: failed to mark loop inactive after sandbox timeout', err)
+      }
+      return null
+    }
+    console.log(`[forge] restartLoop: sandbox ready container=${waitResult.containerName}`)
 
     const promptParts: Array<{ type: 'text'; text: string }> = [{ type: 'text' as const, text: promptText }]
     
@@ -615,6 +704,14 @@ function PlanViewerDialog(props: {
               variant: 'success',
               duration: 3000,
             })
+
+            // For workspace-backed worktree loops, navigate to the session immediately.
+            if (isWorktree && launchResult.workspaceId && launchResult.sessionId) {
+              try {
+                props.api.route.navigate('session', { sessionID: launchResult.sessionId })
+              } catch {}
+            }
+
             // Refresh sidebar immediately after mutation is issued
             props.onRefresh?.()
           }
@@ -972,6 +1069,11 @@ function LoopDetailsDialog(props: { api: TuiPluginApi; loop: LoopInfo; onBack?: 
         <Show when={props.onBack}>
           <text fg={theme().textMuted} onMouseUp={() => props.onBack!()}>Back</text>
         </Show>
+        <Show when={currentLoop().sessionId && currentLoop().workspaceId}>
+          <text fg={theme().success} onMouseUp={() => {
+            props.api.route.navigate('session', { sessionID: currentLoop().sessionId })
+          }}>Open session</text>
+        </Show>
         <Show when={currentLoop().active}>
           <text fg={theme().warning} onMouseUp={handleRestart}>Force Restart</text>
           <text fg={theme().error} onMouseUp={handleCancel}>Cancel loop</text>
@@ -1168,7 +1270,12 @@ function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: strin
                   flexDirection="row"
                   gap={1}
                   onMouseUp={() => {
-                    if (loop.worktree) {
+                    // Workspace-backed worktree loop: navigate directly to its session.
+                    // Legacy worktree loop (no workspaceId): open the details dialog.
+                    // In-place loop: navigate directly.
+                    if (loop.worktree && loop.workspaceId && loop.sessionId) {
+                      props.api.route.navigate('session', { sessionID: loop.sessionId })
+                    } else if (loop.worktree) {
                       props.api.ui.dialog.setSize("medium")
                       props.api.ui.dialog.replace(() => (
                         <LoopDetailsDialog api={props.api} loop={loop} onRefresh={refreshSidebarData} />

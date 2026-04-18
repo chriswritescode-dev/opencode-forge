@@ -2,12 +2,6 @@ import type { PluginConfig } from '../types'
 
 type PermissionRule = { permission: string; pattern: string; action: 'allow' | 'deny' }
 
-export const LOOP_PERMISSION_RULESET: PermissionRule[] = [
-  { permission: '*', pattern: '*', action: 'allow' },
-  { permission: 'external_directory', pattern: '*', action: 'deny' },
-  { permission: 'bash', pattern: 'git push *', action: 'deny' },
-]
-
 /**
  * Builds the permission ruleset for loop sessions.
  *

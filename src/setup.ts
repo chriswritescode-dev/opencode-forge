@@ -113,9 +113,14 @@ export function loadPluginConfig(): PluginConfig {
 }
 
 function normalizeConfig(config: PluginConfig): PluginConfig {
-  const normalized: PluginConfig = {
+  // Emit deprecation warning before coalescing
+  if (config.defaultKvTtlMs !== undefined && config.completedLoopTtlMs === undefined) {
+    console.warn('[forge] Config: "defaultKvTtlMs" is deprecated, please rename to "completedLoopTtlMs". Compatibility shim will be removed in a future release.')
+  }
+
+  return {
     dataDir: config.dataDir,
-    defaultKvTtlMs: config.defaultKvTtlMs,
+    completedLoopTtlMs: config.completedLoopTtlMs ?? config.defaultKvTtlMs,
     logging: config.logging,
     compaction: config.compaction,
     messagesTransform: config.messagesTransform,
@@ -127,11 +132,4 @@ function normalizeConfig(config: PluginConfig): PluginConfig {
     sandbox: config.sandbox,
     graph: config.graph,
   }
-  
-
-  if (normalized.sandbox) {
-    normalized.sandbox.mode = normalized.sandbox.mode || 'off'
-  }
-  
-  return normalized
 }

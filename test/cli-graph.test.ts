@@ -1,21 +1,24 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { Database } from 'bun:sqlite'
 import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs'
+import { tmpdir } from 'os'
 import { join } from 'path'
 import { hashGraphCacheScope } from '../src/storage/graph-projects'
 
-function createTestKvDb(tempDir: string): Database {
+function createTestGraphStatusDb(tempDir: string): Database {
   const dbPath = join(tempDir, 'graph.db')
   const db = new Database(dbPath)
 
   db.run(`
-    CREATE TABLE IF NOT EXISTS project_kv (
-      project_id TEXT NOT NULL,
-      key TEXT NOT NULL,
-      data TEXT NOT NULL,
-      expires_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (project_id, key)
+    CREATE TABLE IF NOT EXISTS graph_status (
+      project_id   TEXT NOT NULL,
+      cwd          TEXT NOT NULL DEFAULT '',
+      state        TEXT NOT NULL,
+      ready        INTEGER NOT NULL,
+      stats_json   TEXT,
+      message      TEXT,
+      updated_at   INTEGER NOT NULL,
+      PRIMARY KEY (project_id, cwd)
     )
   `)
 
@@ -29,7 +32,7 @@ describe('CLI Graph', () => {
   let originalError: typeof console.error
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join('.', 'temp-graph-cli-'))
+    tempDir = mkdtempSync(join(tmpdir(), 'temp-graph-cli-'))
     projectDir = join(tempDir, 'project')
     mkdirSync(projectDir, { recursive: true })
     originalLog = console.log
@@ -45,14 +48,17 @@ describe('CLI Graph', () => {
   })
 
   test('status prints persisted graph status', async () => {
-    const db = createTestKvDb(tempDir)
+    const db = createTestGraphStatusDb(tempDir)
+    const stats = { files: 3, symbols: 10, edges: 5, calls: 2 }
     db.run(
-      'INSERT INTO project_kv (project_id, key, data, expires_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      'INSERT INTO graph_status (project_id, cwd, state, ready, stats_json, message, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [
         'test-project',
-        'graph:status',
-        JSON.stringify({ state: 'ready', stats: { files: 3, symbols: 10, edges: 5, calls: 2 }, updatedAt: Date.now() }),
-        Date.now() + 86400000,
+        '',
+        'ready',
+        1,
+        JSON.stringify(stats),
+        null,
         Date.now(),
       ]
     )

@@ -1,6 +1,6 @@
 {
   "name": "opencode-forge",
-  "version": "0.1.11",
+  "version": "0.2.0",
   "type": "module",
   "oc-plugin": [
     "server",
@@ -49,14 +49,14 @@
   "license": "MIT",
   "homepage": "https://github.com/chriswritescode-dev/opencode-forge",
   "dependencies": {
-    "@opencode-ai/plugin": "^1.4.2",
-    "@opencode-ai/sdk": "^1.4.2",
+    "@opencode-ai/plugin": "^1.4.6",
+    "@opencode-ai/sdk": "^1.4.6",
     "tree-sitter-wasms": "0.1.13",
     "web-tree-sitter": "0.25.10"
   },
   "peerDependencies": {
-    "@opentui/core": ">=0.1.92",
-    "@opentui/solid": ">=0.1.92"
+    "@opentui/core": ">=0.1.99",
+    "@opentui/solid": ">=0.1.99"
   },
   "peerDependenciesMeta": {
     "@opentui/core": {
@@ -68,8 +68,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@opentui/core": "0.1.97",
-    "@opentui/solid": "0.1.97",
+    "@opentui/core": "0.1.99",
+    "@opentui/solid": "0.1.99",
     "@types/node": "^25.6.0",
     "@typescript-eslint/eslint-plugin": "^8.58.0",
     "@typescript-eslint/parser": "^8.58.0",

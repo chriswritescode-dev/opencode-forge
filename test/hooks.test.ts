@@ -1,7 +1,6 @@
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
 import { createSessionHooks } from '../src/hooks/session'
 import { createLoopEventHandler } from '../src/hooks/loop'
-import { createKvService } from '../src/services/kv'
 import { createLoopService } from '../src/services/loop'
 import { Database } from 'bun:sqlite'
 import type { Logger } from '../src/types'

@@ -4,15 +4,7 @@ import type { ToolContext } from './types'
 const z = tool.schema
 
 export function createPlanTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
-  const { kvService, projectId, logger, loopService } = ctx
-
-  function resolvePlanKey(sessionID: string): string {
-    const loopName = loopService.resolveLoopName(sessionID)
-    if (loopName) {
-      return `plan:${loopName}`
-    }
-    return `plan:${sessionID}`
-  }
+  const { plansRepo, loopsRepo, projectId, logger, loopService } = ctx
 
   return {
     'plan-write': tool({
@@ -21,11 +13,15 @@ export function createPlanTools(ctx: ToolContext): Record<string, ReturnType<typ
         content: z.string().describe('The plan content to write'),
       },
       execute: async (args, context) => {
-        const key = resolvePlanKey(context.sessionID)
-        kvService.set(projectId, key, args.content)
+        const loopName = loopService.resolveLoopName(context.sessionID)
+        if (loopName) {
+          loopsRepo.updatePrompt(projectId, loopName, args.content)
+        } else {
+          plansRepo.writeForSession(projectId, context.sessionID, args.content)
+        }
         
         const lineCount = args.content.split('\n').length
-        logger.log(`plan-write: stored plan at ${key} (${lineCount} lines)`)
+        logger.log(`plan-write: stored plan for session ${context.sessionID} (${lineCount} lines)`)
         
         return `Plan stored (${lineCount} lines)`
       },
@@ -38,10 +34,15 @@ export function createPlanTools(ctx: ToolContext): Record<string, ReturnType<typ
         new_string: z.string().describe('The string to replace it with'),
       },
       execute: async (args, context) => {
-        const key = resolvePlanKey(context.sessionID)
-        const existing = kvService.get<string>(projectId, key)
+        const existingLoopName = loopService.resolveLoopName(context.sessionID)
+        let existing: string | undefined
+        if (existingLoopName) {
+          existing = loopsRepo.getLarge(projectId, existingLoopName)?.prompt ?? plansRepo.getForLoop(projectId, existingLoopName)?.content
+        } else {
+          existing = plansRepo.getForSession(projectId, context.sessionID)?.content
+        }
         
-        if (existing === null) {
+        if (!existing) {
           return `No plan found for session ${context.sessionID}`
         }
 
@@ -54,10 +55,14 @@ export function createPlanTools(ctx: ToolContext): Record<string, ReturnType<typ
         }
 
         const updated = existing.replace(args.old_string, args.new_string)
-        kvService.set(projectId, key, updated)
+        if (existingLoopName) {
+          loopsRepo.updatePrompt(projectId, existingLoopName, updated)
+        } else {
+          plansRepo.writeForSession(projectId, context.sessionID, updated)
+        }
         
         const lineCount = updated.split('\n').length
-        logger.log(`plan-edit: updated plan at ${key} (${lineCount} lines)`)
+        logger.log(`plan-edit: updated plan for session ${context.sessionID} (${lineCount} lines)`)
         
         return `Plan updated (${lineCount} lines)`
       },
@@ -72,15 +77,24 @@ export function createPlanTools(ctx: ToolContext): Record<string, ReturnType<typ
         loop_name: z.string().optional().describe('Optional loop name to read plan:{loop_name} directly instead of resolving from the current session'),
       },
       execute: async (args, context) => {
-        const key = args.loop_name ? `plan:${args.loop_name}` : resolvePlanKey(context.sessionID)
-        const value = kvService.get<string>(projectId, key)
+        let content: string | undefined
+        if (args.loop_name) {
+          content = loopsRepo.getLarge(projectId, args.loop_name)?.prompt ?? plansRepo.getForLoop(projectId, args.loop_name)?.content
+        } else {
+          const resolvedLoopName = loopService.resolveLoopName(context.sessionID)
+          if (resolvedLoopName) {
+            content = loopsRepo.getLarge(projectId, resolvedLoopName)?.prompt ?? plansRepo.getForLoop(projectId, resolvedLoopName)?.content
+          } else {
+            content = plansRepo.getForSession(projectId, context.sessionID)?.content
+          }
+        }
         
-        if (value === null) {
+        if (!content) {
           logger.log(`plan-read: no plan found for session ${context.sessionID}`)
           return `No plan found for current session`
         }
 
-        logger.log(`plan-read: retrieved plan from ${key}`)
+        logger.log(`plan-read: retrieved plan for session ${context.sessionID}`)
         
         if (args.pattern) {
           let regex: RegExp
@@ -90,7 +104,7 @@ export function createPlanTools(ctx: ToolContext): Record<string, ReturnType<typ
             return `Invalid regex pattern: ${(e as Error).message}`
           }
 
-          const lines = value.split('\n')
+          const lines = content.split('\n')
           const matches: Array<{ lineNum: number; text: string }> = []
           
           for (let i = 0; i < lines.length; i++) {
@@ -106,7 +120,7 @@ export function createPlanTools(ctx: ToolContext): Record<string, ReturnType<typ
           return `Found ${matches.length} match${matches.length === 1 ? '' : 'es'}:\n\n${matches.map((m) => `  Line ${m.lineNum}: ${m.text}`).join('\n')}`
         }
 
-        const lines = value.split('\n')
+        const lines = content.split('\n')
         const totalLines = lines.length
 
         let resultLines = lines

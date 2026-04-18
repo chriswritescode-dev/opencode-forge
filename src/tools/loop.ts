@@ -15,6 +15,7 @@ import { agents } from '../agents'
 import { isSandboxEnabled } from '../sandbox/context'
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 import { waitForGraphReady } from '../utils/tui-graph-status'
+import { createLoopWorkspace, bindSessionToWorkspace } from '../workspace/forge-worktree'
 
 const z = tool.schema
 
@@ -38,7 +39,7 @@ export async function setupLoop(
   ctx: ToolContext,
   options: LoopSetupOptions,
 ): Promise<string> {
-  const { v2, directory, config, loopService, logger, sandboxManager, kvService, projectId } = ctx
+  const { v2, directory, config, loopService, logger, sandboxManager, plansRepo, projectId } = ctx
   const projectDir = directory
   const maxIter = options.maxIterations ?? config.loop?.defaultMaxIterations ?? 0
   
@@ -49,6 +50,7 @@ export async function setupLoop(
     directory: string
     branch?: string
     worktree: boolean
+    workspaceId?: string
   }
 
   let loopContext: LoopContext
@@ -115,7 +117,7 @@ export async function setupLoop(
           sourceCwd: projectDir,
           targetCwd: worktreeInfo.directory,
           dataDir: ctx.dataDir,
-          kvService,
+          graphStatusRepo: ctx.graphStatusRepo,
           logger,
         })
       } catch (err) {
@@ -162,16 +164,67 @@ export async function setupLoop(
       branch: worktreeInfo.branch,
       worktree: true,
     }
+
+    // Create workspace and bind session for worktree loops — required for workspace-backed switching
+    const workspace = await createLoopWorkspace(v2, {
+      loopName: uniqueLoopName,
+      directory: worktreeInfo.directory,
+      branch: worktreeInfo.branch,
+    })
+
+    if (!workspace) {
+      logger.error(`loop: failed to create workspace for worktree loop ${uniqueLoopName}`)
+      try {
+        await v2.session.abort({ sessionID: loopContext.sessionId })
+      } catch (cleanupErr) {
+        logger.error('loop: failed to cleanup session', cleanupErr)
+      }
+      try {
+        await v2.worktree.remove({ worktreeRemoveInput: { directory: worktreeInfo.directory } })
+        const { deleteGraphCacheScope } = await import('../storage/graph-projects')
+        const deletedCache = deleteGraphCacheScope(ctx.projectId, worktreeInfo.directory, ctx.dataDir)
+        if (deletedCache) {
+          logger.log(`loop: deleted graph cache for worktree ${worktreeInfo.directory}`)
+        }
+      } catch (cleanupErr) {
+        logger.error('loop: failed to cleanup worktree', cleanupErr)
+      }
+      return 'Failed to create workspace for loop.'
+    }
+
+    loopContext.workspaceId = workspace.workspaceId
+    try {
+      await bindSessionToWorkspace(v2, workspace.workspaceId, loopContext.sessionId)
+      logger.log(`loop: workspace ${workspace.workspaceId} bound to session ${loopContext.sessionId}`)
+    } catch (bindErr) {
+      logger.error('loop: failed to bind session to workspace', bindErr)
+      try {
+        await v2.session.abort({ sessionID: loopContext.sessionId })
+      } catch (cleanupErr) {
+        logger.error('loop: failed to cleanup session', cleanupErr)
+      }
+      try {
+        await v2.worktree.remove({ worktreeRemoveInput: { directory: loopContext.directory } })
+        const { deleteGraphCacheScope } = await import('../storage/graph-projects')
+        const deletedCache = deleteGraphCacheScope(ctx.projectId, loopContext.directory, ctx.dataDir)
+        if (deletedCache) {
+          logger.log(`loop: deleted graph cache for worktree ${loopContext.directory}`)
+        }
+      } catch (cleanupErr) {
+        logger.error('loop: failed to cleanup worktree', cleanupErr)
+      }
+      return 'Failed to bind workspace to loop.'
+    }
   }
 
-  let sandboxContainerName: string | undefined
+  let sandboxContainer: string | undefined
   const sandboxEnabled = isSandboxEnabled(config, sandboxManager) && !!options.worktree
 
   if (sandboxEnabled) {
     try {
       const result = await sandboxManager!.start(uniqueLoopName, loopContext.directory)
-      sandboxContainerName = result.containerName
-      logger.log(`Sandbox container ${sandboxContainerName} started for loop ${uniqueLoopName}`)
+      sandboxContainer = result.containerName
+      logger.log(`Sandbox container ${sandboxContainer} started for loop ${uniqueLoopName}`)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       logger.error(`loop: failed to start sandbox container`, err)
@@ -192,19 +245,21 @@ export async function setupLoop(
     startedAt: new Date().toISOString(),
     prompt: options.prompt,
     phase: 'coding',
-    audit: options.audit,
+    audit: true,
     errorCount: 0,
     auditCount: 0,
     worktree: options.worktree,
     sandbox: sandboxEnabled,
-    sandboxContainerName,
+    sandboxContainer,
     executionModel: options.executionModel,
     auditorModel: options.auditorModel,
+    workspaceId: options.worktree ? loopContext.workspaceId : undefined,
   }
 
-  kvService.set(projectId, `plan:${uniqueLoopName}`, options.prompt)
+  // Plan is persisted into loop_large_fields.prompt by loopService.setState below.
+  // Clean up the draft entry in the plans table if a sourcePlanSessionID was passed.
   if (options.sourcePlanSessionID) {
-    kvService.delete(projectId, `plan:${options.sourcePlanSessionID}`)
+    plansRepo.deleteForSession(projectId, options.sourcePlanSessionID)
   }
 
   loopService.setState(uniqueLoopName, state)
@@ -287,11 +342,11 @@ export async function setupLoop(
 
   options.onLoopStarted?.(uniqueLoopName)
 
-  if (!options.worktree) {
-    v2.tui.selectSession({ sessionID: loopContext.sessionId }).catch((err) => {
-      logger.error('loop: failed to navigate TUI to new session', err)
-    })
-  }
+  // Navigate TUI to the new session for both worktree and non-worktree loops.
+  // Worktree loops are workspace-backed, so selectSession works across workspaces.
+  v2.tui.selectSession({ sessionID: loopContext.sessionId }).catch((err) => {
+    logger.error('loop: failed to navigate TUI to new session', err)
+  })
 
   const maxInfo = maxIter > 0 ? maxIter.toString() : 'unlimited'
   const auditInfo = options.audit ? 'enabled' : 'disabled'
@@ -351,18 +406,17 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         let planText = args.plan
         let sourcePlanSessionID: string | undefined
         if (!planText) {
-          const planKey = `plan:${context.sessionID}`
-          const cached = ctx.kvService.get<string>(ctx.projectId, planKey)
-          if (!cached) {
+          const planRow = ctx.plansRepo.getForSession(ctx.projectId, context.sessionID)
+          if (!planRow) {
             return 'No plan found. Write the plan via plan-write before calling this tool, or pass it directly as the plan argument.'
           }
-          planText = typeof cached === 'string' ? cached : JSON.stringify(cached, null, 2)
+          planText = planRow.content
           sourcePlanSessionID = context.sessionID
         }
 
         const sessionTitle = args.title.length > 60 ? `${args.title.substring(0, 57)}...` : args.title
         const loopModel = parseModelString(config.loop?.model) ?? parseModelString(config.executionModel)
-        const audit = config.loop?.defaultAudit ?? true
+        const audit = true
         const executionModel = config.loop?.model ?? config.executionModel
         const auditorModel = config.auditorModel ?? config.loop?.model ?? config.executionModel
         
@@ -396,9 +450,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
         if (args.name) {
           const name = args.name
-          const matchedState = loopService.findByLoopName(name)
-          if (!matchedState) {
-            const candidates = loopService.findCandidatesByPartialName(name)
+          const { match, candidates } = loopService.findMatchByName(name)
+          if (!match) {
             if (candidates.length > 0) {
               return `Multiple loops match "${name}":\n${candidates.map((s) => `- ${s.loopName}`).join('\n')}\n\nBe more specific.`
             }
@@ -409,7 +462,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             }
              return `No active loop found for loop "${name}".`
           }
-          state = matchedState
+          state = match
           if (!state.active) {
              return `Loop "${state.loopName}" has already completed.`
           }
@@ -550,7 +603,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             auditCount: 0,
             worktree: stoppedState.worktree,
             sandbox: restartSandbox,
-            sandboxContainerName: restartSandbox
+            sandboxContainer: restartSandbox
                 ? ctx.sandboxManager?.docker.containerName(stoppedState.loopName!)
                 : undefined,
             executionModel: stoppedState.executionModel,
@@ -680,9 +733,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           return lines.join('\n')
         }
 
-        const state = loopService.findByLoopName(args.name)
+        const { match: state, candidates } = loopService.findMatchByName(args.name)
         if (!state) {
-          const candidates = loopService.findCandidatesByPartialName(args.name)
           if (candidates.length > 0) {
             return `Multiple loops match "${args.name}":\n${candidates.map((s) => `- ${s.loopName}`).join('\n')}\n\nBe more specific.`
           }

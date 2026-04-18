@@ -33,13 +33,17 @@ export function createLoopEventHandler(
   projectId?: string,
   dataDir?: string,
 ): LoopEventHandler {
-  const minAudits = loopService.getMinAudits()
   const retryTimeouts = new Map<string, NodeJS.Timeout>()
+  const idleRetryTimeouts = new Map<string, NodeJS.Timeout>()
+  const idleRetryAttempts = new Map<string, number>()
   const lastActivityTime = new Map<string, number>()
   const stallWatchdogs = new Map<string, NodeJS.Timeout>()
   const consecutiveStalls = new Map<string, number>()
   const watchdogRunning = new Map<string, boolean>()
   const stateLocks = new Map<string, Promise<void>>()
+
+  const IDLE_RETRY_DELAY_MS = 1500
+  const MAX_IDLE_RETRIES = 1
 
   function withStateLock(loopName: string, fn: () => Promise<void>): Promise<void> {
     const prev = stateLocks.get(loopName) ?? Promise.resolve()
@@ -227,13 +231,26 @@ export function createLoopEventHandler(
       retryTimeouts.delete(loopName)
     }
 
+    const idleRetryTimeout = idleRetryTimeouts.get(loopName)
+    if (idleRetryTimeout) {
+      clearTimeout(idleRetryTimeout)
+      idleRetryTimeouts.delete(loopName)
+    }
+    idleRetryAttempts.delete(loopName)
+
     loopService.unregisterLoopSession(sessionId)
 
-    loopService.setState(loopName, {
-      ...state,
-      active: false,
-      completedAt: new Date().toISOString(),
-      terminationReason: reason,
+    const now = Date.now()
+    const statusMap = (r: string): 'completed' | 'cancelled' | 'errored' | 'stalled' => {
+      if (r === 'completed') return 'completed'
+      if (r === 'cancelled' || r === 'user_aborted' || r === 'shutdown') return 'cancelled'
+      if (r === 'max_iterations' || r === 'stall_timeout') return 'stalled'
+      return 'errored'
+    }
+    loopService.terminate(loopName, {
+      status: statusMap(reason),
+      reason,
+      completedAt: now,
     })
 
     try {
@@ -243,6 +260,8 @@ export function createLoopEventHandler(
     }
 
     logger.log(`Loop terminated: reason="${reason}", loop="${state.loopName}", iteration=${state.iteration}`)
+
+    logger.debug(`Loop: terminateLoop reason=${reason} worktree=${!!state.worktree} logEligible=${reason === 'completed' && !!state.worktree}`)
 
     // Log worktree completion if configured and loop completed successfully
     // Write directly from host context using filesystem calls
@@ -310,7 +329,7 @@ export function createLoopEventHandler(
       await commitAndCleanupWorktree(state)
     }
 
-    if (state.sandbox && state.sandboxContainerName && sandboxManager) {
+    if (state.sandbox && state.sandboxContainer && sandboxManager) {
       try {
         await sandboxManager.stop(state.loopName!)
         logger.log(`Loop: stopped sandbox container for ${state.loopName}`)
@@ -331,7 +350,7 @@ export function createLoopEventHandler(
     
     if (nextErrorCount < MAX_RETRIES) {
       logger.error(`Loop: ${context} (attempt ${nextErrorCount}/${MAX_RETRIES}), will retry`, err)
-      loopService.setState(loopName, { ...currentState, errorCount: nextErrorCount })
+      loopService.incrementError(loopName)
       if (retryFn) {
         const retryTimeout = setTimeout(async () => {
           const freshState = loopService.getActiveState(loopName)
@@ -458,46 +477,43 @@ export function createLoopEventHandler(
     }
 
     logger.error(`Loop: assistant error detected in ${phase} phase: ${assistantError}`)
-    const isModelError = /provider|auth|model|api\s*error/i.test(assistantError)
-    if (isModelError) {
-      const nextErrorCount = (currentState.errorCount ?? 0) + 1
-      if (nextErrorCount >= MAX_RETRIES) {
-        await terminateLoop(loopName, currentState, `error_max_retries: assistant error: ${assistantError}`)
-        return null
+      const isModelError = /provider|auth|model|api\s*error/i.test(assistantError)
+      if (isModelError) {
+        const nextErrorCount = loopService.incrementError(loopName)
+        if (nextErrorCount >= MAX_RETRIES) {
+          await terminateLoop(loopName, currentState, `error_max_retries: assistant error: ${assistantError}`)
+          return null
+        }
+        loopService.setModelFailed(loopName, true)
+        logger.log(`Loop: marking model as failed, will fall back to default model (error ${nextErrorCount}/${MAX_RETRIES})`)
+        return { assistantErrorDetected: true, currentState: loopService.getActiveState(loopName)! }
       }
-      loopService.setState(loopName, { ...currentState, modelFailed: true, errorCount: nextErrorCount })
-      logger.log(`Loop: marking model as failed, will fall back to default model (error ${nextErrorCount}/${MAX_RETRIES})`)
-      return { assistantErrorDetected: true, currentState: loopService.getActiveState(loopName)! }
-    }
 
     return { assistantErrorDetected: true, currentState }
   }
 
   /**
-   * Shared: check completion signal and terminate if ready.
+   * Shared: check audit clear and terminate if ready.
    * Returns true if the loop was terminated (caller should return).
    */
-  async function checkCompletionAndTerminate(
+  async function checkAuditClearAndTerminate(
     loopName: string,
     currentState: LoopState,
-    textContent: string | null,
-    auditCount: number,
   ): Promise<boolean> {
-    if (!currentState.completionSignal || !textContent) return false
-    if (!loopService.checkCompletionSignal(textContent, currentState.completionSignal)) return false
-
-    if (!currentState.audit || auditCount >= minAudits) {
-      if (loopService.hasOutstandingFindings(currentState.worktreeBranch)) {
-        logger.log(`Loop: completion promise detected but outstanding review findings remain, continuing`)
-        return false
-      }
-      await terminateLoop(loopName, currentState, 'completed')
-      logger.log(`Loop completed: detected ${currentState.completionSignal} at iteration ${currentState.iteration} (${auditCount}/${minAudits} audits)`)
-      return true
+    logger.debug(`Loop: checking audit clear loop=${loopName} auditCount=${currentState.auditCount ?? 0} branch=${currentState.worktreeBranch ?? '(none)'}`)
+    if ((currentState.auditCount ?? 0) < 1) {
+      logger.debug(`Loop: audit clear gate blocked by auditCount<1`)
+      return false
     }
-
-    logger.log(`Loop: completion promise detected but only ${auditCount}/${minAudits} audits performed, continuing`)
-    return false
+    const bugFindings = loopService.getOutstandingFindings(currentState.worktreeBranch, 'bug')
+    if (bugFindings.length > 0) {
+      logger.log(`Loop: audit complete but ${bugFindings.length} bug finding(s) remain, continuing`)
+      return false
+    }
+    logger.log(`Loop: audit all-clear, terminating loop=${loopName} iteration=${currentState.iteration} audits=${currentState.auditCount ?? 0}`)
+    await terminateLoop(loopName, currentState, 'completed')
+    logger.log(`Loop completed: auditor all-clear at iteration ${currentState.iteration} (audits=${currentState.auditCount ?? 0})`)
+    return true
   }
 
   /**
@@ -505,7 +521,8 @@ export function createLoopEventHandler(
    */
   function resetErrorCountIfNeeded(loopName: string, currentState: LoopState, assistantErrorDetected: boolean, phase: string): LoopState {
     if (!assistantErrorDetected && currentState.errorCount && currentState.errorCount > 0) {
-      loopService.setState(loopName, { ...currentState, errorCount: 0, modelFailed: false })
+      loopService.resetError(loopName)
+      loopService.setModelFailed(loopName, false)
       logger.log(`Loop: resetting error count after successful retry in ${phase} phase`)
       return loopService.getActiveState(loopName)!
     }
@@ -530,12 +547,13 @@ export function createLoopEventHandler(
       logger.error(`Loop: session rotation failed, continuing with existing session`, err)
     }
 
-    loopService.setState(loopName, {
-      ...currentState,
+    loopService.applyRotation(loopName, {
       sessionId: activeSessionId,
-      errorCount: assistantErrorDetected ? currentState.errorCount : 0,
-      modelFailed: assistantErrorDetected ? currentState.modelFailed : false,
-      ...stateUpdates,
+      iteration: stateUpdates.iteration ?? currentState.iteration,
+      phase: stateUpdates.phase,
+      auditCount: stateUpdates.auditCount,
+      lastAuditResult: stateUpdates.lastAuditResult,
+      resetError: !assistantErrorDetected && currentState.errorCount > 0,
     })
 
     const nextIteration = stateUpdates.iteration ?? currentState.iteration
@@ -619,21 +637,17 @@ export function createLoopEventHandler(
       return
     }
 
-    let assistantErrorDetected = false
-    if (currentState.completionSignal) {
-      const { text: textContent, error: assistantError, lastMessageRole } = await getLastAssistantInfo(currentState.sessionId, currentState.worktreeDir)
-      if (lastMessageRole !== 'assistant') {
-        logger.error(`Loop: assistant message not found in coding phase (last message: ${lastMessageRole}), session may not have responded yet`)
-        return
-      }
-
-      const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantError, 'coding')
-      if (!errorResult) return
-      assistantErrorDetected = errorResult.assistantErrorDetected
-      currentState = errorResult.currentState
-
-      if (await checkCompletionAndTerminate(loopName, currentState, textContent, currentState.auditCount ?? 0)) return
+    const { error: assistantError, lastMessageRole } =
+      await getLastAssistantInfo(currentState.sessionId, currentState.worktreeDir)
+    if (lastMessageRole !== 'assistant') {
+      logger.error(`Loop: assistant message not found in coding phase (last message: ${lastMessageRole}), session may not have responded yet`)
+      return
     }
+
+    const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantError, 'coding')
+    if (!errorResult) return
+    const assistantErrorDetected = errorResult.assistantErrorDetected
+    currentState = errorResult.currentState
 
     currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'coding')
 
@@ -642,60 +656,45 @@ export function createLoopEventHandler(
       return
     }
 
-    if (currentState.audit) {
-      loopService.setState(loopName, { ...currentState, phase: 'auditing', errorCount: 0 })
-      logger.log(`Loop iteration ${currentState.iteration ?? 0} complete, running auditor for session ${currentState.sessionId}`)
+    loopService.setPhaseAndResetError(loopName, 'auditing')
+    logger.log(`Loop iteration ${currentState.iteration ?? 0} complete, running auditor for session ${currentState.sessionId}`)
 
-      const currentConfig = getConfig()
-      const auditorModel = resolveLoopAuditorModel(currentConfig, loopService, loopName, logger)
-      
-      const auditPrompt = {
-        sessionID: currentState.sessionId,
-        directory: currentState.worktreeDir,
-        parts: [{
-          type: 'subtask' as const,
-          agent: 'auditor',
-          description: `Post-iteration ${currentState.iteration} code review`,
-          prompt: loopService.buildAuditPrompt(currentState),
-          ...(auditorModel ? { model: auditorModel } : {}),
-        }],
-      }
+    const currentConfig = getConfig()
+    const auditorModel = resolveLoopAuditorModel(currentConfig, loopService, loopName, logger)
+    
+    const auditPrompt = {
+      sessionID: currentState.sessionId,
+      directory: currentState.worktreeDir,
+      parts: [{
+        type: 'subtask' as const,
+        agent: 'auditor',
+        description: `Post-iteration ${currentState.iteration} code review`,
+        prompt: loopService.buildAuditPrompt(currentState),
+        ...(auditorModel ? { model: auditorModel } : {}),
+      }],
+    }
 
-      const promptResult = await v2Client.session.promptAsync(auditPrompt)
+    const promptResult = await v2Client.session.promptAsync(auditPrompt)
 
-      if (promptResult.error) {
-        const retryFn = async () => {
-          const result = await v2Client.session.promptAsync(auditPrompt)
-          if (result.error) {
-            throw result.error
-          }
+    if (promptResult.error) {
+      const retryFn = async () => {
+        const result = await v2Client.session.promptAsync(auditPrompt)
+        if (result.error) {
+          throw result.error
         }
-        await handlePromptError(loopName, { ...currentState, phase: 'coding' }, 'failed to send audit prompt', promptResult.error, retryFn)
-        return
       }
-
-      const modelSource = currentState.auditorModel
-        ? `loop state override: ${currentState.auditorModel}`
-        : currentConfig.auditorModel
-          ? `config.auditorModel: ${currentConfig.auditorModel}`
-          : 'default fallback'
-      logger.log(`auditor using model: ${modelSource}`)
-
-      consecutiveStalls.set(loopName, 0)
+      await handlePromptError(loopName, { ...currentState, phase: 'coding' }, 'failed to send audit prompt', promptResult.error, retryFn)
       return
     }
 
-    const nextIteration = (currentState.iteration ?? 0) + 1
-    const continuationPrompt = loopService.buildContinuationPrompt({ ...currentState, iteration: nextIteration })
+    const modelSource = currentState.auditorModel
+      ? `loop state override: ${currentState.auditorModel}`
+      : currentConfig.auditorModel
+        ? `config.auditorModel: ${currentConfig.auditorModel}`
+        : 'default fallback'
+    logger.log(`auditor using model: ${modelSource}`)
 
-    await rotateAndSendContinuation(
-      loopName,
-      currentState,
-      { iteration: nextIteration },
-      continuationPrompt,
-      assistantErrorDetected,
-      'coding phase',
-    )
+    consecutiveStalls.set(loopName, 0)
   }
 
   async function handleAuditingPhase(loopName: string, _state: LoopState): Promise<void> {
@@ -714,8 +713,32 @@ export function createLoopEventHandler(
     const { text: auditText, error: assistantError, lastMessageRole } = await getLastAssistantInfo(currentState.sessionId, currentState.worktreeDir)
 
     if (lastMessageRole !== 'assistant') {
-      logger.error(`Loop: assistant message not found in auditing phase (last message: ${lastMessageRole}), session may not have responded yet`)
+      const attempts = idleRetryAttempts.get(loopName) ?? 0
+      if (attempts >= MAX_IDLE_RETRIES) {
+        logger.error(`Loop: auditing phase retry exhausted for ${loopName} (last message: ${lastMessageRole})`)
+        idleRetryAttempts.delete(loopName)
+        return
+      }
+      logger.log(`Loop: auditing idle without assistant message (last=${lastMessageRole}), retrying in ${IDLE_RETRY_DELAY_MS}ms (attempt ${attempts + 1}/${MAX_IDLE_RETRIES})`)
+      idleRetryAttempts.set(loopName, attempts + 1)
+      const t = setTimeout(() => {
+        void withStateLock(loopName, async () => {
+          const fresh = loopService.getActiveState(loopName)
+          if (!fresh?.active || fresh.phase !== 'auditing') return
+          await handleAuditingPhase(loopName, fresh)
+        })
+      }, IDLE_RETRY_DELAY_MS)
+      idleRetryTimeouts.set(loopName, t)
       return
+    }
+    
+    const pending = idleRetryTimeouts.get(loopName)
+    if (pending) {
+      clearTimeout(pending)
+      idleRetryTimeouts.delete(loopName)
+    }
+    if (idleRetryAttempts.has(loopName)) {
+      idleRetryAttempts.delete(loopName)
     }
 
     const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantError, 'auditing')
@@ -725,37 +748,60 @@ export function createLoopEventHandler(
 
     currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'auditing')
 
-    const nextIteration = (currentState.iteration ?? 0) + 1
-    const newAuditCount = (currentState.auditCount ?? 0) + 1
-    logger.log(`Loop audit ${newAuditCount} at iteration ${currentState.iteration ?? 0}`)
+    // Only increment audit count and check termination if the audit was successful (no error)
+    if (!assistantErrorDetected) {
+      const newAuditCount = (currentState.auditCount ?? 0) + 1
+      logger.log(`Loop audit ${newAuditCount} at iteration ${currentState.iteration ?? 0}`)
 
-    const auditFindings = auditText ?? undefined
+      // Check clear first
+      const candidateState = { ...currentState, auditCount: newAuditCount }
+      if (await checkAuditClearAndTerminate(loopName, candidateState)) return
 
-    if (await checkCompletionAndTerminate(loopName, currentState, auditText, newAuditCount)) return
+      const nextIteration = (currentState.iteration ?? 0) + 1
+      if ((currentState.maxIterations ?? 0) > 0 && nextIteration > (currentState.maxIterations ?? 0)) {
+        await terminateLoop(loopName, currentState, 'max_iterations')
+        return
+      }
 
-    if ((currentState.maxIterations ?? 0) > 0 && nextIteration > (currentState.maxIterations ?? 0)) {
-      await terminateLoop(loopName, currentState, 'max_iterations')
-      return
+      const continuationPrompt = loopService.buildContinuationPrompt(
+        { ...currentState, iteration: nextIteration },
+        auditText ?? undefined,
+      )
+
+      await rotateAndSendContinuation(
+        loopName,
+        currentState,
+        {
+          iteration: nextIteration,
+          phase: 'coding',
+          lastAuditResult: auditText ?? undefined,
+          auditCount: newAuditCount,
+        },
+        continuationPrompt,
+        assistantErrorDetected,
+        'coding continuation',
+      )
+    } else {
+      logger.log(`Loop: audit error detected, continuing without incrementing audit count`)
+      const nextIteration = (currentState.iteration ?? 0) + 1
+      const continuationPrompt = loopService.buildContinuationPrompt(
+        { ...currentState, iteration: nextIteration },
+        auditText ?? undefined,
+      )
+      await rotateAndSendContinuation(
+        loopName,
+        currentState,
+        {
+          iteration: nextIteration,
+          phase: 'coding',
+          lastAuditResult: auditText ?? undefined,
+          auditCount: currentState.auditCount ?? 0,
+        },
+        continuationPrompt,
+        assistantErrorDetected,
+        'coding continuation',
+      )
     }
-
-    const continuationPrompt = loopService.buildContinuationPrompt(
-      { ...currentState, iteration: nextIteration },
-      auditFindings,
-    )
-
-    await rotateAndSendContinuation(
-      loopName,
-      currentState,
-      {
-        iteration: nextIteration,
-        phase: 'coding',
-        lastAuditResult: auditFindings,
-        auditCount: newAuditCount,
-      },
-      continuationPrompt,
-      assistantErrorDetected,
-      'coding continuation',
-    )
   }
 
   async function onEvent(input: { event: { type: string; properties?: Record<string, unknown> } }): Promise<void> {
@@ -804,7 +850,7 @@ export function createLoopEventHandler(
         const isModelError = /provider|auth|model|api\s*error/i.test(errorMessage)
         if (isModelError && !state.modelFailed) {
           logger.log(`Loop: marking model as failed, will fall back to default on next iteration`)
-          loopService.setState(loopName, { ...state, modelFailed: true })
+          loopService.setModelFailed(loopName, true)
         }
       }
       return
@@ -860,6 +906,11 @@ export function createLoopEventHandler(
       clearTimeout(timeout)
       retryTimeouts.delete(worktreeName)
     }
+    for (const [worktreeName, timeout] of idleRetryTimeouts.entries()) {
+      clearTimeout(timeout)
+      idleRetryTimeouts.delete(worktreeName)
+    }
+    idleRetryAttempts.clear()
     for (const [worktreeName, interval] of stallWatchdogs.entries()) {
       clearInterval(interval)
       stallWatchdogs.delete(worktreeName)

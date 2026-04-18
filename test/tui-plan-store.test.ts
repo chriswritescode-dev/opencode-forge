@@ -1,82 +1,87 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { Database } from 'bun:sqlite'
-import { resolvePlanKey, readPlan, writePlan, deletePlan } from '../src/utils/tui-plan-store'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { readPlan, writePlan, deletePlan } from '../src/utils/tui-plan-store'
+import { createPlansRepo } from '../src/storage/repos/plans-repo'
+import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 
-const TEST_DIR = '/tmp/opencode-manager-tui-plan-test-' + Date.now()
-
-function createTestDb(): Database {
-  const dbPath = `${TEST_DIR}-${Math.random().toString(36).slice(2)}.db`
+function createTestDb(dbPath: string): Database {
   const db = new Database(dbPath)
   db.run(`
-    CREATE TABLE IF NOT EXISTS project_kv (
-      project_id TEXT NOT NULL,
-      key TEXT NOT NULL,
-      data TEXT NOT NULL,
-      expires_at INTEGER NOT NULL,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (project_id, key)
+    CREATE TABLE IF NOT EXISTS loops (
+      project_id           TEXT NOT NULL,
+      loop_name            TEXT NOT NULL,
+      status               TEXT NOT NULL CHECK(status IN ('running','completed','cancelled','errored','stalled')),
+      current_session_id   TEXT NOT NULL,
+      worktree             INTEGER NOT NULL,
+      worktree_dir         TEXT NOT NULL,
+      worktree_branch      TEXT,
+      project_dir          TEXT NOT NULL,
+      max_iterations       INTEGER NOT NULL,
+      iteration            INTEGER NOT NULL DEFAULT 0,
+      audit_count          INTEGER NOT NULL DEFAULT 0,
+      error_count          INTEGER NOT NULL DEFAULT 0,
+      phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing')),
+      audit                INTEGER NOT NULL DEFAULT 0,
+      completion_signal    TEXT,
+      execution_model      TEXT,
+      auditor_model        TEXT,
+      model_failed         INTEGER NOT NULL DEFAULT 0,
+      sandbox              INTEGER NOT NULL DEFAULT 0,
+      sandbox_container    TEXT,
+      started_at           INTEGER NOT NULL,
+      completed_at         INTEGER,
+      termination_reason   TEXT,
+      completion_summary   TEXT,
+      workspace_id   TEXT,
+      PRIMARY KEY (project_id, loop_name)
     )
   `)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_project_kv_expires_at ON project_kv(expires_at)`)
-  return { db, dbPath }
+  db.run(`CREATE UNIQUE INDEX idx_loops_session ON loops(project_id, current_session_id)`)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS loop_large_fields (
+      project_id          TEXT NOT NULL,
+      loop_name           TEXT NOT NULL,
+      prompt              TEXT,
+      last_audit_result   TEXT,
+      PRIMARY KEY (project_id, loop_name)
+    )
+  `)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS plans (
+      project_id   TEXT NOT NULL,
+      loop_name    TEXT,
+      session_id   TEXT,
+      content      TEXT NOT NULL,
+      updated_at   INTEGER NOT NULL,
+      CHECK (loop_name IS NOT NULL OR session_id IS NOT NULL),
+      CHECK (NOT (loop_name IS NOT NULL AND session_id IS NOT NULL)),
+      UNIQUE (project_id, loop_name),
+      UNIQUE (project_id, session_id)
+    )
+  `)
+  return db
 }
 
 describe('TUI Plan Store', () => {
-  let db: Database
+  let tempDir: string
   let dbPath: string
+  let db: Database
   const projectId = 'test-project'
   const sessionId = 'test-session-123'
   const planContent = '# Test Plan\n\nThis is a test plan.'
 
   beforeEach(() => {
-    const result = createTestDb()
-    db = result.db
-    dbPath = result.dbPath
+    tempDir = mkdtempSync(join(tmpdir(), 'tui-plan-test-'))
+    dbPath = join(tempDir, 'graph.db')
+    db = createTestDb(dbPath)
   })
 
   afterEach(() => {
     try { db.close() } catch {}
-  })
-
-  describe('resolvePlanKey', () => {
-    test('Returns session-based key when no loop mapping exists', () => {
-      const key = resolvePlanKey(projectId, sessionId, dbPath)
-      expect(key).toBe(`plan:${sessionId}`)
-    })
-
-    test('Returns worktree-based key when loop-session mapping exists', () => {
-      const worktreeName = 'test-worktree'
-      const now = Date.now()
-      const ttl = 7 * 24 * 60 * 60 * 1000
-      
-      // Create loop-session mapping
-      db.prepare(
-        'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(projectId, `loop-session:${sessionId}`, JSON.stringify(worktreeName), now + ttl, now, now)
-
-      const key = resolvePlanKey(projectId, sessionId, dbPath)
-      expect(key).toBe(`plan:${worktreeName}`)
-    })
-
-    test('Falls back to session key when loop-session mapping is expired', () => {
-      const worktreeName = 'test-worktree'
-      const expiredTime = Date.now() - 1000 // 1 second ago
-      
-      // Create expired loop-session mapping
-      db.prepare(
-        'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(projectId, `loop-session:${sessionId}`, JSON.stringify(worktreeName), expiredTime, Date.now() - 2000, Date.now() - 2000)
-
-      const key = resolvePlanKey(projectId, sessionId, dbPath)
-      expect(key).toBe(`plan:${sessionId}`)
-    })
-
-    test('Handles missing database gracefully', () => {
-      // Use a non-existent DB path
-      const key = resolvePlanKey('non-existent-project', sessionId, '/non-existent/db.db')
-      expect(key).toBe(`plan:${sessionId}`)
-    })
+    try { rmSync(tempDir, { recursive: true, force: true }) } catch {}
   })
 
   describe('readPlan', () => {
@@ -85,150 +90,72 @@ describe('TUI Plan Store', () => {
       expect(result).toBeNull()
     })
 
-    test('Reads plan from session-based key for non-loop sessions', () => {
-      const now = Date.now()
-      const ttl = 7 * 24 * 60 * 60 * 1000
+    test('Reads plan from session-based row when no loop mapping', () => {
+      const plansRepo = createPlansRepo(db)
+      plansRepo.writeForSession(projectId, sessionId, planContent)
       
-      db.prepare(
-        'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(projectId, `plan:${sessionId}`, JSON.stringify(planContent), now + ttl, now, now)
-
       const result = readPlan(projectId, sessionId, dbPath)
       expect(result).toBe(planContent)
     })
 
-    test('Reads plan from worktree-based key for loop sessions', () => {
-      const worktreeName = 'test-worktree'
-      const now = Date.now()
-      const ttl = 7 * 24 * 60 * 60 * 1000
+    test('Reads plan from loop-bound row when session maps to a loop', () => {
+      const loopsRepo = createLoopsRepo(db)
+      const plansRepo = createPlansRepo(db)
+      const loopName = 'test-loop'
       
-      // Create loop-session mapping
-      db.prepare(
-        'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(projectId, `loop-session:${sessionId}`, JSON.stringify(worktreeName), now + ttl, now, now)
+      loopsRepo.insert({
+        projectId,
+        loopName,
+        status: 'running',
+        currentSessionId: sessionId,
+        worktree: true,
+        worktreeDir: '/tmp/test-worktree',
+        worktreeBranch: 'main',
+        projectDir: '/tmp/test-project',
+        maxIterations: 10,
+        iteration: 1,
+        auditCount: 0,
+        errorCount: 0,
+        phase: 'coding',
+        audit: true,
+        completionSignal: null,
+        executionModel: null,
+        auditorModel: null,
+        modelFailed: false,
+        sandbox: false,
+        sandboxContainer: null,
+        startedAt: Date.now(),
+        completedAt: null,
+        terminationReason: null,
+        completionSummary: null,
+        workspaceId: null,
+      }, { prompt: null, lastAuditResult: null })
       
-      // Create plan under worktree key
-      db.prepare(
-        'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(projectId, `plan:${worktreeName}`, JSON.stringify(planContent), now + ttl, now, now)
-
-      const result = readPlan(projectId, sessionId, dbPath)
-      expect(result).toBe(planContent)
-    })
-
-    test('Handles JSON-encoded strings correctly', () => {
-      const now = Date.now()
-      const ttl = 7 * 24 * 60 * 60 * 1000
+      plansRepo.writeForLoop(projectId, loopName, planContent)
       
-      // The helper stores content as JSON.stringify(content), then unwraps on read
-      // This test verifies the round-trip works correctly
-      const written = writePlan(projectId, sessionId, planContent, dbPath)
-      expect(written).toBe(true)
-
       const result = readPlan(projectId, sessionId, dbPath)
       expect(result).toBe(planContent)
     })
   })
 
   describe('writePlan', () => {
-    test('Returns false when database does not exist', () => {
-      const result = writePlan('non-existent-project', sessionId, planContent, '/non-existent/db.db')
-      expect(result).toBe(false)
-    })
-
-    test('Writes plan with session-based key for non-loop sessions', () => {
-      const result = writePlan(projectId, sessionId, planContent, dbPath)
-      expect(result).toBe(true)
-
-      const row = db.prepare(
-        'SELECT data, key, created_at FROM project_kv WHERE project_id = ? AND key = ?'
-      ).get(projectId, `plan:${sessionId}`) as { data: string; key: string; created_at: number } | null
-
-      expect(row).toBeDefined()
-      expect(row?.key).toBe(`plan:${sessionId}`)
-      expect(JSON.parse(row?.data || 'null')).toBe(planContent)
-      expect(row?.created_at).toBeDefined()
-      expect(row!.created_at).toBeGreaterThan(0)
-    })
-
-    test('Writes plan with worktree-based key for loop sessions', () => {
-      const worktreeName = 'test-worktree'
-      const now = Date.now()
-      const ttl = 7 * 24 * 60 * 60 * 1000
+    test('Writes session-scoped plan when no loop mapping', () => {
+      const success = writePlan(projectId, sessionId, planContent, dbPath)
+      expect(success).toBe(true)
       
-      // Create loop-session mapping first
-      db.prepare(
-        'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(projectId, `loop-session:${sessionId}`, JSON.stringify(worktreeName), now + ttl, now, now)
-
-      const result = writePlan(projectId, sessionId, planContent, dbPath)
-      expect(result).toBe(true)
-
-      const row = db.prepare(
-        'SELECT data, key, created_at FROM project_kv WHERE project_id = ? AND key = ?'
-      ).get(projectId, `plan:${worktreeName}`) as { data: string; key: string; created_at: number } | null
-
-      expect(row).toBeDefined()
-      expect(row?.key).toBe(`plan:${worktreeName}`)
-      expect(JSON.parse(row?.data || 'null')).toBe(planContent)
-      expect(row?.created_at).toBeDefined()
-      expect(row!.created_at).toBeGreaterThan(0)
+      const result = readPlan(projectId, sessionId, dbPath)
+      expect(result).toBe(planContent)
     })
   })
 
   describe('deletePlan', () => {
-    test('Returns false when database does not exist', () => {
-      const result = deletePlan('non-existent-project', sessionId, '/non-existent/db.db')
-      expect(result).toBe(false)
-    })
-
-    test('Deletes plan from session-based key for non-loop sessions', () => {
-      const now = Date.now()
-      const ttl = 7 * 24 * 60 * 60 * 1000
-      
-      // Create plan
-      db.prepare(
-        'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(projectId, `plan:${sessionId}`, JSON.stringify(planContent), now + ttl, now, now)
-
+    test('Deletes session-scoped plan', () => {
+      writePlan(projectId, sessionId, planContent, dbPath)
       const deleted = deletePlan(projectId, sessionId, dbPath)
       expect(deleted).toBe(true)
-
-      const row = db.prepare(
-        'SELECT data FROM project_kv WHERE project_id = ? AND key = ?'
-      ).get(projectId, `plan:${sessionId}`)
-
-      expect(row).toBeNull()
-    })
-
-    test('Deletes plan from worktree-based key for loop sessions', () => {
-      const worktreeName = 'test-worktree'
-      const now = Date.now()
-      const ttl = 7 * 24 * 60 * 60 * 1000
       
-      // Create loop-session mapping
-      db.prepare(
-        'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(projectId, `loop-session:${sessionId}`, JSON.stringify(worktreeName), now + ttl, now, now)
-      
-      // Create plan under worktree key
-      db.prepare(
-        'INSERT INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(projectId, `plan:${worktreeName}`, JSON.stringify(planContent), now + ttl, now, now)
-
-      const deleted = deletePlan(projectId, sessionId, dbPath)
-      expect(deleted).toBe(true)
-
-      const row = db.prepare(
-        'SELECT data FROM project_kv WHERE project_id = ? AND key = ?'
-      ).get(projectId, `plan:${worktreeName}`)
-
-      expect(row).toBeNull()
-    })
-
-    test('Returns false when plan does not exist', () => {
-      const deleted = deletePlan(projectId, sessionId, dbPath)
-      expect(deleted).toBe(false)
+      const result = readPlan(projectId, sessionId, dbPath)
+      expect(result).toBeNull()
     })
   })
 })

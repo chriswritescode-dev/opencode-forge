@@ -26,6 +26,7 @@ export type LoopInfo = {
   worktreeDir?: string
   executionModel?: string
   auditorModel?: string
+  workspaceId?: string
 }
 
 /**
@@ -37,7 +38,7 @@ export function getDbPath(): string {
 }
 
 /**
- * Reads loop states from the shared KV store.
+ * Reads loop states from the loops table.
  * 
  * @param projectId - The project ID (git commit hash)
  * @param dbPathOverride - Optional database path override (for testing)
@@ -51,32 +52,63 @@ export function readLoopStates(projectId: string, dbPathOverride?: string): Loop
   let db: Database | null = null
   try {
     db = new Database(dbPath, { readonly: true })
-    const now = Date.now()
-    const stmt = db.prepare('SELECT key, data FROM project_kv WHERE project_id = ? AND key LIKE ? AND expires_at > ?')
-    const rows = stmt.all(projectId, 'loop:%', now) as Array<{ key: string; data: string }>
+    const stmt = db.prepare(`
+      SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir,
+             worktree_branch, project_dir, max_iterations, iteration, audit_count,
+             error_count, phase, audit, completion_signal, execution_model, auditor_model,
+             model_failed, sandbox, sandbox_container, started_at, completed_at,
+             termination_reason, completion_summary, workspace_id
+      FROM loops
+      WHERE project_id = ?
+      ORDER BY started_at DESC
+    `)
+    const rows = stmt.all(projectId) as Array<{
+      project_id: string
+      loop_name: string
+      status: string
+      current_session_id: string
+      worktree: number
+      worktree_dir: string
+      worktree_branch: string | null
+      project_dir: string
+      max_iterations: number
+      iteration: number
+      audit_count: number
+      error_count: number
+      phase: string
+      audit: number
+      completion_signal: string | null
+      execution_model: string | null
+      auditor_model: string | null
+      model_failed: number
+      sandbox: number
+      sandbox_container: string | null
+      started_at: number
+      completed_at: number | null
+      termination_reason: string | null
+      completion_summary: string | null
+      workspace_id: string | null
+    }>
     
     const loops: LoopInfo[] = []
     for (const row of rows) {
-      try {
-        const state = JSON.parse(row.data)
-        if (!state.loopName || !state.sessionId) continue
-        loops.push({
-          name: state.loopName,
-          phase: state.phase ?? 'coding',
-          iteration: state.iteration ?? 0,
-          maxIterations: state.maxIterations ?? 0,
-          sessionId: state.sessionId,
-          active: state.active ?? false,
-          startedAt: state.startedAt,
-          completedAt: state.completedAt,
-          terminationReason: state.terminationReason,
-          worktreeBranch: state.worktreeBranch,
-          worktree: state.worktree ?? false,
-          worktreeDir: state.worktreeDir,
-          executionModel: state.executionModel,
-          auditorModel: state.auditorModel,
-        })
-      } catch {}
+      loops.push({
+        name: row.loop_name,
+        phase: row.phase as 'coding' | 'auditing',
+        iteration: row.iteration,
+        maxIterations: row.max_iterations,
+        sessionId: row.current_session_id,
+        active: row.status === 'running',
+        startedAt: new Date(row.started_at).toISOString(),
+        completedAt: row.completed_at ? new Date(row.completed_at).toISOString() : undefined,
+        terminationReason: row.termination_reason ?? undefined,
+        worktreeBranch: row.worktree_branch ?? undefined,
+        worktree: row.worktree === 1,
+        worktreeDir: row.worktree_dir,
+        executionModel: row.execution_model ?? undefined,
+        auditorModel: row.auditor_model ?? undefined,
+        workspaceId: row.workspace_id ?? undefined,
+      })
     }
     return loops
   } catch {
@@ -103,31 +135,60 @@ export function readLoopByName(projectId: string, loopName: string, dbPathOverri
   let db: Database | null = null
   try {
     db = new Database(dbPath, { readonly: true })
-    const now = Date.now()
-    const key = `loop:${loopName}`
-    const row = db.prepare('SELECT data FROM project_kv WHERE project_id = ? AND key = ? AND expires_at > ?')
-      .get(projectId, key, now) as { data: string } | null
+    const row = db.prepare(`
+      SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir,
+             worktree_branch, project_dir, max_iterations, iteration, audit_count,
+             error_count, phase, audit, completion_signal, execution_model, auditor_model,
+             model_failed, sandbox, sandbox_container, started_at, completed_at,
+             termination_reason, completion_summary, workspace_id
+      FROM loops
+      WHERE project_id = ? AND loop_name = ?
+    `).get(projectId, loopName) as {
+      project_id: string
+      loop_name: string
+      status: string
+      current_session_id: string
+      worktree: number
+      worktree_dir: string
+      worktree_branch: string | null
+      project_dir: string
+      max_iterations: number
+      iteration: number
+      audit_count: number
+      error_count: number
+      phase: string
+      audit: number
+      completion_signal: string | null
+      execution_model: string | null
+      auditor_model: string | null
+      model_failed: number
+      sandbox: number
+      sandbox_container: string | null
+      started_at: number
+      completed_at: number | null
+      termination_reason: string | null
+      completion_summary: string | null
+      workspace_id: string | null
+    } | null
     
     if (!row) return null
     
-    const state = JSON.parse(row.data)
-    if (!state.loopName || !state.sessionId) return null
-    
     return {
-      name: state.loopName,
-      phase: state.phase ?? 'coding',
-      iteration: state.iteration ?? 0,
-      maxIterations: state.maxIterations ?? 0,
-      sessionId: state.sessionId,
-      active: state.active ?? false,
-      startedAt: state.startedAt,
-      completedAt: state.completedAt,
-      terminationReason: state.terminationReason,
-      worktreeBranch: state.worktreeBranch,
-      worktree: state.worktree ?? false,
-      worktreeDir: state.worktreeDir,
-      executionModel: state.executionModel,
-      auditorModel: state.auditorModel,
+      name: row.loop_name,
+      phase: row.phase as 'coding' | 'auditing',
+      iteration: row.iteration,
+      maxIterations: row.max_iterations,
+      sessionId: row.current_session_id,
+      active: row.status === 'running',
+      startedAt: new Date(row.started_at).toISOString(),
+      completedAt: row.completed_at ? new Date(row.completed_at).toISOString() : undefined,
+      terminationReason: row.termination_reason ?? undefined,
+      worktreeBranch: row.worktree_branch ?? undefined,
+      worktree: row.worktree === 1,
+      worktreeDir: row.worktree_dir,
+      executionModel: row.execution_model ?? undefined,
+      auditorModel: row.auditor_model ?? undefined,
+      workspaceId: row.workspace_id ?? undefined,
     }
   } catch {
     return null

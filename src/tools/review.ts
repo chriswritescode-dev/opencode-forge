@@ -5,7 +5,7 @@ import { injectBranchField } from '../utils/git-branch'
 const z = tool.schema
 
 export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
-  const { kvService, projectId, logger, loopService } = ctx
+  const { reviewFindingsRepo, projectId, logger, loopService } = ctx
 
   return {
     'review-write': tool({
@@ -19,22 +19,25 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         status: z.string().default('open').describe('The status of the finding (default: "open")'),
       },
       execute: async (args) => {
-        const key = `review-finding:${args.file}:${args.line}`
-        const value = {
-          severity: args.severity,
+        const row = {
+          projectId,
           file: args.file,
           line: args.line,
+          severity: args.severity,
           description: args.description,
           scenario: args.scenario,
-          status: args.status,
-          date: new Date().toISOString().split('T')[0],
+          branch: null as string | null,
         }
 
-        injectBranchField(value, ctx.directory, loopService)
+        injectBranchField(row, ctx.directory, loopService)
 
-        kvService.set(projectId, key, value)
-        logger.log(`review-write: stored finding at ${args.file}:${args.line} (${args.severity})`)
+        const result = reviewFindingsRepo.write(row)
+        if (!result.ok && result.conflict) {
+          logger.log(`review-write: finding already exists at ${args.file}:${args.line}`)
+          return `Finding already exists at ${args.file}:${args.line}. Only review-delete (auditor only) can remove an existing finding.`
+        }
         
+        logger.log(`review-write: stored finding at ${args.file}:${args.line} (${args.severity})`)
         return `Stored review finding at ${args.file}:${args.line} (${args.severity})`
       },
     }),
@@ -46,10 +49,10 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         pattern: z.string().optional().describe('Regex pattern to search across findings'),
       },
       execute: async (args) => {
-        let findings = kvService.listByPrefix(projectId, 'review-finding:')
+        let findings = reviewFindingsRepo.listAll(projectId)
 
         if (args.file) {
-          findings = findings.filter((f) => f.key.startsWith(`review-finding:${args.file}:`))
+          findings = findings.filter((f) => f.file === args.file)
         }
 
         if (args.pattern) {
@@ -62,9 +65,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
 
           const matchedFindings = []
           for (const finding of findings) {
-            const valueStr = typeof finding.data === 'string' 
-              ? finding.data 
-              : JSON.stringify(finding.data, null, 2)
+            const valueStr = `${finding.description} ${finding.scenario}`
             if (regex.test(valueStr)) {
               matchedFindings.push(finding)
             }
@@ -77,8 +78,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         }
 
         const formatted = findings.map((f) => {
-          const data = f.data as Record<string, unknown>
-          return `- **${f.key}**\n  - Severity: ${String(data.severity)}\n  - File: ${String(data.file)}:${Number(data.line)}\n  - Description: ${String(data.description)}\n  - Scenario: ${String(data.scenario)}\n  - Status: ${String(data.status)}\n  - Branch: ${String(data.branch || 'N/A')}`
+          return `- **${f.file}:${f.line}**\n  - Severity: ${f.severity}\n  - File: ${f.file}:${f.line}\n  - Description: ${f.description}\n  - Scenario: ${f.scenario}\n  - Branch: ${f.branch || 'N/A'}`
         })
 
         logger.log(`review-read: found ${findings.length} findings`)
@@ -93,8 +93,10 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         line: z.number().describe('The line number of the finding to delete'),
       },
       execute: async (args) => {
-        const key = `review-finding:${args.file}:${args.line}`
-        kvService.delete(projectId, key)
+        const deleted = reviewFindingsRepo.delete(projectId, args.file, args.line)
+        if (!deleted) {
+          return `No review finding found at ${args.file}:${args.line}`
+        }
         logger.log(`review-delete: deleted finding at ${args.file}:${args.line}`)
         return `Deleted review finding at ${args.file}:${args.line}`
       },

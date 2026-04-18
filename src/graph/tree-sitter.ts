@@ -81,6 +81,9 @@ const QUERIES: Record<string, string> = {
     (type_alias_declaration name: (type_identifier) @name) @type
     (lexical_declaration (variable_declarator name: (identifier) @name)) @var
     (import_statement source: (string) @source) @import
+    (call_expression
+      function: (import)
+      arguments: (arguments (string) @source)) @dynamic_import
     (export_statement) @export
   `,
   javascript: `
@@ -89,6 +92,9 @@ const QUERIES: Record<string, string> = {
     (method_definition name: (property_identifier) @name) @method
     (lexical_declaration (variable_declarator name: (identifier) @name)) @var
     (import_statement source: (string) @source) @import
+    (call_expression
+      function: (import)
+      arguments: (arguments (string) @source)) @dynamic_import
     (export_statement) @export
   `,
   python: `
@@ -356,7 +362,9 @@ export class TreeSitterBackend {
           if (patternCapture?.name === "import") {
             const node = patternCapture.node;
             const source = sourceCapture ? sourceCapture.node.text.replace(/['"]/g, "") : node.text;
-            const specifiers = extractImportSpecifiers(node, language);
+            // Check for top-level `import type` syntax
+            const hasTopLevelType = node.children.some(c => c?.type === 'type')
+            const { specifiers, allSpecifiersAreType } = extractImportSpecifiersWithTypes(node, language)
             const isDefault =
               specifiers.length > 0 &&
               node.text.includes("import ") &&
@@ -368,6 +376,28 @@ export class TreeSitterBackend {
               specifiers,
               isDefault,
               isNamespace,
+              isTypeOnly: hasTopLevelType || allSpecifiersAreType,
+              isDynamic: false,
+              location: {
+                file: absFile,
+                line: node.startPosition.row + 1,
+                column: node.startPosition.column + 1,
+                endLine: node.endPosition.row + 1,
+              },
+            });
+            continue;
+          }
+
+          if (patternCapture?.name === "dynamic_import") {
+            const node = patternCapture.node;
+            const source = sourceCapture ? sourceCapture.node.text.replace(/['"]/g, "") : node.text;
+            imports.push({
+              source,
+              specifiers: [],
+              isDefault: false,
+              isNamespace: false,
+              isTypeOnly: false,
+              isDynamic: true,
               location: {
                 file: absFile,
                 line: node.startPosition.row + 1,
@@ -780,30 +810,59 @@ export class TreeSitterBackend {
   }
 }
 
-function extractImportSpecifiers(node: TSNode, language: Language): string[] {
-  const specifiers: string[] = [];
-  collectSpecifiers(node, language, specifiers);
-  return specifiers;
+interface ImportSpecifiersResult {
+  specifiers: string[]
+  allSpecifiersAreType: boolean
 }
 
-function collectSpecifiers(node: TSNode, language: Language, out: string[]): void {
+function extractImportSpecifiersWithTypes(node: TSNode, language: Language): ImportSpecifiersResult {
+  const specifiers: string[] = [];
+  const state = { seenAnySpecifier: false, allSpecifiersAreType: true };
+  collectSpecifiersWithTypes(node, language, specifiers, state);
+  // allSpecifiersAreType is true only if we saw at least one specifier and all were type-only
+  return { specifiers, allSpecifiersAreType: state.seenAnySpecifier && state.allSpecifiersAreType };
+}
+
+function collectSpecifiersWithTypes(
+  node: TSNode,
+  language: Language,
+  out: string[],
+  state: { seenAnySpecifier: boolean; allSpecifiersAreType: boolean },
+): void {
   const type = node.type;
 
   if (language === "typescript" || language === "javascript") {
     if (type === "import_specifier") {
       const name = node.childForFieldName("name");
-      if (name) out.push(name.text);
+      if (name) {
+        // Check if this specifier has `type` prefix (e.g., `import { type Foo, bar }`)
+        // The first child being a 'type' keyword indicates a type-only specifier
+        const hasTypeKeyword = node.children[0]?.type === 'type'
+        const isTypeSpecifier = hasTypeKeyword
+        state.seenAnySpecifier = true
+        if (!isTypeSpecifier) {
+          out.push(name.text);
+          state.allSpecifiersAreType = false
+        }
+        // type-only specifiers are not added to out array, but we don't flip allSpecifiersAreType
+      }
       return;
     }
     if (type === "identifier" && node.parent?.type === "import_clause") {
       out.push(node.text);
+      state.seenAnySpecifier = true
+      state.allSpecifiersAreType = false
       return;
     }
     if (type === "namespace_import") {
       const name = node.namedChildren.find(
         (c: TSNode | null) => c != null && c.type === "identifier",
       );
-      if (name) out.push(name.text);
+      if (name) {
+        out.push(name.text);
+        state.seenAnySpecifier = true
+        state.allSpecifiersAreType = false
+      }
       return;
     }
   } else if (language === "python") {
@@ -812,7 +871,11 @@ function collectSpecifiers(node: TSNode, language: Language, out: string[]): voi
       if (name) {
         const text = name.text;
         const last = text.split(".").pop();
-        if (last) out.push(last);
+        if (last) {
+          out.push(last);
+          state.seenAnySpecifier = true
+          state.allSpecifiersAreType = false
+        }
       }
       return;
     }
@@ -820,13 +883,21 @@ function collectSpecifiers(node: TSNode, language: Language, out: string[]): voi
       const field = node.parent.childForFieldName("module_name");
       if (node !== field) {
         const last = node.text.split(".").pop();
-        if (last) out.push(last);
+        if (last) {
+          out.push(last);
+          state.seenAnySpecifier = true
+          state.allSpecifiersAreType = false
+        }
         return;
       }
     }
     if (type === "dotted_name" && node.parent?.type === "import_statement") {
       const last = node.text.split(".").pop();
-      if (last) out.push(last);
+      if (last) {
+        out.push(last);
+        state.seenAnySpecifier = true
+        state.allSpecifiersAreType = false
+      }
       return;
     }
   } else if (language === "rust") {
@@ -835,6 +906,8 @@ function collectSpecifiers(node: TSNode, language: Language, out: string[]): voi
       if (path) {
         const name = path.childForFieldName("name");
         out.push(name ? name.text : path.text);
+        state.seenAnySpecifier = true
+        state.allSpecifiersAreType = false
         return;
       }
     }
@@ -845,11 +918,17 @@ function collectSpecifiers(node: TSNode, language: Language, out: string[]): voi
         node.parent?.type === "use_declaration")
     ) {
       out.push(node.text);
+      state.seenAnySpecifier = true
+      state.allSpecifiersAreType = false
       return;
     }
     if (type === "scoped_identifier" && !node.parent?.type?.includes("use_list")) {
       const name = node.childForFieldName("name");
-      if (name) out.push(name.text);
+      if (name) {
+        out.push(name.text);
+        state.seenAnySpecifier = true
+        state.allSpecifiersAreType = false
+      }
       return;
     }
   } else if (language === "go") {
@@ -858,17 +937,27 @@ function collectSpecifiers(node: TSNode, language: Language, out: string[]): voi
       const path = node.childForFieldName("path");
       if (name && name.text !== ".") {
         out.push(name.text);
+        state.seenAnySpecifier = true
+        state.allSpecifiersAreType = false
       } else if (path) {
         const raw = path.text.replace(/['"]/g, "");
         const last = raw.split("/").pop();
-        if (last) out.push(last);
+        if (last) {
+          out.push(last);
+          state.seenAnySpecifier = true
+          state.allSpecifiersAreType = false
+        }
       }
       return;
     }
     if (type === "interpreted_string_literal") {
       const raw = node.text.replace(/['"]/g, "");
       const last = raw.split("/").pop();
-      if (last) out.push(last);
+      if (last) {
+        out.push(last);
+        state.seenAnySpecifier = true
+        state.allSpecifiersAreType = false
+      }
       return;
     }
   }
@@ -876,9 +965,11 @@ function collectSpecifiers(node: TSNode, language: Language, out: string[]): voi
   const childCount = node.namedChildCount;
   for (let i = 0; i < childCount; i++) {
     const child = node.namedChild(i);
-    if (child) collectSpecifiers(child, language, out);
+    if (child) collectSpecifiersWithTypes(child, language, out, state);
   }
 }
+
+
 
 function isPublicSymbol(
   name: string,

@@ -23,7 +23,7 @@ export const pendingBranchSnapshots = new Map<string, { cwd: string; branch: str
  * - Falls back to the plugin/project cwd
  * - Normalizes relative paths against the project root
  */
-export function resolveBashWorkdir(args: unknown, projectCwd: string): string {
+function resolveBashWorkdir(args: unknown, projectCwd: string): string {
   const workdirArg = (args as Record<string, unknown>)?.workdir as string | undefined
   
   if (workdirArg) {
@@ -92,7 +92,7 @@ export function isBranchChangeCommand(args: unknown): boolean {
  * - git checkout <path> (unambiguous file path without --)
  * Returns empty array if not a checkout file restore command.
  */
-export function extractCheckoutPaths(args: unknown, workdir: string): string[] {
+function extractCheckoutPaths(args: unknown, workdir: string): string[] {
   const command = ((args as Record<string, unknown>)?.command as string) || ''
   
   if (!command.trim()) {
@@ -139,7 +139,7 @@ export function extractCheckoutPaths(args: unknown, workdir: string): string[] {
  * Reads the current git HEAD revision (commit hash) from the resolved working directory using git.
  * Returns null when the directory is not a repo or the revision cannot be determined.
  */
-export function getCurrentHeadRef(workdir: string): string | null {
+function getCurrentHeadRef(workdir: string): string | null {
   try {
     const result = execFileSync('git', ['rev-parse', '--verify', 'HEAD'], {
       cwd: workdir,
@@ -157,7 +157,7 @@ export function getCurrentHeadRef(workdir: string): string | null {
  * Reads the current branch name from the resolved working directory using git.
  * Returns null when the directory is not a repo or the branch cannot be determined.
  */
-export function getCurrentBranch(workdir: string): string | null {
+function getCurrentBranch(workdir: string): string | null {
   try {
     const result = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
       cwd: workdir,
@@ -176,7 +176,7 @@ export function getCurrentBranch(workdir: string): string | null {
  * Uses git diff --name-only with the specified diff filter to detect additions, deletions, and modifications.
  * Returns an empty array if the refs are equal, invalid, or if git command fails.
  */
-export function getChangedPathsBetweenRefs(workdir: string, prevRef: string, nextRef: string): string[] {
+function getChangedPathsBetweenRefs(workdir: string, prevRef: string, nextRef: string): string[] {
   if (prevRef === nextRef) {
     return []
   }

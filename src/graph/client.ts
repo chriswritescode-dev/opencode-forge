@@ -151,9 +151,9 @@ export class GraphClient {
     return this.client.call<CalleeResult[]>('getCallees', [path, line])
   }
 
-  async getUnusedExports(limit = 20): Promise<UnusedExportResult[]> {
+  async getUnusedExports(limit = 20, includeInternalOnly = false): Promise<UnusedExportResult[]> {
     if (!this.client) throw new Error('Graph client not initialized')
-    return this.client.call<UnusedExportResult[]>('getUnusedExports', [limit])
+    return this.client.call<UnusedExportResult[]>('getUnusedExports', [limit, includeInternalOnly])
   }
 
   async getDuplicateStructures(limit = 20): Promise<DuplicateStructureResult[]> {

@@ -1,6 +1,7 @@
 import { test, expect, describe } from 'bun:test'
 import { createGraphTools } from '../src/tools/graph'
 import type { GraphService } from '../src/graph/service'
+import type { GraphStatusRepo } from '../src/storage/repos/graph-status-repo'
 
 // Mock graph service
 function createMockGraphService(): GraphService {
@@ -69,6 +70,10 @@ function createMockGraphService(): GraphService {
     ],
     render: async (opts) => ({ content: '// test', paths: ['test.ts'] }),
     onFileChanged: (path) => {},
+    getOrphanFiles: async (limit = 50) => [],
+    getCircularDependencies: async (limit = 50) => [],
+    getChangeImpact: async (file, limit = 50) => ({ direct: [], indirect: [], total: 0 }),
+    getSymbolReferences: async (path, line) => [],
   }
 }
 
@@ -222,7 +227,7 @@ describe('graph-status tool', () => {
 })
 
 describe('graph tools error state handling', () => {
-  test('graph-status should report error state from KV store', async () => {
+  test('graph-status should report error state from graphStatusRepo', async () => {
     const mockService = {
       ready: false,
       scan: async () => {},
@@ -230,28 +235,27 @@ describe('graph tools error state handling', () => {
       getStats: async () => ({ files: 0, symbols: 0, edges: 0, calls: 0 }),
     } as any
     
-    const mockKvService = {
-      get: (_projectId: string, key: string) => {
-        if (key === 'graph:status') {
-          return {
-            state: 'error',
-            message: 'Graph index incomplete: 5 files and 100 symbols indexed but 0 dependency edges generated',
-            stats: { files: 5, symbols: 100, edges: 0, calls: 0 },
-          }
+    const mockGraphStatusRepo = {
+      read: (projectId: string, cwd: string) => {
+        return {
+          state: 'error' as const,
+          ready: false,
+          stats: { files: 5, symbols: 100, edges: 0, calls: 0 },
+          message: 'Graph index incomplete: 5 files and 100 symbols indexed but 0 dependency edges generated',
+          updatedAt: Date.now(),
         }
-        return null
       },
     } as any
     
     const mockCtx = {
       graphService: mockService,
+      graphStatusRepo: mockGraphStatusRepo,
       logger: console as any,
       projectId: 'test',
       directory: '/test',
       config: {},
       db: {} as any,
       dataDir: '/test/data',
-      kvService: mockKvService,
       loopService: {} as any,
       loopHandler: {} as any,
       v2: {} as any,
@@ -271,32 +275,31 @@ describe('graph tools error state handling', () => {
     expect(result).toContain('Files: 5')
   })
 
-  test('graph-query should report error state from KV store', async () => {
+  test('graph-query should report error state from graphStatusRepo', async () => {
     const mockService = {
       ready: false,
     } as any
     
-    const mockKvService = {
-      get: (_projectId: string, key: string) => {
-        if (key === 'graph:status') {
-          return {
-            state: 'error',
-            message: 'Graph index incomplete: 5 files and 100 symbols indexed but 0 dependency edges generated',
-          }
+    const mockGraphStatusRepo = {
+      read: (projectId: string, cwd: string) => {
+        return {
+          state: 'error' as const,
+          ready: false,
+          message: 'Graph index incomplete: 5 files and 100 symbols indexed but 0 dependency edges generated',
+          updatedAt: Date.now(),
         }
-        return null
       },
     } as any
     
     const mockCtx = {
       graphService: mockService,
+      graphStatusRepo: mockGraphStatusRepo,
       logger: console as any,
       projectId: 'test',
       directory: '/test',
       config: {},
       db: {} as any,
       dataDir: '/test/data',
-      kvService: mockKvService,
       loopService: {} as any,
       loopHandler: {} as any,
       v2: {} as any,
@@ -320,19 +323,19 @@ describe('graph tools error state handling', () => {
       ready: false,
     } as any
     
-    const mockKvService = {
-      get: () => null,
+    const mockGraphStatusRepo = {
+      read: (projectId: string, cwd: string) => null,
     } as any
     
     const mockCtx = {
       graphService: mockService,
+      graphStatusRepo: mockGraphStatusRepo,
       logger: console as any,
       projectId: 'test',
       directory: '/test',
       config: {},
       db: {} as any,
       dataDir: '/test/data',
-      kvService: mockKvService,
       loopService: {} as any,
       loopHandler: {} as any,
       v2: {} as any,
@@ -350,32 +353,31 @@ describe('graph tools error state handling', () => {
     expect(result).toContain('Graph not indexed yet')
   })
 
-  test('graph-symbols should report error state from KV store', async () => {
+  test('graph-symbols should report error state from graphStatusRepo', async () => {
     const mockService = {
       ready: false,
     } as any
     
-    const mockKvService = {
-      get: (_projectId: string, key: string) => {
-        if (key === 'graph:status') {
-          return {
-            state: 'error',
-            message: 'Graph index incomplete: 5 files and 100 symbols indexed but 0 dependency edges generated',
-          }
+    const mockGraphStatusRepo = {
+      read: (projectId: string, cwd: string) => {
+        return {
+          state: 'error' as const,
+          ready: false,
+          message: 'Graph index incomplete: 5 files and 100 symbols indexed but 0 dependency edges generated',
+          updatedAt: Date.now(),
         }
-        return null
       },
     } as any
     
     const mockCtx = {
       graphService: mockService,
+      graphStatusRepo: mockGraphStatusRepo,
       logger: console as any,
       projectId: 'test',
       directory: '/test',
       config: {},
       db: {} as any,
       dataDir: '/test/data',
-      kvService: mockKvService,
       loopService: {} as any,
       loopHandler: {} as any,
       v2: {} as any,
@@ -400,19 +402,19 @@ describe('graph tools error state handling', () => {
       ready: false,
     } as any
     
-    const mockKvService = {
-      get: () => null,
+    const mockGraphStatusRepo = {
+      read: (projectId: string, cwd: string) => null,
     } as any
     
     const mockCtx = {
       graphService: mockService,
+      graphStatusRepo: mockGraphStatusRepo,
       logger: console as any,
       projectId: 'test',
       directory: '/test',
       config: {},
       db: {} as any,
       dataDir: '/test/data',
-      kvService: mockKvService,
       loopService: {} as any,
       loopHandler: {} as any,
       v2: {} as any,

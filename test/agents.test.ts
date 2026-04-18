@@ -123,8 +123,8 @@ describe('Agent definitions', () => {
 
     test('architect prompt includes pre-plan checkpoint instructions', () => {
       const prompt = architectAgent.systemPrompt
-      expect(prompt).toContain('Pre-plan checkpoint')
-      expect(prompt).toContain('findings/next-steps summary')
+      expect(prompt).toContain('Pre-plan approval')
+      expect(prompt).toContain('present a brief pre-plan summary')
       expect(prompt).toContain('Do NOT call `plan-write` until the user has approved writing the plan')
     })
 
@@ -141,7 +141,7 @@ describe('Agent definitions', () => {
     test('architect prompt includes pre-plan approval section', () => {
       const prompt = architectAgent.systemPrompt
       expect(prompt).toContain('## Pre-plan approval')
-      expect(prompt).toContain('present a brief findings/next-steps summary')
+      expect(prompt).toContain('present a brief pre-plan summary')
       expect(prompt).toContain('Should I write the implementation plan?')
     })
   })

@@ -2,12 +2,20 @@ import type { LoopState } from '../../services/loop'
 import { buildCompletionSignalInstructions } from '../../services/loop'
 import { buildLoopPermissionRuleset } from '../../constants/loop'
 import { agents } from '../../agents'
-import { openDatabase, confirm } from '../utils'
-import { findPartialMatch } from '../../utils/partial-match'
-import { createOpencodeClient } from '@opencode-ai/sdk/v2'
+import {
+  openDatabase,
+  confirm,
+  createOpencodeClientFromServer,
+  listLoopsFromDb,
+  resolveLoopByNameOrExit,
+  printBlock,
+} from '../utils'
+import { existsSync } from 'fs'
+import { join } from 'path'
+import { resolveDataDir } from '../../storage'
 import { loadPluginConfig } from '../../setup'
 
-export interface RestartArgs {
+interface RestartArgs {
   dbPath?: string
   resolvedProjectId?: string
   name?: string
@@ -15,106 +23,25 @@ export interface RestartArgs {
   server?: string
 }
 
-function createStatusClient(serverUrl: string, directory: string) {
-  const url = new URL(serverUrl)
-  const password = url.password || process.env['OPENCODE_SERVER_PASSWORD']
-  const cleanUrl = new URL(url.toString())
-  cleanUrl.username = ''
-  cleanUrl.password = ''
-  const clientConfig: Parameters<typeof createOpencodeClient>[0] = { baseUrl: cleanUrl.toString(), directory }
-  if (password) {
-    clientConfig.headers = {
-      Authorization: `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`,
-    }
-  }
-  return createOpencodeClient(clientConfig)
-}
-
 export async function run(argv: RestartArgs): Promise<void> {
   const db = openDatabase(argv.dbPath)
 
   try {
-    const projectId = argv.resolvedProjectId
-
-    const now = Date.now()
-    let query: string
-    let params: (string | number)[]
-
-    if (projectId) {
-      query = 'SELECT project_id, key, data FROM project_kv WHERE project_id = ? AND key LIKE ? AND expires_at > ?'
-      params = [projectId, 'loop:%', now]
-    } else {
-      query = 'SELECT project_id, key, data FROM project_kv WHERE key LIKE ? AND expires_at > ?'
-      params = ['loop:%', now]
-    }
-
-    let rows: Array<{ project_id: string; key: string; data: string }>
-    try {
-      rows = db.prepare(query).all(...params) as Array<{ project_id: string; key: string; data: string }>
-    } catch {
-      rows = []
-    }
-
-    if (rows.length === 0) {
-      console.log('')
-      console.log('No loops.')
-      console.log('')
-      return
-    }
-
-    const loops: Array<{ state: LoopState; row: { project_id: string; key: string; data: string } }> = []
-
-    for (const row of rows) {
-      try {
-        const state = JSON.parse(row.data) as LoopState
-        loops.push({ state, row })
-      } catch (err) {
-        console.error(`Failed to parse loop state for key ${row.key}:`, err)
-      }
-    }
+    const loops = listLoopsFromDb(db, argv.resolvedProjectId)
 
     if (loops.length === 0) {
-      console.log('')
-      console.log('No loops.')
-      console.log('')
+      printBlock('No loops.')
       return
     }
 
-    let loopToRestart: { state: LoopState; row: { project_id: string; key: string; data: string } } | undefined
+    let loopToRestart = argv.name
+      ? resolveLoopByNameOrExit(argv.name, loops)
+      : undefined
 
-    if (argv.name) {
-      const { match, candidates } = findPartialMatch(argv.name, loops, (l) => [
-        l.state.loopName,
-        l.state.worktreeBranch,
-      ])
-
-      if (!match && candidates.length > 0) {
-        console.error(`Multiple loops match '${argv.name}':`)
-        for (const c of candidates) {
-          console.error(`  - ${c.state.loopName}`)
-        }
-        console.error('')
-        process.exit(1)
-      }
-
-      if (!match && candidates.length === 0) {
-        console.error(`Loop not found: ${argv.name}`)
-        console.error('')
-        console.error('Available loops:')
-        for (const l of loops) {
-          console.error(`  - ${l.state.loopName}`)
-        }
-        console.error('')
-        process.exit(1)
-      }
-
-      loopToRestart = match!
-    } else {
+    if (!loopToRestart) {
       const restartableLoops = loops.filter((l) => l.state.active || (l.state.terminationReason && l.state.terminationReason !== 'completed'))
       if (restartableLoops.length === 0) {
-        console.log('')
-        console.log('No restartable loops found.')
-        console.log('')
+        printBlock('No restartable loops found.')
         return
       }
       if (restartableLoops.length === 1) {
@@ -133,33 +60,21 @@ export async function run(argv: RestartArgs): Promise<void> {
       }
     }
 
-    if (!loopToRestart) {
-      console.error('Internal error: loop not found')
-      process.exit(1)
-    }
-
     const { state, row } = loopToRestart
 
     if (state.terminationReason === 'completed') {
-      console.log('')
-      console.log(`Loop "${state.loopName}" completed successfully and cannot be restarted.`)
-      console.log('')
+      printBlock(`Loop "${state.loopName}" completed successfully and cannot be restarted.`)
       process.exit(1)
     }
 
     if (!state.worktreeDir) {
-      console.log('')
-      console.log(`Cannot restart "${state.loopName}": worktree directory is missing.`)
-      console.log('')
+      printBlock(`Cannot restart "${state.loopName}": worktree directory is missing.`)
       process.exit(1)
     }
 
     if (state.worktree && state.worktreeDir) {
-      const { existsSync } = await import('fs')
       if (!existsSync(state.worktreeDir)) {
-        console.log('')
-        console.log(`Cannot restart "${state.loopName}": worktree directory no longer exists at ${state.worktreeDir}.`)
-        console.log('')
+        printBlock(`Cannot restart "${state.loopName}": worktree directory no longer exists at ${state.worktreeDir}.`)
         process.exit(1)
       }
     }
@@ -184,7 +99,7 @@ export async function run(argv: RestartArgs): Promise<void> {
     const serverUrl = argv.server ?? 'http://localhost:5551'
     const directory = state.worktreeDir
 
-    const client = createStatusClient(serverUrl, directory)
+    const client = createOpencodeClientFromServer(serverUrl, directory)
 
     if (state.active) {
       try {
@@ -216,16 +131,8 @@ export async function run(argv: RestartArgs): Promise<void> {
 
     const newSessionId = createResult.data.id
 
-    const sessionKey = `loop-session:${newSessionId}`
-    db.prepare('INSERT OR REPLACE INTO project_kv (project_id, key, data, expires_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(
-      row.project_id,
-      sessionKey,
-      JSON.stringify(state.loopName),
-      now + 30 * 24 * 60 * 60 * 1000,
-      now,
-    )
-
-    const newState: LoopState = {
+    // Update the loop in the new loops table
+    const updatedState: LoopState = {
       ...state,
       active: true,
       sessionId: newSessionId,
@@ -237,12 +144,78 @@ export async function run(argv: RestartArgs): Promise<void> {
       terminationReason: undefined,
       projectDir: state.projectDir || state.worktreeDir,
     }
-    db.prepare('UPDATE project_kv SET data = ?, updated_at = ? WHERE project_id = ? AND key = ?').run(
-      JSON.stringify(newState),
-      now,
-      row.project_id,
-      row.key,
-    )
+    
+    // Write to loops table using direct SQL (CLI doesn't have loopsRepo)
+    db.run('BEGIN')
+    try {
+      db.prepare(`
+        UPDATE loops SET
+          status = ?,
+          current_session_id = ?,
+          phase = ?,
+          iteration = ?,
+          error_count = ?,
+          audit_count = ?,
+          started_at = ?,
+          completed_at = ?,
+          termination_reason = ?,
+          completion_summary = ?,
+          sandbox_container = ?
+        WHERE project_id = ? AND loop_name = ?
+      `).run(
+        updatedState.active ? 'running' : 'completed',
+        newSessionId,
+        updatedState.phase,
+        updatedState.iteration,
+        updatedState.errorCount,
+        updatedState.auditCount,
+        new Date(updatedState.startedAt).getTime(),
+        updatedState.completedAt ? new Date(updatedState.completedAt).getTime() : null,
+        updatedState.terminationReason ?? null,
+        updatedState.completionSummary ?? null,
+        null, // Clear sandbox_container so reconciler starts fresh
+        row.project_id,
+        row.loop_name
+      )
+      
+      // Update large fields
+      db.prepare(`
+        INSERT OR REPLACE INTO loop_large_fields (project_id, loop_name, prompt, last_audit_result)
+        VALUES (?, ?, ?, ?)
+      `).run(
+        row.project_id,
+        row.loop_name,
+        updatedState.prompt ?? null,
+        updatedState.lastAuditResult ?? null
+      )
+      
+      db.run('COMMIT')
+    } catch (err) {
+      db.run('ROLLBACK')
+      throw err
+    }
+
+    // Wait for sandbox to be ready before first prompt (only for worktree + sandbox mode)
+    if (state.worktree && state.sandbox) {
+      const dbPath = join(resolveDataDir(), 'graph.db')
+      const dbExists = existsSync(dbPath)
+      
+      if (dbExists) {
+        const { waitForSandboxReady } = await import('../../utils/sandbox-ready')
+        const waitResult = await waitForSandboxReady({
+          projectId: row.project_id,
+          loopName: row.loop_name,
+          dbPath,
+          pollMs: 100,
+          timeoutMs: 15000,
+        })
+        
+        if (!waitResult.ready) {
+          console.error(`Sandbox not ready after restart: ${waitResult.reason}`)
+          process.exit(1)
+        }
+      }
+    }
 
     let promptText = state.prompt ?? ''
     if (state.completionSignal) {

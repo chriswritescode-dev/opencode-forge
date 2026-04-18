@@ -9,6 +9,7 @@ import {
   type ExecutionPreferences,
 } from '../src/utils/tui-execution-preferences'
 import type { PluginConfig } from '../src/types'
+import { createTuiPrefsRepo } from '../src/storage/repos/tui-prefs-repo'
 
 const TEST_DB_PATH = join('/tmp', `test-execution-prefs-${Date.now()}.db`)
 
@@ -16,15 +17,13 @@ function createTestDb(dbPath: string) {
   const db = new Database(dbPath)
   db.run('PRAGMA busy_timeout=5000')
   db.run(`
-    CREATE TABLE IF NOT EXISTS project_kv (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      project_id TEXT NOT NULL,
-      key TEXT NOT NULL,
-      data TEXT NOT NULL,
-      expires_at INTEGER NOT NULL,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      UNIQUE(project_id, key)
+    CREATE TABLE IF NOT EXISTS tui_preferences (
+      project_id   TEXT NOT NULL,
+      key          TEXT NOT NULL,
+      data         TEXT NOT NULL,
+      expires_at   INTEGER,
+      updated_at   INTEGER NOT NULL,
+      PRIMARY KEY (project_id, key)
     )
   `)
   db.close()
@@ -147,34 +146,21 @@ describe('Execution Preferences', () => {
     expect(result).toEqual(prefs)
   })
 
-  test('writeExecutionPreferences does not mutate loop state records', () => {
+  test('writeExecutionPreferences does not mutate other preference keys', () => {
     const projectId = 'test-project'
     
-    // First, write a loop state record
-    const loopStateKey = 'loop:test-loop'
-    const loopState = {
-      active: true,
-      sessionId: 'session-123',
-      loopName: 'test-loop',
-      executionModel: 'original-exec-model',
-      auditorModel: 'original-auditor-model',
+    // First, write another preference key
+    const otherKey = 'other:test-key'
+    const otherValue = {
+      someField: 'original-value',
+      anotherField: 'original-auditor-model',
     }
     
-    // Manually write loop state to DB
+    // Manually write other preference to DB
     const db = new Database(TEST_DB_PATH)
     db.run('PRAGMA busy_timeout=5000')
-    const now = Date.now()
-    const TTL_MS = 7 * 24 * 60 * 60 * 1000
-    db.prepare(
-      'INSERT OR REPLACE INTO project_kv (project_id, key, data, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(
-      projectId,
-      loopStateKey,
-      JSON.stringify(loopState),
-      now + TTL_MS,
-      now,
-      now
-    )
+    const repo = createTuiPrefsRepo(db)
+    repo.set(projectId, otherKey, otherValue, 7 * 24 * 60 * 60 * 1000)
     db.close()
     
     // Write execution preferences
@@ -185,18 +171,17 @@ describe('Execution Preferences', () => {
     }
     writeExecutionPreferences(projectId, prefs, TEST_DB_PATH)
     
-    // Verify loop state was not modified
+    // Verify other key was not modified
     const loopDb = new Database(TEST_DB_PATH, { readonly: true })
-    const loopRow = loopDb.prepare(
-      'SELECT data FROM project_kv WHERE project_id = ? AND key = ?'
-    ).get(projectId, loopStateKey) as { data: string } | null
+    const otherRepo = createTuiPrefsRepo(loopDb)
+    const retrieved = otherRepo.get(projectId, otherKey)
     
-    expect(loopRow).toBeDefined()
-    if (loopRow) {
-      const retrievedState = JSON.parse(loopRow.data)
-      expect(retrievedState.executionModel).toBe('original-exec-model')
-      expect(retrievedState.auditorModel).toBe('original-auditor-model')
-      expect(retrievedState.mode).toBeUndefined() // preferences key should not appear in loop state
+    expect(retrieved).toBeDefined()
+    if (retrieved) {
+      const typedRetrieved = retrieved as { someField: string; anotherField: string; mode?: string }
+      expect(typedRetrieved.someField).toBe('original-value')
+      expect(typedRetrieved.anotherField).toBe('original-auditor-model')
+      expect(typedRetrieved.mode).toBeUndefined() // preferences key should not appear in other key
     }
     loopDb.close()
   })

@@ -5,7 +5,7 @@ import { parseModelString, retryWithModelFallback } from '../utils/model-fallbac
 const z = tool.schema
 
 export function createPlanExecuteTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
-  const { directory, config, logger, v2, kvService, projectId } = ctx
+  const { directory, config, logger, v2, plansRepo, projectId } = ctx
 
   return {
     'plan-execute': tool({
@@ -20,13 +20,12 @@ export function createPlanExecuteTools(ctx: ToolContext): Record<string, ReturnT
 
         let planText = args.plan
         if (!planText) {
-          const planKey = `plan:${context.sessionID}`
-          const cached = kvService.get<string>(projectId, planKey)
-          if (!cached) {
+          const planRow = plansRepo.getForSession(projectId, context.sessionID)
+          if (!planRow) {
             return 'No plan found. Write the plan via plan-write before calling this tool, or pass it directly as the plan argument.'
           }
-          planText = typeof cached === 'string' ? cached : JSON.stringify(cached, null, 2)
-          kvService.delete(projectId, planKey)
+          planText = planRow.content
+          plansRepo.deleteForSession(projectId, context.sessionID)
         }
 
         const sessionTitle = args.title.length > 60 ? `${args.title.substring(0, 57)}...` : args.title
