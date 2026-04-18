@@ -38,6 +38,7 @@
   },
   "author": "Chris Scott",
   "description": "OpenCode Forge - autonomous dev loops, plan storage, code graph indexing, and sandboxing for OpenCode",
+  "image": "https://raw.githubusercontent.com/chriswritescode-dev/opencode-forge/main/opengraph-image.png",
   "keywords": [
     "opencode",
     "graph",

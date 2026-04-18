@@ -33,7 +33,16 @@ Add to your `opencode.json`:
 
 ```json
 {
-  "plugin": ["opencode-forge"]
+  "plugin": ["opencode-forge@latest"]
+}
+```
+
+**For TUI features:** Also add to your `tui.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": ["opencode-forge@latest"]
 }
 ```
 
