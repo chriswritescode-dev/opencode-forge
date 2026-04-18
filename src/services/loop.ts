@@ -38,6 +38,7 @@ export interface LoopState {
   executionModel?: string
   auditorModel?: string
   workspaceId?: string
+  hostSessionId?: string
 }
 
 export interface LoopService {
@@ -108,6 +109,7 @@ export function createLoopService(
       executionModel: row.executionModel ?? undefined,
       auditorModel: row.auditorModel ?? undefined,
       workspaceId: row.workspaceId ?? undefined,
+      hostSessionId: row.hostSessionId ?? undefined,
     }
   }
 
@@ -137,6 +139,7 @@ export function createLoopService(
       terminationReason: state.terminationReason ?? null,
       completionSummary: state.completionSummary ?? null,
       workspaceId: state.workspaceId ?? null,
+      hostSessionId: state.hostSessionId ?? null,
     }
   }
 

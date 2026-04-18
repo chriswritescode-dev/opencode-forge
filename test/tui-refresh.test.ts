@@ -37,6 +37,7 @@ function createTestDb(): { db: Database; dbPath: string } {
       termination_reason TEXT,
       completion_summary TEXT,
       workspace_id TEXT,
+      host_session_id TEXT,
       PRIMARY KEY (project_id, loop_name)
     )
   `)
@@ -73,10 +74,11 @@ function insertLoopData(
     completedAt?: number | null
     terminationReason?: string | null
     worktreeBranch?: string | null
-    worktree?: boolean
-    worktreeDir?: string
-    executionModel?: string | null
-    auditorModel?: string | null
+      worktree?: boolean
+      worktreeDir?: string
+      executionModel?: string | null
+      auditorModel?: string | null
+      hostSessionId?: string | null
   } = {}
 ): void {
   const now = options.startedAt ?? Date.now()
@@ -86,8 +88,8 @@ function insertLoopData(
       worktree_branch, project_dir, max_iterations, iteration, audit_count,
       error_count, phase, audit, execution_model, auditor_model,
       model_failed, sandbox, sandbox_container, started_at, completed_at,
-      termination_reason, completion_summary
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      termination_reason, completion_summary, workspace_id, host_session_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     projectId,
     loopName,
@@ -111,7 +113,9 @@ function insertLoopData(
     now,
     options.completedAt ?? null,
     options.terminationReason ?? null,
-    null
+    null,
+    null,
+    options.hostSessionId ?? null
   )
 }
 
@@ -205,6 +209,38 @@ describe('TUI Refresh Behavior', () => {
       expect(states[0].name).toBe('newer-loop')
       expect(states[1].name).toBe('older-loop')
     })
+
+    test('Hydrates hostSessionId from database', () => {
+      const now = Date.now()
+      insertLoopData(db, projectId, 'loop-with-host', {
+        sessionId: 'session-host',
+        phase: 'coding',
+        iteration: 1,
+        status: 'completed',
+        startedAt: now,
+        hostSessionId: 'host-session-123',
+      })
+
+      const states = readLoopStates(projectId, dbPath)
+      expect(states.length).toBe(1)
+      expect(states[0].hostSessionId).toBe('host-session-123')
+    })
+
+    test('Returns undefined when hostSessionId is null', () => {
+      const now = Date.now()
+      insertLoopData(db, projectId, 'loop-without-host', {
+        sessionId: 'session-no-host',
+        phase: 'coding',
+        iteration: 1,
+        status: 'running',
+        startedAt: now,
+        hostSessionId: null,
+      })
+
+      const states = readLoopStates(projectId, dbPath)
+      expect(states.length).toBe(1)
+      expect(states[0].hostSessionId).toBeUndefined()
+    })
   })
 
   describe('readLoopByName', () => {
@@ -254,6 +290,22 @@ describe('TUI Refresh Behavior', () => {
       expect(result).toBeDefined()
       expect(result?.name).toBe('completed-loop')
       expect(result?.active).toBe(false)
+    })
+
+    test('Hydrates hostSessionId from database', () => {
+      const now = Date.now()
+      insertLoopData(db, projectId, 'loop-with-host', {
+        sessionId: 'test-session-host',
+        phase: 'coding',
+        iteration: 1,
+        status: 'completed',
+        startedAt: now,
+        hostSessionId: 'host-session-456',
+      })
+
+      const result = readLoopByName(projectId, 'loop-with-host', dbPath)
+      expect(result).toBeDefined()
+      expect(result?.hostSessionId).toBe('host-session-456')
     })
   })
 

@@ -24,7 +24,7 @@ export function listLoopsFromDb(
            worktree_branch, project_dir, max_iterations, iteration, audit_count,
            error_count, phase, audit, execution_model, auditor_model,
            model_failed, sandbox, sandbox_container, started_at, completed_at,
-           termination_reason, completion_summary, workspace_id
+           termination_reason, completion_summary, workspace_id, host_session_id
     FROM loops
     WHERE project_id = ? AND status IN (${placeholders})
   `
@@ -80,6 +80,7 @@ interface LoopRowRaw {
   termination_reason: string | null
   completion_summary: string | null
   workspace_id: string | null
+  host_session_id: string | null
 }
 
 function mapRow(row: LoopRowRaw): LoopRow {
@@ -108,5 +109,6 @@ function mapRow(row: LoopRowRaw): LoopRow {
     terminationReason: row.termination_reason,
     completionSummary: row.completion_summary,
     workspaceId: row.workspace_id,
+    hostSessionId: row.host_session_id,
   }
 }

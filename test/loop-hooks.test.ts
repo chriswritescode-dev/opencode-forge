@@ -128,6 +128,7 @@ describe('loop-hooks integration', () => {
         termination_reason   TEXT,
         completion_summary   TEXT,
         workspace_id   TEXT,
+        host_session_id   TEXT,
         PRIMARY KEY (project_id, loop_name)
       )
     `)

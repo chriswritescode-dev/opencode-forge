@@ -34,6 +34,7 @@ export interface FreshLoopOptions {
   auditorModel?: string
   /** Optional override for sandbox enabled state (for testing) */
   sandboxEnabled?: boolean
+  hostSessionId?: string
 }
 
 export interface LaunchResult {
@@ -44,6 +45,7 @@ export interface LaunchResult {
   worktreeDir?: string
   worktreeBranch?: string
   workspaceId?: string
+  hostSessionId?: string
 }
 
 /**
@@ -251,6 +253,7 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
         terminationReason: null,
         completionSummary: null,
         workspaceId: workspaceId ?? null,
+        hostSessionId: options.hostSessionId ?? null,
       }
       
       const large: LoopLargeFields = {
@@ -376,5 +379,6 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
     worktreeDir: sessionDirectory,
     worktreeBranch,
     workspaceId,
+    hostSessionId: options.hostSessionId,
   }
 }
