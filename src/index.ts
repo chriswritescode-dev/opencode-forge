@@ -265,6 +265,36 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     })
     const graphCommandHook = createGraphCommandEventHook(graphService || null, logger)
 
+    // Resolves an active loop state for a session, checking the session itself
+    // and its direct parent. Subagent sessions (e.g. the auditor launched via the
+    // Task tool) have their own sessionID with a parentID pointing at the loop's
+    // primary session; without the parent hop, permission.ask cannot auto-allow
+    // for subagents and leaks prompts to the TUI.
+    const parentSessionCache = new Map<string, string | null>()
+    async function resolveActiveLoopForSession(sessionId: string): Promise<ReturnType<typeof loopService.getActiveState>> {
+      const directLoopName = loopService.resolveLoopName(sessionId)
+      const directState = directLoopName ? loopService.getActiveState(directLoopName) : null
+      if (directState?.active) return directState
+
+      let parentId = parentSessionCache.get(sessionId)
+      if (parentId === undefined) {
+        try {
+          const result = await v2.session.get({ sessionID: sessionId, directory })
+          parentId = result.data?.parentID ?? null
+          parentSessionCache.set(sessionId, parentId)
+        } catch (err) {
+          logger.debug(`permission.ask: session.get failed for ${sessionId}`, err)
+          parentSessionCache.set(sessionId, null)
+          return null
+        }
+      }
+
+      if (!parentId) return null
+      const parentLoopName = loopService.resolveLoopName(parentId)
+      const parentState = parentLoopName ? loopService.getActiveState(parentLoopName) : null
+      return parentState?.active ? parentState : null
+    }
+
     return {
       getCleanup,
       tool: tools,
@@ -304,19 +334,18 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         await graphAfterHook!(input, output)
       },
       'permission.ask': async (input, output) => {
-        const loopName = loopService.resolveLoopName(input.sessionID)
-        const state = loopName ? loopService.getActiveState(loopName) : null
-        if (!state?.active) return
+        const state = await resolveActiveLoopForSession(input.sessionID)
+        if (!state) return
 
         const patterns = Array.isArray(input.pattern) ? input.pattern : (input.pattern ? [input.pattern] : [])
 
         if (patterns.some((p) => p.startsWith('git push'))) {
-          logger.log(`Loop: denied git push for session ${input.sessionID}`)
+          logger.log(`Loop: denied git push for session ${input.sessionID} (loop ${state.loopName})`)
           output.status = 'deny'
           return
         }
 
-        logger.log(`Loop: auto-allowing ${input.type} [${patterns.join(', ')}] for session ${input.sessionID}`)
+        logger.log(`Loop: auto-allowing ${input.type} [${patterns.join(', ')}] for session ${input.sessionID} (loop ${state.loopName})`)
         output.status = 'allow'
       },
       'experimental.session.compacting': async (input, output) => {
