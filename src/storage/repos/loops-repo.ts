@@ -26,6 +26,7 @@ export interface LoopRow {
   terminationReason: string | null
   completionSummary: string | null
   workspaceId: string | null
+  hostSessionId: string | null
 }
 
 export interface LoopLargeFields {
@@ -47,6 +48,7 @@ export interface LoopsRepo {
   setAuditCount(projectId: string, loopName: string, count: number): void
   setCurrentSessionId(projectId: string, loopName: string, sessionId: string): void
   setWorkspaceId(projectId: string, loopName: string, workspaceId: string): void
+  setHostSessionId(projectId: string, loopName: string, hostSessionId: string): void
   setModelFailed(projectId: string, loopName: string, failed: boolean): void
   setLastAuditResult(projectId: string, loopName: string, text: string | null): void
   setSandboxContainer(projectId: string, loopName: string, containerName: string | null): void
@@ -98,6 +100,7 @@ function mapRow(row: LoopRowRaw): LoopRow {
     terminationReason: row.termination_reason,
     completionSummary: row.completion_summary,
     workspaceId: row.workspace_id,
+    hostSessionId: row.host_session_id,
   }
 }
 
@@ -126,6 +129,7 @@ interface LoopRowRaw {
   termination_reason: string | null
   completion_summary: string | null
   workspace_id: string | null
+  host_session_id: string | null
 }
 
 export function createLoopsRepo(db: Database): LoopsRepo {
@@ -135,8 +139,8 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       worktree_branch, project_dir, max_iterations, iteration, audit_count,
       error_count, phase, audit, execution_model, auditor_model,
       model_failed, sandbox, sandbox_container, started_at, completed_at,
-      termination_reason, completion_summary, workspace_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      termination_reason, completion_summary, workspace_id, host_session_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   const upsertLargeStmt = db.prepare(`
@@ -152,7 +156,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
            worktree_branch, project_dir, max_iterations, iteration, audit_count,
            error_count, phase, audit, execution_model, auditor_model,
            model_failed, sandbox, sandbox_container, started_at, completed_at,
-           termination_reason, completion_summary, workspace_id
+           termination_reason, completion_summary, workspace_id, host_session_id
     FROM loops
     WHERE project_id = ? AND loop_name = ?
   `)
@@ -168,7 +172,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
            worktree_branch, project_dir, max_iterations, iteration, audit_count,
            error_count, phase, audit, execution_model, auditor_model,
            model_failed, sandbox, sandbox_container, started_at, completed_at,
-           termination_reason, completion_summary, workspace_id
+           termination_reason, completion_summary, workspace_id, host_session_id
     FROM loops
     WHERE project_id = ? AND current_session_id = ?
   `)
@@ -178,7 +182,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
            worktree_branch, project_dir, max_iterations, iteration, audit_count,
            error_count, phase, audit, execution_model, auditor_model,
            model_failed, sandbox, sandbox_container, started_at, completed_at,
-           termination_reason, completion_summary, workspace_id
+           termination_reason, completion_summary, workspace_id, host_session_id
     FROM loops
     WHERE project_id = ? AND status IN
   `
@@ -220,6 +224,11 @@ export function createLoopsRepo(db: Database): LoopsRepo {
 
   const setWorkspaceIdStmt = db.prepare(`
     UPDATE loops SET workspace_id = ?
+    WHERE project_id = ? AND loop_name = ?
+  `)
+
+  const setHostSessionIdStmt = db.prepare(`
+    UPDATE loops SET host_session_id = ?
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -306,7 +315,8 @@ export function createLoopsRepo(db: Database): LoopsRepo {
         row.completedAt,
         row.terminationReason,
         row.completionSummary,
-        row.workspaceId
+        row.workspaceId,
+        row.hostSessionId
       )
       if (result.changes === 0) {
         // Conflict - row already exists
@@ -376,6 +386,10 @@ export function createLoopsRepo(db: Database): LoopsRepo {
 
     setWorkspaceId(projectId: string, loopName: string, workspaceId: string): void {
       setWorkspaceIdStmt.run(workspaceId, projectId, loopName)
+    },
+
+    setHostSessionId(projectId: string, loopName: string, hostSessionId: string): void {
+      setHostSessionIdStmt.run(hostSessionId, projectId, loopName)
     },
 
     setModelFailed(projectId: string, loopName: string, failed: boolean): void {

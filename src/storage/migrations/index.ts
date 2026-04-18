@@ -78,4 +78,13 @@ export const migrations: Migration[] = [
       db.run(loadSql('107_add_workspace_id_to_loops.sql'))
     },
   },
+  {
+    id: '108',
+    description: 'Add host_session_id column to loops table for post-completion redirect',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      if (cols.some((c) => c.name === 'host_session_id')) return
+      db.run(loadSql('108_add_host_session_id_to_loops.sql'))
+    },
+  },
 ]

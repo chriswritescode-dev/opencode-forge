@@ -660,6 +660,7 @@ function PlanViewerDialog(props: {
             api: props.api,
             executionModel,
             auditorModel,
+            hostSessionId: props.sessionId,
           })
           
           if (launchResult) {
@@ -1108,6 +1109,8 @@ function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: strin
    * - Periodic polling for transient graph states (5s interval)
    * - Manual onRefresh callbacks from dialogs
    */
+  const redirectedSessions = new Set<string>()
+
   function refreshSidebarData() {
     if (!pid) return
     
@@ -1130,6 +1133,30 @@ function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: strin
     if (props.sessionId) {
       const plan = readPlan(pid, props.sessionId)
       setHasPlan(plan !== null)
+    }
+    
+    // Auto-redirect if the currently-viewed session belongs to a loop that just completed
+    if (props.sessionId && !redirectedSessions.has(props.sessionId)) {
+      const ended = states.find(l =>
+        l.sessionId === props.sessionId
+        && !l.active
+        && l.terminationReason === 'completed'
+        && l.worktree
+        && l.hostSessionId,
+      )
+      if (ended) {
+        redirectedSessions.add(props.sessionId)
+        try {
+          props.api.route.navigate('session', { sessionID: ended.hostSessionId! })
+          props.api.ui.toast({
+            message: `Loop "${ended.name}" completed · click Forge sidebar to review`,
+            variant: 'success',
+            duration: 5000,
+          })
+        } catch (err) {
+          console.error('[forge] sidebar: failed to redirect after loop completion', err)
+        }
+      }
     }
     
     // Refresh graph status from KV (scoped to current directory)

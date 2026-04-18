@@ -32,6 +32,7 @@ interface LoopSetupOptions {
   executionModel?: string
   auditorModel?: string
   onLoopStarted?: (loopName: string) => void
+  hostSessionId?: string
 }
 
 export async function setupLoop(
@@ -224,6 +225,7 @@ export async function setupLoop(
     executionModel: options.executionModel,
     auditorModel: options.auditorModel,
     workspaceId: options.worktree ? loopContext.workspaceId : undefined,
+    hostSessionId: options.hostSessionId,
   }
 
   // Plan is persisted into loop_large_fields.prompt by loopService.setState below.
@@ -367,6 +369,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         title: z.string().describe('Short title for the session (shown in session list)'),
         worktree: z.boolean().optional().default(false).describe('Run in isolated git worktree instead of current directory'),
         loopName: z.string().optional().describe('Name for the loop (max 25 chars, auto-incremented if collision exists)'),
+        hostSessionId: z.string().optional().describe('Host session ID for post-completion redirect'),
       },
       execute: async (args, context) => {
         if (config.loop?.enabled === false) {
@@ -406,6 +409,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           worktree: args.worktree,
           executionModel: executionModel,
           auditorModel: auditorModel,
+          hostSessionId: args.hostSessionId,
           onLoopStarted: (id) => loopHandler.startWatchdog(id),
         })
       },

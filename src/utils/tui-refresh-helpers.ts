@@ -27,6 +27,7 @@ export type LoopInfo = {
   executionModel?: string
   auditorModel?: string
   workspaceId?: string
+  hostSessionId?: string
 }
 
 /**
@@ -57,7 +58,7 @@ export function readLoopStates(projectId: string, dbPathOverride?: string): Loop
              worktree_branch, project_dir, max_iterations, iteration, audit_count,
              error_count, phase, audit, execution_model, auditor_model,
              model_failed, sandbox, sandbox_container, started_at, completed_at,
-             termination_reason, completion_summary, workspace_id
+             termination_reason, completion_summary, workspace_id, host_session_id
       FROM loops
       WHERE project_id = ?
       ORDER BY started_at DESC
@@ -87,6 +88,7 @@ export function readLoopStates(projectId: string, dbPathOverride?: string): Loop
       termination_reason: string | null
       completion_summary: string | null
       workspace_id: string | null
+      host_session_id: string | null
     }>
     
     const loops: LoopInfo[] = []
@@ -107,6 +109,7 @@ export function readLoopStates(projectId: string, dbPathOverride?: string): Loop
         executionModel: row.execution_model ?? undefined,
         auditorModel: row.auditor_model ?? undefined,
         workspaceId: row.workspace_id ?? undefined,
+        hostSessionId: row.host_session_id ?? undefined,
       })
     }
     return loops
@@ -139,7 +142,7 @@ export function readLoopByName(projectId: string, loopName: string, dbPathOverri
              worktree_branch, project_dir, max_iterations, iteration, audit_count,
              error_count, phase, audit, execution_model, auditor_model,
              model_failed, sandbox, sandbox_container, started_at, completed_at,
-             termination_reason, completion_summary, workspace_id
+             termination_reason, completion_summary, workspace_id, host_session_id
       FROM loops
       WHERE project_id = ? AND loop_name = ?
     `).get(projectId, loopName) as {
@@ -167,6 +170,7 @@ export function readLoopByName(projectId: string, loopName: string, dbPathOverri
       termination_reason: string | null
       completion_summary: string | null
       workspace_id: string | null
+      host_session_id: string | null
     } | null
     
     if (!row) return null
@@ -187,6 +191,7 @@ export function readLoopByName(projectId: string, loopName: string, dbPathOverri
       executionModel: row.execution_model ?? undefined,
       auditorModel: row.auditor_model ?? undefined,
       workspaceId: row.workspace_id ?? undefined,
+      hostSessionId: row.host_session_id ?? undefined,
     }
   } catch {
     return null

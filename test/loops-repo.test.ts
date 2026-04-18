@@ -42,7 +42,8 @@ describe('LoopsRepo', () => {
         completed_at         INTEGER,
         termination_reason   TEXT,
         completion_summary   TEXT,
-        workspace_id   TEXT,
+        workspace_id         TEXT,
+        host_session_id      TEXT,
         PRIMARY KEY (project_id, loop_name)
       )
     `)
@@ -97,6 +98,7 @@ describe('LoopsRepo', () => {
     terminationReason: null,
     completionSummary: null,
     workspaceId: null,
+    hostSessionId: null,
   }
 
   const testLarge: LoopLargeFields = {
@@ -355,6 +357,47 @@ describe('LoopsRepo', () => {
       
       const large = repo.getLarge(testRow.projectId, testRow.loopName)
       expect(large!.lastAuditResult).toBe('Audit findings...')
+    })
+  })
+
+  describe('hostSessionId', () => {
+    test('should persist and round-trip hostSessionId', () => {
+      const rowWithHost: LoopRow = {
+        ...testRow,
+        loopName: 'loop-with-host',
+        currentSessionId: 'session-host',
+        hostSessionId: 'host-session-123',
+      }
+      
+      repo.insert(rowWithHost, testLarge)
+      
+      const retrieved = repo.get(rowWithHost.projectId, rowWithHost.loopName)
+      expect(retrieved).toBeTruthy()
+      expect(retrieved!.hostSessionId).toBe('host-session-123')
+    })
+
+    test('should store null when hostSessionId is not provided', () => {
+      const rowWithoutHost: LoopRow = {
+        ...testRow,
+        loopName: 'loop-without-host',
+        currentSessionId: 'session-no-host',
+        hostSessionId: null,
+      }
+      
+      repo.insert(rowWithoutHost, testLarge)
+      
+      const retrieved = repo.get(rowWithoutHost.projectId, rowWithoutHost.loopName)
+      expect(retrieved).toBeTruthy()
+      expect(retrieved!.hostSessionId).toBeNull()
+    })
+
+    test('setHostSessionId should update the column', () => {
+      repo.insert(testRow, testLarge)
+      
+      repo.setHostSessionId(testRow.projectId, testRow.loopName, 'new-host-session')
+      
+      const retrieved = repo.get(testRow.projectId, testRow.loopName)
+      expect(retrieved!.hostSessionId).toBe('new-host-session')
     })
   })
 })

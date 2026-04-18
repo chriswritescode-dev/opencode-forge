@@ -310,7 +310,7 @@ export function createLoopEventHandler(
         : `Loop ended: ${reason}`
 
       v2Client.tui.publish({
-        directory: state.worktreeDir,
+        directory: state.projectDir ?? state.worktreeDir,
         body: {
           type: 'tui.toast.show',
           properties: {
@@ -327,6 +327,17 @@ export function createLoopEventHandler(
 
     if (reason === 'completed' || reason === 'cancelled') {
       await commitAndCleanupWorktree(state)
+      if (state.worktree) {
+        try {
+          await v2Client.session.delete({
+            sessionID: sessionId,
+            directory: state.projectDir ?? state.worktreeDir,
+          })
+          logger.log(`Loop: deleted loop session ${sessionId} for ${state.loopName}`)
+        } catch (err) {
+          logger.error(`Loop: failed to delete loop session ${sessionId}`, err)
+        }
+      }
     }
 
     if (state.sandbox && state.sandboxContainer && sandboxManager) {
