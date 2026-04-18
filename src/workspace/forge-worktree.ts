@@ -93,9 +93,12 @@ export async function createLoopWorkspace(
     branch?: string | null
   }
 ): Promise<{ workspaceId: string } | null> {
+  const workspaceApi = client.experimental?.workspace
+  if (!workspaceApi || typeof workspaceApi.create !== 'function') {
+    return null
+  }
   try {
-    // Create workspace record via upstream API - let the system generate a proper workspace ID
-    const result = await client.experimental.workspace.create({
+    const result = await workspaceApi.create({
       type: FORGE_WORKTREE_WORKSPACE_TYPE,
       branch: options.branch ?? null,
       extra: {
@@ -104,17 +107,17 @@ export async function createLoopWorkspace(
         branch: options.branch ?? null,
       },
     })
-    
+
     if ('error' in result && result.error) {
       console.error('Failed to create workspace', result.error)
       return null
     }
-    
+
     if (!('data' in result) || !result.data) {
       console.error('Failed to create workspace: no data returned')
       return null
     }
-    
+
     return {
       workspaceId: result.data.id,
     }
@@ -140,7 +143,11 @@ export async function bindSessionToWorkspace(
   workspaceId: string,
   sessionId: string
 ): Promise<void> {
-  const result = await client.experimental.workspace.sessionRestore({
+  const workspaceApi = client.experimental?.workspace
+  if (!workspaceApi || typeof workspaceApi.sessionRestore !== 'function') {
+    throw new Error('experimental.workspace.sessionRestore not available on this host')
+  }
+  const result = await workspaceApi.sessionRestore({
     id: workspaceId,
     sessionID: sessionId,
   })

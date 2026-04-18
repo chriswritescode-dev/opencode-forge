@@ -60,6 +60,7 @@ Loop search dialog:
 - **Bundled Agents** - Ships with Code, Architect, and Auditor agents preconfigured for graph-aware workflows
 - **CLI Tools** - Loop status, cancel, restart, graph status, graph scan, and upgrade commands via `opencode-forge`
 - **Docker Sandbox** - Run loops inside isolated Docker containers with bind-mounted project directory, automatic container lifecycle, and selective tool routing (bash, glob, grep)
+- **Workspace Integration** - Optional: when the host runtime exposes the experimental workspace API, worktree loops register as OpenCode workspaces so you can switch between them (and your main project) directly from the TUI
 
 ## Agents
 
@@ -667,6 +668,40 @@ On model errors during execution, automatic fallback to the default model kicks 
 The loop completes when the Code agent outputs the completion promise. It auto-terminates after `maxIterations` (if set) or after 3 consecutive errors.
 
 By default, loops run in the current directory. Set `worktree: true` to run in an isolated git worktree instead (enables worktree creation, auto-commit, and cleanup on completion).
+
+## Workspace Integration
+
+Worktree loops can optionally register as **OpenCode workspaces**, letting you switch between them (and your main project) from the same TUI session without restarting or re-opening anything.
+
+### When it runs
+
+Workspace integration is **host-gated, not config-gated**. Forge registers a `forge-worktree` workspace adaptor at plugin load time only if the host runtime exposes the experimental workspace API (`experimental_workspace` on the plugin input, `experimental.workspace` on the SDK client).
+
+- **Host exposes the API** → worktree loops become workspace-backed. The worktree directory appears as a switchable workspace in the TUI, and its sessions are bound to that workspace.
+- **Host does not expose the API** → forge skips registration, logs a note, and worktree loops run exactly as before. Everything else (iteration, auditing, sandbox, status, cancel, restart) is unaffected.
+
+No forge config option enables or disables this — the feature lights up automatically on supported hosts.
+
+### What it does
+
+When a worktree loop starts on a supported host, forge:
+
+1. Creates the git worktree (as usual)
+2. Creates a new Code session pointed at the worktree directory
+3. Calls `experimental.workspace.create` with `type: "forge-worktree"` and the loop metadata (`loopName`, `directory`, `branch`) in the `extra` payload
+4. Calls `experimental.workspace.sessionRestore` to bind the session to that workspace
+5. Persists the workspace ID on the loop record (`loops.workspace_id`) so the TUI can route clicks on a loop into the correct workspace
+
+The adaptor's `create` and `remove` hooks are intentional no-ops — forge's loop system owns worktree lifecycle, not the workspace system. The adaptor only surfaces existing worktrees to the workspace UI.
+
+### Graceful degradation
+
+If workspace creation or session binding fails at runtime (network error, API mismatch, unsupported host), the loop **does not abort**. Forge logs the failure, clears the workspace ID, and the loop continues as a regular (non-workspace) worktree loop. You lose workspace-based switching for that loop, but the loop itself runs to completion.
+
+### From the TUI
+
+- Clicking a worktree loop in the sidebar opens its Loop Details dialog as before
+- On hosts with workspace support, the loop is additionally accessible via the workspace switcher, letting you jump between your main project and any active worktree loop inline
 
 ## Docker Sandbox
 

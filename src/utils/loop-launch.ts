@@ -142,54 +142,26 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
     
     sessionId = createResult.data.id
 
-    // Create workspace and bind session for worktree loops — required for workspace-backed switching
+    // Optionally create a workspace and bind the session so the worktree loop
+    // can be switched to directly from the TUI. If the host runtime doesn't
+    // expose experimental_workspace, the loop continues without workspace
+    // backing — the user just can't switch via the workspace UI.
     const workspace = await createLoopWorkspace(api.client, {
       loopName: uniqueWorktreeName,
       directory: sessionDirectory,
       branch: worktreeBranch,
     })
 
-    if (!workspace) {
-      console.error('loop-launch: failed to create workspace for worktree loop', { loopName: uniqueWorktreeName })
+    if (workspace) {
+      workspaceId = workspace.workspaceId
       try {
-        await api.client.session.abort({ sessionID: sessionId })
-      } catch (cleanupErr) {
-        console.error('loop-launch: failed to cleanup session', cleanupErr)
+        await bindSessionToWorkspace(api.client, workspaceId, sessionId)
+      } catch (bindErr) {
+        console.error('loop-launch: failed to bind session to workspace; continuing without workspace backing', bindErr)
+        workspaceId = undefined
       }
-      try {
-        await api.client.worktree.remove({ worktreeRemoveInput: { directory: sessionDirectory } })
-        const { deleteGraphCacheScope } = await import('../storage/graph-projects')
-        const deletedCache = deleteGraphCacheScope(options.projectId, sessionDirectory, resolveDataDir())
-        if (deletedCache) {
-          console.log(`loop-launch: deleted graph cache for worktree ${sessionDirectory}`)
-        }
-      } catch (cleanupErr) {
-        console.error('loop-launch: failed to cleanup worktree', cleanupErr)
-      }
-      return null
-    }
-
-    workspaceId = workspace.workspaceId
-    try {
-      await bindSessionToWorkspace(api.client, workspaceId, sessionId)
-    } catch (bindErr) {
-      console.error('loop-launch: failed to bind session to workspace', bindErr)
-      try {
-        await api.client.session.abort({ sessionID: sessionId })
-      } catch (cleanupErr) {
-        console.error('loop-launch: failed to cleanup session', cleanupErr)
-      }
-      try {
-        await api.client.worktree.remove({ worktreeRemoveInput: { directory: sessionDirectory } })
-        const { deleteGraphCacheScope } = await import('../storage/graph-projects')
-        const deletedCache = deleteGraphCacheScope(options.projectId, sessionDirectory, resolveDataDir())
-        if (deletedCache) {
-          console.log(`loop-launch: deleted graph cache for worktree ${sessionDirectory}`)
-        }
-      } catch (cleanupErr) {
-        console.error('loop-launch: failed to cleanup worktree', cleanupErr)
-      }
-      return null
+    } else {
+      console.log(`loop-launch: workspace API unavailable or create failed; continuing without workspace backing for ${uniqueWorktreeName}`)
     }
   } else {
     // In-place loop - may still need log directory access if direct logging is used
