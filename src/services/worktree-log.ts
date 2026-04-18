@@ -204,9 +204,10 @@ export function formatWorktreeCompletionEntry(
   const branchInfo = options.worktreeBranch ? `\n- **Branch:** ${options.worktreeBranch}` : ''
   const planSection = (planText?.trim()) || 'Plan unavailable'
   
-  return `## ${options.loopName}
+  return `# ${options.projectDir}
 
-- **Original Project:** ${options.projectDir}
+## ${options.loopName}
+
 - **Loop:** ${options.loopName}${branchInfo}
 - **Completed:** ${timestamp}
 - **Iteration:** ${options.iteration}

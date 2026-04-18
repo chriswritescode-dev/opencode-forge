@@ -338,8 +338,8 @@ describe('appendWorktreeLogEntry', () => {
     expect(existsSync(expectedFile)).toBe(true)
 
     const content = readFileSync(expectedFile, 'utf-8')
+    expect(content).toContain('# /path/to/project')
     expect(content).toContain('## test-loop')
-    expect(content).toContain('**Original Project:** /path/to/project')
     expect(content).toContain('**Loop:** test-loop')
     expect(content).toContain('**Branch:** worktree/test-loop')
     expect(content).toContain('2024-01-15T10:30:00.000Z')
@@ -799,8 +799,8 @@ describe('writeWorktreeCompletionLog', () => {
     expect(existsSync(expectedFile)).toBe(true)
 
     const content = readFileSync(expectedFile, 'utf-8')
+    expect(content).toContain('# /path/to/project')
     expect(content).toContain('## test-loop')
-    expect(content).toContain('**Original Project:** /path/to/project')
     expect(content).toContain('**Loop:** test-loop')
     expect(content).toContain('**Branch:** worktree/test-loop')
     expect(content).toContain('2024-01-15T10:30:00.000Z')
