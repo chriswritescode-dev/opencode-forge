@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.webp" alt="OpenCode Forge logo" />
+</p>
+
 <h1 align="center">OpenCode Forge</h1>
 
 <p align="center">
