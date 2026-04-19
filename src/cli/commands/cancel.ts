@@ -1,13 +1,14 @@
 import {
   openDatabase,
   confirm,
-  listLoopsFromDb,
   resolveLoopByNameOrExit,
   printBlock,
 } from '../utils'
-import { execSync, spawnSync } from 'child_process'
+import { dirname } from 'path'
 import { existsSync } from 'fs'
-import { resolve } from 'path'
+import { createLoopsRepo } from '../../storage/repos/loops-repo'
+import { cleanupLoopWorktree } from '../../utils/worktree-cleanup'
+import { listLoopStatesFromDb } from '../../storage/cli-helpers'
 
 interface CancelArgs {
   dbPath?: string
@@ -21,7 +22,7 @@ export async function run(argv: CancelArgs): Promise<void> {
   const db = openDatabase(argv.dbPath)
 
   try {
-    const loops = listLoopsFromDb(db, argv.resolvedProjectId, { activeOnly: true })
+    const loops = listLoopStatesFromDb(db, argv.resolvedProjectId, { activeOnly: true })
 
     if (loops.length === 0) {
       printBlock('No active loops.')
@@ -69,44 +70,28 @@ export async function run(argv: CancelArgs): Promise<void> {
       return
     }
 
-    const updatedState = {
-      ...state,
-      active: false,
-      completedAt: new Date().toISOString(),
-      terminationReason: 'cancelled',
-    }
     const now = Date.now()
-    
-    // Update the loop in the new loops table
-    db.prepare(`
-      UPDATE loops SET
-        status = ?,
-        completed_at = ?,
-        termination_reason = ?,
-        completion_summary = ?
-      WHERE project_id = ? AND loop_name = ?
-    `).run(
-      'cancelled',
-      now,
-      updatedState.terminationReason,
-      null,
-      loopToCancel.row.project_id,
-      loopToCancel.row.loop_name,
-    )
+    createLoopsRepo(db).terminate(loopToCancel.row.project_id, loopToCancel.row.loop_name, {
+      status: 'cancelled',
+      reason: 'cancelled',
+      completedAt: now,
+    })
 
     console.log(`Cancelled loop: ${state.loopName}`)
 
     if (argv.cleanup && state.worktreeDir && state.worktree) {
       if (existsSync(state.worktreeDir)) {
-        try {
-          const gitCommonDir = execSync('git rev-parse --git-common-dir', { cwd: state.worktreeDir, encoding: 'utf-8' }).trim()
-          const gitRoot = resolve(state.worktreeDir, gitCommonDir, '..')
-          const removeResult = spawnSync('git', ['worktree', 'remove', '-f', state.worktreeDir], { cwd: gitRoot, encoding: 'utf-8' })
-          if (removeResult.status !== 0) {
-            throw new Error(removeResult.stderr || 'git worktree remove failed')
-          }
+        const dataDir = argv.dbPath ? dirname(argv.dbPath) : undefined
+        const result = await cleanupLoopWorktree({
+          worktreeDir: state.worktreeDir,
+          projectId: loopToCancel.row.project_id,
+          dataDir,
+          logPrefix: 'oc-forge loop cancel',
+          logger: console,
+        })
+        if (result.removed) {
           console.log(`Removed worktree: ${state.worktreeDir}`)
-        } catch {
+        } else {
           console.error(`Failed to remove worktree: ${state.worktreeDir}`)
           console.error('You may need to remove it manually.')
         }

@@ -1,9 +1,7 @@
-import { truncate } from '../cli/utils'
+import { formatTokens, truncate } from './format'
 import type { LoopSessionOutput } from '../services/loop'
 
-export function formatTokens(n: number): string {
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`
-}
+export { formatTokens } from './format'
 
 export function formatSessionOutput(
   sessionOutput: LoopSessionOutput,

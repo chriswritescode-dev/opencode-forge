@@ -20,9 +20,10 @@ import { retryWithModelFallback, parseModelString } from './model-fallback'
 import { loadPluginConfig } from '../setup'
 import { createLoopsRepo } from '../storage/repos/loops-repo'
 import type { LoopRow, LoopLargeFields } from '../storage/repos/loops-repo'
-import { createLoopWorkspace, bindSessionToWorkspace } from '../workspace/forge-worktree'
+import { createLoopWorkspace } from '../workspace/forge-worktree'
+import { createLoopSessionWithWorkspace } from './loop-session'
 
-export interface FreshLoopOptions {
+interface FreshLoopOptions {
   planText: string
   title: string
   directory: string
@@ -39,7 +40,7 @@ export interface FreshLoopOptions {
   hostSessionId?: string
 }
 
-export interface LaunchResult {
+interface LaunchResult {
   sessionId: string
   loopName: string
   executionName: string
@@ -127,27 +128,6 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
     })()
     console.log(`loop-launch: graph seed ${seedResult.seeded ? 'reused' : 'skipped'} (${seedResult.reason})`)
     
-    // Worktree sessions no longer need log directory access since logging is dispatched via host session
-    const agentExclusions = agents.code.tools?.exclude
-    const permissionRuleset = buildLoopPermissionRuleset(config, null, {
-      isWorktree: true,
-      agentExclusions,
-    })
-    
-    console.log(`loop-launch: creating session with directory=${hostWorktreeDir} (sandbox: ${isSandboxEnabled})`)
-    
-    const createResult = await api.client.session.create({
-      title: `Loop: ${title}`,
-      directory: hostWorktreeDir,
-      permission: permissionRuleset,
-    })
-    
-    if (createResult.error || !createResult.data) {
-      return null
-    }
-    
-    sessionId = createResult.data.id
-
     // Optionally create a workspace and bind the session so the worktree loop
     // can be switched to directly from the TUI. If the host runtime doesn't
     // expose experimental_workspace, the loop continues without workspace
@@ -158,16 +138,38 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
       branch: worktreeBranch,
     })
 
-    if (workspace) {
-      workspaceId = workspace.workspaceId
-      try {
-        await bindSessionToWorkspace(api.client, workspaceId, sessionId)
-      } catch (bindErr) {
-        console.error('loop-launch: failed to bind session to workspace; continuing without workspace backing', bindErr)
-        workspaceId = undefined
-      }
-    } else {
+    if (!workspace) {
       console.log(`loop-launch: workspace API unavailable or create failed; continuing without workspace backing for ${uniqueWorktreeName}`)
+    }
+
+    // Worktree sessions no longer need log directory access since logging is dispatched via host session
+    const agentExclusions = agents.code.tools?.exclude
+    const permissionRuleset = buildLoopPermissionRuleset(config, null, {
+      isWorktree: true,
+      agentExclusions,
+    })
+    
+    console.log(`loop-launch: creating session with directory=${hostWorktreeDir} (sandbox: ${isSandboxEnabled})`)
+
+    const createResult = await createLoopSessionWithWorkspace({
+      v2: api.client,
+      title: `Loop: ${title}`,
+      directory: hostWorktreeDir,
+      permission: permissionRuleset,
+      workspaceId: workspace?.workspaceId,
+      logPrefix: 'loop-launch',
+      logger: console,
+    })
+    
+    if (!createResult) {
+      return null
+    }
+    
+    sessionId = createResult.sessionId
+    workspaceId = createResult.boundWorkspaceId
+
+    if (createResult.bindFailed) {
+      console.error('loop-launch: continuing without workspace backing')
     }
   } else {
     // In-place loop - may still need log directory access if direct logging is used

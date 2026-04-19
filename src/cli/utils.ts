@@ -8,8 +8,6 @@ import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import { openForgeDatabase } from '../storage/database'
 import type { LoopState } from '../services/loop'
 import { findPartialMatch } from '../utils/partial-match'
-import { listLoopsFromDb as listLoopsFromDbNew } from '../storage/cli-helpers'
-import { getGitProjectId as sharedGetGitProjectId } from '../utils/project-id'
 
 function resolveDefaultDbPath(): string {
   const localForgePath = join(process.cwd(), '.opencode', 'state', 'opencode', 'forge', 'graph.db')
@@ -32,12 +30,6 @@ function resolveDefaultDbPath(): string {
   return join(dataDir, 'graph.db')
 }
 
-export function getGitProjectId(dir?: string): string | null {
-  return sharedGetGitProjectId(dir)
-}
-
-
-
 export function openDatabase(dbPath?: string): Database {
   const resolvedPath = dbPath || resolveDefaultDbPath()
 
@@ -50,11 +42,6 @@ export function openDatabase(dbPath?: string): Database {
 }
 
 
-
-export function truncate(str: string, maxLen: number): string {
-  if (str.length <= maxLen) return str
-  return str.slice(0, maxLen - 3) + '...'
-}
 
 export function confirm(message: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -77,7 +64,7 @@ export function confirm(message: string): Promise<boolean> {
  *
  * Returns `null` if opencode.db is missing or any error occurs.
  */
-export function withOpencodeProjectDb<T>(fn: (db: Database) => T): T | null {
+function withOpencodeProjectDb<T>(fn: (db: Database) => T): T | null {
   try {
     const defaultBase = join(homedir(), platform() === 'win32' ? 'AppData' : '.local', 'share')
     const xdgDataHome = process.env['XDG_DATA_HOME'] || defaultBase
@@ -179,65 +166,6 @@ export function createOpencodeClientFromServer(serverUrl: string, directory: str
   return createOpencodeClient(clientConfig)
 }
 
-export interface LoopEntry {
-  state: LoopState
-  row: { project_id: string; loop_name: string }
-}
-
-/**
- * Reads all loops from the new loops table, optionally scoped to a projectId.
- * Converts LoopRow to legacy LoopState for backward compatibility with CLI commands.
- *
- * Rows that fail to convert are skipped. If `activeOnly` is true, only running loops are returned.
- */
-export function listLoopsFromDb(
-  db: Database,
-  projectId: string | undefined,
-  options?: { activeOnly?: boolean },
-): LoopEntry[] {
-  const entries = listLoopsFromDbNew(db, projectId, {
-    statuses: options?.activeOnly ? ['running'] : undefined,
-    activeOnly: options?.activeOnly,
-  })
-  
-  return entries.map((entry) => ({
-    state: loopRowToState(entry.row, entry.large),
-    row: { project_id: entry.row.projectId, loop_name: entry.row.loopName },
-  }))
-}
-
-/**
- * Converts a LoopRow to the legacy LoopState format for CLI/TUI compatibility.
- */
-function loopRowToState(row: ReturnType<typeof listLoopsFromDbNew>[number]['row'], large: ReturnType<typeof listLoopsFromDbNew>[number]['large']): LoopState {
-  return {
-    active: row.status === 'running',
-    sessionId: row.currentSessionId,
-    loopName: row.loopName,
-    worktreeDir: row.worktreeDir,
-    projectDir: row.projectDir,
-    worktreeBranch: row.worktreeBranch ?? undefined,
-    iteration: row.iteration,
-    maxIterations: row.maxIterations,
-    startedAt: new Date(row.startedAt).toISOString(),
-    prompt: large?.prompt ?? undefined,
-    phase: row.phase,
-    audit: row.audit,
-    lastAuditResult: large?.lastAuditResult ?? undefined,
-    errorCount: row.errorCount,
-    auditCount: row.auditCount,
-    terminationReason: row.terminationReason ?? undefined,
-    completedAt: row.completedAt ? new Date(row.completedAt).toISOString() : undefined,
-    worktree: row.worktree,
-    modelFailed: row.modelFailed,
-    sandbox: row.sandbox,
-    sandboxContainer: row.sandboxContainer ?? undefined,
-    completionSummary: row.completionSummary ?? undefined,
-    executionModel: row.executionModel ?? undefined,
-    auditorModel: row.auditorModel ?? undefined,
-  }
-}
-
 /**
  * Resolves a partial loop name against a list of loops. On ambiguity or no
  * match, prints a message to stderr listing all available loops and exits
@@ -283,18 +211,4 @@ export function printBlock(message: string): void {
   console.log('')
   console.log(message)
   console.log('')
-}
-
-/**
- * Formats a millisecond duration as `<h>h <m>m` (no seconds) or
- * `<h>h <m>m <s>s` when `includeSeconds` is true.
- */
-export function formatDuration(ms: number, opts?: { includeSeconds?: boolean }): string {
-  const hours = Math.floor(ms / (1000 * 60 * 60))
-  const minutes = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60))
-  if (!opts?.includeSeconds) {
-    return `${hours}h ${minutes}m`
-  }
-  const seconds = Math.floor((ms % (1000 * 60)) / 1000)
-  return `${hours}h ${minutes}m ${seconds}s`
 }

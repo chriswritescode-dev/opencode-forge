@@ -18,6 +18,7 @@ import { readLoopStates, readLoopByName, shouldPollSidebar, type LoopInfo } from
 import { readExecutionPreferences, writeExecutionPreferences, resolveExecutionDialogDefaults } from './utils/tui-execution-preferences'
 import { fetchAvailableModels, flattenProviders, buildDialogSelectOptions, getModelDisplayLabel, getRecentModels, recordRecentModel, sortModelsByPriority, type ModelInfo } from './utils/tui-models'
 import { getGitProjectId } from './utils/project-id'
+import { formatDuration, formatTokens, truncate, truncateMiddle } from './utils/format'
 
 import { buildLoopPermissionRuleset } from './constants/loop'
 import { agents } from './agents'
@@ -289,36 +290,6 @@ async function restartLoop(projectId: string, loopName: string, api: TuiPluginAp
   } finally {
     try { db?.close() } catch {}
   }
-}
-
-function formatTokens(n: number): string {
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`
-}
-
-function formatDuration(ms: number): string {
-  const hours = Math.floor(ms / (1000 * 60 * 60))
-  const minutes = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60))
-  const seconds = Math.floor((ms % (1000 * 60)) / 1000)
-  if (hours > 0) {
-    return `${hours}h ${minutes}m ${seconds}s`
-  }
-  if (minutes > 0) {
-    return `${minutes}m ${seconds}s`
-  }
-  return `${seconds}s`
-}
-
-function truncate(text: string, maxLength: number): string {
-  if (text.length <= maxLength) return text
-  return text.slice(0, maxLength - 3) + '...'
-}
-
-function truncateMiddle(text: string, maxLength: number): string {
-  if (text.length <= maxLength) return text
-  const keep = maxLength - 5
-  const start = Math.ceil(keep / 2)
-  const end = Math.floor(keep / 2)
-  return text.slice(0, start) + '.....' + text.slice(text.length - end)
 }
 
 function PlanViewerDialog(props: {
@@ -1023,7 +994,7 @@ function LoopDetailsDialog(props: { api: TuiPluginApi; loop: LoopInfo; onBack?: 
                 <box>
                   <text fg={theme().text}>
                     <span style={{ fg: theme().textMuted }}>Duration: </span>
-                    {formatDuration(stats()!.timing!.durationMs)}
+                    {formatDuration(stats()!.timing!.durationMs, { includeSeconds: true, compact: true })}
                   </text>
                 </box>
               </Show>

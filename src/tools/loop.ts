@@ -1,7 +1,7 @@
 import { tool } from '@opencode-ai/plugin'
-import { execSync, spawnSync } from 'child_process'
+import { execSync } from 'child_process'
 import { existsSync } from 'fs'
-import { join, resolve } from 'path'
+import { join } from 'path'
 import type { ToolContext } from './types'
 
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
@@ -13,9 +13,11 @@ import { buildLoopPermissionRuleset } from '../constants/loop'
 import { resolveWorktreeLogTarget } from '../services/worktree-log'
 import { agents } from '../agents'
 import { isSandboxEnabled } from '../sandbox/context'
-import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
+import { formatElapsedSeconds, computeElapsedSeconds } from '../utils/loop-helpers'
 import { waitForGraphReady } from '../utils/tui-graph-status'
-import { createLoopWorkspace, bindSessionToWorkspace } from '../workspace/forge-worktree'
+import { createLoopWorkspace } from '../workspace/forge-worktree'
+import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
+import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 
 const z = tool.schema
 
@@ -135,46 +137,6 @@ export async function setupLoop(
     })()
     logger.log(`loop: graph seed ${seedResult.seeded ? 'reused' : 'skipped'} (${seedResult.reason})`)
 
-    // Worktree sessions no longer need log directory access since logging is dispatched via host session
-    // Only resolve log target for non-worktree sessions or if needed for other purposes
-    const agentExclusions = agents.code.tools?.exclude
-    const permissionRuleset = buildLoopPermissionRuleset(config, null, {
-      isWorktree: true,
-      agentExclusions,
-    })
-
-    logger.log(`loop: creating session with directory=${sessionDirectory} (host: ${hostWorktreeDir}, sandbox: ${sandboxEnabled})`)
-
-    const createResult = await v2.session.create({
-      title: options.sessionTitle,
-      directory: sessionDirectory,
-      permission: permissionRuleset,
-    })
-
-    if (createResult.error || !createResult.data) {
-      logger.error(`loop: failed to create session`, createResult.error)
-      try {
-        await v2.worktree.remove({ worktreeRemoveInput: { directory: hostWorktreeDir } })
-        // Delete graph cache for this worktree scope on startup failure
-        const { deleteGraphCacheScope } = await import('../storage/graph-projects')
-        const deleted = deleteGraphCacheScope(ctx.projectId, hostWorktreeDir, ctx.dataDir)
-        if (deleted) {
-          logger.log(`loop: deleted graph cache for worktree ${hostWorktreeDir}`)
-        }
-      } catch (cleanupErr) {
-        logger.error(`loop: failed to cleanup worktree`, cleanupErr)
-      }
-      return 'Failed to create loop session.'
-    }
-
-    loopContext = {
-      sessionId: createResult.data.id,
-      directory: sessionDirectory,
-      branch: worktreeInfo.branch,
-      worktree: true,
-      hostDirectory: hostWorktreeDir,
-    }
-
     // Optionally create a workspace and bind the session so the worktree loop
     // can be switched to directly from the TUI. If the host runtime doesn't
     // expose experimental_workspace, the loop continues without workspace
@@ -186,16 +148,53 @@ export async function setupLoop(
     })
 
     if (workspace) {
-      loopContext.workspaceId = workspace.workspaceId
-      try {
-        await bindSessionToWorkspace(v2, workspace.workspaceId, loopContext.sessionId)
-        logger.log(`loop: workspace ${workspace.workspaceId} bound to session ${loopContext.sessionId}`)
-      } catch (bindErr) {
-        logger.error('loop: failed to bind session to workspace; continuing without workspace backing', bindErr)
-        loopContext.workspaceId = undefined
-      }
+      logger.log(`loop: workspace ${workspace.workspaceId} created for ${uniqueLoopName}`)
     } else {
       logger.log(`loop: workspace API unavailable or create failed; continuing without workspace backing for ${uniqueLoopName}`)
+    }
+
+    // Worktree sessions no longer need log directory access since logging is dispatched via host session
+    // Only resolve log target for non-worktree sessions or if needed for other purposes
+    const agentExclusions = agents.code.tools?.exclude
+    const permissionRuleset = buildLoopPermissionRuleset(config, null, {
+      isWorktree: true,
+      agentExclusions,
+    })
+
+    logger.log(`loop: creating session with directory=${sessionDirectory} (host: ${hostWorktreeDir}, sandbox: ${sandboxEnabled})`)
+
+    const createResult = await createLoopSessionWithWorkspace({
+      v2,
+      title: options.sessionTitle,
+      directory: sessionDirectory,
+      permission: permissionRuleset,
+      workspaceId: workspace?.workspaceId,
+      logPrefix: 'loop',
+      logger,
+    })
+
+    if (!createResult) {
+      await cleanupLoopWorktree({
+        worktreeDir: hostWorktreeDir,
+        projectId: ctx.projectId,
+        dataDir: ctx.dataDir,
+        logPrefix: 'loop',
+        logger,
+      })
+      return 'Failed to create loop session.'
+    }
+
+    loopContext = {
+      sessionId: createResult.sessionId,
+      directory: sessionDirectory,
+      branch: worktreeInfo.branch,
+      worktree: true,
+      hostDirectory: hostWorktreeDir,
+      workspaceId: createResult.boundWorkspaceId,
+    }
+
+    if (createResult.bindFailed) {
+      logger.log(`loop: continuing without workspace backing for ${uniqueLoopName}`)
     }
   }
 
@@ -294,10 +293,10 @@ export async function setupLoop(
     logger,
   )
 
-  if (promptResult.error) {
-    logger.error(`loop: failed to send prompt`, promptResult.error)
-    loopService.deleteState(uniqueLoopName)
-    if (sandboxEnabled) {
+    if (promptResult.error) {
+      logger.error(`loop: failed to send prompt`, promptResult.error)
+      loopService.deleteState(uniqueLoopName)
+      if (sandboxEnabled) {
       try {
         await sandboxManager!.stop(uniqueLoopName)
       } catch (sbxErr) {
@@ -305,17 +304,13 @@ export async function setupLoop(
       }
     }
     if (options.worktree) {
-      try {
-        await v2.worktree.remove({ worktreeRemoveInput: { directory: loopContext.hostDirectory! } })
-        // Delete graph cache for this worktree scope on startup failure
-        const { deleteGraphCacheScope } = await import('../storage/graph-projects')
-        const deleted = deleteGraphCacheScope(ctx.projectId, loopContext.hostDirectory!, ctx.dataDir)
-        if (deleted) {
-          logger.log(`loop: deleted graph cache for worktree ${loopContext.hostDirectory}`)
-        }
-      } catch (cleanupErr) {
-        logger.error(`loop: failed to cleanup worktree`, cleanupErr)
-      }
+      await cleanupLoopWorktree({
+        worktreeDir: loopContext.hostDirectory!,
+        projectId: ctx.projectId,
+        dataDir: ctx.dataDir,
+        logPrefix: 'loop',
+        logger,
+      })
     }
     return !options.worktree
       ? 'Loop session created but failed to send prompt.'
@@ -462,24 +457,13 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         logger.log(`loop-cancel: cancelled loop for session=${state.sessionId} at iteration ${state.iteration}`)
 
         if (config.loop?.cleanupWorktree && state.worktree && state.worktreeDir) {
-          try {
-            const gitCommonDir = execSync('git rev-parse --git-common-dir', { cwd: state.worktreeDir, encoding: 'utf-8' }).trim()
-            const gitRoot = resolve(state.worktreeDir, gitCommonDir, '..')
-            const removeResult = spawnSync('git', ['worktree', 'remove', '-f', state.worktreeDir], { cwd: gitRoot, encoding: 'utf-8' })
-            if (removeResult.status !== 0) {
-              throw new Error(removeResult.stderr || 'git worktree remove failed')
-            }
-            logger.log(`loop-cancel: removed worktree ${state.worktreeDir}`)
-            
-            // Delete graph cache for this worktree scope
-            const { deleteGraphCacheScope } = await import('../storage/graph-projects')
-            const deleted = deleteGraphCacheScope(ctx.projectId, state.worktreeDir, ctx.dataDir)
-            if (deleted) {
-              logger.log(`loop-cancel: deleted graph cache for worktree ${state.worktreeDir}`)
-            }
-          } catch (err) {
-            logger.error(`loop-cancel: failed to remove worktree`, err)
-          }
+          await cleanupLoopWorktree({
+            worktreeDir: state.worktreeDir,
+            projectId: ctx.projectId,
+            dataDir: ctx.dataDir,
+            logPrefix: 'loop-cancel',
+            logger,
+          })
         }
 
         const modeInfo = !state.worktree ? ' (in-place)' : ''
@@ -575,43 +559,25 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
               }
             }
 
-            const createParams: {
-              title: string
-              directory: string
-              permission: ReturnType<typeof buildLoopPermissionRuleset>
-              workspaceID?: string
-            } = {
+            const createResult = await createLoopSessionWithWorkspace({
+              v2,
               title: stoppedState.loopName,
               directory: stoppedState.worktreeDir!,
               permission: permissionRuleset,
-            }
+              workspaceId: stoppedState.workspaceId,
+              logPrefix: 'loop-restart',
+              logger,
+            })
 
-            // Preserve workspace attachment if the loop has a workspaceId
-            if (stoppedState.workspaceId) {
-              createParams.workspaceID = stoppedState.workspaceId
-            }
-
-            const createResult = await v2.session.create(createParams)
-
-            if (createResult.error || !createResult.data) {
-              logger.error(`loop-restart: failed to create session`, createResult.error)
+            if (!createResult) {
               return { ok: false, error: `Failed to create new session for restart.` }
             }
 
-            const newSessionId = createResult.data.id
+            const newSessionId = createResult.sessionId
 
-            // Rebind the new session to the workspace if workspaceId exists
-            if (stoppedState.workspaceId) {
-              try {
-                await bindSessionToWorkspace(v2, stoppedState.workspaceId, newSessionId)
-                logger.log(`loop-restart: workspace ${stoppedState.workspaceId} bound to session ${newSessionId}`)
-              } catch (bindErr) {
-                logger.error('loop-restart: failed to bind session to workspace; clearing workspace id', bindErr)
-                // Clear workspace id so the re-inserted row does not advertise a nonexistent attachment.
-                // Preserve hostSessionId so post-completion TUI redirect still works.
-                stoppedState.workspaceId = undefined
-                bindFailed = true
-              }
+            if (createResult.bindFailed) {
+              stoppedState.workspaceId = undefined
+              bindFailed = true
             }
 
             loopService.deleteState(stoppedState.loopName!)
@@ -664,20 +630,13 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
           const newSessionId = outcome.newSessionId
 
-          if (outcome.bindFailed && v2.tui) {
-            v2.tui.publish({
+          if (outcome.bindFailed) {
+            publishWorkspaceDetachedToast({
+              v2,
               directory: stoppedState.projectDir ?? stoppedState.worktreeDir!,
-              body: {
-                type: 'tui.toast.show',
-                properties: {
-                  title: stoppedState.loopName!,
-                  message: 'Workspace attachment lost on restart; session continues without workspace grouping.',
-                  variant: 'warning',
-                  duration: 5000,
-                },
-              },
-            }).catch((err) => {
-              logger.error('loop-restart: failed to publish workspace-detached toast', err)
+              loopName: stoppedState.loopName!,
+              logger,
+              context: 'on restart',
             })
           }
 
@@ -741,7 +700,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
             const lines: string[] = ['Recently Completed Loops', '']
             recent.forEach((s, i) => {
-              const durationStr = formatDuration(computeElapsedSeconds(s.startedAt, s.completedAt))
+              const durationStr = formatElapsedSeconds(computeElapsedSeconds(s.startedAt, s.completedAt))
               lines.push(`${i + 1}. ${s.loopName}`)
               lines.push(`   Reason: ${s.terminationReason ?? 'unknown'} | Iterations: ${s.iteration} | Duration: ${durationStr} | Completed: ${s.completedAt ?? 'unknown'}`)
               lines.push('')
@@ -766,7 +725,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
           const lines: string[] = [`Active Loops (${active.length})`, '']
           active.forEach((s, i) => {
-            const duration = formatDuration(computeElapsedSeconds(s.startedAt))
+            const duration = formatElapsedSeconds(computeElapsedSeconds(s.startedAt))
             const iterInfo = s.maxIterations && s.maxIterations > 0 ? `${s.iteration} / ${s.maxIterations}` : `${s.iteration} (unlimited)`
             const sessionStatus = statuses[s.sessionId]?.type ?? 'unavailable'
             const modeIndicator = !s.worktree ? ' (in-place)' : ''
@@ -783,7 +742,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             lines.push('')
             const limitedRecent = recent.slice(0, 10)
             limitedRecent.forEach((s, i) => {
-              const durationStr = formatDuration(computeElapsedSeconds(s.startedAt, s.completedAt))
+              const durationStr = formatElapsedSeconds(computeElapsedSeconds(s.startedAt, s.completedAt))
               lines.push(`${i + 1}. ${s.loopName}`)
               lines.push(`   Reason: ${s.terminationReason ?? 'unknown'} | Iterations: ${s.iteration} | Duration: ${durationStr} | Completed: ${s.completedAt ?? 'unknown'}`)
               lines.push('')
@@ -808,7 +767,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
         if (!state.active) {
           const maxInfo = state.maxIterations && state.maxIterations > 0 ? `${state.iteration} / ${state.maxIterations}` : `${state.iteration} (unlimited)`
-          const durationStr = formatDuration(computeElapsedSeconds(state.startedAt, state.completedAt))
+          const durationStr = formatElapsedSeconds(computeElapsedSeconds(state.startedAt, state.completedAt))
 
           const statusLines: string[] = [
             'Loop Status (Inactive)',
@@ -869,7 +828,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           sessionStatus = 'unavailable'
         }
 
-        const duration = formatDuration(computeElapsedSeconds(state.startedAt))
+        const duration = formatElapsedSeconds(computeElapsedSeconds(state.startedAt))
 
         const stallInfo = loopHandler.getStallInfo(state.loopName!)
         const secondsSinceActivity = stallInfo

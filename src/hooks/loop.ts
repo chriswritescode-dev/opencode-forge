@@ -5,13 +5,13 @@ import { MAX_RETRIES, MAX_CONSECUTIVE_STALLS } from '../services/loop'
 import type { Logger, PluginConfig } from '../types'
 import { retryWithModelFallback } from '../utils/model-fallback'
 import { resolveLoopModel, resolveLoopAuditorModel } from '../utils/loop-helpers'
-import { execSync, spawnSync } from 'child_process'
-import { resolve } from 'path'
+import { spawnSync } from 'child_process'
 import type { createSandboxManager } from '../sandbox/manager'
 import { buildWorktreeCompletionPayload, writeWorktreeCompletionLog } from '../services/worktree-log'
 import { buildLoopPermissionRuleset } from '../constants/loop'
 import { agents } from '../agents'
-import { bindSessionToWorkspace } from '../workspace/forge-worktree'
+import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
+import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 
 export interface LoopEventHandler {
   onEvent(input: { event: { type: string; properties?: Record<string, unknown> } }): Promise<void>
@@ -60,27 +60,6 @@ export function createLoopEventHandler(
     return nextPromise
   }
 
-  function notifyWorkspaceDetached(loopName: string): void {
-    if (!v2Client.tui) return
-    const state = loopService.getAnyState(loopName)
-    const directory = state?.projectDir ?? state?.worktreeDir
-    if (!directory) return
-    v2Client.tui.publish({
-      directory,
-      body: {
-        type: 'tui.toast.show',
-        properties: {
-          title: loopName,
-          message: 'Workspace attachment lost; session continues without workspace grouping.',
-          variant: 'warning',
-          duration: 5000,
-        },
-      },
-    }).catch((err) => {
-      logger.error('Loop: failed to publish workspace-detached toast', err)
-    })
-  }
-
   async function commitAndCleanupWorktree(state: LoopState): Promise<{ committed: boolean; cleaned: boolean }> {
     if (!state.worktree) {
       logger.log(`Loop: in-place mode, skipping commit and cleanup`)
@@ -118,31 +97,14 @@ export function createLoopEventHandler(
     }
 
     if (state.worktreeDir && state.worktreeBranch) {
-      try {
-        const gitCommonDir = execSync('git rev-parse --git-common-dir', { cwd: state.worktreeDir, encoding: 'utf-8' }).trim()
-        const gitRoot = resolve(state.worktreeDir, gitCommonDir, '..')
-        const removeResult = spawnSync('git', ['worktree', 'remove', '-f', state.worktreeDir], { cwd: gitRoot, encoding: 'utf-8' })
-        if (removeResult.status !== 0) {
-          throw new Error(removeResult.stderr || 'git worktree remove failed')
-        }
-        cleaned = true
-        logger.log(`Loop: removed worktree ${state.worktreeDir}, branch ${state.worktreeBranch} preserved`)
-        
-        // Delete graph cache for this worktree scope after successful worktree removal
-        if (state.worktreeDir && projectId && dataDir) {
-          try {
-            const { deleteGraphCacheScope } = await import('../storage/graph-projects')
-            const deleted = deleteGraphCacheScope(projectId, state.worktreeDir, dataDir)
-            if (deleted) {
-              logger.log(`Loop: deleted graph cache for worktree ${state.worktreeDir}`)
-            }
-          } catch (err) {
-            logger.error(`Loop: failed to delete graph cache for worktree ${state.worktreeDir}`, err)
-          }
-        }
-      } catch (err) {
-        logger.error(`Loop: failed to remove worktree ${state.worktreeDir}`, err)
-      }
+      const result = await cleanupLoopWorktree({
+        worktreeDir: state.worktreeDir,
+        projectId,
+        dataDir,
+        logPrefix: 'Loop',
+        logger,
+      })
+      cleaned = result.removed
     }
 
     return { committed, cleaned }
@@ -457,44 +419,31 @@ export function createLoopEventHandler(
       agentExclusions,
     })
 
-    const createParams: {
-      title: string
-      directory: string
-      permission: ReturnType<typeof buildLoopPermissionRuleset>
-      workspaceID?: string
-    } = {
+    const createResult = await createLoopSessionWithWorkspace({
+      v2: v2Client,
       title: state.loopName,
       directory: sessionDir,
       permission: permissionRuleset,
+      workspaceId: state.workspaceId,
+      logPrefix: 'Loop',
+      logger,
+    })
+
+    if (!createResult) {
+      throw new Error('Failed to create new session.')
     }
 
-    // Preserve workspace attachment if the loop has a workspaceId
-    if (state.workspaceId) {
-      createParams.workspaceID = state.workspaceId
-    }
+    const newSessionId = createResult.sessionId
 
-    const createResult = await v2Client.session.create(createParams)
-
-    if (createResult.error || !createResult.data) {
-      throw new Error(`Failed to create new session: ${createResult.error}`)
-    }
-
-    const newSessionId = createResult.data.id
-
-    // Rebind the new session to the workspace if workspaceId exists
-    if (state.workspaceId) {
-      try {
-        await bindSessionToWorkspace(v2Client, state.workspaceId, newSessionId)
-        logger.log(`Loop: workspace ${state.workspaceId} bound to rotated session ${newSessionId}`)
-      } catch (bindErr) {
-        logger.error('Loop: failed to bind rotated session to workspace; clearing persisted workspace id', bindErr)
-        // Clear workspace id with an UPDATE so it doesn't advertise a nonexistent attachment.
-        // Using setState here would throw because applyRotation below will update the same row.
-        // Preserve host_session_id so post-completion TUI redirect still works.
-        loopService.clearWorkspaceId(loopName)
-        state.workspaceId = undefined
-        notifyWorkspaceDetached(loopName)
-      }
+    if (createResult.bindFailed) {
+      loopService.clearWorkspaceId(loopName)
+      state.workspaceId = undefined
+      publishWorkspaceDetachedToast({
+        v2: v2Client,
+        directory: state.projectDir ?? state.worktreeDir,
+        loopName,
+        logger,
+      })
     }
 
     const oldRetryTimeout = retryTimeouts.get(loopName)
