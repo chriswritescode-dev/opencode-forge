@@ -4,7 +4,7 @@ import { mkdirSync, rmSync, writeFileSync, existsSync } from 'fs'
 import { join, sep } from 'path'
 import { execSync } from 'child_process'
 import type { Logger } from '../src/types'
-import type { GraphService } from '../src/graph/service'
+import type { GraphService } from '../src/graph'
 
 const TEST_DIR = '/tmp/opencode-graph-hooks-test-' + Date.now()
 

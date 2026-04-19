@@ -1,6 +1,6 @@
 import { describe, test, expect, mock } from 'bun:test'
 import { createGraphCommandEventHook } from '../src/hooks/graph-command'
-import type { GraphService } from '../src/graph/service'
+import type { GraphService } from '../src/graph'
 
 describe('Graph command event hook', () => {
   const mockLogger = {

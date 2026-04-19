@@ -1,6 +1,6 @@
 import { test, expect, describe } from 'bun:test'
 import { createGraphTools } from '../src/tools/graph'
-import type { GraphService } from '../src/graph/service'
+import type { GraphService } from '../src/graph'
 import type { GraphStatusRepo } from '../src/storage/repos/graph-status-repo'
 
 // Mock graph service
