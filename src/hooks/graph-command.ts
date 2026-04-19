@@ -6,7 +6,7 @@
  * This replaces the invalid shared-module bridge approach.
  */
 
-import type { GraphService } from '../graph/service'
+import type { GraphService } from '../graph'
 import type { Logger } from '../types'
 
 export interface GraphCommandHookInput {

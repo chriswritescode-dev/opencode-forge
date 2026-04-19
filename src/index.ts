@@ -142,7 +142,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         // Guarded auto-scan if enabled - checks cache freshness before scanning
         const autoScan = config.graph?.autoScan ?? true
         if (autoScan) {
-          graphService.ensureStartupIndex().catch((err) => {
+          graphService.ensureStartupIndex().catch((err: unknown) => {
             logger.error('Graph startup index check failed', err)
           })
         }

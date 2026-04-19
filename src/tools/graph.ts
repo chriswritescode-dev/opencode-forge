@@ -1,6 +1,6 @@
 import { tool } from '@opencode-ai/plugin'
 import type { ToolContext } from './types'
-import type { GraphService } from '../graph/service'
+import type { GraphService } from '../graph'
 
 const z = tool.schema
 

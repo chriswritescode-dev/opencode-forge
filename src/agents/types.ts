@@ -1,3 +1,4 @@
+// Public interface — kept even if unused internally
 /**
  * Available agent roles in the plugin.
  */

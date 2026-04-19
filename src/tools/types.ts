@@ -5,7 +5,7 @@ import type { createLoopEventHandler } from '../hooks'
 import type { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2'
 import type { PluginInput } from '@opencode-ai/plugin'
 import type { createSandboxManager } from '../sandbox/manager'
-import type { GraphService } from '../graph/service'
+import type { GraphService } from '../graph'
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../storage/repos/review-findings-repo'
 import type { GraphStatusRepo } from '../storage/repos/graph-status-repo'
@@ -50,5 +50,4 @@ export interface ToolContext {
   /** Loops repo for loop storage. */
   loopsRepo: LoopsRepo
 }
-
 

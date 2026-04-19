@@ -1,6 +1,6 @@
 import type { Hooks } from '@opencode-ai/plugin'
 import type { Logger } from '../types'
-import type { GraphService } from '../graph/service'
+import type { GraphService } from '../graph'
 import { join, isAbsolute, normalize, resolve, sep } from 'path'
 import { execFileSync } from 'child_process'
 
