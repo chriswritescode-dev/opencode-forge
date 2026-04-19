@@ -1,3 +1,4 @@
+// Public interface — kept even if unused internally
 /** Languages supported by tree-sitter backend */
 export type Language =
   | 'typescript'

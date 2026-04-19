@@ -7,12 +7,12 @@ const VERSION_CACHE_TTL_MS = 5 * 60 * 1000
 
 let cachedVersion: { value: string | null; expiresAt: number } | null = null
 
-export function resolveOpencodeCacheDir(): string {
+function resolveOpencodeCacheDir(): string {
   const xdgCacheHome = process.env['XDG_CACHE_HOME'] || join(homedir(), '.cache')
   return join(xdgCacheHome, 'opencode')
 }
 
-export async function fetchLatestVersion(): Promise<string | null> {
+async function fetchLatestVersion(): Promise<string | null> {
   if (cachedVersion && Date.now() < cachedVersion.expiresAt) {
     return cachedVersion.value
   }
@@ -29,24 +29,24 @@ export async function fetchLatestVersion(): Promise<string | null> {
   }
 }
 
-export function getCurrentVersion(): string {
+function getCurrentVersion(): string {
   return VERSION
 }
 
-export interface UpgradeResult {
+interface UpgradeResult {
   upgraded: boolean
   from: string
   to: string
   message: string
 }
 
-export interface UpgradeCheckResult {
+interface UpgradeCheckResult {
   current: string
   latest: string | null
   updateAvailable: boolean
 }
 
-export function compareVersions(a: string, b: string): number {
+function compareVersions(a: string, b: string): number {
   const aParts = a.split('.').map(Number)
   const bParts = b.split('.').map(Number)
   for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
@@ -66,7 +66,7 @@ export async function checkForUpdate(): Promise<UpgradeCheckResult> {
   return { current, latest, updateAvailable }
 }
 
-export function updateCachePackageJson(cacheDir: string, version: string): void {
+function updateCachePackageJson(cacheDir: string, version: string): void {
   const packageJsonPath = join(cacheDir, 'package.json')
   if (!existsSync(packageJsonPath)) {
     return
@@ -128,14 +128,4 @@ export async function performUpgrade(
     to: latest,
     message: `Successfully upgraded from v${current} to v${latest}`,
   }
-}
-
-export function formatUpgradeCheck(check: UpgradeCheckResult): string {
-  if (check.latest === null) {
-    return `v${check.current} (unable to check for updates)`
-  }
-  if (check.updateAvailable) {
-    return `v${check.current} → v${check.latest} available. Run oc-forge upgrade to update.`
-  }
-  return `v${check.current} (latest)`
 }

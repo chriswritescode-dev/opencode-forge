@@ -1,8 +1,9 @@
 import { Database } from 'bun:sqlite'
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
 import { join } from 'path'
-import { hashProjectId, hashGraphCacheScope } from '../storage/graph-projects'
+import { hashProjectId, hashGraphCacheScope } from './scope-hash'
 import { openSqliteWithIntegrityGuard, cleanupOrphanedShmFile } from '../storage/sqlite-open'
+import type { GraphScope } from './scope-types'
 
 // Track database instances for cleanup
 const databaseInstances: Map<string, Database> = new Map()
@@ -15,9 +16,7 @@ const GRAPH_METADATA_FILE = 'graph-metadata.json'
 /**
  * Graph cache metadata structure stored in the metadata file
  */
-export interface GraphCacheMetadata {
-  projectId: string
-  cwd: string
+export interface GraphCacheMetadata extends GraphScope {
   createdAt: number
   /** Timestamp of the last successful full scan */
   lastIndexedAt?: number

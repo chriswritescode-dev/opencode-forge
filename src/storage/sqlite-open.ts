@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite'
 import { existsSync, mkdirSync, unlinkSync } from 'fs'
 import { dirname } from 'path'
 
-export interface SqliteOpenOptions {
+interface SqliteOpenOptions {
   /** Bootstrap schema (runs on every successful open — must be idempotent, e.g. CREATE TABLE IF NOT EXISTS). */
   bootstrap: (db: Database) => void
   /** Pragmas to run after open and on fresh-db creation. */

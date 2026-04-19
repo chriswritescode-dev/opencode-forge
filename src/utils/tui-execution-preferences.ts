@@ -11,7 +11,7 @@ import { join } from 'path'
 import { resolveDataDir, createTuiPrefsRepo } from '../storage'
 import type { PluginConfig } from '../types'
 
-export interface ExecutionPreferences {
+interface ExecutionPreferences {
   mode: 'New session' | 'Execute here' | 'Loop (worktree)' | 'Loop'
   executionModel?: string
   auditorModel?: string

@@ -7,10 +7,12 @@
 
 import { existsSync, readdirSync, statSync, rmSync } from 'fs'
 import { join } from 'path'
-import { createHash } from 'crypto'
 import { resolveDataDir } from './database'
 import { readGraphCacheMetadata } from '../graph/database'
 import { resolveProjectNames } from '../cli/utils'
+import { hashProjectId, hashGraphCacheScope } from '../graph/scope-hash'
+
+export { hashProjectId, hashGraphCacheScope } from '../graph/scope-hash'
 
 /**
  * Result of graph cache directory enumeration
@@ -56,25 +58,6 @@ function indexLegacyProjectHashes(nameMap: Map<string, string>): Map<string, str
  * @param projectId - The project ID to hash
  * @returns 16-character hex string
  */
-export function hashProjectId(projectId: string): string {
-  return createHash('sha256').update(projectId).digest('hex').substring(0, 16)
-}
-
-/**
- * Hashes a graph cache scope using SHA256 and returns the first 16 hex characters.
- * This creates a unique cache identity from projectId and cwd to ensure worktree
- * sessions with the same logical project ID use separate caches.
- * 
- * @param projectId - The project ID
- * @param cwd - The working directory scope
- * @returns 16-character hex string
- */
-export function hashGraphCacheScope(projectId: string, cwd: string): string {
-  const normalizedCwd = cwd.replace(/\/$/, '')
-  const scopeInput = `${projectId}::${normalizedCwd}`
-  return hashProjectId(scopeInput)
-}
-
 /**
  * Resolves the graph cache directory path for a given project ID and cwd.
  * The cache identity is derived from both projectId and normalized cwd to ensure
@@ -87,9 +70,7 @@ export function hashGraphCacheScope(projectId: string, cwd: string): string {
  */
 export function resolveGraphCacheDir(projectId: string, cwd: string, dataDir?: string): string {
   const resolvedDataDir = dataDir ?? resolveDataDir()
-  const normalizedCwd = cwd.replace(/\/$/, '')
-  const scopeInput = `${projectId}::${normalizedCwd}`
-  const cacheHash = hashProjectId(scopeInput)
+  const cacheHash = hashGraphCacheScope(projectId, cwd)
   return join(resolvedDataDir, 'graph', cacheHash)
 }
 

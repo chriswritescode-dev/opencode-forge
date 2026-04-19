@@ -1,4 +1,4 @@
-export interface PartialMatchResult<T> {
+interface PartialMatchResult<T> {
   match: T | null
   candidates: T[]
 }

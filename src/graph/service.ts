@@ -27,7 +27,7 @@ import { INDEXABLE_EXTENSIONS } from './constants'
 import { IGNORED_DIRS, IGNORED_EXTS } from './utils'
 import type { GraphState, GraphStatsPayload } from '../utils/graph-status-store'
 
-export interface GraphService {
+interface GraphService {
   /** Whether the graph service is fully initialized and ready to respond to queries. */
   readonly ready: boolean
   /**
@@ -169,7 +169,7 @@ export interface GraphService {
   ensureStartupIndex(): Promise<'scanned' | 'skipped'>
 }
 
-export type GraphStatusCallback = (state: GraphState, stats?: GraphStatsPayload, message?: string) => void
+type GraphStatusCallback = (state: GraphState, stats?: GraphStatsPayload, message?: string) => void
 
 /**
  * Configuration for creating a graph service instance.

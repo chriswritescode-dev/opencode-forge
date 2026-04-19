@@ -34,7 +34,7 @@ export type LoopInfo = {
  * Gets the database path used by the memory plugin.
  * Exported for testing purposes.
  */
-export function getDbPath(): string {
+function getDbPath(): string {
   return join(resolveDataDir(), 'graph.db')
 }
 

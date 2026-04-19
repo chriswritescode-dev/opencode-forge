@@ -8,7 +8,7 @@ import { EventEmitter } from 'events'
  * Configure via GRAPH_RPC_TIMEOUT_MS environment variable.
  * Default: 120000 (120 seconds)
  */
-export const RPC_TIMEOUT_MS = parseInt(process.env.GRAPH_RPC_TIMEOUT_MS ?? '120000', 10)
+const RPC_TIMEOUT_MS = parseInt(process.env.GRAPH_RPC_TIMEOUT_MS ?? '120000', 10)
 
 /**
  * Generic RPC client for worker communication

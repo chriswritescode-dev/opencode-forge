@@ -58,7 +58,7 @@ function bootstrapForgeSchema(db: Database): void {
   runMigrations(db)
 }
 
-export interface ForgeDatabaseOptions {
+interface ForgeDatabaseOptions {
   completedLoopTtlMs?: number
 }
 

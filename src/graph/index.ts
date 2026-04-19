@@ -1,7 +1,10 @@
 // Graph module public exports
 
-export { createGraphService } from './service'
-export type { GraphService } from './service'
+import { createGraphService } from './service'
+
+export { createGraphService }
+// Public interface — kept even if unused internally
+export type GraphService = ReturnType<typeof createGraphService>
 export { GraphClient } from './client'
 export { initializeGraphDatabase, closeGraphDatabase, ensureGraphDirectory } from './database'
 export { RpcClient, RpcServer } from './rpc'
