@@ -70,6 +70,7 @@ export interface LoopService {
   setLastAuditResult(name: string, text: string | null): void
   setSandboxContainer(name: string, containerName: string | null): void
   setStatus(name: string, status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'): void
+  clearWorkspaceId(name: string): void
   applyRotation(name: string, opts: { sessionId: string; iteration: number; phase?: 'coding' | 'auditing'; auditCount?: number; lastAuditResult?: string | null; resetError?: boolean }): void
   terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
 }
@@ -398,6 +399,10 @@ export function createLoopService(
     loopsRepo.setSandboxContainer(projectId, name, containerName)
   }
 
+  function clearWorkspaceId(name: string): void {
+    loopsRepo.clearWorkspaceId(projectId, name)
+  }
+
   return {
     getActiveState,
     getAnyState,
@@ -429,6 +434,7 @@ export function createLoopService(
     setSandboxContainer,
     applyRotation,
     terminate,
+    clearWorkspaceId,
   }
 }
 

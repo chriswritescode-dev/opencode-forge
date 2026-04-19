@@ -383,4 +383,60 @@ describe('SandboxManager', () => {
       expect(calls).toContain('oc-forge-sandbox-second')
     })
   })
+
+  describe('isLive', () => {
+    test('returns false when worktree is not in active map', async () => {
+      const mockDocker = createMockDockerService()
+      const logger = createMockLogger()
+      const manager = createSandboxManager(
+        mockDocker as unknown as DockerService,
+        { image: 'oc-forge-sandbox:latest' },
+        logger
+      )
+
+      const result = await manager.isLive('unknown')
+
+      expect(result).toBe(false)
+    })
+
+    test('returns true when worktree is in map and Docker reports container running', async () => {
+      const mockDocker = createMockDockerService()
+      const logger = createMockLogger()
+      const manager = createSandboxManager(
+        mockDocker as unknown as DockerService,
+        { image: 'oc-forge-sandbox:latest' },
+        logger
+      )
+
+      await manager.start('test', '/path')
+
+      const result = await manager.isLive('test')
+
+      expect(result).toBe(true)
+      expect(manager.isActive('test')).toBe(true)
+    })
+
+    test('returns false and removes stale map entry when Docker reports container not running', async () => {
+      const mockDocker = createMockDockerService()
+      const logger = createMockLogger()
+      const manager = createSandboxManager(
+        mockDocker as unknown as DockerService,
+        { image: 'oc-forge-sandbox:latest' },
+        logger
+      )
+
+      // Start a container to add it to the active map
+      await manager.start('test', '/path')
+      expect(manager.isActive('test')).toBe(true)
+
+      // Simulate Docker reporting the container is not running
+      mockDocker.setRunning('oc-forge-sandbox-test', false)
+
+      const result = await manager.isLive('test')
+
+      expect(result).toBe(false)
+      // Stale map entry should have been removed
+      expect(manager.isActive('test')).toBe(false)
+    })
+  })
 })

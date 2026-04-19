@@ -514,12 +514,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
              return `No loop found for "${args.name}".\n\nAvailable loops:\n${available}`
           }
 
-          if (stoppedState.active) {
-            if (!args.force) {
-              return `Loop "${stoppedState.loopName}" is currently active. Use restart with force: true to force-restart a stuck loop.`
-            }
-            try { await v2.session.abort({ sessionID: stoppedState.sessionId }) } catch {}
-            loopService.unregisterLoopSession(stoppedState.sessionId)
+          if (stoppedState.active && !args.force) {
+            return `Loop "${stoppedState.loopName}" is currently active. Use restart with force: true to force-restart a stuck loop.`
           }
 
           if (stoppedState.terminationReason === 'completed') {
@@ -539,60 +535,151 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             agentExclusions,
           })
 
-          const createParams = {
-            title: stoppedState.loopName,
-            directory: stoppedState.worktreeDir!,
-            permission: permissionRuleset,
-          }
-
-          const createResult = await v2.session.create(createParams)
-
-          if (createResult.error || !createResult.data) {
-             logger.error(`loop-restart: failed to create session`, createResult.error)
-            return `Failed to create new session for restart.`
-          }
-
-          const newSessionId = createResult.data.id
-
-          loopService.deleteState(stoppedState.loopName!)
-
           const restartSandbox = isSandboxEnabled(config, ctx.sandboxManager)
-          if (restartSandbox) {
-            try {
-              const sbxResult = await ctx.sandboxManager!.start(stoppedState.loopName!, stoppedState.worktreeDir!)
-               logger.log(`loop-restart: started sandbox container ${sbxResult.containerName}`)
-            } catch (err) {
-               logger.error(`loop-restart: failed to start sandbox container`, err)
-              return `Restart failed: could not start sandbox container.`
+
+          // Perform all state-mutating work under the per-loop exclusive lock so an in-flight
+          // audit/idle handler cannot race and rotate the loop into a second replacement session.
+          // The lock covers: abort → clear timers → re-read state → create session → bind workspace
+          // → deleteState → start sandbox → setState → registerLoopSession. Once registerLoopSession
+          // has written the new sessionId, the staleness guard in onEvent() will reject any queued
+          // event for the old sessionId.
+          type RestartOutcome =
+            | { ok: true; newSessionId: string; sandbox: boolean; bindFailed: boolean }
+            | { ok: false; error: string }
+
+          let bindFailed = false
+
+          const outcome = await loopHandler.runExclusive<RestartOutcome>(stoppedState.loopName, async () => {
+            // For active force-restart, re-read the latest state inside the lock and invalidate
+            // the old session. For inactive restarts, stoppedState is already authoritative.
+            if (stoppedState.active) {
+              const latestState = loopService.getActiveState(stoppedState.loopName)
+              if (latestState?.active) {
+                try { await v2.session.abort({ sessionID: latestState.sessionId }) } catch {}
+                loopHandler.clearLoopTimers(stoppedState.loopName)
+                loopService.unregisterLoopSession(latestState.sessionId)
+                // Refresh stoppedState fields from the latest snapshot
+                stoppedState.sessionId = latestState.sessionId
+                stoppedState.iteration = latestState.iteration
+                stoppedState.prompt = latestState.prompt
+                stoppedState.worktreeDir = latestState.worktreeDir
+                stoppedState.projectDir = latestState.projectDir
+                stoppedState.worktreeBranch = latestState.worktreeBranch
+                stoppedState.maxIterations = latestState.maxIterations
+                stoppedState.audit = latestState.audit
+                stoppedState.executionModel = latestState.executionModel
+                stoppedState.auditorModel = latestState.auditorModel
+                stoppedState.workspaceId = latestState.workspaceId
+                stoppedState.hostSessionId = latestState.hostSessionId
+                stoppedState.sandbox = latestState.sandbox
+              }
             }
+
+            const createParams: {
+              title: string
+              directory: string
+              permission: ReturnType<typeof buildLoopPermissionRuleset>
+              workspaceID?: string
+            } = {
+              title: stoppedState.loopName,
+              directory: stoppedState.worktreeDir!,
+              permission: permissionRuleset,
+            }
+
+            // Preserve workspace attachment if the loop has a workspaceId
+            if (stoppedState.workspaceId) {
+              createParams.workspaceID = stoppedState.workspaceId
+            }
+
+            const createResult = await v2.session.create(createParams)
+
+            if (createResult.error || !createResult.data) {
+              logger.error(`loop-restart: failed to create session`, createResult.error)
+              return { ok: false, error: `Failed to create new session for restart.` }
+            }
+
+            const newSessionId = createResult.data.id
+
+            // Rebind the new session to the workspace if workspaceId exists
+            if (stoppedState.workspaceId) {
+              try {
+                await bindSessionToWorkspace(v2, stoppedState.workspaceId, newSessionId)
+                logger.log(`loop-restart: workspace ${stoppedState.workspaceId} bound to session ${newSessionId}`)
+              } catch (bindErr) {
+                logger.error('loop-restart: failed to bind session to workspace; clearing workspace id', bindErr)
+                // Clear workspace id so the re-inserted row does not advertise a nonexistent attachment.
+                // Preserve hostSessionId so post-completion TUI redirect still works.
+                stoppedState.workspaceId = undefined
+                bindFailed = true
+              }
+            }
+
+            loopService.deleteState(stoppedState.loopName!)
+
+            if (restartSandbox) {
+              try {
+                const sbxResult = await ctx.sandboxManager!.start(stoppedState.loopName!, stoppedState.worktreeDir!)
+                logger.log(`loop-restart: started sandbox container ${sbxResult.containerName}`)
+              } catch (err) {
+                logger.error(`loop-restart: failed to start sandbox container`, err)
+                return { ok: false, error: `Restart failed: could not start sandbox container.` }
+              }
+            }
+
+            const newState: LoopState = {
+              active: true,
+              sessionId: newSessionId,
+              loopName: stoppedState.loopName,
+              worktreeDir: stoppedState.worktreeDir!,
+              projectDir: stoppedState.projectDir || stoppedState.worktreeDir!,
+              worktreeBranch: stoppedState.worktreeBranch,
+              iteration: stoppedState.iteration!,
+              maxIterations: stoppedState.maxIterations!,
+              startedAt: new Date().toISOString(),
+              prompt: stoppedState.prompt,
+              phase: 'coding',
+              audit: stoppedState.audit,
+              errorCount: 0,
+              auditCount: 0,
+              worktree: stoppedState.worktree,
+              sandbox: restartSandbox,
+              sandboxContainer: restartSandbox
+                  ? ctx.sandboxManager?.docker.containerName(stoppedState.loopName!)
+                  : undefined,
+              executionModel: stoppedState.executionModel,
+              auditorModel: stoppedState.auditorModel,
+              workspaceId: stoppedState.workspaceId,
+              hostSessionId: stoppedState.hostSessionId,
+            }
+
+            loopService.setState(stoppedState.loopName!, newState)
+            loopService.registerLoopSession(newSessionId, stoppedState.loopName!)
+
+            return { ok: true, newSessionId, sandbox: restartSandbox, bindFailed }
+          })
+
+          if (!outcome.ok) {
+            return outcome.error
           }
 
-          const newState: LoopState = {
-            active: true,
-            sessionId: newSessionId,
-            loopName: stoppedState.loopName,
-            worktreeDir: stoppedState.worktreeDir!,
-            projectDir: stoppedState.projectDir || stoppedState.worktreeDir!,
-            worktreeBranch: stoppedState.worktreeBranch,
-            iteration: stoppedState.iteration!,
-            maxIterations: stoppedState.maxIterations!,
-            startedAt: new Date().toISOString(),
-            prompt: stoppedState.prompt,
-            phase: 'coding',
-            audit: stoppedState.audit,
-            errorCount: 0,
-            auditCount: 0,
-            worktree: stoppedState.worktree,
-            sandbox: restartSandbox,
-            sandboxContainer: restartSandbox
-                ? ctx.sandboxManager?.docker.containerName(stoppedState.loopName!)
-                : undefined,
-            executionModel: stoppedState.executionModel,
-            auditorModel: stoppedState.auditorModel,
-          }
+          const newSessionId = outcome.newSessionId
 
-          loopService.setState(stoppedState.loopName!, newState)
-          loopService.registerLoopSession(newSessionId, stoppedState.loopName!)
+          if (outcome.bindFailed && v2.tui) {
+            v2.tui.publish({
+              directory: stoppedState.projectDir ?? stoppedState.worktreeDir!,
+              body: {
+                type: 'tui.toast.show',
+                properties: {
+                  title: stoppedState.loopName!,
+                  message: 'Workspace attachment lost on restart; session continues without workspace grouping.',
+                  variant: 'warning',
+                  duration: 5000,
+                },
+              },
+            }).catch((err) => {
+              logger.error('loop-restart: failed to publish workspace-detached toast', err)
+            })
+          }
 
           const promptText = stoppedState.prompt ?? ''
 

@@ -11,6 +11,7 @@ import type { createSandboxManager } from '../sandbox/manager'
 import { buildWorktreeCompletionPayload, writeWorktreeCompletionLog } from '../services/worktree-log'
 import { buildLoopPermissionRuleset } from '../constants/loop'
 import { agents } from '../agents'
+import { bindSessionToWorkspace } from '../workspace/forge-worktree'
 
 export interface LoopEventHandler {
   onEvent(input: { event: { type: string; properties?: Record<string, unknown> } }): Promise<void>
@@ -19,6 +20,8 @@ export interface LoopEventHandler {
   startWatchdog(loopName: string): void
   getStallInfo(loopName: string): { consecutiveStalls: number; lastActivityTime: number } | null
   cancelBySessionId(sessionId: string): Promise<boolean>
+  runExclusive<T>(loopName: string, fn: () => Promise<T>): Promise<T>
+  clearLoopTimers(loopName: string): void
 }
 
 
@@ -40,20 +43,42 @@ export function createLoopEventHandler(
   const stallWatchdogs = new Map<string, NodeJS.Timeout>()
   const consecutiveStalls = new Map<string, number>()
   const watchdogRunning = new Map<string, boolean>()
-  const stateLocks = new Map<string, Promise<void>>()
+  const stateLocks = new Map<string, Promise<unknown>>()
 
   const IDLE_RETRY_DELAY_MS = 1500
   const MAX_IDLE_RETRIES = 1
 
-  function withStateLock(loopName: string, fn: () => Promise<void>): Promise<void> {
+  function withStateLock<T>(loopName: string, fn: () => Promise<T>): Promise<T> {
     const prev = stateLocks.get(loopName) ?? Promise.resolve()
-    const next = prev.then(fn, fn).finally(() => {
-      if (stateLocks.get(loopName) === next) {
+    const nextPromise = prev.catch(() => undefined).then(() => fn())
+    stateLocks.set(loopName, nextPromise)
+    void nextPromise.finally(() => {
+      if (stateLocks.get(loopName) === nextPromise) {
         stateLocks.delete(loopName)
       }
     })
-    stateLocks.set(loopName, next)
-    return next
+    return nextPromise
+  }
+
+  function notifyWorkspaceDetached(loopName: string): void {
+    if (!v2Client.tui) return
+    const state = loopService.getAnyState(loopName)
+    const directory = state?.projectDir ?? state?.worktreeDir
+    if (!directory) return
+    v2Client.tui.publish({
+      directory,
+      body: {
+        type: 'tui.toast.show',
+        properties: {
+          title: loopName,
+          message: 'Workspace attachment lost; session continues without workspace grouping.',
+          variant: 'warning',
+          duration: 5000,
+        },
+      },
+    }).catch((err) => {
+      logger.error('Loop: failed to publish workspace-detached toast', err)
+    })
   }
 
   async function commitAndCleanupWorktree(state: LoopState): Promise<{ committed: boolean; cleaned: boolean }> {
@@ -432,10 +457,20 @@ export function createLoopEventHandler(
       agentExclusions,
     })
 
-    const createParams = {
+    const createParams: {
+      title: string
+      directory: string
+      permission: ReturnType<typeof buildLoopPermissionRuleset>
+      workspaceID?: string
+    } = {
       title: state.loopName,
       directory: sessionDir,
       permission: permissionRuleset,
+    }
+
+    // Preserve workspace attachment if the loop has a workspaceId
+    if (state.workspaceId) {
+      createParams.workspaceID = state.workspaceId
     }
 
     const createResult = await v2Client.session.create(createParams)
@@ -445,6 +480,22 @@ export function createLoopEventHandler(
     }
 
     const newSessionId = createResult.data.id
+
+    // Rebind the new session to the workspace if workspaceId exists
+    if (state.workspaceId) {
+      try {
+        await bindSessionToWorkspace(v2Client, state.workspaceId, newSessionId)
+        logger.log(`Loop: workspace ${state.workspaceId} bound to rotated session ${newSessionId}`)
+      } catch (bindErr) {
+        logger.error('Loop: failed to bind rotated session to workspace; clearing persisted workspace id', bindErr)
+        // Clear workspace id with an UPDATE so it doesn't advertise a nonexistent attachment.
+        // Using setState here would throw because applyRotation below will update the same row.
+        // Preserve host_session_id so post-completion TUI redirect still works.
+        loopService.clearWorkspaceId(loopName)
+        state.workspaceId = undefined
+        notifyWorkspaceDetached(loopName)
+      }
+    }
 
     const oldRetryTimeout = retryTimeouts.get(loopName)
     if (oldRetryTimeout) {
@@ -852,18 +903,28 @@ export function createLoopEventHandler(
       if (isAbort) {
         const loopName = loopService.resolveLoopName(eventSessionId)
         if (!loopName) return
-        const state = loopService.getActiveState(loopName)
-        if (state?.active) {
+        await withStateLock(loopName, async () => {
+          const state = loopService.getActiveState(loopName)
+          if (!state?.active) return
+          if (state.sessionId !== eventSessionId) {
+            logger.log(`Loop: ignoring stale aborted event for session ${eventSessionId} (current: ${state.sessionId})`)
+            return
+          }
           logger.log(`Loop: session ${eventSessionId} aborted, terminating loop`)
           await terminateLoop(loopName, state, 'user_aborted')
-        }
+        })
         return
       }
 
       const loopName = loopService.resolveLoopName(eventSessionId)
       if (!loopName) return
-      const state = loopService.getActiveState(loopName)
-      if (state?.active) {
+      await withStateLock(loopName, async () => {
+        const state = loopService.getActiveState(loopName)
+        if (!state?.active) return
+        if (state.sessionId !== eventSessionId) {
+          logger.log(`Loop: ignoring stale error event for session ${eventSessionId} (current: ${state.sessionId})`)
+          return
+        }
         const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
         logger.error(`Loop: session error for ${eventSessionId}: ${errorMessage}`)
         const isModelError = /provider|auth|model|api\s*error/i.test(errorMessage)
@@ -871,7 +932,7 @@ export function createLoopEventHandler(
           logger.log(`Loop: marking model as failed, will fall back to default on next iteration`)
           loopService.setModelFailed(loopName, true)
         }
-      }
+      })
       return
     }
 
@@ -950,6 +1011,25 @@ export function createLoopEventHandler(
     return true
   }
 
+  function clearLoopTimers(loopName: string): void {
+    const retryTimeout = retryTimeouts.get(loopName)
+    if (retryTimeout) {
+      clearTimeout(retryTimeout)
+      retryTimeouts.delete(loopName)
+    }
+
+    const idleRetryTimeout = idleRetryTimeouts.get(loopName)
+    if (idleRetryTimeout) {
+      clearTimeout(idleRetryTimeout)
+      idleRetryTimeouts.delete(loopName)
+    }
+    idleRetryAttempts.delete(loopName)
+  }
+
+  function runExclusive<T>(loopName: string, fn: () => Promise<T>): Promise<T> {
+    return withStateLock<T>(loopName, fn)
+  }
+
   return {
     onEvent,
     terminateAll,
@@ -957,5 +1037,7 @@ export function createLoopEventHandler(
     startWatchdog,
     getStallInfo,
     cancelBySessionId,
+    runExclusive,
+    clearLoopTimers,
   }
 }

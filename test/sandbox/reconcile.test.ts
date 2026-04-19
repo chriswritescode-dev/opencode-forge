@@ -14,6 +14,7 @@ describe('reconcileSandboxes', () => {
   beforeEach(() => {
     mockSandboxManager = {
       isActive: mock(),
+      isLive: mock(async () => true),
       getActive: mock(),
       start: mock(),
       restore: mock(),
@@ -75,6 +76,7 @@ describe('reconcileSandboxes', () => {
 
     mockLoopService.listActive.mockReturnValue([state])
     mockSandboxManager.isActive.mockReturnValue(true)
+    mockSandboxManager.isLive.mockResolvedValue(true)
     mockSandboxManager.getActive.mockReturnValue({
       containerName: 'oc-forge-sandbox-test-loop',
       projectDir: '/test/dir',
@@ -93,6 +95,7 @@ describe('reconcileSandboxes', () => {
 
     mockLoopService.listActive.mockReturnValue([state])
     mockSandboxManager.isActive.mockReturnValue(true)
+    mockSandboxManager.isLive.mockResolvedValue(true)
     mockSandboxManager.getActive.mockReturnValue({
       containerName: 'oc-forge-sandbox-test-loop',
       projectDir: '/test/dir',
@@ -172,6 +175,7 @@ describe('reconcileSandboxes', () => {
     mockLoopService.listActive.mockReturnValue([state])
     mockLoopService.getActiveState.mockReturnValue(state)
     mockSandboxManager.isActive.mockReturnValue(true)
+    mockSandboxManager.isLive.mockResolvedValue(true)
     mockSandboxManager.getActive.mockReturnValue({
       containerName: 'oc-forge-sandbox-test-loop',
       projectDir: '/test/dir',
@@ -256,5 +260,35 @@ describe('reconcileSandboxes', () => {
     // The second call should return early before calling listActive
     expect(mockLoopService.listActive).toHaveBeenCalledTimes(1)
     expect(mockSandboxManager.start).toHaveBeenCalledTimes(1)
+  })
+
+  it('should restore container when map is stale but Docker reports container missing', async () => {
+    const state = createBaseState({ sandboxContainer: 'oc-forge-sandbox-test-loop' })
+    
+    mockLoopService.listActive.mockReturnValue([state])
+    // Map says active, but isLive will check Docker
+    mockSandboxManager.isActive.mockReturnValue(true)
+    mockSandboxManager.getActive.mockReturnValue({
+      containerName: 'oc-forge-sandbox-test-loop',
+      projectDir: '/test/dir',
+      startedAt: state.startedAt,
+    })
+    // Simulate isLive checking Docker and finding container not running
+    const mockManagerWithIsLive = {
+      ...mockSandboxManager,
+      isLive: mock(async () => {
+        // Container not in Docker - stale map entry
+        return false
+      }),
+    }
+    const depsWithIsLive = {
+      ...deps,
+      sandboxManager: mockManagerWithIsLive as unknown as SandboxManager,
+    }
+    
+    await reconcileSandboxes(depsWithIsLive)
+    
+    // Should have called restore since Docker says container is not running
+    expect(mockSandboxManager.restore).toHaveBeenCalledWith('test-loop', '/test/dir', state.startedAt)
   })
 })

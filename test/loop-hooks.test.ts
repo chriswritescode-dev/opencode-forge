@@ -628,4 +628,236 @@ describe('loop-hooks integration', () => {
       rmSync(worktreeDir, { recursive: true, force: true })
     })
   })
+
+  describe('session rotation with workspace binding', () => {
+    it('binds rotated session to existing workspace', async () => {
+      const workspaceId = 'test-workspace-123'
+      let bindCalled = false
+      let boundSessionId: string | null = null
+      
+      const v2Client = {
+        session: {
+          messages: async () => ({ data: [{ info: { role: 'assistant' }, parts: [{ type: 'text' as const, text: 'Reviewed.' }] }] }),
+          promptAsync: async () => ({ data: {}, error: null }),
+          abort: async () => {},
+          status: async () => ({ data: { 'test-session': { type: 'idle' } } }),
+          create: async (opts: any) => {
+            const newId = `mock-session-${Date.now()}`
+            return { data: { id: newId }, error: undefined }
+          },
+          delete: async () => {},
+        },
+        tui: {
+          publish: async () => {},
+          selectSession: async () => {},
+        },
+        worktree: {
+          create: async () => ({ data: { directory: '/mock/worktree', branch: 'mock-branch' }, error: undefined }),
+          remove: async () => {},
+        },
+        experimental: {
+          workspace: {
+            sessionRestore: async (opts: any) => {
+              bindCalled = true
+              boundSessionId = opts.sessionID
+              return { data: {}, error: null }
+            },
+          },
+        },
+      } as any
+      
+      const { handler, service } = createTestHandler(v2Client)
+      
+      const loopName = 'test-loop-rotate-workspace'
+      const sessionId = 'test-session-rotate'
+      const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
+      const worktreeBranch = 'loop-rotate-branch'
+      
+      const loopsRepo = createLoopsRepo(db)
+      const reviewFindingsRepo = createReviewFindingsRepo(db)
+      const now = Date.now()
+      
+      const insertOk = loopsRepo.insert({
+        projectId: testProjectId,
+        loopName,
+        status: 'running',
+        currentSessionId: sessionId,
+        worktree: true,
+        worktreeDir: worktreeDir,
+        worktreeBranch,
+        projectDir: worktreeDir,
+        maxIterations: 0,
+        iteration: 1,
+        auditCount: 1,
+        errorCount: 0,
+        phase: 'auditing',
+        audit: true,
+        executionModel: null,
+        auditorModel: null,
+        modelFailed: false,
+        sandbox: false,
+        sandboxContainer: null,
+        startedAt: now,
+        completedAt: null,
+        terminationReason: null,
+        completionSummary: null,
+        workspaceId,
+        hostSessionId: 'host-123',
+      }, {
+        prompt: 'Test prompt',
+        lastAuditResult: null,
+      })
+      
+      // Add an outstanding bug finding so the loop doesn't terminate (needs to continue rotating)
+      reviewFindingsRepo.write({
+        projectId: testProjectId,
+        file: 'test.ts',
+        line: 10,
+        severity: 'bug',
+        description: 'Test bug finding',
+        scenario: 'Test scenario',
+        branch: worktreeBranch,
+      })
+      
+      // Verify the state was inserted with workspaceId
+      expect(insertOk).toBe(true)
+      expect(service.getAnyState(loopName)?.workspaceId).toBe(workspaceId)
+
+      const idleEvent = {
+        event: {
+          type: 'session.status' as const,
+          properties: {
+            status: { type: 'idle' as const },
+            sessionID: sessionId,
+          },
+        },
+      }
+      
+      await handler.onEvent(idleEvent)
+      await new Promise(resolve => setTimeout(resolve, 100))
+      
+      expect(bindCalled).toBe(true)
+      expect(boundSessionId).not.toBeNull()
+      const newState = service.getAnyState(loopName)
+      expect(newState?.workspaceId).toBe(workspaceId)
+      
+      rmSync(worktreeDir, { recursive: true, force: true })
+    })
+
+    it('clears workspaceId but preserves hostSessionId when bind fails during rotation', async () => {
+      const workspaceId = 'test-workspace-fail'
+      const hostSessionId = 'host-preserve-456'
+      const toastCalls: Array<{ variant?: string; message?: string }> = []
+
+      const v2Client = {
+        session: {
+          messages: async () => ({ data: [{ info: { role: 'assistant' }, parts: [{ type: 'text' as const, text: 'Reviewed.' }] }] }),
+          promptAsync: async () => ({ data: {}, error: null }),
+          abort: async () => {},
+          status: async () => ({ data: { 'test-session': { type: 'idle' } } }),
+          create: async () => ({ data: { id: `mock-session-${Date.now()}` }, error: undefined }),
+          delete: async () => {},
+        },
+        tui: {
+          publish: async (opts: any) => {
+            const props = opts?.body?.properties ?? {}
+            toastCalls.push({ variant: props.variant, message: props.message })
+          },
+          selectSession: async () => {},
+        },
+        worktree: {
+          create: async () => ({ data: { directory: '/mock/worktree', branch: 'mock-branch' }, error: undefined }),
+          remove: async () => {},
+        },
+        experimental: {
+          workspace: {
+            sessionRestore: async () => {
+              throw new Error('workspace gone')
+            },
+          },
+        },
+      } as any
+
+      const { handler, service } = createTestHandler(v2Client)
+
+      const loopName = 'test-loop-bind-fail'
+      const sessionId = 'test-session-bind-fail'
+      const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
+      const worktreeBranch = 'loop-bind-fail-branch'
+
+      const loopsRepo = createLoopsRepo(db)
+      const reviewFindingsRepo = createReviewFindingsRepo(db)
+      const now = Date.now()
+
+      loopsRepo.insert({
+        projectId: testProjectId,
+        loopName,
+        status: 'running',
+        currentSessionId: sessionId,
+        worktree: true,
+        worktreeDir,
+        worktreeBranch,
+        projectDir: worktreeDir,
+        maxIterations: 0,
+        iteration: 1,
+        auditCount: 1,
+        errorCount: 0,
+        phase: 'auditing',
+        audit: true,
+        executionModel: null,
+        auditorModel: null,
+        modelFailed: false,
+        sandbox: false,
+        sandboxContainer: null,
+        startedAt: now,
+        completedAt: null,
+        terminationReason: null,
+        completionSummary: null,
+        workspaceId,
+        hostSessionId,
+      }, {
+        prompt: 'Test prompt',
+        lastAuditResult: null,
+      })
+
+      reviewFindingsRepo.write({
+        projectId: testProjectId,
+        file: 'test.ts',
+        line: 10,
+        severity: 'bug',
+        description: 'Test bug finding',
+        scenario: 'Test scenario',
+        branch: worktreeBranch,
+      })
+
+      const idleEvent = {
+        event: {
+          type: 'session.status' as const,
+          properties: {
+            status: { type: 'idle' as const },
+            sessionID: sessionId,
+          },
+        },
+      }
+
+      await handler.onEvent(idleEvent)
+      await new Promise(resolve => setTimeout(resolve, 100))
+
+      const newState = service.getAnyState(loopName)
+      expect(newState).toBeDefined()
+      // workspaceId should be cleared
+      expect(newState?.workspaceId).toBeUndefined()
+      // hostSessionId must be preserved so post-completion TUI redirect still works
+      expect(newState?.hostSessionId).toBe(hostSessionId)
+      // Loop must remain active (new session registered) despite bind failure
+      expect(newState?.active).toBe(true)
+      expect(newState?.sessionId).not.toBe(sessionId)
+      // Warning toast should have been published to notify the user
+      const warningToasts = toastCalls.filter((t) => t.variant === 'warning')
+      expect(warningToasts.length).toBeGreaterThan(0)
+      expect(warningToasts[0].message).toContain('Workspace attachment lost')
+
+      rmSync(worktreeDir, { recursive: true, force: true })
+    })
+  })
 })

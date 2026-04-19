@@ -49,6 +49,7 @@ export interface LoopsRepo {
   setCurrentSessionId(projectId: string, loopName: string, sessionId: string): void
   setWorkspaceId(projectId: string, loopName: string, workspaceId: string): void
   setHostSessionId(projectId: string, loopName: string, hostSessionId: string): void
+  clearWorkspaceId(projectId: string, loopName: string): void
   setModelFailed(projectId: string, loopName: string, failed: boolean): void
   setLastAuditResult(projectId: string, loopName: string, text: string | null): void
   setSandboxContainer(projectId: string, loopName: string, containerName: string | null): void
@@ -232,6 +233,11 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     WHERE project_id = ? AND loop_name = ?
   `)
 
+  const clearWorkspaceIdStmt = db.prepare(`
+    UPDATE loops SET workspace_id = NULL
+    WHERE project_id = ? AND loop_name = ?
+  `)
+
   const setModelFailedStmt = db.prepare(`
     UPDATE loops SET model_failed = ?
     WHERE project_id = ? AND loop_name = ?
@@ -390,6 +396,10 @@ export function createLoopsRepo(db: Database): LoopsRepo {
 
     setHostSessionId(projectId: string, loopName: string, hostSessionId: string): void {
       setHostSessionIdStmt.run(hostSessionId, projectId, loopName)
+    },
+
+    clearWorkspaceId(projectId: string, loopName: string): void {
+      clearWorkspaceIdStmt.run(projectId, loopName)
     },
 
     setModelFailed(projectId: string, loopName: string, failed: boolean): void {

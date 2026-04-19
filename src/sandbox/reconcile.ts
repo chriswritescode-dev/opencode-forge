@@ -57,17 +57,23 @@ export async function reconcileSandboxes(deps: ReconcileSandboxesDeps): Promise<
       try {
         const loopName = state.loopName
 
-        // Case 1: Container is already active - ensure the persisted container name
-        // matches the manager's view. This covers both "missing" and "stale/mismatched"
-        // names (e.g. after a crash between manager start and state write).
+        // Case 1: Container is already active - verify it's actually running in Docker
+        // This prevents trusting stale in-memory state when Docker reports the container is gone
         if (sandboxManager.isActive(loopName)) {
-          const active = sandboxManager.getActive(loopName)
-          if (active && state.sandboxContainer !== active.containerName) {
-            loopService.setSandboxContainer(loopName, active.containerName)
-            const action = state.sandboxContainer ? 'corrected' : 'backfilled'
-            logger.log(`Sandbox reconcile: ${action} container name for ${loopName}`)
+          const isActuallyRunning = await sandboxManager.isLive(loopName)
+          if (!isActuallyRunning) {
+            // Map was stale - Docker says container is not running, fall through to restore/start
+            logger.log(`Sandbox reconcile: map entry for ${loopName} was stale (container not in Docker)`)
+          } else {
+            // Container is verified running - ensure persisted name matches
+            const active = sandboxManager.getActive(loopName)
+            if (active && state.sandboxContainer !== active.containerName) {
+              loopService.setSandboxContainer(loopName, active.containerName)
+              const action = state.sandboxContainer ? 'corrected' : 'backfilled'
+              logger.log(`Sandbox reconcile: ${action} container name for ${loopName}`)
+            }
+            continue
           }
-          continue
         }
 
         // Case 2: Container name exists but container is not active - restore
