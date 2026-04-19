@@ -15,7 +15,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         line: z.number().describe('The line number of the finding'),
         severity: z.enum(['bug', 'warning']).describe('The severity of the finding'),
         description: z.string().describe('Clear description of the issue'),
-        scenario: z.string().describe('The specific conditions under which this issue manifests'),
+        scenario: z.string().optional().describe('The specific conditions under which this issue manifests'),
         status: z.string().default('open').describe('The status of the finding (default: "open")'),
       },
       execute: async (args) => {
@@ -25,7 +25,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
           line: args.line,
           severity: args.severity,
           description: args.description,
-          scenario: args.scenario,
+          scenario: args.scenario ?? null,
           branch: null as string | null,
         }
 
@@ -65,7 +65,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
 
           const matchedFindings = []
           for (const finding of findings) {
-            const valueStr = `${finding.description} ${finding.scenario}`
+            const valueStr = `${finding.description} ${finding.scenario || ''}`
             if (regex.test(valueStr)) {
               matchedFindings.push(finding)
             }
@@ -78,7 +78,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         }
 
         const formatted = findings.map((f) => {
-          return `- **${f.file}:${f.line}**\n  - Severity: ${f.severity}\n  - File: ${f.file}:${f.line}\n  - Description: ${f.description}\n  - Scenario: ${f.scenario}\n  - Branch: ${f.branch || 'N/A'}`
+          return `- **${f.file}:${f.line}**\n  - Severity: ${f.severity}\n  - File: ${f.file}:${f.line}\n  - Description: ${f.description}\n  - Scenario: ${f.scenario || 'N/A'}\n  - Branch: ${f.branch || 'N/A'}`
         })
 
         logger.log(`review-read: found ${findings.length} findings`)

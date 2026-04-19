@@ -6,7 +6,7 @@ export interface ReviewFindingRow {
   line: number
   severity: 'bug' | 'warning'
   description: string
-  scenario: string
+  scenario: string | null
   branch: string | null
   createdAt: number
 }
@@ -17,7 +17,7 @@ export interface WriteFindingResult {
 }
 
 export interface ReviewFindingsRepo {
-  write(row: Omit<ReviewFindingRow, 'createdAt'>): WriteFindingResult
+  write(row: Omit<ReviewFindingRow, 'createdAt' | 'scenario'> & { scenario?: string | null }): WriteFindingResult
   listAll(projectId: string): ReviewFindingRow[]
   listByBranch(projectId: string, branch: string | null): ReviewFindingRow[]
   listByFile(projectId: string, file: string): ReviewFindingRow[]
@@ -31,6 +31,13 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
     ON CONFLICT (project_id, file, line) DO NOTHING
     RETURNING 1
   `)
+
+  function toScenario(value: string | null | undefined): string | null {
+    if (value === undefined || value === '') {
+      return null
+    }
+    return value
+  }
 
   const stmtListAll = db.prepare(`
     SELECT project_id, file, line, severity, description, scenario, branch, created_at
@@ -58,14 +65,14 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
     WHERE project_id = ? AND file = ? AND line = ?
   `)
 
-  function write(row: Omit<ReviewFindingRow, 'createdAt'>): WriteFindingResult {
+  function write(row: Omit<ReviewFindingRow, 'createdAt' | 'scenario'> & { scenario?: string | null }): WriteFindingResult {
     const result = stmtWrite.run(
       row.projectId,
       row.file,
       row.line,
       row.severity,
       row.description,
-      row.scenario,
+      toScenario(row.scenario),
       row.branch,
       Date.now()
     )
@@ -82,7 +89,7 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
       line: number
       severity: 'bug' | 'warning'
       description: string
-      scenario: string
+      scenario: string | null
       branch: string | null
       created_at: number
     }>
@@ -105,7 +112,7 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
       line: number
       severity: 'bug' | 'warning'
       description: string
-      scenario: string
+      scenario: string | null
       branch: string | null
       created_at: number
     }>
@@ -128,7 +135,7 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
       line: number
       severity: 'bug' | 'warning'
       description: string
-      scenario: string
+      scenario: string | null
       branch: string | null
       created_at: number
     }>

@@ -76,7 +76,7 @@ function createTestDb(): Database {
       line         INTEGER NOT NULL,
       severity     TEXT NOT NULL CHECK(severity IN ('bug','warning')),
       description  TEXT NOT NULL,
-      scenario     TEXT NOT NULL,
+      scenario     TEXT,
       branch       TEXT,
       created_at   INTEGER NOT NULL,
       PRIMARY KEY (project_id, file, line)
