@@ -27,14 +27,14 @@ interface LoopState {
   sessionId: string                  // Current OpenCode session ID
   loopName: string                   // Unique loop identifier
   worktreeDir: string                // Worktree path (empty if in-place)
-  sessionDirectory?: string          // Container-mapped directory for sandbox mode
+  projectDir?: string                // Project directory path
   worktreeBranch?: string            // Branch name if using worktree
   iteration: number                  // Current iteration count
   maxIterations: number              // Maximum iterations (0 = unlimited)
   startedAt: string                  // ISO timestamp
   prompt?: string                    // Original task prompt
   phase: 'coding' | 'auditing'       // Current phase
-  audit?: boolean                    // Whether auditing is enabled
+  audit: boolean                     // Whether auditing is enabled (always true)
   lastAuditResult?: string           // Last audit output
   errorCount: number                 // Consecutive error count
   auditCount: number                 // Number of audits completed
@@ -43,7 +43,11 @@ interface LoopState {
   worktree?: boolean                 // Whether using worktree isolation
   modelFailed?: boolean              // Whether model error occurred
   sandbox?: boolean                  // Whether using Docker sandbox
-  sandboxContainerName?: string      // Container name if sandboxed
+  sandboxContainer?: string          // Container name if sandboxed
+  completionSummary?: string         // Summary of loop completion
+  executionModel?: string            // Model used for execution
+  auditorModel?: string              // Model used for auditing
+  workspaceId?: string               // OpenCode workspace ID
   hostSessionId?: string             // Host session ID for post-completion redirect
 }
 ```
@@ -145,7 +149,7 @@ When `sandbox.mode` is `"docker"` and `worktree: true`, loops run inside a Docke
 3. `read`/`write`/`edit` operate on host filesystem
 4. Container stopped and removed on loop completion
 
-See [sandbox documentation](#) in architecture.md for details.
+See [sandbox documentation](../architecture.md#sandbox-system) for details.
 
 ## Completion Conditions
 

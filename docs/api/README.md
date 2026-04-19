@@ -2,6 +2,10 @@
 
 ***
 
+<p align="center">
+  <img src="_media/logo.webp" alt="OpenCode Forge logo" />
+</p>
+
 <h1 align="center">OpenCode Forge</h1>
 
 <p align="center">
@@ -14,6 +18,15 @@
   <a href="https://github.com/chriswritescode-dev/opencode-forge/blob/main/LICENSE"><img src="https://img.shields.io/github/license/chriswritescode-dev/opencode-forge" alt="License" /></a>
 </p>
 
+## Breaking change (v0.2.0)
+
+Forge has replaced its generic key-value store with dedicated typed tables for loops, plans, review findings, graph status, and TUI preferences. On upgrade:
+
+- Existing loops, plans, review findings, graph-status entries, and TUI preferences stored in the old `project_kv` table are dropped.
+- Active loops from the previous version will not be resumed (they are already effectively dead due to the schema change and should be considered cancelled).
+- No user action required other than restarting opencode.
+- The config key `defaultKvTtlMs` has been renamed to `completedLoopTtlMs`. The old name still works with a deprecation warning for one release cycle.
+
 ## Quick Start
 
 ```bash
@@ -24,9 +37,36 @@ Add to your `opencode.json`:
 
 ```json
 {
-  "plugin": ["opencode-forge"]
+  "plugin": ["opencode-forge@latest"]
 }
 ```
+
+**For TUI features:** Also add to your `tui.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": ["opencode-forge@latest"]
+}
+```
+
+## Screenshots
+
+Plan viewer showing the plan in rendered markdown format:
+
+![Plan Viewer](_media/view-plan.webp)
+
+Execution flow dialog with mode and model selection:
+
+![Execution Flow](_media/execution.webp)
+
+Plan editor with raw text editing:
+
+![Plan Editor](_media/plan-editor.webp)
+
+Loop search dialog:
+
+![Search Loops](_media/search-loops.webp)
 
 ## Features
 
@@ -37,6 +77,7 @@ Add to your `opencode.json`:
 - **Bundled Agents** - Ships with Code, Architect, and Auditor agents preconfigured for graph-aware workflows
 - **CLI Tools** - Loop status, cancel, restart, graph status, graph scan, and upgrade commands via `opencode-forge`
 - **Docker Sandbox** - Run loops inside isolated Docker containers with bind-mounted project directory, automatic container lifecycle, and selective tool routing (bash, glob, grep)
+- **Workspace Integration** - Optional: when the host runtime exposes the experimental workspace API, worktree loops register as OpenCode workspaces so you can switch between them (and your main project) directly from the TUI
 
 ## Agents
 
@@ -338,7 +379,7 @@ You can edit this file to customize settings. The file is created only if it doe
     "showVersion": true            // Show plugin version in sidebar title
   },
 
-  // TTL for completed/cancelled/errored/stalled loops before sweep (default: 604800000 / 7 days)
+  // TTL in ms for completed/cancelled loops before cleanup. Default: 604800000 (7 days)
   "completedLoopTtlMs": 604800000,
 
   // Per-agent overrides (temperature range: 0.0 - 2.0)
@@ -354,10 +395,11 @@ You can edit this file to customize settings. The file is created only if it doe
 ### Options
 
 #### Top-level
-- `dataDir` - Data directory for plugin storage (graph.db, KV store, logs). When empty, resolves to `~/.local/share/opencode/forge` (or `XDG_DATA_HOME` equivalent) (default: `""`)
+- `dataDir` - Data directory for plugin storage (graph.db, logs). When empty, resolves to `~/.local/share/opencode/forge` (or `XDG_DATA_HOME` equivalent) (default: `""`)
 - `completedLoopTtlMs` - TTL for completed/cancelled/errored/stalled loops before sweep (default: `604800000` / 7 days). Deprecated alias `defaultKvTtlMs` still works for backward compatibility.
-- `executionModel` - Model override for plan execution sessions, format: `provider/model` (e.g. `anthropic/claude-hautilus-3-5-20241022`). When set, `plan-execute` uses this model for the new Code session. When empty or omitted, OpenCode's default model is used (typically the `model` field from `opencode.json`). **Recommended:** Set this to a fast, cheap model (e.g. Haiku or MiniMax) and use a smart model (e.g. Opus) for the Architect session — planning needs reasoning, execution needs speed.
-- `auditorModel` - Model override for the auditor agent (`provider/model`). When set, overrides the auditor agent's default model. When not set, uses platform default (default: `""`)
+- `executionModel` - Model override for plan execution sessions, format: `provider/model` (e.g. `anthropic/claude-sonnet-4-20250514`). When set, `plan-execute` uses this model for the new Code session. When empty or omitted, OpenCode's default model is used (typically the `model` field from `opencode.json`). **Recommended:** Set this to a fast, cheap model (e.g. Haiku or MiniMax) and use a smart model (e.g. Opus) for the Architect session — planning needs reasoning, execution needs speed. This value is used as a fallback when no per-launch selection is made.
+- `auditorModel` - Model override for the auditor agent (`provider/model`). When set, overrides the auditor agent's default model. When not set, uses platform default (default: `""`). This value is used as a fallback when no per-launch selection is made.
+- `agents` - Per-agent temperature overrides keyed by display name (e.g., `"code"`, `"architect"`, `"auditor"`). Temperature range: `0.0` - `2.0` (default: `undefined`)
 
 #### Logging
 - `logging.enabled` - Enable file logging (default: `false`)
@@ -381,7 +423,7 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 - `loop.model` - Model override for loop sessions (`provider/model`), falls back to `executionModel` (default: `""`)
 - `loop.stallTimeoutMs` - Watchdog stall detection timeout in milliseconds (default: `60000`)
 
-**Migration note:** As of v0.2.0, auditing runs unconditionally after each coding iteration. The `loop.defaultAudit` option was removed.
+**Migration note:** As of v0.2.0, auditing runs unconditionally after each coding iteration. The `loop.defaultAudit` option was removed and audit is now always enabled. If you previously had `"defaultAudit": false` in your config, audits will now run on every iteration regardless of that setting.
 
 #### Sandbox
 - `sandbox.mode` - Sandbox mode: `"off"` or `"docker"` (default: `"off"`)
@@ -393,17 +435,12 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 - `graph.watch` - Watch for file changes (default: `true`)
 - `graph.debounceMs` - Debounce delay for file watch events (default: `100`)
 
-**Note:** On startup, the graph service performs a lightweight freshness check using file count and modification times - a full scan runs only when the cache is missing, stale, or unhealthy. Watcher-driven incremental updates handle post-startup file changes.
-
-**Note:** Graph indexing runs in batches and processes all files without a fixed file-count cap. Progress is reported during indexing via status updates.
+**Note:** Graph indexing runs in batches and processes all files without a fixed file-count cap. Progress is reported during indexing via status updates. On startup, the graph service performs a lightweight freshness check using file count and modification times - a full scan runs only when the cache is missing, stale, or unhealthy. Watcher-driven incremental updates handle post-startup file changes.
 
 #### TUI
 - `tui.sidebar` - Show the forge sidebar widget in OpenCode TUI (default: `true`)
 - `tui.showLoops` - Display active and recent loop status in the sidebar (default: `true`)
 - `tui.showVersion` - Show plugin version number in the sidebar title (default: `true`)
-
-#### Agents
-- `agents` - Per-agent temperature overrides keyed by display name (e.g., `"code"`, `"architect"`, `"auditor"`). Temperature range: `0.0` - `2.0` (default: `undefined`)
 
 ## TUI Plugin
 
@@ -425,7 +462,44 @@ When an architect session produces a plan, it is cached in the project KV store.
 
 The plan viewer dialog renders the full plan as GitHub-flavored markdown with syntax highlighting:
 
-Click `[edit]` to switch to edit mode, where you can modify the plan text directly in a textarea. Click **Save** to write changes back to the KV store, or `[view]` to return to the rendered view without saving.
+- **View tab** — Rendered markdown view with full formatting
+- **Edit tab** — Raw text editor for direct plan modification. Click **Save** to write changes back to the KV store
+- **Execute tab** — Opens the execution dialog with mode and model selection
+- **Export** — Exports the plan to a markdown file in the project directory
+
+### Execution Dialog
+
+The Execute tab provides a comprehensive dialog for launching plans with full control over execution parameters:
+
+#### Execution Mode Selection
+
+Choose from four execution modes:
+
+1. **New session** — Creates a fresh Code session and sends the plan as the initial prompt
+2. **Execute here** — Takes over the current session immediately with the plan
+3. **Loop (worktree)** — Launches an iterative coding/auditing loop in an isolated git worktree
+4. **Loop** — Launches an iterative coding/auditing loop in the current directory
+
+#### Model Selection
+
+Two model selectors are available:
+
+**Execution Model:**
+- Opens a full model selection dialog with all available providers
+- Shows recently used models (last 10, 90-day TTL) for quick access
+- Displays model capabilities (reasoning, tools support) in descriptions
+- Defaults to last-used selection, falling back to `config.loop.model` → `config.executionModel`
+
+**Auditor Model:**
+- Same model selection interface
+- Defaults to last-used selection, falling back to `config.auditorModel` → `config.loop.model` → `config.executionModel`
+
+#### Persistence
+
+Your selections are automatically saved to the project KV store after launch:
+- Last-used mode and models are persisted per-project (30-day TTL)
+- Subsequent plan executions pre-fill with your previous choices
+- Recent models are tracked across all dialog interactions
 
 ### Loop Details Dialog
 
@@ -457,16 +531,31 @@ Add to your `~/.config/opencode/tui.json` or project-level `tui.json`:
 }
 ```
 
-For local development, reference the built TUI file directly:
+### Model Selection Dialog
 
-```json
-{
-  "$schema": "https://opencode.ai/tui.json",
-  "plugin": [
-    "/path/to/opencode-forge/dist/tui.js"
-  ]
-}
-```
+The TUI provides a comprehensive model selection dialog when executing plans. The dialog features:
+
+#### Model Organization
+
+Models are displayed in priority order:
+
+1. **Recent** — Last 10 models used across all dialogs (90-day TTL)
+2. **Connected providers** — Models from currently connected providers
+3. **Configured providers** — Models from providers defined in your OpenCode config
+4. **All models** — Remaining models sorted alphabetically by provider and model name
+
+Each model shows:
+- Model name and provider
+- Capabilities (reasoning, tools support)
+- Full identifier (e.g., `anthropic/claude-sonnet-4-20250514`)
+
+#### Quick Access
+
+- **"Use default"** option at the top to use config defaults
+- Recently used models are tracked automatically
+- Last-used selections are persisted per-project (30-day TTL)
+
+### Configuration
 
 TUI options are configured in `~/.config/opencode/forge-config.jsonc` under the `tui` key:
 
@@ -482,6 +571,17 @@ TUI options are configured in `~/.config/opencode/forge-config.jsonc` under the 
 
 Set `sidebar` to `false` to completely disable the widget.
 
+For local development, reference the built TUI file directly:
+
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": [
+    "/path/to/opencode-forge/dist/tui.js"
+  ]
+}
+```
+
 ## architect → code Workflow
 
 Plan with a smart model, execute with a fast model. The architect agent researches the codebase and designs an implementation plan; the code agent implements it.
@@ -494,16 +594,33 @@ The user can view the cached plan at any time from the **sidebar** (📋 Plan li
 
 ### Execution
 
-After the architect presents a summary, the user approves via one of four execution modes:
+After the architect presents a summary, the user chooses an execution mode from the execution dialog:
 
 - **New session** — Creates a new Code session and sends the plan as the initial prompt. The architect session is aborted and the TUI navigates to the new session.
 - **Execute here** — The architect session is aborted and the code agent takes over the same session immediately with the plan.
 - **Loop (worktree)** — Creates an isolated git worktree and launches an iterative coding/auditing loop. When `config.sandbox.mode` is `"docker"`, the loop automatically uses Docker sandbox.
-- **Loop (in-place)** — Runs an iterative coding/auditing loop in the current directory without worktree isolation.
+- **Loop** — Runs an iterative coding/auditing loop in the current directory without worktree isolation.
+
+The dialog also lets you pick the execution model and auditor model at launch time. Those selections are remembered per project and pre-filled on later launches.
 
 Execution is immediate — there are no additional LLM calls between approval and execution. The system intercepts the user's approval answer, reads the cached plan from KV, and dispatches it programmatically to the code agent. The architect never processes the approval response.
 
-Set `executionModel` in your config to a fast model (e.g., Haiku) and use a smart model (e.g., Opus) for the architect session.
+### Configuration Fallbacks
+
+Model selection follows this priority order:
+
+**For execution model:**
+1. Dialog selection (last-used, persisted per-project)
+2. `config.loop.model`
+3. `config.executionModel`
+4. Platform default
+
+**For auditor model:**
+1. Dialog selection (last-used, persisted per-project)
+2. `config.auditorModel`
+3. `config.loop.model`
+4. `config.executionModel`
+5. Platform default
 
 ## Loop
 
@@ -540,7 +657,16 @@ A watchdog monitors loop activity. If no progress is detected within `stallTimeo
 
 ### Model Configuration
 
-Loops use `loop.model` if set, falling back to `executionModel`, then the platform default. On model errors, automatic fallback to the default model kicks in.
+Loops use the following priority order for model selection:
+
+1. **Dialog selection** — Model chosen in the execution dialog (persisted per-project)
+2. `loop.model` — Config override for all loops
+3. `executionModel` — Global execution model fallback
+4. Platform default — OpenCode's default model
+
+When launching from the TUI dialog, your selection is remembered and pre-filled on subsequent launches. The dialog also allows selecting a separate model for the auditor phase.
+
+On model errors during execution, automatic fallback to the default model kicks in.
 
 ### Safety
 
@@ -558,6 +684,40 @@ Loops use `loop.model` if set, falling back to `executionModel`, then the platfo
 The loop auto-terminates after `maxIterations` (if set) or after 3 consecutive errors. Outstanding `bug` findings in the review system block termination.
 
 By default, loops run in the current directory. Set `worktree: true` to run in an isolated git worktree instead (enables worktree creation, auto-commit, and cleanup on completion).
+
+## Workspace Integration
+
+Worktree loops can optionally register as **OpenCode workspaces**, letting you switch between them (and your main project) from the same TUI session without restarting or re-opening anything.
+
+### When it runs
+
+Workspace integration is **host-gated, not config-gated**. Forge registers a `forge-worktree` workspace adaptor at plugin load time only if the host runtime exposes the experimental workspace API (`experimental_workspace` on the plugin input, `experimental.workspace` on the SDK client).
+
+- **Host exposes the API** → worktree loops become workspace-backed. The worktree directory appears as a switchable workspace in the TUI, and its sessions are bound to that workspace.
+- **Host does not expose the API** → forge skips registration, logs a note, and worktree loops run exactly as before. Everything else (iteration, auditing, sandbox, status, cancel, restart) is unaffected.
+
+No forge config option enables or disables this — the feature lights up automatically on supported hosts.
+
+### What it does
+
+When a worktree loop starts on a supported host, forge:
+
+1. Creates the git worktree (as usual)
+2. Creates a new Code session pointed at the worktree directory
+3. Calls `experimental.workspace.create` with `type: "forge-worktree"` and the loop metadata (`loopName`, `directory`, `branch`) in the `extra` payload
+4. Calls `experimental.workspace.sessionRestore` to bind the session to that workspace
+5. Persists the workspace ID on the loop record (`loops.workspace_id`) so the TUI can route clicks on a loop into the correct workspace
+
+The adaptor's `create` and `remove` hooks are intentional no-ops — forge's loop system owns worktree lifecycle, not the workspace system. The adaptor only surfaces existing worktrees to the workspace UI.
+
+### Graceful degradation
+
+If workspace creation or session binding fails at runtime (network error, API mismatch, unsupported host), the loop **does not abort**. Forge logs the failure, clears the workspace ID, and the loop continues as a regular (non-workspace) worktree loop. You lose workspace-based switching for that loop, but the loop itself runs to completion.
+
+### From the TUI
+
+- Clicking a worktree loop in the sidebar opens its Loop Details dialog as before
+- On hosts with workspace support, the loop is additionally accessible via the workspace switcher, letting you jump between your main project and any active worktree loop inline
 
 ## Docker Sandbox
 
@@ -635,9 +795,27 @@ pnpm test       # Run tests
 pnpm typecheck  # Type check without emitting
 ```
 
-## Contributing
+## Breaking Changes
 
-See [CONTRIBUTING.md](_media/CONTRIBUTING.md) for development setup, testing, code style, and Git workflow guidelines.
+### v0.2.0 - Typed Storage Schema
+
+Forge has replaced its generic key-value store (`project_kv` table) with typed SQL-schema tables for loops, plans, review findings, and graph status. This eliminates whole-object read-modify-write concurrency bugs, adds real indexes for branch-scoped and status-scoped queries, and removes the silent 7-day TTL on all persisted data.
+
+**What changed:**
+- `loops` table - stores loop state with atomic updates for counters (error_count, audit_count, iteration)
+- `loop_large_fields` table - stores prompt and last_audit_result (lazy-loaded)
+- `plans` table - supports both session-staged and loop-bound plans with explicit promotion
+- `review_findings` table - write-once per (file, line), existence = open
+- `graph_status` table - graph indexing status with last-write-wins semantics
+
+**Upgrade impact:**
+- Existing `project_kv` data is dropped on upgrade
+- Active loops are preserved via the stale-reconciliation path
+- Completed loops and their plans will not be recoverable
+- No action required from users other than restarting opencode
+
+**Configuration change:**
+- `defaultKvTtlMs` renamed to `completedLoopTtlMs` (backward-compatible, falls back with deprecation warning)
 
 ## License
 

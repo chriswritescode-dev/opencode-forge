@@ -132,9 +132,9 @@ Code structure graph with file watching and symbol tracking.
 | Tool | Description |
 |------|-------------|
 | `graph-status` | Check graph indexing status or trigger re-scan. Actions: `status`, `scan` |
-| `graph-query` | Query file-level graph information. Actions: `top_files`, `file_deps`, `file_dependents`, `cochanges`, `blast_radius`, `packages`, `file_symbols` |
-| `graph-symbols` | Query symbol-level graph information. Actions: `find`, `search`, `signature`, `callers`, `callees` |
-| `graph-analyze` | Analyze code quality. Actions: `unused_exports`, `duplication`, `near_duplicates` |
+| `graph-query` | Query file-level graph information. Actions: `top_files`, `file_deps`, `file_dependents`, `cochanges`, `blast_radius`, `packages`, `file_symbols`, `change_impact` |
+| `graph-symbols` | Query symbol-level graph information. Actions: `find`, `search`, `signature`, `callers`, `callees`, `references` |
+| `graph-analyze` | Analyze code quality. Actions: `unused_exports`, `duplication`, `near_duplicates`, `orphan_files`, `circular_deps` |
 
 ### Graph Tool Details
 
@@ -153,10 +153,11 @@ graph-status { action: "status" | "scan" }
 Query file-level graph information.
 
 ```typescript
-graph-query { 
-  action: "top_files" | "file_deps" | "file_dependents" | "cochanges" | "blast_radius" | "packages" | "file_symbols",
+graph-query {
+  action: "top_files" | "file_deps" | "file_dependents" | "cochanges" | "blast_radius" | "packages" | "file_symbols" | "change_impact",
   file?: string,
-  limit?: number 
+  files?: string[],
+  limit?: number
 }
 ```
 
@@ -168,17 +169,18 @@ graph-query {
 - `blast_radius` - Calculate blast radius for a file
 - `packages` - List external packages used
 - `file_symbols` - Get symbols defined in a file
+- `change_impact` - Analyze the impact of changing multiple files simultaneously (use `files` array to specify files)
 
 #### graph-symbols
 Query symbol-level graph information.
 
 ```typescript
-graph-symbols { 
-  action: "find" | "search" | "signature" | "callers" | "callees",
+graph-symbols {
+  action: "find" | "search" | "signature" | "callers" | "callees" | "references",
   name?: string,
   file?: string,
   kind?: string,
-  limit?: number 
+  limit?: number
 }
 ```
 
@@ -188,16 +190,17 @@ graph-symbols {
 - `signature` - Get symbol signature
 - `callers` - Find all callers of a symbol
 - `callees` - Find all callees of a symbol
+- `references` - Find all references to a symbol
 
 #### graph-analyze
 Analyze code quality issues.
 
 ```typescript
-graph-analyze { 
-  action: "unused_exports" | "duplication" | "near_duplicates",
+graph-analyze {
+  action: "unused_exports" | "duplication" | "near_duplicates" | "orphan_files" | "circular_deps",
   file?: string,
   limit?: number,
-  threshold?: number 
+  threshold?: number
 }
 ```
 
@@ -205,6 +208,8 @@ graph-analyze {
 - `unused_exports` - Find exported symbols that are never imported
 - `duplication` - Find duplicate code structures
 - `near_duplicates` - Find near-duplicate code patterns (configurable threshold)
+- `orphan_files` - Find files with no dependencies and no dependents
+- `circular_deps` - Find circular dependency chains
 
 ## Slash Commands
 
@@ -352,7 +357,11 @@ You can edit this file to customize settings. The file is created only if it doe
     "defaultMaxIterations": 15,    // Max iterations (0 = unlimited)
     "cleanupWorktree": false,      // Auto-remove worktree on cancel
     "model": "",                   // Model override for loop sessions
-    "stallTimeoutMs": 60000        // Stall detection timeout (60s)
+    "stallTimeoutMs": 60000,       // Stall detection timeout (60s)
+    "worktreeLogging": {           // Worktree loop completion logging
+      "enabled": false,            // Enable completion logging
+      "directory": ""              // Log directory (defaults to platform data dir)
+    }
   },
 
   // Docker sandbox configuration for isolated loop execution
@@ -373,7 +382,12 @@ You can edit this file to customize settings. The file is created only if it doe
   "tui": {
     "sidebar": true,               // Show memory sidebar in OpenCode TUI
     "showLoops": true,             // Display loop status in sidebar
-    "showVersion": true            // Show plugin version in sidebar title
+    "showVersion": true,           // Show plugin version in sidebar title
+    "keybinds": {                  // Keyboard shortcut overrides
+      "viewPlan": "Meta+Shift+P",  // View plan dialog
+      "executePlan": "Meta+Shift+E", // Execute plan dialog
+      "showLoops": "Meta+Shift+L"  // Show loops dialog
+    }
   },
 
   // TTL in ms for completed/cancelled loops before cleanup. Default: 604800000 (7 days)
@@ -419,6 +433,8 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 - `loop.cleanupWorktree` - Auto-remove worktree on cancel (default: `false`)
 - `loop.model` - Model override for loop sessions (`provider/model`), falls back to `executionModel` (default: `""`)
 - `loop.stallTimeoutMs` - Watchdog stall detection timeout in milliseconds (default: `60000`)
+- `loop.worktreeLogging.enabled` - Enable worktree loop completion logging (default: `false`)
+- `loop.worktreeLogging.directory` - Directory for completion logs, defaults to platform data dir (default: `""`)
 
 **Migration note:** As of v0.2.0, auditing runs unconditionally after each coding iteration. The `loop.defaultAudit` option was removed and audit is now always enabled. If you previously had `"defaultAudit": false` in your config, audits will now run on every iteration regardless of that setting.
 
@@ -438,6 +454,7 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 - `tui.sidebar` - Show the forge sidebar widget in OpenCode TUI (default: `true`)
 - `tui.showLoops` - Display active and recent loop status in the sidebar (default: `true`)
 - `tui.showVersion` - Show plugin version number in the sidebar title (default: `true`)
+- `tui.keybinds` - Keyboard shortcut overrides for Forge commands (default: `Meta+Shift+P/E/L`)
 
 ## TUI Plugin
 
