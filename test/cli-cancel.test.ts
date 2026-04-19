@@ -1,9 +1,9 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { Database } from 'bun:sqlite'
-import { existsSync } from 'fs'
-import { join } from 'path'
-import { mkdtempSync, rmSync } from 'fs'
-import { type LoopState } from '../src/services/loop'
+import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs'
+import { execSync } from 'child_process'
+import { join, resolve } from 'path'
+import { resolveGraphCacheDir } from '../src/storage/graph-projects'
 
 function createTestDb(tempDir: string): Database {
   const dbPath = join(tempDir, 'memory.db')
@@ -91,6 +91,20 @@ function insertLoopState(db: Database, projectId: string, loopName: string, opts
     'INSERT OR REPLACE INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, worktree_branch, project_dir, max_iterations, iteration, audit_count, error_count, phase, audit, execution_model, auditor_model, model_failed, sandbox, sandbox_container, started_at, completed_at, termination_reason, completion_summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     [projectId, loopName, status, sessionId, worktree, worktreeDir, worktreeBranch, worktreeDir, maxIterations, iteration, auditCount, errorCount, phase, 0, null, null, 0, 0, null, now, completedAt, terminationReason, null]
   )
+}
+
+function createWorktreeRepo(baseDir: string, worktreeName: string): { repoDir: string; worktreeDir: string } {
+  const repoDir = resolve(baseDir, 'repo')
+  const worktreeDir = resolve(baseDir, worktreeName)
+  mkdirSync(repoDir, { recursive: true })
+  execSync('git init', { cwd: repoDir })
+  execSync('git config user.email "test@test.com"', { cwd: repoDir })
+  execSync('git config user.name "Test"', { cwd: repoDir })
+  writeFileSync(join(repoDir, 'README.md'), '# test\n')
+  execSync('git add README.md', { cwd: repoDir })
+  execSync('git commit -m "init"', { cwd: repoDir })
+  execSync(`git worktree add "${worktreeDir}" -b ${worktreeName}`, { cwd: repoDir })
+  return { repoDir, worktreeDir }
 }
 
 describe('CLI Cancel', () => {
@@ -319,5 +333,61 @@ describe('CLI Cancel', () => {
     expect(output).toContain("Multiple loops match 'auth':")
     expect(output).toContain('loop-feat-auth')
     expect(output).toContain('loop-auth-fix')
+  })
+
+  test('loop cancel --cleanup deletes graph cache scope and terminates via LoopsRepo', async () => {
+    const db = createTestDb(tempDir)
+    const projectId = 'test-project'
+    const loopName = 'cleanup-loop'
+    const { worktreeDir } = createWorktreeRepo(tempDir, 'cleanup-worktree')
+    const graphCacheDir = resolveGraphCacheDir(projectId, worktreeDir, tempDir)
+    mkdirSync(graphCacheDir, { recursive: true })
+    writeFileSync(join(graphCacheDir, 'graph.db'), 'cache')
+
+    insertLoopState(db, projectId, loopName, { worktreeDir })
+    db.close()
+
+    const { run } = await import('../src/cli/commands/cancel')
+    await run({
+      dbPath: join(tempDir, 'memory.db'),
+      resolvedProjectId: projectId,
+      name: loopName,
+      cleanup: true,
+      force: true,
+    })
+
+    const db2 = new Database(join(tempDir, 'memory.db'))
+    const row = db2.prepare('SELECT status, termination_reason, completed_at FROM loops WHERE loop_name = ?').get(loopName) as { status: string; termination_reason: string; completed_at: number | null }
+    db2.close()
+
+    expect(row.status).toBe('cancelled')
+    expect(row.termination_reason).toBe('cancelled')
+    expect(row.completed_at).toBeTruthy()
+    expect(existsSync(worktreeDir)).toBe(false)
+    expect(existsSync(graphCacheDir)).toBe(false)
+  })
+
+  test('loop cancel without --cleanup preserves graph cache scope and worktree dir', async () => {
+    const db = createTestDb(tempDir)
+    const projectId = 'test-project'
+    const loopName = 'no-cleanup-loop'
+    const { worktreeDir } = createWorktreeRepo(tempDir, 'no-cleanup-worktree')
+    const graphCacheDir = resolveGraphCacheDir(projectId, worktreeDir, tempDir)
+    mkdirSync(graphCacheDir, { recursive: true })
+    writeFileSync(join(graphCacheDir, 'graph.db'), 'cache')
+
+    insertLoopState(db, projectId, loopName, { worktreeDir })
+    db.close()
+
+    const { run } = await import('../src/cli/commands/cancel')
+    await run({
+      dbPath: join(tempDir, 'memory.db'),
+      resolvedProjectId: projectId,
+      name: loopName,
+      force: true,
+    })
+
+    expect(existsSync(worktreeDir)).toBe(true)
+    expect(existsSync(graphCacheDir)).toBe(true)
   })
 })
