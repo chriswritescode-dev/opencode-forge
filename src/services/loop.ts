@@ -5,9 +5,9 @@ import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo, ReviewFindingRow } from '../storage/repos/review-findings-repo'
 
 export const MAX_RETRIES = 3
-export const STALL_TIMEOUT_MS = 60_000
+const STALL_TIMEOUT_MS = 60_000
 export const MAX_CONSECUTIVE_STALLS = 5
-export const RECENT_MESSAGES_COUNT = 5
+const RECENT_MESSAGES_COUNT = 5
 
 /**
  * Represents the runtime state of an autonomous loop.
@@ -75,6 +75,37 @@ export interface LoopService {
   terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
 }
 
+export function rowToLoopState(row: LoopRow, large: LoopLargeFields | null): LoopState {
+  return {
+    active: row.status === 'running',
+    sessionId: row.currentSessionId,
+    loopName: row.loopName,
+    worktreeDir: row.worktreeDir,
+    projectDir: row.projectDir,
+    worktreeBranch: row.worktreeBranch ?? undefined,
+    iteration: row.iteration,
+    maxIterations: row.maxIterations,
+    startedAt: new Date(row.startedAt).toISOString(),
+    prompt: large?.prompt ?? undefined,
+    phase: row.phase,
+    audit: row.audit,
+    lastAuditResult: large?.lastAuditResult ?? undefined,
+    errorCount: row.errorCount,
+    auditCount: row.auditCount,
+    terminationReason: row.terminationReason ?? undefined,
+    completedAt: row.completedAt ? new Date(row.completedAt).toISOString() : undefined,
+    worktree: row.worktree,
+    modelFailed: row.modelFailed,
+    sandbox: row.sandbox,
+    sandboxContainer: row.sandboxContainer ?? undefined,
+    completionSummary: row.completionSummary ?? undefined,
+    executionModel: row.executionModel ?? undefined,
+    auditorModel: row.auditorModel ?? undefined,
+    workspaceId: row.workspaceId ?? undefined,
+    hostSessionId: row.hostSessionId ?? undefined,
+  }
+}
+
 export function createLoopService(
   loopsRepo: LoopsRepo,
   plansRepo: PlansRepo,
@@ -83,37 +114,6 @@ export function createLoopService(
   logger: Logger,
   loopConfig?: LoopConfig,
 ): LoopService {
-  function rowToState(row: LoopRow, large: LoopLargeFields | null): LoopState {
-    return {
-      active: row.status === 'running',
-      sessionId: row.currentSessionId,
-      loopName: row.loopName,
-      worktreeDir: row.worktreeDir,
-      projectDir: row.projectDir,
-      worktreeBranch: row.worktreeBranch ?? undefined,
-      iteration: row.iteration,
-      maxIterations: row.maxIterations,
-      startedAt: new Date(row.startedAt).toISOString(),
-      prompt: large?.prompt ?? undefined,
-      phase: row.phase,
-      audit: row.audit,
-      lastAuditResult: large?.lastAuditResult ?? undefined,
-      errorCount: row.errorCount,
-      auditCount: row.auditCount,
-      terminationReason: row.terminationReason ?? undefined,
-      completedAt: row.completedAt ? new Date(row.completedAt).toISOString() : undefined,
-      worktree: row.worktree,
-      modelFailed: row.modelFailed,
-      sandbox: row.sandbox,
-      sandboxContainer: row.sandboxContainer ?? undefined,
-      completionSummary: row.completionSummary ?? undefined,
-      executionModel: row.executionModel ?? undefined,
-      auditorModel: row.auditorModel ?? undefined,
-      workspaceId: row.workspaceId ?? undefined,
-      hostSessionId: row.hostSessionId ?? undefined,
-    }
-  }
-
   function stateToRow(state: LoopState): LoopRow {
     return {
       projectId,
@@ -148,7 +148,7 @@ export function createLoopService(
     const row = loopsRepo.get(projectId, name)
     if (!row) return null
     const large = loopsRepo.getLarge(projectId, name)
-    return rowToState(row, large)
+    return rowToLoopState(row, large)
   }
 
   function getActiveState(name: string): LoopState | null {
@@ -283,7 +283,7 @@ export function createLoopService(
     const rows = loopsRepo.listByStatus(projectId, ['running'])
     return rows.map((row) => {
       const large = loopsRepo.getLarge(projectId, row.loopName)
-      return rowToState(row, large)
+      return rowToLoopState(row, large)
     })
   }
 
@@ -291,7 +291,7 @@ export function createLoopService(
     const rows = loopsRepo.listByStatus(projectId, ['completed', 'cancelled', 'errored', 'stalled'])
     return rows.map((row) => {
       const large = loopsRepo.getLarge(projectId, row.loopName)
-      return rowToState(row, large)
+      return rowToLoopState(row, large)
     })
   }
 
@@ -300,13 +300,13 @@ export function createLoopService(
     const mapResult = (row: LoopRow | null): LoopState | null => {
       if (!row) return null
       const large = loopsRepo.getLarge(projectId, row.loopName)
-      return rowToState(row, large)
+      return rowToLoopState(row, large)
     }
     return {
       match: mapResult(result.match),
       candidates: result.candidates.map((row) => {
         const large = loopsRepo.getLarge(projectId, row.loopName)
-        return rowToState(row, large)
+        return rowToLoopState(row, large)
       }),
     }
   }

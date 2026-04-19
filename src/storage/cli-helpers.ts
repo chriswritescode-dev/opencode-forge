@@ -1,16 +1,22 @@
 import type { Database } from 'bun:sqlite'
 import type { LoopRow, LoopLargeFields } from './repos/loops-repo'
+import { rowToLoopState, type LoopState } from '../services/loop'
 
-export interface LoopEntry {
+interface LoopEntry {
   row: LoopRow
   large: LoopLargeFields | null
+}
+
+export interface LoopStateEntry {
+  state: LoopState
+  row: { project_id: string; loop_name: string }
 }
 
 /**
  * Reads all loops from the loops table, optionally scoped to a projectId.
  * Returns LoopRow with LoopLargeFields for complete state reconstruction.
  */
-export function listLoopsFromDb(
+function listLoopsFromDb(
   db: Database,
   projectId: string | undefined,
   options?: { statuses?: LoopRow['status'][]; activeOnly?: boolean },
@@ -53,6 +59,17 @@ export function listLoopsFromDb(
   }
   
   return entries
+}
+
+export function listLoopStatesFromDb(
+  db: Database,
+  projectId: string | undefined,
+  options?: { statuses?: LoopRow['status'][]; activeOnly?: boolean },
+): LoopStateEntry[] {
+  return listLoopsFromDb(db, projectId, options).map((entry) => ({
+    state: rowToLoopState(entry.row, entry.large),
+    row: { project_id: entry.row.projectId, loop_name: entry.row.loopName },
+  }))
 }
 
 interface LoopRowRaw {

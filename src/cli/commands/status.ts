@@ -2,12 +2,11 @@ import type { LoopState } from '../../services/loop'
 import {
   openDatabase,
   createOpencodeClientFromServer,
-  listLoopsFromDb,
   resolveLoopByNameOrExit,
-  formatDuration,
   printBlock,
-  type LoopEntry,
 } from '../utils'
+import { formatDuration } from '../../utils/format'
+import { listLoopStatesFromDb, type LoopStateEntry } from '../../storage/cli-helpers'
 import { formatSessionOutput, formatAuditResult } from '../../utils/loop-format'
 import { fetchSessionOutput } from '../../services/loop'
 import { filterByPartial } from '../../utils/partial-match'
@@ -60,7 +59,7 @@ async function tryFetchSessionStatus(serverUrl: string, sessionId: string, direc
 }
 
 function printActiveLoopDetails(
-  loop: LoopEntry,
+  loop: LoopStateEntry,
   serverUrl: string,
 ): Promise<void> {
   const state = loop.state
@@ -107,7 +106,7 @@ function printActiveLoopDetails(
 }
 
 async function printCompletedLoopDetails(
-  loop: LoopEntry,
+  loop: LoopStateEntry,
   serverUrl: string,
 ): Promise<void> {
   const state = loop.state
@@ -163,7 +162,7 @@ export async function run(argv: StatusArgs): Promise<void> {
       return
     }
 
-    const loops = listLoopsFromDb(db, argv.resolvedProjectId)
+    const loops = listLoopStatesFromDb(db, argv.resolvedProjectId)
     const activeLoops = loops.filter((l) => isValidActiveState(l.state))
     const recentLoops = loops.filter((l) => !l.state.active && l.state.completedAt)
 

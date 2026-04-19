@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
-import { parseGlobalOptions, getGitProjectId, resolveProjectIdByName } from './utils'
+import { parseGlobalOptions, resolveProjectIdByName } from './utils'
+import { getGitProjectId } from '../utils/project-id'
 
 interface CommandModule {
   cli: (args: string[], globalOpts: { dbPath?: string; resolvedProjectId?: string; dir?: string }) => Promise<void> | void

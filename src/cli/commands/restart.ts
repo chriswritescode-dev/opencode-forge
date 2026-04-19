@@ -5,7 +5,6 @@ import {
   openDatabase,
   confirm,
   createOpencodeClientFromServer,
-  listLoopsFromDb,
   resolveLoopByNameOrExit,
   printBlock,
 } from '../utils'
@@ -13,6 +12,7 @@ import { existsSync } from 'fs'
 import { join } from 'path'
 import { resolveDataDir } from '../../storage'
 import { loadPluginConfig } from '../../setup'
+import { listLoopStatesFromDb } from '../../storage/cli-helpers'
 
 interface RestartArgs {
   dbPath?: string
@@ -26,7 +26,7 @@ export async function run(argv: RestartArgs): Promise<void> {
   const db = openDatabase(argv.dbPath)
 
   try {
-    const loops = listLoopsFromDb(db, argv.resolvedProjectId)
+    const loops = listLoopStatesFromDb(db, argv.resolvedProjectId)
 
     if (loops.length === 0) {
       printBlock('No loops.')
