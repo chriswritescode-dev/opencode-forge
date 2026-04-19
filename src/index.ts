@@ -22,6 +22,7 @@ import type { GraphService } from './graph'
 import { createGraphStatusCallback, writeGraphStatus, UNAVAILABLE_STATUS } from './utils/graph-status-store'
 import { createGraphStatusRepo } from './storage'
 import { FORGE_WORKTREE_WORKSPACE_TYPE, createForgeWorktreeAdaptor } from './workspace/forge-worktree'
+import { LRUCache } from './utils/lru-cache'
 
 
 /**
@@ -270,13 +271,17 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     // Task tool) have their own sessionID with a parentID pointing at the loop's
     // primary session; without the parent hop, permission.ask cannot auto-allow
     // for subagents and leaks prompts to the TUI.
-    const parentSessionCache = new Map<string, string | null>()
+    // Bounded LRU avoids unbounded growth across long-running plugin lifetimes;
+    // evicted entries are simply re-fetched via session.get on next use.
+    const parentSessionCache = new LRUCache<string | null>(500)
     async function resolveActiveLoopForSession(sessionId: string): Promise<ReturnType<typeof loopService.getActiveState>> {
       const directLoopName = loopService.resolveLoopName(sessionId)
       const directState = directLoopName ? loopService.getActiveState(directLoopName) : null
       if (directState?.active) return directState
 
-      let parentId = parentSessionCache.get(sessionId)
+      let parentId: string | null | undefined = parentSessionCache.has(sessionId)
+        ? parentSessionCache.get(sessionId)
+        : undefined
       if (parentId === undefined) {
         try {
           const result = await v2.session.get({ sessionID: sessionId, directory })
