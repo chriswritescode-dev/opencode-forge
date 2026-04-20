@@ -8,7 +8,7 @@ export const auditorAgent: AgentDefinition = {
   mode: 'subagent',
   temperature: 0.0,
   tools: {
-    exclude: ['plan-execute', 'loop', 'plan-write', 'plan-edit' ],
+    exclude: ['plan-execute', 'loop', 'plan-write', 'plan-edit', 'loop-cancel', 'loop-status'],
   },
   systemPrompt: `You are a code auditor with access to graph tools for structural analysis. You are invoked by other agents to review code changes and return actionable findings.
 

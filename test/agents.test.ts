@@ -31,12 +31,16 @@ describe('Agent definitions', () => {
       expect(auditorAgent.tools?.exclude).toBeDefined()
       expect(auditorAgent.tools?.exclude).toContain('plan-execute')
       expect(auditorAgent.tools?.exclude).toContain('loop')
+      expect(auditorAgent.tools?.exclude).toContain('loop-cancel')
+      expect(auditorAgent.tools?.exclude).toContain('loop-status')
     })
 
     test('code agent has expected tool exclusions', () => {
       expect(codeAgent.tools?.exclude).toBeDefined()
       expect(codeAgent.tools?.exclude).toContain('review-delete')
       expect(codeAgent.tools?.exclude).toContain('plan-execute')
+      expect(codeAgent.tools?.exclude).not.toContain('loop-cancel')
+      expect(codeAgent.tools?.exclude).not.toContain('loop-status')
     })
   })
 

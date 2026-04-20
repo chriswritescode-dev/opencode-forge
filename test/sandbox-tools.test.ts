@@ -1,8 +1,7 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeEach } from 'bun:test'
 import { createSandboxToolBeforeHook, createSandboxToolAfterHook } from '../src/hooks/sandbox-tools'
-import type { createLoopService } from '../src/services/loop'
-import type { createSandboxManager } from '../src/sandbox/manager'
 import type { Logger } from '../src/types'
+import type { SandboxContext } from '../src/sandbox/context'
 
 interface MockSandboxContext {
   docker: {
@@ -13,21 +12,12 @@ interface MockSandboxContext {
 }
 
 interface MockDeps {
-  loopService: {
-    resolveLoopName: (sessionId: string) => string | null
-    getActiveState: (name: string) => { active: boolean; sandbox?: boolean } | null
-  }
-  sandboxManager: {
-    docker: MockSandboxContext['docker']
-    getActive: (name: string) => { containerName: string; projectDir: string } | null
-  } | null
+  resolveSandboxForSession: (sessionID: string) => Promise<SandboxContext | null>
   logger: Logger
 }
 
 describe('sandbox tool hooks', () => {
   let mockDocker: MockSandboxContext['docker']
-  let mockLoopService: MockDeps['loopService']
-  let mockSandboxManager: MockDeps['sandboxManager']
   let mockLogger: Logger
   let beforeHook: ReturnType<typeof createSandboxToolBeforeHook>
   let afterHook: ReturnType<typeof createSandboxToolAfterHook>
@@ -54,7 +44,6 @@ describe('sandbox tool hooks', () => {
             exitCode: 0,
           }
         }
-        // For bash commands, return the actual command output
         return {
           stdout: `Executed: ${cmd}`,
           stderr: '',
@@ -63,48 +52,39 @@ describe('sandbox tool hooks', () => {
       },
     }
 
-    mockLoopService = {
-      resolveLoopName: (sessionId) => sessionId === TEST_SESSION_ID ? 'test-worktree' : null,
-      getActiveState: (name) => name === 'test-worktree' ? { active: true, sandbox: true } : null,
-    }
-
-    mockSandboxManager = {
-      docker: mockDocker,
-      getActive: (name) => name === 'test-worktree' ? {
-        containerName: TEST_CONTAINER_NAME,
-        projectDir: TEST_HOST_DIR,
-      } : null,
-    }
-
     mockLogger = {
       log: () => {},
       error: () => {},
       debug: () => {},
     }
 
+    const sandboxContext: SandboxContext = {
+      docker: mockDocker,
+      containerName: TEST_CONTAINER_NAME,
+      hostDir: TEST_HOST_DIR,
+    }
+
+    const resolveSandboxForSession = async (sessionID: string): Promise<SandboxContext | null> => {
+      return sessionID === TEST_SESSION_ID ? sandboxContext : null
+    }
+
     const deps: MockDeps = {
-      loopService: mockLoopService,
-      sandboxManager: mockSandboxManager,
+      resolveSandboxForSession,
       logger: mockLogger,
     }
 
-    beforeHook = createSandboxToolBeforeHook(deps as never)
-    afterHook = createSandboxToolAfterHook(deps as never)
+    beforeHook = createSandboxToolBeforeHook(deps)
+    afterHook = createSandboxToolAfterHook(deps)
   })
 
   // No cleanup needed - Bun test handles this
 
   describe('non-sandbox passthrough', () => {
     test('bash is not intercepted when no sandbox session is resolved', async () => {
-      const deps: MockDeps = {
-        loopService: {
-          resolveLoopName: () => null,
-          getActiveState: () => null,
-        },
-        sandboxManager: null,
+      const hook = createSandboxToolBeforeHook({
+        resolveSandboxForSession: async () => null,
         logger: mockLogger,
-      }
-      const hook = createSandboxToolBeforeHook(deps as never)
+      })
 
       const input = { tool: 'bash', sessionID: 'no-sandbox-session', callID: 'call-1' }
       const output = { args: { command: 'echo test' } }
@@ -115,15 +95,10 @@ describe('sandbox tool hooks', () => {
     })
 
     test('glob is not intercepted when no sandbox session is resolved', async () => {
-      const deps: MockDeps = {
-        loopService: {
-          resolveLoopName: () => null,
-          getActiveState: () => null,
-        },
-        sandboxManager: null,
+      const hook = createSandboxToolBeforeHook({
+        resolveSandboxForSession: async () => null,
         logger: mockLogger,
-      }
-      const hook = createSandboxToolBeforeHook(deps as never)
+      })
 
       const input = { tool: 'glob', sessionID: 'no-sandbox-session', callID: 'call-1' }
       const output = { args: { pattern: '*.ts' } }
@@ -134,15 +109,10 @@ describe('sandbox tool hooks', () => {
     })
 
     test('grep is not intercepted when no sandbox session is resolved', async () => {
-      const deps: MockDeps = {
-        loopService: {
-          resolveLoopName: () => null,
-          getActiveState: () => null,
-        },
-        sandboxManager: null,
+      const hook = createSandboxToolBeforeHook({
+        resolveSandboxForSession: async () => null,
         logger: mockLogger,
-      }
-      const hook = createSandboxToolBeforeHook(deps as never)
+      })
 
       const input = { tool: 'grep', sessionID: 'no-sandbox-session', callID: 'call-1' }
       const output = { args: { pattern: 'test' } }
@@ -167,7 +137,7 @@ describe('sandbox tool hooks', () => {
         },
       }
 
-      await beforeHook!(input as never, output as never)
+      await beforeHook(input as never, output as never)
 
       expect(output.args).toBeDefined()
     })
@@ -188,8 +158,8 @@ describe('sandbox tool hooks', () => {
         metadata: undefined,
       }
 
-      await beforeHook!(input as never, output as never)
-      await afterHook!({ ...input, args: output.args } as never, output as never)
+      await beforeHook(input as never, output as never)
+      await afterHook({ ...input, args: output.args } as never, output as never)
 
       expect(output.output).toContain(TEST_HOST_DIR)
       expect(output.output).toContain('file.ts')
@@ -214,8 +184,8 @@ describe('sandbox tool hooks', () => {
         metadata: undefined,
       }
 
-      await beforeHook!(input as never, output as never)
-      await afterHook!({ ...input, args: output.args } as never, output as never)
+      await beforeHook(input as never, output as never)
+      await afterHook({ ...input, args: output.args } as never, output as never)
 
       expect(output.output).toContain('Found')
       expect(output.output).toContain('matches')
@@ -237,8 +207,8 @@ describe('sandbox tool hooks', () => {
         metadata: undefined,
       }
 
-      await beforeHook!(input as never, output as never)
-      await afterHook!({ ...input, args: output.args } as never, output as never)
+      await beforeHook(input as never, output as never)
+      await afterHook({ ...input, args: output.args } as never, output as never)
 
       expect(output.output).toContain('Line 10:')
       expect(output.output).toContain('console.log')
@@ -260,7 +230,7 @@ describe('sandbox tool hooks', () => {
         metadata: undefined,
       }
 
-      await beforeHook!(input as never, output as never)
+      await beforeHook(input as never, output as never)
 
       expect(output.args).toBeDefined()
     })
@@ -282,8 +252,8 @@ describe('sandbox tool hooks', () => {
         metadata: undefined,
       }
 
-      await beforeHook!(input as never, output as never)
-      await afterHook!({ ...input, args: output.args } as never, output as never)
+      await beforeHook(input as never, output as never)
+      await afterHook({ ...input, args: output.args } as never, output as never)
 
       expect(output.output).toContain('echo "test output"')
     })
@@ -303,8 +273,8 @@ describe('sandbox tool hooks', () => {
         metadata: undefined,
       }
 
-      await beforeHook!(input as never, output as never)
-      await afterHook!({ ...input, args: output.args } as never, output as never)
+      await beforeHook(input as never, output as never)
+      await afterHook({ ...input, args: output.args } as never, output as never)
 
       expect(output.output).toContain('Git push is not available')
     })

@@ -14,7 +14,6 @@ import { extractLoopNames } from './plan-execution'
 import { resolveDataDir } from '../storage'
 import { buildLoopPermissionRuleset } from '../constants/loop'
 import { resolveWorktreeLogTarget } from '../services/worktree-log'
-import { agents } from '../agents'
 import { waitForGraphReady } from './tui-graph-status'
 import { retryWithModelFallback, parseModelString } from './model-fallback'
 import { loadPluginConfig } from '../setup'
@@ -143,10 +142,8 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
     }
 
     // Worktree sessions no longer need log directory access since logging is dispatched via host session
-    const agentExclusions = agents.code.tools?.exclude
     const permissionRuleset = buildLoopPermissionRuleset(config, null, {
       isWorktree: true,
-      agentExclusions,
     })
     
     console.log(`loop-launch: creating session with directory=${hostWorktreeDir} (sandbox: ${isSandboxEnabled})`)
@@ -179,10 +176,8 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
       sandbox: isSandboxEnabled,
       dataDir,
     })
-    const agentExclusions = agents.code.tools?.exclude
     const permissionRuleset = buildLoopPermissionRuleset(config, logTarget?.permissionPath ?? null, {
       isWorktree: false,
-      agentExclusions,
     })
     
     const createResult = await api.client.session.create({

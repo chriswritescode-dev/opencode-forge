@@ -481,6 +481,35 @@ describe('buildLoopPermissionRuleset integration', () => {
     const externalDirRules = ruleset.filter(r => r.permission === 'external_directory' && r.action === 'allow')
     expect(externalDirRules.length).toBe(0)
   })
+
+  test('buildLoopPermissionRuleset always denies loop-cancel and loop-status for worktree loops', () => {
+    const config: PluginConfig = {}
+    const ruleset = buildLoopPermissionRuleset(config, null, { isWorktree: true })
+
+    expect(ruleset).toContainEqual({ permission: 'loop-cancel', pattern: '*', action: 'deny' })
+    expect(ruleset).toContainEqual({ permission: 'loop-status', pattern: '*', action: 'deny' })
+  })
+
+  test('buildLoopPermissionRuleset always denies loop-cancel and loop-status for in-place loops', () => {
+    const config: PluginConfig = {}
+    const ruleset = buildLoopPermissionRuleset(config, null, { isWorktree: false })
+
+    expect(ruleset).toContainEqual({ permission: 'loop-cancel', pattern: '*', action: 'deny' })
+    expect(ruleset).toContainEqual({ permission: 'loop-status', pattern: '*', action: 'deny' })
+  })
+
+  test('buildLoopPermissionRuleset does not deny auditor review tools at session level', () => {
+    const config: PluginConfig = {}
+    const ruleset = buildLoopPermissionRuleset(config, null, { isWorktree: true })
+
+    expect(ruleset.some(r => r.permission === 'review-write' && r.action === 'deny')).toBe(false)
+    expect(ruleset.some(r => r.permission === 'review-delete' && r.action === 'deny')).toBe(false)
+    expect(ruleset).toContainEqual({ permission: '*', pattern: '*', action: 'allow' })
+    expect(ruleset).toContainEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
+    expect(ruleset).toContainEqual({ permission: 'bash', pattern: 'git push *', action: 'deny' })
+    expect(ruleset).toContainEqual({ permission: 'loop-cancel', pattern: '*', action: 'deny' })
+    expect(ruleset).toContainEqual({ permission: 'loop-status', pattern: '*', action: 'deny' })
+  })
 })
 
 describe('sandbox permission path mapping', () => {

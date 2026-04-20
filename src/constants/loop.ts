@@ -7,8 +7,6 @@ type PermissionRule = { permission: string; pattern: string; action: 'allow' | '
  *
  * - Worktree loops get a blanket allow-all (isolated environment).
  * - In-place loops omit the allow-all so the agent's own permissions apply.
- * - Agent tool exclusions are appended as deny rules at the end so they
- *   take precedence over the allow-all via the harness's findLast semantics.
  * - Adds external_directory allow rule for worktree logging when configured AND needed.
  *   Note: With host-session dispatch, worktree sessions no longer need direct host log access.
  *   This parameter is kept for backward compatibility but should be null for new designs.
@@ -22,7 +20,7 @@ type PermissionRule = { permission: string; pattern: string; action: 'allow' | '
 export function buildLoopPermissionRuleset(
   config: PluginConfig,
   logDirectory?: string | null,
-  options?: { isWorktree?: boolean; agentExclusions?: string[] },
+  options?: { isWorktree?: boolean },
 ): PermissionRule[] {
   const isWorktree = options?.isWorktree ?? true
   const rules: PermissionRule[] = []
@@ -47,11 +45,10 @@ export function buildLoopPermissionRuleset(
     })
   }
 
-  if (options?.agentExclusions) {
-    for (const tool of options.agentExclusions) {
-      rules.push({ permission: tool, pattern: '*', action: 'deny' })
-    }
-  }
+  rules.push(
+    { permission: 'loop-cancel', pattern: '*', action: 'deny' },
+    { permission: 'loop-status', pattern: '*', action: 'deny' },
+  )
 
   return rules
 }

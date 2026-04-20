@@ -1,14 +1,11 @@
 import type { Hooks } from '@opencode-ai/plugin'
 import type { Logger } from '../types'
-import type { createLoopService } from '../services/loop'
-import type { createSandboxManager } from '../sandbox/manager'
+import type { SandboxContext } from '../sandbox/context'
 import { toContainerPath, rewriteOutput } from '../sandbox/path'
-import { getSandboxForSession } from '../sandbox/context'
 import { executeSandboxGlob, executeSandboxGrep } from '../tools/sandbox-fs'
 
 interface SandboxToolHookDeps {
-  loopService: ReturnType<typeof createLoopService>
-  sandboxManager: ReturnType<typeof createSandboxManager> | null
+  resolveSandboxForSession: (sessionID: string) => Promise<SandboxContext | null>
   logger: Logger
 }
 
@@ -23,8 +20,11 @@ export function createSandboxToolBeforeHook(deps: SandboxToolHookDeps): Hooks['t
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- matches upstream Hooks type
     output: { args: any },
   ) => {
-    const sandbox = getSandboxForSession(deps, input.sessionID)
-    if (!sandbox) return
+    const sandbox = await deps.resolveSandboxForSession(input.sessionID)
+    if (!sandbox) {
+      deps.logger.debug(`[sandbox-hook] no sandbox for session ${input.sessionID} tool=${input.tool}`)
+      return
+    }
 
     const { docker, containerName, hostDir } = sandbox
 

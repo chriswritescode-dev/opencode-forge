@@ -71,7 +71,7 @@ You have access to specialized tools for reading plans and review findings:
 - \`plan-read\`: Retrieve implementation plans. Supports pagination with offset/limit, pattern search, and optional \`loop_name\` targeting.
 - \`review-read\`: Retrieve code review findings. No args lists all findings. Use file to filter by file path. Use pattern for regex search.
 
-These tools provide read-only access to ephemeral state that survives compaction but isn't permanent enough for long-term storage.
+These tools provide read-only access to ephemeral state.
 
 - Never attempt to remove, delete, or clear review findings. Your job is to fix the underlying issue; the auditor is responsible for clearing findings once they are resolved.
 `,

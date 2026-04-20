@@ -1,6 +1,5 @@
 import type { LoopState } from '../../services/loop'
 import { buildLoopPermissionRuleset } from '../../constants/loop'
-import { agents } from '../../agents'
 import {
   openDatabase,
   confirm,
@@ -111,10 +110,8 @@ export async function run(argv: RestartArgs): Promise<void> {
 
     // Worktree sessions no longer need log directory access since logging is dispatched via host session
     const config = loadPluginConfig()
-    const agentExclusions = agents.code.tools?.exclude
     const permissionRuleset = buildLoopPermissionRuleset(config, null, {
       isWorktree: !!state.worktree,
-      agentExclusions,
     })
 
     console.log(`restart: creating session with directory=${sessionDir} (sandbox: ${!!state.sandbox})`)

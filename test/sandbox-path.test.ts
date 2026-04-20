@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test'
-import { toContainerPath, toHostPath, rewriteOutput } from '../src/sandbox/path'
+import { toContainerPath, rewriteOutput } from '../src/sandbox/path'
 
 describe('toContainerPath', () => {
   test('converts host path to container path', () => {
@@ -21,27 +21,15 @@ describe('toContainerPath', () => {
     const result = toContainerPath('/home/user/project', '/home/user/project')
     expect(result).toBe('/workspace')
   })
-})
 
-describe('toHostPath', () => {
-  test('converts container path to host path', () => {
-    const result = toHostPath('/workspace/src/file.ts', '/home/user/project')
-    expect(result).toBe('/home/user/project/src/file.ts')
+  test('does not match sibling directories with shared prefix', () => {
+    const result = toContainerPath('/home/user/project-extra/file.ts', '/home/user/project')
+    expect(result).toBe('/home/user/project-extra/file.ts')
   })
 
-  test('returns absolute non-workspace paths unchanged', () => {
-    const result = toHostPath('/usr/bin/node', '/home/user/project')
-    expect(result).toBe('/usr/bin/node')
-  })
-
-  test('treats relative paths as relative to workspace', () => {
-    const result = toHostPath('src/file.ts', '/home/user/project')
-    expect(result).toBe('/home/user/project/src/file.ts')
-  })
-
-  test('converts exact /workspace to hostDir', () => {
-    const result = toHostPath('/workspace', '/home/user/project')
-    expect(result).toBe('/home/user/project')
+  test('does not match /workspace-foo as /workspace', () => {
+    const result = toContainerPath('/workspace-foo/file.ts', '/home/user/project')
+    expect(result).toBe('/workspace-foo/file.ts')
   })
 })
 
@@ -75,5 +63,35 @@ describe('rewriteOutput', () => {
   test('handles multiple occurrences on same line', () => {
     const result = rewriteOutput('/workspace/a and /workspace/b', '/home/user/project')
     expect(result).toBe('/home/user/project/a and /home/user/project/b')
+  })
+
+  test('rewrites /workspace followed by punctuation', () => {
+    const result = rewriteOutput('cwd=/workspace: ok', '/home/user/project')
+    expect(result).toBe('cwd=/home/user/project: ok')
+  })
+
+  test('rewrites /workspace inside quotes', () => {
+    const result = rewriteOutput(`path="/workspace/src"`, '/home/user/project')
+    expect(result).toBe(`path="/home/user/project/src"`)
+  })
+
+  test('rewrites /workspace followed by closing paren', () => {
+    const result = rewriteOutput('at (/workspace/file.ts:10)', '/home/user/project')
+    expect(result).toBe('at (/home/user/project/file.ts:10)')
+  })
+
+  test('rewrites /workspace followed by comma', () => {
+    const result = rewriteOutput('dirs=/workspace,/tmp', '/home/user/project')
+    expect(result).toBe('dirs=/home/user/project,/tmp')
+  })
+
+  test('does not rewrite /workspace-foo as /workspace', () => {
+    const result = rewriteOutput('path /workspace-foo/file', '/home/user/project')
+    expect(result).toBe('path /workspace-foo/file')
+  })
+
+  test('does not rewrite /workspaces as /workspace', () => {
+    const result = rewriteOutput('dir /workspaces/x', '/home/user/project')
+    expect(result).toBe('dir /workspaces/x')
   })
 })

@@ -11,7 +11,6 @@ import { formatSessionOutput, formatAuditResult } from '../utils/loop-format'
 import { fetchSessionOutput, MAX_RETRIES, type LoopState, type LoopSessionOutput } from '../services/loop'
 import { buildLoopPermissionRuleset } from '../constants/loop'
 import { resolveWorktreeLogTarget } from '../services/worktree-log'
-import { agents } from '../agents'
 import { isSandboxEnabled } from '../sandbox/context'
 import { formatElapsedSeconds, computeElapsedSeconds } from '../utils/loop-helpers'
 import { waitForGraphReady } from '../utils/tui-graph-status'
@@ -67,10 +66,8 @@ export async function setupLoop(
       sandbox: false,
       dataDir: ctx.dataDir,
     }, ctx.logger)
-    const agentExclusions = agents.code.tools?.exclude
     const permissionRuleset = buildLoopPermissionRuleset(config, logTarget?.permissionPath ?? null, {
       isWorktree: false,
-      agentExclusions,
     })
 
     let currentBranch: string | undefined
@@ -155,10 +152,8 @@ export async function setupLoop(
 
     // Worktree sessions no longer need log directory access since logging is dispatched via host session
     // Only resolve log target for non-worktree sessions or if needed for other purposes
-    const agentExclusions = agents.code.tools?.exclude
     const permissionRuleset = buildLoopPermissionRuleset(config, null, {
       isWorktree: true,
-      agentExclusions,
     })
 
     logger.log(`loop: creating session with directory=${sessionDirectory} (host: ${hostWorktreeDir}, sandbox: ${sandboxEnabled})`)
@@ -513,10 +508,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           }
 
           // Worktree sessions no longer need log directory access since logging is dispatched via host session
-          const agentExclusions = agents.code.tools?.exclude
           const permissionRuleset = buildLoopPermissionRuleset(config, null, {
             isWorktree: !!stoppedState.worktree,
-            agentExclusions,
           })
 
           const restartSandbox = isSandboxEnabled(config, ctx.sandboxManager)

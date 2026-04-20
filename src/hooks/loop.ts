@@ -9,7 +9,6 @@ import { spawnSync } from 'child_process'
 import type { createSandboxManager } from '../sandbox/manager'
 import { buildWorktreeCompletionPayload, writeWorktreeCompletionLog } from '../services/worktree-log'
 import { buildLoopPermissionRuleset } from '../constants/loop'
-import { agents } from '../agents'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 
@@ -413,10 +412,8 @@ export function createLoopEventHandler(
 
     // Worktree sessions no longer need log directory access since logging is dispatched via host session
     // Only resolve log target for non-worktree sessions
-    const agentExclusions = agents.code.tools?.exclude
     const permissionRuleset = buildLoopPermissionRuleset(getConfig(), null, {
       isWorktree: !!state.worktree,
-      agentExclusions,
     })
 
     const createResult = await createLoopSessionWithWorkspace({

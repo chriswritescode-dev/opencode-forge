@@ -23,6 +23,71 @@ import { createGraphStatusCallback, writeGraphStatus, UNAVAILABLE_STATUS } from 
 import { createGraphStatusRepo } from './storage'
 import { FORGE_WORKTREE_WORKSPACE_TYPE, createForgeWorktreeAdaptor } from './workspace/forge-worktree'
 import { LRUCache } from './utils/lru-cache'
+import { createSessionLoopResolver } from './services/session-loop-resolver'
+
+export function createParentSessionLookup({
+  v2,
+  directory,
+  loopService,
+  logger,
+}: {
+  v2: ReturnType<typeof createV2Client>
+  directory: string
+  loopService: ReturnType<typeof createLoopService>
+  logger: ReturnType<typeof createLogger>
+}): (sessionId: string) => Promise<string | null> {
+  const cache = new LRUCache<string | null>(500)
+
+  return async (sessionId: string): Promise<string | null> => {
+    if (cache.has(sessionId)) {
+      return cache.get(sessionId) ?? null
+    }
+
+    type SessionGetInput = Parameters<typeof v2.session.get>[0]
+
+    const attempts: Array<{ label: string; directory?: string; input: SessionGetInput }> = [
+      { label: 'no-dir', input: { sessionID: sessionId } as SessionGetInput },
+    ]
+
+    const seenDirectories = new Set<string>()
+    for (const state of loopService.listActive()) {
+      if (!state.worktreeDir || seenDirectories.has(state.worktreeDir)) continue
+      seenDirectories.add(state.worktreeDir)
+      attempts.push({
+        label: `loop:${state.loopName}`,
+        directory: state.worktreeDir,
+        input: { sessionID: sessionId, directory: state.worktreeDir } as SessionGetInput,
+      })
+    }
+
+    if (!seenDirectories.has(directory)) {
+      attempts.push({
+        label: 'host',
+        directory,
+        input: { sessionID: sessionId, directory } as SessionGetInput,
+      })
+    }
+
+    const failures: string[] = []
+
+    for (const attempt of attempts) {
+      try {
+        const result = await v2.session.get(attempt.input)
+        if (result.data) {
+          const parentId = result.data.parentID ?? null
+          cache.set(sessionId, parentId)
+          return parentId
+        }
+        failures.push(`${attempt.label}[${attempt.directory ?? 'none'}]:empty`)
+      } catch (err) {
+        failures.push(`${attempt.label}[${attempt.directory ?? 'none'}]:${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+
+    logger.log(`[session-resolver] session.get failed for ${sessionId} across ${attempts.length} attempts: ${failures.join('; ')}`)
+    return null
+  }
+}
 
 
 /**
@@ -245,13 +310,11 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const toolExecuteAfterHook = createToolExecuteAfterHook(ctx)
     const planApprovalEventHook = createPlanApprovalEventHook(ctx)
     const sandboxBeforeHook = createSandboxToolBeforeHook({
-      loopService,
-      sandboxManager,
+      resolveSandboxForSession,
       logger,
     })
     const sandboxAfterHook = createSandboxToolAfterHook({
-      loopService,
-      sandboxManager,
+      resolveSandboxForSession,
       logger,
     })
     const graphBeforeHook = createGraphToolBeforeHook({
@@ -266,38 +329,23 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     })
     const graphCommandHook = createGraphCommandEventHook(graphService || null, logger)
 
-    // Resolves an active loop state for a session, checking the session itself
-    // and its direct parent. Subagent sessions (e.g. the auditor launched via the
-    // Task tool) have their own sessionID with a parentID pointing at the loop's
-    // primary session; without the parent hop, permission.ask cannot auto-allow
-    // for subagents and leaks prompts to the TUI.
-    // Bounded LRU avoids unbounded growth across long-running plugin lifetimes;
-    // evicted entries are simply re-fetched via session.get on next use.
-    const parentSessionCache = new LRUCache<string | null>(500)
-    async function resolveActiveLoopForSession(sessionId: string): Promise<ReturnType<typeof loopService.getActiveState>> {
-      const directLoopName = loopService.resolveLoopName(sessionId)
-      const directState = directLoopName ? loopService.getActiveState(directLoopName) : null
-      if (directState?.active) return directState
+    const parentSessionLookup = createParentSessionLookup({ v2, directory, loopService, logger })
+    const sessionLoopResolver = createSessionLoopResolver({
+      loopService,
+      getParentSessionId: parentSessionLookup,
+      logger,
+    })
 
-      let parentId: string | null | undefined = parentSessionCache.has(sessionId)
-        ? parentSessionCache.get(sessionId)
-        : undefined
-      if (parentId === undefined) {
-        try {
-          const result = await v2.session.get({ sessionID: sessionId, directory })
-          parentId = result.data?.parentID ?? null
-          parentSessionCache.set(sessionId, parentId)
-        } catch (err) {
-          logger.debug(`permission.ask: session.get failed for ${sessionId}`, err)
-          parentSessionCache.set(sessionId, null)
-          return null
-        }
-      }
-
-      if (!parentId) return null
-      const parentLoopName = loopService.resolveLoopName(parentId)
-      const parentState = parentLoopName ? loopService.getActiveState(parentLoopName) : null
-      return parentState?.active ? parentState : null
+    // Resolves sandbox context for a session by following parent hops until an
+    // active sandbox loop is found. Returns null if no sandbox is active for
+    // the session or its ancestor.
+    async function resolveSandboxForSession(sessionID: string) {
+      const resolved = await sessionLoopResolver.resolveActiveLoopForSession(sessionID)
+      if (!resolved || !resolved.active || !resolved.sandbox) return null
+      if (!sandboxManager) return null
+      const active = sandboxManager.getActive(resolved.loopName)
+      if (!active) return null
+      return { docker: sandboxManager.docker, containerName: active.containerName, hostDir: active.projectDir }
     }
 
     return {
@@ -319,9 +367,9 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         await graphCommandHook(eventInput)
       },
       'tool.execute.before': async (input, output) => {
-        const loopName = loopService.resolveLoopName(input.sessionID)
-        if (loopName) {
-          logger.log(`[tool-before] ${input.tool} callID=${input.callID} session=${input.sessionID} loop=${loopName}`)
+        const resolved = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
+        if (resolved) {
+          logger.log(`[tool-before] ${input.tool} callID=${input.callID} session=${input.sessionID} loop=${resolved.loopName} sandbox=${resolved.sandbox ? 'yes' : 'no'}`)
         }
         // Graph hook must run BEFORE sandbox hook to inspect original command
         // Graph hook must also run BEFORE toolExecuteBeforeHook to capture original args
@@ -330,8 +378,8 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         await sandboxBeforeHook!(input, output)
       },
       'tool.execute.after': async (input, output) => {
-        const loopName = loopService.resolveLoopName(input.sessionID)
-        if (loopName) {
+        const resolved = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
+        if (resolved) {
           logger.log(`[tool-after] ${input.tool} callID=${input.callID} output=${output.output?.slice(0, 200)}`)
         }
         await sandboxAfterHook!(input, output)
@@ -339,7 +387,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         await graphAfterHook!(input, output)
       },
       'permission.ask': async (input, output) => {
-        const state = await resolveActiveLoopForSession(input.sessionID)
+        const state = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
         if (!state) return
 
         const patterns = Array.isArray(input.pattern) ? input.pattern : (input.pattern ? [input.pattern] : [])
