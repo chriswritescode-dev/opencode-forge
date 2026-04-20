@@ -12,6 +12,7 @@ import { join } from 'path'
 import { resolveDataDir } from '../../storage'
 import { loadPluginConfig } from '../../setup'
 import { listLoopStatesFromDb } from '../../storage/cli-helpers'
+import { createLoopSessionWithWorkspace } from '../../utils/loop-session'
 
 interface RestartArgs {
   dbPath?: string
@@ -116,18 +117,22 @@ export async function run(argv: RestartArgs): Promise<void> {
 
     console.log(`restart: creating session with directory=${sessionDir} (sandbox: ${!!state.sandbox})`)
 
-    const createResult = await client.session.create({
+    const createResult = await createLoopSessionWithWorkspace({
+      v2: client,
       title: state.loopName,
       directory: sessionDir,
       permission: permissionRuleset,
+      workspaceId: state.workspaceId,
+      logPrefix: 'cli-restart',
+      logger: console,
     })
 
-    if (createResult.error || !createResult.data) {
-      console.error(`Failed to create new session: ${createResult.error}`)
+    if (!createResult) {
+      console.error('Failed to create new session')
       process.exit(1)
     }
 
-    const newSessionId = createResult.data.id
+    const newSessionId = createResult.sessionId
 
     // Update the loop in the new loops table
     const updatedState: LoopState = {

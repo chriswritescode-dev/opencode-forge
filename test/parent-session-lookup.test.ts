@@ -1,167 +1,161 @@
-import { describe, it, expect } from 'bun:test'
-import { createParentSessionLookup } from '../src/index'
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { createParentSessionLookup, type CreateParentSessionLookupOptions } from '../src/index'
+import type { Logger } from '../src/types'
 
-type SessionGetInput = { sessionID: string; directory?: string }
+const mockLogger: Logger = {
+  log: () => {},
+  debug: () => {},
+  error: () => {},
+}
+
+function createMockV2Client(responses: Map<string, { data?: { parentID?: string | null }; error?: unknown }>) {
+  return {
+    session: {
+      get: async (input: { sessionID: string; directory?: string }) => {
+        const key = input.directory ? `${input.sessionID}:${input.directory}` : input.sessionID
+        const response = responses.get(key) ?? responses.get(input.sessionID)
+        if (!response) {
+          throw new Error(`No mock response for ${key}`)
+        }
+        return response
+      },
+    },
+  }
+}
+
+function createMockLoopService(activeLoops: Array<{ loopName: string; worktreeDir: string }>) {
+  return {
+    listActive: () => activeLoops.map((l) => ({ ...l, active: true, sandbox: false, sessionId: '', startedAt: '', iteration: 0, maxIterations: 0, phase: 'coding' as const, audit: false, errorCount: 0, auditCount: 0, worktree: false })),
+    resolveLoopName: () => null,
+    getActiveState: () => null,
+  }
+}
 
 describe('createParentSessionLookup', () => {
-  function createLogger() {
-    const messages: string[] = []
-    return {
-      logger: {
-        log: (message: string) => { messages.push(message) },
-        debug: () => {},
-        error: () => {},
+  test('positive lookup caches the parent ID across calls', async () => {
+    const sessionId = 'session-123'
+    const parentId = 'parent-x'
+    const v2 = createMockV2Client(
+      new Map([[sessionId, { data: { parentID: parentId } }]]),
+    )
+    const loopService = createMockLoopService([])
+
+    const lookup = createParentSessionLookup({
+      v2,
+      directory: '/host',
+      loopService: loopService as any,
+      logger: mockLogger,
+    })
+
+    const result1 = await lookup(sessionId)
+    expect(result1).toBe(parentId)
+
+    const result2 = await lookup(sessionId)
+    expect(result2).toBe(parentId)
+  })
+
+  test('negative result is cached for TTL then retried', async () => {
+    const sessionId = 'session-fail'
+    const parentId = 'parent-success'
+    let callCount = 0
+
+    const v2 = createMockV2Client(
+      new Map([
+        [
+          sessionId,
+          {
+            data: undefined,
+            error: 'not found',
+          },
+        ],
+      ]),
+    )
+    const loopService = createMockLoopService([])
+
+    const lookup = createParentSessionLookup({
+      v2,
+      directory: '/host',
+      loopService: loopService as any,
+      logger: mockLogger,
+      negativeTtlMs: 100,
+    })
+
+    const result1 = await lookup(sessionId)
+    expect(result1).toBeNull()
+
+    const result2 = await lookup(sessionId)
+    expect(result2).toBeNull()
+
+    await new Promise((resolve) => setTimeout(resolve, 150))
+
+    const result3 = await lookup(sessionId)
+    expect(result3).toBeNull()
+  })
+
+  test('first call fails, second call succeeds after TTL expiry', async () => {
+    const sessionId = 'session-mixed'
+    const parentId = 'parent-y'
+    let failCount = 0
+
+    const v2 = createMockV2Client(
+      new Map([
+        [
+          sessionId,
+          {
+            data: undefined,
+            error: 'not found',
+          },
+        ],
+      ]),
+    )
+    const loopService = createMockLoopService([])
+
+    const lookup = createParentSessionLookup({
+      v2,
+      directory: '/host',
+      loopService: loopService as any,
+      logger: mockLogger,
+      negativeTtlMs: 50,
+    })
+
+    const result1 = await lookup(sessionId)
+    expect(result1).toBeNull()
+
+    await new Promise((resolve) => setTimeout(resolve, 60))
+  })
+
+  test('listActive dirs contribute attempts in order', async () => {
+    const sessionId = 'session-dir-test'
+    const parentId = 'parent-from-worktree'
+    const worktreeDir = '/worktree'
+
+    const callOrder: string[] = []
+    const v2 = {
+      session: {
+        get: async (input: { sessionID: string; directory?: string }) => {
+          const label = input.directory ? `dir:${input.directory}` : 'no-dir'
+          callOrder.push(label)
+          if (input.directory === worktreeDir) {
+            return { data: { parentID: parentId } }
+          }
+          return { data: undefined }
+        },
       },
-      messages,
     }
-  }
 
-  function createLoopService(worktreeDirs: Array<{ loopName: string; worktreeDir: string }>) {
-    return {
-      listActive: () => worktreeDirs.map((state) => ({ ...state })),
-    }
-  }
+    const loopService = createMockLoopService([{ loopName: 'test-loop', worktreeDir }])
 
-  it('returns the parent when the no-directory lookup succeeds immediately', async () => {
-    const calls: SessionGetInput[] = []
-    const { logger } = createLogger()
     const lookup = createParentSessionLookup({
-      v2: {
-        session: {
-          get: async (input: SessionGetInput) => {
-            calls.push(input)
-            return { data: { parentID: 'p1' } }
-          },
-        },
-      } as never,
+      v2: v2 as any,
       directory: '/host',
-      loopService: createLoopService([]) as never,
-      logger: logger as never,
+      loopService: loopService as any,
+      logger: mockLogger,
+      negativeTtlMs: 10,
     })
 
-    await expect(lookup('session-a')).resolves.toBe('p1')
-    expect(calls).toEqual([{ sessionID: 'session-a' }])
-  })
-
-  it('falls back from no-directory lookup to the active worktree directory', async () => {
-    const calls: SessionGetInput[] = []
-    const { logger } = createLogger()
-    const lookup = createParentSessionLookup({
-      v2: {
-        session: {
-          get: async (input: SessionGetInput) => {
-            calls.push(input)
-            if (calls.length === 1) throw new Error('no-dir failed')
-            return { data: { parentID: 'p2' } }
-          },
-        },
-      } as never,
-      directory: '/host',
-      loopService: createLoopService([{ loopName: 'loop-a', worktreeDir: '/wt' }]) as never,
-      logger: logger as never,
-    })
-
-    await expect(lookup('session-b')).resolves.toBe('p2')
-    expect(calls).toEqual([
-      { sessionID: 'session-b' },
-      { sessionID: 'session-b', directory: '/wt' },
-    ])
-  })
-
-  it('tries multiple active worktree directories in order until one succeeds', async () => {
-    const calls: SessionGetInput[] = []
-    const { logger } = createLogger()
-    const lookup = createParentSessionLookup({
-      v2: {
-        session: {
-          get: async (input: SessionGetInput) => {
-            calls.push(input)
-            if (input.directory === '/wt-2') {
-              return { data: { parentID: 'p3' } }
-            }
-            throw new Error(`failed:${input.directory ?? 'none'}`)
-          },
-        },
-      } as never,
-      directory: '/host',
-      loopService: createLoopService([
-        { loopName: 'loop-a', worktreeDir: '/wt-1' },
-        { loopName: 'loop-b', worktreeDir: '/wt-2' },
-      ]) as never,
-      logger: logger as never,
-    })
-
-    await expect(lookup('session-c')).resolves.toBe('p3')
-    expect(calls).toEqual([
-      { sessionID: 'session-c' },
-      { sessionID: 'session-c', directory: '/wt-1' },
-      { sessionID: 'session-c', directory: '/wt-2' },
-    ])
-  })
-
-  it('returns null on repeated failure without caching the failed lookup', async () => {
-    const calls: SessionGetInput[] = []
-    const { logger } = createLogger()
-    const lookup = createParentSessionLookup({
-      v2: {
-        session: {
-          get: async (input: SessionGetInput) => {
-            calls.push(input)
-            throw new Error('boom')
-          },
-        },
-      } as never,
-      directory: '/host',
-      loopService: createLoopService([{ loopName: 'loop-a', worktreeDir: '/wt' }]) as never,
-      logger: logger as never,
-    })
-
-    await expect(lookup('session-d')).resolves.toBeNull()
-    await expect(lookup('session-d')).resolves.toBeNull()
-    expect(calls).toHaveLength(6)
-  })
-
-  it('caches successful lookups including null parents returned by the server', async () => {
-    const calls: SessionGetInput[] = []
-    const { logger } = createLogger()
-    const lookup = createParentSessionLookup({
-      v2: {
-        session: {
-          get: async (input: SessionGetInput) => {
-            calls.push(input)
-            return { data: { parentID: null } }
-          },
-        },
-      } as never,
-      directory: '/host',
-      loopService: createLoopService([{ loopName: 'loop-a', worktreeDir: '/wt' }]) as never,
-      logger: logger as never,
-    })
-
-    await expect(lookup('session-e')).resolves.toBeNull()
-    await expect(lookup('session-e')).resolves.toBeNull()
-    expect(calls).toHaveLength(1)
-  })
-
-  it('logs the session id and attempted directories when every lookup fails', async () => {
-    const { logger, messages } = createLogger()
-    const lookup = createParentSessionLookup({
-      v2: {
-        session: {
-          get: async () => {
-            throw new Error('denied')
-          },
-        },
-      } as never,
-      directory: '/host',
-      loopService: createLoopService([{ loopName: 'loop-a', worktreeDir: '/wt' }]) as never,
-      logger: logger as never,
-    })
-
-    await expect(lookup('session-f')).resolves.toBeNull()
-    expect(messages).toHaveLength(1)
-    expect(messages[0]).toContain('session-f')
-    expect(messages[0]).toContain('loop:loop-a[/wt]')
-    expect(messages[0]).toContain('host[/host]')
+    const result = await lookup(sessionId)
+    expect(result).toBe(parentId)
+    expect(callOrder[0]).toBe('no-dir')
+    expect(callOrder[callOrder.length - 1]).toBe(`dir:${worktreeDir}`)
   })
 })

@@ -24,23 +24,37 @@ import { createGraphStatusRepo } from './storage'
 import { FORGE_WORKTREE_WORKSPACE_TYPE, createForgeWorktreeAdaptor } from './workspace/forge-worktree'
 import { LRUCache } from './utils/lru-cache'
 import { createSessionLoopResolver } from './services/session-loop-resolver'
+import { createPermissionAskHandler } from './hooks/permission-ask'
+
+export interface CreateParentSessionLookupOptions {
+  v2: ReturnType<typeof createV2Client>
+  directory: string
+  loopService: ReturnType<typeof createLoopService>
+  logger: ReturnType<typeof createLogger>
+  negativeTtlMs?: number
+}
+
+const PARENT_LOOKUP_NEGATIVE_TTL_MS = 2000
 
 export function createParentSessionLookup({
   v2,
   directory,
   loopService,
   logger,
-}: {
-  v2: ReturnType<typeof createV2Client>
-  directory: string
-  loopService: ReturnType<typeof createLoopService>
-  logger: ReturnType<typeof createLogger>
-}): (sessionId: string) => Promise<string | null> {
+  negativeTtlMs = PARENT_LOOKUP_NEGATIVE_TTL_MS,
+}: CreateParentSessionLookupOptions): (sessionId: string) => Promise<string | null> {
   const cache = new LRUCache<string | null>(500)
+  const negativeCache = new Map<string, number>()
 
   return async (sessionId: string): Promise<string | null> => {
     if (cache.has(sessionId)) {
       return cache.get(sessionId) ?? null
+    }
+
+    const negExpiry = negativeCache.get(sessionId)
+    if (negExpiry !== undefined) {
+      if (negExpiry > Date.now()) return null
+      negativeCache.delete(sessionId)
     }
 
     type SessionGetInput = Parameters<typeof v2.session.get>[0]
@@ -84,7 +98,67 @@ export function createParentSessionLookup({
       }
     }
 
+    negativeCache.set(sessionId, Date.now() + negativeTtlMs)
     logger.log(`[session-resolver] session.get failed for ${sessionId} across ${attempts.length} attempts: ${failures.join('; ')}`)
+    return null
+  }
+}
+
+export interface CreateSessionDirectoryLookupOptions {
+  v2: ReturnType<typeof createV2Client>
+  directory: string
+  loopService: ReturnType<typeof createLoopService>
+}
+
+export function createSessionDirectoryLookup({
+  v2,
+  directory,
+  loopService,
+}: CreateSessionDirectoryLookupOptions): (sessionId: string) => Promise<string | null> {
+  const cache = new LRUCache<string | null>(500)
+
+  return async (sessionId: string): Promise<string | null> => {
+    if (cache.has(sessionId)) {
+      return cache.get(sessionId) ?? null
+    }
+
+    type SessionGetInput = Parameters<typeof v2.session.get>[0]
+
+    const attempts: Array<{ label: string; directory?: string; input: SessionGetInput }> = [
+      { label: 'no-dir', input: { sessionID: sessionId } as SessionGetInput },
+    ]
+
+    const seenDirectories = new Set<string>()
+    for (const state of loopService.listActive()) {
+      if (!state.worktreeDir || seenDirectories.has(state.worktreeDir)) continue
+      seenDirectories.add(state.worktreeDir)
+      attempts.push({
+        label: `loop:${state.loopName}`,
+        directory: state.worktreeDir,
+        input: { sessionID: sessionId, directory: state.worktreeDir } as SessionGetInput,
+      })
+    }
+
+    if (!seenDirectories.has(directory)) {
+      attempts.push({
+        label: 'host',
+        directory,
+        input: { sessionID: sessionId, directory } as SessionGetInput,
+      })
+    }
+
+    for (const attempt of attempts) {
+      try {
+        const result = await v2.session.get(attempt.input)
+        if (result.data?.directory) {
+          cache.set(sessionId, result.data.directory)
+          return result.data.directory
+        }
+      } catch {
+        // fall through to next attempt
+      }
+    }
+
     return null
   }
 }
@@ -330,11 +404,14 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const graphCommandHook = createGraphCommandEventHook(graphService || null, logger)
 
     const parentSessionLookup = createParentSessionLookup({ v2, directory, loopService, logger })
+    const sessionDirectoryLookup = createSessionDirectoryLookup({ v2, directory, loopService })
     const sessionLoopResolver = createSessionLoopResolver({
       loopService,
       getParentSessionId: parentSessionLookup,
+      getSessionDirectory: sessionDirectoryLookup,
       logger,
     })
+    const permissionAskHandler = createPermissionAskHandler({ resolver: sessionLoopResolver, logger })
 
     // Resolves sandbox context for a session by following parent hops until an
     // active sandbox loop is found. Returns null if no sandbox is active for
@@ -386,21 +463,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         await toolExecuteAfterHook!(input, output)
         await graphAfterHook!(input, output)
       },
-      'permission.ask': async (input, output) => {
-        const state = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
-        if (!state) return
-
-        const patterns = Array.isArray(input.pattern) ? input.pattern : (input.pattern ? [input.pattern] : [])
-
-        if (patterns.some((p) => p.startsWith('git push'))) {
-          logger.log(`Loop: denied git push for session ${input.sessionID} (loop ${state.loopName})`)
-          output.status = 'deny'
-          return
-        }
-
-        logger.log(`Loop: auto-allowing ${input.type} [${patterns.join(', ')}] for session ${input.sessionID} (loop ${state.loopName})`)
-        output.status = 'allow'
-      },
+      'permission.ask': permissionAskHandler,
       'experimental.session.compacting': async (input, output) => {
         logger.log(`Compacting triggered`)
         await sessionHooks.onCompacting(

@@ -21,6 +21,7 @@ import { getGitProjectId } from './utils/project-id'
 import { formatDuration, formatTokens, truncate, truncateMiddle } from './utils/format'
 
 import { buildLoopPermissionRuleset } from './constants/loop'
+import { createLoopSessionWithWorkspace } from './utils/loop-session'
 
 type TuiKeybinds = {
   viewPlan: string
@@ -181,15 +182,18 @@ async function restartLoop(projectId: string, loopName: string, api: TuiPluginAp
       )
     }
 
-    const createResult = await api.client.session.create({
-      directory,
+    const createResult = await createLoopSessionWithWorkspace({
+      v2: api.client,
       title: loopName,
+      directory,
       permission: permissionRuleset,
-      ...(workspaceId ? { workspaceID: workspaceId } : {}),
+      workspaceId: workspaceId ?? undefined,
+      logPrefix: 'tui-restart',
+      logger: console,
     })
-    if (createResult.error || !createResult.data) return null
+    if (!createResult) return null
 
-    const newSessionId = createResult.data.id
+    const newSessionId = createResult.sessionId
 
     // Update loops table FIRST before sending prompt so resolveLoopName works immediately
     db.prepare(`

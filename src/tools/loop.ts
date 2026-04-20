@@ -12,7 +12,7 @@ import { fetchSessionOutput, MAX_RETRIES, type LoopState, type LoopSessionOutput
 import { buildLoopPermissionRuleset } from '../constants/loop'
 import { resolveWorktreeLogTarget } from '../services/worktree-log'
 import { isSandboxEnabled } from '../sandbox/context'
-import { formatElapsedSeconds, computeElapsedSeconds } from '../utils/loop-helpers'
+import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 import { waitForGraphReady } from '../utils/tui-graph-status'
 import { createLoopWorkspace } from '../workspace/forge-worktree'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
@@ -693,7 +693,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
             const lines: string[] = ['Recently Completed Loops', '']
             recent.forEach((s, i) => {
-              const durationStr = formatElapsedSeconds(computeElapsedSeconds(s.startedAt, s.completedAt))
+              const durationStr = formatDuration(computeElapsedSeconds(s.startedAt, s.completedAt))
               lines.push(`${i + 1}. ${s.loopName}`)
               lines.push(`   Reason: ${s.terminationReason ?? 'unknown'} | Iterations: ${s.iteration} | Duration: ${durationStr} | Completed: ${s.completedAt ?? 'unknown'}`)
               lines.push('')
@@ -718,7 +718,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
           const lines: string[] = [`Active Loops (${active.length})`, '']
           active.forEach((s, i) => {
-            const duration = formatElapsedSeconds(computeElapsedSeconds(s.startedAt))
+            const duration = formatDuration(computeElapsedSeconds(s.startedAt))
             const iterInfo = s.maxIterations && s.maxIterations > 0 ? `${s.iteration} / ${s.maxIterations}` : `${s.iteration} (unlimited)`
             const sessionStatus = statuses[s.sessionId]?.type ?? 'unavailable'
             const modeIndicator = !s.worktree ? ' (in-place)' : ''
@@ -735,7 +735,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             lines.push('')
             const limitedRecent = recent.slice(0, 10)
             limitedRecent.forEach((s, i) => {
-              const durationStr = formatElapsedSeconds(computeElapsedSeconds(s.startedAt, s.completedAt))
+              const durationStr = formatDuration(computeElapsedSeconds(s.startedAt, s.completedAt))
               lines.push(`${i + 1}. ${s.loopName}`)
               lines.push(`   Reason: ${s.terminationReason ?? 'unknown'} | Iterations: ${s.iteration} | Duration: ${durationStr} | Completed: ${s.completedAt ?? 'unknown'}`)
               lines.push('')
@@ -760,7 +760,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
         if (!state.active) {
           const maxInfo = state.maxIterations && state.maxIterations > 0 ? `${state.iteration} / ${state.maxIterations}` : `${state.iteration} (unlimited)`
-          const durationStr = formatElapsedSeconds(computeElapsedSeconds(state.startedAt, state.completedAt))
+          const durationStr = formatDuration(computeElapsedSeconds(state.startedAt, state.completedAt))
 
           const statusLines: string[] = [
             'Loop Status (Inactive)',
@@ -821,7 +821,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           sessionStatus = 'unavailable'
         }
 
-        const duration = formatElapsedSeconds(computeElapsedSeconds(state.startedAt))
+        const duration = formatDuration(computeElapsedSeconds(state.startedAt))
 
         const stallInfo = loopHandler.getStallInfo(state.loopName!)
         const secondsSinceActivity = stallInfo
