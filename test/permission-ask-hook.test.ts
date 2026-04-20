@@ -9,9 +9,9 @@ const mockLogger = {
 }
 
 describe('createPermissionAskHandler', () => {
-  test('sandbox loop + non-push pattern → output.status === "allow"', async () => {
+  test('worktree loop (sandbox) + non-push pattern → output.status === "allow"', async () => {
     const resolver = {
-      resolveActiveLoopForSession: async (_sessionId: string) => ({ loopName: 'test-loop', active: true, sandbox: true }),
+      resolveActiveLoopForSession: async (_sessionId: string) => ({ loopName: 'test-loop', active: true, sandbox: true, worktreeDir: '/tmp/test' }),
     }
 
     const logs: string[] = []
@@ -29,9 +29,9 @@ describe('createPermissionAskHandler', () => {
     expect(logs.some((l) => l.includes('allow'))).toBe(true)
   })
 
-  test('sandbox loop + git push origin main → output.status === "deny"', async () => {
+  test('worktree loop (sandbox) + git push origin main → output.status === "deny"', async () => {
     const resolver = {
-      resolveActiveLoopForSession: async (_sessionId: string) => ({ loopName: 'test-loop', active: true, sandbox: true }),
+      resolveActiveLoopForSession: async (_sessionId: string) => ({ loopName: 'test-loop', active: true, sandbox: true, worktreeDir: '/tmp/test' }),
     }
 
     const logs: string[] = []
@@ -49,9 +49,9 @@ describe('createPermissionAskHandler', () => {
     expect(logs.some((l) => l.includes('deny'))).toBe(true)
   })
 
-  test('sandbox loop + mixed patterns including git push → deny', async () => {
+  test('worktree loop (sandbox) + mixed patterns including git push → deny', async () => {
     const resolver = {
-      resolveActiveLoopForSession: async (_sessionId: string) => ({ loopName: 'test-loop', active: true, sandbox: true }),
+      resolveActiveLoopForSession: async (_sessionId: string) => ({ loopName: 'test-loop', active: true, sandbox: true, worktreeDir: '/tmp/test' }),
     }
 
     const logs: string[] = []
@@ -68,7 +68,47 @@ describe('createPermissionAskHandler', () => {
     expect(output.status).toBe('deny')
   })
 
-  test('non-sandbox loop → falls through to host default (output.status unchanged)', async () => {
+  test('worktree loop (non-sandbox) + non-push pattern → output.status === "allow"', async () => {
+    const resolver = {
+      resolveActiveLoopForSession: async (_sessionId: string) => ({ loopName: 'test-loop', active: true, sandbox: false, worktreeDir: '/tmp/test' }),
+    }
+
+    const logs: string[] = []
+    const logger = { ...mockLogger, log: (msg: string) => logs.push(msg) }
+
+    const handler = createPermissionAskHandler({ resolver: resolver as any, logger })
+    const output: { status?: 'allow' | 'deny' | 'ask' } = {}
+
+    await handler(
+      { sessionID: 'session-worktree', type: 'bash', pattern: 'ls *', id: '1', messageID: '1', title: 'test', metadata: {}, time: { created: 0 } } as Permission,
+      output,
+    )
+
+    expect(output.status).toBe('allow')
+    expect(logs.some((l) => l.includes('allow'))).toBe(true)
+  })
+
+  test('worktree loop (non-sandbox) + git push → deny', async () => {
+    const resolver = {
+      resolveActiveLoopForSession: async (_sessionId: string) => ({ loopName: 'test-loop', active: true, sandbox: false, worktreeDir: '/tmp/test' }),
+    }
+
+    const logs: string[] = []
+    const logger = { ...mockLogger, log: (msg: string) => logs.push(msg) }
+
+    const handler = createPermissionAskHandler({ resolver: resolver as any, logger })
+    const output: { status?: 'allow' | 'deny' | 'ask' } = {}
+
+    await handler(
+      { sessionID: 'session-worktree', type: 'bash', pattern: 'git push origin main', id: '1', messageID: '1', title: 'test', metadata: {}, time: { created: 0 } } as Permission,
+      output,
+    )
+
+    expect(output.status).toBe('deny')
+    expect(logs.some((l) => l.includes('deny'))).toBe(true)
+  })
+
+  test('in-place loop (non-worktree) → falls through to host default (output.status unchanged)', async () => {
     const resolver = {
       resolveActiveLoopForSession: async (_sessionId: string) => ({ loopName: 'test-loop', active: true, sandbox: false }),
     }
@@ -85,7 +125,7 @@ describe('createPermissionAskHandler', () => {
     )
 
     expect(output.status).toBeUndefined()
-    expect(logs.some((l) => l.includes('not a sandbox loop'))).toBe(true)
+    expect(logs.some((l) => l.includes('not a worktree loop'))).toBe(true)
   })
 
   test('unresolved session → output.status unchanged', async () => {
