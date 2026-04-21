@@ -11,6 +11,7 @@ import { buildWorktreeCompletionPayload, writeWorktreeCompletionLog } from '../s
 import { buildLoopPermissionRuleset } from '../constants/loop'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
+import { getAgentExcludedTools } from '../agents'
 
 export interface LoopEventHandler {
   onEvent(input: { event: { type: string; properties?: Record<string, unknown> } }): Promise<void>
@@ -411,9 +412,12 @@ export function createLoopEventHandler(
     const sessionDir = state.worktreeDir
 
     // Worktree sessions no longer need log directory access since logging is dispatched via host session
-    // Only resolve log target for non-worktree sessions
+    // Only resolve log target for non-worktree sessions.
+    // Forward the agent's excluded tools as deny rules so they remain enforced across every
+    // iteration's rotated session, not just iteration 1.
     const permissionRuleset = buildLoopPermissionRuleset(getConfig(), null, {
       isWorktree: !!state.worktree,
+      excludedTools: getAgentExcludedTools('code'),
     })
 
     const createResult = await createLoopSessionWithWorkspace({

@@ -1,5 +1,6 @@
 import type { LoopState } from '../../services/loop'
 import { buildLoopPermissionRuleset } from '../../constants/loop'
+import { getAgentExcludedTools } from '../../agents'
 import {
   openDatabase,
   confirm,
@@ -109,10 +110,13 @@ export async function run(argv: RestartArgs): Promise<void> {
       }
     }
 
-    // Worktree sessions no longer need log directory access since logging is dispatched via host session
+    // Worktree sessions no longer need log directory access since logging is dispatched via host session.
+    // Forward the agent's excluded tools as deny rules so a CLI-restarted loop retains the same
+    // tool exclusions as a freshly launched loop.
     const config = loadPluginConfig()
     const permissionRuleset = buildLoopPermissionRuleset(config, null, {
       isWorktree: !!state.worktree,
+      excludedTools: getAgentExcludedTools('code'),
     })
 
     console.log(`restart: creating session with directory=${sessionDir} (sandbox: ${!!state.sandbox})`)

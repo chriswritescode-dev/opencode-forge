@@ -17,7 +17,7 @@ import { waitForGraphReady } from '../utils/tui-graph-status'
 import { createLoopWorkspace } from '../workspace/forge-worktree'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
-import { agents } from '../agents'
+import { getAgentExcludedTools } from '../agents'
 
 const z = tool.schema
 
@@ -68,11 +68,9 @@ export async function setupLoop(
       dataDir: ctx.dataDir,
     }, ctx.logger)
     // Get the agent's excluded tools to enforce as permanent denials
-    const agent = agents.code
-    const excludedTools = agent?.tools?.exclude ?? []
     const permissionRuleset = buildLoopPermissionRuleset(config, logTarget?.permissionPath ?? null, {
       isWorktree: false,
-      excludedTools,
+      excludedTools: getAgentExcludedTools('code'),
     })
 
     let currentBranch: string | undefined
@@ -158,11 +156,9 @@ export async function setupLoop(
     // Worktree sessions no longer need log directory access since logging is dispatched via host session
     // Only resolve log target for non-worktree sessions or if needed for other purposes
     // Get the agent's excluded tools to enforce as permanent denials
-    const agent = agents.code
-    const excludedTools = agent?.tools?.exclude ?? []
     const permissionRuleset = buildLoopPermissionRuleset(config, null, {
       isWorktree: true,
-      excludedTools,
+      excludedTools: getAgentExcludedTools('code'),
     })
 
     logger.log(`loop: creating session with directory=${sessionDirectory} (host: ${hostWorktreeDir}, sandbox: ${sandboxEnabled})`)
@@ -518,11 +514,9 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
           // Worktree sessions no longer need log directory access since logging is dispatched via host session
           // Get the agent's excluded tools to enforce as permanent denials
-          const agent = agents.code
-          const excludedTools = agent?.tools?.exclude ?? []
           const permissionRuleset = buildLoopPermissionRuleset(config, null, {
             isWorktree: !!stoppedState.worktree,
-            excludedTools,
+            excludedTools: getAgentExcludedTools('code'),
           })
 
           const restartSandbox = isSandboxEnabled(config, ctx.sandboxManager)

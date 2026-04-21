@@ -96,4 +96,11 @@ export const migrations: Migration[] = [
       db.run(loadSql('110_drop_completion_signal_from_loops.sql'))
     },
   },
+  {
+    id: '111',
+    description: 'Make scenario column nullable in review_findings table',
+    apply: (db: Database) => {
+      db.run(loadSql('111_make_scenario_nullable.sql'))
+    },
+  },
 ]

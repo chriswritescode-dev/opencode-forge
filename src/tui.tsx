@@ -21,6 +21,7 @@ import { getGitProjectId } from './utils/project-id'
 import { formatDuration, formatTokens, truncate, truncateMiddle } from './utils/format'
 
 import { buildLoopPermissionRuleset } from './constants/loop'
+import { getAgentExcludedTools } from './agents'
 import { createLoopSessionWithWorkspace } from './utils/loop-session'
 
 type TuiKeybinds = {
@@ -158,6 +159,7 @@ async function restartLoop(projectId: string, loopName: string, api: TuiPluginAp
     const config = loadPluginConfig()
     const permissionRuleset = buildLoopPermissionRuleset(config, null, {
       isWorktree: !!row.worktree,
+      excludedTools: getAgentExcludedTools('code'),
     })
 
     // Resolve the workspace ID for worktree loops.
