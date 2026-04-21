@@ -10,19 +10,23 @@ type PermissionRule = { permission: string; pattern: string; action: 'allow' | '
  * - Adds external_directory allow rule for worktree logging when configured AND needed.
  *   Note: With host-session dispatch, worktree sessions no longer need direct host log access.
  *   This parameter is kept for backward compatibility but should be null for new designs.
+ * - Agent tool exclusions are appended as deny rules at the END to ensure they take precedence.
  *
  * Note on external_directory evaluation: The blanket `*:*:allow` for worktree loops
  * covers the session's own cwd. The `external_directory:*:deny` rule only blocks
  * paths outside the worktree. Audit performed: sandbox worktree loops launch
  * without permission prompts for their own cwd because the container-mapped
  * directory falls within the worktree scope that the blanket allow covers.
+ *
+ * @param excludedTools - List of tool names to exclude (from agent definition). These are appended as deny rules last.
  */
 export function buildLoopPermissionRuleset(
   config: PluginConfig,
   logDirectory?: string | null,
-  options?: { isWorktree?: boolean },
+  options?: { isWorktree?: boolean; excludedTools?: string[] },
 ): PermissionRule[] {
   const isWorktree = options?.isWorktree ?? true
+  const excludedTools = options?.excludedTools ?? []
   const rules: PermissionRule[] = []
 
   if (isWorktree) {
@@ -49,6 +53,12 @@ export function buildLoopPermissionRuleset(
     { permission: 'loop-cancel', pattern: '*', action: 'deny' },
     { permission: 'loop-status', pattern: '*', action: 'deny' },
   )
+
+  // Append agent tool exclusions as deny rules at the END
+  // This ensures they take precedence due to findLast evaluation in opencode
+  for (const tool of excludedTools) {
+    rules.push({ permission: tool, pattern: '*', action: 'deny' })
+  }
 
   return rules
 }

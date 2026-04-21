@@ -21,6 +21,7 @@ import { createLoopsRepo } from '../storage/repos/loops-repo'
 import type { LoopRow, LoopLargeFields } from '../storage/repos/loops-repo'
 import { createLoopWorkspace } from '../workspace/forge-worktree'
 import { createLoopSessionWithWorkspace } from './loop-session'
+import { agents } from '../agents'
 
 interface FreshLoopOptions {
   planText: string
@@ -142,8 +143,12 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
     }
 
     // Worktree sessions no longer need log directory access since logging is dispatched via host session
+    // Get the agent's excluded tools to enforce as permanent denials
+    const agent = agents.code
+    const excludedTools = agent?.tools?.exclude ?? []
     const permissionRuleset = buildLoopPermissionRuleset(config, null, {
       isWorktree: true,
+      excludedTools,
     })
     
     console.log(`loop-launch: creating session with directory=${hostWorktreeDir} (sandbox: ${isSandboxEnabled})`)
@@ -176,8 +181,12 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
       sandbox: isSandboxEnabled,
       dataDir,
     })
+    // Get the agent's excluded tools to enforce as permanent denials
+    const agent = agents.code
+    const excludedTools = agent?.tools?.exclude ?? []
     const permissionRuleset = buildLoopPermissionRuleset(config, logTarget?.permissionPath ?? null, {
       isWorktree: false,
+      excludedTools,
     })
     
     const createResult = await api.client.session.create({

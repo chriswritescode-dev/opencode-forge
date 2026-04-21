@@ -1,5 +1,4 @@
 import type { Plugin, PluginInput, Hooks } from '@opencode-ai/plugin'
-import { tool } from '@opencode-ai/plugin'
 import { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2'
 import { agents } from './agents'
 import { createConfigHandler } from './config'
@@ -198,302 +197,237 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     logger.log(`Initializing plugin for directory: ${directory}, projectId: ${projectId}`)
 
     const dataDir = config.dataDir || resolveDataDir()
+    
+    const db = initializeDatabase(dataDir, { completedLoopTtlMs: config.completedLoopTtlMs })
+
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, config.loop)
+
+    const activeSandboxLoops = loopService.listActive().filter(s => s.sandbox && s.loopName)
+
+    const reconciledCount = loopService.reconcileStale()
+    if (reconciledCount > 0) {
+      logger.log(`Reconciled ${reconciledCount} stale loop(s) from previous session`)
+    }
+
+    let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
+    if (config.sandbox?.mode === 'docker') {
+      const dockerService = createDockerService(logger)
+      try {
+        sandboxManager = createSandboxManager(dockerService, {
+          image: config.sandbox?.image || 'oc-forge-sandbox:latest',
+        }, logger)
+        logger.log('Docker sandbox manager initialized')
+      } catch (err) {
+        logger.error('Failed to initialize Docker sandbox manager', err)
+      }
+    }
+
+    // Sandbox reconciliation interval handle
+    let sandboxReconcileInterval: ReturnType<typeof setInterval> | null = null
+
+    if (sandboxManager) {
+      const preserveLoops = activeSandboxLoops.map(s => s.loopName!).filter(Boolean)
+      await sandboxManager.cleanupOrphans(preserveLoops)
+      
+      // Initial restore for active sandbox loops
+      for (const loop of activeSandboxLoops) {
+        try {
+          await sandboxManager.restore(loop.loopName!, loop.worktreeDir, loop.startedAt)
+          loopService.setStatus(loop.loopName!, 'running')
+          logger.log(`Restored sandbox and reactivated loop for ${loop.loopName}`)
+        } catch (err) {
+          logger.error(`Failed to restore sandbox for ${loop.loopName}`, err)
+        }
+      }
+
+      // Run initial reconciliation
+      const reconcileDeps = { sandboxManager, loopService, logger }
+      await reconcileSandboxes(reconcileDeps)
+
+      // Start periodic reconciliation (every 2 seconds).
+      // Reuse the same deps object so reconcile.ts's WeakMap-based re-entrancy guard works across ticks.
+      sandboxReconcileInterval = setInterval(() => {
+        reconcileSandboxes(reconcileDeps).catch((err) => {
+          logger.error('Sandbox reconciliation failed', err)
+        })
+      }, 2000)
+    }
+
+    const loopHandler = createLoopEventHandler(loopService, client, v2, logger, () => config, sandboxManager || undefined, projectId, dataDir)
+
+    // Initialize graph service if enabled
+    const graphEnabled = config.graph?.enabled ?? true
+    let graphService: GraphService | null = null
+    const graphStatusRepo = createGraphStatusRepo(db)
+    
+    if (graphEnabled) {
+      try {
+        // Create status callback for persisting graph state (scoped to cwd for worktree sessions)
+        const graphStatusCallback = createGraphStatusCallback(graphStatusRepo, projectId, directory)
+        
+        graphService = createGraphService({
+          projectId,
+          dataDir,
+          cwd: directory,
+          logger,
+          watch: config.graph?.watch ?? true,
+          debounceMs: config.graph?.debounceMs,
+          onStatusChange: graphStatusCallback,
+        })
+        
+        // Guarded auto-scan if enabled - checks cache freshness before scanning
+        const autoScan = config.graph?.autoScan ?? true
+        if (autoScan) {
+          graphService.ensureStartupIndex().catch((err: unknown) => {
+            logger.error('Graph startup index check failed', err)
+          })
+        }
+      } catch (err) {
+        logger.error('Failed to initialize graph service', err)
+        graphService = null
+      }
+    } else {
+      // Graph is disabled - persist unavailable status
+      writeGraphStatus(graphStatusRepo, projectId, UNAVAILABLE_STATUS)
+    }
 
     const compactionConfig: CompactionConfig | undefined = config.compaction
     const messagesTransformConfig = config.messagesTransform
     const sessionHooks = createSessionHooks(projectId, logger, input, compactionConfig)
 
-    // Phase B: Background initialization (~60ms)
-    // Everything expensive goes inside initPromise.
-    const initPromise: Promise<{
-      db: ReturnType<typeof initializeDatabase>
-      loopsRepo: ReturnType<typeof createLoopsRepo>
-      plansRepo: ReturnType<typeof createPlansRepo>
-      reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
-      graphStatusRepo: ReturnType<typeof createGraphStatusRepo>
-      loopService: ReturnType<typeof createLoopService>
-      loopHandler: ReturnType<typeof createLoopEventHandler>
-      graphService: GraphService | null
-      sandboxManager: ReturnType<typeof createSandboxManager> | null
-      sandboxReconcileInterval: ReturnType<typeof setInterval> | null
-      cleanup: () => Promise<void>
-      tools: Record<string, ReturnType<typeof tool>>
-      toolExecuteBeforeHook: ReturnType<typeof createToolExecuteBeforeHook>
-      toolExecuteAfterHook: ReturnType<typeof createToolExecuteAfterHook>
-      planApprovalEventHook: ReturnType<typeof createPlanApprovalEventHook>
-      sandboxBeforeHook: ReturnType<typeof createSandboxToolBeforeHook>
-      sandboxAfterHook: ReturnType<typeof createSandboxToolAfterHook>
-      graphBeforeHook: ReturnType<typeof createGraphToolBeforeHook>
-      graphAfterHook: ReturnType<typeof createGraphToolAfterHook>
-      graphCommandHook: ReturnType<typeof createGraphCommandEventHook>
-      sessionLoopResolver: ReturnType<typeof createSessionLoopResolver>
-      permissionAskHandler: ReturnType<typeof createPermissionAskHandler>
-      resolveSandboxForSession: (sessionID: string) => Promise<{ docker: unknown; containerName: string; hostDir: string } | null>
-    }> = (async () => {
-      const db = initializeDatabase(dataDir, { completedLoopTtlMs: config.completedLoopTtlMs })
+    let cleanupPromise: Promise<void> | null = null
 
-      const loopsRepo = createLoopsRepo(db)
-      const plansRepo = createPlansRepo(db)
-      const reviewFindingsRepo = createReviewFindingsRepo(db)
-      const graphStatusRepo = createGraphStatusRepo(db)
-
-      const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, config.loop)
-
-      const activeSandboxLoops = loopService.listActive().filter(s => s.sandbox && s.loopName)
-
-      const reconciledCount = loopService.reconcileStale()
-      if (reconciledCount > 0) {
-        logger.log(`Reconciled ${reconciledCount} stale loop(s) from previous session`)
-      }
-
-      let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
-      if (config.sandbox?.mode === 'docker') {
-        const dockerService = createDockerService(logger)
-        try {
-          sandboxManager = createSandboxManager(dockerService, {
-            image: config.sandbox?.image || 'oc-forge-sandbox:latest',
-          }, logger)
-          logger.log('Docker sandbox manager initialized')
-        } catch (err) {
-          logger.error('Failed to initialize Docker sandbox manager', err)
-        }
-      }
-
-      // Sandbox reconciliation interval handle
-      let sandboxReconcileInterval: ReturnType<typeof setInterval> | null = null
-
-      if (sandboxManager) {
-        const preserveLoops = activeSandboxLoops.map(s => s.loopName!).filter(Boolean)
-        await sandboxManager.cleanupOrphans(preserveLoops)
-        
-        // Initial restore for active sandbox loops
-        for (const loop of activeSandboxLoops) {
-          try {
-            await sandboxManager.restore(loop.loopName!, loop.worktreeDir, loop.startedAt)
-            loopService.setStatus(loop.loopName!, 'running')
-            logger.log(`Restored sandbox and reactivated loop for ${loop.loopName}`)
-          } catch (err) {
-            logger.error(`Failed to restore sandbox for ${loop.loopName}`, err)
-          }
-        }
-
-        // Run initial reconciliation
-        const reconcileDeps = { sandboxManager, loopService, logger }
-        await reconcileSandboxes(reconcileDeps)
-
-        // Start periodic reconciliation (every 2 seconds).
-        // Reuse the same deps object so reconcile.ts's WeakMap-based re-entrancy guard works across ticks.
-        sandboxReconcileInterval = setInterval(() => {
-          reconcileSandboxes(reconcileDeps).catch((err) => {
-            logger.error('Sandbox reconciliation failed', err)
-          })
-        }, 2000)
-      }
-
-      const loopHandler = createLoopEventHandler(loopService, client, v2, logger, () => config, sandboxManager || undefined, projectId, dataDir)
-
-      // Initialize graph service if enabled
-      const graphEnabled = config.graph?.enabled ?? true
-      let graphService: GraphService | null = null
-      
-      if (graphEnabled) {
-        try {
-          // Create status callback for persisting graph state (scoped to cwd for worktree sessions)
-          const graphStatusCallback = createGraphStatusCallback(graphStatusRepo, projectId, directory)
-          
-          graphService = createGraphService({
-            projectId,
-            dataDir,
-            cwd: directory,
-            logger,
-            watch: config.graph?.watch ?? true,
-            debounceMs: config.graph?.debounceMs,
-            onStatusChange: graphStatusCallback,
-          })
-          
-          // Guarded auto-scan if enabled - checks cache freshness before scanning
-          const autoScan = config.graph?.autoScan ?? true
-          if (autoScan) {
-            graphService.ensureStartupIndex().catch((err: unknown) => {
-              logger.error('Graph startup index check failed', err)
-            })
-          }
-        } catch (err) {
-          logger.error('Failed to initialize graph service', err)
-          graphService = null
-        }
-      } else {
-        // Graph is disabled - persist unavailable status
-        writeGraphStatus(graphStatusRepo, projectId, UNAVAILABLE_STATUS)
-      }
-
-      let cleanupPromise: Promise<void> | null = null
-
-      const cleanup = (): Promise<void> => {
-        if (cleanupPromise) {
-          return cleanupPromise
-        }
-        cleanupPromise = (async () => {
-          logger.log('Cleaning up plugin resources...')
-          
-          // Unregister process listeners before async work
-          process.removeListener('exit', handleExit)
-          process.removeListener('SIGINT', handleSigint)
-          process.removeListener('SIGTERM', handleSigterm)
-
-          // Clear sandbox reconciliation interval
-          if (sandboxReconcileInterval) {
-            clearInterval(sandboxReconcileInterval)
-            sandboxReconcileInterval = null
-          }
-
-          if (sandboxManager) {
-            const activeLoops = loopService.listActive()
-            for (const state of activeLoops) {
-              if (state.sandbox && sandboxManager) {
-                try {
-                   await sandboxManager.stop(state.loopName!)
-                   logger.log(`Cleanup: stopped sandbox for ${state.loopName}`)
-                 } catch (err) {
-                   logger.error(`Cleanup: failed to stop sandbox for ${state.loopName}`, err)
-                 }
-              }
-            }
-          }
-
-          loopHandler.terminateAll()
-          logger.log('Loop: all active loops terminated')
-          
-          loopHandler.clearAllRetryTimeouts()
-          
-          if (graphService) {
-            await graphService.close()
-            logger.log('Graph service closed')
-          }
-          
-          closeDatabase(db)
-          logger.log('Plugin cleanup complete')
-        })()
+    const cleanup = (): Promise<void> => {
+      if (cleanupPromise) {
         return cleanupPromise
       }
+      cleanupPromise = (async () => {
+        logger.log('Cleaning up plugin resources...')
+        
+        // Unregister process listeners before async work
+        process.removeListener('exit', handleExit)
+        process.removeListener('SIGINT', handleSigint)
+        process.removeListener('SIGTERM', handleSigterm)
 
-      const handleExit = cleanup
-      const handleSigint = cleanup
-      const handleSigterm = cleanup
+        // Clear sandbox reconciliation interval
+        if (sandboxReconcileInterval) {
+          clearInterval(sandboxReconcileInterval)
+          sandboxReconcileInterval = null
+        }
 
-      process.once('exit', handleExit)
-      process.once('SIGINT', handleSigint)
-      process.once('SIGTERM', handleSigterm)
+        if (sandboxManager) {
+          const activeLoops = loopService.listActive()
+          for (const state of activeLoops) {
+            if (state.sandbox && sandboxManager) {
+              try {
+                 await sandboxManager.stop(state.loopName!)
+                 logger.log(`Cleanup: stopped sandbox for ${state.loopName}`)
+               } catch (err) {
+                 logger.error(`Cleanup: failed to stop sandbox for ${state.loopName}`, err)
+               }
+            }
+          }
+        }
 
-      // Create tool context
-      const ctx: ToolContext = {
-        projectId,
-        directory,
-        config,
-        logger,
-        db,
-        dataDir,
-        loopService,
-        loopHandler,
-        v2,
-        cleanup,
-        input,
-        sandboxManager,
-        graphService: graphService || null,
-        plansRepo,
-        reviewFindingsRepo,
-        graphStatusRepo,
-        loopsRepo,
-      }
+        loopHandler.terminateAll()
+        logger.log('Loop: all active loops terminated')
+        
+        loopHandler.clearAllRetryTimeouts()
+        
+        if (graphService) {
+          await graphService.close()
+          logger.log('Graph service closed')
+        }
+        
+        closeDatabase(db)
+        logger.log('Plugin cleanup complete')
+      })()
+      return cleanupPromise
+    }
 
-      const tools = createTools(ctx)
-      const toolExecuteBeforeHook = createToolExecuteBeforeHook(ctx)
-      const toolExecuteAfterHook = createToolExecuteAfterHook(ctx)
-      const planApprovalEventHook = createPlanApprovalEventHook(ctx)
-      
-      const parentSessionLookup = createParentSessionLookup({ v2, directory, loopService, logger })
-      const sessionDirectoryLookup = createSessionDirectoryLookup({ v2, directory, loopService })
-      const sessionLoopResolver = createSessionLoopResolver({
-        loopService,
-        getParentSessionId: parentSessionLookup,
-        getSessionDirectory: sessionDirectoryLookup,
-        logger,
-      })
-      const permissionAskHandler = createPermissionAskHandler({ resolver: sessionLoopResolver, logger })
+    const handleExit = cleanup
+    const handleSigint = cleanup
+    const handleSigterm = cleanup
 
-      // Resolves sandbox context for a session by following parent hops until an
-      // active sandbox loop is found. Returns null if no sandbox is active for
-      // the session or its ancestor.
-      async function resolveSandboxForSession(sessionID: string) {
-        const resolved = await sessionLoopResolver.resolveActiveLoopForSession(sessionID)
-        if (!resolved || !resolved.active || !resolved.sandbox) return null
-        if (!sandboxManager) return null
-        const active = sandboxManager.getActive(resolved.loopName)
-        if (!active) return null
-        return { docker: sandboxManager.docker, containerName: active.containerName, hostDir: active.projectDir }
-      }
+    process.once('exit', handleExit)
+    process.once('SIGINT', handleSigint)
+    process.once('SIGTERM', handleSigterm)
 
-      const sandboxBeforeHook = createSandboxToolBeforeHook({
-        resolveSandboxForSession,
-        logger,
-      })
-      const sandboxAfterHook = createSandboxToolAfterHook({
-        resolveSandboxForSession,
-        logger,
-      })
-      const graphBeforeHook = createGraphToolBeforeHook({
-        graphService: graphService || null,
-        logger,
-        cwd: directory,
-      })
-      const graphAfterHook = createGraphToolAfterHook({
-        graphService: graphService || null,
-        logger,
-        cwd: directory,
-      })
-      const graphCommandHook = createGraphCommandEventHook(graphService || null, logger)
+    const getCleanup = cleanup
 
-      return {
-        db,
-        loopsRepo,
-        plansRepo,
-        reviewFindingsRepo,
-        graphStatusRepo,
-        loopService,
-        loopHandler,
-        graphService,
-        sandboxManager,
-        sandboxReconcileInterval,
-        cleanup,
-        tools,
-        toolExecuteBeforeHook,
-        toolExecuteAfterHook,
-        planApprovalEventHook,
-        sandboxBeforeHook,
-        sandboxAfterHook,
-        graphBeforeHook,
-        graphAfterHook,
-        graphCommandHook,
-        sessionLoopResolver,
-        permissionAskHandler,
-        resolveSandboxForSession,
-      }
-    })()
+    const ctx: ToolContext = {
+      projectId,
+      directory,
+      config,
+      logger,
+      db,
+      dataDir,
+      loopService,
+      loopHandler,
+      v2,
+      cleanup,
+      input,
+      sandboxManager,
+      graphService: graphService || null,
+      plansRepo,
+      reviewFindingsRepo,
+      graphStatusRepo,
+      loopsRepo,
+    }
 
-    initPromise.catch(err => logger.error('Forge plugin init failed', err))
+    const tools = createTools(ctx)
+    const toolExecuteBeforeHook = createToolExecuteBeforeHook(ctx)
+    const toolExecuteAfterHook = createToolExecuteAfterHook(ctx)
+    const planApprovalEventHook = createPlanApprovalEventHook(ctx)
+    const sandboxBeforeHook = createSandboxToolBeforeHook({
+      resolveSandboxForSession,
+      logger,
+    })
+    const sandboxAfterHook = createSandboxToolAfterHook({
+      resolveSandboxForSession,
+      logger,
+    })
+    const graphBeforeHook = createGraphToolBeforeHook({
+      graphService: graphService || null,
+      logger,
+      cwd: directory,
+    })
+    const graphAfterHook = createGraphToolAfterHook({
+      graphService: graphService || null,
+      logger,
+      cwd: directory,
+    })
+    const graphCommandHook = createGraphCommandEventHook(graphService || null, logger)
 
-    // Helper to wait for init before executing hooks
-    const withInit = async <T>(fn: (init: Awaited<typeof initPromise>) => T | Promise<T>): Promise<T> => {
-      const init = await initPromise
-      return fn(init)
+    const parentSessionLookup = createParentSessionLookup({ v2, directory, loopService, logger })
+    const sessionDirectoryLookup = createSessionDirectoryLookup({ v2, directory, loopService })
+    const sessionLoopResolver = createSessionLoopResolver({
+      loopService,
+      getParentSessionId: parentSessionLookup,
+      getSessionDirectory: sessionDirectoryLookup,
+      logger,
+    })
+    const permissionAskHandler = createPermissionAskHandler({ resolver: sessionLoopResolver, logger })
+
+    // Resolves sandbox context for a session by following parent hops until an
+    // active sandbox loop is found. Returns null if no sandbox is active for
+    // the session or its ancestor.
+    async function resolveSandboxForSession(sessionID: string) {
+      const resolved = await sessionLoopResolver.resolveActiveLoopForSession(sessionID)
+      if (!resolved || !resolved.active || !resolved.sandbox) return null
+      if (!sandboxManager) return null
+      const active = sandboxManager.getActive(resolved.loopName)
+      if (!active) return null
+      return { docker: sandboxManager.docker, containerName: active.containerName, hostDir: active.projectDir }
     }
 
     return {
-      getCleanup: async () => {
-        const init = await initPromise
-        return init.cleanup()
-      },
-      tool: (await initPromise).tools,
+      getCleanup,
+      tool: tools,
       config: createConfigHandler(agents, config.agents),
       'chat.message': async (input, output) => {
         await sessionHooks.onMessage(input, output)
@@ -501,44 +435,35 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       event: async (input) => {
         const eventInput = input as { event: { type: string; properties?: Record<string, unknown> } }
         if (eventInput.event?.type === 'server.instance.disposed') {
-          await withInit(init => init.cleanup())
+          await cleanup()
           return
         }
-        await withInit(async init => {
-          await init.loopHandler.onEvent(eventInput)
-          await sessionHooks.onEvent(eventInput)
-          await init.planApprovalEventHook(eventInput)
-          await init.graphCommandHook(eventInput)
-        })
+        await loopHandler.onEvent(eventInput)
+        await sessionHooks.onEvent(eventInput)
+        await planApprovalEventHook(eventInput)
+        await graphCommandHook(eventInput)
       },
       'tool.execute.before': async (input, output) => {
-        await withInit(async init => {
-          const resolved = await init.sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
-          if (resolved) {
-            logger.log(`[tool-before] ${input.tool} callID=${input.callID} session=${input.sessionID} loop=${resolved.loopName} sandbox=${resolved.sandbox ? 'yes' : 'no'}`)
-          }
-          // Graph hook must run BEFORE sandbox hook to inspect original command
-          // Graph hook must also run BEFORE toolExecuteBeforeHook to capture original args
-          await init.graphBeforeHook!(input, output)
-          await init.toolExecuteBeforeHook!(input, output)
-          await init.sandboxBeforeHook!(input, output)
-        })
+        const resolved = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
+        if (resolved) {
+          logger.log(`[tool-before] ${input.tool} callID=${input.callID} session=${input.sessionID} loop=${resolved.loopName} sandbox=${resolved.sandbox ? 'yes' : 'no'}`)
+        }
+        // Graph hook must run BEFORE sandbox hook to inspect original command
+        // Graph hook must also run BEFORE toolExecuteBeforeHook to capture original args
+        await graphBeforeHook!(input, output)
+        await toolExecuteBeforeHook!(input, output)
+        await sandboxBeforeHook!(input, output)
       },
       'tool.execute.after': async (input, output) => {
-        await withInit(async init => {
-          const resolved = await init.sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
-          if (resolved) {
-            logger.log(`[tool-after] ${input.tool} callID=${input.callID} output=${output.output?.slice(0, 200)}`)
-          }
-          await init.sandboxAfterHook!(input, output)
-          await init.toolExecuteAfterHook!(input, output)
-          await init.graphAfterHook!(input, output)
-        })
+        const resolved = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
+        if (resolved) {
+          logger.log(`[tool-after] ${input.tool} callID=${input.callID} output=${output.output?.slice(0, 200)}`)
+        }
+        await sandboxAfterHook!(input, output)
+        await toolExecuteAfterHook!(input, output)
+        await graphAfterHook!(input, output)
       },
-      'permission.ask': async (input, output) => {
-        const init = await initPromise
-        return init.permissionAskHandler(input, output)
-      },
+      'permission.ask': permissionAskHandler,
       'experimental.session.compacting': async (input, output) => {
         logger.log(`Compacting triggered`)
         await sessionHooks.onCompacting(
@@ -579,7 +504,11 @@ However, you CAN and SHOULD:
 - Use \`plan-execute\` or \`loop\` ONLY AFTER:
   1. The plan has been written via \`plan-write\`
   2. The user explicitly approves via the question tool
-  3. After the plan is written, present a summary and use the \`question\` tool to collect execution approval with the four canonical options
+
+Follow the two-step approval flow:
+1. After research/design, present findings and next steps, then use the \`question\` tool to ask whether to write the plan
+2. Only after the user approves writing the plan, call \`plan-write\` to persist it
+3. After the plan is written, present a summary and use the \`question\` tool to collect execution approval with the four canonical options
 
 Never execute a plan without both a written plan and explicit approval via the question tool.
 </system-reminder>`,
