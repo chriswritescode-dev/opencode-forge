@@ -244,7 +244,7 @@ export function createLoopService(
         `- ${finding.file}:${finding.line}`,
         `  - Severity: ${finding.severity}`,
         `  - Description: ${finding.description}`,
-        `  - Scenario: ${finding.scenario}`,
+        `  - Scenario: ${finding.scenario || 'N/A'}`,
       ].join('\n')
     }).join('\n\n')
   }
