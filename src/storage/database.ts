@@ -64,6 +64,13 @@ interface ForgeDatabaseOptions {
 
 const DEFAULT_COMPLETED_LOOP_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
+type CachedDb = { db: Database; refCount: number }
+const dbCache = new Map<string, CachedDb>()
+
+function cacheKey(dbPath: string, options?: ForgeDatabaseOptions): string {
+  return `${dbPath}::${options?.completedLoopTtlMs ?? DEFAULT_COMPLETED_LOOP_TTL_MS}`
+}
+
 export function openForgeDatabase(dbPath: string, options?: ForgeDatabaseOptions): Database {
   const db = openSqliteWithIntegrityGuard(dbPath, {
     label: 'Forge database',
@@ -84,10 +91,26 @@ export function initializeDatabase(dataDir: string, options?: ForgeDatabaseOptio
   }
 
   const dbPath = `${dataDir}/graph.db`
-  
-  return openForgeDatabase(dbPath, options)
+  const key = cacheKey(dbPath, options)
+  const cached = dbCache.get(key)
+  if (cached) {
+    cached.refCount += 1
+    return cached.db
+  }
+  const db = openForgeDatabase(dbPath, options)
+  dbCache.set(key, { db, refCount: 1 })
+  return db
 }
 
 export function closeDatabase(db: Database): void {
+  for (const [key, entry] of dbCache) {
+    if (entry.db !== db) continue
+    entry.refCount -= 1
+    if (entry.refCount <= 0) {
+      dbCache.delete(key)
+      db.close()
+    }
+    return
+  }
   db.close()
 }
