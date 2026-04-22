@@ -9,7 +9,7 @@ const mockLogger = {
 }
 
 describe('createPermissionAskHandler', () => {
-  test('worktree loop (sandbox) + non-push pattern → output.status === "allow"', async () => {
+  test('worktree loop (sandbox) + non-push pattern → falls through to opencode default', async () => {
     const resolver = {
       resolveActiveLoopForSession: async (_sessionId: string) => ({ loopName: 'test-loop', active: true, sandbox: true, worktreeDir: '/tmp/test' }),
     }
@@ -25,11 +25,11 @@ describe('createPermissionAskHandler', () => {
       output,
     )
 
-    expect(output.status).toBe('allow')
-    expect(logs.some((l) => l.includes('allow'))).toBe(true)
+    expect(output.status).toBeUndefined()
+    expect(logs.some((l) => l.includes('worktree loop'))).toBe(true)
   })
 
-  test('worktree loop (sandbox) + git push origin main → output.status === "deny"', async () => {
+  test('worktree loop (sandbox) + git push origin main → falls through to opencode default', async () => {
     const resolver = {
       resolveActiveLoopForSession: async (_sessionId: string) => ({ loopName: 'test-loop', active: true, sandbox: true, worktreeDir: '/tmp/test' }),
     }
@@ -45,11 +45,11 @@ describe('createPermissionAskHandler', () => {
       output,
     )
 
-    expect(output.status).toBe('deny')
-    expect(logs.some((l) => l.includes('deny'))).toBe(true)
+    expect(output.status).toBeUndefined()
+    expect(logs.some((l) => l.includes('worktree loop'))).toBe(true)
   })
 
-  test('worktree loop (sandbox) + mixed patterns including git push → deny', async () => {
+  test('worktree loop (sandbox) + mixed patterns including git push → falls through to opencode default', async () => {
     const resolver = {
       resolveActiveLoopForSession: async (_sessionId: string) => ({ loopName: 'test-loop', active: true, sandbox: true, worktreeDir: '/tmp/test' }),
     }
@@ -65,10 +65,11 @@ describe('createPermissionAskHandler', () => {
       output,
     )
 
-    expect(output.status).toBe('deny')
+    expect(output.status).toBeUndefined()
+    expect(logs.some((l) => l.includes('worktree loop'))).toBe(true)
   })
 
-  test('worktree loop (non-sandbox) + non-push pattern → output.status === "allow"', async () => {
+  test('worktree loop (non-sandbox) + non-push pattern → falls through to opencode default', async () => {
     const resolver = {
       resolveActiveLoopForSession: async (_sessionId: string) => ({ loopName: 'test-loop', active: true, sandbox: false, worktreeDir: '/tmp/test' }),
     }
@@ -84,11 +85,11 @@ describe('createPermissionAskHandler', () => {
       output,
     )
 
-    expect(output.status).toBe('allow')
-    expect(logs.some((l) => l.includes('allow'))).toBe(true)
+    expect(output.status).toBeUndefined()
+    expect(logs.some((l) => l.includes('worktree loop'))).toBe(true)
   })
 
-  test('worktree loop (non-sandbox) + git push → deny', async () => {
+  test('worktree loop (non-sandbox) + git push → falls through to opencode default', async () => {
     const resolver = {
       resolveActiveLoopForSession: async (_sessionId: string) => ({ loopName: 'test-loop', active: true, sandbox: false, worktreeDir: '/tmp/test' }),
     }
@@ -104,8 +105,8 @@ describe('createPermissionAskHandler', () => {
       output,
     )
 
-    expect(output.status).toBe('deny')
-    expect(logs.some((l) => l.includes('deny'))).toBe(true)
+    expect(output.status).toBeUndefined()
+    expect(logs.some((l) => l.includes('worktree loop'))).toBe(true)
   })
 
   test('in-place loop (non-worktree) → falls through to host default (output.status unchanged)', async () => {

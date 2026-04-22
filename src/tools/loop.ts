@@ -10,14 +10,12 @@ import { findPartialMatch } from '../utils/partial-match'
 import { formatSessionOutput, formatAuditResult } from '../utils/loop-format'
 import { fetchSessionOutput, MAX_RETRIES, type LoopState, type LoopSessionOutput } from '../services/loop'
 import { buildLoopPermissionRuleset } from '../constants/loop'
-import { resolveWorktreeLogTarget } from '../services/worktree-log'
 import { isSandboxEnabled } from '../sandbox/context'
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 import { waitForGraphReady } from '../utils/tui-graph-status'
 import { createLoopWorkspace } from '../workspace/forge-worktree'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
-import { getAgentExcludedTools } from '../agents'
 
 const z = tool.schema
 
@@ -59,18 +57,8 @@ export async function setupLoop(
   let loopContext: LoopContext
 
   if (!options.worktree) {
-    // Non-worktree: resolve log target using project directory
-    // Note: In-place loops may still need log directory access if they write logs directly
-    const logTarget = resolveWorktreeLogTarget(config, {
-      projectDir: projectDir,
-      sandboxHostDir: undefined,
-      sandbox: false,
-      dataDir: ctx.dataDir,
-    }, ctx.logger)
-    // Get the agent's excluded tools to enforce as permanent denials
-    const permissionRuleset = buildLoopPermissionRuleset(config, logTarget?.permissionPath ?? null, {
+    const permissionRuleset = buildLoopPermissionRuleset({
       isWorktree: false,
-      excludedTools: getAgentExcludedTools('code'),
     })
 
     let currentBranch: string | undefined
@@ -153,12 +141,8 @@ export async function setupLoop(
       logger.log(`loop: workspace API unavailable or create failed; continuing without workspace backing for ${uniqueLoopName}`)
     }
 
-    // Worktree sessions no longer need log directory access since logging is dispatched via host session
-    // Only resolve log target for non-worktree sessions or if needed for other purposes
-    // Get the agent's excluded tools to enforce as permanent denials
-    const permissionRuleset = buildLoopPermissionRuleset(config, null, {
+    const permissionRuleset = buildLoopPermissionRuleset({
       isWorktree: true,
-      excludedTools: getAgentExcludedTools('code'),
     })
 
     logger.log(`loop: creating session with directory=${sessionDirectory} (host: ${hostWorktreeDir}, sandbox: ${sandboxEnabled})`)
@@ -512,11 +496,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             }
           }
 
-          // Worktree sessions no longer need log directory access since logging is dispatched via host session
-          // Get the agent's excluded tools to enforce as permanent denials
-          const permissionRuleset = buildLoopPermissionRuleset(config, null, {
+          const permissionRuleset = buildLoopPermissionRuleset({
             isWorktree: !!stoppedState.worktree,
-            excludedTools: getAgentExcludedTools('code'),
           })
 
           const restartSandbox = isSandboxEnabled(config, ctx.sandboxManager)

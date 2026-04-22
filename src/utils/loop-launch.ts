@@ -13,7 +13,6 @@ import { generateUniqueName } from '../services/loop'
 import { extractLoopNames } from './plan-execution'
 import { resolveDataDir } from '../storage'
 import { buildLoopPermissionRuleset } from '../constants/loop'
-import { resolveWorktreeLogTarget } from '../services/worktree-log'
 import { waitForGraphReady } from './tui-graph-status'
 import { retryWithModelFallback, parseModelString } from './model-fallback'
 import { loadPluginConfig } from '../setup'
@@ -21,7 +20,6 @@ import { createLoopsRepo } from '../storage/repos/loops-repo'
 import type { LoopRow, LoopLargeFields } from '../storage/repos/loops-repo'
 import { createLoopWorkspace } from '../workspace/forge-worktree'
 import { createLoopSessionWithWorkspace } from './loop-session'
-import { getAgentExcludedTools } from '../agents'
 
 interface FreshLoopOptions {
   planText: string
@@ -95,7 +93,6 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
   
   // Load config early to determine sandbox state for loop state persistence
   const config = loadPluginConfig()
-  const dataDir = resolveDataDir()
   const isSandboxEnabled = options.sandboxEnabled ?? (config.sandbox?.mode === 'docker')
   
   if (isWorktree) {
@@ -142,11 +139,8 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
       console.log(`loop-launch: workspace API unavailable or create failed; continuing without workspace backing for ${uniqueWorktreeName}`)
     }
 
-    // Worktree sessions no longer need log directory access since logging is dispatched via host session
-    // Get the agent's excluded tools to enforce as permanent denials
-    const permissionRuleset = buildLoopPermissionRuleset(config, null, {
+    const permissionRuleset = buildLoopPermissionRuleset({
       isWorktree: true,
-      excludedTools: getAgentExcludedTools('code'),
     })
     
     console.log(`loop-launch: creating session with directory=${hostWorktreeDir} (sandbox: ${isSandboxEnabled})`)
@@ -172,17 +166,8 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
       console.error('loop-launch: continuing without workspace backing')
     }
   } else {
-    // In-place loop - may still need log directory access if direct logging is used
-    const logTarget = resolveWorktreeLogTarget(config, {
-      projectDir: directory,
-      sandboxHostDir: undefined,
-      sandbox: isSandboxEnabled,
-      dataDir,
-    })
-    // Get the agent's excluded tools to enforce as permanent denials
-    const permissionRuleset = buildLoopPermissionRuleset(config, logTarget?.permissionPath ?? null, {
+    const permissionRuleset = buildLoopPermissionRuleset({
       isWorktree: false,
-      excludedTools: getAgentExcludedTools('code'),
     })
     
     const createResult = await api.client.session.create({

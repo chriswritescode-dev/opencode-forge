@@ -9,7 +9,7 @@ export interface PermissionAskDeps {
 }
 
 export function createPermissionAskHandler(deps: PermissionAskDeps) {
-  return async (input: Permission, output: { status?: 'allow' | 'deny' | 'ask' }): Promise<void> => {
+  return async (input: Permission, _output: { status?: 'allow' | 'deny' | 'ask' }): Promise<void> => {
     const patterns = Array.isArray(input.pattern) ? input.pattern : (input.pattern ? [input.pattern] : [])
     deps.logger.log(`[permission.ask] session=${input.sessionID} type=${input.type} patterns=[${patterns.join(', ')}]`)
 
@@ -27,13 +27,10 @@ export function createPermissionAskHandler(deps: PermissionAskDeps) {
       return
     }
 
-    if (patterns.some((p) => p.startsWith('git push'))) {
-      deps.logger.log(`[permission.ask] deny git push session=${input.sessionID} loop=${state.loopName}`)
-      output.status = 'deny'
-      return
-    }
-
-    deps.logger.log(`[permission.ask] allow type=${input.type} session=${input.sessionID} loop=${state.loopName}`)
-    output.status = 'allow'
+    // For worktree loops, we let opencode's core permission system handle all decisions
+    // by not setting output.status. This prevents conflicts between the hook and
+    // opencode's own ruleset evaluation which throws DeniedError.
+    deps.logger.log(`[permission.ask] worktree loop=${state.loopName} — falling through to opencode default`)
+    return
   }
 }
