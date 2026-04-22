@@ -110,6 +110,7 @@ export async function run(argv: RestartArgs): Promise<void> {
 
     const permissionRuleset = buildLoopPermissionRuleset({
       isWorktree: !!state.worktree,
+      isSandbox: !!state.sandbox,
     })
 
     console.log(`restart: creating session with directory=${sessionDir} (sandbox: ${!!state.sandbox})`)

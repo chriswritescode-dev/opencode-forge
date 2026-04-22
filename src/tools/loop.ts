@@ -143,6 +143,7 @@ export async function setupLoop(
 
     const permissionRuleset = buildLoopPermissionRuleset({
       isWorktree: true,
+      isSandbox: sandboxEnabled,
     })
 
     logger.log(`loop: creating session with directory=${sessionDirectory} (host: ${hostWorktreeDir}, sandbox: ${sandboxEnabled})`)
