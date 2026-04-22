@@ -412,6 +412,7 @@ export function createLoopEventHandler(
 
     const permissionRuleset = buildLoopPermissionRuleset({
       isWorktree: !!state.worktree,
+      isSandbox: !!state.sandbox,
     })
 
     const createResult = await createLoopSessionWithWorkspace({

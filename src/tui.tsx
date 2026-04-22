@@ -158,6 +158,7 @@ async function restartLoop(projectId: string, loopName: string, api: TuiPluginAp
     const config = loadPluginConfig()
     const permissionRuleset = buildLoopPermissionRuleset({
       isWorktree: !!row.worktree,
+      isSandbox: !!row.sandbox,
     })
 
     // Resolve the workspace ID for worktree loops.
