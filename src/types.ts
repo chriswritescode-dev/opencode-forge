@@ -122,6 +122,18 @@ export interface GraphConfig {
 }
 
 /**
+ * Configuration for the remote HTTP control plane (JSON API).
+ */
+export interface ApiConfig {
+  /** Enable the remote HTTP control plane. Defaults to false. */
+  enabled?: boolean
+  /** Bind host. Defaults to "127.0.0.1". Set to "0.0.0.0" to expose remotely. */
+  host?: string
+  /** TCP port. Defaults to 5552. */
+  port?: number
+}
+
+/**
  * Complete plugin configuration for opencode-forge.
  */
 export interface PluginConfig {
@@ -153,5 +165,7 @@ export interface PluginConfig {
   sandbox?: SandboxConfig
   /** Graph indexing configuration. */
   graph?: GraphConfig
+  /** Remote HTTP control plane configuration. */
+  api?: ApiConfig
 }
 

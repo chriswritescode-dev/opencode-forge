@@ -48,6 +48,13 @@
     "image": "oc-forge-sandbox:latest"
   },
 
+  // Remote HTTP control plane (JSON API)
+  "api": {
+    "enabled": false,            // Enable inbound HTTP API
+    "host": "127.0.0.1",         // Bind host ("0.0.0.0" exposes remotely)
+    "port": 5552                 // TCP port
+  },
+
   // Graph indexing configuration
   "graph": {
     "enabled": true,

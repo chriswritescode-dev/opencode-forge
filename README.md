@@ -448,6 +448,13 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 - `graph.watch` - Watch for file changes (default: `true`)
 - `graph.debounceMs` - Debounce delay for file watch events (default: `100`)
 
+#### Remote API
+- `api.enabled` - Enable the remote HTTP control plane (JSON API) (default: `false`)
+- `api.host` - Bind host for the API server. Use `"127.0.0.1"` for localhost-only access or `"0.0.0.0"` to expose remotely (default: `"127.0.0.1"`)
+- `api.port` - TCP port for the API server (default: `5552`)
+
+**Authentication:** The API uses HTTP Basic authentication with the password from the `OPENCODE_SERVER_PASSWORD` environment variable. If the password is unset and the server is bound to a non-localhost address, the server refuses to start. Localhost-only mode permits unauthenticated requests for local development.
+
 **Note:** Graph indexing runs in batches and processes all files without a fixed file-count cap. Progress is reported during indexing via status updates. On startup, the graph service performs a lightweight freshness check using file count and modification times - a full scan runs only when the cache is missing, stale, or unhealthy. Watcher-driven incremental updates handle post-startup file changes.
 
 #### TUI

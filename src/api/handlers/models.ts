@@ -1,0 +1,72 @@
+import type { ApiDeps } from '../types'
+import { ok } from '../response'
+import { parseJsonBody, ModelPrefsBody } from '../schemas'
+import { fetchAvailableModels } from '../../utils/tui-models'
+import type { ExecutionPreferences } from '../../utils/tui-execution-preferences'
+import {
+  readExecutionPreferences,
+  writeExecutionPreferences,
+} from '../../utils/tui-execution-preferences'
+import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
+
+export async function handleListModels(
+  _req: Request,
+  deps: ApiDeps
+): Promise<Response> {
+  // Create a minimal TUI API shape for fetchAvailableModels
+  const api = {
+    client: deps.ctx.v2,
+    state: {
+      path: { directory: deps.ctx.directory },
+      config: {},
+    },
+  } as unknown as TuiPluginApi
+
+  const result = await fetchAvailableModels(api)
+
+  if (result.error) {
+    return ok({
+      providers: result.providers,
+      error: result.error,
+    })
+  }
+
+  return ok({
+    providers: result.providers,
+    connectedProviderIds: result.connectedProviderIds,
+    configuredProviderIds: result.configuredProviderIds,
+  })
+}
+
+export async function handleGetModelPreferences(
+  _req: Request,
+  _deps: ApiDeps,
+  params: Record<string, string>
+): Promise<Response> {
+  const { projectId } = params
+  const prefs = readExecutionPreferences(projectId)
+
+  if (!prefs) {
+    throw new Error('preferences not found')
+  }
+
+  return ok(prefs)
+}
+
+export async function handleWriteModelPreferences(
+  req: Request,
+  _deps: ApiDeps,
+  params: Record<string, string>
+): Promise<Response> {
+  const { projectId } = params
+  const body = await parseJsonBody(req, ModelPrefsBody)
+
+  const prefs: ExecutionPreferences = {
+    mode: (body.mode as ExecutionPreferences['mode']) ?? 'New session',
+    executionModel: body.executionModel,
+    auditorModel: body.auditorModel,
+  }
+  writeExecutionPreferences(projectId, prefs)
+
+  return ok({ ok: true })
+}

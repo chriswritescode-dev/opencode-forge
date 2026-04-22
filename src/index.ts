@@ -25,6 +25,7 @@ import { FORGE_WORKTREE_WORKSPACE_TYPE, createForgeWorktreeAdaptor } from './wor
 import { LRUCache } from './utils/lru-cache'
 import { createSessionLoopResolver } from './services/session-loop-resolver'
 import { createPermissionAskHandler } from './hooks/permission-ask'
+import { startForgeApiServer, type ForgeApiServer } from './api/server'
 
 export interface CreateParentSessionLookupOptions {
   v2: ReturnType<typeof createV2Client>
@@ -333,6 +334,16 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           }
         }
 
+        // Stop the API server if it was started
+        if (apiServer) {
+          try {
+            await apiServer.stop()
+            logger.log('API server stopped')
+          } catch (err) {
+            logger.error('Failed to stop API server', err)
+          }
+        }
+
         loopHandler.terminateAll()
         logger.log('Loop: all active loops terminated')
         
@@ -378,6 +389,9 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       graphStatusRepo,
       loopsRepo,
     }
+
+    // Start the remote HTTP API server if enabled
+    const apiServer: ForgeApiServer | null = startForgeApiServer(ctx)
 
     const tools = createTools(ctx)
     const toolExecuteBeforeHook = createToolExecuteBeforeHook(ctx)
