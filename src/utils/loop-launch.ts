@@ -141,6 +141,7 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
 
     const permissionRuleset = buildLoopPermissionRuleset({
       isWorktree: true,
+      isSandbox: isSandboxEnabled,
     })
     
     console.log(`loop-launch: creating session with directory=${hostWorktreeDir} (sandbox: ${isSandboxEnabled})`)

@@ -166,13 +166,15 @@ describe('Fresh Loop Launch', () => {
       title: `Loop: ${title}`,
       directory: TEST_DIR,
       permission: expect.arrayContaining([
-        expect.objectContaining({ permission: 'external_directory', action: 'deny', pattern: '*' }),
         expect.objectContaining({ permission: 'bash', action: 'deny', pattern: 'git push *' }),
       ]),
     })
     const callArgs = (mockApi.client.session.create as ReturnType<typeof mock>).mock.calls[0][0]
     const hasAllowAll = callArgs.permission.some((r: { permission: string; action: string }) => r.permission === '*' && r.action === 'allow')
     expect(hasAllowAll).toBe(false)
+    // In-place loops should have no external_directory rule (OpenCode asks by default)
+    const hasExternalDirRule = callArgs.permission.some((r: { permission: string }) => r.permission === 'external_directory')
+    expect(hasExternalDirRule).toBe(false)
     expect(mockApi.client.session.promptAsync).toHaveBeenCalled()
   })
 

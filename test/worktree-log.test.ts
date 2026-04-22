@@ -441,7 +441,7 @@ describe('buildLoopPermissionRuleset integration', () => {
   })
 
   test('does not deny auditor review tools at session level', () => {
-    const ruleset = buildLoopPermissionRuleset({ isWorktree: true })
+    const ruleset = buildLoopPermissionRuleset({ isWorktree: true, isSandbox: false })
 
     expect(ruleset.some(r => r.permission === 'review-write' && r.action === 'deny')).toBe(false)
     expect(ruleset.some(r => r.permission === 'review-delete' && r.action === 'deny')).toBe(false)
