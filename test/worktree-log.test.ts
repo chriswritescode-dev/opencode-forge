@@ -426,81 +426,22 @@ describe('appendWorktreeLogEntry', () => {
 })
 
 describe('buildLoopPermissionRuleset integration', () => {
-  test('adds external_directory allow rule when worktree logging is enabled', () => {
-    const config: PluginConfig = {
-      loop: {
-        worktreeLogging: {
-          enabled: true,
-          directory: '/tmp/test-logs',
-        },
-      },
-    }
-
-    const ruleset = buildLoopPermissionRuleset(config, '/tmp/test-logs')
-    
-    // Should have base rules plus the external_directory allow rule
-    expect(ruleset.length).toBeGreaterThan(1)
-    expect(ruleset).toContainEqual({
-      permission: 'external_directory',
-      pattern: '/tmp/test-logs',
-      action: 'allow',
-    })
-  })
-
-  test('does not add external_directory rule when logging is disabled', () => {
-    const config: PluginConfig = {
-      loop: {
-        worktreeLogging: {
-          enabled: false,
-          directory: '/tmp/test-logs',
-        },
-      },
-    }
-
-    const ruleset = buildLoopPermissionRuleset(config, '/tmp/test-logs')
-    
-    // Should only have base rules
-    const externalDirRules = ruleset.filter(r => r.permission === 'external_directory')
-    expect(externalDirRules.length).toBe(1) // Only the deny-all rule
-    expect(externalDirRules[0].action).toBe('deny')
-  })
-
-  test('does not add external_directory rule when directory is null', () => {
-    const config: PluginConfig = {
-      loop: {
-        worktreeLogging: {
-          enabled: true,
-          directory: '/tmp/test-logs',
-        },
-      },
-    }
-
-    const ruleset = buildLoopPermissionRuleset(config, null)
-    
-    // Should only have base rules
-    const externalDirRules = ruleset.filter(r => r.permission === 'external_directory' && r.action === 'allow')
-    expect(externalDirRules.length).toBe(0)
-  })
-
-  test('buildLoopPermissionRuleset always denies loop-cancel and loop-status for worktree loops', () => {
-    const config: PluginConfig = {}
-    const ruleset = buildLoopPermissionRuleset(config, null, { isWorktree: true })
+  test('always denies loop-cancel and loop-status for worktree loops', () => {
+    const ruleset = buildLoopPermissionRuleset({ isWorktree: true })
 
     expect(ruleset).toContainEqual({ permission: 'loop-cancel', pattern: '*', action: 'deny' })
     expect(ruleset).toContainEqual({ permission: 'loop-status', pattern: '*', action: 'deny' })
   })
 
-  test('buildLoopPermissionRuleset always denies loop-cancel and loop-status for in-place loops', () => {
-    const config: PluginConfig = {}
-    const ruleset = buildLoopPermissionRuleset(config, null, { isWorktree: false })
+  test('always denies loop-cancel and loop-status for in-place loops', () => {
+    const ruleset = buildLoopPermissionRuleset({ isWorktree: false })
 
     expect(ruleset).toContainEqual({ permission: 'loop-cancel', pattern: '*', action: 'deny' })
     expect(ruleset).toContainEqual({ permission: 'loop-status', pattern: '*', action: 'deny' })
   })
 
-  test('buildLoopPermissionRuleset does not deny auditor review tools at session level', () => {
-    const config: PluginConfig = {}
-    const ruleset = buildLoopPermissionRuleset(config, null, { isWorktree: true })
+  test('does not deny auditor review tools at session level', () => {
+    const ruleset = buildLoopPermissionRuleset({ isWorktree: true })
 
     expect(ruleset.some(r => r.permission === 'review-write' && r.action === 'deny')).toBe(false)
     expect(ruleset.some(r => r.permission === 'review-delete' && r.action === 'deny')).toBe(false)
@@ -575,99 +516,6 @@ describe('sandbox permission path mapping', () => {
     expect(result!.permissionPath).toBeNull()
   })
 
-  test('buildLoopPermissionRuleset adds allow rule for mapped permission path', () => {
-    const config: PluginConfig = {
-      loop: {
-        worktreeLogging: {
-          enabled: true,
-          directory: 'logs',
-        },
-      },
-    }
-
-    const worktreeDir = join(testProjectDir, 'worktree')
-    mkdirSync(worktreeDir, { recursive: true })
-
-    const logTarget = resolveWorktreeLogTarget(config, {
-      projectDir: worktreeDir,
-      sandboxHostDir: worktreeDir,
-      sandbox: true,
-    })
-
-    const ruleset = buildLoopPermissionRuleset(config, logTarget?.permissionPath ?? null, {
-      isWorktree: true,
-    })
-
-    const allowRules = ruleset.filter(r => 
-      r.permission === 'external_directory' && r.action === 'allow'
-    )
-    
-    expect(allowRules.length).toBe(1)
-    expect(allowRules[0].pattern).toBe('/workspace/logs')
-  })
-
-  test('buildLoopPermissionRuleset does not add allow rule for null permission path', () => {
-    const config: PluginConfig = {
-      loop: {
-        worktreeLogging: {
-          enabled: true,
-          directory: 'logs',
-        },
-      },
-    }
-
-    const ruleset = buildLoopPermissionRuleset(config, null, {
-      isWorktree: true,
-    })
-
-    const allowRules = ruleset.filter(r => 
-      r.permission === 'external_directory' && r.action === 'allow'
-    )
-    
-    expect(allowRules.length).toBe(0)
-  })
-
-  test('buildLoopPermissionRuleset does not add allow rule when logging disabled', () => {
-    const config: PluginConfig = {
-      loop: {
-        worktreeLogging: {
-          enabled: false,
-          directory: '/tmp/logs',
-        },
-      },
-    }
-
-    const ruleset = buildLoopPermissionRuleset(config, '/tmp/logs', {
-      isWorktree: true,
-    })
-
-    const allowRules = ruleset.filter(r => 
-      r.permission === 'external_directory' && r.action === 'allow'
-    )
-    
-    expect(allowRules.length).toBe(0)
-  })
-
-  test('buildLoopPermissionRuleset does not add allow rule when permissionPath is null', () => {
-    const config: PluginConfig = {
-      loop: {
-        worktreeLogging: {
-          enabled: true,
-          directory: '/tmp/logs',
-        },
-      },
-    }
-
-    const ruleset = buildLoopPermissionRuleset(config, null, {
-      isWorktree: true,
-    })
-
-    const allowRules = ruleset.filter(r => 
-      r.permission === 'external_directory' && r.action === 'allow'
-    )
-    
-    expect(allowRules.length).toBe(0)
-  })
 })
 
 describe('buildWorktreeCompletionPayload', () => {

@@ -7,9 +7,6 @@ export const codeAgent: AgentDefinition = {
   description: 'Primary coding agent with graph-first code discovery',
   mode: 'primary',
   color: '#3b82f6',
-  permission: {
-    question: 'allow',
-  },
   tools: {
     exclude: ['review-write','review-delete','plan-execute', 'plan-write', 'plan-edit', 'loop'] 
   },
