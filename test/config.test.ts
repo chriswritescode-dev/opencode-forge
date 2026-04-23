@@ -182,6 +182,45 @@ describe('createConfigHandler', () => {
       expect(tools['review-delete']).toBe(false)
     })
 
+    test('code agent excluded tools are mirrored to permission: deny (opencode enforces via permission, not tools)', async () => {
+      const configHandler = createConfigHandler(agents)
+      const config: Record<string, unknown> = {}
+
+      await configHandler(config)
+
+      const agentConfigs = config.agent as Record<string, unknown>
+      const code = agentConfigs.code as Record<string, unknown>
+      const permission = code.permission as Record<string, string>
+
+      expect(permission).toBeDefined()
+      for (const tool of ['review-write', 'review-delete', 'plan-execute', 'plan-write', 'plan-edit', 'loop']) {
+        expect(permission[tool]).toBe('deny')
+      }
+    })
+
+    test('user tool override flips permission entry to allow', async () => {
+      const configHandler = createConfigHandler(agents)
+      const config: Record<string, unknown> = {
+        agent: {
+          code: {
+            tools: {
+              'review-delete': true,
+            },
+          },
+        },
+      }
+
+      await configHandler(config)
+
+      const agentConfigs = config.agent as Record<string, unknown>
+      const code = agentConfigs.code as Record<string, unknown>
+      const permission = code.permission as Record<string, string>
+
+      expect(permission['review-delete']).toBe('allow')
+      // Other excludes should still be denied.
+      expect(permission['plan-write']).toBe('deny')
+    })
+
     test('user tool override preserves built-in excludes during merge', async () => {
       const configHandler = createConfigHandler(agents)
       const config: Record<string, unknown> = {
