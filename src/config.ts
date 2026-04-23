@@ -137,10 +137,22 @@ export function createConfigHandler(
         if (mergedAgents[name]) {
           const existing = mergedAgents[name]
           const mergedTools = { ...(existing?.tools ?? {}), ...(userConfig.tools ?? {}) }
+          const mergedPermission = {
+            ...((existing?.permission as Record<string, unknown> | undefined) ?? {}),
+            ...((userConfig.permission as Record<string, unknown> | undefined) ?? {}),
+          }
+          // User tool overrides must also win at the permission layer, since opencode
+          // enforces agent tool access via permission rules, not the legacy `tools` map.
+          if (userConfig.tools) {
+            for (const [tool, enabled] of Object.entries(userConfig.tools)) {
+              mergedPermission[tool] = enabled ? 'allow' : 'deny'
+            }
+          }
           mergedAgents[name] = {
             ...existing,
             ...userConfig,
             ...(Object.keys(mergedTools).length ? { tools: mergedTools } : {}),
+            ...(Object.keys(mergedPermission).length ? { permission: mergedPermission } : {}),
           }
         } else {
           mergedAgents[name] = userConfig
@@ -189,9 +201,19 @@ function createAgentConfigs(agents: Record<AgentRole, AgentDefinition>): Record<
 
   for (const agent of Object.values(agents)) {
     const tools: Record<string, boolean> = {}
+    // Mirror tools.exclude into a permission map. Opencode's agent loader only
+    // reads `value.permission` when merging plugin-provided `cfg.agent` entries
+    // (see opencode packages/opencode/src/agent/agent.ts). The legacy `tools`
+    // map is only normalized via the zod Info transform at parse time, which
+    // does not run on config mutated by the plugin config hook. Without this
+    // permission mirror, excluded tools remain callable.
+    const permission: Record<string, unknown> = {
+      ...((agent.permission as Record<string, unknown> | undefined) ?? {}),
+    }
     if (agent.tools?.exclude) {
       for (const tool of agent.tools.exclude) {
         tools[tool] = false
+        permission[tool] = 'deny'
       }
     }
 
@@ -206,7 +228,7 @@ function createAgentConfigs(agents: Record<AgentRole, AgentDefinition>): Record<
       ...(agent.steps !== undefined ? { steps: agent.steps } : {}),
       ...(agent.hidden ? { hidden: agent.hidden } : {}),
       ...(agent.color ? { color: agent.color } : {}),
-      ...(agent.permission ? { permission: agent.permission } : {}),
+      ...(Object.keys(permission).length > 0 ? { permission } : {}),
     }
   }
 
