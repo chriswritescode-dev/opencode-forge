@@ -241,7 +241,6 @@ export async function run(argv: RestartArgs): Promise<void> {
     console.log(`Continuing from iteration: ${state.iteration}`)
     console.log(`Previous termination: ${state.terminationReason ?? 'unknown'}`)
     console.log(`Directory: ${state.worktreeDir}`)
-    console.log(`Audit: ${state.audit ? 'enabled' : 'disabled'}`)
     console.log('')
   } finally {
     db.close()

@@ -142,7 +142,7 @@ export function createConfigHandler(
             ...((userConfig.permission as Record<string, unknown> | undefined) ?? {}),
           }
           // User tool overrides must also win at the permission layer, since opencode
-          // enforces agent tool access via permission rules, not the legacy `tools` map.
+          // enforces agent tool access via permission rules 
           if (userConfig.tools) {
             for (const [tool, enabled] of Object.entries(userConfig.tools)) {
               mergedPermission[tool] = enabled ? 'allow' : 'deny'

@@ -1,5 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { startForgeApiServer } from '../src/api/server'
 import { loadPluginConfig, resolveConfigPath } from '../src/setup'
+import type { ToolContext } from '../src/tools/types'
 import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
@@ -358,5 +360,93 @@ describe('bundled sample config', () => {
     expect(config.api?.enabled).toBe(true)
     expect(config.api?.host).toBe('0.0.0.0')
     expect(config.api?.port).toBe(8080)
+  })
+
+  test('loadPluginConfig round-trips tui.remoteServer.url', () => {
+    const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
+    mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
+    process.env['XDG_CONFIG_HOME'] = testConfigDir
+
+    const configWithRemoteServer = {
+      tui: {
+        remoteServer: {
+          url: 'http://remote.example:4096',
+        },
+      },
+    }
+
+    writeFileSync(configPath, JSON.stringify(configWithRemoteServer))
+
+    const config = loadPluginConfig()
+    expect(config.tui?.remoteServer?.url).toBe('http://remote.example:4096')
+  })
+})
+
+describe('bundled config documents OPENCODE_SERVER_PASSWORD contract', () => {
+  test('bundled forge-config.jsonc mentions OPENCODE_SERVER_PASSWORD near api block', () => {
+    const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
+    const content = readFileSync(bundledConfigPath, 'utf-8')
+    expect(content).toContain('OPENCODE_SERVER_PASSWORD')
+    expect(content).toContain('"::1"')
+  })
+
+  test('README Remote API section documents ::1 and no-start behavior', () => {
+    const readmePath = join(import.meta.dir, '..', 'README.md')
+    const content = readFileSync(readmePath, 'utf-8')
+    expect(content).toContain('::1')
+    expect(content).toContain('OPENCODE_SERVER_PASSWORD')
+    expect(content).not.toContain('the server refuses to start')
+  })
+
+  test('bundled config and README document tui.remoteServer.url', () => {
+    const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
+    const configContent = readFileSync(bundledConfigPath, 'utf-8')
+    expect(configContent).toContain('remoteServer')
+    expect(configContent).toContain('OPENCODE_SERVER_PASSWORD')
+
+    const readmePath = join(import.meta.dir, '..', 'README.md')
+    const readmeContent = readFileSync(readmePath, 'utf-8')
+    expect(readmeContent).toContain('tui.remoteServer.url')
+  })
+})
+
+describe('remote API startup authentication requirements', () => {
+  const originalPassword = process.env.OPENCODE_SERVER_PASSWORD
+
+  afterEach(() => {
+    if (originalPassword === undefined) {
+      delete process.env.OPENCODE_SERVER_PASSWORD
+    } else {
+      process.env.OPENCODE_SERVER_PASSWORD = originalPassword
+    }
+  })
+
+  test('does not start for non-localhost host without OPENCODE_SERVER_PASSWORD', () => {
+    delete process.env.OPENCODE_SERVER_PASSWORD
+    const errors: string[] = []
+    const ctx = {
+      projectId: 'test-project',
+      config: {
+        api: {
+          enabled: true,
+          host: '0.0.0.0',
+          port: 5552,
+        },
+      },
+      logger: {
+        log: () => {},
+        debug: () => {},
+        error: (message: string) => {
+          errors.push(message)
+        },
+      },
+    } as unknown as ToolContext
+
+    const server = startForgeApiServer(ctx)
+
+    expect(server).toBeNull()
+    expect(errors).toEqual([
+      '[api] refusing to start: host=0.0.0.0 requires OPENCODE_SERVER_PASSWORD',
+    ])
   })
 })

@@ -132,7 +132,15 @@ function normalizeConfig(config: PluginConfig): PluginConfig {
     executionModel: config.executionModel,
     auditorModel: config.auditorModel,
     loop: config.loop,
-    tui: config.tui,
+    tui: config.tui
+      ? {
+          sidebar: config.tui.sidebar,
+          showLoops: config.tui.showLoops,
+          showVersion: config.tui.showVersion,
+          keybinds: config.tui.keybinds,
+          remoteServer: config.tui.remoteServer,
+        }
+      : undefined,
     agents: config.agents,
     sandbox: config.sandbox,
     graph: config.graph,

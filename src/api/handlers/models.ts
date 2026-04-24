@@ -9,6 +9,20 @@ import {
 } from '../../utils/tui-execution-preferences'
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 
+function mapModelPrefsMode(mode: string | undefined): ExecutionPreferences['mode'] {
+  switch (mode) {
+    case 'new-session':
+      return 'New session'
+    case 'execute-here':
+      return 'Execute here'
+    case 'loop':
+      return 'Loop'
+    case 'loop-worktree':
+    default:
+      return 'Loop (worktree)'
+  }
+}
+
 export async function handleListModels(
   _req: Request,
   deps: ApiDeps
@@ -62,7 +76,7 @@ export async function handleWriteModelPreferences(
   const body = await parseJsonBody(req, ModelPrefsBody)
 
   const prefs: ExecutionPreferences = {
-    mode: (body.mode as ExecutionPreferences['mode']) ?? 'New session',
+    mode: mapModelPrefsMode(body.mode),
     executionModel: body.executionModel,
     auditorModel: body.auditorModel,
   }

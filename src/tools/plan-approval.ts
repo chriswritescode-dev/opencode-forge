@@ -172,7 +172,6 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
               sessionTitle: `Loop: ${title}`,
               loopName: uniqueLoopName,
               maxIterations: config.loop?.defaultMaxIterations ?? 0,
-              audit: true,
               agent: 'code',
               model: loopModel,
               worktree: isWorktree,

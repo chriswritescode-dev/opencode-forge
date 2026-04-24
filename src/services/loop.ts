@@ -24,7 +24,6 @@ export interface LoopState {
   startedAt: string
   prompt?: string
   phase: 'coding' | 'auditing'
-  audit: boolean
   lastAuditResult?: string
   errorCount: number
   auditCount: number
@@ -88,7 +87,6 @@ export function rowToLoopState(row: LoopRow, large: LoopLargeFields | null): Loo
     startedAt: new Date(row.startedAt).toISOString(),
     prompt: large?.prompt ?? undefined,
     phase: row.phase,
-    audit: row.audit,
     lastAuditResult: large?.lastAuditResult ?? undefined,
     errorCount: row.errorCount,
     auditCount: row.auditCount,
@@ -129,7 +127,6 @@ export function createLoopService(
       auditCount: state.auditCount,
       errorCount: state.errorCount,
       phase: state.phase,
-      audit: state.audit,
       executionModel: state.executionModel ?? null,
       auditorModel: state.auditorModel ?? null,
       modelFailed: state.modelFailed ?? false,

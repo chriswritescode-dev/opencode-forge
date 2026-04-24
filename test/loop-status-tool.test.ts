@@ -30,7 +30,6 @@ function createTestDb(): { db: Database; path: string } {
       audit_count INTEGER NOT NULL DEFAULT 0,
       error_count INTEGER NOT NULL DEFAULT 0,
       phase TEXT NOT NULL CHECK(phase IN ('coding','auditing')),
-      audit INTEGER NOT NULL,
       execution_model TEXT,
       auditor_model TEXT,
       model_failed INTEGER NOT NULL DEFAULT 0,
@@ -204,7 +203,7 @@ describe('loop-status tool restart path', () => {
       startedAt: new Date().toISOString(),
       prompt: 'Test prompt',
       phase: 'auditing',
-      audit: true,
+
       errorCount: 0,
       auditCount: 1,
       worktree: true,
@@ -286,7 +285,7 @@ describe('loop-status tool restart path', () => {
       startedAt: new Date().toISOString(),
       prompt: 'Test prompt 2',
       phase: 'auditing',
-      audit: true,
+
       errorCount: 0,
       auditCount: 0,
       worktree: true,
@@ -354,7 +353,7 @@ describe('loop-status tool restart path', () => {
       startedAt: new Date().toISOString(),
       prompt: 'Test prompt',
       phase: 'auditing',
-      audit: true,
+
       errorCount: 0,
       auditCount: 1,
       worktree: true,
@@ -439,7 +438,7 @@ describe('loop-status tool restart path', () => {
       completedAt: new Date().toISOString(),
       prompt: 'Test prompt 3',
       phase: 'coding',
-      audit: true,
+
       errorCount: 0,
       auditCount: 0,
       terminationReason: 'cancelled',

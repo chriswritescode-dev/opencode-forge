@@ -24,7 +24,6 @@ function createTestDb(tempDir: string): Database {
       audit_count INTEGER NOT NULL DEFAULT 0,
       error_count INTEGER NOT NULL DEFAULT 0,
       phase TEXT NOT NULL CHECK(phase IN ('coding','auditing')),
-      audit INTEGER NOT NULL,
       execution_model TEXT,
       auditor_model TEXT,
       model_failed INTEGER NOT NULL DEFAULT 0,
@@ -72,10 +71,10 @@ function insertLoopState(db: Database, projectId: string, loopName: string, stat
     `INSERT INTO loops (
       project_id, loop_name, status, current_session_id, worktree, worktree_dir,
       worktree_branch, project_dir, max_iterations, iteration, audit_count,
-      error_count, phase, audit, execution_model, auditor_model,
+      error_count, phase, execution_model, auditor_model,
       model_failed, sandbox, sandbox_container, started_at, completed_at,
       termination_reason, completion_summary
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       projectId,
       loopName,
@@ -90,7 +89,7 @@ function insertLoopState(db: Database, projectId: string, loopName: string, stat
       0,
       0,
       state.phase ?? 'coding',
-      0,
+
       null,
       null,
       0,

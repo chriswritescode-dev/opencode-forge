@@ -15,7 +15,6 @@ export interface LoopRow {
   auditCount: number
   errorCount: number
   phase: 'coding' | 'auditing'
-  audit: boolean
   executionModel: string | null
   auditorModel: string | null
   modelFailed: boolean
@@ -90,7 +89,6 @@ function mapRow(row: LoopRowRaw): LoopRow {
     auditCount: row.audit_count,
     errorCount: row.error_count,
     phase: row.phase as LoopRow['phase'],
-    audit: row.audit === 1,
     executionModel: row.execution_model,
     auditorModel: row.auditor_model,
     modelFailed: row.model_failed === 1,
@@ -119,7 +117,6 @@ interface LoopRowRaw {
   audit_count: number
   error_count: number
   phase: string
-  audit: number
   execution_model: string | null
   auditor_model: string | null
   model_failed: number
@@ -138,10 +135,10 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     INSERT INTO loops (
       project_id, loop_name, status, current_session_id, worktree, worktree_dir,
       worktree_branch, project_dir, max_iterations, iteration, audit_count,
-      error_count, phase, audit, execution_model, auditor_model,
+      error_count, phase, execution_model, auditor_model,
       model_failed, sandbox, sandbox_container, started_at, completed_at,
       termination_reason, completion_summary, workspace_id, host_session_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   const upsertLargeStmt = db.prepare(`
@@ -155,7 +152,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
   const getStmt = db.prepare(`
     SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir,
            worktree_branch, project_dir, max_iterations, iteration, audit_count,
-           error_count, phase, audit, execution_model, auditor_model,
+           error_count, phase, execution_model, auditor_model,
            model_failed, sandbox, sandbox_container, started_at, completed_at,
            termination_reason, completion_summary, workspace_id, host_session_id
     FROM loops
@@ -171,7 +168,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
   const getBySessionIdStmt = db.prepare(`
     SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir,
            worktree_branch, project_dir, max_iterations, iteration, audit_count,
-           error_count, phase, audit, execution_model, auditor_model,
+           error_count, phase, execution_model, auditor_model,
            model_failed, sandbox, sandbox_container, started_at, completed_at,
            termination_reason, completion_summary, workspace_id, host_session_id
     FROM loops
@@ -181,7 +178,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
   const listByStatusBase = `
     SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir,
            worktree_branch, project_dir, max_iterations, iteration, audit_count,
-           error_count, phase, audit, execution_model, auditor_model,
+           error_count, phase, execution_model, auditor_model,
            model_failed, sandbox, sandbox_container, started_at, completed_at,
            termination_reason, completion_summary, workspace_id, host_session_id
     FROM loops
@@ -311,7 +308,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
         row.auditCount,
         row.errorCount,
         row.phase,
-        row.audit ? 1 : 0,
         row.executionModel,
         row.auditorModel,
         row.modelFailed ? 1 : 0,

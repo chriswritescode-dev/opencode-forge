@@ -25,7 +25,6 @@ interface LoopSetupOptions {
   loopName: string
   sourcePlanSessionID?: string
   maxIterations: number
-  audit: boolean
   agent?: string
   model?: { providerID: string; modelID: string }
   worktree?: boolean
@@ -210,7 +209,6 @@ export async function setupLoop(
     startedAt: new Date().toISOString(),
     prompt: options.prompt,
     phase: 'coding',
-    audit: true,
     errorCount: 0,
     auditCount: 0,
     worktree: options.worktree,
@@ -311,7 +309,6 @@ export async function setupLoop(
   })
 
   const maxInfo = maxIter > 0 ? maxIter.toString() : 'unlimited'
-  const auditInfo = options.audit ? 'enabled' : 'disabled'
   const modelInfo = actualModel ? `${actualModel.providerID}/${actualModel.modelID}` : 'default'
 
   const lines: string[] = [
@@ -335,7 +332,6 @@ export async function setupLoop(
   lines.push(
     `Model: ${modelInfo}`,
     `Max iterations: ${maxInfo}`,
-    `Audit: ${auditInfo}`,
     '',
     'The loop will automatically continue when the session goes idle.',
     'Your job is done — just confirm to the user that the loop has been launched.',
@@ -378,7 +374,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
         const sessionTitle = args.title.length > 60 ? `${args.title.substring(0, 57)}...` : args.title
         const loopModel = parseModelString(config.loop?.model) ?? parseModelString(config.executionModel)
-        const audit = true
         const executionModel = config.loop?.model ?? config.executionModel
         const auditorModel = config.auditorModel ?? config.loop?.model ?? config.executionModel
         
@@ -390,7 +385,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           loopName,
           sourcePlanSessionID,
           maxIterations: config.loop?.defaultMaxIterations ?? 0,
-          audit: audit,
           agent: 'code',
           model: loopModel,
           worktree: args.worktree,
@@ -532,7 +526,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
                 stoppedState.projectDir = latestState.projectDir
                 stoppedState.worktreeBranch = latestState.worktreeBranch
                 stoppedState.maxIterations = latestState.maxIterations
-                stoppedState.audit = latestState.audit
                 stoppedState.executionModel = latestState.executionModel
                 stoppedState.auditorModel = latestState.auditorModel
                 stoppedState.workspaceId = latestState.workspaceId
@@ -586,7 +579,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
               startedAt: new Date().toISOString(),
               prompt: stoppedState.prompt,
               phase: 'coding',
-              audit: stoppedState.audit,
               errorCount: 0,
               auditCount: 0,
               worktree: stoppedState.worktree,
@@ -670,7 +662,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             `Continuing from iteration: ${stoppedState.iteration}`,
             `Previous termination: ${stoppedState.terminationReason}`,
             `Directory: ${stoppedState.worktreeDir}${branchInfo}`,
-            `Audit: ${stoppedState.audit ? 'enabled' : 'disabled'}`,
           ].join('\n')
         }
 
@@ -834,7 +825,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           `Phase: ${state.phase}`,
           `Iteration: ${maxInfo}`,
           `Duration: ${duration}`,
-          `Audit: ${state.audit ? 'enabled' : 'disabled'}`,
         )
         if (state.worktreeBranch) {
           statusLines.push(`Branch: ${state.worktreeBranch}`)

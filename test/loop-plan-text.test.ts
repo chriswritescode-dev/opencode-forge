@@ -47,7 +47,7 @@ describe('loopService.getPlanText', () => {
       startedAt: new Date().toISOString(),
       prompt: planText,
       phase: 'coding' as const,
-      audit: true,
+
       errorCount: 0,
       auditCount: 0,
       worktree: true,
@@ -96,7 +96,7 @@ describe('loopService.getPlanText', () => {
       startedAt: new Date().toISOString(),
       prompt: executionPlan,
       phase: 'coding' as const,
-      audit: true,
+
       errorCount: 0,
       auditCount: 0,
       worktree: true,
@@ -138,7 +138,7 @@ describe('loopService.getPlanText', () => {
       startedAt: new Date().toISOString(),
       prompt: planText,
       phase: 'coding' as const,
-      audit: true,
+
       errorCount: 0,
       auditCount: 0,
       worktree: true,

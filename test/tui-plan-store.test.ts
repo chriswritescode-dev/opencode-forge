@@ -24,7 +24,6 @@ function createTestDb(dbPath: string): Database {
       audit_count          INTEGER NOT NULL DEFAULT 0,
       error_count          INTEGER NOT NULL DEFAULT 0,
       phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing')),
-      audit                INTEGER NOT NULL DEFAULT 0,
       execution_model      TEXT,
       auditor_model        TEXT,
       model_failed         INTEGER NOT NULL DEFAULT 0,
@@ -118,7 +117,7 @@ describe('TUI Plan Store', () => {
         auditCount: 0,
         errorCount: 0,
         phase: 'coding',
-        audit: true,
+
         executionModel: null,
         auditorModel: null,
         modelFailed: false,

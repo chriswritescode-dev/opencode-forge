@@ -26,7 +26,6 @@ function createTestDb(): Database {
       audit_count          INTEGER NOT NULL DEFAULT 0,
       error_count          INTEGER NOT NULL DEFAULT 0,
       phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing')),
-      audit                INTEGER NOT NULL DEFAULT 0,
       execution_model      TEXT,
       auditor_model        TEXT,
       model_failed         INTEGER NOT NULL DEFAULT 0,
@@ -417,7 +416,7 @@ describe('plan-read', () => {
       startedAt: new Date().toISOString(),
       prompt: '# Explicit Loop Plan\n\n## Phase 1\n- Read by loop name',
       phase: 'coding' as const,
-      audit: true,
+
       errorCount: 0,
       auditCount: 0,
       worktree: true,
@@ -512,7 +511,7 @@ describe('plan-read with loop session', () => {
       startedAt: new Date().toISOString(),
       prompt: '# Initial Plan',
       phase: 'coding' as const,
-      audit: true,
+
       errorCount: 0,
       auditCount: 0,
       worktree: true,
@@ -548,7 +547,7 @@ describe('plan-read with loop session', () => {
       startedAt: new Date().toISOString(),
       prompt: '# Loop Plan\n\n## Phase 1\n- Do the thing',
       phase: 'coding' as const,
-      audit: true,
+
       errorCount: 0,
       auditCount: 0,
       worktree: true,

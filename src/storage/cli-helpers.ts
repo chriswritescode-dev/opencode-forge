@@ -28,7 +28,7 @@ function listLoopsFromDb(
   const baseQuery = `
     SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir,
            worktree_branch, project_dir, max_iterations, iteration, audit_count,
-           error_count, phase, audit, execution_model, auditor_model,
+           error_count, phase, execution_model, auditor_model,
            model_failed, sandbox, sandbox_container, started_at, completed_at,
            termination_reason, completion_summary, workspace_id, host_session_id
     FROM loops
@@ -86,7 +86,6 @@ interface LoopRowRaw {
   audit_count: number
   error_count: number
   phase: string
-  audit: number
   execution_model: string | null
   auditor_model: string | null
   model_failed: number
@@ -115,7 +114,6 @@ function mapRow(row: LoopRowRaw): LoopRow {
     auditCount: row.audit_count,
     errorCount: row.error_count,
     phase: row.phase as LoopRow['phase'],
-    audit: row.audit === 1,
     executionModel: row.execution_model,
     auditorModel: row.auditor_model,
     modelFailed: row.model_failed === 1,

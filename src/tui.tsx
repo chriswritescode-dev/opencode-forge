@@ -2,12 +2,13 @@
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from '@opencode-ai/plugin/tui'
 import { createEffect, createMemo, createSignal, onCleanup, Show, For } from 'solid-js'
 import { SyntaxStyle, type TextareaRenderable } from '@opentui/core'
-import { readFileSync, existsSync, writeFileSync } from 'fs'
-import { homedir, platform } from 'os'
+import { existsSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { Database } from 'bun:sqlite'
 import { VERSION } from './version'
 import { resolveDataDir } from './storage'
+import { loadPluginConfig } from './setup'
+import type { TuiConfig } from './types'
 import { fetchSessionStats, type SessionStats } from './utils/session-stats'
 import { slugify } from './utils/logger'
 import { extractPlanTitle, PLAN_EXECUTION_LABELS, matchExecutionLabel, type PlanExecutionLabel } from './utils/plan-execution'
@@ -19,6 +20,7 @@ import { readExecutionPreferences, writeExecutionPreferences, resolveExecutionDi
 import { fetchAvailableModels, flattenProviders, buildDialogSelectOptions, getModelDisplayLabel, getRecentModels, recordRecentModel, sortModelsByPriority, type ModelInfo } from './utils/tui-models'
 import { getGitProjectId } from './utils/project-id'
 import { formatDuration, formatTokens, truncate, truncateMiddle } from './utils/format'
+import { createOpencodeClientFromServer } from './utils/opencode-client'
 
 import { buildLoopPermissionRuleset } from './constants/loop'
 import { createLoopSessionWithWorkspace } from './utils/loop-session'
@@ -42,31 +44,23 @@ type TuiOptions = {
   keybinds: TuiKeybinds
 }
 
-type TuiConfig = {
-  sidebar?: boolean
-  showLoops?: boolean
-  showVersion?: boolean
-  keybinds?: Partial<TuiKeybinds>
-}
 
 
-
-function loadTuiConfig(): TuiConfig | undefined {
+function resolveTuiClient(api: TuiPluginApi, tuiConfig: TuiConfig | undefined): TuiPluginApi['client'] {
+  const url = tuiConfig?.remoteServer?.url?.trim()
+  if (!url) return api.client
   try {
-    const defaultBase = join(homedir(), platform() === 'win32' ? 'AppData' : '.config')
-    const configDir = process.env['XDG_CONFIG_HOME'] || defaultBase
-    const configRoot = join(configDir, 'opencode')
-    const configPath = existsSync(join(configRoot, 'forge-config.jsonc'))
-      ? join(configRoot, 'forge-config.jsonc')
-      : existsSync(join(configRoot, 'memory-config.jsonc'))
-        ? join(configRoot, 'memory-config.jsonc')
-        : join(configRoot, 'graph-config.jsonc')
-    const raw = readFileSync(configPath, 'utf-8')
-    const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')
-    const parsed = JSON.parse(stripped)
-    return parsed?.tui
+    return createOpencodeClientFromServer({
+      serverUrl: url,
+      directory: api.state.path.directory,
+    }) as TuiPluginApi['client']
   } catch {
-    return undefined
+    api.ui.toast({
+      message: 'Invalid remote OpenCode server URL; using local client',
+      variant: 'warning',
+      duration: 5000,
+    })
+    return api.client
   }
 }
 
@@ -122,7 +116,7 @@ async function restartLoop(projectId: string, loopName: string, api: TuiPluginAp
     const now = Date.now()
     const row = db.prepare(`
       SELECT status, current_session_id, worktree_dir, worktree, project_dir, execution_model,
-             auditor_model, prompt, iteration, phase, audit, sandbox,
+             auditor_model, prompt, iteration, phase, sandbox,
              worktree_branch, workspace_id
       FROM loops
       LEFT JOIN loop_large_fields USING (project_id, loop_name)
@@ -138,7 +132,6 @@ async function restartLoop(projectId: string, loopName: string, api: TuiPluginAp
       prompt: string | null
       iteration: number
       phase: string
-      audit: number
       sandbox: number
       worktree_branch: string | null
       workspace_id: string | null
@@ -1040,7 +1033,7 @@ function LoopDetailsDialog(props: { api: TuiPluginApi; loop: LoopInfo; onBack?: 
   )
 }
 
-function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: string }) {
+function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: string; remoteUrl?: string }) {
   const [open, setOpen] = createSignal(true)
   const [loops, setLoops] = createSignal<LoopInfo[]>([])
   const [hasPlan, setHasPlan] = createSignal(false)
@@ -1052,6 +1045,20 @@ function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: strin
 
   const title = createMemo(() => {
     return props.opts.showVersion ? `Forge v${VERSION}` : 'Forge'
+  })
+
+  const remoteInfo = createMemo(() => {
+    const url = props.remoteUrl?.trim()
+    if (!url) return null
+    try {
+      const urlObj = new URL(url)
+      return {
+        hostname: urlObj.hostname,
+        protocol: urlObj.protocol.replace(':', ''),
+      }
+    } catch {
+      return null
+    }
   })
 
   const dot = (loop: LoopInfo) => {
@@ -1217,6 +1224,8 @@ function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: strin
             {!open() && hasPlan() ? <span style={{ fg: theme().info }}> · plan</span> : ''}
             {!open() && graphStatusFormatted() && graphStatusFormatted()!.text.includes('ready') ? <span style={{ fg: theme().success }}> · ready</span> : ''}
             {!open() && activeCount() > 0 ? <span style={{ fg: theme().textMuted }}>{` (${activeCount()} active)`}</span> : ''}
+            {!open() && remoteInfo() ? <span style={{ fg: theme().warning }}>{` (${remoteInfo()!.hostname})`}</span> : ''}
+            {!open() && !remoteInfo() ? <span style={{ fg: theme().textMuted }}> (local)</span> : ''}
           </text>
         </box>
         <Show when={open()}>
@@ -1305,7 +1314,11 @@ export { readLoopStates, readLoopByName }
 
 const tui: TuiPlugin = async (api) => {
 
-  const tuiConfig = loadTuiConfig()
+  const pluginConfig = loadPluginConfig()
+  const tuiConfig = pluginConfig.tui
+  const client = resolveTuiClient(api, tuiConfig)
+  const tuiApi = client === api.client ? api : { ...api, client }
+
   const opts: TuiOptions = {
     sidebar: tuiConfig?.sidebar ?? true,
     showLoops: tuiConfig?.showLoops ?? true,
@@ -1358,7 +1371,7 @@ const tui: TuiPlugin = async (api) => {
                   if (freshLoop) {
                     api.ui.dialog.setSize("medium")
                     api.ui.dialog.replace(() => (
-                      <LoopDetailsDialog api={api} loop={freshLoop} onBack={showLoopList} onRefresh={() => {}} />
+                      <LoopDetailsDialog api={tuiApi} loop={freshLoop} onBack={showLoopList} onRefresh={() => {}} />
                     ))
                   } else {
                     api.ui.dialog.clear()
@@ -1402,7 +1415,7 @@ const tui: TuiPlugin = async (api) => {
         }
         api.ui.dialog.setSize("xlarge")
         api.ui.dialog.replace(() => (
-          <PlanViewerDialog api={api} planContent={freshPlan} projectId={pid} sessionId={sessionID} onRefresh={refreshSidebar} />
+          <PlanViewerDialog api={tuiApi} planContent={freshPlan} projectId={pid} sessionId={sessionID} onRefresh={refreshSidebar} />
         ))
       },
     }, {
@@ -1419,7 +1432,7 @@ const tui: TuiPlugin = async (api) => {
         }
         api.ui.dialog.setSize("xlarge")
         api.ui.dialog.replace(() => (
-          <PlanViewerDialog api={api} planContent={freshPlan} projectId={pid} sessionId={sessionID} onRefresh={refreshSidebar} startInExecuteMode={true} />
+          <PlanViewerDialog api={tuiApi} planContent={freshPlan} projectId={pid} sessionId={sessionID} onRefresh={refreshSidebar} startInExecuteMode={true} />
         ))
       },
     }]
@@ -1429,7 +1442,7 @@ const tui: TuiPlugin = async (api) => {
     order: 150,
     slots: {
       sidebar_content(_ctx, slotProps) {
-        return <Sidebar api={api} opts={opts} sessionId={slotProps.session_id} />
+        return <Sidebar api={tuiApi} opts={opts} sessionId={slotProps.session_id} remoteUrl={tuiConfig?.remoteServer?.url} />
       },
     },
   })

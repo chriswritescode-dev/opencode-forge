@@ -387,6 +387,9 @@ You can edit this file to customize settings. The file is created only if it doe
       "viewPlan": "Meta+Shift+P",  // View plan dialog
       "executePlan": "Meta+Shift+E", // Execute plan dialog
       "showLoops": "Meta+Shift+L"  // Show loops dialog
+    },
+    "remoteServer": {
+      "url": ""                    // Optional remote OpenCode server URL for TUI actions. Empty/omitted means use local client. URL may include Basic Auth password (http://opencode:password@host:4096). If no URL password is supplied, OPENCODE_SERVER_PASSWORD is used when set.
     }
   },
 
@@ -450,18 +453,19 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 
 #### Remote API
 - `api.enabled` - Enable the remote HTTP control plane (JSON API) (default: `false`)
-- `api.host` - Bind host for the API server. Use `"127.0.0.1"` for localhost-only access or `"0.0.0.0"` to expose remotely (default: `"127.0.0.1"`)
+- `api.host` - Bind host for the API server. Only the literal values `"127.0.0.1"` and `"::1"` are treated as localhost; any other value (including the hostname `"localhost"`, LAN IPs, or `"0.0.0.0"`) is treated as non-localhost and requires a password. Default: `"127.0.0.1"`.
 - `api.port` - TCP port for the API server (default: `5552`)
 
-**Authentication:** The API uses HTTP Basic authentication with the password from the `OPENCODE_SERVER_PASSWORD` environment variable. If the password is unset and the server is bound to a non-localhost address, the server refuses to start. Localhost-only mode permits unauthenticated requests for local development.
+**Authentication:** The API uses HTTP Basic authentication with the password from the `OPENCODE_SERVER_PASSWORD` environment variable. When `api.host` is non-localhost (anything other than `"127.0.0.1"` or `"::1"`) and `OPENCODE_SERVER_PASSWORD` is unset, the API server logs an error and does not start — plugin initialization continues without an API. In localhost-only mode, requests are accepted without credentials when no password is configured; if a password is configured, it is still enforced on every request.
 
 **Note:** Graph indexing runs in batches and processes all files without a fixed file-count cap. Progress is reported during indexing via status updates. On startup, the graph service performs a lightweight freshness check using file count and modification times - a full scan runs only when the cache is missing, stale, or unhealthy. Watcher-driven incremental updates handle post-startup file changes.
 
 #### TUI
 - `tui.sidebar` - Show the forge sidebar widget in OpenCode TUI (default: `true`)
-- `tui.showLoops` - Display active and recent loop status in the sidebar (default: `true`)
+- `tui.showLoops` - Display active loop status in the sidebar (default: `true`)
 - `tui.showVersion` - Show plugin version number in the sidebar title (default: `true`)
 - `tui.keybinds` - Keyboard shortcut overrides for Forge commands (default: `Meta+Shift+P/E/L`)
+- `tui.remoteServer.url` - Optional remote OpenCode server URL for TUI client actions (default: `""`). When empty or omitted, the local OpenCode TUI client is used. The URL may include Basic Auth credentials (e.g., `http://opencode:password@host:4096`). If no password is embedded in the URL, the `OPENCODE_SERVER_PASSWORD` environment variable is used when set.
 
 ## TUI Plugin
 

@@ -663,11 +663,6 @@ export function createLoopEventHandler(
 
     currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'coding')
 
-    if ((currentState.maxIterations ?? 0) > 0 && (currentState.iteration ?? 0) >= (currentState.maxIterations ?? 0)) {
-      await terminateLoop(loopName, currentState, 'max_iterations')
-      return
-    }
-
     loopService.setPhaseAndResetError(loopName, 'auditing')
     logger.log(`Loop iteration ${currentState.iteration ?? 0} complete, running auditor for session ${currentState.sessionId}`)
 

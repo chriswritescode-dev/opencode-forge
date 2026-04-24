@@ -103,4 +103,13 @@ export const migrations: Migration[] = [
       db.run(loadSql('111_make_scenario_nullable.sql'))
     },
   },
+  {
+    id: '112',
+    description: 'Drop audit column from loops table (dead flag removal)',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      if (!cols.some((c) => c.name === 'audit')) return
+      db.run(loadSql('112_drop_audit_from_loops.sql'))
+    },
+  },
 ]

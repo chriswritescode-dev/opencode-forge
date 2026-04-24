@@ -94,7 +94,6 @@ describe('Loop Terminate Handler', () => {
         audit_count          INTEGER NOT NULL DEFAULT 0,
         error_count          INTEGER NOT NULL DEFAULT 0,
         phase                TEXT NOT NULL,
-        audit                INTEGER NOT NULL,
         execution_model      TEXT,
         auditor_model        TEXT,
         model_failed         INTEGER NOT NULL DEFAULT 0,
@@ -178,7 +177,7 @@ describe('Loop Terminate Handler', () => {
       startedAt: new Date().toISOString(),
       prompt: 'Test prompt',
       phase: 'coding',
-      audit: true,
+
       errorCount: 0,
       auditCount: 0,
       worktree: true,
