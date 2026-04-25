@@ -1,66 +1,74 @@
-import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
-import type { TuiConfig } from '../types'
-import { buildOpencodeBasicAuthHeader, createOpencodeClientFromServer, sanitizeServerUrl } from './opencode-client'
+import type { PluginConfig } from '../types'
+import { buildOpencodeBasicAuthHeader, sanitizeServerUrl } from './opencode-client'
 import type { LoopInfo } from './tui-refresh-helpers'
 import type { GraphStatusPayload } from './graph-status-store'
 import type { ExecutionPreferences } from './tui-execution-preferences'
-
-export function resolveTuiClient(api: TuiPluginApi, tuiConfig: TuiConfig | undefined): TuiPluginApi['client'] {
-  const url = tuiConfig?.remoteServer?.url?.trim()
-  if (!url) return api.client
-  try {
-    return createOpencodeClientFromServer({
-      serverUrl: url,
-      directory: api.state.path.directory,
-    }) as TuiPluginApi['client']
-  } catch {
-    api.ui.toast({
-      message: 'Invalid remote OpenCode server URL; using local client',
-      variant: 'warning',
-      duration: 5000,
-    })
-    return api.client
-  }
-}
 
 type ApiEnvelope<T> = { ok: true; data: T } | { ok: false; error: { code: string; message: string } }
 
 export type ApiExecutionMode = 'new-session' | 'execute-here' | 'loop' | 'loop-worktree'
 
-export interface RemoteTuiStateClient {
-  getProjectId(): Promise<string | null>
-  readPlan(projectId: string, sessionId: string): Promise<string | null>
-  writePlan(projectId: string, sessionId: string, content: string): Promise<boolean>
-  deletePlan(projectId: string, sessionId: string): Promise<boolean>
-  listLoops(projectId: string): Promise<LoopInfo[]>
-  getLoop(projectId: string, loopName: string): Promise<LoopInfo | null>
-  cancelLoop(projectId: string, loopName: string): Promise<boolean>
-  restartLoop(projectId: string, loopName: string, force: boolean): Promise<string | null>
-  readGraphStatus(projectId: string, cwd: string): Promise<GraphStatusPayload | null>
-  readPreferences(projectId: string): Promise<ExecutionPreferences | null>
-  writePreferences(projectId: string, prefs: ExecutionPreferences): Promise<boolean>
-  listModels(projectId: string): Promise<{
+export interface ExecutionContext {
+  preferences: ExecutionPreferences | null
+  models: {
     providers: unknown[]
     connectedProviderIds?: string[]
     configuredProviderIds?: string[]
     error?: string
-  }>
-  executePlan(projectId: string, sessionId: string, body: {
-    mode: ApiExecutionMode
-    title: string
-    plan: string
-    executionModel?: string
-    auditorModel?: string
-    targetSessionId?: string
-  }): Promise<{ sessionId?: string; loopName?: string; worktreeDir?: string } | null>
-  startLoop(projectId: string, body: {
-    plan: string
-    title: string
-    worktree: boolean
-    executionModel?: string
-    auditorModel?: string
-    hostSessionId?: string
-  }): Promise<{ sessionId: string; loopName: string; worktreeDir?: string } | null>
+  }
+}
+
+export interface ExecutePlanRequest {
+  mode: ApiExecutionMode
+  title: string
+  plan: string
+  executionModel?: string
+  auditorModel?: string
+  targetSessionId?: string
+}
+
+export interface StartLoopRequest {
+  plan: string
+  title: string
+  worktree: boolean
+  executionModel?: string
+  auditorModel?: string
+  hostSessionId?: string
+}
+
+export interface ForgeProjectClient {
+  readonly projectId: string
+
+  plan: {
+    read(sessionId: string): Promise<string | null>
+    write(sessionId: string, content: string): Promise<boolean>
+    delete(sessionId: string): Promise<boolean>
+    /**
+     * Atomic execute workflow:
+     *   1) POST /plans/session/:id/execute
+     *   2) on success, PUT /models/preferences (best-effort)
+     *   3) on success and mode in {new-session, loop, loop-worktree}, DELETE /plans/session/:id
+     * Returns the execute result; preference and delete failures are swallowed.
+     */
+    execute(
+      sessionId: string,
+      req: ExecutePlanRequest,
+      prefs: ExecutionPreferences,
+    ): Promise<{ sessionId?: string; loopName?: string; worktreeDir?: string } | null>
+  }
+
+  loops: {
+    list(): Promise<LoopInfo[]>
+    get(loopName: string): Promise<LoopInfo | null>
+    cancel(loopName: string): Promise<boolean>
+    restart(loopName: string, force: boolean): Promise<string | null>
+    start(req: StartLoopRequest): Promise<{ sessionId: string; loopName: string; worktreeDir?: string } | null>
+  }
+
+  /** Single round-trip pair: read preferences and list models. */
+  loadExecutionContext(): Promise<ExecutionContext>
+
+  readGraphStatus(cwd: string): Promise<GraphStatusPayload | null>
 }
 
 function makeRemoteRequest(baseUrl: string, password?: string) {
@@ -111,9 +119,141 @@ function mapRemoteLoop(input: Record<string, unknown>): LoopInfo {
   }
 }
 
-export function resolveRemoteTuiStateClient(tuiConfig: TuiConfig | undefined): RemoteTuiStateClient | null {
-  const rawUrl = tuiConfig?.remoteServer?.url?.trim()
-  if (!rawUrl) return null
+function mapPrefMode(label: ExecutionPreferences['mode']): ApiExecutionMode {
+  return label === 'Execute here' ? 'execute-here'
+    : label === 'Loop' ? 'loop'
+    : label === 'Loop (worktree)' ? 'loop-worktree'
+    : 'new-session'
+}
+
+export function resolveForgeApiUrl(config: PluginConfig): string {
+  const remoteUrl = config.tui?.remoteServer?.url?.trim()
+  if (remoteUrl) return remoteUrl
+  const host = config.api?.host ?? '127.0.0.1'
+  const port = config.api?.port ?? 5552
+  const formattedHost = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
+  return `http://${formattedHost}:${port}`
+}
+
+function buildClient(
+  projectId: string,
+  request: <T>(path: string, init?: RequestInit) => Promise<T>,
+): ForgeProjectClient {
+  const projectPath = `/api/v1/projects/${encodeURIComponent(projectId)}`
+
+  const plan: ForgeProjectClient['plan'] = {
+    async read(sessionId) {
+      try {
+        const data = await request<{ content: string }>(`${projectPath}/plans/session/${encodeURIComponent(sessionId)}`)
+        return data.content
+      } catch { return null }
+    },
+    async write(sessionId, content) {
+      try {
+        await request(`${projectPath}/plans/session/${encodeURIComponent(sessionId)}`, {
+          method: 'PUT',
+          body: JSON.stringify({ content }),
+        })
+        return true
+      } catch { return false }
+    },
+    async delete(sessionId) {
+      try {
+        await request(`${projectPath}/plans/session/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
+        return true
+      } catch { return false }
+    },
+    async execute(sessionId, req, prefs) {
+      let result: { sessionId?: string; loopName?: string; worktreeDir?: string } | null
+      try {
+        result = await request(`${projectPath}/plans/session/${encodeURIComponent(sessionId)}/execute`, {
+          method: 'POST',
+          body: JSON.stringify(req),
+        })
+      } catch { return null }
+
+      // Best-effort prefs save
+      try {
+        const mode = mapPrefMode(prefs.mode)
+        await request(`${projectPath}/models/preferences`, {
+          method: 'PUT',
+          body: JSON.stringify({ mode, executionModel: prefs.executionModel, auditorModel: prefs.auditorModel }),
+        })
+      } catch { /* ignore */ }
+
+      // Conditional delete (matches current tui.tsx:243-245 logic)
+      if (req.mode === 'new-session' || req.mode === 'loop' || req.mode === 'loop-worktree') {
+        try {
+          await request(`${projectPath}/plans/session/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
+        } catch { /* ignore */ }
+      }
+
+      return result
+    },
+  }
+
+  const loops: ForgeProjectClient['loops'] = {
+    async list() {
+      try {
+        const data = await request<{ loops?: unknown[]; active?: unknown[]; recent?: unknown[] }>(`${projectPath}/loops`)
+        const arr = data.loops ?? [...(data.active ?? []), ...(data.recent ?? [])]
+        return arr.map((l) => mapRemoteLoop(l as Record<string, unknown>))
+      } catch { return [] }
+    },
+    async get(loopName) {
+      try {
+        const data = await request<Record<string, unknown>>(`${projectPath}/loops/${encodeURIComponent(loopName)}`)
+        return mapRemoteLoop(data)
+      } catch { return null }
+    },
+    async cancel(loopName) {
+      try {
+        await request(`${projectPath}/loops/${encodeURIComponent(loopName)}`, { method: 'DELETE' })
+        return true
+      } catch { return false }
+    },
+    async restart(loopName, force) {
+      try {
+        const data = await request<{ sessionId?: string }>(`${projectPath}/loops/${encodeURIComponent(loopName)}/restart`, {
+          method: 'POST',
+          body: JSON.stringify({ force }),
+        })
+        return data.sessionId ?? null
+      } catch { return null }
+    },
+    async start(req) {
+      try {
+        return await request(`${projectPath}/loops`, {
+          method: 'POST',
+          body: JSON.stringify(req),
+        })
+      } catch { return null }
+    },
+  }
+
+  return {
+    projectId,
+    plan,
+    loops,
+    async loadExecutionContext() {
+      const [prefsResult, modelsResult] = await Promise.all([
+        request<ExecutionPreferences>(`${projectPath}/models/preferences`).catch(() => null),
+        request<ExecutionContext['models']>(`${projectPath}/models`).catch(() => ({ providers: [], error: 'Failed to load models' })),
+      ])
+      return { preferences: prefsResult, models: modelsResult }
+    },
+    async readGraphStatus(cwd) {
+      try {
+        const query = cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''
+        const data = await request<{ status: GraphStatusPayload | null }>(`${projectPath}/graph/status${query}`)
+        return data.status
+      } catch { return null }
+    },
+  }
+}
+
+export async function connectForgeProject(config: PluginConfig): Promise<ForgeProjectClient | null> {
+  const rawUrl = resolveForgeApiUrl(config)
 
   let baseUrl: string
   let urlPassword: string | undefined
@@ -124,133 +264,19 @@ export function resolveRemoteTuiStateClient(tuiConfig: TuiConfig | undefined): R
   } catch {
     return null
   }
+
   const password = urlPassword || process.env['OPENCODE_SERVER_PASSWORD']
   const request = makeRemoteRequest(baseUrl, password)
 
-  return {
-    async getProjectId() {
-      try {
-        const data = await request<{ projects: Array<{ id: string }> }>('/api/v1/projects')
-        return data.projects[0]?.id ?? null
-      } catch {
-        return null
-      }
-    },
-    async readPlan(projectId, sessionId) {
-      try {
-        const data = await request<{ content: string }>(`/api/v1/projects/${encodeURIComponent(projectId)}/plans/session/${encodeURIComponent(sessionId)}`)
-        return data.content
-      } catch {
-        return null
-      }
-    },
-    async writePlan(projectId, sessionId, content) {
-      try {
-        await request(`/api/v1/projects/${encodeURIComponent(projectId)}/plans/session/${encodeURIComponent(sessionId)}`, {
-          method: 'PUT',
-          body: JSON.stringify({ content }),
-        })
-        return true
-      } catch {
-        return false
-      }
-    },
-    async deletePlan(projectId, sessionId) {
-      try {
-        await request(`/api/v1/projects/${encodeURIComponent(projectId)}/plans/session/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
-        return true
-      } catch {
-        return false
-      }
-    },
-    async listLoops(projectId) {
-      const data = await request<{ loops?: unknown[]; active?: unknown[]; recent?: unknown[] }>(`/api/v1/projects/${encodeURIComponent(projectId)}/loops`)
-      const loops = data.loops ?? [...(data.active ?? []), ...(data.recent ?? [])]
-      return loops.map((loop) => mapRemoteLoop(loop as Record<string, unknown>))
-    },
-    async getLoop(projectId, loopName) {
-      try {
-        const data = await request<Record<string, unknown>>(`/api/v1/projects/${encodeURIComponent(projectId)}/loops/${encodeURIComponent(loopName)}`)
-        return mapRemoteLoop(data)
-      } catch {
-        return null
-      }
-    },
-    async cancelLoop(projectId, loopName) {
-      try {
-        await request(`/api/v1/projects/${encodeURIComponent(projectId)}/loops/${encodeURIComponent(loopName)}`, { method: 'DELETE' })
-        return true
-      } catch {
-        return false
-      }
-    },
-    async restartLoop(projectId, loopName, force) {
-      try {
-        const data = await request<{ sessionId?: string }>(`/api/v1/projects/${encodeURIComponent(projectId)}/loops/${encodeURIComponent(loopName)}/restart`, {
-          method: 'POST',
-          body: JSON.stringify({ force }),
-        })
-        return data.sessionId ?? null
-      } catch {
-        return null
-      }
-    },
-    async readGraphStatus(projectId, cwd) {
-      try {
-        const query = cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''
-        const data = await request<{ status: GraphStatusPayload | null }>(`/api/v1/projects/${encodeURIComponent(projectId)}/graph/status${query}`)
-        return data.status
-      } catch {
-        return null
-      }
-    },
-    async readPreferences(projectId) {
-      try {
-        return await request<ExecutionPreferences>(`/api/v1/projects/${encodeURIComponent(projectId)}/models/preferences`)
-      } catch {
-        return null
-      }
-    },
-    async writePreferences(projectId, prefs) {
-      const mode = prefs.mode === 'Execute here'
-        ? 'execute-here'
-        : prefs.mode === 'Loop'
-          ? 'loop'
-          : prefs.mode === 'Loop (worktree)'
-            ? 'loop-worktree'
-            : 'new-session'
-      try {
-        await request(`/api/v1/projects/${encodeURIComponent(projectId)}/models/preferences`, {
-          method: 'PUT',
-          body: JSON.stringify({ mode, executionModel: prefs.executionModel, auditorModel: prefs.auditorModel }),
-        })
-        return true
-      } catch {
-        return false
-      }
-    },
-    async listModels(projectId) {
-      return await request(`/api/v1/projects/${encodeURIComponent(projectId)}/models`)
-    },
-    async executePlan(projectId, sessionId, body) {
-      try {
-        return await request(`/api/v1/projects/${encodeURIComponent(projectId)}/plans/session/${encodeURIComponent(sessionId)}/execute`, {
-          method: 'POST',
-          body: JSON.stringify(body),
-        })
-      } catch {
-        return null
-      }
-    },
-    async startLoop(projectId, body) {
-      try {
-        return await request(`/api/v1/projects/${encodeURIComponent(projectId)}/loops`, {
-          method: 'POST',
-          body: JSON.stringify(body),
-        })
-      } catch {
-        return null
-      }
-    },
+  let projectId: string
+  try {
+    const data = await request<{ projects: Array<{ id: string }> }>('/api/v1/projects')
+    const id = data.projects[0]?.id
+    if (!id) return null
+    projectId = id
+  } catch {
+    return null
   }
+
+  return buildClient(projectId, request)
 }

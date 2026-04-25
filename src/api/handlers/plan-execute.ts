@@ -24,6 +24,8 @@ export async function handleExecutePlan(
   }
 
   const { ctx } = deps
+  const executionModel = body.executionModel || ctx.config.loop?.model || ctx.config.executionModel
+  const auditorModel = body.auditorModel || ctx.config.auditorModel
 
   switch (body.mode) {
     case 'new-session': {
@@ -33,7 +35,7 @@ export async function handleExecutePlan(
         directory: ctx.directory,
         projectId,
         sessionId,
-        executionModel: body.executionModel,
+        executionModel,
         v2: ctx.v2,
         logger: ctx.logger,
         mode: 'new-session',
@@ -60,7 +62,7 @@ export async function handleExecutePlan(
         directory: ctx.directory,
         projectId,
         sessionId,
-        executionModel: body.executionModel,
+        executionModel,
         v2: ctx.v2,
         logger: ctx.logger,
         mode: 'execute-here',
@@ -88,8 +90,8 @@ export async function handleExecutePlan(
         projectId,
         isWorktree,
         v2: ctx.v2,
-        executionModel: body.executionModel,
-        auditorModel: body.auditorModel,
+        executionModel,
+        auditorModel,
         hostSessionId: sessionId,
       })
 

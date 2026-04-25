@@ -59,7 +59,7 @@ function getDefaultConfig(): PluginConfig {
       file: resolveLogPath(),
     },
     api: {
-      enabled: false,
+      enabled: true,
       host: '127.0.0.1',
       port: 5552,
     },
@@ -144,12 +144,10 @@ function normalizeConfig(config: PluginConfig): PluginConfig {
     agents: config.agents,
     sandbox: config.sandbox,
     graph: config.graph,
-    api: config.api
-      ? {
-          enabled: config.api.enabled ?? false,
-          host: config.api.host ?? '127.0.0.1',
-          port: config.api.port ?? 5552,
-        }
-      : undefined,
+    api: {
+      enabled: config.api?.enabled ?? true,
+      host: config.api?.host ?? '127.0.0.1',
+      port: config.api?.port ?? 5552,
+    },
   }
 }

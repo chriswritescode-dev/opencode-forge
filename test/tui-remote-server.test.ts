@@ -2,26 +2,14 @@ import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { mkdirSync, rmSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { loadPluginConfig } from '../src/setup'
-import { resolveTuiClient } from '../src/utils/tui-client'
-import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
+import { resolveForgeApiUrl, connectForgeProject } from '../src/utils/tui-client'
 
 const TEST_DIR = '/tmp/opencode-forge-tui-remote-test-' + Date.now()
-
-function createMockApi(): TuiPluginApi {
-  return {
-    client: { local: true },
-    state: {
-      path: { directory: TEST_DIR },
-    },
-    ui: {
-      toast: mock(() => {}),
-    },
-  } as unknown as TuiPluginApi
-}
 
 describe('TUI remote server config', () => {
   let testConfigDir: string
   let testDataDir: string
+  const originalFetch = globalThis.fetch
 
   beforeEach(() => {
     testConfigDir = TEST_DIR + '-config-' + Math.random().toString(36).slice(2)
@@ -33,6 +21,7 @@ describe('TUI remote server config', () => {
   })
 
   afterEach(() => {
+    globalThis.fetch = originalFetch
     delete process.env['XDG_CONFIG_HOME']
     delete process.env['XDG_DATA_HOME']
     if (existsSync(testConfigDir)) {
@@ -93,35 +82,125 @@ describe('TUI remote server config', () => {
     expect(config.tui).toBeUndefined()
   })
 
-  test('resolveTuiClient returns local client when no remote URL is configured', () => {
-    const api = createMockApi()
+  test('default config enables local inbound Forge API', () => {
+    const config = loadPluginConfig()
 
-    const client = resolveTuiClient(api, undefined)
-
-    expect(client).toBe(api.client)
+    expect(config.api?.enabled).toBe(true)
+    expect(resolveForgeApiUrl(config)).toBe('http://127.0.0.1:5552')
   })
 
-  test('resolveTuiClient returns remote client for valid remote URL', () => {
-    const api = createMockApi()
-
-    const client = resolveTuiClient(api, {
-      remoteServer: { url: 'http://remote.example:4096' },
+  test('resolveForgeApiUrl returns remote Forge API URL when configured', () => {
+    const url = resolveForgeApiUrl({
+      tui: {
+        remoteServer: { url: 'http://remote.example:4096' },
+      },
     } as any)
 
-    expect(client).not.toBe(api.client)
-    expect(api.ui.toast).not.toHaveBeenCalled()
+    expect(url).toBe('http://remote.example:4096')
   })
 
-  test('resolveTuiClient falls back to local client for invalid remote URL', () => {
-    const api = createMockApi()
+  test('resolveForgeApiUrl brackets IPv6 localhost', () => {
+    const url = resolveForgeApiUrl({
+      api: { enabled: true, host: '::1', port: 5552 },
+    })
 
-    const client = resolveTuiClient(api, {
-      remoteServer: { url: 'not a url' },
+    expect(url).toBe('http://[::1]:5552')
+  })
+
+  test('connectForgeProject returns null for invalid remote URL', async () => {
+    const client = await connectForgeProject({
+      tui: {
+        remoteServer: { url: 'not a url' },
+      },
     } as any)
+    expect(client).toBeNull()
+  })
 
-    expect(client).toBe(api.client)
-    expect(api.ui.toast).toHaveBeenCalledWith(expect.objectContaining({
-      variant: 'warning',
-    }))
+  test('plan.execute posts execute, then prefs, then delete for loop mode', async () => {
+    const requests: Array<{ url: string; method?: string; body?: string }> = []
+    globalThis.fetch = mock(async (url, init) => {
+      const u = String(url)
+      requests.push({ url: u, method: init?.method, body: init?.body as string })
+      if (u.endsWith('/api/v1/projects')) {
+        return new Response(JSON.stringify({ ok: true, data: { projects: [{ id: 'project-1' }] } }), { status: 200 })
+      }
+      if (u.includes('/models/preferences')) {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ ok: true, data: { sessionId: 'session-1', loopName: 'loop-1' } }), { status: 202 })
+    }) as unknown as typeof fetch
+
+    const client = await connectForgeProject({ tui: { remoteServer: { url: 'http://remote.example:4096' } } })
+    const result = await client?.plan.execute('host-session', {
+      mode: 'loop', title: 'Plan', plan: '# Plan',
+      executionModel: 'provider/exec', auditorModel: 'provider/auditor',
+    }, { mode: 'Loop', executionModel: 'provider/exec', auditorModel: 'provider/auditor' })
+
+    expect(result?.loopName).toBe('loop-1')
+    // 1: project resolution, 2: execute, 3: prefs PUT, 4: plan DELETE
+    expect(requests.length).toBe(4)
+    expect(requests[1]?.url).toContain('/plans/session/host-session/execute')
+    expect(requests[1]?.method).toBe('POST')
+    expect(requests[2]?.url).toContain('/models/preferences')
+    expect(requests[2]?.method).toBe('PUT')
+    expect(requests[3]?.url).toContain('/plans/session/host-session')
+    expect(requests[3]?.method).toBe('DELETE')
+  })
+
+  test('loops.start posts worktree and auditor model to the API', async () => {
+    const requests: Array<{ url: string; method?: string; body?: string }> = []
+    globalThis.fetch = mock(async (url, init) => {
+      const u = String(url)
+      requests.push({ url: u, method: init?.method, body: init?.body as string })
+      if (u.endsWith('/api/v1/projects')) {
+        return new Response(JSON.stringify({ ok: true, data: { projects: [{ id: 'project-1' }] } }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ ok: true, data: { sessionId: 'session-1', loopName: 'loop-1', worktreeDir: '/tmp/wt' } }), { status: 202 })
+    }) as unknown as typeof fetch
+
+    const client = await connectForgeProject({ tui: { remoteServer: { url: 'http://remote.example:4096' } } })
+    const result = await client?.loops.start({
+      title: 'Plan', plan: '# Plan', worktree: true,
+      executionModel: 'provider/exec', auditorModel: 'provider/auditor',
+      hostSessionId: 'host-session',
+    })
+
+    expect(result?.worktreeDir).toBe('/tmp/wt')
+    expect(requests.length).toBe(2)
+    expect(requests[1]?.url).toContain('/api/v1/projects/project-1/loops')
+    expect(requests[1]?.method).toBe('POST')
+    expect(JSON.parse(requests[1]?.body as string)).toEqual({
+      title: 'Plan',
+      plan: '# Plan',
+      worktree: true,
+      executionModel: 'provider/exec',
+      auditorModel: 'provider/auditor',
+      hostSessionId: 'host-session',
+    })
+  })
+
+  test('loadExecutionContext fetches preferences and models in parallel', async () => {
+    const requests: string[] = []
+    globalThis.fetch = mock(async (url) => {
+      const u = String(url)
+      requests.push(u)
+      if (u.endsWith('/api/v1/projects')) {
+        return new Response(JSON.stringify({ ok: true, data: { projects: [{ id: 'p' }] } }), { status: 200 })
+      }
+      if (u.includes('/models/preferences')) {
+        return new Response(JSON.stringify({ ok: true, data: { mode: 'Loop', executionModel: 'm/x' } }), { status: 200 })
+      }
+      if (u.endsWith('/models')) {
+        return new Response(JSON.stringify({ ok: true, data: { providers: [{ id: 'anthropic' }] } }), { status: 200 })
+      }
+      return new Response('{}', { status: 404 })
+    }) as unknown as typeof fetch
+
+    const client = await connectForgeProject({ tui: { remoteServer: { url: 'http://remote.example:4096' } } })
+    const ctx = await client!.loadExecutionContext()
+    expect(ctx.preferences?.mode).toBe('Loop')
+    expect(ctx.models.providers.length).toBe(1)
+    expect(requests.some(u => u.includes('/models/preferences'))).toBe(true)
+    expect(requests.some(u => u.endsWith('/models'))).toBe(true)
   })
 })

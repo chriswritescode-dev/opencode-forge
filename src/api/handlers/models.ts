@@ -5,6 +5,7 @@ import { fetchAvailableModels } from '../../utils/tui-models'
 import type { ExecutionPreferences } from '../../utils/tui-execution-preferences'
 import {
   readExecutionPreferences,
+  resolveExecutionDialogDefaults,
   writeExecutionPreferences,
 } from '../../utils/tui-execution-preferences'
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
@@ -56,17 +57,18 @@ export async function handleListModels(
 
 export async function handleGetModelPreferences(
   _req: Request,
-  _deps: ApiDeps,
+  deps: ApiDeps,
   params: Record<string, string>
 ): Promise<Response> {
   const { projectId } = params
   const prefs = readExecutionPreferences(projectId)
+  const defaults = resolveExecutionDialogDefaults(deps.ctx.config, prefs)
 
-  if (!prefs) {
-    throw new Error('preferences not found')
-  }
-
-  return ok(prefs)
+  return ok({
+    mode: defaults.mode as ExecutionPreferences['mode'],
+    executionModel: defaults.executionModel || undefined,
+    auditorModel: defaults.auditorModel || undefined,
+  })
 }
 
 export async function handleWriteModelPreferences(

@@ -84,3 +84,52 @@ test('migrations run in transactions', () => {
 
   db.close()
 })
+
+test('review findings scenario is nullable for new databases', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const scenario = db.prepare('PRAGMA table_info(review_findings)').all().find((col) => {
+    return (col as { name: string }).name === 'scenario'
+  }) as { notnull: number } | undefined
+
+  expect(scenario?.notnull).toBe(0)
+
+  db.close()
+})
+
+test('review findings scenario is made nullable when legacy migration id was already used', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  db.run(`
+    CREATE TABLE migrations (
+      id TEXT PRIMARY KEY,
+      description TEXT NOT NULL,
+      applied_at INTEGER NOT NULL
+    );
+    CREATE TABLE review_findings (
+      project_id   TEXT NOT NULL,
+      file         TEXT NOT NULL,
+      line         INTEGER NOT NULL,
+      severity     TEXT NOT NULL CHECK(severity IN ('bug','warning')),
+      description  TEXT NOT NULL,
+      scenario     TEXT NOT NULL,
+      branch       TEXT,
+      created_at   INTEGER NOT NULL,
+      PRIMARY KEY (project_id, file, line)
+    );
+    INSERT INTO migrations (id, description, applied_at) VALUES
+      ('103', 'Create review_findings table for write-once review findings', 1),
+      ('111', 'Drop session_directory column from loops table (dead data removal)', 1);
+  `)
+  db.close()
+
+  const migrated = openForgeDatabase(dbPath)
+  const scenario = migrated.prepare('PRAGMA table_info(review_findings)').all().find((col) => {
+    return (col as { name: string }).name === 'scenario'
+  }) as { notnull: number } | undefined
+
+  expect(scenario?.notnull).toBe(0)
+
+  migrated.close()
+})

@@ -1,9 +1,13 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { Database } from 'bun:sqlite'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs'
 import { createLoopService, generateUniqueName } from '../src/services/loop'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
+import { createGraphStatusRepo } from '../src/storage/repos/graph-status-repo'
+import { handleExecutePlan } from '../src/api/handlers/plan-execute'
+import { openForgeDatabase, resolveDataDir } from '../src/storage/database'
 import type { Logger } from '../src/types'
 import { createToolExecuteAfterHook, createPlanApprovalEventHook } from '../src/tools/plan-approval'
 import type { ToolContext } from '../src/tools/types'
@@ -765,5 +769,149 @@ describe('generateUniqueName for plan approval', () => {
     const existingNames = ['other-loop', 'different-loop']
     const result = generateUniqueName('new-loop', existingNames)
     expect(result).toBe('new-loop')
+  })
+})
+
+describe('plan execute API loop dispatch', () => {
+  const originalDataHome = process.env.XDG_DATA_HOME
+  const originalConfigHome = process.env.XDG_CONFIG_HOME
+  let testDataDir: string
+  let testConfigDir: string
+  let db: Database
+
+  beforeEach(() => {
+    testDataDir = `${TEST_DIR}-api-${Math.random().toString(36).slice(2)}`
+    testConfigDir = `${TEST_DIR}-api-config-${Math.random().toString(36).slice(2)}`
+    process.env.XDG_DATA_HOME = testDataDir
+    process.env.XDG_CONFIG_HOME = testConfigDir
+    mkdirSync(`${testConfigDir}/opencode`, { recursive: true })
+    writeFileSync(`${testConfigDir}/opencode/forge-config.jsonc`, JSON.stringify({ sandbox: { mode: 'none' } }))
+    mkdirSync(resolveDataDir(), { recursive: true })
+    db = openForgeDatabase(`${resolveDataDir()}/graph.db`)
+  })
+
+  afterEach(() => {
+    db?.close()
+    if (originalDataHome === undefined) {
+      delete process.env.XDG_DATA_HOME
+    } else {
+      process.env.XDG_DATA_HOME = originalDataHome
+    }
+    if (originalConfigHome === undefined) {
+      delete process.env.XDG_CONFIG_HOME
+    } else {
+      process.env.XDG_CONFIG_HOME = originalConfigHome
+    }
+    if (existsSync(testDataDir)) {
+      rmSync(testDataDir, { recursive: true, force: true })
+    }
+    if (existsSync(testConfigDir)) {
+      rmSync(testConfigDir, { recursive: true, force: true })
+    }
+  })
+
+  function createApiDeps(overrides?: Partial<ToolContext>) {
+    const plansRepo = createPlansRepo(db)
+    const loopsRepo = createLoopsRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'api-project', createMockLogger())
+    const promptAsync = mock(() => Promise.resolve({ data: {} }))
+    const sessionCreate = mock(() => Promise.resolve({ data: { id: `session-${Math.random().toString(36).slice(2)}` } }))
+    const worktreeCreate = mock(async () => {
+      const directory = `${testDataDir}/worktree`
+      createGraphStatusRepo(db).write({
+        projectId: 'api-project',
+        cwd: directory,
+        state: 'ready',
+        ready: true,
+        stats: { files: 1, symbols: 1, edges: 0, calls: 0 },
+        message: null,
+      })
+      return { data: { directory, branch: 'opencode/loop-api-plan' }, error: undefined }
+    })
+
+    const ctx = {
+      projectId: 'api-project',
+      directory: '/repo',
+      config: {
+        executionModel: 'provider/default-exec',
+        auditorModel: 'provider/default-auditor',
+      } as PluginConfig,
+      logger: createMockLogger(),
+      db,
+      plansRepo,
+      loopService,
+      v2: {
+        session: {
+          create: sessionCreate,
+          promptAsync,
+          abort: async () => ({ data: {} }),
+        },
+        worktree: {
+          create: worktreeCreate,
+        },
+      } as unknown as ToolContext['v2'],
+      ...overrides,
+    } as ToolContext
+
+    return { ctx, promptAsync, sessionCreate, worktreeCreate }
+  }
+
+  test('loop mode launches an in-place loop and persists default auditor model', async () => {
+    const { ctx, sessionCreate } = createApiDeps()
+    const req = new Request('http://test.local/execute', {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'loop', title: 'API Plan', plan: '# API Plan' }),
+    })
+
+    const res = await handleExecutePlan(req, { ctx, logger: ctx.logger, projectId: 'api-project' }, {
+      projectId: 'api-project',
+      sessionId: 'host-session',
+    })
+
+    expect(res.status).toBe(202)
+    expect(sessionCreate).toHaveBeenCalledWith(expect.objectContaining({ directory: '/repo' }))
+    const row = db.prepare('SELECT worktree, execution_model, auditor_model, host_session_id FROM loops WHERE project_id = ?').get('api-project') as {
+      worktree: number
+      execution_model: string
+      auditor_model: string
+      host_session_id: string
+    }
+    expect(row.worktree).toBe(0)
+    expect(row.execution_model).toBe('provider/default-exec')
+    expect(row.auditor_model).toBe('provider/default-auditor')
+    expect(row.host_session_id).toBe('host-session')
+  })
+
+  test('loop-worktree mode launches a worktree loop and honors explicit auditor model', async () => {
+    const { ctx, worktreeCreate } = createApiDeps()
+    const req = new Request('http://test.local/execute', {
+      method: 'POST',
+      body: JSON.stringify({
+        mode: 'loop-worktree',
+        title: 'API Worktree Plan',
+        plan: '# API Worktree Plan',
+        executionModel: 'provider/request-exec',
+        auditorModel: 'provider/request-auditor',
+      }),
+    })
+
+    const res = await handleExecutePlan(req, { ctx, logger: ctx.logger, projectId: 'api-project' }, {
+      projectId: 'api-project',
+      sessionId: 'host-session',
+    })
+
+    expect(res.status).toBe(202)
+    expect(worktreeCreate).toHaveBeenCalled()
+    const row = db.prepare('SELECT worktree, worktree_dir, execution_model, auditor_model FROM loops WHERE project_id = ?').get('api-project') as {
+      worktree: number
+      worktree_dir: string
+      execution_model: string
+      auditor_model: string
+    }
+    expect(row.worktree).toBe(1)
+    expect(row.worktree_dir).toBe(`${testDataDir}/worktree`)
+    expect(row.execution_model).toBe('provider/request-exec')
+    expect(row.auditor_model).toBe('provider/request-auditor')
   })
 })

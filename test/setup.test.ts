@@ -321,12 +321,12 @@ describe('bundled sample config', () => {
     const parsed = JSON.parse(normalized)
     
     expect(parsed.api).toBeDefined()
-    expect(parsed.api?.enabled).toBe(false)
+    expect(parsed.api?.enabled).toBe(true)
     expect(parsed.api?.host).toBe('127.0.0.1')
     expect(parsed.api?.port).toBe(5552)
   })
 
-  test('loadPluginConfig surfaces api.enabled as false by default', () => {
+  test('loadPluginConfig surfaces api.enabled as true by default', () => {
     // Set up test config directory to use bundled config
     const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
     mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
@@ -338,7 +338,7 @@ describe('bundled sample config', () => {
     writeFileSync(configPath, bundledContent)
 
     const config = loadPluginConfig()
-    expect(config.api?.enabled).toBe(false)
+    expect(config.api?.enabled).toBe(true)
   })
 
   test('loadPluginConfig round-trips user-supplied api block', () => {
