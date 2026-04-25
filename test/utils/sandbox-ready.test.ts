@@ -56,6 +56,7 @@ describe('waitForSandboxReady', () => {
         completion_summary TEXT,
         workspace_id         TEXT,
         host_session_id      TEXT,
+        audit_session_id     TEXT,
         session_directory    TEXT,
         PRIMARY KEY (project_id, loop_name)
       )

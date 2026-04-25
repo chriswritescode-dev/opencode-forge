@@ -1,10 +1,10 @@
 import type { ApiDeps } from '../types'
 import { ok } from '../response'
-import { notFound } from '../errors'
 import { Database } from 'bun:sqlite'
 import { homedir, platform } from 'os'
 import { join, basename } from 'path'
 import { existsSync } from 'fs'
+import { readGraphStatus } from '../../utils/tui-graph-status'
 
 function withOpencodeProjectDb<T>(fn: (db: Database) => T): T | null {
   try {
@@ -43,9 +43,10 @@ export function listKnownProjects(): Array<{ id: string; name: string | null }> 
 
 export async function handleListProjects(
   _req: Request,
-  _deps: ApiDeps
+  deps: ApiDeps
 ): Promise<Response> {
-  const projects = listKnownProjects()
+  const knownProject = listKnownProjects().find((project) => project.id === deps.ctx.projectId)
+  const projects = [knownProject ?? { id: deps.ctx.projectId, name: basename(deps.ctx.directory) }]
   return ok({ projects })
 }
 
@@ -57,10 +58,16 @@ export async function handleGetProject(
   const { projectId } = params
   const { directory } = deps.ctx
 
-  // Verify the projectId matches the context
-  if (projectId !== deps.ctx.projectId) {
-    throw notFound('project not found')
-  }
-
   return ok({ id: projectId, directory })
+}
+
+export async function handleGetGraphStatus(
+  req: Request,
+  _deps: ApiDeps,
+  params: Record<string, string>
+): Promise<Response> {
+  const { projectId } = params
+  const url = new URL(req.url)
+  const cwd = url.searchParams.get('cwd') ?? undefined
+  return ok({ status: readGraphStatus(projectId, undefined, cwd) })
 }

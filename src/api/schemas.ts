@@ -1,6 +1,7 @@
 import { tool } from '@opencode-ai/plugin'
 import type { ZodType } from 'zod'
 import { z as zod } from 'zod'
+import { badRequest } from './errors'
 
 const z = tool.schema
 
@@ -66,15 +67,19 @@ export async function parseJsonBody<T>(
   req: Request,
   schema: ZodType<T>
 ): Promise<T> {
+  let body: unknown
   try {
-    const body = await req.json()
+    body = await req.json()
+  } catch {
+    throw badRequest('invalid JSON body')
+  }
+
+  try {
     return schema.parse(body) as T
   } catch (err) {
     if (err instanceof zod.ZodError) {
       const message = err.issues.map((e) => e.message).join('; ')
-      const error = new Error(message)
-      error.cause = err
-      throw error
+      throw badRequest(message || 'invalid request body')
     }
     throw err
   }

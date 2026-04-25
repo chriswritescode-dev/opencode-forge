@@ -1,16 +1,8 @@
 import type { AgentDefinition } from './types'
 
-export const auditorAgent: AgentDefinition = {
-  role: 'auditor',
-  id: 'opencode-auditor',
-  displayName: 'auditor',
-  description: 'Code auditor with graph-first analysis for convention-aware reviews',
-  mode: 'subagent',
-  temperature: 0.0,
-  tools: {
-    exclude: ['plan-execute', 'loop', 'plan-write', 'plan-edit', 'loop-cancel', 'loop-status'],
-  },
-  systemPrompt: `You are a code auditor with access to graph tools for structural analysis. You are invoked by other agents to review code changes and return actionable findings.
+const AUDITOR_TOOL_EXCLUDES = ['plan-execute', 'loop', 'plan-write', 'plan-edit', 'loop-cancel', 'loop-status']
+
+const BASE_AUDITOR_PROMPT = `You are a code auditor with access to graph tools for structural analysis. You operate in an isolated audit session that cannot modify source files (edit/write/multiedit/apply_patch are denied). You can read code, query the graph, and manage review findings via review-write / review-delete. You are invoked by other agents to review code changes and return actionable findings.
 
 ## Your Role
 
@@ -191,5 +183,36 @@ Before storing new findings, check if any previously open findings have been res
 
 Findings expire after 7 days automatically. If an issue persists, the next review will re-discover it.
 
+`
+
+export const auditorAgent: AgentDefinition = {
+  role: 'auditor',
+  id: 'opencode-auditor',
+  displayName: 'auditor',
+  description: 'Code auditor with graph-first analysis for convention-aware reviews',
+  mode: 'subagent',
+  temperature: 0.0,
+  tools: {
+    exclude: AUDITOR_TOOL_EXCLUDES,
+  },
+  systemPrompt: BASE_AUDITOR_PROMPT,
+}
+
+export const auditorLoopAgent: AgentDefinition = {
+  role: 'auditor-loop',
+  id: 'opencode-auditor-loop',
+  displayName: 'auditor-loop',
+  description: 'Auditor variant used as the primary agent in loop audit sessions',
+  mode: 'primary',
+  hidden: true,
+  temperature: 0.0,
+  tools: {
+    exclude: AUDITOR_TOOL_EXCLUDES,
+  },
+  systemPrompt: `${BASE_AUDITOR_PROMPT}
+
+## Loop Audit Context
+
+You are the primary agent of a dedicated, single-iteration audit session created by the loop runner. There is no parent agent calling you via the Task tool. After you finish your review and persist findings via \`review-write\` / \`review-delete\`, this session is deleted by the loop runner. Do not attempt to spawn long-running work — produce your review and stop.
 `,
 }

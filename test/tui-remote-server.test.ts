@@ -1,9 +1,23 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { mkdirSync, rmSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { loadPluginConfig } from '../src/setup'
+import { resolveTuiClient } from '../src/utils/tui-client'
+import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 
 const TEST_DIR = '/tmp/opencode-forge-tui-remote-test-' + Date.now()
+
+function createMockApi(): TuiPluginApi {
+  return {
+    client: { local: true },
+    state: {
+      path: { directory: TEST_DIR },
+    },
+    ui: {
+      toast: mock(() => {}),
+    },
+  } as unknown as TuiPluginApi
+}
 
 describe('TUI remote server config', () => {
   let testConfigDir: string
@@ -77,5 +91,37 @@ describe('TUI remote server config', () => {
 
     const config = loadPluginConfig()
     expect(config.tui).toBeUndefined()
+  })
+
+  test('resolveTuiClient returns local client when no remote URL is configured', () => {
+    const api = createMockApi()
+
+    const client = resolveTuiClient(api, undefined)
+
+    expect(client).toBe(api.client)
+  })
+
+  test('resolveTuiClient returns remote client for valid remote URL', () => {
+    const api = createMockApi()
+
+    const client = resolveTuiClient(api, {
+      remoteServer: { url: 'http://remote.example:4096' },
+    } as any)
+
+    expect(client).not.toBe(api.client)
+    expect(api.ui.toast).not.toHaveBeenCalled()
+  })
+
+  test('resolveTuiClient falls back to local client for invalid remote URL', () => {
+    const api = createMockApi()
+
+    const client = resolveTuiClient(api, {
+      remoteServer: { url: 'not a url' },
+    } as any)
+
+    expect(client).toBe(api.client)
+    expect(api.ui.toast).toHaveBeenCalledWith(expect.objectContaining({
+      variant: 'warning',
+    }))
   })
 })

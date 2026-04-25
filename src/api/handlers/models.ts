@@ -11,6 +11,7 @@ import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 
 function mapModelPrefsMode(mode: string | undefined): ExecutionPreferences['mode'] {
   switch (mode) {
+    case undefined:
     case 'new-session':
       return 'New session'
     case 'execute-here':
@@ -18,8 +19,9 @@ function mapModelPrefsMode(mode: string | undefined): ExecutionPreferences['mode
     case 'loop':
       return 'Loop'
     case 'loop-worktree':
-    default:
       return 'Loop (worktree)'
+    default:
+      return 'New session'
   }
 }
 

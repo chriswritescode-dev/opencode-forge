@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { existsSync, mkdirSync, rmSync } from 'fs'
 import { join } from 'path'
 import { handleWriteModelPreferences } from '../src/api/handlers/models'
+import { errorResponse } from '../src/api/response'
 import { openForgeDatabase, resolveDataDir } from '../src/storage/database'
 import { readExecutionPreferences } from '../src/utils/tui-execution-preferences'
 import type { ApiDeps } from '../src/api/types'
@@ -52,5 +53,38 @@ describe('model preferences API', () => {
       const prefs = readExecutionPreferences(projectId)
       expect(prefs?.mode).toBe(expected)
     }
+  })
+
+  test('defaults omitted mode to new session', async () => {
+    const projectId = 'project-omitted-mode'
+    const req = new Request('http://test.local/preferences', {
+      method: 'POST',
+      body: JSON.stringify({ executionModel: 'test/model' }),
+    })
+
+    const res = await handleWriteModelPreferences(req, {} as ApiDeps, { projectId })
+    expect(res.status).toBe(200)
+
+    const prefs = readExecutionPreferences(projectId)
+    expect(prefs?.mode).toBe('New session')
+    expect(prefs?.executionModel).toBe('test/model')
+  })
+
+  test('invalid preference body returns bad request error', async () => {
+    const req = new Request('http://test.local/preferences', {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'invalid-mode' }),
+    })
+
+    let res: Response
+    try {
+      res = await handleWriteModelPreferences(req, {} as ApiDeps, { projectId: 'project-invalid-mode' })
+    } catch (err) {
+      res = errorResponse(err)
+    }
+
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: { code: string } }
+    expect(body.error.code).toBe('bad_request')
   })
 })

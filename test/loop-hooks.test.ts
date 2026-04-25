@@ -129,6 +129,7 @@ describe('loop-hooks integration', () => {
         completion_summary   TEXT,
         workspace_id   TEXT,
         host_session_id   TEXT,
+        audit_session_id  TEXT,
         PRIMARY KEY (project_id, loop_name)
       )
     `)
@@ -190,7 +191,7 @@ describe('loop-hooks integration', () => {
       },
     } as PluginConfig
     
-    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, testProjectId, logger, testConfig)
+    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, testProjectId, logger, testConfig as any)
   })
 
   afterEach(() => {
@@ -211,7 +212,7 @@ describe('loop-hooks integration', () => {
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     
-    const service = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, testProjectId, logger, testConfig)
+    const service = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, testProjectId, logger, testConfig as any)
     
     const getConfig = () => testConfig as PluginConfig
     
@@ -224,17 +225,18 @@ describe('loop-hooks integration', () => {
 
   describe('worktree completion log writing', () => {
     it('writes completion log when audit clears and no bug findings', async () => {
+      const loopName = 'test-loop-completion'
+      const sessionId = 'test-session-123'
+      const auditSessionId = 'test-audit-session-123'
+      const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
+      const worktreeBranch = 'loop-test-branch'
+      
       const v2Client = createMockV2Client({
         messagesCalls: [{ lastMessageRole: 'assistant', text: 'Code reviewed, no issues found.' }],
         statusType: 'idle',
       })
       
       const { handler, service } = createTestHandler(v2Client as any)
-      
-      const loopName = 'test-loop-completion'
-      const sessionId = 'test-session-123'
-      const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
-      const worktreeBranch = 'loop-test-branch'
       
       const loopsRepo = createLoopsRepo(db)
       const now = Date.now()
@@ -244,6 +246,7 @@ describe('loop-hooks integration', () => {
         loopName,
         status: 'running',
         currentSessionId: sessionId,
+        auditSessionId,
         worktree: true,
         worktreeDir: worktreeDir,
         worktreeBranch,
@@ -274,7 +277,7 @@ describe('loop-hooks integration', () => {
           type: 'session.status' as const,
           properties: {
             status: { type: 'idle' as const },
-            sessionID: sessionId,
+            sessionID: auditSessionId,
           },
         },
       }
@@ -339,6 +342,7 @@ describe('loop-hooks integration', () => {
         completionSummary: null,
         workspaceId: null,
         hostSessionId: null,
+        auditSessionId: null,
       }, {
         prompt: 'Test prompt',
         lastAuditResult: null,
@@ -444,6 +448,7 @@ describe('loop-hooks integration', () => {
         completionSummary: null,
         workspaceId: null,
         hostSessionId: null,
+        auditSessionId: null,
       }, {
         prompt: 'Test prompt',
         lastAuditResult: null,
@@ -532,6 +537,7 @@ describe('loop-hooks integration', () => {
         completionSummary: null,
         workspaceId: null,
         hostSessionId: null,
+        auditSessionId: null,
       }, {
         prompt: 'Test prompt',
         lastAuditResult: null,
@@ -601,6 +607,7 @@ describe('loop-hooks integration', () => {
         completionSummary: null,
         workspaceId: null,
         hostSessionId: null,
+        auditSessionId: null,
       }, {
         prompt: 'Test prompt',
         lastAuditResult: null,
@@ -701,6 +708,7 @@ describe('loop-hooks integration', () => {
         completionSummary: null,
         workspaceId,
         hostSessionId: 'host-123',
+        auditSessionId: null,
       }, {
         prompt: 'Test prompt',
         lastAuditResult: null,
@@ -812,6 +820,7 @@ describe('loop-hooks integration', () => {
         completionSummary: null,
         workspaceId,
         hostSessionId,
+        auditSessionId: null,
       }, {
         prompt: 'Test prompt',
         lastAuditResult: null,
@@ -922,6 +931,7 @@ describe('loop-hooks integration', () => {
         completionSummary: null,
         workspaceId: null,
         hostSessionId: null,
+        auditSessionId: null,
       }, {
         prompt: 'Test prompt',
         lastAuditResult: null,
@@ -993,6 +1003,7 @@ describe('loop-hooks integration', () => {
         completionSummary: null,
         workspaceId: null,
         hostSessionId: null,
+        auditSessionId: null,
       }, {
         prompt: 'Test prompt',
         lastAuditResult: null,
@@ -1072,6 +1083,7 @@ describe('loop-hooks integration', () => {
         completionSummary: null,
         workspaceId: null,
         hostSessionId: null,
+        auditSessionId: null,
       }, {
         prompt: 'Test prompt',
         lastAuditResult: null,

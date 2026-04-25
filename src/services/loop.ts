@@ -15,6 +15,7 @@ const RECENT_MESSAGES_COUNT = 5
 export interface LoopState {
   active: boolean
   sessionId: string
+  auditSessionId?: string
   loopName: string
   worktreeDir: string
   projectDir?: string
@@ -46,6 +47,8 @@ export interface LoopService {
   setState(name: string, state: LoopState): void
   deleteState(name: string): void
   registerLoopSession(sessionId: string, loopName: string): void
+  registerAuditSession(sessionId: string, loopName: string): void
+  unregisterAuditSession(sessionId: string): void
   resolveLoopName(sessionId: string): string | null
   unregisterLoopSession(sessionId: string): void
   buildContinuationPrompt(state: LoopState, auditFindings?: string): string
@@ -70,6 +73,7 @@ export interface LoopService {
   setSandboxContainer(name: string, containerName: string | null): void
   setStatus(name: string, status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'): void
   clearWorkspaceId(name: string): void
+  setAuditSessionId(name: string, sessionId: string | null): void
   applyRotation(name: string, opts: { sessionId: string; iteration: number; phase?: 'coding' | 'auditing'; auditCount?: number; lastAuditResult?: string | null; resetError?: boolean }): void
   terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
 }
@@ -78,6 +82,7 @@ export function rowToLoopState(row: LoopRow, large: LoopLargeFields | null): Loo
   return {
     active: row.status === 'running',
     sessionId: row.currentSessionId,
+    auditSessionId: row.auditSessionId ?? undefined,
     loopName: row.loopName,
     worktreeDir: row.worktreeDir,
     projectDir: row.projectDir,
@@ -118,6 +123,7 @@ export function createLoopService(
       loopName: state.loopName,
       status: state.active ? 'running' : 'completed',
       currentSessionId: state.sessionId,
+      auditSessionId: state.auditSessionId ?? null,
       worktree: state.worktree ?? false,
       worktreeDir: state.worktreeDir,
       worktreeBranch: state.worktreeBranch ?? null,
@@ -185,6 +191,14 @@ export function createLoopService(
     loopsRepo.setCurrentSessionId(projectId, loopName, sessionId)
   }
 
+  function registerAuditSession(sessionId: string, loopName: string): void {
+    loopsRepo.setAuditSessionId(projectId, loopName, sessionId)
+  }
+
+  function unregisterAuditSession(_sessionId: string): void {
+    // No-op: audit sessions are ephemeral and deleted after use
+  }
+
   function resolveLoopName(sessionId: string): string | null {
     return loopsRepo.getBySessionId(projectId, sessionId)?.loopName ?? null
   }
@@ -192,6 +206,10 @@ export function createLoopService(
   function unregisterLoopSession(_sessionId: string): void {
     // No-op: the only caller is rotateSession, which immediately calls registerLoopSession
     // The old session has no row pointing to it — nothing to unregister
+  }
+
+  function setAuditSessionId(name: string, sessionId: string | null): void {
+    loopsRepo.setAuditSessionId(projectId, name, sessionId)
   }
 
   function buildContinuationPrompt(state: LoopState, auditFindings?: string): string {
@@ -406,6 +424,9 @@ export function createLoopService(
     setState,
     deleteState,
     registerLoopSession,
+    registerAuditSession,
+    unregisterAuditSession,
+    setAuditSessionId,
     resolveLoopName,
     unregisterLoopSession,
     setStatus,

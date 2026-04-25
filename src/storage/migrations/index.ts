@@ -112,4 +112,13 @@ export const migrations: Migration[] = [
       db.run(loadSql('112_drop_audit_from_loops.sql'))
     },
   },
+  {
+    id: '113',
+    description: 'Add audit_session_id column to loops table for audit session isolation',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      if (cols.some((c) => c.name === 'audit_session_id')) return
+      db.run(loadSql('113_add_audit_session_id_to_loops.sql'))
+    },
+  },
 ]

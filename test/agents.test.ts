@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'bun:test'
 import { architectAgent } from '../src/agents/architect'
 import { codeAgent } from '../src/agents/code'
-import { auditorAgent } from '../src/agents/auditor'
+import { auditorAgent, auditorLoopAgent } from '../src/agents/auditor'
 
 describe('Agent definitions', () => {
   describe('metadata stability', () => {
@@ -41,6 +41,25 @@ describe('Agent definitions', () => {
       expect(codeAgent.tools?.exclude).toContain('plan-execute')
       expect(codeAgent.tools?.exclude).not.toContain('loop-cancel')
       expect(codeAgent.tools?.exclude).not.toContain('loop-status')
+    })
+
+    test('auditor-loop agent has stable metadata and primary mode', () => {
+      expect(auditorLoopAgent.role).toBe('auditor-loop')
+      expect(auditorLoopAgent.id).toBe('opencode-auditor-loop')
+      expect(auditorLoopAgent.displayName).toBe('auditor-loop')
+      expect(auditorLoopAgent.mode).toBe('primary')
+      expect(auditorLoopAgent.hidden).toBe(true)
+      expect(auditorLoopAgent.temperature).toBe(0.0)
+    })
+
+    test('auditor-loop agent shares tool exclusions with auditor', () => {
+      expect(auditorLoopAgent.tools?.exclude).toEqual(auditorAgent.tools?.exclude)
+    })
+
+    test('auditor-loop prompt extends the base auditor prompt with loop context', () => {
+      expect(auditorLoopAgent.systemPrompt).toContain('isolated audit session')
+      expect(auditorLoopAgent.systemPrompt).toContain('Loop Audit Context')
+      expect(auditorLoopAgent.systemPrompt).toContain('primary agent')
     })
   })
 

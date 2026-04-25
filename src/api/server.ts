@@ -9,6 +9,7 @@ import { notFound, forbidden } from './errors'
 import {
   handleListProjects,
   handleGetProject,
+  handleGetGraphStatus,
 } from './handlers/projects'
 import {
   handleGetSessionPlan,
@@ -57,6 +58,12 @@ function buildRoutes(): Route[] {
     method: 'GET',
     pattern: '/api/v1/projects/:projectId',
     handler: handleGetProject,
+  })
+
+  routes.push({
+    method: 'GET',
+    pattern: '/api/v1/projects/:projectId/graph/status',
+    handler: handleGetGraphStatus,
   })
 
   // Plans - session

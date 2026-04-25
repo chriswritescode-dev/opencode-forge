@@ -1,11 +1,36 @@
 import type { ApiDeps } from '../types'
 import { ok } from '../response'
-import { notFound, conflict } from '../errors'
+import { ApiError, notFound } from '../errors'
 import { parseJsonBody, LoopStartBody, LoopRestartBody } from '../schemas'
 import { listLoopStatesFromDb } from '../../storage/cli-helpers'
 import { openDatabase } from '../../cli/utils'
 import { launchFreshLoop } from '../../utils/loop-launch'
-import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
+import { cancelLoopByName, restartLoopByName } from '../../services/loop-control'
+import type { LoopInfo } from '../../utils/tui-refresh-helpers'
+
+function toLoopInfo(entry: ReturnType<typeof listLoopStatesFromDb>[number]): LoopInfo & { loopName: string; status: string } {
+  const state = entry.state
+  return {
+    loopName: entry.row.loop_name,
+    name: entry.row.loop_name,
+    status: state.active ? 'running' : (state.terminationReason ?? 'unknown'),
+    phase: state.phase,
+    iteration: state.iteration,
+    maxIterations: state.maxIterations,
+    sessionId: state.sessionId,
+    active: state.active,
+    startedAt: state.startedAt,
+    completedAt: state.completedAt,
+    terminationReason: state.terminationReason,
+    worktree: state.worktree,
+    worktreeDir: state.worktreeDir,
+    worktreeBranch: state.worktreeBranch,
+    executionModel: state.executionModel,
+    auditorModel: state.auditorModel,
+    workspaceId: state.workspaceId,
+    hostSessionId: state.hostSessionId,
+  }
+}
 
 export async function handleListLoops(
   _req: Request,
@@ -22,24 +47,12 @@ export async function handleListLoops(
   const loopStates = listLoopStatesFromDb(db, projectId)
 
   // Separate active and recent (non-active)
-  const active = loopStates
-    .filter((entry) => entry.state.active)
-    .map((entry) => ({
-      loopName: entry.row.loop_name,
-      status: entry.state.phase,
-      sessionId: entry.state.sessionId,
-      iteration: entry.state.iteration,
-    }))
+  const loops = loopStates.map(toLoopInfo)
+  const active = loops.filter((entry) => entry.active)
 
-  const recent = loopStates
-    .filter((entry) => !entry.state.active)
-    .map((entry) => ({
-      loopName: entry.row.loop_name,
-      status: entry.state.terminationReason ?? 'unknown',
-      terminationReason: entry.state.terminationReason,
-    }))
+  const recent = loops.filter((entry) => !entry.active)
 
-  return ok({ active, recent })
+  return ok({ loops, active, recent })
 }
 
 export async function handleGetLoop(
@@ -61,18 +74,7 @@ export async function handleGetLoop(
     throw notFound('loop not found')
   }
 
-  return ok({
-    loopName: entry.row.loop_name,
-    status: entry.state.active ? 'running' : (entry.state.terminationReason ?? 'unknown'),
-    sessionId: entry.state.sessionId,
-    iteration: entry.state.iteration,
-    auditCount: entry.state.auditCount,
-    errorCount: entry.state.errorCount,
-    phase: entry.state.phase,
-    worktree: entry.state.worktree,
-    worktreeDir: entry.state.worktreeDir,
-    worktreeBranch: entry.state.worktreeBranch,
-  })
+  return ok(toLoopInfo(entry))
 }
 
 export async function handleStartLoop(
@@ -85,18 +87,13 @@ export async function handleStartLoop(
 
   const { ctx } = deps
 
-  // Create a minimal TUI API shim
-  const tuiApi: TuiPluginApi = {
-    client: ctx.v2,
-  } as TuiPluginApi
-
   const result = await launchFreshLoop({
     planText: body.plan,
     title: body.title,
     directory: ctx.directory,
     projectId,
     isWorktree: body.worktree ?? false,
-    api: tuiApi,
+    v2: ctx.v2,
     executionModel: body.executionModel,
     auditorModel: body.auditorModel,
     hostSessionId: body.hostSessionId,
@@ -121,51 +118,41 @@ export async function handleCancelLoop(
   deps: ApiDeps,
   params: Record<string, string>
 ): Promise<Response> {
-  const { projectId, loopName } = params
+  const { loopName } = params
 
-  // Terminate the loop
-  deps.ctx.loopsRepo.terminate(projectId, loopName, {
-    status: 'cancelled',
-    reason: 'cancelled',
-    completedAt: Date.now(),
-  })
+  const result = await cancelLoopByName(deps.ctx, loopName)
+
+  if (!result.ok) {
+    throw new ApiError(result.status, result.code, result.message)
+  }
 
   return ok({ loopName, status: 'cancelled' })
 }
 
 export async function handleRestartLoop(
   _req: Request,
-  _deps: ApiDeps,
+  deps: ApiDeps,
   params: Record<string, string>
 ): Promise<Response> {
-  const { projectId, loopName } = params
+  const { loopName } = params
   const body = await parseJsonBody(_req, LoopRestartBody)
 
-  // Check if loop exists and get its status
-  const db = openDatabase()
-  if (!db) {
-    throw notFound('database not found')
+  const result = await restartLoopByName(deps.ctx, loopName, body.force ?? false)
+
+  if (!result.ok) {
+    throw new ApiError(result.status, result.code, result.message)
   }
 
-  const loopStates = listLoopStatesFromDb(db, projectId)
-  const entry = loopStates.find((e) => e.row.loop_name === loopName)
-
-  if (!entry) {
-    throw notFound('loop not found')
-  }
-
-  // If loop is active and force not specified, return conflict
-  if (entry.state.active && !body.force) {
-    throw conflict('loop is already active, use force=true to restart')
-  }
-
-  // For now, we'll return a simplified response
-  // Full restart logic would mirror src/cli/commands/restart.ts
   return ok(
     {
       loopName,
-      status: 'restarting',
+      status: 'restarted',
       force: body.force ?? false,
+      sessionId: result.newSessionId,
+      worktreeDir: result.state.worktreeDir,
+      iteration: result.state.iteration,
+      sandbox: result.sandbox,
+      bindFailed: result.bindFailed,
     },
     202
   )

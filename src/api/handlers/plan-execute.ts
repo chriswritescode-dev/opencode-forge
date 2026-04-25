@@ -4,7 +4,6 @@ import { notFound, badRequest } from '../errors'
 import { parseJsonBody, PlanExecuteBody } from '../schemas'
 import { runPlanExecution } from '../../utils/plan-execution-runner'
 import { launchFreshLoop } from '../../utils/loop-launch'
-import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 
 export async function handleExecutePlan(
   req: Request,
@@ -25,12 +24,6 @@ export async function handleExecutePlan(
   }
 
   const { ctx } = deps
-
-  // Create a minimal TUI API shim for launchFreshLoop
-  const tuiApi: TuiPluginApi = {
-    client: ctx.v2,
-    // Stub other properties - not used by launchFreshLoop
-  } as unknown as TuiPluginApi
 
   switch (body.mode) {
     case 'new-session': {
@@ -88,16 +81,13 @@ export async function handleExecutePlan(
     case 'loop-worktree': {
       const isWorktree = body.mode === 'loop-worktree'
 
-      // launchFreshLoop expects a TuiPluginApi - we need to adapt
-      // For now, we'll need to refactor launchFreshLoop to accept v2 client directly
-      // This is a placeholder - the actual implementation will need the refactor
       const launchResult = await launchFreshLoop({
         planText,
         title: body.title,
         directory: ctx.directory,
         projectId,
         isWorktree,
-        api: tuiApi,
+        v2: ctx.v2,
         executionModel: body.executionModel,
         auditorModel: body.auditorModel,
         hostSessionId: sessionId,
