@@ -252,7 +252,10 @@ function buildClient(
   }
 }
 
-export async function connectForgeProject(config: PluginConfig): Promise<ForgeProjectClient | null> {
+export async function connectForgeProject(
+  config: PluginConfig,
+  directory?: string
+): Promise<ForgeProjectClient | null> {
   const rawUrl = resolveForgeApiUrl(config)
 
   let baseUrl: string
@@ -270,8 +273,12 @@ export async function connectForgeProject(config: PluginConfig): Promise<ForgePr
 
   let projectId: string
   try {
-    const data = await request<{ projects: Array<{ id: string }> }>('/api/v1/projects')
-    const id = data.projects[0]?.id
+    const query = directory ? `?directory=${encodeURIComponent(directory)}` : ''
+    const data = await request<{ projects: Array<{ id: string; directory?: string | null }> }>(`/api/v1/projects${query}`)
+    let id = data.projects.find((project) => project.directory === directory)?.id
+    if (!id) {
+      id = data.projects[0]?.id
+    }
     if (!id) return null
     projectId = id
   } catch {

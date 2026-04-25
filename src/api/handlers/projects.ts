@@ -42,11 +42,38 @@ export function listKnownProjects(): Array<{ id: string; name: string | null }> 
 }
 
 export async function handleListProjects(
-  _req: Request,
+  req: Request,
   deps: ApiDeps
 ): Promise<Response> {
-  const knownProject = listKnownProjects().find((project) => project.id === deps.ctx.projectId)
-  const projects = [knownProject ?? { id: deps.ctx.projectId, name: basename(deps.ctx.directory) }]
+  const url = new URL(req.url)
+  const directoryFilter = url.searchParams.get('directory')
+
+  const registered = deps.registry.list()
+  const known = listKnownProjects()
+  const registeredIds = new Set(registered.map((ctx) => ctx.projectId))
+
+  const projects = [
+    ...registered.map((ctx) => ({
+      id: ctx.projectId,
+      name: basename(ctx.directory),
+      directory: ctx.directory,
+      active: true,
+    })),
+    ...known
+      .filter((project) => !registeredIds.has(project.id))
+      .map((project) => ({
+        id: project.id,
+        name: project.name,
+        directory: null,
+        active: false,
+      })),
+  ]
+
+  if (directoryFilter) {
+    const matched = projects.find((project) => project.directory === directoryFilter)
+    return ok({ projects: matched ? [matched] : [] })
+  }
+
   return ok({ projects })
 }
 

@@ -25,7 +25,23 @@ import { FORGE_WORKTREE_WORKSPACE_TYPE, createForgeWorktreeAdaptor } from './wor
 import { LRUCache } from './utils/lru-cache'
 import { createSessionLoopResolver } from './services/session-loop-resolver'
 import { createPermissionAskHandler } from './hooks/permission-ask'
-import { startForgeApiServer, type ForgeApiServer } from './api/server'
+import { attachForgeApiServer, type ForgeApiServer } from './api/server'
+import { getProjectRegistry } from './api/project-registry'
+import type { ProjectRegistry } from './api/project-registry'
+
+export async function cleanupSandboxOrphansAcrossRegistry(
+  registry: ProjectRegistry,
+  sandboxManager: Pick<ReturnType<typeof createSandboxManager>, 'cleanupOrphans'>
+): Promise<string[]> {
+  const preserveLoops = registry
+    .list()
+    .flatMap((ctx) => ctx.loopService.listActive())
+    .filter((state) => state.sandbox && state.loopName)
+    .map((state) => state.loopName!)
+
+  await sandboxManager.cleanupOrphans(preserveLoops)
+  return preserveLoops
+}
 
 export interface CreateParentSessionLookupOptions {
   v2: ReturnType<typeof createV2Client>
@@ -230,34 +246,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     // Sandbox reconciliation interval handle
     let sandboxReconcileInterval: ReturnType<typeof setInterval> | null = null
 
-    if (sandboxManager) {
-      const preserveLoops = activeSandboxLoops.map(s => s.loopName!).filter(Boolean)
-      await sandboxManager.cleanupOrphans(preserveLoops)
-      
-      // Initial restore for active sandbox loops
-      for (const loop of activeSandboxLoops) {
-        try {
-          await sandboxManager.restore(loop.loopName!, loop.worktreeDir, loop.startedAt)
-          loopService.setStatus(loop.loopName!, 'running')
-          logger.log(`Restored sandbox and reactivated loop for ${loop.loopName}`)
-        } catch (err) {
-          logger.error(`Failed to restore sandbox for ${loop.loopName}`, err)
-        }
-      }
-
-      // Run initial reconciliation
-      const reconcileDeps = { sandboxManager, loopService, logger }
-      await reconcileSandboxes(reconcileDeps)
-
-      // Start periodic reconciliation (every 2 seconds).
-      // Reuse the same deps object so reconcile.ts's WeakMap-based re-entrancy guard works across ticks.
-      sandboxReconcileInterval = setInterval(() => {
-        reconcileSandboxes(reconcileDeps).catch((err) => {
-          logger.error('Sandbox reconciliation failed', err)
-        })
-      }, 2000)
-    }
-
     const loopHandler = createLoopEventHandler(loopService, client, v2, logger, () => config, sandboxManager || undefined, projectId, dataDir)
 
     // Initialize graph service if enabled
@@ -299,6 +287,9 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const compactionConfig: CompactionConfig | undefined = config.compaction
     const messagesTransformConfig = config.messagesTransform
     const sessionHooks = createSessionHooks(projectId, logger, input, compactionConfig)
+    const registry = getProjectRegistry()
+
+    let apiServer: ForgeApiServer | null = null
 
     let cleanupPromise: Promise<void> | null = null
 
@@ -338,11 +329,13 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         if (apiServer) {
           try {
             await apiServer.stop()
-            logger.log('API server stopped')
+            logger.log('API server released')
           } catch (err) {
             logger.error('Failed to stop API server', err)
           }
         }
+
+        registry.unregister(projectId)
 
         loopHandler.terminateAll()
         logger.log('Loop: all active loops terminated')
@@ -390,8 +383,33 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       loopsRepo,
     }
 
+    registry.register(ctx)
+
+    if (sandboxManager) {
+      await cleanupSandboxOrphansAcrossRegistry(registry, sandboxManager)
+
+      for (const loop of activeSandboxLoops) {
+        try {
+          await sandboxManager.restore(loop.loopName!, loop.worktreeDir, loop.startedAt)
+          loopService.setStatus(loop.loopName!, 'running')
+          logger.log(`Restored sandbox and reactivated loop for ${loop.loopName}`)
+        } catch (err) {
+          logger.error(`Failed to restore sandbox for ${loop.loopName}`, err)
+        }
+      }
+
+      const reconcileDeps = { sandboxManager, loopService, logger }
+      await reconcileSandboxes(reconcileDeps)
+
+      sandboxReconcileInterval = setInterval(() => {
+        reconcileSandboxes(reconcileDeps).catch((err) => {
+          logger.error('Sandbox reconciliation failed', err)
+        })
+      }, 2000)
+    }
+
     // Start the remote HTTP API server if enabled
-    const apiServer: ForgeApiServer | null = startForgeApiServer(ctx)
+    apiServer = attachForgeApiServer(ctx, registry)
 
     const tools = createTools(ctx)
     const toolExecuteBeforeHook = createToolExecuteBeforeHook(ctx)

@@ -203,4 +203,37 @@ describe('TUI remote server config', () => {
     expect(requests.some(u => u.includes('/models/preferences'))).toBe(true)
     expect(requests.some(u => u.endsWith('/models'))).toBe(true)
   })
+
+  test('connectForgeProject prefers project matching requested directory', async () => {
+    const requests: string[] = []
+    globalThis.fetch = mock(async (url) => {
+      const u = String(url)
+      requests.push(u)
+      if (u.includes('/api/v1/projects?directory=')) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: { projects: [{ id: 'project-b', directory: '/repo/b' }] },
+          }),
+          { status: 200 }
+        )
+      }
+      if (u.includes('/api/v1/projects/project-b/loops')) {
+        return new Response(JSON.stringify({ ok: true, data: { loops: [], active: [], recent: [] } }), {
+          status: 200,
+        })
+      }
+      return new Response('{}', { status: 404 })
+    }) as unknown as typeof fetch
+
+    const client = await connectForgeProject(
+      { tui: { remoteServer: { url: 'http://remote.example:4096' } } },
+      '/repo/b'
+    )
+    expect(client).not.toBeNull()
+
+    await client!.loops.list()
+    expect(requests[0]).toContain('/api/v1/projects?directory=%2Frepo%2Fb')
+    expect(requests[1]).toContain('/api/v1/projects/project-b/loops')
+  })
 })

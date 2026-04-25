@@ -1,10 +1,12 @@
 import type { ToolContext } from '../tools/types'
 import type { Logger } from '../types'
+import type { ProjectRegistry } from './project-registry'
 
 export interface ApiDeps {
   ctx: ToolContext
   logger: Logger
   projectId: string
+  registry: ProjectRegistry
 }
 
 export interface RouteMatch {

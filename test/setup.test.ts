@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { startForgeApiServer } from '../src/api/server'
+import { attachForgeApiServer } from '../src/api/server'
+import { getProjectRegistry } from '../src/api/project-registry'
 import { loadPluginConfig, resolveConfigPath } from '../src/setup'
 import type { ToolContext } from '../src/tools/types'
 import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs'
@@ -442,7 +443,10 @@ describe('remote API startup authentication requirements', () => {
       },
     } as unknown as ToolContext
 
-    const server = startForgeApiServer(ctx)
+    const registry = getProjectRegistry()
+    registry.register(ctx)
+    const server = attachForgeApiServer(ctx, registry)
+    registry.unregister(ctx.projectId)
 
     expect(server).toBeNull()
     expect(errors).toEqual([
