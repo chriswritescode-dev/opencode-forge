@@ -227,9 +227,6 @@ export async function restartLoopByName(ctx: ToolContext, name: string | undefin
       hostSessionId: stoppedState.hostSessionId,
     }
 
-    loopService.deleteState(stoppedState.loopName)
-    loopService.setState(stoppedState.loopName, newState)
-    loopService.registerLoopSession(newSessionId, stoppedState.loopName)
     restartedState = newState
 
     return { ok: true, newSessionId, sandbox: restartSandbox, bindFailed }
@@ -293,6 +290,9 @@ export async function restartLoopByName(ctx: ToolContext, name: string | undefin
     return fail('internal_error', 500, 'Restart failed: could not send prompt to new session.')
   }
 
+  loopService.deleteState(stoppedState.loopName)
+  loopService.setState(stoppedState.loopName, restartedState!)
+  loopService.registerLoopSession(outcome.newSessionId, stoppedState.loopName)
   loopHandler.startWatchdog(stoppedState.loopName)
 
   const modeInfo = !stoppedState.worktree ? ' (in-place)' : ''
