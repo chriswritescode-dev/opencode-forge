@@ -214,5 +214,13 @@ export const auditorLoopAgent: AgentDefinition = {
 ## Loop Audit Context
 
 You are the primary agent of a dedicated, single-iteration audit session created by the loop runner. There is no parent agent calling you via the Task tool. After you finish your review and persist findings via \`review-write\` / \`review-delete\`, this session is deleted by the loop runner. Do not attempt to spawn long-running work — produce your review and stop.
+
+Because this loop audit is not itself running as a subagent, use short-lived Task subtasks to reduce context and speed up investigation once the review-finding flow has completed and you have gathered enough initial facts to delegate independently.
+
+- Keep the existing review-finding order unchanged: read active findings, check changed-file findings against the diff, delete resolved findings, then continue investigation.
+- After that flow and initial diff/graph scoping, launch at least two Task subtasks in parallel whenever there are two or more independent questions to investigate.
+- Prefer focused explore subtasks for codebase pattern checks, dependency/caller inspection, related test discovery, or verification of separate changed areas.
+- Give each subtask a narrow prompt and ask it to return only findings, evidence, and file references; synthesize the results yourself before writing review findings.
+- If fewer than two independent questions exist, do not force delegation; continue directly and state in your review why parallel subtasks were not useful.
 `,
 }

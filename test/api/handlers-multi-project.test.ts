@@ -156,13 +156,22 @@ describe('multi-project API handlers', () => {
     expect(listBody.data.projects.map((project) => project.id).sort()).toEqual(['project-a', 'project-b'])
 
     const loopsRes = await fetchHandler!(
-      new Request('http://127.0.0.1:35556/api/v1/projects/project-b/loops')
+      new Request('http://127.0.0.1:35556/api/v1/projects/project-b/loops', {
+        headers: { 'x-opencode-directory': '/path/B' },
+      })
     )
     const loopsBody = await loopsRes.json() as {
       data: { loops: Array<{ loopName: string }> }
     }
     expect(loopsRes.status).toBe(200)
     expect(loopsBody.data.loops.map((loop) => loop.loopName)).toEqual(['loop-b'])
+
+    const mismatchedDirectoryRes = await fetchHandler!(
+      new Request('http://127.0.0.1:35556/api/v1/projects/project-b/loops', {
+        headers: { 'x-opencode-directory': '/path/A' },
+      })
+    )
+    expect(mismatchedDirectoryRes.status).toBe(404)
 
     const planARes = await fetchHandler!(
       new Request('http://127.0.0.1:35556/api/v1/projects/project-a/plans/session/session-1')

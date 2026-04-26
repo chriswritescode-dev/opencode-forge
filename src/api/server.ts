@@ -213,6 +213,7 @@ function buildFetchHandler(
 
       const url = new URL(req.url)
       const m = match(routes, req.method, url.pathname)
+      const requestDirectory = url.searchParams.get('directory') ?? req.headers.get('x-opencode-directory') ?? undefined
 
       if (!m) {
         throw notFound(`no route for ${req.method} ${url.pathname}`)
@@ -220,16 +221,20 @@ function buildFetchHandler(
 
       let ctx: ToolContext | null = null
       if (m.params.projectId) {
-        ctx = registry.get(m.params.projectId)
+        ctx = requestDirectory ? registry.findByDirectory(requestDirectory) : registry.get(m.params.projectId)
         if (!ctx) {
           throw notFound(`project not registered: ${m.params.projectId}`)
         }
+        if (ctx.projectId !== m.params.projectId) {
+          throw notFound(`project not registered: ${m.params.projectId}`)
+        }
       } else {
+        const directoryCtx = requestDirectory ? registry.findByDirectory(requestDirectory) : null
         const all = registry.list()
         if (all.length === 0) {
           throw notFound('no projects registered')
         }
-        ctx = all[0]
+        ctx = directoryCtx ?? all[0]
       }
 
       const deps: ApiDeps = {

@@ -10,6 +10,7 @@ describe('TUI remote server config', () => {
   let testConfigDir: string
   let testDataDir: string
   const originalFetch = globalThis.fetch
+  const originalPassword = process.env['OPENCODE_SERVER_PASSWORD']
 
   beforeEach(() => {
     testConfigDir = TEST_DIR + '-config-' + Math.random().toString(36).slice(2)
@@ -24,6 +25,11 @@ describe('TUI remote server config', () => {
     globalThis.fetch = originalFetch
     delete process.env['XDG_CONFIG_HOME']
     delete process.env['XDG_DATA_HOME']
+    if (originalPassword === undefined) {
+      delete process.env['OPENCODE_SERVER_PASSWORD']
+    } else {
+      process.env['OPENCODE_SERVER_PASSWORD'] = originalPassword
+    }
     if (existsSync(testConfigDir)) {
       rmSync(testConfigDir, { recursive: true, force: true })
     }
@@ -203,10 +209,11 @@ describe('TUI remote server config', () => {
   })
 
   test('connectForgeProject prefers project matching requested directory', async () => {
-    const requests: string[] = []
-    globalThis.fetch = mock(async (url) => {
+    const requests: Array<{ url: string; directory?: string }> = []
+    globalThis.fetch = mock(async (url, init) => {
       const u = String(url)
-      requests.push(u)
+      const headers = new Headers(init?.headers)
+      requests.push({ url: u, directory: headers.get('x-opencode-directory') ?? undefined })
       if (u.includes('/api/v1/projects?directory=')) {
         return new Response(
           JSON.stringify({
@@ -231,8 +238,34 @@ describe('TUI remote server config', () => {
     expect(client).not.toBeNull()
 
     await client!.loops.list()
-    expect(requests[0]).toContain('/api/v1/projects?directory=%2Frepo%2Fb')
-    expect(requests[1]).toContain('/api/v1/projects/project-b/loops')
+    expect(requests[0]?.url).toContain('/api/v1/projects?directory=%2Frepo%2Fb')
+    expect(requests[0]?.directory).toBe('/repo/b')
+    expect(requests[1]?.url).toContain('/api/v1/projects/project-b/loops')
+    expect(requests[1]?.directory).toBe('/repo/b')
+  })
+
+  test('connectForgeProject sends configured password as basic auth', async () => {
+    process.env['OPENCODE_SERVER_PASSWORD'] = 'test-password'
+    const requests: Array<{ url: string; authorization?: string }> = []
+    globalThis.fetch = mock(async (url, init) => {
+      const u = String(url)
+      const headers = new Headers(init?.headers)
+      requests.push({ url: u, authorization: headers.get('Authorization') ?? undefined })
+      if (u.endsWith('/api/v1/projects')) {
+        return new Response(JSON.stringify({ ok: true, data: { projects: [{ id: 'project-1' }] } }), { status: 200 })
+      }
+      if (u.includes('/api/v1/projects/project-1/loops')) {
+        return new Response(JSON.stringify({ ok: true, data: { loops: [], active: [], recent: [] } }), { status: 200 })
+      }
+      return new Response('{}', { status: 404 })
+    }) as unknown as typeof fetch
+
+    const client = await connectForgeProject({ tui: { remoteServer: { url: 'http://remote.example:4096' } } })
+
+    expect(client).not.toBeNull()
+    await client!.loops.list()
+    expect(requests[0]?.authorization).toBe('Basic b3BlbmNvZGU6dGVzdC1wYXNzd29yZA==')
+    expect(requests[1]?.authorization).toBe('Basic b3BlbmNvZGU6dGVzdC1wYXNzd29yZA==')
   })
 
   test('connectForgeProject returns null when requested directory is not registered', async () => {

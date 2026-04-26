@@ -3,6 +3,8 @@ import { buildOpencodeBasicAuthHeader, sanitizeServerUrl } from './opencode-clie
 import type { LoopInfo } from './tui-refresh-helpers'
 import type { GraphStatusPayload } from './graph-status-store'
 import type { ExecutionPreferences } from './tui-execution-preferences'
+import { execFileSync } from 'node:child_process'
+import { platform } from 'node:os'
 
 type ApiEnvelope<T> = { ok: true; data: T } | { ok: false; error: { code: string; message: string } }
 
@@ -71,13 +73,16 @@ export interface ForgeProjectClient {
   readGraphStatus(cwd: string): Promise<GraphStatusPayload | null>
 }
 
-function makeRemoteRequest(baseUrl: string, password?: string) {
+function makeRemoteRequest(baseUrl: string, password?: string, directory?: string) {
   const root = baseUrl.replace(/\/$/, '')
   const headers: Record<string, string> = {
     Accept: 'application/json',
   }
   if (password) {
     headers.Authorization = buildOpencodeBasicAuthHeader(password)
+  }
+  if (directory) {
+    headers['x-opencode-directory'] = directory
   }
 
   return async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -96,6 +101,23 @@ function makeRemoteRequest(baseUrl: string, password?: string) {
     }
     return envelope.data
   }
+}
+
+function readOpencodeServerPasswordFromKeychain(): string | undefined {
+  if (platform() !== 'darwin') return undefined
+  try {
+    return execFileSync('security', ['find-generic-password', '-a', 'opencode', '-s', 'opencode-server-password', '-w'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 1000,
+    }).trim() || undefined
+  } catch {
+    return undefined
+  }
+}
+
+function resolveForgeApiPassword(urlPassword?: string): string | undefined {
+  return urlPassword || process.env['OPENCODE_SERVER_PASSWORD'] || readOpencodeServerPasswordFromKeychain()
 }
 
 function mapRemoteLoop(input: Record<string, unknown>): LoopInfo {
@@ -299,8 +321,8 @@ export async function connectForgeProject(
     return null
   }
 
-  const password = urlPassword || process.env['OPENCODE_SERVER_PASSWORD']
-  const request = makeRemoteRequest(baseUrl, password)
+  const password = resolveForgeApiPassword(urlPassword)
+  const request = makeRemoteRequest(baseUrl, password, directory)
 
   let projectId: string
   try {

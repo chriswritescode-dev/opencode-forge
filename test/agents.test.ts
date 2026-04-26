@@ -61,6 +61,13 @@ describe('Agent definitions', () => {
       expect(auditorLoopAgent.systemPrompt).toContain('Loop Audit Context')
       expect(auditorLoopAgent.systemPrompt).toContain('primary agent')
     })
+
+    test('auditor-loop prompt requires parallel subtasks after finding checks', () => {
+      const prompt = auditorLoopAgent.systemPrompt
+      expect(prompt).toContain('review-finding flow has completed')
+      expect(prompt).toContain('launch at least two Task subtasks in parallel')
+      expect(prompt).toContain('Keep the existing review-finding order unchanged')
+    })
   })
 
   describe('graph-first policy in system prompts', () => {

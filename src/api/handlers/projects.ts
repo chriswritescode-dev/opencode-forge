@@ -26,7 +26,7 @@ function withOpencodeProjectDb<T>(fn: (db: Database) => T): T | null {
   }
 }
 
-export function listKnownProjects(): Array<{ id: string; name: string | null }> {
+export function listKnownProjects(): Array<{ id: string; name: string | null; directory: string | null }> {
   const result =
     withOpencodeProjectDb((db) => {
       const rows = db.prepare('SELECT id, worktree FROM project').all() as Array<{
@@ -36,6 +36,7 @@ export function listKnownProjects(): Array<{ id: string; name: string | null }> 
       return rows.map((row) => ({
         id: row.id,
         name: basename(row.worktree),
+        directory: row.worktree,
       }))
     }) ?? []
   return result
@@ -64,13 +65,13 @@ export async function handleListProjects(
       .map((project) => ({
         id: project.id,
         name: project.name,
-        directory: null,
+        directory: project.directory,
         active: false,
       })),
   ]
 
   if (directoryFilter) {
-    const matched = projects.find((project) => project.directory === directoryFilter)
+    const matched = projects.find((project) => project.active && project.directory === directoryFilter)
     return ok({ projects: matched ? [matched] : [] })
   }
 
