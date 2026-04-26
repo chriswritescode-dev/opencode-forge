@@ -5,7 +5,7 @@
  * separate from the restartLoop() function which requires preexisting loop state.
  */
 
-import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
+import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import { Database } from 'bun:sqlite'
 import { existsSync } from 'fs'
 import { join } from 'path'
@@ -27,7 +27,7 @@ interface FreshLoopOptions {
   directory: string
   projectId: string
   isWorktree: boolean
-  api: TuiPluginApi
+  v2: OpencodeClient
   dbPath?: string
   executionModel?: string
   auditorModel?: string
@@ -56,7 +56,7 @@ interface LaunchResult {
  * @returns LaunchResult with session ID, loop name, and worktree details if successful, null otherwise
  */
 export async function launchFreshLoop(options: FreshLoopOptions): Promise<LaunchResult | null> {
-  const { planText, title, directory, projectId, isWorktree, api } = options
+  const { planText, title, directory, projectId, isWorktree, v2 } = options
 
   // Extract loop name from plan (uses explicit Loop Name field or falls back to title)
   const { displayName, executionName } = extractLoopNames(planText)
@@ -97,7 +97,7 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
   
   if (isWorktree) {
     // Create worktree first to get the actual directory
-    const worktreeResult = await api.client.worktree.create({
+    const worktreeResult = await v2.worktree.create({
       worktreeCreateInput: { name: uniqueWorktreeName },
     })
     
@@ -129,7 +129,7 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
     // can be switched to directly from the TUI. If the host runtime doesn't
     // expose experimental_workspace, the loop continues without workspace
     // backing — the user just can't switch via the workspace UI.
-    const workspace = await createLoopWorkspace(api.client, {
+    const workspace = await createLoopWorkspace(v2, {
       loopName: uniqueWorktreeName,
       directory: hostWorktreeDir,
       branch: worktreeBranch,
@@ -147,7 +147,7 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
     console.log(`loop-launch: creating session with directory=${hostWorktreeDir} (sandbox: ${isSandboxEnabled})`)
 
     const createResult = await createLoopSessionWithWorkspace({
-      v2: api.client,
+      v2,
       title: `Loop: ${title}`,
       directory: hostWorktreeDir,
       permission: permissionRuleset,
@@ -171,7 +171,7 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
       isWorktree: false,
     })
     
-    const createResult = await api.client.session.create({
+    const createResult = await v2.session.create({
       title: `Loop: ${title}`,
       directory,
       permission: permissionRuleset,
@@ -200,7 +200,6 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
     startedAt: new Date().toISOString(),
     prompt: planText,
     phase: 'coding' as const,
-    audit: true,
     errorCount: 0,
     auditCount: 0,
     worktree: isWorktree,
@@ -224,6 +223,7 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
         loopName: uniqueWorktreeName,
         status: 'running',
         currentSessionId: sessionId,
+        auditSessionId: null,
         worktree: isWorktree,
         worktreeDir: hostWorktreeDir ?? directory,
         worktreeBranch: worktreeBranch ?? null,
@@ -233,7 +233,6 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
         auditCount: loopState.auditCount,
         errorCount: loopState.errorCount,
         phase: loopState.phase,
-        audit: loopState.audit,
         executionModel: loopState.executionModel ?? null,
         auditorModel: loopState.auditorModel ?? null,
         modelFailed: false,
@@ -261,7 +260,7 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
       // Clean up the session if we created one
       if (sessionId) {
         try {
-          await api.client.session.abort({ sessionID: sessionId })
+          await v2.session.abort({ sessionID: sessionId })
         } catch (abortErr) {
           console.error('[forge] loop-launch: failed to abort session after error', abortErr)
         }
@@ -354,9 +353,9 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
   const promptParts = [{ type: 'text' as const, text: promptText }]
   const { result: promptResult } = await retryWithModelFallback(
     () => loopModel
-      ? api.client.session.promptAsync({ sessionID: sessionId, directory: sessionDir, agent: 'code', model: loopModel, parts: promptParts })
-      : api.client.session.promptAsync({ sessionID: sessionId, directory: sessionDir, agent: 'code', parts: promptParts }),
-    () => api.client.session.promptAsync({ sessionID: sessionId, directory: sessionDir, agent: 'code', parts: promptParts }),
+      ? v2.session.promptAsync({ sessionID: sessionId, directory: sessionDir, agent: 'code', model: loopModel, parts: promptParts })
+      : v2.session.promptAsync({ sessionID: sessionId, directory: sessionDir, agent: 'code', parts: promptParts }),
+    () => v2.session.promptAsync({ sessionID: sessionId, directory: sessionDir, agent: 'code', parts: promptParts }),
     loopModel,
     console,
   )

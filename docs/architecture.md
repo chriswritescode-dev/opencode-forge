@@ -20,6 +20,15 @@ Key exports:
 - `PluginConfig` - Configuration type
 - `VERSION` - Plugin version
 
+### Multi-client / multi-project
+
+Each `opencode attach --dir <worktree>` invokes `createForgePlugin` once for that project, even when clients share the same `opencode serve` process.
+
+- The API listener is process-shared and reference-counted (`src/api/server.ts`): one `Bun.serve` instance per host/port is reused by all attached projects.
+- Active projects are tracked in a process-level registry (`src/api/project-registry.ts`), and API dispatch resolves the request to the correct project `ToolContext` by `:projectId`.
+- Storage remains project-keyed (SQLite rows include `projectId`), so no schema changes are required for multi-project isolation.
+- Sandbox orphan cleanup is registry-aware: preserve loop names are unioned across all registered projects before container cleanup.
+
 ### TUI Plugin (`src/tui.tsx`)
 
 The TUI plugin provides a sidebar widget that displays:

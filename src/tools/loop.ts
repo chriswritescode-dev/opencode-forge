@@ -1,12 +1,10 @@
 import { tool } from '@opencode-ai/plugin'
 import { execSync } from 'child_process'
-import { existsSync } from 'fs'
 import { join } from 'path'
 import type { ToolContext } from './types'
 
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
 import { slugify } from '../utils/logger'
-import { findPartialMatch } from '../utils/partial-match'
 import { formatSessionOutput, formatAuditResult } from '../utils/loop-format'
 import { fetchSessionOutput, MAX_RETRIES, type LoopState, type LoopSessionOutput } from '../services/loop'
 import { buildLoopPermissionRuleset } from '../constants/loop'
@@ -14,8 +12,9 @@ import { isSandboxEnabled } from '../sandbox/context'
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 import { waitForGraphReady } from '../utils/tui-graph-status'
 import { createLoopWorkspace } from '../workspace/forge-worktree'
-import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
+import { createLoopSessionWithWorkspace } from '../utils/loop-session'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
+import { cancelLoopByName, restartLoopByName } from '../services/loop-control'
 
 const z = tool.schema
 
@@ -25,7 +24,6 @@ interface LoopSetupOptions {
   loopName: string
   sourcePlanSessionID?: string
   maxIterations: number
-  audit: boolean
   agent?: string
   model?: { providerID: string; modelID: string }
   worktree?: boolean
@@ -39,7 +37,7 @@ export async function setupLoop(
   ctx: ToolContext,
   options: LoopSetupOptions,
 ): Promise<string> {
-  const { v2, directory, config, loopService, logger, sandboxManager, plansRepo, projectId } = ctx
+  const { v2, directory, config, loopService, logger, sandboxManager, projectId } = ctx
   const projectDir = directory
   const maxIter = options.maxIterations ?? config.loop?.defaultMaxIterations ?? 0
   
@@ -210,7 +208,6 @@ export async function setupLoop(
     startedAt: new Date().toISOString(),
     prompt: options.prompt,
     phase: 'coding',
-    audit: true,
     errorCount: 0,
     auditCount: 0,
     worktree: options.worktree,
@@ -220,12 +217,6 @@ export async function setupLoop(
     auditorModel: options.auditorModel,
     workspaceId: options.worktree ? loopContext.workspaceId : undefined,
     hostSessionId: options.hostSessionId,
-  }
-
-  // Plan is persisted into loop_large_fields.prompt by loopService.setState below.
-  // Clean up the draft entry in the plans table if a sourcePlanSessionID was passed.
-  if (options.sourcePlanSessionID) {
-    plansRepo.deleteForSession(projectId, options.sourcePlanSessionID)
   }
 
   loopService.setState(uniqueLoopName, state)
@@ -311,7 +302,6 @@ export async function setupLoop(
   })
 
   const maxInfo = maxIter > 0 ? maxIter.toString() : 'unlimited'
-  const auditInfo = options.audit ? 'enabled' : 'disabled'
   const modelInfo = actualModel ? `${actualModel.providerID}/${actualModel.modelID}` : 'default'
 
   const lines: string[] = [
@@ -335,7 +325,6 @@ export async function setupLoop(
   lines.push(
     `Model: ${modelInfo}`,
     `Max iterations: ${maxInfo}`,
-    `Audit: ${auditInfo}`,
     '',
     'The loop will automatically continue when the session goes idle.',
     'Your job is done — just confirm to the user that the loop has been launched.',
@@ -378,7 +367,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
         const sessionTitle = args.title.length > 60 ? `${args.title.substring(0, 57)}...` : args.title
         const loopModel = parseModelString(config.loop?.model) ?? parseModelString(config.executionModel)
-        const audit = true
         const executionModel = config.loop?.model ?? config.executionModel
         const auditorModel = config.auditorModel ?? config.loop?.model ?? config.executionModel
         
@@ -390,7 +378,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           loopName,
           sourcePlanSessionID,
           maxIterations: config.loop?.defaultMaxIterations ?? 0,
-          audit: audit,
           agent: 'code',
           model: loopModel,
           worktree: args.worktree,
@@ -408,52 +395,12 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         name: z.string().optional().describe('Worktree name of the loop to cancel'),
       },
       execute: async (args) => {
-        let state: LoopState
-
-        if (args.name) {
-          const name = args.name
-          const { match, candidates } = loopService.findMatchByName(name)
-          if (!match) {
-            if (candidates.length > 0) {
-              return `Multiple loops match "${name}":\n${candidates.map((s) => `- ${s.loopName}`).join('\n')}\n\nBe more specific.`
-            }
-            const recent = loopService.listRecent()
-            const foundRecent = recent.find((s) => s.loopName === name || (s.worktreeBranch && s.worktreeBranch.toLowerCase().includes(name.toLowerCase())))
-            if (foundRecent) {
-               return `Loop "${foundRecent.loopName}" has already completed.`
-            }
-             return `No active loop found for loop "${name}".`
-          }
-          state = match
-          if (!state.active) {
-             return `Loop "${state.loopName}" has already completed.`
-          }
-        } else {
-          const active = loopService.listActive()
-           if (active.length === 0) return 'No active loops.'
-          if (active.length === 1) {
-            state = active[0]
-          } else {
-             return `Multiple active loops. Specify a name:\n${active.map((s) => `- ${s.loopName} (iteration ${s.iteration})`).join('\n')}`
-          }
+        const result = await cancelLoopByName(ctx, args.name)
+        if (result.ok) return result.message
+        if (result.candidates?.length) {
+          return `${result.message}\n${result.candidates.map((candidate) => `- ${candidate}`).join('\n')}`
         }
-
-        await loopHandler.cancelBySessionId(state.sessionId)
-        logger.log(`loop-cancel: cancelled loop for session=${state.sessionId} at iteration ${state.iteration}`)
-
-        if (config.loop?.cleanupWorktree && state.worktree && state.worktreeDir) {
-          await cleanupLoopWorktree({
-            worktreeDir: state.worktreeDir,
-            projectId: ctx.projectId,
-            dataDir: ctx.dataDir,
-            logPrefix: 'loop-cancel',
-            logger,
-          })
-        }
-
-        const modeInfo = !state.worktree ? ' (in-place)' : ''
-        const branchInfo = state.worktreeBranch ? `\nBranch: ${state.worktreeBranch}` : ''
-        return `Cancelled loop "${state.loopName}"${modeInfo} (was at iteration ${state.iteration}).\nDirectory: ${state.worktreeDir}${branchInfo}`
+        return result.message
       },
     }),
 
@@ -468,210 +415,13 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         const active = loopService.listActive()
 
         if (args.restart) {
-          if (!args.name) {
-            return 'Specify a loop name to restart. Use loop-status to see available loops.'
+          const result = await restartLoopByName(ctx, args.name, args.force)
+          if (result.ok) return result.message
+          if (result.candidates?.length) {
+            const label = result.code === 'not_found' ? 'Available loops' : 'Matches'
+            return `${result.message}\n\n${label}:\n${result.candidates.map((candidate) => `- ${candidate}`).join('\n')}`
           }
-
-          const recent = loopService.listRecent()
-          const allStates = [...active, ...recent]
-          const { match: stoppedState, candidates } = findPartialMatch(args.name, allStates, (s) => [s.loopName, s.worktreeBranch])
-          if (!stoppedState && candidates.length > 0) {
-            return `Multiple loops match "${args.name}":\n${candidates.map((s) => `- ${s.loopName}`).join('\n')}\n\nBe more specific.`
-          }
-          if (!stoppedState) {
-            const available = [...active, ...recent].map((s) => `- ${s.loopName}`).join('\n')
-             return `No loop found for "${args.name}".\n\nAvailable loops:\n${available}`
-          }
-
-          if (stoppedState.active && !args.force) {
-            return `Loop "${stoppedState.loopName}" is currently active. Use restart with force: true to force-restart a stuck loop.`
-          }
-
-          if (stoppedState.terminationReason === 'completed') {
-            return `Loop "${stoppedState.loopName}" completed successfully and cannot be restarted.`
-          }
-
-          if (!stoppedState.worktree && stoppedState.worktreeDir) {
-            if (!existsSync(stoppedState.worktreeDir)) {
-              return `Cannot restart "${stoppedState.loopName}": worktree directory no longer exists at ${stoppedState.worktreeDir}. The worktree may have been cleaned up.`
-            }
-          }
-
-          const permissionRuleset = buildLoopPermissionRuleset({
-            isWorktree: !!stoppedState.worktree,
-          })
-
-          const restartSandbox = isSandboxEnabled(config, ctx.sandboxManager)
-
-          // Perform all state-mutating work under the per-loop exclusive lock so an in-flight
-          // audit/idle handler cannot race and rotate the loop into a second replacement session.
-          // The lock covers: abort → clear timers → re-read state → create session → bind workspace
-          // → deleteState → start sandbox → setState → registerLoopSession. Once registerLoopSession
-          // has written the new sessionId, the staleness guard in onEvent() will reject any queued
-          // event for the old sessionId.
-          type RestartOutcome =
-            | { ok: true; newSessionId: string; sandbox: boolean; bindFailed: boolean }
-            | { ok: false; error: string }
-
-          let bindFailed = false
-
-          const outcome = await loopHandler.runExclusive<RestartOutcome>(stoppedState.loopName, async () => {
-            // For active force-restart, re-read the latest state inside the lock and invalidate
-            // the old session. For inactive restarts, stoppedState is already authoritative.
-            if (stoppedState.active) {
-              const latestState = loopService.getActiveState(stoppedState.loopName)
-              if (latestState?.active) {
-                try { await v2.session.abort({ sessionID: latestState.sessionId }) } catch {}
-                loopHandler.clearLoopTimers(stoppedState.loopName)
-                loopService.unregisterLoopSession(latestState.sessionId)
-                // Refresh stoppedState fields from the latest snapshot
-                stoppedState.sessionId = latestState.sessionId
-                stoppedState.iteration = latestState.iteration
-                stoppedState.prompt = latestState.prompt
-                stoppedState.worktreeDir = latestState.worktreeDir
-                stoppedState.projectDir = latestState.projectDir
-                stoppedState.worktreeBranch = latestState.worktreeBranch
-                stoppedState.maxIterations = latestState.maxIterations
-                stoppedState.audit = latestState.audit
-                stoppedState.executionModel = latestState.executionModel
-                stoppedState.auditorModel = latestState.auditorModel
-                stoppedState.workspaceId = latestState.workspaceId
-                stoppedState.hostSessionId = latestState.hostSessionId
-                stoppedState.sandbox = latestState.sandbox
-              }
-            }
-
-            const createResult = await createLoopSessionWithWorkspace({
-              v2,
-              title: stoppedState.loopName,
-              directory: stoppedState.worktreeDir!,
-              permission: permissionRuleset,
-              workspaceId: stoppedState.workspaceId,
-              logPrefix: 'loop-restart',
-              logger,
-            })
-
-            if (!createResult) {
-              return { ok: false, error: `Failed to create new session for restart.` }
-            }
-
-            const newSessionId = createResult.sessionId
-
-            if (createResult.bindFailed) {
-              stoppedState.workspaceId = undefined
-              bindFailed = true
-            }
-
-            loopService.deleteState(stoppedState.loopName!)
-
-            if (restartSandbox) {
-              try {
-                const sbxResult = await ctx.sandboxManager!.start(stoppedState.loopName!, stoppedState.worktreeDir!)
-                logger.log(`loop-restart: started sandbox container ${sbxResult.containerName}`)
-              } catch (err) {
-                logger.error(`loop-restart: failed to start sandbox container`, err)
-                return { ok: false, error: `Restart failed: could not start sandbox container.` }
-              }
-            }
-
-            const newState: LoopState = {
-              active: true,
-              sessionId: newSessionId,
-              loopName: stoppedState.loopName,
-              worktreeDir: stoppedState.worktreeDir!,
-              projectDir: stoppedState.projectDir || stoppedState.worktreeDir!,
-              worktreeBranch: stoppedState.worktreeBranch,
-              iteration: stoppedState.iteration!,
-              maxIterations: stoppedState.maxIterations!,
-              startedAt: new Date().toISOString(),
-              prompt: stoppedState.prompt,
-              phase: 'coding',
-              audit: stoppedState.audit,
-              errorCount: 0,
-              auditCount: 0,
-              worktree: stoppedState.worktree,
-              sandbox: restartSandbox,
-              sandboxContainer: restartSandbox
-                  ? ctx.sandboxManager?.docker.containerName(stoppedState.loopName!)
-                  : undefined,
-              executionModel: stoppedState.executionModel,
-              auditorModel: stoppedState.auditorModel,
-              workspaceId: stoppedState.workspaceId,
-              hostSessionId: stoppedState.hostSessionId,
-            }
-
-            loopService.setState(stoppedState.loopName!, newState)
-            loopService.registerLoopSession(newSessionId, stoppedState.loopName!)
-
-            return { ok: true, newSessionId, sandbox: restartSandbox, bindFailed }
-          })
-
-          if (!outcome.ok) {
-            return outcome.error
-          }
-
-          const newSessionId = outcome.newSessionId
-
-          if (outcome.bindFailed) {
-            publishWorkspaceDetachedToast({
-              v2,
-              directory: stoppedState.projectDir ?? stoppedState.worktreeDir!,
-              loopName: stoppedState.loopName!,
-              logger,
-              context: 'on restart',
-            })
-          }
-
-          const promptText = stoppedState.prompt ?? ''
-
-          const loopModel = parseModelString(stoppedState.executionModel)
-            ?? parseModelString(config.loop?.model)
-            ?? parseModelString(config.executionModel)
-
-          const { result: promptResult } = await retryWithModelFallback(
-            () => v2.session.promptAsync({
-              sessionID: newSessionId,
-              directory: stoppedState.worktreeDir!,
-              parts: [{ type: 'text' as const, text: promptText }],
-              agent: 'code',
-              model: loopModel!,
-            }),
-            () => v2.session.promptAsync({
-              sessionID: newSessionId,
-              directory: stoppedState.worktreeDir!,
-              parts: [{ type: 'text' as const, text: promptText }],
-              agent: 'code',
-            }),
-            loopModel,
-            logger,
-          )
-
-          if (promptResult.error) {
-             logger.error(`loop-restart: failed to send prompt`, promptResult.error)
-            loopService.deleteState(stoppedState.loopName!)
-            if (restartSandbox) {
-              try {
-                await ctx.sandboxManager!.stop(stoppedState.loopName!)
-              } catch (sbxErr) {
-                 logger.error(`loop-restart: failed to stop sandbox on prompt failure`, sbxErr)
-              }
-            }
-            return `Restart failed: could not send prompt to new session.`
-          }
-
-          loopHandler.startWatchdog(stoppedState.loopName!)
-
-          const modeInfo = !stoppedState.worktree ? ' (in-place)' : ''
-          const branchInfo = stoppedState.worktreeBranch ? `\nBranch: ${stoppedState.worktreeBranch}` : ''
-          return [
-            `Restarted loop "${stoppedState.loopName}"${modeInfo}`,
-            '',
-            `New session: ${newSessionId}`,
-            `Continuing from iteration: ${stoppedState.iteration}`,
-            `Previous termination: ${stoppedState.terminationReason}`,
-            `Directory: ${stoppedState.worktreeDir}${branchInfo}`,
-            `Audit: ${stoppedState.audit ? 'enabled' : 'disabled'}`,
-          ].join('\n')
+          return result.message
         }
 
         if (!args.name) {
@@ -834,7 +584,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           `Phase: ${state.phase}`,
           `Iteration: ${maxInfo}`,
           `Duration: ${duration}`,
-          `Audit: ${state.audit ? 'enabled' : 'disabled'}`,
         )
         if (state.worktreeBranch) {
           statusLines.push(`Branch: ${state.worktreeBranch}`)

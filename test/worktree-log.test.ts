@@ -440,11 +440,12 @@ describe('buildLoopPermissionRuleset integration', () => {
     expect(ruleset).toContainEqual({ permission: 'loop-status', pattern: '*', action: 'deny' })
   })
 
-  test('does not deny auditor review tools at session level', () => {
+  test('DENIES auditor review tools at session level (auditor now runs in separate session)', () => {
     const ruleset = buildLoopPermissionRuleset({ isWorktree: true, isSandbox: false })
 
-    expect(ruleset.some(r => r.permission === 'review-write' && r.action === 'deny')).toBe(false)
-    expect(ruleset.some(r => r.permission === 'review-delete' && r.action === 'deny')).toBe(false)
+    // These tools are now denied at session level because auditor runs in its own session
+    expect(ruleset.some(r => r.permission === 'review-write' && r.action === 'deny')).toBe(true)
+    expect(ruleset.some(r => r.permission === 'review-delete' && r.action === 'deny')).toBe(true)
     expect(ruleset).toContainEqual({ permission: '*', pattern: '*', action: 'allow' })
     expect(ruleset).toContainEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
     expect(ruleset).toContainEqual({ permission: 'bash', pattern: 'git push *', action: 'deny' })

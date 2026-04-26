@@ -17,6 +17,7 @@ export type LoopInfo = {
   iteration: number
   maxIterations: number
   sessionId: string
+  auditSessionId?: string
   active: boolean
   startedAt?: string
   completedAt?: string
@@ -54,9 +55,9 @@ export function readLoopStates(projectId: string, dbPathOverride?: string): Loop
   try {
     db = new Database(dbPath, { readonly: true })
     const stmt = db.prepare(`
-      SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir,
+      SELECT project_id, loop_name, status, current_session_id, audit_session_id, worktree, worktree_dir,
              worktree_branch, project_dir, max_iterations, iteration, audit_count,
-             error_count, phase, audit, execution_model, auditor_model,
+             error_count, phase, execution_model, auditor_model,
              model_failed, sandbox, sandbox_container, started_at, completed_at,
              termination_reason, completion_summary, workspace_id, host_session_id
       FROM loops
@@ -68,6 +69,7 @@ export function readLoopStates(projectId: string, dbPathOverride?: string): Loop
       loop_name: string
       status: string
       current_session_id: string
+      audit_session_id: string | null
       worktree: number
       worktree_dir: string
       worktree_branch: string | null
@@ -77,7 +79,6 @@ export function readLoopStates(projectId: string, dbPathOverride?: string): Loop
       audit_count: number
       error_count: number
       phase: string
-      audit: number
       execution_model: string | null
       auditor_model: string | null
       model_failed: number
@@ -99,6 +100,7 @@ export function readLoopStates(projectId: string, dbPathOverride?: string): Loop
         iteration: row.iteration,
         maxIterations: row.max_iterations,
         sessionId: row.current_session_id,
+        auditSessionId: row.audit_session_id ?? undefined,
         active: row.status === 'running',
         startedAt: new Date(row.started_at).toISOString(),
         completedAt: row.completed_at ? new Date(row.completed_at).toISOString() : undefined,
@@ -138,9 +140,9 @@ export function readLoopByName(projectId: string, loopName: string, dbPathOverri
   try {
     db = new Database(dbPath, { readonly: true })
     const row = db.prepare(`
-      SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir,
+      SELECT project_id, loop_name, status, current_session_id, audit_session_id, worktree, worktree_dir,
              worktree_branch, project_dir, max_iterations, iteration, audit_count,
-             error_count, phase, audit, execution_model, auditor_model,
+             error_count, phase, execution_model, auditor_model,
              model_failed, sandbox, sandbox_container, started_at, completed_at,
              termination_reason, completion_summary, workspace_id, host_session_id
       FROM loops
@@ -150,6 +152,7 @@ export function readLoopByName(projectId: string, loopName: string, dbPathOverri
       loop_name: string
       status: string
       current_session_id: string
+      audit_session_id: string | null
       worktree: number
       worktree_dir: string
       worktree_branch: string | null
@@ -159,7 +162,6 @@ export function readLoopByName(projectId: string, loopName: string, dbPathOverri
       audit_count: number
       error_count: number
       phase: string
-      audit: number
       execution_model: string | null
       auditor_model: string | null
       model_failed: number
@@ -181,6 +183,7 @@ export function readLoopByName(projectId: string, loopName: string, dbPathOverri
       iteration: row.iteration,
       maxIterations: row.max_iterations,
       sessionId: row.current_session_id,
+      auditSessionId: row.audit_session_id ?? undefined,
       active: row.status === 'running',
       startedAt: new Date(row.started_at).toISOString(),
       completedAt: row.completed_at ? new Date(row.completed_at).toISOString() : undefined,

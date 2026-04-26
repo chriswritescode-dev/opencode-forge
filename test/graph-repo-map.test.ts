@@ -339,3 +339,57 @@ test('getNearDuplicates returns globally top-N by similarity', async () => {
   // The near-identical a1/a2 pair must not be displaced by weaker pairs
   expect(result.some(r => r.similarity >= 0.95)).toBe(true)
 })
+
+test('concurrent same-file indexing is idempotent', async () => {
+  // Create a file with an exported symbol
+  const raceFile = join(testDir, 'race.ts')
+  writeFileSync(raceFile, `export function raceFunction() {
+  return 'racing'
+}`)
+
+  const { execSync } = await import('child_process')
+  execSync('git add .', { cwd: testDir })
+
+  // Run concurrent indexing operations on the same file
+  await Promise.all([repoMap.indexFile('race.ts'), repoMap.indexFile('race.ts')])
+
+  // Verify exactly one file row exists
+  const db: Database = (repoMap as any).db
+  const countResult = db.prepare('SELECT COUNT(*) as count FROM files WHERE path = ?').get('race.ts') as { count: number }
+  expect(countResult.count).toBe(1)
+
+  // Verify the symbol appears exactly once
+  const symbols = repoMap.getFileSymbols('race.ts')
+  const raceSymbols = symbols.filter(s => s.name === 'raceFunction')
+  expect(raceSymbols).toHaveLength(1)
+})
+
+test('reindex clears stale external imports', async () => {
+  // Create a file that imports from express
+  const importsFile = join(testDir, 'imports.ts')
+  writeFileSync(importsFile, `import express from 'express'\nimport { Router } from 'express'\n\nexport const app = express()`)
+
+  const { execSync } = await import('child_process')
+  execSync('git init', { cwd: testDir })
+  execSync('git add .', { cwd: testDir })
+
+  // Index the file
+  await repoMap.indexFile('imports.ts')
+
+  // Verify express is in external packages
+  let packages = repoMap.getExternalPackages()
+  expect(packages.some(p => p.package === 'express')).toBe(true)
+
+  // Rewrite the file without external imports
+  writeFileSync(importsFile, `export const app = null`)
+
+  // Ensure mtime changes by waiting briefly
+  await new Promise(resolve => setTimeout(resolve, 10))
+
+  // Reindex the file
+  await repoMap.indexFile('imports.ts')
+
+  // Verify express is no longer in external packages
+  packages = repoMap.getExternalPackages()
+  expect(packages.some(p => p.package === 'express')).toBe(false)
+})

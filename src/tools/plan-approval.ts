@@ -70,9 +70,6 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
             }
             const planText = planRow.content
             
-            // Delete from plans repo after reading (consistent with other paths)
-            plansRepo.deleteForSession(projectId, input.sessionID)
-            
             pendingExecutions.set(input.sessionID, {
               directory: ctx.directory,
               executionModel: parseModelString(ctx.config.executionModel),
@@ -111,8 +108,6 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
                 return
               }
               const newSessionId = createResult.data.id
-              
-              plansRepo.deleteForSession(projectId, input.sessionID)
               
               retryWithModelFallback(
                 () => v2.session.promptAsync({
@@ -172,7 +167,6 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
               sessionTitle: `Loop: ${title}`,
               loopName: uniqueLoopName,
               maxIterations: config.loop?.defaultMaxIterations ?? 0,
-              audit: true,
               agent: 'code',
               model: loopModel,
               worktree: isWorktree,
@@ -186,11 +180,9 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
               const isSuccess = typeof result === 'string' && result.startsWith('Memory loop activated')
               if (!isSuccess) {
                 logger.error('Plan approval: loop setup failed, keeping architect session active', result)
-                // Plan row stays in plansRepo so the user can retry from the same architect session.
                 return
               }
               logger.log('Plan approval: loop setup complete, aborting architect session')
-              plansRepo.deleteForSession(projectId, input.sessionID)
               v2.session.abort({ sessionID: input.sessionID }).catch((err) => {
                 logger.error('Plan approval: failed to abort architect session', err)
               })

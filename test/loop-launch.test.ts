@@ -24,7 +24,6 @@ function createTestDb(): { db: Database; path: string } {
       audit_count INTEGER NOT NULL DEFAULT 0,
       error_count INTEGER NOT NULL DEFAULT 0,
       phase TEXT NOT NULL CHECK(phase IN ('coding','auditing')),
-      audit INTEGER NOT NULL,
       execution_model TEXT,
       auditor_model TEXT,
       model_failed INTEGER NOT NULL DEFAULT 0,
@@ -36,6 +35,7 @@ function createTestDb(): { db: Database; path: string } {
       completion_summary TEXT,
       workspace_id         TEXT,
       host_session_id      TEXT,
+      audit_session_id     TEXT,
       session_directory    TEXT,
       PRIMARY KEY (project_id, loop_name)
     )
@@ -157,7 +157,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -188,7 +188,7 @@ describe('Fresh Loop Launch', () => {
       projectId,
       isWorktree: true,
       sandboxEnabled: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -209,7 +209,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -245,7 +245,7 @@ describe('Fresh Loop Launch', () => {
       projectId,
       isWorktree: true,
       sandboxEnabled: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -277,7 +277,7 @@ describe('Fresh Loop Launch', () => {
       projectId,
       isWorktree: true,
       sandboxEnabled: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -309,7 +309,7 @@ describe('Fresh Loop Launch', () => {
       isWorktree: true,
       sandboxEnabled: true,
       skipSandboxWait: true,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -340,7 +340,7 @@ describe('Fresh Loop Launch', () => {
       isWorktree: true,
       sandboxEnabled: true,
       skipSandboxWait: true,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -364,7 +364,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -390,7 +390,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -424,7 +424,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -440,7 +440,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -459,7 +459,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -478,7 +478,7 @@ describe('Fresh Loop Launch', () => {
       projectId,
       isWorktree: true,
       sandboxEnabled: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -500,7 +500,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -541,7 +541,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -569,7 +569,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -589,7 +589,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -607,7 +607,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -628,7 +628,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -647,7 +647,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -666,7 +666,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -697,7 +697,7 @@ describe('Fresh Loop Launch', () => {
       projectId,
       isWorktree: true,
       sandboxEnabled: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -721,7 +721,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
     })
 
@@ -746,7 +746,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
       executionModel,
       auditorModel,
@@ -773,7 +773,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
       executionModel,
     })
@@ -801,7 +801,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
       executionModel,
     })
@@ -819,7 +819,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
       executionModel,
     })
@@ -843,7 +843,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
       executionModel,
       auditorModel,
@@ -886,7 +886,7 @@ describe('Fresh Loop Launch', () => {
       directory: TEST_DIR,
       projectId,
       isWorktree: false,
-      api: mockApi,
+      v2: mockApi.client,
       dbPath,
       executionModel,
     })

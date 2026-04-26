@@ -58,6 +58,11 @@ function getDefaultConfig(): PluginConfig {
       enabled: false,
       file: resolveLogPath(),
     },
+    api: {
+      enabled: true,
+      host: '127.0.0.1',
+      port: 5552,
+    },
   }
 }
 
@@ -127,9 +132,22 @@ function normalizeConfig(config: PluginConfig): PluginConfig {
     executionModel: config.executionModel,
     auditorModel: config.auditorModel,
     loop: config.loop,
-    tui: config.tui,
+    tui: config.tui
+      ? {
+          sidebar: config.tui.sidebar,
+          showLoops: config.tui.showLoops,
+          showVersion: config.tui.showVersion,
+          keybinds: config.tui.keybinds,
+          remoteServer: config.tui.remoteServer,
+        }
+      : undefined,
     agents: config.agents,
     sandbox: config.sandbox,
     graph: config.graph,
+    api: {
+      enabled: config.api?.enabled ?? true,
+      host: config.api?.host ?? '127.0.0.1',
+      port: config.api?.port ?? 5552,
+    },
   }
 }

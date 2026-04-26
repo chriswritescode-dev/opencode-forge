@@ -382,6 +382,12 @@ export function createGraphService(config: GraphServiceConfig): GraphService {
       return
     }
 
+    // Defer flush while a scan is in flight to avoid race conditions
+    if (scanInFlight) {
+      scheduleFlush()
+      return
+    }
+
     isFlushing = true
     const pathsToFlush = new Map(pendingQueue)
     pendingQueue.clear()
@@ -581,6 +587,11 @@ export function createGraphService(config: GraphServiceConfig): GraphService {
           throw err
         } finally {
           scanInFlight = null
+          
+          // Schedule flush for any changes that arrived during the scan
+          if (pendingQueue.size > 0 && !closing && workerHealthy) {
+            scheduleFlush()
+          }
         }
       })()
 

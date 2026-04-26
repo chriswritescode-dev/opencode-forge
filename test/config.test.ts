@@ -198,7 +198,7 @@ describe('createConfigHandler', () => {
       }
     })
 
-    test('user tool override flips permission entry to allow', async () => {
+    test('user tool override cannot flip built-in permission deny', async () => {
       const configHandler = createConfigHandler(agents)
       const config: Record<string, unknown> = {
         agent: {
@@ -216,7 +216,7 @@ describe('createConfigHandler', () => {
       const code = agentConfigs.code as Record<string, unknown>
       const permission = code.permission as Record<string, string>
 
-      expect(permission['review-delete']).toBe('allow')
+      expect(permission['review-delete']).toBe('deny')
       // Other excludes should still be denied.
       expect(permission['plan-write']).toBe('deny')
     })
@@ -243,7 +243,7 @@ describe('createConfigHandler', () => {
       expect(tools.bash).toBe(true)
     })
 
-    test('explicit user override can override built-in tool denies', async () => {
+    test('explicit user override cannot override built-in tool denies', async () => {
       const configHandler = createConfigHandler(agents)
       const config: Record<string, unknown> = {
         agent: {
@@ -261,7 +261,7 @@ describe('createConfigHandler', () => {
       const code = agentConfigs.code as Record<string, unknown>
       const tools = code.tools as Record<string, boolean>
       
-      expect(tools['review-delete']).toBe(true)
+      expect(tools['review-delete']).toBe(false)
     })
 
     test('auditor agent retains review-delete access', async () => {

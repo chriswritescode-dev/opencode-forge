@@ -103,4 +103,48 @@ export const migrations: Migration[] = [
       db.run(loadSql('111_make_scenario_nullable.sql'))
     },
   },
+  {
+    id: '112',
+    description: 'Drop audit column from loops table (dead flag removal)',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      if (!cols.some((c) => c.name === 'audit')) return
+      db.run(loadSql('112_drop_audit_from_loops.sql'))
+    },
+  },
+  {
+    id: '113',
+    description: 'Add audit_session_id column to loops table for audit session isolation',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      if (cols.some((c) => c.name === 'audit_session_id')) return
+      db.run(loadSql('113_add_audit_session_id_to_loops.sql'))
+    },
+  },
+  {
+    id: '114',
+    description: 'Ensure scenario column is nullable in review_findings table',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(review_findings)').all() as Array<{ name: string; notnull: number }>
+      const scenario = cols.find((c) => c.name === 'scenario')
+      if (!scenario || scenario.notnull === 0) return
+      db.run(`
+        CREATE TABLE review_findings_new (
+          project_id   TEXT NOT NULL,
+          file         TEXT NOT NULL,
+          line         INTEGER NOT NULL,
+          severity     TEXT NOT NULL CHECK(severity IN ('bug','warning')),
+          description  TEXT NOT NULL,
+          scenario     TEXT,
+          branch       TEXT,
+          created_at   INTEGER NOT NULL,
+          PRIMARY KEY (project_id, file, line)
+        );
+        INSERT INTO review_findings_new SELECT * FROM review_findings;
+        DROP TABLE review_findings;
+        ALTER TABLE review_findings_new RENAME TO review_findings;
+        CREATE INDEX IF NOT EXISTS idx_review_findings_branch ON review_findings(project_id, branch);
+      `)
+    },
+  },
 ]

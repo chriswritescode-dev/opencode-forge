@@ -2,26 +2,19 @@
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from '@opencode-ai/plugin/tui'
 import { createEffect, createMemo, createSignal, onCleanup, Show, For } from 'solid-js'
 import { SyntaxStyle, type TextareaRenderable } from '@opentui/core'
-import { readFileSync, existsSync, writeFileSync } from 'fs'
-import { homedir, platform } from 'os'
+import { writeFileSync } from 'fs'
 import { join } from 'path'
-import { Database } from 'bun:sqlite'
 import { VERSION } from './version'
-import { resolveDataDir } from './storage'
+import { loadPluginConfig } from './setup'
 import { fetchSessionStats, type SessionStats } from './utils/session-stats'
 import { slugify } from './utils/logger'
 import { extractPlanTitle, PLAN_EXECUTION_LABELS, matchExecutionLabel, type PlanExecutionLabel } from './utils/plan-execution'
-import { launchFreshLoop } from './utils/loop-launch'
-import { readPlan, writePlan, deletePlan } from './utils/tui-plan-store'
-import { readGraphStatus, formatGraphStatus } from './utils/tui-graph-status'
-import { readLoopStates, readLoopByName, shouldPollSidebar, type LoopInfo } from './utils/tui-refresh-helpers'
-import { readExecutionPreferences, writeExecutionPreferences, resolveExecutionDialogDefaults } from './utils/tui-execution-preferences'
-import { fetchAvailableModels, flattenProviders, buildDialogSelectOptions, getModelDisplayLabel, getRecentModels, recordRecentModel, sortModelsByPriority, type ModelInfo } from './utils/tui-models'
-import { getGitProjectId } from './utils/project-id'
+import { formatGraphStatus } from './utils/tui-graph-status'
+import { shouldPollSidebar, type LoopInfo } from './utils/tui-refresh-helpers'
+import { resolveExecutionDialogDefaults } from './utils/tui-execution-preferences'
+import { flattenProviders, buildDialogSelectOptions, getModelDisplayLabel, sortModelsByPriority, type ModelInfo } from './utils/tui-models'
 import { formatDuration, formatTokens, truncate, truncateMiddle } from './utils/format'
-
-import { buildLoopPermissionRuleset } from './constants/loop'
-import { createLoopSessionWithWorkspace } from './utils/loop-session'
+import { resolveForgeApiUrl, connectForgeProject, type ApiExecutionMode, type ForgeProjectClient } from './utils/tui-client'
 
 type TuiKeybinds = {
   viewPlan: string
@@ -41,265 +34,12 @@ type TuiOptions = {
   showVersion: boolean
   keybinds: TuiKeybinds
 }
-
-type TuiConfig = {
-  sidebar?: boolean
-  showLoops?: boolean
-  showVersion?: boolean
-  keybinds?: Partial<TuiKeybinds>
-}
-
-
-
-function loadTuiConfig(): TuiConfig | undefined {
-  try {
-    const defaultBase = join(homedir(), platform() === 'win32' ? 'AppData' : '.config')
-    const configDir = process.env['XDG_CONFIG_HOME'] || defaultBase
-    const configRoot = join(configDir, 'opencode')
-    const configPath = existsSync(join(configRoot, 'forge-config.jsonc'))
-      ? join(configRoot, 'forge-config.jsonc')
-      : existsSync(join(configRoot, 'memory-config.jsonc'))
-        ? join(configRoot, 'memory-config.jsonc')
-        : join(configRoot, 'graph-config.jsonc')
-    const raw = readFileSync(configPath, 'utf-8')
-    const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')
-    const parsed = JSON.parse(stripped)
-    return parsed?.tui
-  } catch {
-    return undefined
-  }
-}
-
-
-
-
-
-function cancelLoop(projectId: string, loopName: string): string | null {
-  const dbPath = join(resolveDataDir(), 'graph.db')
-
-  if (!existsSync(dbPath)) return null
-
-  let db: Database | null = null
-  try {
-    db = new Database(dbPath)
-    db.run('PRAGMA busy_timeout=5000')
-    const row = db.prepare(`
-      SELECT status, current_session_id
-      FROM loops
-      WHERE project_id = ? AND loop_name = ?
-    `).get(projectId, loopName) as { status: string; current_session_id: string } | null
-    
-    if (!row) return null
-    if (row.status !== 'running') return null
-
-    const now = Date.now()
-    db.prepare(`
-      UPDATE loops SET
-        status = ?,
-        completed_at = ?,
-        termination_reason = ?,
-        completion_summary = ?
-      WHERE project_id = ? AND loop_name = ?
-    `).run('cancelled', now, 'cancelled', null, projectId, loopName)
-    
-    return row.current_session_id
-  } catch {
-    return null
-  } finally {
-    try { db?.close() } catch {}
-  }
-}
-
-async function restartLoop(projectId: string, loopName: string, api: TuiPluginApi): Promise<string | null> {
-  const dbPath = join(resolveDataDir(), 'graph.db')
-
-  if (!existsSync(dbPath)) return null
-
-  let db: Database | null = null
-  try {
-    db = new Database(dbPath)
-    db.run('PRAGMA busy_timeout=5000')
-    const now = Date.now()
-    const row = db.prepare(`
-      SELECT status, current_session_id, worktree_dir, worktree, project_dir, execution_model,
-             auditor_model, prompt, iteration, phase, audit, sandbox,
-             worktree_branch, workspace_id
-      FROM loops
-      LEFT JOIN loop_large_fields USING (project_id, loop_name)
-      WHERE project_id = ? AND loop_name = ?
-    `).get(projectId, loopName) as {
-      status: string
-      current_session_id: string
-      worktree_dir: string
-      worktree: number
-      project_dir: string
-      execution_model: string | null
-      auditor_model: string | null
-      prompt: string | null
-      iteration: number
-      phase: string
-      audit: number
-      sandbox: number
-      worktree_branch: string | null
-      workspace_id: string | null
-    } | null
-    
-    if (!row) return null
-
-    const oldSessionId = row.current_session_id
-    if (row.status === 'running') {
-      try { await api.client.session.abort({ sessionID: oldSessionId }) } catch {}
-    }
-
-    const directory = row.worktree_dir
-    if (!directory) return null
-
-    const { loadPluginConfig } = await import('./setup')
-    const config = loadPluginConfig()
-    const permissionRuleset = buildLoopPermissionRuleset({
-      isWorktree: !!row.worktree,
-      isSandbox: !!row.sandbox,
-    })
-
-    // Resolve the workspace ID for worktree loops.
-    // - If the loop already has workspace_id, use it.
-    // - If it's a legacy worktree loop (no workspace_id), create a workspace record now
-    //   and persist it back to the row for future restarts.
-    let workspaceId: string | null = row.workspace_id ?? null
-    if (row.worktree === 1 && !workspaceId) {
-      const { createLoopWorkspace } = await import('./workspace/forge-worktree')
-      const ws = await createLoopWorkspace(api.client, {
-        loopName,
-        directory,
-        branch: row.worktree_branch ?? null,
-      })
-      if (!ws) {
-        console.error(`[forge] restartLoop: failed to create workspace for legacy worktree loop ${loopName}`)
-        return null
-      }
-      workspaceId = ws.workspaceId
-      db.prepare('UPDATE loops SET workspace_id = ? WHERE project_id = ? AND loop_name = ?').run(
-        workspaceId, projectId, loopName
-      )
-    }
-
-    const createResult = await createLoopSessionWithWorkspace({
-      v2: api.client,
-      title: loopName,
-      directory,
-      permission: permissionRuleset,
-      workspaceId: workspaceId ?? undefined,
-      logPrefix: 'tui-restart',
-      logger: console,
-    })
-    if (!createResult) return null
-
-    const newSessionId = createResult.sessionId
-
-    // Update loops table FIRST before sending prompt so resolveLoopName works immediately
-    db.prepare(`
-      UPDATE loops SET
-        status = ?,
-        current_session_id = ?,
-        phase = ?,
-        iteration = ?,
-        error_count = ?,
-        audit_count = ?,
-        started_at = ?,
-        completed_at = ?,
-        termination_reason = ?,
-        completion_summary = ?
-      WHERE project_id = ? AND loop_name = ?
-    `).run(
-      'running',
-      newSessionId,
-      row.phase,
-      row.iteration,
-      0,
-      0,
-      now,
-      null,
-      null,
-      null,
-      projectId,
-      loopName
-    )
-
-    const promptText = row.prompt ?? ''
-
-    const { parseModelString, retryWithModelFallback } = await import('./utils/model-fallback')
-    const loopModel = parseModelString(row.execution_model ?? undefined)
-      ?? parseModelString(config.loop?.model)
-      ?? parseModelString(config.executionModel)
-
-    const { waitForSandboxReady } = await import('./utils/sandbox-ready')
-    const waitResult = await waitForSandboxReady({
-      projectId,
-      loopName,
-      dbPath,
-      pollMs: 200,
-      timeoutMs: 15_000,
-    })
-    if (!waitResult.ready) {
-      console.error(`[forge] restartLoop: sandbox not ready (${waitResult.reason}); aborting restart`)
-
-      try {
-        const { createDockerService } = await import('./sandbox/docker')
-        const docker = createDockerService(console)
-        const containerName = docker.containerName(loopName)
-        if (await docker.isRunning(containerName)) {
-          await docker.removeContainer(containerName)
-          console.log(`[forge] restartLoop: removed sandbox container ${containerName} after aborted restart`)
-        }
-      } catch (err) {
-        console.error('[forge] restartLoop: failed to remove sandbox container after abort', err)
-      }
-
-      try {
-        db.prepare(`
-          UPDATE loops SET
-            status = ?,
-            completed_at = ?,
-            termination_reason = ?,
-            completion_summary = ?
-          WHERE project_id = ? AND loop_name = ?
-        `).run('errored', now, 'sandbox_start_failed: ' + waitResult.reason, null, projectId, loopName)
-      } catch (err) {
-        console.error('[forge] restartLoop: failed to mark loop inactive after sandbox timeout', err)
-      }
-      return null
-    }
-    console.log(`[forge] restartLoop: sandbox ready container=${waitResult.containerName}`)
-
-    const promptParts: Array<{ type: 'text'; text: string }> = [{ type: 'text' as const, text: promptText }]
-    
-    const { result: promptResult } = await retryWithModelFallback(
-      () => loopModel
-        ? api.client.session.promptAsync({ sessionID: newSessionId, directory, agent: 'code', model: loopModel, parts: promptParts })
-        : api.client.session.promptAsync({ sessionID: newSessionId, directory, agent: 'code', parts: promptParts }),
-      () => api.client.session.promptAsync({ sessionID: newSessionId, directory, agent: 'code', parts: promptParts }),
-      loopModel,
-      console,
-    )
-    
-    if (promptResult.error) {
-      throw new Error('Failed to prompt restarted loop')
-    }
-
-    return newSessionId
-  } catch {
-    return null
-  } finally {
-    try { db?.close() } catch {}
-  }
-}
-
 function PlanViewerDialog(props: {
   api: TuiPluginApi
+  client: ForgeProjectClient
   planContent: string
-  projectId: string
   sessionId: string
-  onRefresh?: () => void
+  onRefresh?: () => void | Promise<void>
   startInExecuteMode?: boolean
   initialExecutionModel?: string
   initialAuditorModel?: string
@@ -319,51 +59,45 @@ function PlanViewerDialog(props: {
 
   const hasInitialOverrides = props.initialExecutionModel !== undefined || props.initialAuditorModel !== undefined
 
-  // Load last-used preferences for dialog defaults
-  const directory = props.api.state.path.directory
-  const pid = getGitProjectId(directory)
-  const loadDefaults = async () => {
-    if (pid) {
-      const storedPrefs = readExecutionPreferences(pid)
-      const { loadPluginConfig } = await import('./setup')
-      const config = loadPluginConfig()
-      const defaults = resolveExecutionDialogDefaults(config, storedPrefs)
-      if (!hasInitialOverrides) {
-        setExecutionModel(defaults.executionModel)
-        setAuditorModel(defaults.auditorModel)
-      }
-      setDefaultsLoaded(true)
-    } else {
-      setDefaultsLoaded(true)
+  const loadContext = async () => {
+    const ctx = await props.client.loadExecutionContext()
+    // defaults
+    const defaults = resolveExecutionDialogDefaults(
+      { logging: { enabled: false, file: '' } },
+      ctx.preferences,
+    )
+    if (!hasInitialOverrides) {
+      setExecutionModel(defaults.executionModel)
+      setAuditorModel(defaults.auditorModel)
     }
-  }
-
-  // Load available models from API (also loads recents for categorization)
-  const loadModels = async () => {
-    const result = await fetchAvailableModels(props.api)
-    if (result.error) {
-      setModelsError(result.error)
+    setDefaultsLoaded(true)
+    // models
+    if (ctx.models.error) {
+      setModelsError(ctx.models.error)
       setModelsLoaded(true)
       return
     }
-    const allModelList = flattenProviders(result.providers)
-    const recents = pid ? getRecentModels(pid) : []
+    const allModelList = flattenProviders(ctx.models.providers as Parameters<typeof flattenProviders>[0])
+    const recents: string[] = []
     setRecentModelIds(recents)
     const sorted = sortModelsByPriority(allModelList, {
       recents,
-      connectedProviderIds: result.connectedProviderIds,
-      configuredProviderIds: result.configuredProviderIds,
+      connectedProviderIds: ctx.models.connectedProviderIds,
+      configuredProviderIds: ctx.models.configuredProviderIds,
     })
     setAllModels(sorted)
     setModelsLoaded(true)
   }
 
-  loadDefaults()
-  loadModels()
+  void loadContext().catch((err) => {
+    console.error('[forge] PlanViewerDialog: loadContext failed', err)
+    setDefaultsLoaded(true)
+    setModelsLoaded(true)
+  })
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const text = textareaRef?.plainText ?? content()
-    const saved = writePlan(props.projectId, props.sessionId, text)
+    const saved = await props.client.plan.write(props.sessionId, text)
     props.api.ui.toast({
       message: saved ? 'Plan saved' : 'Failed to save plan',
       variant: saved ? 'success' : 'error',
@@ -424,8 +158,8 @@ function PlanViewerDialog(props: {
           props.api.ui.dialog.replace(() => (
             <PlanViewerDialog
               api={props.api}
+              client={props.client}
               planContent={content()}
-              projectId={props.projectId}
               sessionId={props.sessionId}
               onRefresh={props.onRefresh}
               startInExecuteMode={true}
@@ -456,235 +190,42 @@ function PlanViewerDialog(props: {
   const handleExecuteMode = async (mode: string, executionModel?: string, auditorModel?: string) => {
     const planText = content()
     const title = extractPlanTitle(planText)
-    const directory = props.api.state.path.directory
-    const pid = getGitProjectId(directory)
-    
-    if (!pid) {
-      props.api.ui.toast({
-        message: 'Failed to resolve project ID',
-        variant: 'error',
-        duration: 3000,
-      })
-      return
-    }
 
     // Use canonical label matching instead of fragile string comparison
     const matchedLabel = matchExecutionLabel(mode)
-    
-    switch (matchedLabel) {
-      case 'New session': {
-        props.api.ui.dialog.clear()
-        props.api.ui.toast({
-          message: 'Creating new session for plan execution...',
-          variant: 'info',
-          duration: 3000,
-        })
 
-        try {
-          const createResult = await props.api.client.session.create({ 
-            title, 
-            directory 
-          })
-          
-          if (createResult.error || !createResult.data) {
-            props.api.ui.toast({
-              message: 'Failed to create new session',
-              variant: 'error',
-              duration: 3000,
-            })
-            return
-          }
-          
-          const newSessionId = createResult.data.id
-          
-          // Delete plan from old session
-          if (pid) {
-            deletePlan(pid, props.sessionId)
-          }
-          
-          // Use execution model with retryWithModelFallback pattern
-          const { parseModelString, retryWithModelFallback } = await import('./utils/model-fallback')
-          const { loadPluginConfig } = await import('./setup')
-          const config = loadPluginConfig()
-          const model = parseModelString(executionModel) ?? parseModelString(config.loop?.model) ?? parseModelString(config.executionModel)
-          
-          const promptParts = [{ type: 'text' as const, text: planText }]
-          const { result: promptResult } = await retryWithModelFallback(
-            () => model
-              ? props.api.client.session.promptAsync({ sessionID: newSessionId, directory, agent: 'code', model, parts: promptParts })
-              : props.api.client.session.promptAsync({ sessionID: newSessionId, directory, agent: 'code', parts: promptParts }),
-            () => props.api.client.session.promptAsync({ sessionID: newSessionId, directory, agent: 'code', parts: promptParts }),
-            model,
-            console,
-          )
-          
-          if (promptResult.error) {
-            throw new Error('Failed to prompt session')
-          }
-          
-          props.api.ui.toast({
-            message: `New session created: ${title}`,
-            variant: 'success',
-            duration: 3000,
-          })
-          
-          // Save execution preferences and record recent models
-          writeExecutionPreferences(pid, {
-            mode: matchedLabel as PlanExecutionLabel,
-            executionModel,
-            auditorModel,
-          })
-          if (executionModel) recordRecentModel(pid, executionModel)
-          if (auditorModel) recordRecentModel(pid, auditorModel)
+    const apiMode: ApiExecutionMode = matchedLabel === 'Execute here'
+      ? 'execute-here'
+      : matchedLabel === 'Loop'
+        ? 'loop'
+        : matchedLabel === 'Loop (worktree)'
+          ? 'loop-worktree'
+          : 'new-session'
 
-          // Refresh sidebar immediately after mutation is issued
-          props.onRefresh?.()
-          
-          try {
-            props.api.route.navigate('session', { sessionID: newSessionId })
-          } catch {}
-        } catch {
-          props.api.ui.toast({
-            message: 'Failed to create new session',
-            variant: 'error',
-            duration: 3000,
-          })
-        }
-        break
-      }
-      
-      case 'Execute here': {
-        props.api.ui.dialog.clear()
-        props.api.ui.toast({
-          message: 'Switching to code agent for plan execution...',
-          variant: 'info',
-          duration: 3000,
-        })
+    props.api.ui.dialog.clear()
+    props.api.ui.toast({ message: 'Executing plan...', variant: 'info', duration: 3000 })
+    const result = await props.client.plan.execute(props.sessionId, {
+      mode: apiMode,
+      title,
+      plan: planText,
+      executionModel,
+      auditorModel,
+      targetSessionId: props.sessionId,
+    }, {
+      mode: matchedLabel as PlanExecutionLabel,
+      executionModel,
+      auditorModel,
+    })
 
-        const inPlacePrompt = `The architect agent has created an implementation plan. You are now the code agent taking over this session. Your job is to execute the plan — edit files, run commands, create tests, and implement every phase. Do NOT just describe or summarize the changes. Actually make them.\n\nImplementation Plan:\n${planText}`
-        
-        try {
-          const { parseModelString, retryWithModelFallback } = await import('./utils/model-fallback')
-          const { loadPluginConfig } = await import('./setup')
-          const config = loadPluginConfig()
-          const model = parseModelString(executionModel) ?? parseModelString(config.loop?.model) ?? parseModelString(config.executionModel)
-          
-          const promptParts = [{ type: 'text' as const, text: inPlacePrompt }]
-          const { result: promptResult } = await retryWithModelFallback(
-            () => model
-              ? props.api.client.session.promptAsync({ sessionID: props.sessionId, directory, agent: 'code', model, parts: promptParts })
-              : props.api.client.session.promptAsync({ sessionID: props.sessionId, directory, agent: 'code', parts: promptParts }),
-            () => props.api.client.session.promptAsync({ sessionID: props.sessionId, directory, agent: 'code', parts: promptParts }),
-            model,
-            console,
-          )
-          
-          if (promptResult.error) {
-            throw new Error('Failed to prompt session')
-          }
-          
-          props.api.ui.toast({
-            message: 'Executing plan in current session',
-            variant: 'success',
-            duration: 3000,
-          })
-          
-          // Save execution preferences and record recent models
-          writeExecutionPreferences(pid, {
-            mode: matchedLabel as PlanExecutionLabel,
-            executionModel,
-            auditorModel,
-          })
-          if (executionModel) recordRecentModel(pid, executionModel)
-          if (auditorModel) recordRecentModel(pid, auditorModel)
+    if (!result) {
+      props.api.ui.toast({ message: 'Failed to execute plan', variant: 'error', duration: 3000 })
+      return
+    }
 
-          // Refresh sidebar immediately after mutation is issued
-          props.onRefresh?.()
-        } catch {
-          props.api.ui.toast({
-            message: 'Failed to execute plan in current session',
-            variant: 'error',
-            duration: 3000,
-          })
-        }
-        break
-      }
-      
-      case 'Loop (worktree)':
-      case 'Loop': {
-        const isWorktree = matchedLabel === 'Loop (worktree)'
-        
-        props.api.ui.dialog.clear()
-        props.api.ui.toast({
-          message: isWorktree ? 'Starting loop in worktree...' : 'Starting loop in-place...',
-          variant: 'info',
-          duration: 3000,
-        })
-
-        // Use fresh loop launch helper instead of restartLoop
-        // This creates a new loop session rather than requiring preexisting state
-        try {
-          const launchResult = await launchFreshLoop({
-            planText,
-            title,
-            directory,
-            projectId: pid,
-            isWorktree,
-            api: props.api,
-            executionModel,
-            auditorModel,
-            hostSessionId: props.sessionId,
-          })
-          
-          if (launchResult) {
-            // Delete plan from old session after successful launch
-            if (pid) {
-              deletePlan(pid, props.sessionId)
-            }
-            
-            // Save execution preferences after successful launch
-            writeExecutionPreferences(pid, {
-              mode: matchedLabel as PlanExecutionLabel,
-              executionModel,
-              auditorModel,
-            })
-            if (executionModel) recordRecentModel(pid, executionModel)
-            if (auditorModel) recordRecentModel(pid, auditorModel)
-
-            // Use the actual loop name returned by the launcher
-            props.api.ui.toast({
-              message: isWorktree ? `Loop started in worktree: ${launchResult.loopName}` : `Loop started: ${launchResult.loopName}`,
-              variant: 'success',
-              duration: 3000,
-            })
-
-            // For workspace-backed worktree loops, navigate to the session immediately.
-            if (isWorktree && launchResult.workspaceId && launchResult.sessionId) {
-              try {
-                props.api.route.navigate('session', { sessionID: launchResult.sessionId })
-              } catch {}
-            }
-
-            // Refresh sidebar immediately after mutation is issued
-            props.onRefresh?.()
-          }
-        } catch {
-          props.api.ui.toast({
-            message: 'Failed to start loop',
-            variant: 'error',
-            duration: 3000,
-          })
-        }
-        break
-      }
-      
-      default: {
-        props.api.ui.toast({
-          message: 'Unknown execution mode',
-          variant: 'error',
-          duration: 3000,
-        })
-      }
+    props.api.ui.toast({ message: result.loopName ? `Loop started: ${result.loopName}` : 'Plan execution started', variant: 'success', duration: 3000 })
+    props.onRefresh?.()
+    if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop-worktree')) {
+      try { props.api.route.navigate('session', { sessionID: result.sessionId }) } catch {}
     }
   }
 
@@ -825,20 +366,19 @@ function PlanViewerDialog(props: {
   )
 }
 
-function LoopDetailsDialog(props: { api: TuiPluginApi; loop: LoopInfo; onBack?: () => void; onRefresh?: () => void }) {
+function LoopDetailsDialog(props: { api: TuiPluginApi; client: ForgeProjectClient; loop: LoopInfo; onBack?: () => void; onRefresh?: () => void | Promise<void> }) {
   const theme = () => props.api.theme.current
   const [currentLoop, setCurrentLoop] = createSignal<LoopInfo>(props.loop)
   const [stats, setStats] = createSignal<SessionStats | null>(null)
   const [loading, setLoading] = createSignal(true)
 
   const directory = props.api.state.path.directory
-  const pid = getGitProjectId(directory)
 
   // Re-read loop state when dialog opens and on refresh requests
   // This ensures the dialog shows fresh data, not a stale snapshot
-  const refreshLoopState = () => {
-    if (pid && currentLoop().name) {
-      const freshLoop = readLoopByName(pid, currentLoop().name)
+  const refreshLoopState = async () => {
+    if (currentLoop().name) {
+      const freshLoop = await props.client.loops.get(currentLoop().name)
       if (freshLoop) {
         setCurrentLoop(freshLoop)
       }
@@ -864,18 +404,12 @@ function LoopDetailsDialog(props: { api: TuiPluginApi; loop: LoopInfo; onBack?: 
     }
   })
 
-  const handleCancel = () => {
+  const handleCancel = async () => {
     props.api.ui.dialog.clear()
-    const directory = props.api.state.path.directory
-    const pid = getGitProjectId(directory)
-    if (!pid) return
-    const sessionId = cancelLoop(pid, currentLoop().name)
-    if (sessionId) {
-      props.api.client.session.abort({ sessionID: sessionId }).catch(() => {})
-    }
+    const cancelled = await props.client.loops.cancel(currentLoop().name)
     props.api.ui.toast({
-      message: sessionId ? `Cancelled loop: ${currentLoop().name}` : `Loop ${currentLoop().name} is not active`,
-      variant: sessionId ? 'success' : 'info',
+      message: cancelled ? `Cancelled loop: ${currentLoop().name}` : `Loop ${currentLoop().name} is not active`,
+      variant: cancelled ? 'success' : 'info',
       duration: 3000,
     })
     // Refresh sidebar immediately after mutation is issued
@@ -884,10 +418,7 @@ function LoopDetailsDialog(props: { api: TuiPluginApi; loop: LoopInfo; onBack?: 
 
   const handleRestart = async () => {
     props.api.ui.dialog.clear()
-    const directory = props.api.state.path.directory
-    const pid = getGitProjectId(directory)
-    if (!pid) return
-    const newSessionId = await restartLoop(pid, currentLoop().name, props.api)
+    const newSessionId = await props.client.loops.restart(currentLoop().name, currentLoop().active)
     const label = currentLoop().active ? 'Force restarting' : 'Restarting'
     props.api.ui.toast({
       message: newSessionId ? `${label} loop: ${currentLoop().name}` : `Failed to restart loop: ${currentLoop().name}`,
@@ -1040,18 +571,31 @@ function LoopDetailsDialog(props: { api: TuiPluginApi; loop: LoopInfo; onBack?: 
   )
 }
 
-function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: string }) {
+function Sidebar(props: { api: TuiPluginApi; client: ForgeProjectClient; opts: TuiOptions; sessionId?: string; remoteUrl?: string }) {
   const [open, setOpen] = createSignal(true)
   const [loops, setLoops] = createSignal<LoopInfo[]>([])
   const [hasPlan, setHasPlan] = createSignal(false)
   const [graphStatusFormatted, setGraphStatusFormatted] = createSignal<ReturnType<typeof formatGraphStatus> | null>(null)
-  const [graphStatusRaw, setGraphStatusRaw] = createSignal<ReturnType<typeof readGraphStatus> | null>(null)
+  const [graphStatusRaw, setGraphStatusRaw] = createSignal<Parameters<typeof formatGraphStatus>[0] | null>(null)
   const theme = () => props.api.theme.current
   const directory = props.api.state.path.directory
-  const pid = getGitProjectId(directory)
 
   const title = createMemo(() => {
     return props.opts.showVersion ? `Forge v${VERSION}` : 'Forge'
+  })
+
+  const remoteInfo = createMemo(() => {
+    const url = props.remoteUrl?.trim()
+    if (!url) return null
+    try {
+      const urlObj = new URL(url)
+      return {
+        hostname: urlObj.hostname,
+        protocol: urlObj.protocol.replace(':', ''),
+      }
+    } catch {
+      return null
+    }
   })
 
   const dot = (loop: LoopInfo) => {
@@ -1084,11 +628,8 @@ function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: strin
    */
   const redirectedSessions = new Set<string>()
 
-  function refreshSidebarData() {
-    if (!pid) return
-    
-    // Refresh loop states from KV
-    const states = readLoopStates(pid)
+  async function refreshSidebarData() {
+    const states = await props.client.loops.list()
     const cutoff = Date.now() - 5 * 60 * 1000
     const visible = states.filter(l => 
       l.active || (l.completedAt && new Date(l.completedAt).getTime() > cutoff)
@@ -1104,7 +645,7 @@ function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: strin
     
     // Refresh plan presence for current session
     if (props.sessionId) {
-      const plan = readPlan(pid, props.sessionId)
+      const plan = await props.client.plan.read(props.sessionId)
       setHasPlan(plan !== null)
     }
     
@@ -1133,7 +674,7 @@ function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: strin
     }
     
     // Refresh graph status from KV (scoped to current directory)
-    const status = readGraphStatus(pid, undefined, directory)
+    const status = await props.client.readGraphStatus(directory)
     setGraphStatusRaw(status)
     setGraphStatusFormatted(formatGraphStatus(status))
   }
@@ -1158,7 +699,7 @@ function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: strin
   function startPolling() {
     if (pollTimer) return
     pollTimer = setInterval(() => {
-      refreshSidebarData()
+      void refreshSidebarData()
     }, 5000)
   }
 
@@ -1169,12 +710,12 @@ function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: strin
     }
   }
 
-  refreshSidebarData()
+  void refreshSidebarData()
 
   // Re-check after a short delay to catch graph status that wasn't written yet at mount time
   const initTimer = setTimeout(() => {
     if (!graphStatusRaw()) {
-      refreshSidebarData()
+      void refreshSidebarData()
     }
   }, 2000)
 
@@ -1217,6 +758,8 @@ function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: strin
             {!open() && hasPlan() ? <span style={{ fg: theme().info }}> · plan</span> : ''}
             {!open() && graphStatusFormatted() && graphStatusFormatted()!.text.includes('ready') ? <span style={{ fg: theme().success }}> · ready</span> : ''}
             {!open() && activeCount() > 0 ? <span style={{ fg: theme().textMuted }}>{` (${activeCount()} active)`}</span> : ''}
+            {!open() && remoteInfo() ? <span style={{ fg: theme().warning }}>{` (${remoteInfo()!.hostname})`}</span> : ''}
+            {!open() && !remoteInfo() ? <span style={{ fg: theme().textMuted }}> (local)</span> : ''}
           </text>
         </box>
         <Show when={open()}>
@@ -1224,9 +767,9 @@ function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: strin
             <box
               flexDirection="row"
               gap={1}
-              onMouseUp={() => {
-                if (!pid || !props.sessionId) return
-                const plan = readPlan(pid, props.sessionId)
+              onMouseUp={async () => {
+                if (!props.sessionId) return
+                const plan = await props.client.plan.read(props.sessionId)
                 if (!plan) {
                   props.api.ui.toast({ message: 'Plan not found', variant: 'info', duration: 3000 })
                   return
@@ -1234,7 +777,7 @@ function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: strin
                 const refreshSidebar = refreshSidebarData
                 props.api.ui.dialog.setSize("xlarge")
                 props.api.ui.dialog.replace(() => (
-                  <PlanViewerDialog api={props.api} planContent={plan} projectId={pid} sessionId={props.sessionId!} onRefresh={refreshSidebar} />
+                  <PlanViewerDialog api={props.api} client={props.client} planContent={plan} sessionId={props.sessionId!} onRefresh={refreshSidebar} />
                 ))
               }}
             >
@@ -1269,14 +812,14 @@ function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: strin
                     if (!loop.active) {
                       props.api.ui.dialog.setSize("medium")
                       props.api.ui.dialog.replace(() => (
-                        <LoopDetailsDialog api={props.api} loop={loop} onRefresh={refreshSidebarData} />
+                        <LoopDetailsDialog api={props.api} client={props.client} loop={loop} onRefresh={refreshSidebarData} />
                       ))
                     } else if (loop.worktree && loop.workspaceId && loop.sessionId) {
                       props.api.route.navigate('session', { sessionID: loop.sessionId })
                     } else if (loop.worktree) {
                       props.api.ui.dialog.setSize("medium")
                       props.api.ui.dialog.replace(() => (
-                        <LoopDetailsDialog api={props.api} loop={loop} onRefresh={refreshSidebarData} />
+                        <LoopDetailsDialog api={props.api} client={props.client} loop={loop} onRefresh={refreshSidebarData} />
                       ))
                     } else {
                       props.api.route.navigate('session', { sessionID: loop.sessionId })
@@ -1300,12 +843,18 @@ function Sidebar(props: { api: TuiPluginApi; opts: TuiOptions; sessionId?: strin
 
 const id = 'oc-forge'
 
-// Export helper functions for testing
-export { readLoopStates, readLoopByName }
-
 const tui: TuiPlugin = async (api) => {
 
-  const tuiConfig = loadTuiConfig()
+  const pluginConfig = loadPluginConfig()
+  const tuiConfig = pluginConfig.tui
+  const remoteUrl = resolveForgeApiUrl(pluginConfig)
+  const directory = api.state.path.directory
+  const client = await connectForgeProject(pluginConfig, directory)
+  if (!client) {
+    api.ui.toast({ message: `Forge API unavailable for ${directory}; TUI disabled`, variant: 'error', duration: 5000 })
+    return
+  }
+
   const opts: TuiOptions = {
     sidebar: tuiConfig?.sidebar ?? true,
     showLoops: tuiConfig?.showLoops ?? true,
@@ -1316,22 +865,16 @@ const tui: TuiPlugin = async (api) => {
   if (!opts.sidebar) return
 
   api.command.register(() => {
-    const directory = api.state.path.directory
-    const pid = getGitProjectId(directory)
-    if (!pid) return []
-
-    const states = readLoopStates(pid)
-    if (states.length === 0) return []
-
     return [
       {
         title: 'Forge: Show loops',
         value: 'forge.loops.show',
-        description: `${states.length} loop${states.length !== 1 ? 's' : ''}`,
+        description: 'API loops',
         category: 'Forge',
         keybind: opts.keybinds.showLoops,
-        onSelect: () => {
-          const worktreeLoops = states.filter(l => l.worktree)
+        onSelect: async () => {
+          const currentStates = await client.loops.list()
+          const worktreeLoops = currentStates.filter(l => l.worktree)
           const loopOptions = worktreeLoops.map(l => {
             const status = l.active
               ? l.phase
@@ -1350,15 +893,13 @@ const tui: TuiPlugin = async (api) => {
               <api.ui.DialogSelect
                 title="Loops"
                 options={loopOptions}
-                onSelect={(opt) => {
+                onSelect={async (opt) => {
                   const loopName = opt.value as string
-                  // Re-read fresh loop state from KV when opening details
-                  // This ensures command-driven dialogs use fresh data, not the initial snapshot
-                  const freshLoop = pid ? readLoopByName(pid, loopName) : null
+                  const freshLoop = await client.loops.get(loopName)
                   if (freshLoop) {
                     api.ui.dialog.setSize("medium")
                     api.ui.dialog.replace(() => (
-                      <LoopDetailsDialog api={api} loop={freshLoop} onBack={showLoopList} onRefresh={() => {}} />
+                      <LoopDetailsDialog api={api} client={client} loop={freshLoop} onBack={showLoopList} onRefresh={() => {}} />
                     ))
                   } else {
                     api.ui.dialog.clear()
@@ -1378,10 +919,6 @@ const tui: TuiPlugin = async (api) => {
     const route = api.route.current
     if (route.name !== 'session') return []
 
-    const directory = api.state.path.directory
-    const pid = getGitProjectId(directory)
-    if (!pid) return []
-
     const sessionID = (route as { params: { sessionID: string } }).params.sessionID
 
     const refreshSidebar = () => {
@@ -1394,15 +931,15 @@ const tui: TuiPlugin = async (api) => {
       description: 'View cached plan for this session',
       category: 'Forge',
       keybind: opts.keybinds.viewPlan,
-      onSelect: () => {
-        const freshPlan = readPlan(pid, sessionID)
+      onSelect: async () => {
+        const freshPlan = await client.plan.read(sessionID)
         if (!freshPlan) {
           api.ui.toast({ message: 'No plan found for this session', variant: 'info', duration: 3000 })
           return
         }
         api.ui.dialog.setSize("xlarge")
         api.ui.dialog.replace(() => (
-          <PlanViewerDialog api={api} planContent={freshPlan} projectId={pid} sessionId={sessionID} onRefresh={refreshSidebar} />
+          <PlanViewerDialog api={api} client={client} planContent={freshPlan} sessionId={sessionID} onRefresh={refreshSidebar} />
         ))
       },
     }, {
@@ -1411,15 +948,15 @@ const tui: TuiPlugin = async (api) => {
       description: 'Execute cached plan',
       category: 'Forge',
       keybind: opts.keybinds.executePlan,
-      onSelect: () => {
-        const freshPlan = readPlan(pid, sessionID)
+      onSelect: async () => {
+        const freshPlan = await client.plan.read(sessionID)
         if (!freshPlan) {
           api.ui.toast({ message: 'No plan found for this session', variant: 'info', duration: 3000 })
           return
         }
         api.ui.dialog.setSize("xlarge")
         api.ui.dialog.replace(() => (
-          <PlanViewerDialog api={api} planContent={freshPlan} projectId={pid} sessionId={sessionID} onRefresh={refreshSidebar} startInExecuteMode={true} />
+          <PlanViewerDialog api={api} client={client} planContent={freshPlan} sessionId={sessionID} onRefresh={refreshSidebar} startInExecuteMode={true} />
         ))
       },
     }]
@@ -1429,7 +966,7 @@ const tui: TuiPlugin = async (api) => {
     order: 150,
     slots: {
       sidebar_content(_ctx, slotProps) {
-        return <Sidebar api={api} opts={opts} sessionId={slotProps.session_id} />
+        return <Sidebar api={api} client={client} opts={opts} sessionId={slotProps.session_id} remoteUrl={remoteUrl} />
       },
     },
   })

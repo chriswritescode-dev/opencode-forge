@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { Database } from 'bun:sqlite'
+import { mkdirSync } from 'fs'
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import { createLoopService } from '../src/services/loop'
@@ -30,7 +31,6 @@ function createTestDb(): { db: Database; path: string } {
       audit_count INTEGER NOT NULL DEFAULT 0,
       error_count INTEGER NOT NULL DEFAULT 0,
       phase TEXT NOT NULL CHECK(phase IN ('coding','auditing')),
-      audit INTEGER NOT NULL,
       execution_model TEXT,
       auditor_model TEXT,
       model_failed INTEGER NOT NULL DEFAULT 0,
@@ -42,6 +42,7 @@ function createTestDb(): { db: Database; path: string } {
       completion_summary TEXT,
       workspace_id         TEXT,
       host_session_id      TEXT,
+      audit_session_id     TEXT,
       session_directory    TEXT,
       PRIMARY KEY (project_id, loop_name)
     )
@@ -191,6 +192,7 @@ describe('loop-status tool restart path', () => {
     // Seed a running worktree loop with workspace metadata
     const oldSessionId = 'old-session-123'
     const worktreeDir = `${TEST_DIR}/worktree`
+    mkdirSync(worktreeDir, { recursive: true })
     
     loopService.setState(loopName, {
       active: true,
@@ -204,7 +206,7 @@ describe('loop-status tool restart path', () => {
       startedAt: new Date().toISOString(),
       prompt: 'Test prompt',
       phase: 'auditing',
-      audit: true,
+
       errorCount: 0,
       auditCount: 1,
       worktree: true,
@@ -273,6 +275,7 @@ describe('loop-status tool restart path', () => {
     
     const oldSessionId = 'old-session-456'
     const worktreeDir = `${TEST_DIR}/worktree2`
+    mkdirSync(worktreeDir, { recursive: true })
     
     loopService.setState(loopName, {
       active: true,
@@ -286,7 +289,7 @@ describe('loop-status tool restart path', () => {
       startedAt: new Date().toISOString(),
       prompt: 'Test prompt 2',
       phase: 'auditing',
-      audit: true,
+
       errorCount: 0,
       auditCount: 0,
       worktree: true,
@@ -341,6 +344,7 @@ describe('loop-status tool restart path', () => {
     // Seed a running worktree loop with workspace metadata
     const oldSessionId = 'old-session-bindfail'
     const worktreeDir = `${TEST_DIR}/worktree-bindfail`
+    mkdirSync(worktreeDir, { recursive: true })
 
     loopService.setState(loopName, {
       active: true,
@@ -354,7 +358,7 @@ describe('loop-status tool restart path', () => {
       startedAt: new Date().toISOString(),
       prompt: 'Test prompt',
       phase: 'auditing',
-      audit: true,
+
       errorCount: 0,
       auditCount: 1,
       worktree: true,
@@ -424,6 +428,7 @@ describe('loop-status tool restart path', () => {
     
     const oldSessionId = 'old-session-789'
     const worktreeDir = `${TEST_DIR}/worktree3`
+    mkdirSync(worktreeDir, { recursive: true })
     
     // Create an inactive loop
     loopService.setState(loopName, {
@@ -439,7 +444,7 @@ describe('loop-status tool restart path', () => {
       completedAt: new Date().toISOString(),
       prompt: 'Test prompt 3',
       phase: 'coding',
-      audit: true,
+
       errorCount: 0,
       auditCount: 0,
       terminationReason: 'cancelled',

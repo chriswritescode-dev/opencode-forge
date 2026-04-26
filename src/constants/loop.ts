@@ -11,9 +11,10 @@ type PermissionRule = { permission: string; pattern: string; action: 'allow' | '
  *   and no external_directory rule is added (OpenCode will ask by default).
  *
  * Per-agent tool restrictions are enforced by opencode's per-agent `tools` map
- * (see `src/config.ts`), not at the session level. This keeps subagents
- * (e.g., the auditor subtask) from inheriting restrictions intended only for
- * the primary agent.
+ * (see `src/config.ts`), not at the session level. However, now that the auditor
+ * runs in a separate session (not a subtask), we add explicit session-level denies
+ * for tools the code agent should not call (review-write, review-delete, plan-*, loop).
+ * These denies are placed AFTER the *:allow so findLast picks them up.
  *
  * Worktree completion logs are written by the host session (see
  * `src/hooks/loop.ts` -> `writeWorktreeCompletionLog`), so the loop session
@@ -43,12 +44,63 @@ export function buildLoopPermissionRuleset(
   // In-place loops: no blanket allow and no external_directory rule;
   // the agent's own permissions apply and OpenCode will ask by default.
 
-  // Common restrictions for all loop types
+  // Code agent forbidden tools (enforced at session level now that audit runs
+  // in a separate session). Placed after *:allow so findLast picks these.
   rules.push(
-    { permission: 'bash', pattern: 'git push *', action: 'deny' },
-    { permission: 'loop-cancel', pattern: '*', action: 'deny' },
-    { permission: 'loop-status', pattern: '*', action: 'deny' },
+    { permission: 'review-write',  pattern: '*', action: 'deny' },
+    { permission: 'review-delete', pattern: '*', action: 'deny' },
+    { permission: 'plan-write',    pattern: '*', action: 'deny' },
+    { permission: 'plan-edit',     pattern: '*', action: 'deny' },
+    { permission: 'plan-execute',  pattern: '*', action: 'deny' },
+    { permission: 'loop',          pattern: '*', action: 'deny' },
   )
 
+  // Common restrictions for all loop types
+  rules.push(
+    { permission: 'bash',        pattern: 'git push *', action: 'deny' },
+    { permission: 'loop-cancel', pattern: '*',          action: 'deny' },
+    { permission: 'loop-status', pattern: '*',          action: 'deny' },
+  )
+
+  return rules
+}
+
+/**
+ * Builds the permission ruleset for audit sessions.
+ *
+ * Audit sessions run the auditor agent in an isolated session that cannot
+ * modify source files. The ruleset allows read-only operations (read, grep,
+ * glob, graph-*, codesearch, webfetch, websearch, list, task) and review
+ * tools (review-write, review-delete), but denies all code mutation tools.
+ *
+ * - isSandbox: controls external_directory access (same as coding sessions)
+ */
+export function buildAuditSessionPermissionRuleset(
+  options?: { isSandbox?: boolean },
+): PermissionRule[] {
+  const isSandbox = options?.isSandbox ?? false
+  const rules: PermissionRule[] = [
+    { permission: '*', pattern: '*', action: 'allow' },
+    { permission: 'external_directory', pattern: '*', action: isSandbox ? 'allow' : 'deny' },
+    // Audit sessions must not mutate code.
+    { permission: 'edit',        pattern: '*', action: 'deny' },
+    { permission: 'write',       pattern: '*', action: 'deny' },
+    { permission: 'multiedit',   pattern: '*', action: 'deny' },
+    { permission: 'apply_patch', pattern: '*', action: 'deny' },
+    { permission: 'bash',        pattern: 'git commit *', action: 'deny' },
+    { permission: 'bash',        pattern: 'git push *',   action: 'deny' },
+    { permission: 'bash',        pattern: 'git reset *',  action: 'deny' },
+    { permission: 'bash',        pattern: 'git rm *',     action: 'deny' },
+    { permission: 'bash',        pattern: 'git mv *',     action: 'deny' },
+    { permission: 'bash',        pattern: 'rm *',         action: 'deny' },
+    { permission: 'bash',        pattern: 'mv *',         action: 'deny' },
+    // Auditors must never launch loops, execute plans, or manage other loops.
+    { permission: 'loop',         pattern: '*', action: 'deny' },
+    { permission: 'plan-execute', pattern: '*', action: 'deny' },
+    { permission: 'plan-write',   pattern: '*', action: 'deny' },
+    { permission: 'plan-edit',    pattern: '*', action: 'deny' },
+    { permission: 'loop-cancel',  pattern: '*', action: 'deny' },
+    { permission: 'loop-status',  pattern: '*', action: 'deny' },
+  ]
   return rules
 }

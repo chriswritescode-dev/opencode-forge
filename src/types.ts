@@ -97,6 +97,11 @@ export interface TuiConfig {
     /** Show loops dialog. Default: Meta+Shift+L */
     showLoops?: string
   }
+  /** Remote Forge API configuration for TUI actions. Empty uses the local inbound API. */
+  remoteServer?: {
+    /** Remote Forge API URL for TUI actions. Supports URL password or OPENCODE_SERVER_PASSWORD. */
+    url?: string
+  }
 }
 
 /**
@@ -119,6 +124,26 @@ export interface GraphConfig {
   watch?: boolean
   /** Debounce delay in ms for file change events. */
   debounceMs?: number
+}
+
+/**
+ * Configuration for the remote HTTP control plane (JSON API).
+ *
+ * @remarks
+ * Authentication uses HTTP Basic with the password from the
+ * `OPENCODE_SERVER_PASSWORD` environment variable. Only the literal values
+ * `"127.0.0.1"` and `"::1"` are treated as localhost; any other `host` value
+ * requires `OPENCODE_SERVER_PASSWORD` to be set, otherwise the server logs an
+ * error and does not start. Localhost-only mode without a configured password
+ * accepts requests without credentials.
+ */
+export interface ApiConfig {
+  /** Enable the remote HTTP control plane. Defaults to true. */
+  enabled?: boolean
+  /** Bind host. Only "127.0.0.1" and "::1" are treated as localhost. Any other value requires OPENCODE_SERVER_PASSWORD. Defaults to "127.0.0.1". */
+  host?: string
+  /** TCP port. Defaults to 5552. */
+  port?: number
 }
 
 /**
@@ -153,5 +178,6 @@ export interface PluginConfig {
   sandbox?: SandboxConfig
   /** Graph indexing configuration. */
   graph?: GraphConfig
+  /** Remote HTTP control plane configuration. */
+  api?: ApiConfig
 }
-

@@ -478,6 +478,26 @@ export class RepoMap {
     })()
   }
 
+  /**
+   * Delete all graph rows associated with a file.
+   * @param fileId - The file ID to purge
+   * @param options - Optional configuration; if deleteFile is false, the file row itself is preserved
+   */
+  private purgeFileGraphRows(fileId: number, options?: { deleteFile?: boolean }): void {
+    const deleteFile = options?.deleteFile ?? true
+    this.stmts.deleteRefsByFileId.run([fileId])
+    this.stmts.deleteEdgesBySource.run([fileId])
+    this.stmts.deleteEdgesByTarget.run([fileId])
+    this.stmts.deleteSymbolsByFileId.run([fileId])
+    this.stmts.deleteShapeHashesByFileId.run([fileId])
+    this.stmts.deleteTokenSignaturesByFileId.run([fileId])
+    this.stmts.deleteTokenFragmentsByFileId.run([fileId])
+    this.stmts.deleteExternalImportsByFileId.run([fileId])
+    if (deleteFile) {
+      this.stmts.deleteFile.run([fileId])
+    }
+  }
+
 
 
   async indexFile(filePath: string): Promise<void> {
@@ -584,15 +604,10 @@ export class RepoMap {
 
     // All DB writes in a single transaction
     this.db.transaction(() => {
-      if (existing) {
-        this.stmts.deleteRefsByFileId.run([existing.id])
-        this.stmts.deleteEdgesBySource.run([existing.id])
-        this.stmts.deleteEdgesByTarget.run([existing.id])
-        this.stmts.deleteSymbolsByFileId.run([existing.id])
-        this.stmts.deleteShapeHashesByFileId.run([existing.id])
-        this.stmts.deleteTokenSignaturesByFileId.run([existing.id])
-        this.stmts.deleteTokenFragmentsByFileId.run([existing.id])
-        this.stmts.deleteFile.run([existing.id])
+      // Re-fetch the current row by relPath inside the transaction to avoid TOCTOU race
+      const current = this.stmts.getFileByPath.get(relPath) as IndexedFile | undefined
+      if (current) {
+        this.purgeFileGraphRows(current.id)
       }
 
       const fileId = this.db.run(
@@ -1490,16 +1505,7 @@ export class RepoMap {
     const existing = this.stmts.getFileByPath.get(relPath) as IndexedFile | undefined
     if (!existing) return
 
-    // Delete all related data
-    this.stmts.deleteRefsByFileId.run([existing.id])
-    this.stmts.deleteEdgesBySource.run([existing.id])
-    this.stmts.deleteEdgesByTarget.run([existing.id])
-    this.stmts.deleteSymbolsByFileId.run([existing.id])
-    this.stmts.deleteShapeHashesByFileId.run([existing.id])
-    this.stmts.deleteTokenSignaturesByFileId.run([existing.id])
-    this.stmts.deleteTokenFragmentsByFileId.run([existing.id])
-    this.stmts.deleteExternalImportsByFileId.run([existing.id])
-    this.stmts.deleteFile.run([existing.id])
+    this.purgeFileGraphRows(existing.id)
   }
 
   async buildCoChanges(): Promise<void> {

@@ -137,15 +137,20 @@ export function createConfigHandler(
         if (mergedAgents[name]) {
           const existing = mergedAgents[name]
           const mergedTools = { ...(existing?.tools ?? {}), ...(userConfig.tools ?? {}) }
+          const existingPermission = (existing?.permission as Record<string, unknown> | undefined) ?? {}
           const mergedPermission = {
-            ...((existing?.permission as Record<string, unknown> | undefined) ?? {}),
+            ...existingPermission,
             ...((userConfig.permission as Record<string, unknown> | undefined) ?? {}),
           }
-          // User tool overrides must also win at the permission layer, since opencode
-          // enforces agent tool access via permission rules, not the legacy `tools` map.
           if (userConfig.tools) {
             for (const [tool, enabled] of Object.entries(userConfig.tools)) {
               mergedPermission[tool] = enabled ? 'allow' : 'deny'
+            }
+          }
+          for (const [tool, enabled] of Object.entries(existing?.tools ?? {})) {
+            if (enabled === false && existingPermission[tool] === 'deny') {
+              mergedTools[tool] = false
+              mergedPermission[tool] = 'deny'
             }
           }
           mergedAgents[name] = {

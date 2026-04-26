@@ -80,7 +80,6 @@ function printActiveLoopDetails(
   console.log(`  Phase:           ${state.phase}`)
   console.log(`  Iteration:       ${state.iteration}/${state.maxIterations}`)
   console.log(`  Duration:        ${formatDuration(durationMs, { includeSeconds: true })}`)
-  console.log(`  Audit:           ${state.audit ? 'Yes' : 'No'}`)
   console.log(`  Error Count:     ${state.errorCount ?? 0}`)
   console.log(`  Audit Count:     ${state.auditCount ?? 0}`)
   console.log(`  Started:         ${new Date(startedAt).toISOString()}`)
@@ -185,10 +184,9 @@ export async function run(argv: StatusArgs): Promise<void> {
       for (const loop of activeLoops) {
         const durationMs = Date.now() - new Date(loop.state.startedAt).getTime()
         const iterStr = `${loop.state.iteration}/${loop.state.maxIterations}`
-        const audit = loop.state.audit ? 'Yes' : 'No'
 
         console.log(`  ${loop.state.loopName}`)
-        console.log(`    Phase: ${loop.state.phase}  Iteration: ${iterStr}  Duration: ${formatDuration(durationMs)}  Audit: ${audit}`)
+        console.log(`    Phase: ${loop.state.phase}  Iteration: ${iterStr}  Duration: ${formatDuration(durationMs)}`)
         console.log('')
       }
 

@@ -33,7 +33,6 @@ describe('LoopsRepo', () => {
         audit_count          INTEGER NOT NULL DEFAULT 0,
         error_count          INTEGER NOT NULL DEFAULT 0,
         phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing')),
-        audit                INTEGER NOT NULL,
         execution_model      TEXT,
         auditor_model        TEXT,
         model_failed         INTEGER NOT NULL DEFAULT 0,
@@ -45,6 +44,7 @@ describe('LoopsRepo', () => {
         completion_summary   TEXT,
         workspace_id         TEXT,
         host_session_id      TEXT,
+        audit_session_id     TEXT,
         PRIMARY KEY (project_id, loop_name)
       )
     `)
@@ -79,6 +79,7 @@ describe('LoopsRepo', () => {
     loopName: 'test-loop',
     status: 'running',
     currentSessionId: 'session-1',
+    auditSessionId: null,
     worktree: false,
     worktreeDir: '/tmp/test',
     worktreeBranch: null,
@@ -88,7 +89,7 @@ describe('LoopsRepo', () => {
     auditCount: 0,
     errorCount: 0,
     phase: 'coding',
-    audit: true,
+
     executionModel: null,
     auditorModel: null,
     modelFailed: false,
@@ -399,6 +400,57 @@ describe('LoopsRepo', () => {
       
       const retrieved = repo.get(testRow.projectId, testRow.loopName)
       expect(retrieved!.hostSessionId).toBe('new-host-session')
+    })
+  })
+
+  describe('setAuditSessionId', () => {
+    test('should persist and is readable via get()', () => {
+      const row: LoopRow = {
+        ...testRow,
+        loopName: 'loop-with-audit',
+        currentSessionId: 'session-code',
+        auditSessionId: null,
+      }
+      
+      repo.insert(row, testLarge)
+      
+      repo.setAuditSessionId(row.projectId, row.loopName, 'sess_audit_123')
+      
+      const retrieved = repo.get(row.projectId, row.loopName)
+      expect(retrieved!.auditSessionId).toBe('sess_audit_123')
+    })
+
+    test('setAuditSessionId(null) clears the column', () => {
+      const row: LoopRow = {
+        ...testRow,
+        loopName: 'loop-clear-audit',
+        currentSessionId: 'session-code',
+        auditSessionId: 'sess_audit_old',
+      }
+      
+      repo.insert(row, testLarge)
+      
+      repo.setAuditSessionId(row.projectId, row.loopName, null)
+      
+      const retrieved = repo.get(row.projectId, row.loopName)
+      expect(retrieved!.auditSessionId).toBeNull()
+    })
+
+    test('getBySessionId returns the row when queried by audit_session_id', () => {
+      const auditSessionId = 'sess_audit_lookup_test'
+      const row: LoopRow = {
+        ...testRow,
+        loopName: 'loop-lookup-test',
+        currentSessionId: 'session-code-lookup',
+        auditSessionId: auditSessionId,
+      }
+      
+      repo.insert(row, testLarge)
+      
+      const retrieved = repo.getBySessionId(row.projectId, auditSessionId)
+      expect(retrieved).toBeTruthy()
+      expect(retrieved!.loopName).toBe('loop-lookup-test')
+      expect(retrieved!.auditSessionId).toBe(auditSessionId)
     })
   })
 })

@@ -3,11 +3,11 @@ import { existsSync } from 'fs'
 import { homedir, platform } from 'os'
 import { join, basename } from 'path'
 import { createInterface } from 'readline'
-import { createOpencodeClient } from '@opencode-ai/sdk/v2'
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
+import { createOpencodeClientFromServer as createClientFromServer } from '../utils/opencode-client'
 import { openForgeDatabase } from '../storage/database'
 import type { LoopState } from '../services/loop'
 import { findPartialMatch } from '../utils/partial-match'
+import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 
 function resolveDefaultDbPath(): string {
   const localForgePath = join(process.cwd(), '.opencode', 'state', 'opencode', 'forge', 'graph.db')
@@ -145,25 +145,11 @@ export function parseGlobalOptions(args: string[]): ParsedGlobalOptions {
 }
 
 /**
- * Builds an OpencodeClient from a server URL, extracting embedded Basic Auth
- * credentials (or falling back to `OPENCODE_SERVER_PASSWORD` env var).
+ * Builds an OpencodeClient from a server URL, extracting Basic Auth credentials
+ * from the URL or falling back to `OPENCODE_SERVER_PASSWORD` env var.
  */
 export function createOpencodeClientFromServer(serverUrl: string, directory: string): OpencodeClient {
-  const url = new URL(serverUrl)
-  const password = url.password || process.env['OPENCODE_SERVER_PASSWORD']
-  const cleanUrl = new URL(url.toString())
-  cleanUrl.username = ''
-  cleanUrl.password = ''
-  const clientConfig: Parameters<typeof createOpencodeClient>[0] = {
-    baseUrl: cleanUrl.toString(),
-    directory,
-  }
-  if (password) {
-    clientConfig.headers = {
-      Authorization: `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`,
-    }
-  }
-  return createOpencodeClient(clientConfig)
+  return createClientFromServer({ serverUrl, directory })
 }
 
 /**

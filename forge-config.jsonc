@@ -48,6 +48,16 @@
     "image": "oc-forge-sandbox:latest"
   },
 
+  // Remote HTTP control plane (JSON API).
+  // Only "127.0.0.1" and "::1" are treated as localhost. Any other host
+  // (including "localhost" or "0.0.0.0") requires the OPENCODE_SERVER_PASSWORD
+  // env var to be set, otherwise the API server will refuse to start.
+  "api": {
+    "enabled": true,             // Enable inbound HTTP API
+    "host": "127.0.0.1",         // Bind host; non-localhost requires OPENCODE_SERVER_PASSWORD
+    "port": 5552                 // TCP port
+  },
+
   // Graph indexing configuration
   "graph": {
     "enabled": true,
@@ -60,7 +70,10 @@
   "tui": {
     "sidebar": true,
     "showLoops": true,
-    "showVersion": true
+    "showVersion": true,
+    "remoteServer": {
+      "url": ""                    // Optional remote Forge API URL for TUI actions
+    }                    // Empty/omitted means use the local inbound Forge API. URL may include Basic Auth password (http://opencode:password@host:5552). If no URL password is supplied, OPENCODE_SERVER_PASSWORD is used when set.
   },
 
   // TTL in ms for completed/cancelled loops before cleanup. Default: 604800000 (7 days)
