@@ -245,6 +245,44 @@ function buildClient(
   }
 }
 
+const DIRECTORY_RESOLUTION_ATTEMPTS = 5
+const DIRECTORY_RESOLUTION_RETRY_MS = 100
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function resolveProjectId(
+  request: <T>(path: string, init?: RequestInit) => Promise<T>,
+  directory?: string,
+): Promise<string | null> {
+  const query = directory ? `?directory=${encodeURIComponent(directory)}` : ''
+  const data = await request<{ projects: Array<{ id: string; directory?: string | null }> }>(`/api/v1/projects${query}`)
+
+  if (!directory) {
+    return data.projects[0]?.id ?? null
+  }
+
+  return data.projects.find((project) => project.directory === directory)?.id ?? null
+}
+
+async function resolveProjectIdWithRetry(
+  request: <T>(path: string, init?: RequestInit) => Promise<T>,
+  directory?: string,
+): Promise<string | null> {
+  if (!directory) return resolveProjectId(request)
+
+  for (let attempt = 0; attempt < DIRECTORY_RESOLUTION_ATTEMPTS; attempt += 1) {
+    const id = await resolveProjectId(request, directory)
+    if (id) return id
+    if (attempt < DIRECTORY_RESOLUTION_ATTEMPTS - 1) {
+      await sleep(DIRECTORY_RESOLUTION_RETRY_MS)
+    }
+  }
+
+  return null
+}
+
 export async function connectForgeProject(
   config: PluginConfig,
   directory?: string
@@ -266,12 +304,7 @@ export async function connectForgeProject(
 
   let projectId: string
   try {
-    const query = directory ? `?directory=${encodeURIComponent(directory)}` : ''
-    const data = await request<{ projects: Array<{ id: string; directory?: string | null }> }>(`/api/v1/projects${query}`)
-    let id = data.projects.find((project) => project.directory === directory)?.id
-    if (!id) {
-      id = data.projects[0]?.id
-    }
+    const id = await resolveProjectIdWithRetry(request, directory)
     if (!id) return null
     projectId = id
   } catch {

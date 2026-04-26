@@ -234,4 +234,79 @@ describe('TUI remote server config', () => {
     expect(requests[0]).toContain('/api/v1/projects?directory=%2Frepo%2Fb')
     expect(requests[1]).toContain('/api/v1/projects/project-b/loops')
   })
+
+  test('connectForgeProject returns null when requested directory is not registered', async () => {
+    const requests: string[] = []
+    globalThis.fetch = mock(async (url) => {
+      const u = String(url)
+      requests.push(u)
+      if (u.includes('/api/v1/projects?directory=')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          data: { projects: [{ id: 'project-a', directory: '/repo/a' }] },
+        }), { status: 200 })
+      }
+      return new Response('{}', { status: 404 })
+    }) as unknown as typeof fetch
+
+    const client = await connectForgeProject(
+      { tui: { remoteServer: { url: 'http://remote.example:4096' } } },
+      '/repo/b',
+    )
+
+    expect(client).toBeNull()
+    expect(requests.every((u) => !u.includes('/api/v1/projects/project-a/'))).toBe(true)
+  })
+
+  test('connectForgeProject retries directory lookup until current project is registered', async () => {
+    const requests: string[] = []
+    let projectLookupCount = 0
+    globalThis.fetch = mock(async (url) => {
+      const u = String(url)
+      requests.push(u)
+      if (u.includes('/api/v1/projects?directory=')) {
+        projectLookupCount += 1
+        const projects = projectLookupCount < 3
+          ? []
+          : [{ id: 'project-b', directory: '/repo/b' }]
+        return new Response(JSON.stringify({ ok: true, data: { projects } }), { status: 200 })
+      }
+      if (u.includes('/api/v1/projects/project-b/loops')) {
+        return new Response(JSON.stringify({ ok: true, data: { loops: [], active: [], recent: [] } }), { status: 200 })
+      }
+      return new Response('{}', { status: 404 })
+    }) as unknown as typeof fetch
+
+    const client = await connectForgeProject(
+      { tui: { remoteServer: { url: 'http://remote.example:4096' } } },
+      '/repo/b',
+    )
+
+    expect(client).not.toBeNull()
+    await client!.loops.list()
+    expect(projectLookupCount).toBe(3)
+    expect(requests.some((u) => u.includes('/api/v1/projects/project-b/loops'))).toBe(true)
+  })
+
+  test('connectForgeProject uses first project when no directory is provided', async () => {
+    const requests: string[] = []
+    globalThis.fetch = mock(async (url) => {
+      const u = String(url)
+      requests.push(u)
+      if (u.endsWith('/api/v1/projects') && !u.includes('directory=')) {
+        return new Response(JSON.stringify({ ok: true, data: { projects: [{ id: 'project-1' }] } }), { status: 200 })
+      }
+      if (u.includes('/api/v1/projects/project-1/loops')) {
+        return new Response(JSON.stringify({ ok: true, data: { loops: [], active: [], recent: [] } }), { status: 200 })
+      }
+      return new Response('{}', { status: 404 })
+    }) as unknown as typeof fetch
+
+    const client = await connectForgeProject({ tui: { remoteServer: { url: 'http://remote.example:4096' } } })
+
+    expect(client).not.toBeNull()
+    await client!.loops.list()
+    expect(requests[0]).toBe('http://remote.example:4096/api/v1/projects')
+    expect(requests[1]).toContain('/api/v1/projects/project-1/loops')
+  })
 })

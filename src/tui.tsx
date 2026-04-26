@@ -851,7 +851,7 @@ const tui: TuiPlugin = async (api) => {
   const directory = api.state.path.directory
   const client = await connectForgeProject(pluginConfig, directory)
   if (!client) {
-    api.ui.toast({ message: 'Forge API unavailable; TUI disabled', variant: 'error', duration: 5000 })
+    api.ui.toast({ message: `Forge API unavailable for ${directory}; TUI disabled`, variant: 'error', duration: 5000 })
     return
   }
 
