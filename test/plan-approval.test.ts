@@ -664,7 +664,7 @@ describe('Execute here bypass', () => {
     expect(promptSpy).not.toHaveBeenCalled()
   })
 
-  test('New session path reads plan from session-scoped repo and deletes after dispatch', async () => {
+  test('New session path reads plan from session-scoped repo and plan persists after dispatch', async () => {
     const db = createTestDb()
     openDbs.push(db)
     const testSessionID = 'test-session-abc'
@@ -672,7 +672,8 @@ describe('Execute here bypass', () => {
     const plansRepo = createPlansRepo(db)
     
     // Store a plan in session-scoped repo
-    plansRepo.writeForSession(projectId, testSessionID, '# Test Plan\n\nThis is a test plan.')
+    const originalPlan = '# Test Plan\n\nThis is a test plan.'
+    plansRepo.writeForSession(projectId, testSessionID, originalPlan)
     
     const createSpy = mock(() => Promise.resolve({ data: { id: 'new-session-123' } }))
     const promptSpy = mock(() => Promise.resolve({ data: {} }))
@@ -728,9 +729,226 @@ describe('Execute here bypass', () => {
     // Give async operations time to complete
     await new Promise(resolve => setTimeout(resolve, 100))
 
-    // Verify plan was deleted from session-scoped key
+    // Verify plan persists in session-scoped repo after dispatch
     const planAfter = plansRepo.getForSession(projectId, testSessionID)
-    expect(planAfter).toBeNull()
+    expect(planAfter?.content).toBe(originalPlan)
+  })
+
+  test('Execute here path reads plan from session-scoped repo and plan persists after dispatch', async () => {
+    const db = createTestDb()
+    openDbs.push(db)
+    const testSessionID = 'test-session-execute-here'
+
+    const plansRepo = createPlansRepo(db)
+
+    const originalPlan = '# Execute Here Plan\n\nThis plan should persist after Execute here.'
+    plansRepo.writeForSession(projectId, testSessionID, originalPlan)
+
+    const promptSpy = mock(() => Promise.resolve({ data: {} }))
+    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+
+    const loopsRepo = createLoopsRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
+
+    const ctx = {
+      projectId,
+      directory: testDir,
+      config: { executionModel: 'test-provider/test-model' } as PluginConfig,
+      logger: createMockLogger(),
+      plansRepo,
+      loopService,
+      v2: {
+        session: {
+          abort: abortSpy,
+          promptAsync: promptSpy,
+        },
+        tui: {
+          selectSession: async () => ({ data: {} }),
+        },
+      } as unknown as ToolContext['v2'],
+    } as ToolContext
+
+    const hook = createToolExecuteAfterHook(ctx)
+
+    const args = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop (worktree)', description: 'Loop worktree' },
+          { label: 'Loop', description: 'Loop in place' },
+        ],
+      }],
+    }
+    const output = {
+      title: 'Asked 1 question',
+      output: 'Execute here',
+      metadata: { answers: [['Execute here']] },
+    }
+
+    await hook(
+      { tool: 'question', sessionID: testSessionID, callID: 'test-call', args },
+      output
+    )
+
+    // Give async operations time to complete
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    // Verify plan persists in session-scoped repo after dispatch
+    const planAfter = plansRepo.getForSession(projectId, testSessionID)
+    expect(planAfter?.content).toBe(originalPlan)
+  })
+
+  test('Loop path plan persists after successful setup', async () => {
+    const db = createTestDb()
+    openDbs.push(db)
+    const testSessionID = 'test-session-loop'
+
+    const plansRepo = createPlansRepo(db)
+    const loopsRepo = createLoopsRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
+
+    const originalPlan = '# Loop Plan\n\nThis plan should persist after Loop setup.'
+    plansRepo.writeForSession(projectId, testSessionID, originalPlan)
+
+    const createSpy = mock(() => Promise.resolve({ data: { id: 'loop-session-123' } }))
+    const promptSpy = mock(() => Promise.resolve({ data: {} }))
+    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const selectSessionSpy = mock(() => Promise.resolve({ data: {} }))
+
+    const ctx = {
+      projectId,
+      directory: testDir,
+      config: { executionModel: 'test-provider/test-model', loop: { defaultMaxIterations: 5 } } as PluginConfig,
+      logger: createMockLogger(),
+      plansRepo,
+      loopService,
+      loopHandler: {
+        startWatchdog: mock(() => {}),
+      },
+      v2: {
+        session: {
+          abort: abortSpy,
+          promptAsync: promptSpy,
+          create: createSpy,
+        },
+        tui: {
+          selectSession: selectSessionSpy,
+        },
+      } as unknown as ToolContext['v2'],
+    } as ToolContext
+
+    const hook = createToolExecuteAfterHook(ctx)
+
+    const args = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop (worktree)', description: 'Loop worktree' },
+          { label: 'Loop', description: 'Loop in place' },
+        ],
+      }],
+    }
+    const output = {
+      title: 'Asked 1 question',
+      output: 'Loop',
+      metadata: { answers: [['Loop']] },
+    }
+
+    await hook(
+      { tool: 'question', sessionID: testSessionID, callID: 'test-call', args },
+      output
+    )
+
+    // Give async operations time to complete
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    // Verify plan persists in session-scoped repo after loop setup
+    const planAfter = plansRepo.getForSession(projectId, testSessionID)
+    expect(planAfter?.content).toBe(originalPlan)
+
+    // Verify loop was created and prompt was stored in loop_large_fields
+    const loopRow = db.prepare('SELECT loop_name FROM loops WHERE project_id = ?').get(projectId) as { loop_name: string } | null
+    expect(loopRow).toBeDefined()
+    if (loopRow) {
+      const largeFields = db.prepare('SELECT prompt FROM loop_large_fields WHERE project_id = ? AND loop_name = ?').get(projectId, loopRow.loop_name) as { prompt: string } | null
+      expect(largeFields?.prompt).toBe(originalPlan)
+    }
+  })
+
+  test('Loop path plan persists after failed setup', async () => {
+    const db = createTestDb()
+    openDbs.push(db)
+    const testSessionID = 'test-session-loop-fail'
+
+    const plansRepo = createPlansRepo(db)
+    const loopsRepo = createLoopsRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
+
+    const originalPlan = '# Failed Loop Plan\n\nThis plan should persist after failed Loop setup.'
+    plansRepo.writeForSession(projectId, testSessionID, originalPlan)
+
+    const createSpy = mock(() => Promise.resolve({ data: null, error: 'Failed to create session' }))
+    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+
+    const ctx = {
+      projectId,
+      directory: testDir,
+      config: { executionModel: 'test-provider/test-model', loop: { defaultMaxIterations: 5 } } as PluginConfig,
+      logger: createMockLogger(),
+      plansRepo,
+      loopService,
+      loopHandler: {
+        startWatchdog: mock(() => {}),
+      },
+      v2: {
+        session: {
+          abort: abortSpy,
+          promptAsync: mock(() => Promise.resolve({ data: {} })),
+          create: createSpy,
+        },
+        tui: {
+          selectSession: mock(() => Promise.resolve({ data: {} })),
+        },
+      } as unknown as ToolContext['v2'],
+    } as ToolContext
+
+    const hook = createToolExecuteAfterHook(ctx)
+
+    const args = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop (worktree)', description: 'Loop worktree' },
+          { label: 'Loop', description: 'Loop in place' },
+        ],
+      }],
+    }
+    const output = {
+      title: 'Asked 1 question',
+      output: 'Loop',
+      metadata: { answers: [['Loop']] },
+    }
+
+    await hook(
+      { tool: 'question', sessionID: testSessionID, callID: 'test-call', args },
+      output
+    )
+
+    // Give async operations time to complete
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    // Verify plan persists in session-scoped repo after failed loop setup
+    const planAfter = plansRepo.getForSession(projectId, testSessionID)
+    expect(planAfter?.content).toBe(originalPlan)
   })
 
   test('Two different sessions can store plans independently without collision', async () => {

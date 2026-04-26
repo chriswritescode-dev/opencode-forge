@@ -27,12 +27,18 @@ export function resolveLoopAuditorModel(
   // the user made a deliberate choice — don't fall through to config.
   // undefined means "not set" (e.g., loop launched via tool without override).
   const hasExplicitAuditor = state?.auditorModel !== undefined && state?.auditorModel !== null
+  // Priority: explicit auditor > executor model > config defaults
+  // executor model is always in the chain so a bad auditor model falls through to it
   const resolved = hasExplicitAuditor
-    ? parseModelString(state!.auditorModel)
-    : parseModelString(config.auditorModel)
+    ? (parseModelString(state!.auditorModel)
+      ?? parseModelString(state?.executionModel)
+      ?? parseModelString(config.auditorModel)
+      ?? parseModelString(config.loop?.model)
+      ?? parseModelString(config.executionModel))
+    : (parseModelString(config.auditorModel)
       ?? parseModelString(state?.executionModel)
       ?? parseModelString(config.loop?.model)
-      ?? parseModelString(config.executionModel)
+      ?? parseModelString(config.executionModel))
 
   if (logger) {
     const source = hasExplicitAuditor

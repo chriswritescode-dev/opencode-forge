@@ -44,11 +44,11 @@ export interface ForgeProjectClient {
     write(sessionId: string, content: string): Promise<boolean>
     delete(sessionId: string): Promise<boolean>
     /**
-     * Atomic execute workflow:
+     * Execute workflow:
      *   1) POST /plans/session/:id/execute
      *   2) on success, PUT /models/preferences (best-effort)
-     *   3) on success and mode in {new-session, loop, loop-worktree}, DELETE /plans/session/:id
-     * Returns the execute result; preference and delete failures are swallowed.
+     *   3) plans persist in session-scoped repo for retry capability
+     * Returns the execute result; preference failures are swallowed.
      */
     execute(
       sessionId: string,
@@ -180,13 +180,6 @@ function buildClient(
           body: JSON.stringify({ mode, executionModel: prefs.executionModel, auditorModel: prefs.auditorModel }),
         })
       } catch { /* ignore */ }
-
-      // Conditional delete (matches current tui.tsx:243-245 logic)
-      if (req.mode === 'new-session' || req.mode === 'loop' || req.mode === 'loop-worktree') {
-        try {
-          await request(`${projectPath}/plans/session/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
-        } catch { /* ignore */ }
-      }
 
       return result
     },

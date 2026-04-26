@@ -37,7 +37,7 @@ export async function setupLoop(
   ctx: ToolContext,
   options: LoopSetupOptions,
 ): Promise<string> {
-  const { v2, directory, config, loopService, logger, sandboxManager, plansRepo, projectId } = ctx
+  const { v2, directory, config, loopService, logger, sandboxManager, projectId } = ctx
   const projectDir = directory
   const maxIter = options.maxIterations ?? config.loop?.defaultMaxIterations ?? 0
   
@@ -217,12 +217,6 @@ export async function setupLoop(
     auditorModel: options.auditorModel,
     workspaceId: options.worktree ? loopContext.workspaceId : undefined,
     hostSessionId: options.hostSessionId,
-  }
-
-  // Plan is persisted into loop_large_fields.prompt by loopService.setState below.
-  // Clean up the draft entry in the plans table if a sourcePlanSessionID was passed.
-  if (options.sourcePlanSessionID) {
-    plansRepo.deleteForSession(projectId, options.sourcePlanSessionID)
   }
 
   loopService.setState(uniqueLoopName, state)

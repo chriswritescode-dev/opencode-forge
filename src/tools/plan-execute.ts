@@ -25,7 +25,6 @@ export function createPlanExecuteTools(ctx: ToolContext): Record<string, ReturnT
             return 'No plan found. Write the plan via plan-write before calling this tool, or pass it directly as the plan argument.'
           }
           planText = planRow.content
-          plansRepo.deleteForSession(projectId, context.sessionID)
         }
 
         const sessionTitle = args.title.length > 60 ? `${args.title.substring(0, 57)}...` : args.title

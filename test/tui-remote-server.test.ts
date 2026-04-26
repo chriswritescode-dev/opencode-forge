@@ -116,7 +116,7 @@ describe('TUI remote server config', () => {
     expect(client).toBeNull()
   })
 
-  test('plan.execute posts execute, then prefs, then delete for loop mode', async () => {
+  test('plan.execute posts execute, then prefs, then persists plan for loop mode', async () => {
     const requests: Array<{ url: string; method?: string; body?: string }> = []
     globalThis.fetch = mock(async (url, init) => {
       const u = String(url)
@@ -137,14 +137,12 @@ describe('TUI remote server config', () => {
     }, { mode: 'Loop', executionModel: 'provider/exec', auditorModel: 'provider/auditor' })
 
     expect(result?.loopName).toBe('loop-1')
-    // 1: project resolution, 2: execute, 3: prefs PUT, 4: plan DELETE
-    expect(requests.length).toBe(4)
+    // 1: project resolution, 2: execute, 3: prefs PUT (plan persists for retry)
+    expect(requests.length).toBe(3)
     expect(requests[1]?.url).toContain('/plans/session/host-session/execute')
     expect(requests[1]?.method).toBe('POST')
     expect(requests[2]?.url).toContain('/models/preferences')
     expect(requests[2]?.method).toBe('PUT')
-    expect(requests[3]?.url).toContain('/plans/session/host-session')
-    expect(requests[3]?.method).toBe('DELETE')
   })
 
   test('loops.start posts worktree and auditor model to the API', async () => {
