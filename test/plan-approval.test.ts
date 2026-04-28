@@ -1,11 +1,13 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { Database } from 'bun:sqlite'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { join } from 'path'
 import { createLoopService, generateUniqueName } from '../src/services/loop'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
 import { createGraphStatusRepo } from '../src/storage/repos/graph-status-repo'
+import { resolveGraphCacheDir } from '../src/storage/graph-projects'
 import { handleExecutePlan } from '../src/api/handlers/plan-execute'
 import { openForgeDatabase, resolveDataDir } from '../src/storage/database'
 import type { Logger } from '../src/types'
@@ -1032,11 +1034,14 @@ describe('plan execute API loop dispatch', () => {
     const plansRepo = createPlansRepo(db)
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const graphStatusRepo = createGraphStatusRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'api-project', createMockLogger())
     const promptAsync = mock(() => Promise.resolve({ data: {} }))
     const sessionCreate = mock(() => Promise.resolve({ data: { id: `session-${Math.random().toString(36).slice(2)}` } }))
+    const sessionAbort = mock(() => Promise.resolve({ data: {} }))
     const worktreeCreate = mock(async () => {
       const directory = `${testDataDir}/worktree`
+      mkdirSync(directory, { recursive: true })
       createGraphStatusRepo(db).write({
         projectId: 'api-project',
         cwd: directory,
@@ -1057,13 +1062,18 @@ describe('plan execute API loop dispatch', () => {
       } as PluginConfig,
       logger: createMockLogger(),
       db,
+      dataDir: resolveDataDir(),
       plansRepo,
+      loopsRepo,
+      reviewFindingsRepo,
+      graphStatusRepo,
       loopService,
+      sandboxManager: null,
       v2: {
         session: {
           create: sessionCreate,
           promptAsync,
-          abort: async () => ({ data: {} }),
+          abort: sessionAbort,
         },
         worktree: {
           create: worktreeCreate,
@@ -1072,7 +1082,11 @@ describe('plan execute API loop dispatch', () => {
       ...overrides,
     } as ToolContext
 
-    return { ctx, promptAsync, sessionCreate, worktreeCreate }
+    return { ctx, promptAsync, sessionCreate, sessionAbort, worktreeCreate, graphStatusRepo }
+  }
+
+  function apiDeps(ctx: ToolContext) {
+    return { ctx, logger: ctx.logger, projectId: 'api-project', registry: {} as never }
   }
 
   test('loop mode launches an in-place loop and persists default auditor model', async () => {
@@ -1082,7 +1096,7 @@ describe('plan execute API loop dispatch', () => {
       body: JSON.stringify({ mode: 'loop', title: 'API Plan', plan: '# API Plan' }),
     })
 
-    const res = await handleExecutePlan(req, { ctx, logger: ctx.logger, projectId: 'api-project' }, {
+    const res = await handleExecutePlan(req, apiDeps(ctx), {
       projectId: 'api-project',
       sessionId: 'host-session',
     })
@@ -1114,7 +1128,7 @@ describe('plan execute API loop dispatch', () => {
       }),
     })
 
-    const res = await handleExecutePlan(req, { ctx, logger: ctx.logger, projectId: 'api-project' }, {
+    const res = await handleExecutePlan(req, apiDeps(ctx), {
       projectId: 'api-project',
       sessionId: 'host-session',
     })
@@ -1131,5 +1145,137 @@ describe('plan execute API loop dispatch', () => {
     expect(row.worktree_dir).toBe(`${testDataDir}/worktree`)
     expect(row.execution_model).toBe('provider/request-exec')
     expect(row.auditor_model).toBe('provider/request-auditor')
+  })
+
+  test('loop-worktree mode persists sandbox container name', async () => {
+    const sandboxManager = {
+      start: mock(async () => ({ containerName: 'oc-forge-sandbox-api-worktree-plan' })),
+      stop: mock(async () => {}),
+    }
+    const { ctx } = createApiDeps({
+      config: {
+        executionModel: 'provider/default-exec',
+        auditorModel: 'provider/default-auditor',
+        sandbox: { mode: 'docker' },
+      } as PluginConfig,
+      sandboxManager: sandboxManager as unknown as ToolContext['sandboxManager'],
+    })
+    const req = new Request('http://test.local/execute', {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }),
+    })
+
+    const res = await handleExecutePlan(req, apiDeps(ctx), {
+      projectId: 'api-project',
+      sessionId: 'host-session',
+    })
+
+    expect(res.status).toBe(202)
+    const row = db.prepare('SELECT sandbox, sandbox_container FROM loops WHERE project_id = ?').get('api-project') as {
+      sandbox: number
+      sandbox_container: string | null
+    }
+    expect(row.sandbox).toBe(1)
+    expect(row.sandbox_container).toBe('oc-forge-sandbox-api-worktree-plan')
+  })
+
+  test('loop-worktree mode rolls back session and loop state when sandbox startup fails', async () => {
+    const sandboxManager = {
+      start: mock(async () => { throw new Error('sandbox failed') }),
+      stop: mock(async () => {}),
+    }
+    const { ctx, sessionAbort } = createApiDeps({
+      config: {
+        executionModel: 'provider/default-exec',
+        auditorModel: 'provider/default-auditor',
+        sandbox: { mode: 'docker' },
+      } as PluginConfig,
+      sandboxManager: sandboxManager as unknown as ToolContext['sandboxManager'],
+    })
+    const repoDir = `${testDataDir}/rollback-repo`
+    const worktreeDir = `${testDataDir}/rollback-worktree`
+    const runGit = (args: string[], cwd: string) => {
+      const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'ignore', stderr: 'ignore' })
+      expect(result.exitCode).toBe(0)
+    }
+    mkdirSync(repoDir, { recursive: true })
+    runGit(['init'], repoDir)
+    writeFileSync(join(repoDir, 'README.md'), 'test\n')
+    runGit(['add', 'README.md'], repoDir)
+    runGit(['-c', 'user.email=test@example.com', '-c', 'user.name=Test User', 'commit', '-m', 'init'], repoDir)
+    runGit(['worktree', 'add', worktreeDir, '-b', `rollback-${Date.now()}`], repoDir)
+    ctx.v2.worktree.create = mock(async () => ({
+      data: { directory: worktreeDir, branch: 'opencode/loop-api-worktree-plan' },
+      error: undefined,
+    })) as unknown as ToolContext['v2']['worktree']['create']
+    const req = new Request('http://test.local/execute', {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }),
+    })
+
+    let thrown: unknown
+    try {
+      await handleExecutePlan(req, apiDeps(ctx), {
+        projectId: 'api-project',
+        sessionId: 'host-session',
+      })
+    } catch (err) {
+      thrown = err
+    }
+
+    expect(thrown).toBeDefined()
+    expect(sessionAbort).toHaveBeenCalled()
+    expect(sandboxManager.stop).toHaveBeenCalledWith('api-worktree-plan')
+    expect(existsSync(worktreeDir)).toBe(false)
+    const row = db.prepare('SELECT loop_name FROM loops WHERE project_id = ?').get('api-project')
+    expect(row).toBeNull()
+  })
+
+  test('loop-worktree mode passes graph status repo for seeded worktree status', async () => {
+    const { ctx, graphStatusRepo } = createApiDeps()
+    const worktreeDir = `${testDataDir}/seeded-worktree`
+    mkdirSync(worktreeDir, { recursive: true })
+    const worktreeCreate = mock(async () => ({
+      data: { directory: worktreeDir, branch: 'opencode/loop-api-worktree-plan' },
+      error: undefined,
+    }))
+    ctx.v2.worktree.create = worktreeCreate as unknown as ToolContext['v2']['worktree']['create']
+
+    const sourceCacheDir = resolveGraphCacheDir('api-project', '/repo', ctx.dataDir)
+    mkdirSync(sourceCacheDir, { recursive: true })
+    const sourceGraphDb = new Database(join(sourceCacheDir, 'graph.db'))
+    sourceGraphDb.run('CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY, path TEXT, mtimeMs INTEGER)')
+    sourceGraphDb.close()
+    writeFileSync(join(sourceCacheDir, 'graph-metadata.json'), JSON.stringify({
+      projectId: 'api-project',
+      cwd: '/repo',
+      createdAt: Date.now() - 1000,
+      lastIndexedAt: Date.now() - 500,
+      indexedFileCount: 0,
+      indexedMaxMtimeMs: 0,
+    }))
+    graphStatusRepo.write({
+      projectId: 'api-project',
+      cwd: '/repo',
+      state: 'ready',
+      ready: true,
+      stats: { files: 0, symbols: 0, edges: 0, calls: 0 },
+      message: null,
+    })
+
+    const req = new Request('http://test.local/execute', {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }),
+    })
+
+    const res = await handleExecutePlan(req, apiDeps(ctx), {
+      projectId: 'api-project',
+      sessionId: 'host-session',
+    })
+
+    expect(res.status).toBe(202)
+    const targetStatus = graphStatusRepo.read('api-project', worktreeDir)
+    expect(targetStatus?.state).toBe('ready')
+    expect(targetStatus?.ready).toBe(true)
   })
 })

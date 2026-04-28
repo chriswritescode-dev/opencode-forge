@@ -769,7 +769,7 @@ export function createLoopEventHandler(
       currentState = { ...currentState!, auditSessionId: undefined }
     }
 
-    const { text: auditText, error: assistantError, lastMessageRole } = await getLastAssistantInfo(currentState.auditSessionId, currentState.worktreeDir)
+    const { text: auditText, error: assistantError, lastMessageRole } = await getLastAssistantInfo(auditSessionIdForCleanup, currentState.worktreeDir)
 
     if (lastMessageRole !== 'assistant') {
       const attempts = idleRetryAttempts.get(loopName) ?? 0

@@ -1,8 +1,8 @@
 import type { ToolContext } from './types'
 import type { Hooks } from '@opencode-ai/plugin'
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
-import { setupLoop } from './loop'
 import { extractPlanTitle, extractLoopNames, PLAN_EXECUTION_LABELS } from '../utils/plan-execution'
+import { createForgeExecutionService, type ForgeExecutionRequestContext } from '../services/execution'
 
 const LOOP_BLOCKED_TOOLS: Record<string, string> = {
   question: 'The question tool is not available during a loop. Do not ask questions — continue working on the task autonomously.',
@@ -156,41 +156,61 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
               : 'Starting loop in-place...'
             logger.log(`Plan approval: "${matchedLabel}" — starting loop with loop name "${uniqueLoopName}"`)
             
-            const loopModel = parseModelString(config.loop?.model) ?? parseModelString(config.executionModel)
             const executionModel = config.loop?.model ?? config.executionModel
             const auditorModel = config.auditorModel ?? config.loop?.model ?? config.executionModel
             
-            // Defer architect session abort until setupLoop completes, so we can roll back on failure.
-            // The plan row in plansRepo is kept until success — if setupLoop fails the user can retry.
-            setupLoop(ctx, {
-              prompt: planText,
-              sessionTitle: `Loop: ${title}`,
+            // Build execution request context
+            const execCtx: ForgeExecutionRequestContext = {
+              surface: 'approval-hook',
+              projectId: ctx.projectId,
+              directory: ctx.directory,
+              sourceSessionId: input.sessionID,
+            }
+            
+            // Create execution service
+            const service = createForgeExecutionService({
+              projectId: ctx.projectId,
+              directory: ctx.directory,
+              config,
+              logger,
+              dataDir: ctx.dataDir,
+              v2: ctx.v2,
+              plansRepo: ctx.plansRepo,
+              loopsRepo: ctx.loopsRepo,
+              graphStatusRepo: ctx.graphStatusRepo,
+              loopService: ctx.loopService,
+              loopHandler: ctx.loopHandler,
+              sandboxManager: ctx.sandboxManager,
+            })
+            
+            // Defer architect session abort until loop startup completes, so we can roll back on failure.
+            // The plan row in plansRepo is kept until success — if the service fails the user can retry.
+            service.dispatch(execCtx, {
+              type: 'loop.start',
+              source: { kind: 'inline', planText },
+              title: `Loop: ${title}`,
               loopName: uniqueLoopName,
+              mode: isWorktree ? 'worktree' : 'in-place',
               maxIterations: config.loop?.defaultMaxIterations ?? 0,
-              agent: 'code',
-              model: loopModel,
-              worktree: isWorktree,
-              executionModel: executionModel,
-              auditorModel: auditorModel,
-              onLoopStarted: (id) => ctx.loopHandler.startWatchdog(id),
+              executionModel,
+              auditorModel,
+              lifecycle: {
+                selectSession: true,
+                startWatchdog: true,
+                abortSourceSessionOnSuccess: true,
+              },
             }).then((result) => {
-              // setupLoop returns a multi-line success string starting with "Memory loop activated!".
-              // Any other non-empty string indicates a failure (e.g. "Failed to create worktree.",
-              // "Loop session created but failed to send prompt.", etc.).
-              const isSuccess = typeof result === 'string' && result.startsWith('Memory loop activated')
-              if (!isSuccess) {
-                logger.error('Plan approval: loop setup failed, keeping architect session active', result)
+              if (!result.ok) {
+                logger.error('Plan approval: loop setup failed, keeping architect session active', result.error)
                 return
               }
               logger.log('Plan approval: loop setup complete, aborting architect session')
-              v2.session.abort({ sessionID: input.sessionID }).catch((err) => {
-                logger.error('Plan approval: failed to abort architect session', err)
-              })
+              // abortSourceSessionOnSuccess handles the abort, but we keep this as a fallback
             }).catch((err) => {
-              logger.error('Plan approval: setupLoop threw unexpectedly', err)
+              logger.error('Plan approval: execution service threw unexpectedly', err as Error)
               // Unexpected throw — abort the architect session but leave the plan row so the user can retry.
-              v2.session.abort({ sessionID: input.sessionID }).catch((abortErr) => {
-                logger.error('Plan approval: failed to abort architect session', abortErr)
+              v2.session.abort({ sessionID: input.sessionID }).catch((abortErr: unknown) => {
+                logger.error('Plan approval: failed to abort architect session', abortErr as Error)
               })
             })
             return

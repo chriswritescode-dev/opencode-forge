@@ -1,338 +1,14 @@
 import { tool } from '@opencode-ai/plugin'
-import { execSync } from 'child_process'
-import { join } from 'path'
 import type { ToolContext } from './types'
 
-import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
 import { slugify } from '../utils/logger'
 import { formatSessionOutput, formatAuditResult } from '../utils/loop-format'
-import { fetchSessionOutput, MAX_RETRIES, type LoopState, type LoopSessionOutput } from '../services/loop'
-import { buildLoopPermissionRuleset } from '../constants/loop'
-import { isSandboxEnabled } from '../sandbox/context'
+import { fetchSessionOutput, MAX_RETRIES, type LoopSessionOutput } from '../services/loop'
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
-import { waitForGraphReady } from '../utils/tui-graph-status'
-import { createLoopWorkspace } from '../workspace/forge-worktree'
-import { createLoopSessionWithWorkspace } from '../utils/loop-session'
-import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { cancelLoopByName, restartLoopByName } from '../services/loop-control'
+import { createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
 
 const z = tool.schema
-
-interface LoopSetupOptions {
-  prompt: string
-  sessionTitle: string
-  loopName: string
-  sourcePlanSessionID?: string
-  maxIterations: number
-  agent?: string
-  model?: { providerID: string; modelID: string }
-  worktree?: boolean
-  executionModel?: string
-  auditorModel?: string
-  onLoopStarted?: (loopName: string) => void
-  hostSessionId?: string
-}
-
-export async function setupLoop(
-  ctx: ToolContext,
-  options: LoopSetupOptions,
-): Promise<string> {
-  const { v2, directory, config, loopService, logger, sandboxManager, projectId } = ctx
-  const projectDir = directory
-  const maxIter = options.maxIterations ?? config.loop?.defaultMaxIterations ?? 0
-  
-  const uniqueLoopName = loopService.generateUniqueLoopName(options.loopName)
-
-  interface LoopContext {
-    sessionId: string
-    directory: string
-    hostDirectory?: string
-    branch?: string
-    worktree: boolean
-    workspaceId?: string
-  }
-
-  let loopContext: LoopContext
-
-  if (!options.worktree) {
-    const permissionRuleset = buildLoopPermissionRuleset({
-      isWorktree: false,
-    })
-
-    let currentBranch: string | undefined
-    try {
-      currentBranch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: projectDir, encoding: 'utf-8' }).trim()
-    } catch (_err) {
-      logger.log(`loop: no git branch detected, running without branch info`)
-    }
-
-    const createResult = await v2.session.create({
-      title: options.sessionTitle,
-      directory: projectDir,
-      permission: permissionRuleset,
-    })
-
-    if (createResult.error || !createResult.data) {
-      logger.error(`loop: failed to create session`, createResult.error)
-      return 'Failed to create loop session.'
-    }
-
-    loopContext = {
-      sessionId: createResult.data.id,
-      directory: projectDir,
-      branch: currentBranch,
-      worktree: false,
-    }
-  } else {
-    // Worktree mode: create worktree first to get the actual directory
-    const worktreeResult = await v2.worktree.create({
-      worktreeCreateInput: { name: uniqueLoopName },
-    })
-
-    if (worktreeResult.error || !worktreeResult.data) {
-      logger.error(`loop: failed to create worktree`, worktreeResult.error)
-      return 'Failed to create worktree.'
-    }
-
-    const hostWorktreeDir = worktreeResult.data.directory
-    const worktreeInfo = worktreeResult.data
-    logger.log(`loop: worktree created at ${hostWorktreeDir} (branch: ${worktreeInfo.branch})`)
-
-    // Always use the host worktree path as session.directory
-    // The bind mount makes host and container paths interchangeable for the same files
-    const sandboxEnabled = isSandboxEnabled(config, ctx.sandboxManager)
-    const sessionDirectory = hostWorktreeDir
-
-    // Seed graph cache from source repo to worktree scope before session creation
-    const seedResult = await (async () => {
-      try {
-        const { seedWorktreeGraphScope } = await import('../utils/worktree-graph-seed')
-        return await seedWorktreeGraphScope({
-          projectId: ctx.projectId,
-          sourceCwd: projectDir,
-          targetCwd: hostWorktreeDir,
-          dataDir: ctx.dataDir,
-          graphStatusRepo: ctx.graphStatusRepo,
-          logger,
-        })
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err)
-        logger.log(`loop: graph seed error (non-fatal): ${reason}`)
-        return { seeded: false, reason }
-      }
-    })()
-    logger.log(`loop: graph seed ${seedResult.seeded ? 'reused' : 'skipped'} (${seedResult.reason})`)
-
-    // Optionally create a workspace and bind the session so the worktree loop
-    // can be switched to directly from the TUI. If the host runtime doesn't
-    // expose experimental_workspace, the loop continues without workspace
-    // backing — the user just can't switch via the workspace UI.
-    const workspace = await createLoopWorkspace(v2, {
-      loopName: uniqueLoopName,
-      directory: hostWorktreeDir,
-      branch: worktreeInfo.branch,
-    })
-
-    if (workspace) {
-      logger.log(`loop: workspace ${workspace.workspaceId} created for ${uniqueLoopName}`)
-    } else {
-      logger.log(`loop: workspace API unavailable or create failed; continuing without workspace backing for ${uniqueLoopName}`)
-    }
-
-    const permissionRuleset = buildLoopPermissionRuleset({
-      isWorktree: true,
-      isSandbox: sandboxEnabled,
-    })
-
-    logger.log(`loop: creating session with directory=${sessionDirectory} (host: ${hostWorktreeDir}, sandbox: ${sandboxEnabled})`)
-
-    const createResult = await createLoopSessionWithWorkspace({
-      v2,
-      title: options.sessionTitle,
-      directory: sessionDirectory,
-      permission: permissionRuleset,
-      workspaceId: workspace?.workspaceId,
-      logPrefix: 'loop',
-      logger,
-    })
-
-    if (!createResult) {
-      await cleanupLoopWorktree({
-        worktreeDir: hostWorktreeDir,
-        projectId: ctx.projectId,
-        dataDir: ctx.dataDir,
-        logPrefix: 'loop',
-        logger,
-      })
-      return 'Failed to create loop session.'
-    }
-
-    loopContext = {
-      sessionId: createResult.sessionId,
-      directory: sessionDirectory,
-      branch: worktreeInfo.branch,
-      worktree: true,
-      hostDirectory: hostWorktreeDir,
-      workspaceId: createResult.boundWorkspaceId,
-    }
-
-    if (createResult.bindFailed) {
-      logger.log(`loop: continuing without workspace backing for ${uniqueLoopName}`)
-    }
-  }
-
-  let sandboxContainer: string | undefined
-  const sandboxEnabled = isSandboxEnabled(config, sandboxManager) && !!options.worktree
-
-  if (sandboxEnabled && options.worktree) {
-    try {
-      const result = await sandboxManager!.start(uniqueLoopName, loopContext.hostDirectory!)
-      sandboxContainer = result.containerName
-      logger.log(`Sandbox container ${sandboxContainer} started for loop ${uniqueLoopName} (host dir: ${loopContext.hostDirectory})`)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      logger.error(`loop: failed to start sandbox container`, err)
-      return `Failed to start sandbox container: ${message}`
-    }
-  }
-
-  const state: LoopState = {
-    active: true,
-    sessionId: loopContext.sessionId,
-    loopName: uniqueLoopName,
-    worktreeDir: loopContext.hostDirectory!,
-    projectDir: projectDir,
-    worktreeBranch: loopContext.branch,
-    iteration: 1,
-    maxIterations: maxIter,
-    startedAt: new Date().toISOString(),
-    prompt: options.prompt,
-    phase: 'coding',
-    errorCount: 0,
-    auditCount: 0,
-    worktree: options.worktree,
-    sandbox: sandboxEnabled,
-    sandboxContainer,
-    executionModel: options.executionModel,
-    auditorModel: options.auditorModel,
-    workspaceId: options.worktree ? loopContext.workspaceId : undefined,
-    hostSessionId: options.hostSessionId,
-  }
-
-  loopService.setState(uniqueLoopName, state)
-  loopService.registerLoopSession(loopContext.sessionId, uniqueLoopName)
-  logger.log(`loop: state stored for loop=${uniqueLoopName}`)
-
-  // Wait for worktree graph to be ready before first prompt (only for worktree mode)
-  if (options.worktree) {
-    try {
-      const waitResult = await waitForGraphReady(projectId, {
-        cwd: loopContext.hostDirectory!,
-        dbPathOverride: ctx.dataDir ? join(ctx.dataDir, 'graph.db') : undefined,
-        pollMs: 100,
-        timeoutMs: 5000,
-      })
-      
-      if (waitResult === 'timeout') {
-        logger.log(`setupLoop: graph readiness timeout for worktree ${loopContext.hostDirectory}`)
-      } else if (waitResult === null) {
-        logger.log(`setupLoop: graph status unavailable for worktree ${loopContext.hostDirectory}`)
-      } else {
-        logger.log(`setupLoop: graph ready (${waitResult.state}) for worktree ${loopContext.hostDirectory}`)
-      }
-    } catch (err) {
-      // Non-fatal: continue even if wait fails
-      logger.log(`setupLoop: graph wait error (non-fatal)`, err)
-    }
-  }
-
-  const promptText = options.prompt
-  const sessionDir = state.worktreeDir
-
-  logger.log(`setupLoop: initial prompt sessionID=${loopContext.sessionId} dir=${sessionDir} model=${options.model ? `${options.model.providerID}/${options.model.modelID}` : '(default)'}`)
-
-  const { result: promptResult, usedModel: actualModel } = await retryWithModelFallback(
-    () => v2.session.promptAsync({
-      sessionID: loopContext.sessionId,
-      directory: sessionDir,
-      parts: [{ type: 'text' as const, text: promptText }],
-      ...(options.agent && { agent: options.agent }),
-      model: options.model!,
-    }),
-    () => v2.session.promptAsync({
-      sessionID: loopContext.sessionId,
-      directory: sessionDir,
-      parts: [{ type: 'text' as const, text: promptText }],
-      ...(options.agent && { agent: options.agent }),
-    }),
-    options.model,
-    logger,
-  )
-
-    if (promptResult.error) {
-      logger.error(`loop: failed to send prompt`, promptResult.error)
-      loopService.deleteState(uniqueLoopName)
-      if (sandboxEnabled) {
-      try {
-        await sandboxManager!.stop(uniqueLoopName)
-      } catch (sbxErr) {
-        logger.error(`loop: failed to stop sandbox container on prompt failure`, sbxErr)
-      }
-    }
-    if (options.worktree) {
-      await cleanupLoopWorktree({
-        worktreeDir: loopContext.hostDirectory!,
-        projectId: ctx.projectId,
-        dataDir: ctx.dataDir,
-        logPrefix: 'loop',
-        logger,
-      })
-    }
-    return !options.worktree
-      ? 'Loop session created but failed to send prompt.'
-      : 'Loop session created but failed to send prompt. Cleaned up.'
-  }
-
-  options.onLoopStarted?.(uniqueLoopName)
-
-  // Navigate TUI to the new session for both worktree and non-worktree loops.
-  // Worktree loops are workspace-backed, so selectSession works across workspaces.
-  v2.tui.selectSession({ sessionID: loopContext.sessionId }).catch((err) => {
-    logger.error('loop: failed to navigate TUI to new session', err)
-  })
-
-  const maxInfo = maxIter > 0 ? maxIter.toString() : 'unlimited'
-  const modelInfo = actualModel ? `${actualModel.providerID}/${actualModel.modelID}` : 'default'
-
-  const lines: string[] = [
-    !options.worktree ? 'Memory loop activated! (in-place mode)' : 'Memory loop activated!',
-    '',
-    `Session: ${loopContext.sessionId}`,
-    `Title: ${options.sessionTitle}`,
-  ]
-
-  if (!options.worktree) {
-    lines.push(`Directory: ${loopContext.directory}`)
-    if (loopContext.branch) {
-      lines.push(`Branch: ${loopContext.branch} (in-place)`)
-    }
-  } else {
-    lines.push(`Loop name: ${uniqueLoopName}`)
-    lines.push(`Worktree: ${loopContext.directory}`)
-    lines.push(`Branch: ${loopContext.branch}`)
-  }
-
-  lines.push(
-    `Model: ${modelInfo}`,
-    `Max iterations: ${maxInfo}`,
-    '',
-    'The loop will automatically continue when the session goes idle.',
-    'Your job is done — just confirm to the user that the loop has been launched.',
-    'The user can run loop-status or loop-cancel later if needed.',
-  )
-
-  return lines.join('\n')
-}
 
 export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
   const { v2, loopService, loopHandler, config, logger } = ctx
@@ -352,40 +28,101 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           return 'Loops are disabled in plugin config. Use plan-execute instead.'
         }
 
-        logger.log(`loop: creating worktree for plan="${args.title}"`)
+        logger.log(`loop: creating ${args.worktree ? 'worktree' : 'in-place'} loop for plan="${args.title}"`)
 
         let planText = args.plan
-        let sourcePlanSessionID: string | undefined
+        let source: PlanSource
         if (!planText) {
           const planRow = ctx.plansRepo.getForSession(ctx.projectId, context.sessionID)
           if (!planRow) {
             return 'No plan found. Write the plan via plan-write before calling this tool, or pass it directly as the plan argument.'
           }
           planText = planRow.content
-          sourcePlanSessionID = context.sessionID
+          source = { kind: 'stored', sessionId: context.sessionID }
+        } else {
+          source = { kind: 'inline', planText }
         }
 
         const sessionTitle = args.title.length > 60 ? `${args.title.substring(0, 57)}...` : args.title
-        const loopModel = parseModelString(config.loop?.model) ?? parseModelString(config.executionModel)
         const executionModel = config.loop?.model ?? config.executionModel
         const auditorModel = config.auditorModel ?? config.loop?.model ?? config.executionModel
-        
         const loopName = args.loopName ? slugify(args.loopName) : slugify(sessionTitle)
 
-        return setupLoop(ctx, {
-          prompt: planText,
-          sessionTitle: `Loop: ${sessionTitle}`,
-          loopName,
-          sourcePlanSessionID,
-          maxIterations: config.loop?.defaultMaxIterations ?? 0,
-          agent: 'code',
-          model: loopModel,
-          worktree: args.worktree,
-          executionModel: executionModel,
-          auditorModel: auditorModel,
-          hostSessionId: args.hostSessionId,
-          onLoopStarted: (id) => loopHandler.startWatchdog(id),
+        // Build execution request context
+        const execCtx: ForgeExecutionRequestContext = {
+          surface: 'tool',
+          projectId: ctx.projectId,
+          directory: ctx.directory,
+          sourceSessionId: context.sessionID,
+        }
+
+        // Create execution service
+        const service = createForgeExecutionService({
+          projectId: ctx.projectId,
+          directory: ctx.directory,
+          config,
+          logger,
+          dataDir: ctx.dataDir,
+          v2: ctx.v2,
+          plansRepo: ctx.plansRepo,
+          loopsRepo: ctx.loopsRepo,
+          graphStatusRepo: ctx.graphStatusRepo,
+          loopService: ctx.loopService,
+          loopHandler: ctx.loopHandler,
+          sandboxManager: ctx.sandboxManager,
         })
+
+        const result = await service.dispatch(execCtx, {
+          type: 'loop.start',
+          source,
+          title: sessionTitle,
+          loopName,
+          mode: args.worktree ? 'worktree' : 'in-place',
+          maxIterations: config.loop?.defaultMaxIterations ?? 0,
+          executionModel,
+          auditorModel,
+          hostSessionId: args.hostSessionId,
+          lifecycle: {
+            selectSession: true,
+            startWatchdog: true,
+          },
+        })
+
+        if (!result.ok) {
+          logger.error('loop: failed to start loop', result.error)
+          return `Failed to start loop: ${result.error.message}`
+        }
+
+        // Format success message to match existing output
+        const maxInfo = result.data.maxIterations > 0 ? result.data.maxIterations.toString() : 'unlimited'
+        const modelInfo = result.data.modelUsed ?? 'default'
+        const modeInfo = result.data.mode === 'worktree' ? '' : ' (in-place mode)'
+
+        const lines: string[] = [
+          `Memory loop activated!${modeInfo}`,
+          '',
+          `Session: ${result.data.sessionId}`,
+          `Title: Loop: ${sessionTitle}`,
+        ]
+
+        if (result.data.mode === 'worktree') {
+          lines.push(`Loop name: ${result.data.loopName}`)
+          lines.push(`Worktree: ${result.data.worktreeDir}`)
+          lines.push(`Branch: ${result.data.worktreeBranch ?? 'unknown'}`)
+        } else {
+          lines.push(`Directory: ${ctx.directory}`)
+        }
+
+        lines.push(
+          `Model: ${modelInfo}`,
+          `Max iterations: ${maxInfo}`,
+          '',
+          'The loop will automatically continue when the session goes idle.',
+          'Your job is done — just confirm to the user that the loop has been launched.',
+          'The user can run loop-status or loop-cancel later if needed.',
+        )
+
+        return lines.join('\n')
       },
     }),
 

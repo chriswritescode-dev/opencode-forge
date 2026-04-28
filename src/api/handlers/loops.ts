@@ -1,11 +1,11 @@
 import type { ApiDeps } from '../types'
 import { ok } from '../response'
 import { ApiError, notFound } from '../errors'
-import { parseJsonBody, LoopStartBody, LoopRestartBody } from '../schemas'
+import { parseJsonBody, LoopStartBody, LoopRestartBody, type LoopStart } from '../schemas'
 import { listLoopStatesFromDb } from '../../storage/cli-helpers'
 import { openDatabase } from '../../cli/utils'
-import { launchFreshLoop } from '../../utils/loop-launch'
 import { cancelLoopByName, restartLoopByName } from '../../services/loop-control'
+import { createForgeExecutionService, type ForgeExecutionRequestContext, type ForgeExecutionCommand } from '../../services/execution'
 import type { LoopInfo } from '../../utils/tui-refresh-helpers'
 
 function toLoopInfo(entry: ReturnType<typeof listLoopStatesFromDb>[number]): LoopInfo & { loopName: string; status: string } {
@@ -83,31 +83,59 @@ export async function handleStartLoop(
   params: Record<string, string>
 ): Promise<Response> {
   const { projectId } = params
-  const body = await parseJsonBody(req, LoopStartBody)
+  const body = await parseJsonBody<LoopStart>(req, LoopStartBody)
 
   const { ctx } = deps
 
-  const result = await launchFreshLoop({
-    planText: body.plan,
-    title: body.title,
-    directory: ctx.directory,
+  // Build execution request context
+  const execCtx: ForgeExecutionRequestContext = {
+    surface: 'api',
     projectId,
-    isWorktree: body.worktree ?? false,
+    directory: ctx.directory,
+  }
+
+  // Create execution service
+  const service = createForgeExecutionService({
+    projectId,
+    directory: ctx.directory,
+    config: ctx.config,
+    logger: ctx.logger,
+    dataDir: ctx.dataDir,
     v2: ctx.v2,
+    plansRepo: ctx.plansRepo,
+    loopsRepo: ctx.loopsRepo,
+    graphStatusRepo: ctx.graphStatusRepo,
+    loopService: ctx.loopService,
+    loopHandler: ctx.loopHandler,
+    sandboxManager: ctx.sandboxManager,
+  })
+
+  const command: ForgeExecutionCommand = {
+    type: 'loop.start',
+    source: { kind: 'inline', planText: body.plan },
+    title: body.title,
+    mode: body.worktree ?? false ? 'worktree' : 'in-place',
     executionModel: body.executionModel,
     auditorModel: body.auditorModel,
     hostSessionId: body.hostSessionId,
-  })
+    lifecycle: {
+      selectSession: true,
+      startWatchdog: true,
+    },
+  }
 
-  if (!result) {
-    throw new Error('Failed to launch loop')
+  const result = await service.dispatch(execCtx, command)
+
+  if (!result.ok) {
+    throw new ApiError(result.error.status, result.error.code, result.error.message)
   }
 
   return ok(
     {
-      loopName: result.loopName,
-      sessionId: result.sessionId,
-      worktreeDir: result.worktreeDir,
+      loopName: result.data.loopName,
+      sessionId: result.data.sessionId,
+      worktreeDir: result.data.worktreeDir,
+      displayName: result.data.displayName,
     },
     202
   )
@@ -135,7 +163,7 @@ export async function handleRestartLoop(
   params: Record<string, string>
 ): Promise<Response> {
   const { loopName } = params
-  const body = await parseJsonBody(_req, LoopRestartBody)
+  const body = await parseJsonBody<import('../schemas').LoopRestart>(_req, LoopRestartBody)
 
   const result = await restartLoopByName(deps.ctx, loopName, body.force ?? false)
 

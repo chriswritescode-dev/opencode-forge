@@ -1,6 +1,6 @@
 import { tool } from '@opencode-ai/plugin'
 import type { ToolContext } from './types'
-import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
+import { createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
 
 const z = tool.schema
 
@@ -19,91 +19,82 @@ export function createPlanExecuteTools(ctx: ToolContext): Record<string, ReturnT
         logger.log(`plan-execute: ${args.inPlace ? 'switching to code agent' : 'creating session'} titled "${args.title}"`)
 
         let planText = args.plan
+        let source: PlanSource
         if (!planText) {
           const planRow = plansRepo.getForSession(projectId, context.sessionID)
           if (!planRow) {
             return 'No plan found. Write the plan via plan-write before calling this tool, or pass it directly as the plan argument.'
           }
           planText = planRow.content
+          source = { kind: 'stored', sessionId: context.sessionID }
+        } else {
+          source = { kind: 'inline', planText }
         }
 
         const sessionTitle = args.title.length > 60 ? `${args.title.substring(0, 57)}...` : args.title
-        const executionModel = parseModelString(config.executionModel)
+        const executionModel = config.executionModel
+
+        // Build execution request context
+        const execCtx: ForgeExecutionRequestContext = {
+          surface: 'tool',
+          projectId,
+          directory,
+          sourceSessionId: context.sessionID,
+        }
+
+        // Create execution service
+        const service = createForgeExecutionService({
+          projectId,
+          directory,
+          config,
+          logger,
+          dataDir: ctx.dataDir,
+          v2,
+          plansRepo,
+          loopsRepo: ctx.loopsRepo,
+          graphStatusRepo: ctx.graphStatusRepo,
+          loopService: ctx.loopService,
+          loopHandler: ctx.loopHandler,
+          sandboxManager: ctx.sandboxManager,
+        })
 
         if (args.inPlace) {
-          const inPlacePrompt = `The architect agent has created an implementation plan in this conversation above. You are now the code agent taking over this session. Your job is to execute the plan — edit files, run commands, create tests, and implement every phase. Do NOT just describe or summarize the changes. Actually make them.\n\nPlan reference: ${planText}`
-
-          const { result: promptResult, usedModel: actualModel } = await retryWithModelFallback(
-            () => v2.session.promptAsync({
-              sessionID: context.sessionID,
-              directory,
-              agent: 'code',
-              parts: [{ type: 'text' as const, text: inPlacePrompt }],
-              ...(executionModel ? { model: executionModel } : {}),
-            }),
-            () => v2.session.promptAsync({
-              sessionID: context.sessionID,
-              directory,
-              agent: 'code',
-              parts: [{ type: 'text' as const, text: inPlacePrompt }],
-            }),
+          // Execute-here mode
+          const result = await service.dispatch(execCtx, {
+            type: 'plan.execute.here',
+            source,
+            targetSessionId: context.sessionID,
             executionModel,
-            logger,
-          )
+            title: sessionTitle,
+          })
 
-          if (promptResult.error) {
-            logger.error(`plan-execute: in-place agent switch failed`, promptResult.error)
-            return `Failed to switch to code agent. Error: ${JSON.stringify(promptResult.error)}`
+          if (!result.ok) {
+            logger.error(`plan-execute: in-place execution failed`, result.error)
+            return `Failed to switch to code agent. Error: ${result.error.message}`
           }
 
-          const modelInfo = actualModel ? `${actualModel.providerID}/${actualModel.modelID}` : 'default'
+          const modelInfo = result.data.modelUsed ?? 'default'
           return `Switching to code agent for execution.\n\nTitle: ${sessionTitle}\nModel: ${modelInfo}\nAgent: code`
         }
 
-        const createResult = await v2.session.create({
+        // New session mode
+        const result = await service.dispatch(execCtx, {
+          type: 'plan.execute.newSession',
+          source,
+          executionModel,
           title: sessionTitle,
-          directory,
+          lifecycle: {
+            selectSession: true,
+          },
         })
 
-        if (createResult.error || !createResult.data) {
-          logger.error(`plan-execute: failed to create session`, createResult.error)
+        if (!result.ok) {
+          logger.error(`plan-execute: failed to create session`, result.error)
           return 'Failed to create new session.'
         }
 
-        const newSessionId = createResult.data.id
-        logger.log(`plan-execute: created session=${newSessionId}`)
-
-        const { result: promptResult, usedModel: actualModel } = await retryWithModelFallback(
-          () => v2.session.promptAsync({
-            sessionID: newSessionId,
-            directory,
-            parts: [{ type: 'text' as const, text: planText }],
-            agent: 'code',
-            model: executionModel!,
-          }),
-          () => v2.session.promptAsync({
-            sessionID: newSessionId,
-            directory,
-            parts: [{ type: 'text' as const, text: planText }],
-            agent: 'code',
-          }),
-          executionModel,
-          logger,
-        )
-
-        if (promptResult.error) {
-          logger.error(`plan-execute: failed to prompt session`, promptResult.error)
-          return `Session created (${newSessionId}) but failed to send plan. Switch to it and paste the plan manually.`
-        }
-
-        logger.log(`plan-execute: prompted session=${newSessionId}`)
-
-        v2.tui.selectSession({ sessionID: newSessionId }).catch((err) => {
-          logger.error('plan-execute: failed to navigate TUI to new session', err)
-        })
-
-        const modelInfo = actualModel ? `${actualModel.providerID}/${actualModel.modelID}` : 'default'
-        return `Implementation session created and plan sent.\n\nSession: ${newSessionId}\nTitle: ${sessionTitle}\nModel: ${modelInfo}\n\nNavigated to the new session. You can change the model from the session dropdown.`
+        const modelInfo = result.data.modelUsed ?? 'default'
+        return `Implementation session created and plan sent.\n\nSession: ${result.data.sessionId}\nTitle: ${sessionTitle}\nModel: ${modelInfo}\n\nNavigated to the new session. You can change the model from the session dropdown.`
       },
     }),
   }

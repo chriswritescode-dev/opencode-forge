@@ -310,6 +310,7 @@ describe('loop-hooks integration', () => {
       
       const loopName = 'test-loop-bug-blocked'
       const sessionId = 'test-session-456'
+      const auditSessionId = 'test-audit-session-456'
       const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
       const worktreeBranch = 'loop-bug-branch'
       
@@ -342,7 +343,7 @@ describe('loop-hooks integration', () => {
         completionSummary: null,
         workspaceId: null,
         hostSessionId: null,
-        auditSessionId: null,
+        auditSessionId,
       }, {
         prompt: 'Test prompt',
         lastAuditResult: null,
@@ -363,7 +364,7 @@ describe('loop-hooks integration', () => {
           type: 'session.status' as const,
           properties: {
             status: { type: 'idle' as const },
-            sessionID: sessionId,
+            sessionID: auditSessionId,
           },
         },
       }
@@ -417,6 +418,7 @@ describe('loop-hooks integration', () => {
       
       const loopName = 'test-loop-retry'
       const sessionId = 'test-session-789'
+      const auditSessionId = 'test-audit-session-789'
       const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
       const worktreeBranch = 'loop-retry-branch'
       
@@ -448,7 +450,7 @@ describe('loop-hooks integration', () => {
         completionSummary: null,
         workspaceId: null,
         hostSessionId: null,
-        auditSessionId: null,
+        auditSessionId,
       }, {
         prompt: 'Test prompt',
         lastAuditResult: null,
@@ -459,7 +461,7 @@ describe('loop-hooks integration', () => {
           type: 'session.status' as const,
           properties: {
             status: { type: 'idle' as const },
-            sessionID: sessionId,
+            sessionID: auditSessionId,
           },
         },
       }
@@ -506,6 +508,7 @@ describe('loop-hooks integration', () => {
       
       const loopName = 'test-loop-retry-exhaust'
       const sessionId = 'test-session-999'
+      const auditSessionId = 'test-audit-session-999'
       const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
       const worktreeBranch = 'loop-exhaust-branch'
       
@@ -537,7 +540,7 @@ describe('loop-hooks integration', () => {
         completionSummary: null,
         workspaceId: null,
         hostSessionId: null,
-        auditSessionId: null,
+        auditSessionId,
       }, {
         prompt: 'Test prompt',
         lastAuditResult: null,
@@ -548,7 +551,7 @@ describe('loop-hooks integration', () => {
           type: 'session.status' as const,
           properties: {
             status: { type: 'idle' as const },
-            sessionID: sessionId,
+            sessionID: auditSessionId,
           },
         },
       }
@@ -576,6 +579,7 @@ describe('loop-hooks integration', () => {
       
       const loopName = 'test-loop-write-fail'
       const sessionId = 'test-session-fail'
+      const auditSessionId = 'test-audit-session-fail'
       const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
       const worktreeBranch = 'loop-fail-branch'
       
@@ -607,7 +611,7 @@ describe('loop-hooks integration', () => {
         completionSummary: null,
         workspaceId: null,
         hostSessionId: null,
-        auditSessionId: null,
+        auditSessionId,
       }, {
         prompt: 'Test prompt',
         lastAuditResult: null,
@@ -618,7 +622,7 @@ describe('loop-hooks integration', () => {
           type: 'session.status' as const,
           properties: {
             status: { type: 'idle' as const },
-            sessionID: sessionId,
+            sessionID: auditSessionId,
           },
         },
       }
@@ -676,6 +680,7 @@ describe('loop-hooks integration', () => {
       
       const loopName = 'test-loop-rotate-workspace'
       const sessionId = 'test-session-rotate'
+      const auditSessionId = 'test-audit-session-rotate'
       const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
       const worktreeBranch = 'loop-rotate-branch'
       
@@ -708,7 +713,7 @@ describe('loop-hooks integration', () => {
         completionSummary: null,
         workspaceId,
         hostSessionId: 'host-123',
-        auditSessionId: null,
+        auditSessionId,
       }, {
         prompt: 'Test prompt',
         lastAuditResult: null,
@@ -734,7 +739,7 @@ describe('loop-hooks integration', () => {
           type: 'session.status' as const,
           properties: {
             status: { type: 'idle' as const },
-            sessionID: sessionId,
+            sessionID: auditSessionId,
           },
         },
       }
@@ -788,6 +793,7 @@ describe('loop-hooks integration', () => {
 
       const loopName = 'test-loop-bind-fail'
       const sessionId = 'test-session-bind-fail'
+      const auditSessionId = 'test-audit-session-bind-fail'
       const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
       const worktreeBranch = 'loop-bind-fail-branch'
 
@@ -820,7 +826,7 @@ describe('loop-hooks integration', () => {
         completionSummary: null,
         workspaceId,
         hostSessionId,
-        auditSessionId: null,
+        auditSessionId,
       }, {
         prompt: 'Test prompt',
         lastAuditResult: null,
@@ -841,7 +847,7 @@ describe('loop-hooks integration', () => {
           type: 'session.status' as const,
           properties: {
             status: { type: 'idle' as const },
-            sessionID: sessionId,
+            sessionID: auditSessionId,
           },
         },
       }
@@ -869,7 +875,7 @@ describe('loop-hooks integration', () => {
 
   describe('phase flow invariants', () => {
     it('final iteration runs audit before max_iterations termination', async () => {
-      const promptCalls: Array<{ parts: unknown[] }> = []
+      const promptCalls: Array<{ agent?: string; parts: unknown[] }> = []
       
       const v2Client = {
         session: {
@@ -877,7 +883,7 @@ describe('loop-hooks integration', () => {
             data: [{ info: { role: 'assistant' }, parts: [{ type: 'text', text: 'Code changes complete.' }] }],
           }),
           promptAsync: async (opts: any) => {
-            promptCalls.push({ parts: opts.parts })
+            promptCalls.push({ agent: opts.agent, parts: opts.parts })
             return { data: {}, error: null }
           },
           abort: async () => {},
@@ -955,8 +961,7 @@ describe('loop-hooks integration', () => {
       expect(state?.phase).toBe('auditing')
       
       expect(promptCalls.length).toBeGreaterThan(0)
-      const auditPrompt = promptCalls[0].parts[0] as any
-      expect(auditPrompt.agent).toBe('auditor')
+      expect(promptCalls[0].agent).toBe('auditor-loop')
       
       rmSync(worktreeDir, { recursive: true, force: true })
     })
@@ -971,6 +976,7 @@ describe('loop-hooks integration', () => {
       
       const loopName = 'test-loop-max-audit-done'
       const sessionId = 'test-session-max'
+      const auditSessionId = 'test-audit-session-max'
       const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
       const worktreeBranch = 'loop-max-branch'
       
@@ -1003,7 +1009,7 @@ describe('loop-hooks integration', () => {
         completionSummary: null,
         workspaceId: null,
         hostSessionId: null,
-        auditSessionId: null,
+        auditSessionId,
       }, {
         prompt: 'Test prompt',
         lastAuditResult: null,
@@ -1024,7 +1030,7 @@ describe('loop-hooks integration', () => {
           type: 'session.status' as const,
           properties: {
             status: { type: 'idle' as const },
-            sessionID: sessionId,
+            sessionID: auditSessionId,
           },
         },
       }
@@ -1052,6 +1058,7 @@ describe('loop-hooks integration', () => {
       
       const loopName = 'test-loop-clear-final'
       const sessionId = 'test-session-clear'
+      const auditSessionId = 'test-audit-session-clear'
       const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
       const worktreeBranch = 'loop-clear-branch'
       
@@ -1083,7 +1090,7 @@ describe('loop-hooks integration', () => {
         completionSummary: null,
         workspaceId: null,
         hostSessionId: null,
-        auditSessionId: null,
+        auditSessionId,
       }, {
         prompt: 'Test prompt',
         lastAuditResult: null,
@@ -1094,7 +1101,7 @@ describe('loop-hooks integration', () => {
           type: 'session.status' as const,
           properties: {
             status: { type: 'idle' as const },
-            sessionID: sessionId,
+            sessionID: auditSessionId,
           },
         },
       }

@@ -1,9 +1,8 @@
 import type { ApiDeps } from '../types'
 import { ok } from '../response'
-import { notFound, badRequest } from '../errors'
-import { parseJsonBody, PlanExecuteBody } from '../schemas'
-import { runPlanExecution } from '../../utils/plan-execution-runner'
-import { launchFreshLoop } from '../../utils/loop-launch'
+import { notFound, badRequest, ApiError } from '../errors'
+import { parseJsonBody, PlanExecuteBody, type PlanExecute } from '../schemas'
+import { createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource, type ForgeExecutionCommand } from '../../services/execution'
 
 export async function handleExecutePlan(
   req: Request,
@@ -11,41 +10,73 @@ export async function handleExecutePlan(
   params: Record<string, string>
 ): Promise<Response> {
   const { projectId, sessionId } = params
-  const body = await parseJsonBody(req, PlanExecuteBody)
+  const body = await parseJsonBody<PlanExecute>(req, PlanExecuteBody)
 
   // Get plan content - either from body override or from storage
   let planText = body.plan
+  let source: PlanSource
   if (!planText) {
     const planRow = deps.ctx.plansRepo.getForSession(projectId, sessionId)
     if (!planRow) {
       throw notFound('plan not found')
     }
     planText = planRow.content
+    source = { kind: 'stored', sessionId }
+  } else {
+    source = { kind: 'inline', planText }
   }
 
   const { ctx } = deps
   const executionModel = body.executionModel || ctx.config.loop?.model || ctx.config.executionModel
   const auditorModel = body.auditorModel || ctx.config.auditorModel
 
+  // Build execution request context
+  const execCtx: ForgeExecutionRequestContext = {
+    surface: 'api',
+    projectId,
+    directory: ctx.directory,
+    sourceSessionId: sessionId,
+  }
+
+  // Create execution service
+  const service = createForgeExecutionService({
+    projectId,
+    directory: ctx.directory,
+    config: ctx.config,
+    logger: ctx.logger,
+    dataDir: ctx.dataDir,
+    v2: ctx.v2,
+    plansRepo: ctx.plansRepo,
+    loopsRepo: ctx.loopsRepo,
+    graphStatusRepo: ctx.graphStatusRepo,
+    loopService: ctx.loopService,
+    loopHandler: ctx.loopHandler,
+    sandboxManager: ctx.sandboxManager,
+  })
+
   switch (body.mode) {
     case 'new-session': {
-      const result = await runPlanExecution({
-        planText,
-        title: body.title,
-        directory: ctx.directory,
-        projectId,
-        sessionId,
+      const command: ForgeExecutionCommand = {
+        type: 'plan.execute.newSession',
+        source,
         executionModel,
-        v2: ctx.v2,
-        logger: ctx.logger,
-        mode: 'new-session',
-      })
+        title: body.title,
+        lifecycle: {
+          selectSession: false,
+        },
+      }
+
+      const result = await service.dispatch(execCtx, command)
+
+      if (!result.ok) {
+        throw new ApiError(result.error.status, result.error.code, result.error.message)
+      }
 
       return ok(
         {
-          mode: result.mode,
-          sessionId: result.sessionId,
-          modelUsed: result.modelUsed,
+          mode: 'new-session',
+          sessionId: result.data.sessionId,
+          modelUsed: result.data.modelUsed,
         },
         202
       )
@@ -56,24 +87,25 @@ export async function handleExecutePlan(
         throw badRequest('execute-here mode requires targetSessionId')
       }
 
-      const result = await runPlanExecution({
-        planText,
-        title: body.title,
-        directory: ctx.directory,
-        projectId,
-        sessionId,
-        executionModel,
-        v2: ctx.v2,
-        logger: ctx.logger,
-        mode: 'execute-here',
+      const command: ForgeExecutionCommand = {
+        type: 'plan.execute.here',
+        source,
         targetSessionId: body.targetSessionId,
-      })
+        executionModel,
+        title: body.title,
+      }
+
+      const result = await service.dispatch(execCtx, command)
+
+      if (!result.ok) {
+        throw new ApiError(result.error.status, result.error.code, result.error.message)
+      }
 
       return ok(
         {
-          mode: result.mode,
-          sessionId: result.sessionId,
-          modelUsed: result.modelUsed,
+          mode: 'execute-here',
+          sessionId: result.data.sessionId,
+          modelUsed: result.data.modelUsed,
         },
         202
       )
@@ -83,28 +115,33 @@ export async function handleExecutePlan(
     case 'loop-worktree': {
       const isWorktree = body.mode === 'loop-worktree'
 
-      const launchResult = await launchFreshLoop({
-        planText,
-        title: body.title,
-        directory: ctx.directory,
-        projectId,
-        isWorktree,
-        v2: ctx.v2,
+      const command: ForgeExecutionCommand = {
+        type: 'loop.start',
+        source,
+        mode: isWorktree ? 'worktree' : 'in-place',
         executionModel,
         auditorModel,
         hostSessionId: sessionId,
-      })
+        title: body.title,
+        lifecycle: {
+          selectSession: true,
+          startWatchdog: true,
+        },
+      }
 
-      if (!launchResult) {
-        throw new Error('Failed to launch loop')
+      const result = await service.dispatch(execCtx, command)
+
+      if (!result.ok) {
+        throw new ApiError(result.error.status, result.error.code, result.error.message)
       }
 
       return ok(
         {
           mode: body.mode,
-          sessionId: launchResult.sessionId,
-          loopName: launchResult.loopName,
-          worktreeDir: launchResult.worktreeDir,
+          sessionId: result.data.sessionId,
+          loopName: result.data.loopName,
+          displayName: result.data.displayName,
+          worktreeDir: result.data.worktreeDir,
         },
         202
       )
