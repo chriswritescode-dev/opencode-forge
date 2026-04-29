@@ -2,19 +2,28 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { attachForgeApiServer } from '../../src/api/server'
 import { getProjectRegistry } from '../../src/api/project-registry'
 import type { ToolContext } from '../../src/tools/types'
+import { Database } from 'bun:sqlite'
+import { migrations, createApiRegistryRepo } from '../../src/storage'
 
 function makeCtx(
   projectId: string,
   host: string,
   port: number,
-  errors: string[]
+  errors: string[],
+  logs: string[] = []
 ): ToolContext {
+  const db = new Database(':memory:')
+  for (const migration of migrations) {
+    migration.apply(db)
+  }
+  
   return {
     projectId,
     directory: `/tmp/${projectId}`,
     config: { api: { enabled: true, host, port } },
+    db,
     logger: {
-      log: () => {},
+      log: (message: string) => logs.push(message),
       debug: () => {},
       error: (message: string) => {
         errors.push(message)
@@ -48,12 +57,16 @@ describe('attachForgeApiServer', () => {
     }
   })
 
-  test('reuses listener for same host and port with ref counting', async () => {
+  test('starts coordinator when public port is available', async () => {
     let serveCalls = 0
     let stopCalls = 0
-    ;(Bun as unknown as { serve: typeof Bun.serve }).serve = mock(() => {
+    const serveResults: Array<{ hostname: string; port: number }> = []
+    
+    ;(Bun as unknown as { serve: typeof Bun.serve }).serve = mock((opts: any) => {
       serveCalls += 1
+      serveResults.push({ hostname: opts.hostname, port: opts.port })
       return {
+        port: opts.port,
         stop: () => {
           stopCalls += 1
         },
@@ -61,46 +74,102 @@ describe('attachForgeApiServer', () => {
     })
 
     const errors: string[] = []
-    const a = makeCtx('project-a', '127.0.0.1', 35552, errors)
-    const b = makeCtx('project-b', '127.0.0.1', 35552, errors)
-    registry.register(a)
-    registry.register(b)
-
-    const serverA = attachForgeApiServer(a, registry)
-    const serverB = attachForgeApiServer(b, registry)
-
-    expect(serverA).not.toBeNull()
-    expect(serverB).not.toBeNull()
-    expect(serveCalls).toBe(1)
-
-    if (serverA) servers.push(serverA)
-    if (serverB) servers.push(serverB)
-
-    await serverB?.stop()
-    expect(stopCalls).toBe(0)
-
-    await serverA?.stop()
-    expect(stopCalls).toBe(1)
-  })
-
-  test('returns null when Bun.serve bind fails', () => {
-    ;(Bun as unknown as { serve: typeof Bun.serve }).serve = mock(() => {
-      throw new Error('EADDRINUSE: address already in use')
-    })
-
-    const errors: string[] = []
-    const ctx = makeCtx('project-a', '127.0.0.1', 35553, errors)
+    const logs: string[] = []
+    const ctx = makeCtx('project-a', '127.0.0.1', 35552, errors, logs)
     registry.register(ctx)
 
-    const server = attachForgeApiServer(ctx, registry)
-    expect(server).toBeNull()
-    expect(errors.some((msg) => msg.includes('failed to bind 127.0.0.1:35553'))).toBe(true)
+    const server = await attachForgeApiServer(ctx, registry)
+    expect(server).not.toBeNull()
+    expect(server!.role).toBe('coordinator')
+    expect(serveCalls).toBe(2) // owner server + public server
+    expect(serveResults[0].hostname).toBe('127.0.0.1')
+    expect(serveResults[0].port).toBe(0) // owner server uses port 0
+    expect(serveResults[1].hostname).toBe('127.0.0.1')
+    expect(serveResults[1].port).toBe(35552)
+
+    if (server) servers.push(server)
+
+    await server?.stop()
+    expect(stopCalls).toBe(2) // stops both public and owner servers
+    expect(logs.some((msg) => msg.includes('[api] stopped'))).toBe(true)
   })
 
-  test('returns null on host or port mismatch while existing listener remains', async () => {
+  test('attaches when public port is already in use', async () => {
+    let serveCalls = 0
+    const errors: string[] = []
+    const logs: string[] = []
+    
+    // Mock global fetch for registration
+    const originalFetch = global.fetch
+    global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({ registered: true }), { status: 200 }))) as any
+
+    let firstCall = true
+    ;(Bun as unknown as { serve: typeof Bun.serve }).serve = mock((opts: any) => {
+      serveCalls += 1
+      if (firstCall) {
+        // First call - owner server
+        firstCall = false
+        return {
+          port: opts.port,
+          stop: () => {},
+        } as ReturnType<typeof Bun.serve>
+      } else {
+        // Second call - public server throws Bun's port-in-use message
+        throw new Error('Failed to start server. Is port 35553 in use?')
+      }
+    })
+
+    const ctx = makeCtx('project-a', '127.0.0.1', 35553, errors, logs)
+    registry.register(ctx)
+
+    const server = await attachForgeApiServer(ctx, registry)
+    expect(server).not.toBeNull()
+    expect(server!.role).toBe('attached')
+    expect(server!.url).toBe('http://127.0.0.1:35553')
+    expect(errors.some((msg) => msg.includes('failed to bind'))).toBe(false)
+    expect(logs.some((msg) => msg.includes('attached to existing listener'))).toBe(true)
+
+    if (server) servers.push(server)
+
+    global.fetch = originalFetch
+  })
+
+  test('returns null and cleans owner endpoint for non-EADDRINUSE bind failures', async () => {
+    let ownerServerStopped = false
+    const errors: string[] = []
+    
+    ;(Bun as unknown as { serve: typeof Bun.serve }).serve = mock((opts: any) => {
+      if (opts.port === 0) {
+        // Owner server succeeds
+        return {
+          port: 0,
+          stop: () => {
+            ownerServerStopped = true
+          },
+        } as ReturnType<typeof Bun.serve>
+      } else {
+        // Public server fails with non-EADDRINUSE error
+        throw new Error('permission denied')
+      }
+    })
+
+    const ctx = makeCtx('project-a', '127.0.0.1', 35554, errors)
+    registry.register(ctx)
+
+    const server = await attachForgeApiServer(ctx, registry)
+    expect(server).toBeNull()
+    expect(ownerServerStopped).toBe(true)
+    expect(errors.some((msg) => msg.includes('failed to bind'))).toBe(true)
+  })
+
+  test('stop is idempotent', async () => {
     let stopCalls = 0
-    ;(Bun as unknown as { serve: typeof Bun.serve }).serve = mock(() => {
+    let callCount = 0
+    
+    ;(Bun as unknown as { serve: typeof Bun.serve }).serve = mock((opts: any) => {
+      callCount += 1
       return {
+        port: callCount === 1 ? 0 : 35555,
         stop: () => {
           stopCalls += 1
         },
@@ -108,20 +177,18 @@ describe('attachForgeApiServer', () => {
     })
 
     const errors: string[] = []
-    const a = makeCtx('project-a', '127.0.0.1', 35554, errors)
-    const b = makeCtx('project-b', '127.0.0.1', 35555, errors)
-    registry.register(a)
-    registry.register(b)
+    const ctx = makeCtx('project-a', '127.0.0.1', 35555, errors)
+    registry.register(ctx)
 
-    const serverA = attachForgeApiServer(a, registry)
-    const serverB = attachForgeApiServer(b, registry)
-    expect(serverA).not.toBeNull()
-    expect(serverB).toBeNull()
-    expect(errors.some((msg) => msg.includes('existing listener on 127.0.0.1:35554'))).toBe(true)
+    const server = await attachForgeApiServer(ctx, registry)
+    expect(server).not.toBeNull()
 
-    if (serverA) {
-      await serverA.stop()
+    if (server) {
+      await server.stop()
+      await server.stop() // Second call should be no-op
     }
-    expect(stopCalls).toBe(1)
+
+    // Should stop both owner and public server (2 stops total)
+    expect(stopCalls).toBe(2)
   })
 })

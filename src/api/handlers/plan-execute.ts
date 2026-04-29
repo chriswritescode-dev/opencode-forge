@@ -27,7 +27,7 @@ export async function handleExecutePlan(
   }
 
   const { ctx } = deps
-  const executionModel = body.executionModel || ctx.config.loop?.model || ctx.config.executionModel
+  const executionModel = body.executionModel || ctx.config.executionModel
   const auditorModel = body.auditorModel || ctx.config.auditorModel
 
   // Build execution request context

@@ -8,7 +8,7 @@ export const codeAgent: AgentDefinition = {
   mode: 'primary',
   color: '#3b82f6',
   tools: {
-    exclude: ['review-write','review-delete','plan-execute', 'plan-write', 'plan-edit', 'loop'] 
+    exclude: ['review-write','review-delete','plan-execute', 'loop'] 
   },
   systemPrompt: `You are a coding agent that helps users with software engineering tasks.
 

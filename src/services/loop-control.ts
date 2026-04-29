@@ -250,7 +250,6 @@ export async function restartLoopByName(ctx: ToolContext, name: string | undefin
 
   const promptText = stoppedState.prompt ?? ''
   const loopModel = parseModelString(stoppedState.executionModel)
-    ?? parseModelString(config.loop?.model)
     ?? parseModelString(config.executionModel)
 
   const { result: promptResult } = await retryWithModelFallback(

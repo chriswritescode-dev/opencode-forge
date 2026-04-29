@@ -155,7 +155,7 @@ describe('Agent definitions', () => {
       const prompt = architectAgent.systemPrompt
       expect(prompt).toContain('Pre-plan approval')
       expect(prompt).toContain('present a brief pre-plan summary')
-      expect(prompt).toContain('Do NOT call `plan-write` until the user has approved writing the plan')
+      expect(prompt).toContain('Do NOT output the marked plan until the user approves')
     })
 
     test('architect prompt requires detailed self-contained plans', () => {
@@ -163,9 +163,14 @@ describe('Agent definitions', () => {
       expect(prompt).toContain('detailed, self-contained, and implementation-ready')
       expect(prompt).toContain('Concrete file targets')
       expect(prompt).toContain('Intended edits per file')
+      expect(prompt).toContain('Step-by-step implementation instructions')
       expect(prompt).toContain('Specific integration points')
       expect(prompt).toContain('Explicit test targets')
+      expect(prompt).toContain('Explicit validation')
       expect(prompt).toContain('Phase acceptance criteria')
+      expect(prompt).toContain('extremely detailed and execution-ready')
+      expect(prompt).not.toContain('plan-write')
+      expect(prompt).not.toContain('plan-edit')
     })
 
     test('architect prompt includes pre-plan approval section', () => {

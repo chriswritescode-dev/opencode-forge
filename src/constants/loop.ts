@@ -49,8 +49,6 @@ export function buildLoopPermissionRuleset(
   rules.push(
     { permission: 'review-write',  pattern: '*', action: 'deny' },
     { permission: 'review-delete', pattern: '*', action: 'deny' },
-    { permission: 'plan-write',    pattern: '*', action: 'deny' },
-    { permission: 'plan-edit',     pattern: '*', action: 'deny' },
     { permission: 'plan-execute',  pattern: '*', action: 'deny' },
     { permission: 'loop',          pattern: '*', action: 'deny' },
   )
@@ -97,8 +95,6 @@ export function buildAuditSessionPermissionRuleset(
     // Auditors must never launch loops, execute plans, or manage other loops.
     { permission: 'loop',         pattern: '*', action: 'deny' },
     { permission: 'plan-execute', pattern: '*', action: 'deny' },
-    { permission: 'plan-write',   pattern: '*', action: 'deny' },
-    { permission: 'plan-edit',    pattern: '*', action: 'deny' },
     { permission: 'loop-cancel',  pattern: '*', action: 'deny' },
     { permission: 'loop-status',  pattern: '*', action: 'deny' },
   ]

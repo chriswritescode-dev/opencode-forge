@@ -276,8 +276,8 @@ describe('createForgePlugin', () => {
     expect(hooks.tool?.['graph-analyze']).toBeDefined()
     // Plan/review tools should be registered
     expect(hooks.tool?.['plan-read']).toBeDefined()
-    expect(hooks.tool?.['plan-write']).toBeDefined()
-    expect(hooks.tool?.['plan-edit']).toBeDefined()
+    expect(hooks.tool?.['plan-edit']).toBeUndefined()
+    expect(hooks.tool?.['plan-write']).toBeUndefined()
     expect(hooks.tool?.['review-read']).toBeDefined()
     expect(hooks.tool?.['review-write']).toBeDefined()
     // Loop tools should be registered

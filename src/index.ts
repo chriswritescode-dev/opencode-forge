@@ -28,6 +28,7 @@ import { createPermissionAskHandler } from './hooks/permission-ask'
 import { attachForgeApiServer, type ForgeApiServer } from './api/server'
 import { getProjectRegistry } from './api/project-registry'
 import type { ProjectRegistry } from './api/project-registry'
+import { createPlanCaptureEventHook } from './hooks/plan-capture'
 
 export async function cleanupSandboxOrphansAcrossRegistry(
   registry: ProjectRegistry,
@@ -408,13 +409,14 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       }, 2000)
     }
 
-    // Start the remote HTTP API server if enabled
-    apiServer = attachForgeApiServer(ctx, registry)
+    // Start or attach to the shared remote HTTP API server if enabled
+    apiServer = await attachForgeApiServer(ctx, registry)
 
     const tools = createTools(ctx)
     const toolExecuteBeforeHook = createToolExecuteBeforeHook(ctx)
     const toolExecuteAfterHook = createToolExecuteAfterHook(ctx)
     const planApprovalEventHook = createPlanApprovalEventHook(ctx)
+    const planCaptureEventHook = createPlanCaptureEventHook(ctx)
     const sandboxBeforeHook = createSandboxToolBeforeHook({
       resolveSandboxForSession,
       logger,
@@ -472,6 +474,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         }
         await loopHandler.onEvent(eventInput)
         await sessionHooks.onEvent(eventInput)
+        await planCaptureEventHook(eventInput)
         await planApprovalEventHook(eventInput)
         await graphCommandHook(eventInput)
       },
@@ -530,19 +533,19 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 You are in READ-ONLY mode for file system operations. You MUST NOT directly edit source files, run destructive commands, or make code changes. You may only read, search, and analyze the codebase.
 
 However, you CAN and SHOULD:
-- Use \`plan-write\` to write the plan
-- Use \`plan-edit\` to make targeted updates to the plan
+- Output the final implementation plan wrapped with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` markers (each on its own line)
+- Make the marked plan extremely detailed and execution-ready: exact files, exact symbols/functions/types, concrete edits per file, validation steps, acceptance criteria, and targeted verification commands
 - Use \`plan-read\` to review the plan, including by explicit \`loop_name\` when needed
 - Use \`plan-execute\` or \`loop\` ONLY AFTER:
-  1. The plan has been written via \`plan-write\`
+  1. The final plan has been output with markers and auto-captured by the plugin
   2. The user explicitly approves via the question tool
 
 Follow the two-step approval flow:
 1. After research/design, present findings and next steps, then use the \`question\` tool to ask whether to write the plan
-2. Only after the user approves writing the plan, call \`plan-write\` to persist it
-3. After the plan is written, present a summary and use the \`question\` tool to collect execution approval with the four canonical options
+2. Only after the user approves writing the plan, output the marked plan with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\`
+3. After the plan is auto-captured, present a summary and use the \`question\` tool to collect execution approval with the four canonical options
 
-Never execute a plan without both a written plan and explicit approval via the question tool.
+Never execute a plan without both a marked plan and explicit approval via the question tool.
 </system-reminder>`,
           synthetic: true,
         })

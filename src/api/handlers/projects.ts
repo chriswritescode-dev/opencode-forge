@@ -49,9 +49,15 @@ export async function handleListProjects(
   const url = new URL(req.url)
   const directoryFilter = url.searchParams.get('directory')
 
+  // Prune expired instances
+  deps.apiRegistryRepo.pruneExpired(Date.now())
+
   const registered = deps.registry.list()
+  const persistedInstances = deps.apiRegistryRepo.listProjectInstances()
   const known = listKnownProjects()
+  
   const registeredIds = new Set(registered.map((ctx) => ctx.projectId))
+  const persistedIds = new Set(persistedInstances.map((row) => row.projectId))
 
   const projects = [
     ...registered.map((ctx) => ({
@@ -60,8 +66,16 @@ export async function handleListProjects(
       directory: ctx.directory,
       active: true,
     })),
+    ...persistedInstances
+      .filter((row) => !registeredIds.has(row.projectId))
+      .map((row) => ({
+        id: row.projectId,
+        name: basename(row.directory),
+        directory: row.directory,
+        active: true,
+      })),
     ...known
-      .filter((project) => !registeredIds.has(project.id))
+      .filter((project) => !registeredIds.has(project.id) && !persistedIds.has(project.id))
       .map((project) => ({
         id: project.id,
         name: project.name,

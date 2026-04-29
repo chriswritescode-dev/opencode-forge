@@ -147,4 +147,11 @@ export const migrations: Migration[] = [
       `)
     },
   },
+  {
+    id: '115',
+    description: 'Create API coordinator and project instance registry tables',
+    apply: (db: Database) => {
+      db.run(loadSql('115_create_api_registry.sql'))
+    },
+  },
 ]

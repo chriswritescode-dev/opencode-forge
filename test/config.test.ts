@@ -193,7 +193,7 @@ describe('createConfigHandler', () => {
       const permission = code.permission as Record<string, string>
 
       expect(permission).toBeDefined()
-      for (const tool of ['review-write', 'review-delete', 'plan-execute', 'plan-write', 'plan-edit', 'loop']) {
+      for (const tool of ['review-write', 'review-delete', 'plan-execute', 'loop']) {
         expect(permission[tool]).toBe('deny')
       }
     })
@@ -218,7 +218,7 @@ describe('createConfigHandler', () => {
 
       expect(permission['review-delete']).toBe('deny')
       // Other excludes should still be denied.
-      expect(permission['plan-write']).toBe('deny')
+      expect(permission['plan-execute']).toBe('deny')
     })
 
     test('user tool override preserves built-in excludes during merge', async () => {

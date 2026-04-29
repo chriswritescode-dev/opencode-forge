@@ -9,8 +9,6 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'external_directory', pattern: '*',          action: 'allow' },
       { permission: 'review-write',       pattern: '*',          action: 'deny' },
       { permission: 'review-delete',      pattern: '*',          action: 'deny' },
-      { permission: 'plan-write',         pattern: '*',          action: 'deny' },
-      { permission: 'plan-edit',          pattern: '*',          action: 'deny' },
       { permission: 'plan-execute',       pattern: '*',          action: 'deny' },
       { permission: 'loop',               pattern: '*',          action: 'deny' },
       { permission: 'bash',               pattern: 'git push *', action: 'deny' },
@@ -26,8 +24,6 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'external_directory', pattern: '*',          action: 'deny' },
       { permission: 'review-write',       pattern: '*',          action: 'deny' },
       { permission: 'review-delete',      pattern: '*',          action: 'deny' },
-      { permission: 'plan-write',         pattern: '*',          action: 'deny' },
-      { permission: 'plan-edit',          pattern: '*',          action: 'deny' },
       { permission: 'plan-execute',       pattern: '*',          action: 'deny' },
       { permission: 'loop',               pattern: '*',          action: 'deny' },
       { permission: 'bash',               pattern: 'git push *', action: 'deny' },
@@ -41,8 +37,6 @@ describe('buildLoopPermissionRuleset', () => {
     expect(rules).toEqual([
       { permission: 'review-write',       pattern: '*',          action: 'deny' },
       { permission: 'review-delete',      pattern: '*',          action: 'deny' },
-      { permission: 'plan-write',         pattern: '*',          action: 'deny' },
-      { permission: 'plan-edit',          pattern: '*',          action: 'deny' },
       { permission: 'plan-execute',       pattern: '*',          action: 'deny' },
       { permission: 'loop',               pattern: '*',          action: 'deny' },
       { permission: 'bash',               pattern: 'git push *', action: 'deny' },
@@ -54,7 +48,7 @@ describe('buildLoopPermissionRuleset', () => {
   test('EMITS session-level denies for code-agent tool exclusions (auditor now runs in separate session)', () => {
     // These tools are now denied at the session level because the auditor runs
     // in a separate session. Per-agent `tools` maps still restrict the code agent.
-    const required = ['review-write', 'review-delete', 'plan-execute', 'plan-write', 'plan-edit', 'loop']
+    const required = ['review-write', 'review-delete', 'plan-execute', 'loop']
     for (const isWorktree of [true, false]) {
       for (const isSandbox of [true, false]) {
         const rules = buildLoopPermissionRuleset({ isWorktree, isSandbox })
@@ -90,8 +84,6 @@ describe('buildAuditSessionPermissionRuleset', () => {
     // Loop/plan denies
     expect(rules.some(r => r.permission === 'loop' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'plan-execute' && r.pattern === '*' && r.action === 'deny')).toBe(true)
-    expect(rules.some(r => r.permission === 'plan-write' && r.pattern === '*' && r.action === 'deny')).toBe(true)
-    expect(rules.some(r => r.permission === 'plan-edit' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'loop-cancel' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'loop-status' && r.pattern === '*' && r.action === 'deny')).toBe(true)
   })

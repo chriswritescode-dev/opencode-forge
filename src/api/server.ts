@@ -6,6 +6,9 @@ import { errorResponse } from './response'
 import { notFound } from './errors'
 import type { ApiDeps } from './types'
 import type { ProjectRegistry } from './project-registry'
+import { createApiRegistryRepo } from '../storage'
+import { handleRegisterProjectInstance } from './handlers/internal'
+import { buildOpencodeBasicAuthHeader } from '../utils/opencode-client'
 
 // Import handlers
 import {
@@ -41,20 +44,165 @@ import {
   handleDeleteFinding,
 } from './handlers/findings'
 
+export type ForgeApiRole = 'coordinator' | 'attached'
+
 export interface ForgeApiServer {
   url: string
+  role: ForgeApiRole
   stop(): Promise<void>
 }
 
-type SharedServer = {
+const API_LEASE_TTL_MS = 30_000
+const API_HEARTBEAT_MS = 5_000
+
+type OwnerServer = {
   url: string
-  host: string
-  port: number
-  refCount: number
-  bunServer: ReturnType<typeof Bun.serve>
+  stop(): void
 }
 
-let sharedServer: SharedServer | null = null
+type AttachmentState = {
+  instanceId: string
+  role: ForgeApiRole
+  publicUrl: string
+  ownerServer: OwnerServer
+  heartbeatTimer: ReturnType<typeof setInterval> | null
+  released: boolean
+}
+
+function createApiInstanceId(ctx: ToolContext): string {
+  const randomPart = Math.random().toString(36).slice(2)
+  return `${ctx.projectId}:${process.pid}:${Date.now()}:${randomPart}`
+}
+
+function isAddressInUse(err: unknown): boolean {
+  if (err instanceof Error) {
+    const code = (err as Error & { code?: unknown }).code
+    if (code === 'EADDRINUSE') {
+      return true
+    }
+
+    const message = err.message.toLowerCase()
+    return (
+      message.includes('eaddrinuse') ||
+      message.includes('address already in use') ||
+      /\bport\b.*\bin use\b/.test(message)
+    )
+  }
+  return false
+}
+
+function startOwnerServer(ctx: ToolContext, registry: ProjectRegistry): OwnerServer {
+  const routes = buildRoutes()
+  const apiRegistryRepo = createApiRegistryRepo(ctx.db)
+  const password = process.env.OPENCODE_SERVER_PASSWORD
+  const localhostOnly = true
+  
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch: buildFetchHandler(routes, registry, password, localhostOnly, apiRegistryRepo),
+  })
+  
+  return {
+    url: `http://127.0.0.1:${server.port}`,
+    stop: () => server.stop(true),
+  }
+}
+
+function registerInstance(
+  repo: ReturnType<typeof createApiRegistryRepo>,
+  ctx: ToolContext,
+  instanceId: string,
+  ownerUrl: string,
+  now: number
+): void {
+  repo.upsertProjectInstance({
+    instanceId,
+    projectId: ctx.projectId,
+    directory: ctx.directory,
+    ownerUrl,
+    pid: process.pid,
+    now,
+    ttlMs: API_LEASE_TTL_MS,
+  })
+}
+
+function startHeartbeat(
+  repo: ReturnType<typeof createApiRegistryRepo>,
+  instanceId: string,
+  role: ForgeApiRole
+): ReturnType<typeof setInterval> {
+  return setInterval(() => {
+    try {
+      const now = Date.now()
+      repo.touchProjectInstance(instanceId, now, API_LEASE_TTL_MS)
+      if (role === 'coordinator') {
+        repo.touchCoordinator(instanceId, now, API_LEASE_TTL_MS)
+      }
+      repo.pruneExpired(now)
+    } catch (err) {
+      console.error('[api] heartbeat failed:', err)
+    }
+  }, API_HEARTBEAT_MS)
+}
+
+async function tryRegisterWithCoordinator(
+  publicUrl: string,
+  ctx: ToolContext,
+  ownerUrl: string,
+  instanceId: string
+): Promise<boolean> {
+  try {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    }
+    
+    const password = process.env.OPENCODE_SERVER_PASSWORD
+    if (password) {
+      headers.Authorization = buildOpencodeBasicAuthHeader(password)
+    }
+    
+    const response = await fetch(`${publicUrl}/api/v1/internal/register`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        projectId: ctx.projectId,
+        directory: ctx.directory,
+        ownerUrl,
+        pid: process.pid,
+        instanceId,
+      }),
+    })
+    
+    return response.ok
+  } catch (err) {
+    console.error('[api] coordinator registration request failed:', err)
+    return false
+  }
+}
+
+function proxyToOwner(req: Request, ownerUrl: string): Promise<Response> {
+  const source = new URL(req.url)
+  const target = new URL(source.pathname + source.search, ownerUrl)
+  
+  const headers = new Headers()
+  for (const [key, value] of req.headers.entries()) {
+    if (!['host', 'origin', 'referer'].includes(key.toLowerCase())) {
+      headers.set(key, value)
+    }
+  }
+  
+  const method = req.method
+  const body = (method === 'GET' || method === 'HEAD') ? undefined : req.body
+  
+  return fetch(target, {
+    method,
+    headers,
+    body,
+  })
+}
+
+
 
 function buildRoutes(): Route[] {
   const routes: Route[] = []
@@ -198,6 +346,13 @@ function buildRoutes(): Route[] {
     handler: handleDeleteFinding,
   })
 
+  // Internal registration
+  routes.push({
+    method: 'POST',
+    pattern: '/api/v1/internal/register',
+    handler: handleRegisterProjectInstance,
+  })
+
   return routes
 }
 
@@ -205,7 +360,8 @@ function buildFetchHandler(
   routes: Route[],
   registry: ProjectRegistry,
   password: string | undefined,
-  localhostOnly: boolean
+  localhostOnly: boolean,
+  apiRegistryRepo: ReturnType<typeof createApiRegistryRepo>
 ): (req: Request) => Promise<Response> {
   return async (req: Request): Promise<Response> => {
     try {
@@ -219,14 +375,27 @@ function buildFetchHandler(
         throw notFound(`no route for ${req.method} ${url.pathname}`)
       }
 
+      // Handle internal registration route specially - it doesn't need ctx
+      if (m.params.projectId === 'internal' && url.pathname === '/api/v1/internal/register') {
+        const firstCtx = registry.list()[0]
+        const deps: ApiDeps = {
+          ctx: firstCtx ?? ({} as ToolContext),
+          logger: firstCtx?.logger ?? console,
+          projectId: 'internal',
+          registry,
+          apiRegistryRepo,
+        }
+        return await m.handler(req, deps, m.params)
+      }
+
       let ctx: ToolContext | null = null
       if (m.params.projectId) {
         ctx = requestDirectory ? registry.findByDirectory(requestDirectory) : registry.get(m.params.projectId)
         if (!ctx) {
-          throw notFound(`project not registered: ${m.params.projectId}`)
+          ctx = requestDirectory ? registry.findByDirectory(requestDirectory) : null
         }
-        if (ctx.projectId !== m.params.projectId) {
-          throw notFound(`project not registered: ${m.params.projectId}`)
+        if (ctx && ctx.projectId !== m.params.projectId) {
+          ctx = null
         }
       } else {
         const directoryCtx = requestDirectory ? registry.findByDirectory(requestDirectory) : null
@@ -237,11 +406,24 @@ function buildFetchHandler(
         ctx = directoryCtx ?? all[0]
       }
 
+      // If no local ctx, check persisted registry for owner
+      if (!ctx && m.params.projectId) {
+        const owner = apiRegistryRepo.getProjectInstanceByProject(m.params.projectId)
+        if (owner && owner.expiresAt > Date.now()) {
+          return proxyToOwner(req, owner.ownerUrl)
+        }
+      }
+
+      if (!ctx) {
+        throw notFound(`project not registered: ${m.params.projectId}`)
+      }
+
       const deps: ApiDeps = {
         ctx,
         logger: ctx.logger,
         projectId: ctx.projectId,
         registry,
+        apiRegistryRepo,
       }
 
       return await m.handler(req, deps, m.params)
@@ -251,10 +433,10 @@ function buildFetchHandler(
   }
 }
 
-export function attachForgeApiServer(
+export async function attachForgeApiServer(
   ctx: ToolContext,
   registry: ProjectRegistry
-): ForgeApiServer | null {
+): Promise<ForgeApiServer | null> {
   const apiCfg = ctx.config.api
   if (!apiCfg?.enabled) {
     return null
@@ -272,65 +454,106 @@ export function attachForgeApiServer(
     return null
   }
 
-  if (!sharedServer) {
-    try {
-      const routes = buildRoutes()
-      const bunServer = Bun.serve({
-        hostname: host,
-        port,
-        fetch: buildFetchHandler(routes, registry, password, localhostOnly),
-      })
-      sharedServer = {
-        url: `http://${host}:${port}`,
-        host,
-        port,
-        refCount: 1,
-        bunServer,
+  const apiRegistryRepo = createApiRegistryRepo(ctx.db)
+  const instanceId = createApiInstanceId(ctx)
+  const now = Date.now()
+
+  // Start owner server first
+  const ownerServer = startOwnerServer(ctx, registry)
+
+  // Register this process in persisted registry
+  registerInstance(apiRegistryRepo, ctx, instanceId, ownerServer.url, now)
+
+  const routes = buildRoutes()
+  const fetchHandler = buildFetchHandler(routes, registry, password, localhostOnly, apiRegistryRepo)
+
+  let publicServer: ReturnType<typeof Bun.serve> | null = null
+  let role: ForgeApiRole
+  let publicUrl: string
+
+  try {
+    publicServer = Bun.serve({
+      hostname: host,
+      port,
+      fetch: fetchHandler,
+    })
+    
+    role = 'coordinator'
+    publicUrl = `http://${host}:${port}`
+    
+    // Upsert coordinator lease
+    apiRegistryRepo.upsertCoordinator({
+      host,
+      port,
+      url: publicUrl,
+      instanceId,
+      pid: process.pid,
+      now,
+      ttlMs: API_LEASE_TTL_MS,
+    })
+    
+    ctx.logger.log(`[api] listening on ${publicUrl}`)
+  } catch (err) {
+    if (isAddressInUse(err)) {
+      // Port is already in use - attach to existing coordinator
+      role = 'attached'
+      publicUrl = `http://${host}:${port}`
+      
+      const registered = await tryRegisterWithCoordinator(publicUrl, ctx, ownerServer.url, instanceId)
+      
+      if (!registered) {
+        ctx.logger.log('[api] attached via persisted registry; coordinator registration request failed')
       }
-      ctx.logger.log(`[api] listening on http://${host}:${port}`)
-    } catch (err) {
+      
+      ctx.logger.log(`[api] attached to existing listener ${publicUrl}`)
+    } else {
+      // Other error - clean up and return null
       const message = err instanceof Error ? err.message : String(err)
       ctx.logger.error(`[api] failed to bind ${host}:${port}: ${message}`)
+      ownerServer.stop()
+      apiRegistryRepo.deleteProjectInstance(instanceId)
       return null
     }
-  } else if (sharedServer.host !== host || sharedServer.port !== port) {
-    ctx.logger.error(
-      `[api] cannot start with ${host}:${port}: existing listener on ${sharedServer.host}:${sharedServer.port}`
-    )
-    return null
-  } else {
-    sharedServer.refCount += 1
-    ctx.logger.log(
-      `[api] reusing listener for project ${ctx.projectId} (refCount=${sharedServer.refCount})`
-    )
   }
 
-  let released = false
+  // Start heartbeat
+  const heartbeatTimer = startHeartbeat(apiRegistryRepo, instanceId, role)
+
+  const state: AttachmentState = {
+    instanceId,
+    role,
+    publicUrl,
+    ownerServer,
+    heartbeatTimer,
+    released: false,
+  }
 
   return {
-    url: sharedServer.url,
+    url: publicUrl,
+    role,
     stop: async () => {
-      if (released) {
+      if (state.released) {
         return
       }
-      released = true
+      state.released = true
 
-      if (!sharedServer) {
-        return
+      if (state.heartbeatTimer) {
+        clearInterval(state.heartbeatTimer)
       }
 
-      sharedServer.refCount -= 1
+      apiRegistryRepo.deleteProjectInstance(state.instanceId)
 
-      if (sharedServer.refCount <= 0) {
-        sharedServer.bunServer.stop(true)
-        sharedServer = null
+      if (state.role === 'coordinator') {
+        apiRegistryRepo.deleteCoordinator(state.instanceId)
+        if (publicServer) {
+          publicServer.stop(true)
+        }
         ctx.logger.log('[api] stopped')
-        return
+      } else {
+        ctx.logger.log(`[api] detached from listener for project ${ctx.projectId}`)
       }
 
-      ctx.logger.log(
-        `[api] released listener for project ${ctx.projectId} (refCount=${sharedServer.refCount})`
-      )
+      state.ownerServer.stop()
     },
   }
 }

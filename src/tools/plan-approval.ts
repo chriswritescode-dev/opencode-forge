@@ -3,6 +3,7 @@ import type { Hooks } from '@opencode-ai/plugin'
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
 import { extractPlanTitle, extractLoopNames, PLAN_EXECUTION_LABELS } from '../utils/plan-execution'
 import { createForgeExecutionService, type ForgeExecutionRequestContext } from '../services/execution'
+import { captureLatestPlanForSession } from '../services/plan-capture'
 
 const LOOP_BLOCKED_TOOLS: Record<string, string> = {
   question: 'The question tool is not available during a loop. Do not ask questions — continue working on the task autonomously.',
@@ -20,6 +21,25 @@ const pendingExecutions = new Map<string, PendingExecution>()
 
 export { LOOP_BLOCKED_TOOLS }
 export { extractPlanTitle }
+
+async function resolveCurrentSessionPlan(ctx: ToolContext, sessionID: string): Promise<string | null> {
+  const capture = await captureLatestPlanForSession(
+    {
+      v2: ctx.v2,
+      plansRepo: ctx.plansRepo,
+      projectId: ctx.projectId,
+      directory: ctx.directory,
+      logger: ctx.logger,
+    },
+    sessionID
+  )
+  
+  if (capture.status === 'captured' || capture.status === 'already-current') {
+    return capture.planText
+  }
+  
+  return ctx.plansRepo.getForSession(ctx.projectId, sessionID)?.content ?? null
+}
 
 export function createToolExecuteBeforeHook(ctx: ToolContext): Hooks['tool.execute.before'] {
   const { loopService, logger } = ctx
@@ -41,7 +61,7 @@ export function createToolExecuteBeforeHook(ctx: ToolContext): Hooks['tool.execu
 }
 
 export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execute.after'] {
-  const { loopService, logger, plansRepo, projectId, v2, config } = ctx
+  const { loopService, logger, v2, config } = ctx
 
   return async (
     input: { tool: string; sessionID: string; callID: string; args: unknown },
@@ -61,14 +81,12 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
           const matchedLabel = PLAN_EXECUTION_LABELS.find((l) => answerLower === l.toLowerCase() || answerLower.startsWith(l.toLowerCase()))
           
           if (matchedLabel?.toLowerCase() === 'execute here') {
-            // Read plan from plans repo (same as "New session" path)
-            const planRow = plansRepo.getForSession(projectId, input.sessionID)
-            if (!planRow) {
-              output.output = `${output.output}\n\nError: No cached plan found. Please ensure the plan is written via plan-write before approval.`
+            const planText = await resolveCurrentSessionPlan(ctx, input.sessionID)
+            if (!planText) {
+              output.output = `${output.output}\n\nError: No captured plan found. Ensure the final plan is wrapped with <!-- forge-plan:start --> and <!-- forge-plan:end -->, or save a plan from the TUI before execution.`
               logger.error('Plan approval: plan not found for "Execute here"')
               return
             }
-            const planText = planRow.content
             
             pendingExecutions.set(input.sessionID, {
               directory: ctx.directory,
@@ -86,14 +104,12 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
           }
           
           // Programmatic dispatch for "New session" and "Loop" paths
-          const planRow = plansRepo.getForSession(projectId, input.sessionID)
-          if (!planRow) {
-            output.output = `${output.output}\n\nError: No cached plan found. Please ensure the plan is written via plan-write before approval.`
+          const planText = await resolveCurrentSessionPlan(ctx, input.sessionID)
+          if (!planText) {
+            output.output = `${output.output}\n\nError: No captured plan found. Ensure the final plan is wrapped with <!-- forge-plan:start --> and <!-- forge-plan:end -->, or save a plan from the TUI before execution.`
             logger.error('Plan approval: plan not found')
             return
           }
-          
-          const planText = planRow.content
           const title = extractPlanTitle(planText)
           
           if (matchedLabel === 'New session') {
@@ -156,8 +172,8 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
               : 'Starting loop in-place...'
             logger.log(`Plan approval: "${matchedLabel}" — starting loop with loop name "${uniqueLoopName}"`)
             
-            const executionModel = config.loop?.model ?? config.executionModel
-            const auditorModel = config.auditorModel ?? config.loop?.model ?? config.executionModel
+            const executionModel = config.executionModel
+            const auditorModel = config.auditorModel
             
             // Build execution request context
             const execCtx: ForgeExecutionRequestContext = {

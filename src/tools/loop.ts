@@ -7,6 +7,7 @@ import { fetchSessionOutput, MAX_RETRIES, type LoopSessionOutput } from '../serv
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 import { cancelLoopByName, restartLoopByName } from '../services/loop-control'
 import { createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
+import { captureLatestPlanForSession } from '../services/plan-capture'
 
 const z = tool.schema
 
@@ -33,19 +34,35 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         let planText = args.plan
         let source: PlanSource
         if (!planText) {
-          const planRow = ctx.plansRepo.getForSession(ctx.projectId, context.sessionID)
-          if (!planRow) {
-            return 'No plan found. Write the plan via plan-write before calling this tool, or pass it directly as the plan argument.'
+          const capture = await captureLatestPlanForSession(
+            {
+              v2: ctx.v2,
+              plansRepo: ctx.plansRepo,
+              projectId: ctx.projectId,
+              directory: ctx.directory,
+              logger: ctx.logger,
+            },
+            context.sessionID
+          )
+          
+          if (capture.status === 'captured' || capture.status === 'already-current') {
+            planText = capture.planText
+            source = { kind: 'stored', sessionId: context.sessionID }
+          } else {
+            const planRow = ctx.plansRepo.getForSession(ctx.projectId, context.sessionID)
+            if (!planRow) {
+              return 'No plan found. Ensure the final plan is wrapped with <!-- forge-plan:start --> and <!-- forge-plan:end --> markers, or pass it directly as the plan argument.'
+            }
+            planText = planRow.content
+            source = { kind: 'stored', sessionId: context.sessionID }
           }
-          planText = planRow.content
-          source = { kind: 'stored', sessionId: context.sessionID }
         } else {
           source = { kind: 'inline', planText }
         }
 
         const sessionTitle = args.title.length > 60 ? `${args.title.substring(0, 57)}...` : args.title
-        const executionModel = config.loop?.model ?? config.executionModel
-        const auditorModel = config.auditorModel ?? config.loop?.model ?? config.executionModel
+        const executionModel = config.executionModel
+        const auditorModel = config.auditorModel
         const loopName = args.loopName ? slugify(args.loopName) : slugify(sessionTitle)
 
         // Build execution request context
@@ -262,8 +279,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             ...(state.completedAt ? [`Completed: ${state.completedAt}`] : []),
           )
           statusLines.push(
-            `Model: ${state.executionModel ?? config.loop?.model ?? config.executionModel ?? 'default'}`,
-            `Auditor model: ${state.auditorModel ?? config.auditorModel ?? state.executionModel ?? config.loop?.model ?? config.executionModel ?? 'default'}`,
+            `Model: ${state.executionModel ?? config.executionModel ?? 'default'}`,
+            `Auditor model: ${state.auditorModel ?? config.auditorModel ?? state.executionModel ?? config.executionModel ?? 'default'}`,
           )
 
           if (state.lastAuditResult) {
@@ -349,8 +366,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           `Started: ${state.startedAt}`,
           `Error count: ${state.errorCount} (retries before termination: ${MAX_RETRIES})`,
           `Audit count: ${state.auditCount ?? 0}`,
-          `Model: ${state.executionModel ?? config.loop?.model ?? config.executionModel ?? 'default'}`,
-          `Auditor model: ${state.auditorModel ?? config.auditorModel ?? state.executionModel ?? config.loop?.model ?? config.executionModel ?? 'default'}`,
+          `Model: ${state.executionModel ?? config.executionModel ?? 'default'}`,
+          `Auditor model: ${state.auditorModel ?? config.auditorModel ?? state.executionModel ?? config.executionModel ?? 'default'}`,
           ...(stallCount > 0 ? [`Stalls: ${stallCount}`] : []),
           ...(secondsSinceActivity !== null ? [`Last activity: ${secondsSinceActivity}s ago`] : []),
           '',

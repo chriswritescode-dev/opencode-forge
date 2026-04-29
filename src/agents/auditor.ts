@@ -1,6 +1,6 @@
 import type { AgentDefinition } from './types'
 
-const AUDITOR_TOOL_EXCLUDES = ['plan-execute', 'loop', 'plan-write', 'plan-edit', 'loop-cancel', 'loop-status']
+const AUDITOR_TOOL_EXCLUDES = ['plan-execute', 'loop', 'loop-cancel', 'loop-status']
 
 const BASE_AUDITOR_PROMPT = `You are a code auditor with access to graph tools for structural analysis. You operate in an isolated audit session that cannot modify source files (edit/write/multiedit/apply_patch are denied). You can read code, query the graph, and manage review findings via review-write / review-delete. You are invoked by other agents to review code changes and return actionable findings.
 

@@ -87,9 +87,9 @@ The plugin bundles three agents that integrate with the graph system:
 
 The auditor agent is a read-only subagent (`temperature: 0.0`) that can read the graph but cannot write, edit, or delete graph entries or execute plans. It is invoked by other agents via the Task tool to review code changes against stored project conventions and decisions.
 
-**Tool restrictions:** The auditor cannot use `plan-write`, `plan-edit`, `plan-execute`, or `loop` tools to prevent interference with active workflows.
+**Tool restrictions:** The auditor cannot use `plan-execute` or `loop` tools to prevent interference with active workflows.
 
-The architect agent operates in read-only mode (`temperature: 0.0`, all edits denied) with message-level enforcement via the `experimental.chat.messages.transform` hook. Plans are built incrementally in the KV store during the planning session. After user approval via the question tool, execution is dispatched programmatically — no additional LLM calls are needed. The user can view and edit the cached plan from the sidebar or command palette before or during execution. 
+The architect agent operates in read-only mode (`temperature: 0.0`, all edits denied) with message-level enforcement via the `experimental.chat.messages.transform` hook. Final plans are rendered once in the assistant response between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers, then auto-captured into SQL before execution approval. After user approval via the question tool, execution is dispatched programmatically — no additional LLM calls are needed. The user can view and edit the cached plan from the sidebar or command palette before or during execution. 
 
 
 ## Tools
@@ -100,8 +100,6 @@ Session-scoped plan storage with 7-day TTL for managing implementation plans.
 
 | Tool | Description |
 |------|-------------|
-| `plan-write` | Store the entire plan content. Auto-resolves key to `plan:{sessionID}`. |
-| `plan-edit` | Edit the plan by finding `old_string` and replacing with `new_string`. |
 | `plan-read` | Retrieve the plan. Supports pagination with offset/limit and pattern search. |
 | `plan-execute` | Create a new Code session and send an approved plan as the first prompt |
 

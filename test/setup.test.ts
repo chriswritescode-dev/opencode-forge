@@ -6,6 +6,8 @@ import type { ToolContext } from '../src/tools/types'
 import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
+import { Database } from 'bun:sqlite'
+import { migrations } from '../src/storage'
 
 const TEST_DIR = '/tmp/opencode-manager-memory-setup-test-' + Date.now()
 
@@ -422,7 +424,7 @@ describe('remote API startup authentication requirements', () => {
     }
   })
 
-  test('does not start for non-localhost host without OPENCODE_SERVER_PASSWORD', () => {
+  test('does not start for non-localhost host without OPENCODE_SERVER_PASSWORD', async () => {
     delete process.env.OPENCODE_SERVER_PASSWORD
     const errors: string[] = []
     const ctx = {
@@ -434,6 +436,7 @@ describe('remote API startup authentication requirements', () => {
           port: 5552,
         },
       },
+      db: new Database(':memory:'),
       logger: {
         log: () => {},
         debug: () => {},
@@ -443,9 +446,14 @@ describe('remote API startup authentication requirements', () => {
       },
     } as unknown as ToolContext
 
+    // Apply migrations
+    for (const migration of migrations) {
+      migration.apply(ctx.db)
+    }
+
     const registry = getProjectRegistry()
     registry.register(ctx)
-    const server = attachForgeApiServer(ctx, registry)
+    const server = await attachForgeApiServer(ctx, registry)
     registry.unregister(ctx.projectId)
 
     expect(server).toBeNull()

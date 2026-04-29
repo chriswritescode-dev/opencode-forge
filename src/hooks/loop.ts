@@ -711,33 +711,46 @@ export function createLoopEventHandler(
     loopService.setAuditSessionId(loopName, created.auditSessionId)
     loopService.registerAuditSession(created.auditSessionId, loopName)
 
-    const promptResult = await promptAuditSession(v2Client, {
-      sessionId: created.auditSessionId,
-      worktreeDir: currentState.worktreeDir,
-      prompt: loopService.buildAuditPrompt(currentState),
-      auditorModel,
-    })
+    const sendAuditWithModel = async () => {
+      const result = await promptAuditSession(v2Client, {
+        sessionId: created.auditSessionId,
+        worktreeDir: currentState.worktreeDir,
+        prompt: loopService.buildAuditPrompt(currentState),
+        auditorModel,
+      })
+      return result.ok ? { data: true } : { error: result.error }
+    }
 
-    if (!promptResult.ok) {
+    const sendAuditWithoutModel = async () => {
+      const result = await promptAuditSession(v2Client, {
+        sessionId: created.auditSessionId,
+        worktreeDir: currentState.worktreeDir,
+        prompt: loopService.buildAuditPrompt(currentState),
+      })
+      return result.ok ? { data: true } : { error: result.error }
+    }
+
+    const { result: promptResult, usedModel: actualAuditorModel } = await retryWithModelFallback(
+      sendAuditWithModel,
+      sendAuditWithoutModel,
+      auditorModel,
+      logger,
+    )
+
+    if (promptResult.error) {
       const retryFn = async () => {
-        const retry = await promptAuditSession(v2Client, {
-          sessionId: created.auditSessionId,
-          worktreeDir: currentState.worktreeDir,
-          prompt: loopService.buildAuditPrompt(currentState),
-          auditorModel,
-        })
-        if (!retry.ok) throw retry.error
+        const retry = await sendAuditWithoutModel()
+        if (retry.error) throw retry.error
       }
       await handlePromptError(loopName, { ...currentState, phase: 'auditing' }, 'failed to send audit prompt', promptResult.error, retryFn)
       return
     }
 
-    const modelSource = currentState.auditorModel
-      ? `loop state override: ${currentState.auditorModel}`
-      : currentConfig.auditorModel
-        ? `config.auditorModel: ${currentConfig.auditorModel}`
-        : 'default fallback'
-    logger.log(`auditor using model: ${modelSource} (session ${created.auditSessionId})`)
+    if (actualAuditorModel) {
+      logger.log(`auditor using model: ${actualAuditorModel.providerID}/${actualAuditorModel.modelID} (session ${created.auditSessionId})`)
+    } else {
+      logger.log(`auditor using default model (fallback) (session ${created.auditSessionId})`)
+    }
 
     consecutiveStalls.set(loopName, 0)
   }

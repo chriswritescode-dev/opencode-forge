@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { existsSync, mkdirSync, rmSync } from 'fs'
 import { attachForgeApiServer } from '../../src/api/server'
 import { getProjectRegistry } from '../../src/api/project-registry'
-import { initializeDatabase, closeDatabase, createLoopsRepo, createPlansRepo } from '../../src/storage'
+import { initializeDatabase, closeDatabase, createLoopsRepo, createPlansRepo, migrations } from '../../src/storage'
 import type { ToolContext } from '../../src/tools/types'
 import type { LoopRow, LoopLargeFields } from '../../src/storage/repos/loops-repo'
 
@@ -44,11 +44,12 @@ function makeLoopRow(projectId: string, loopName: string): { row: LoopRow; large
   }
 }
 
-function makeCtx(projectId: string, directory: string, plansRepo: ReturnType<typeof createPlansRepo>): ToolContext {
+function makeCtx(projectId: string, directory: string, plansRepo: ReturnType<typeof createPlansRepo>, db: ReturnType<typeof initializeDatabase>): ToolContext {
   return {
     projectId,
     directory,
     plansRepo,
+    db,
     logger: {
       log: () => {},
       debug: () => {},
@@ -128,12 +129,12 @@ describe('multi-project API handlers', () => {
     const plansRepo = createPlansRepo(db)
     const loopsRepo = createLoopsRepo(db)
 
-    const projectA = makeCtx('project-a', '/path/A', plansRepo)
-    const projectB = makeCtx('project-b', '/path/B', plansRepo)
+    const projectA = makeCtx('project-a', '/path/A', plansRepo, db)
+    const projectB = makeCtx('project-b', '/path/B', plansRepo, db)
     registry.register(projectA)
     registry.register(projectB)
 
-    serverHandle = attachForgeApiServer(projectA, registry)
+    serverHandle = await attachForgeApiServer(projectA, registry)
     expect(serverHandle).not.toBeNull()
     expect(fetchHandler).not.toBeNull()
 

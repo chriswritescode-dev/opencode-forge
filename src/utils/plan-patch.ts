@@ -1,5 +1,5 @@
 /**
- * Shared plan patching logic used by both the plan-edit tool and API handlers.
+ * Shared plan patching logic used by API handlers.
  */
 
 export interface PlanPatchResult {

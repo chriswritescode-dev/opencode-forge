@@ -345,7 +345,7 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
   }
 
   // Send prompt to code agent with model fallback
-  const loopModel = parseModelString(options.executionModel) ?? parseModelString(config.loop?.model) ?? parseModelString(config.executionModel)
+  const loopModel = parseModelString(options.executionModel) ?? parseModelString(config.executionModel)
   const sessionDir = loopState.worktreeDir
   
   console.log(`loop-launch: initial prompt sessionID=${sessionId} dir=${sessionDir} model=${loopModel ? `${loopModel.providerID}/${loopModel.modelID}` : '(default)'}`)

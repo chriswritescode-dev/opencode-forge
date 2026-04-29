@@ -505,8 +505,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     }
     
     // Resolve models
-    const resolvedExecutionModel = command.executionModel ?? deps.config.loop?.model ?? deps.config.executionModel
-    const resolvedAuditorModel = command.auditorModel ?? deps.config.auditorModel ?? deps.config.loop?.model ?? deps.config.executionModel
+    const resolvedExecutionModel = command.executionModel ?? deps.config.executionModel
+    const resolvedAuditorModel = command.auditorModel ?? deps.config.auditorModel
     const loopModel = parseModelString(resolvedExecutionModel)
     
     // Resolve max iterations

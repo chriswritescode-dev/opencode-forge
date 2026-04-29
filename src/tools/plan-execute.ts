@@ -1,6 +1,7 @@
 import { tool } from '@opencode-ai/plugin'
 import type { ToolContext } from './types'
 import { createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
+import { captureLatestPlanForSession } from '../services/plan-capture'
 
 const z = tool.schema
 
@@ -21,12 +22,28 @@ export function createPlanExecuteTools(ctx: ToolContext): Record<string, ReturnT
         let planText = args.plan
         let source: PlanSource
         if (!planText) {
-          const planRow = plansRepo.getForSession(projectId, context.sessionID)
-          if (!planRow) {
-            return 'No plan found. Write the plan via plan-write before calling this tool, or pass it directly as the plan argument.'
+          const capture = await captureLatestPlanForSession(
+            {
+              v2,
+              plansRepo,
+              projectId,
+              directory,
+              logger,
+            },
+            context.sessionID
+          )
+          
+          if (capture.status === 'captured' || capture.status === 'already-current') {
+            planText = capture.planText
+            source = { kind: 'stored', sessionId: context.sessionID }
+          } else {
+            const planRow = plansRepo.getForSession(projectId, context.sessionID)
+            if (!planRow) {
+              return 'No plan found. Ensure the final plan is wrapped with <!-- forge-plan:start --> and <!-- forge-plan:end --> markers, or pass it directly as the plan argument.'
+            }
+            planText = planRow.content
+            source = { kind: 'stored', sessionId: context.sessionID }
           }
-          planText = planRow.content
-          source = { kind: 'stored', sessionId: context.sessionID }
         } else {
           source = { kind: 'inline', planText }
         }

@@ -1,6 +1,52 @@
 import type { PluginConfig, Logger } from '../types'
-import type { LoopService } from '../services/loop'
+import type { LoopService, LoopState } from '../services/loop'
 import { parseModelString } from './model-fallback'
+
+type ModelRef = { providerID: string; modelID: string }
+type LoopModelRole = 'code' | 'auditor'
+
+export interface LoopModelSelection {
+  model: ModelRef | undefined
+  source: string
+}
+
+function firstParsedModel(candidates: Array<[string, string | undefined]>): LoopModelSelection {
+  for (const [source, value] of candidates) {
+    const model = parseModelString(value)
+    if (model) return { model, source: `${source}=${value}` }
+  }
+  return { model: undefined, source: 'default/session model' }
+}
+
+export function resolveLoopModelSelection(
+  config: PluginConfig,
+  state: LoopState | null | undefined,
+  role: LoopModelRole,
+): LoopModelSelection {
+  if (state?.modelFailed) {
+    return { model: undefined, source: 'default/session model (configured model previously failed)' }
+  }
+
+  let candidates: Array<[string, string | undefined]>
+
+  switch (role) {
+    case 'auditor':
+      candidates = [
+        ['state.auditorModel', state?.auditorModel],
+        ['state.executionModel', state?.executionModel],
+        ['config.executionModel', config.executionModel],
+      ]
+      break
+    case 'code':
+      candidates = [
+        ['state.executionModel', state?.executionModel],
+        ['config.executionModel', config.executionModel],
+      ]
+      break
+  }
+
+  return firstParsedModel(candidates)
+}
 
 export function resolveLoopModel(
   config: PluginConfig,
@@ -8,11 +54,7 @@ export function resolveLoopModel(
   loopName: string,
 ): { providerID: string; modelID: string } | undefined {
   const state = loopService.getActiveState(loopName)
-  if (state?.modelFailed) return undefined
-  const hasExplicit = state?.executionModel !== undefined && state?.executionModel !== null
-  if (hasExplicit) return parseModelString(state!.executionModel)
-  return parseModelString(config.loop?.model)
-    ?? parseModelString(config.executionModel)
+  return resolveLoopModelSelection(config, state, 'code').model
 }
 
 export function resolveLoopAuditorModel(
@@ -22,35 +64,12 @@ export function resolveLoopAuditorModel(
   logger?: Logger,
 ): { providerID: string; modelID: string } | undefined {
   const state = loopService.getActiveState(loopName)
-
-  // If auditorModel was explicitly set on the loop state (even as ''),
-  // the user made a deliberate choice — don't fall through to config.
-  // undefined means "not set" (e.g., loop launched via tool without override).
-  const hasExplicitAuditor = state?.auditorModel !== undefined && state?.auditorModel !== null
-  // Priority: explicit auditor > executor model > config defaults
-  // executor model is always in the chain so a bad auditor model falls through to it
-  const resolved = hasExplicitAuditor
-    ? (parseModelString(state!.auditorModel)
-      ?? parseModelString(state?.executionModel)
-      ?? parseModelString(config.auditorModel)
-      ?? parseModelString(config.loop?.model)
-      ?? parseModelString(config.executionModel))
-    : (parseModelString(config.auditorModel)
-      ?? parseModelString(state?.executionModel)
-      ?? parseModelString(config.loop?.model)
-      ?? parseModelString(config.executionModel))
+  const selection = resolveLoopModelSelection(config, state, 'auditor')
 
   if (logger) {
-    const source = hasExplicitAuditor
-      ? (parseModelString(state!.auditorModel) ? `state.auditorModel=${state!.auditorModel}` : 'state.auditorModel=(default/session model)')
-      : parseModelString(config.auditorModel) ? `config.auditorModel=${config.auditorModel}`
-      : parseModelString(state?.executionModel) ? `state.executionModel=${state?.executionModel}`
-      : parseModelString(config.loop?.model) ? `config.loop.model=${config.loop?.model}`
-      : parseModelString(config.executionModel) ? `config.executionModel=${config.executionModel}`
-      : 'none'
-    logger.log(`resolveLoopAuditorModel(${loopName}): resolved from ${source} → ${resolved ? `${resolved.providerID}/${resolved.modelID}` : 'undefined (session model)'}`)
+    logger.log(`resolveLoopAuditorModel(${loopName}): resolved from ${selection.source} → ${selection.model ? `${selection.model.providerID}/${selection.model.modelID}` : 'undefined (session model)'}`)
   }
-  return resolved
+  return selection.model
 }
 
 export function formatDuration(seconds: number): string {
