@@ -54,6 +54,7 @@ export interface ForgeApiServer {
 
 const API_LEASE_TTL_MS = 30_000
 const API_HEARTBEAT_MS = 5_000
+const API_COORDINATOR_REQUEST_TIMEOUT_MS = 5_000
 
 type OwnerServer = {
   url: string
@@ -62,11 +63,50 @@ type OwnerServer = {
 
 type AttachmentState = {
   instanceId: string
-  role: ForgeApiRole
-  publicUrl: string
   ownerServer: OwnerServer
+  publicKey: string
   heartbeatTimer: ReturnType<typeof setInterval> | null
   released: boolean
+}
+
+type PublicAttachment = {
+  instanceId: string
+  fetchHandler: (req: Request) => Promise<Response>
+  apiRegistryRepo: ReturnType<typeof createApiRegistryRepo>
+  ctx: ToolContext
+  setRole(role: ForgeApiRole): void
+}
+
+type PublicServerSlot = {
+  server: ReturnType<typeof Bun.serve>
+  coordinatorInstanceId: string
+  currentFetchHandler: (req: Request) => Promise<Response>
+  attachments: Map<string, PublicAttachment>
+}
+
+const PUBLIC_SERVER_SLOTS_KEY = Symbol.for('forge.api.public-server-slots')
+
+function getPublicServerSlots(): Map<string, PublicServerSlot> {
+  const globalState = globalThis as typeof globalThis & {
+    [PUBLIC_SERVER_SLOTS_KEY]?: Map<string, PublicServerSlot>
+  }
+  if (!globalState[PUBLIC_SERVER_SLOTS_KEY]) {
+    globalState[PUBLIC_SERVER_SLOTS_KEY] = new Map()
+  }
+  return globalState[PUBLIC_SERVER_SLOTS_KEY]
+}
+
+function publicServerKey(host: string, port: number): string {
+  return `${host}:${port}`
+}
+
+function withTimeoutSignal(timeoutMs: number): AbortSignal {
+  if (typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(timeoutMs)
+  }
+  const controller = new AbortController()
+  setTimeout(() => controller.abort(), timeoutMs)
+  return controller.signal
 }
 
 function createApiInstanceId(ctx: ToolContext): string {
@@ -130,16 +170,19 @@ function registerInstance(
 function startHeartbeat(
   repo: ReturnType<typeof createApiRegistryRepo>,
   instanceId: string,
-  role: ForgeApiRole
+  getRole: () => ForgeApiRole,
+  onTick?: (now: number) => void
 ): ReturnType<typeof setInterval> {
   return setInterval(() => {
     try {
       const now = Date.now()
+      const role = getRole()
       repo.touchProjectInstance(instanceId, now, API_LEASE_TTL_MS)
       if (role === 'coordinator') {
         repo.touchCoordinator(instanceId, now, API_LEASE_TTL_MS)
       }
       repo.pruneExpired(now)
+      onTick?.(now)
     } catch (err) {
       console.error('[api] heartbeat failed:', err)
     }
@@ -172,11 +215,30 @@ async function tryRegisterWithCoordinator(
         pid: process.pid,
         instanceId,
       }),
+      signal: withTimeoutSignal(API_COORDINATOR_REQUEST_TIMEOUT_MS),
     })
     
     return response.ok
   } catch (err) {
     console.error('[api] coordinator registration request failed:', err)
+    return false
+  }
+}
+
+async function canReachCoordinator(publicUrl: string, password: string | undefined): Promise<boolean> {
+  try {
+    const headers: Record<string, string> = {}
+    if (password) {
+      headers['Authorization'] = `Bearer ${password}`
+    }
+
+    const response = await fetch(`${publicUrl}/api/v1/projects`, {
+      method: 'GET',
+      headers,
+      signal: withTimeoutSignal(API_COORDINATOR_REQUEST_TIMEOUT_MS),
+    })
+    return response.status < 500
+  } catch {
     return false
   }
 }
@@ -410,7 +472,7 @@ function buildFetchHandler(
       if (!ctx && m.params.projectId) {
         const owner = apiRegistryRepo.getProjectInstanceByProject(m.params.projectId)
         if (owner && owner.expiresAt > Date.now()) {
-          return proxyToOwner(req, owner.ownerUrl)
+          return await proxyToOwner(req, owner.ownerUrl)
         }
       }
 
@@ -457,6 +519,8 @@ export async function attachForgeApiServer(
   const apiRegistryRepo = createApiRegistryRepo(ctx.db)
   const instanceId = createApiInstanceId(ctx)
   const now = Date.now()
+  const publicKey = publicServerKey(host, port)
+  const publicUrl = `http://${host}:${port}`
 
   // Start owner server first
   const ownerServer = startOwnerServer(ctx, registry)
@@ -466,64 +530,152 @@ export async function attachForgeApiServer(
 
   const routes = buildRoutes()
   const fetchHandler = buildFetchHandler(routes, registry, password, localhostOnly, apiRegistryRepo)
+  const slots = getPublicServerSlots()
 
-  let publicServer: ReturnType<typeof Bun.serve> | null = null
-  let role: ForgeApiRole
-  let publicUrl: string
+  let role: ForgeApiRole = 'attached'
 
-  try {
-    publicServer = Bun.serve({
-      hostname: host,
-      port,
-      fetch: fetchHandler,
-    })
-    
-    role = 'coordinator'
-    publicUrl = `http://${host}:${port}`
-    
-    // Upsert coordinator lease
+  const attachment: PublicAttachment = {
+    instanceId,
+    fetchHandler,
+    apiRegistryRepo,
+    ctx,
+    setRole(nextRole) {
+      role = nextRole
+    },
+  }
+
+  const attachToLocalSlot = (slot: PublicServerSlot, nextRole: ForgeApiRole): ForgeApiRole => {
+    slot.attachments.set(instanceId, attachment)
+    attachment.setRole(nextRole)
+    return role
+  }
+
+  const promoteToCoordinator = (logSuccess: boolean): 'promoted' | 'address-in-use' | 'failed' => {
+    const existing = slots.get(publicKey)
+    if (existing) {
+      attachToLocalSlot(existing, existing.coordinatorInstanceId === instanceId ? 'coordinator' : 'attached')
+      return 'promoted'
+    }
+
+    let slot: PublicServerSlot
+    try {
+      const server = Bun.serve({
+        hostname: host,
+        port,
+        fetch: (req) => slot.currentFetchHandler(req),
+      })
+      slot = {
+        server,
+        coordinatorInstanceId: instanceId,
+        currentFetchHandler: fetchHandler,
+        attachments: new Map([[instanceId, attachment]]),
+      }
+      slots.set(publicKey, slot)
+    } catch (err) {
+      if (isAddressInUse(err)) {
+        return 'address-in-use'
+      } else {
+        const message = err instanceof Error ? err.message : String(err)
+        ctx.logger.error(`[api] failed to bind ${host}:${port}: ${message}`)
+        return 'failed'
+      }
+    }
+
     apiRegistryRepo.upsertCoordinator({
       host,
       port,
       url: publicUrl,
       instanceId,
       pid: process.pid,
-      now,
+      now: Date.now(),
       ttlMs: API_LEASE_TTL_MS,
     })
-    
-    ctx.logger.log(`[api] listening on ${publicUrl}`)
-  } catch (err) {
-    if (isAddressInUse(err)) {
-      // Port is already in use - attach to existing coordinator
+    role = 'coordinator'
+    if (logSuccess) {
+      ctx.logger.log(`[api] listening on ${publicUrl}`)
+    }
+    return 'promoted'
+  }
+
+  const localSlot = slots.get(publicKey)
+  if (localSlot) {
+    attachToLocalSlot(localSlot, 'attached')
+    ctx.logger.log(`[api] attached to local listener ${publicUrl}`)
+  } else {
+    const coordinator = apiRegistryRepo.getCoordinator(host, port)
+    const reachable = !!coordinator && coordinator.expiresAt > Date.now() && await canReachCoordinator(publicUrl, password)
+    if (reachable) {
       role = 'attached'
-      publicUrl = `http://${host}:${port}`
-      
       const registered = await tryRegisterWithCoordinator(publicUrl, ctx, ownerServer.url, instanceId)
-      
       if (!registered) {
         ctx.logger.log('[api] attached via persisted registry; coordinator registration request failed')
       }
-      
       ctx.logger.log(`[api] attached to existing listener ${publicUrl}`)
     } else {
-      // Other error - clean up and return null
-      const message = err instanceof Error ? err.message : String(err)
-      ctx.logger.error(`[api] failed to bind ${host}:${port}: ${message}`)
-      ownerServer.stop()
-      apiRegistryRepo.deleteProjectInstance(instanceId)
-      return null
+      const promotionResult = promoteToCoordinator(true)
+      if (promotionResult === 'failed') {
+        ownerServer.stop()
+        apiRegistryRepo.deleteProjectInstance(instanceId)
+        return null
+      }
+      if (promotionResult === 'address-in-use') {
+        role = 'attached'
+        const registered = await tryRegisterWithCoordinator(publicUrl, ctx, ownerServer.url, instanceId)
+        if (!registered) {
+          ctx.logger.log('[api] attached via persisted registry; coordinator registration request failed')
+        }
+        ctx.logger.log(`[api] attached to existing listener ${publicUrl}`)
+      }
+    }
+  }
+
+  const transferCoordinator = (slot: PublicServerSlot): void => {
+    const next = slot.attachments.values().next().value as PublicAttachment | undefined
+    if (!next) return
+    slot.coordinatorInstanceId = next.instanceId
+    slot.currentFetchHandler = next.fetchHandler
+    next.setRole('coordinator')
+    next.apiRegistryRepo.upsertCoordinator({
+      host,
+      port,
+      url: publicUrl,
+      instanceId: next.instanceId,
+      pid: process.pid,
+      now: Date.now(),
+      ttlMs: API_LEASE_TTL_MS,
+    })
+    next.ctx.logger.log(`[api] coordinator transferred to project ${next.ctx.projectId}`)
+  }
+
+  let takeoverInFlight = false
+
+  const tryTakeover = async (): Promise<void> => {
+    if (role === 'coordinator' || state.released || takeoverInFlight) return
+    const slot = slots.get(publicKey)
+    if (slot) {
+      attachToLocalSlot(slot, 'attached')
+      return
+    }
+    takeoverInFlight = true
+    try {
+      if (await canReachCoordinator(publicUrl, password)) return
+      if (promoteToCoordinator(false) === 'promoted') {
+        ctx.logger.log(`[api] took over listener ${publicUrl}`)
+      }
+    } finally {
+      takeoverInFlight = false
     }
   }
 
   // Start heartbeat
-  const heartbeatTimer = startHeartbeat(apiRegistryRepo, instanceId, role)
+  const heartbeatTimer = startHeartbeat(apiRegistryRepo, instanceId, () => role, () => {
+    void tryTakeover()
+  })
 
   const state: AttachmentState = {
     instanceId,
-    role,
-    publicUrl,
     ownerServer,
+    publicKey,
     heartbeatTimer,
     released: false,
   }
@@ -543,11 +695,24 @@ export async function attachForgeApiServer(
 
       apiRegistryRepo.deleteProjectInstance(state.instanceId)
 
-      if (state.role === 'coordinator') {
-        apiRegistryRepo.deleteCoordinator(state.instanceId)
-        if (publicServer) {
-          publicServer.stop(true)
+      const slot = slots.get(state.publicKey)
+      if (slot) {
+        slot.attachments.delete(state.instanceId)
+
+        if (slot.coordinatorInstanceId === state.instanceId) {
+          apiRegistryRepo.deleteCoordinator(state.instanceId)
+          if (slot.attachments.size > 0) {
+            transferCoordinator(slot)
+          } else {
+            slot.server.stop(true)
+            slots.delete(state.publicKey)
+            ctx.logger.log('[api] stopped')
+          }
+        } else {
+          ctx.logger.log(`[api] detached from listener for project ${ctx.projectId}`)
         }
+      } else if (role === 'coordinator') {
+        apiRegistryRepo.deleteCoordinator(state.instanceId)
         ctx.logger.log('[api] stopped')
       } else {
         ctx.logger.log(`[api] detached from listener for project ${ctx.projectId}`)

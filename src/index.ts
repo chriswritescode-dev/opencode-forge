@@ -312,20 +312,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           sandboxReconcileInterval = null
         }
 
-        if (sandboxManager) {
-          const activeLoops = loopService.listActive()
-          for (const state of activeLoops) {
-            if (state.sandbox && sandboxManager) {
-              try {
-                 await sandboxManager.stop(state.loopName!)
-                 logger.log(`Cleanup: stopped sandbox for ${state.loopName}`)
-               } catch (err) {
-                 logger.error(`Cleanup: failed to stop sandbox for ${state.loopName}`, err)
-               }
-            }
-          }
-        }
-
         // Stop the API server if it was started
         if (apiServer) {
           try {
@@ -338,8 +324,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 
         registry.unregister(projectId)
 
-        loopHandler.terminateAll()
-        logger.log('Loop: all active loops terminated')
+        logger.log('Loop: active loops preserved during plugin cleanup')
         
         loopHandler.clearAllRetryTimeouts()
         

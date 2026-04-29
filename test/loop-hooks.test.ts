@@ -223,6 +223,169 @@ describe('loop-hooks integration', () => {
     }
   }
 
+  describe('stall watchdog', () => {
+    it('does not process auditing phase while the audit session is busy', async () => {
+      testConfig.loop = {
+        ...testConfig.loop,
+        stallTimeoutMs: 20,
+      }
+
+      let messageReads = 0
+      let sessionDeletes = 0
+      const v2Client = {
+        session: {
+          messages: async () => {
+            messageReads++
+            return {
+              data: [{ info: { role: 'assistant' }, parts: [{ type: 'text', text: 'Reviewed.' }] }],
+            }
+          },
+          promptAsync: async () => ({ data: {}, error: null }),
+          abort: async () => {},
+          status: async () => ({
+            data: {
+              'coding-session': { type: 'idle' },
+              'audit-session': { type: 'busy' },
+            },
+          }),
+          create: async () => ({ data: { id: 'new-coding-session' }, error: undefined }),
+          delete: async () => {
+            sessionDeletes++
+          },
+        },
+        tui: {
+          publish: async () => {},
+          selectSession: async () => {},
+        },
+        worktree: {
+          create: async () => ({ data: { directory: '/mock/worktree', branch: 'mock-branch' }, error: undefined }),
+          remove: async () => {},
+        },
+      } as MockV2Client
+
+      const { handler, service } = createTestHandler(v2Client as any)
+      const loopName = 'test-loop-audit-watchdog'
+      const loopsRepo = createLoopsRepo(db)
+      const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
+      const now = Date.now()
+
+      loopsRepo.insert({
+        projectId: testProjectId,
+        loopName,
+        status: 'running',
+        currentSessionId: 'coding-session',
+        auditSessionId: 'audit-session',
+        worktree: false,
+        worktreeDir,
+        worktreeBranch: null,
+        projectDir: worktreeDir,
+        maxIterations: 0,
+        iteration: 1,
+        auditCount: 0,
+        errorCount: 0,
+        phase: 'auditing',
+        executionModel: null,
+        auditorModel: null,
+        modelFailed: false,
+        sandbox: false,
+        sandboxContainer: null,
+        startedAt: now,
+        completedAt: null,
+        terminationReason: null,
+        completionSummary: null,
+        workspaceId: null,
+        hostSessionId: null,
+      }, {
+        prompt: 'Test prompt',
+        lastAuditResult: null,
+      })
+
+      handler.startWatchdog(loopName)
+      await new Promise(resolve => setTimeout(resolve, 70))
+      handler.clearLoopTimers(loopName)
+
+      const state = service.getAnyState(loopName)
+      expect(state?.phase).toBe('auditing')
+      expect(state?.auditSessionId).toBe('audit-session')
+      expect(state?.sessionId).toBe('coding-session')
+      expect(messageReads).toBe(0)
+      expect(sessionDeletes).toBe(0)
+
+      rmSync(worktreeDir, { recursive: true, force: true })
+    })
+  })
+
+  describe('audit abort events', () => {
+    it('processes audit result when an audit abort event arrives after assistant response', async () => {
+      const v2Client = createMockV2Client({
+        messagesCalls: [
+          { lastMessageRole: 'assistant', text: 'Code reviewed, no issues found.' },
+          { lastMessageRole: 'assistant', text: 'Code reviewed, no issues found.' },
+        ],
+        statusType: 'idle',
+      })
+
+      const { handler, service, logger } = createTestHandler(v2Client as any)
+      const loopName = 'test-loop-audit-abort-after-response'
+      const sessionId = 'test-session-audit-abort'
+      const auditSessionId = 'test-audit-session-abort'
+      const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
+      const worktreeBranch = 'loop-audit-abort-branch'
+      const loopsRepo = createLoopsRepo(db)
+      const now = Date.now()
+
+      loopsRepo.insert({
+        projectId: testProjectId,
+        loopName,
+        status: 'running',
+        currentSessionId: sessionId,
+        auditSessionId,
+        worktree: true,
+        worktreeDir,
+        worktreeBranch,
+        projectDir: worktreeDir,
+        maxIterations: 0,
+        iteration: 1,
+        auditCount: 0,
+        errorCount: 0,
+        phase: 'auditing',
+        executionModel: null,
+        auditorModel: null,
+        modelFailed: false,
+        sandbox: false,
+        sandboxContainer: null,
+        startedAt: now,
+        completedAt: null,
+        terminationReason: null,
+        completionSummary: null,
+        workspaceId: null,
+        hostSessionId: null,
+      }, {
+        prompt: 'Test prompt',
+        lastAuditResult: null,
+      })
+
+      await handler.onEvent({
+        event: {
+          type: 'session.error' as const,
+          properties: {
+            sessionID: auditSessionId,
+            error: { name: 'MessageAbortedError' },
+          },
+        },
+      })
+
+      await new Promise(resolve => setTimeout(resolve, 100))
+
+      const state = service.getAnyState(loopName)
+      expect(state?.active).toBe(false)
+      expect(state?.terminationReason).toBe('completed')
+      expect(logger.logs.some((entry) => entry.message.includes('processing audit result'))).toBe(true)
+
+      rmSync(worktreeDir, { recursive: true, force: true })
+    })
+  })
+
   describe('worktree completion log writing', () => {
     it('writes completion log when audit clears and no bug findings', async () => {
       const loopName = 'test-loop-completion'

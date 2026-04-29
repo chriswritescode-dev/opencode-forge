@@ -144,7 +144,9 @@ export function createLoopEventHandler(
           return
         }
 
-        const sessionId = state.sessionId
+        const sessionId = state.phase === 'auditing'
+          ? state.auditSessionId ?? state.sessionId
+          : state.sessionId
         let statusCheckFailed = false
         try {
           const statusResult = await v2Client.session.status({ directory: state.worktreeDir })
@@ -155,7 +157,7 @@ export function createLoopEventHandler(
 
           if (hasActiveWork) {
             lastActivityTime.set(loopName, Date.now())
-            logger.log(`Loop watchdog: loop ${loopName} has active work (${status}), resetting timer`)
+            logger.log(`Loop watchdog: loop ${loopName} has active ${state.phase} work (${status}), resetting timer`)
             return
           }
         } catch (err) {
@@ -921,6 +923,12 @@ export function createLoopEventHandler(
             return
           }
           if (isAudit) {
+            const { lastMessageRole } = await getLastAssistantInfo(eventSessionId, state.worktreeDir)
+            if (lastMessageRole === 'assistant') {
+              logger.log(`Loop: audit session ${eventSessionId} aborted after assistant response, processing audit result`)
+              await handleAuditingPhase(loopName, state)
+              return
+            }
             logger.log(`Loop: audit session ${eventSessionId} aborted, cleaning up and rolling back to coding`)
             await deleteAuditSession(v2Client, eventSessionId, state.worktreeDir, logger)
             loopService.unregisterAuditSession(eventSessionId)

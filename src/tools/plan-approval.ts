@@ -155,9 +155,6 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
               output.output = 'Creating new session for plan execution... Failed to create session.'
             })
             
-            v2.session.abort({ sessionID: input.sessionID }).catch((err) => {
-              logger.error('Plan approval: failed to abort architect session', err)
-            })
             return
           }
           
@@ -199,8 +196,6 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
               sandboxManager: ctx.sandboxManager,
             })
             
-            // Defer architect session abort until loop startup completes, so we can roll back on failure.
-            // The plan row in plansRepo is kept until success — if the service fails the user can retry.
             service.dispatch(execCtx, {
               type: 'loop.start',
               source: { kind: 'inline', planText },
@@ -213,21 +208,15 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
               lifecycle: {
                 selectSession: true,
                 startWatchdog: true,
-                abortSourceSessionOnSuccess: true,
               },
             }).then((result) => {
               if (!result.ok) {
                 logger.error('Plan approval: loop setup failed, keeping architect session active', result.error)
                 return
               }
-              logger.log('Plan approval: loop setup complete, aborting architect session')
-              // abortSourceSessionOnSuccess handles the abort, but we keep this as a fallback
+              logger.log('Plan approval: loop setup complete')
             }).catch((err) => {
               logger.error('Plan approval: execution service threw unexpectedly', err as Error)
-              // Unexpected throw — abort the architect session but leave the plan row so the user can retry.
-              v2.session.abort({ sessionID: input.sessionID }).catch((abortErr: unknown) => {
-                logger.error('Plan approval: failed to abort architect session', abortErr as Error)
-              })
             })
             return
           }

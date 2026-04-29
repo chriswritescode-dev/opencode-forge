@@ -191,4 +191,59 @@ describe('attachForgeApiServer', () => {
     // Should stop both owner and public server (2 stops total)
     expect(stopCalls).toBe(2)
   })
+
+  test('proxy requests do not timeout and proxy failures are contained', async () => {
+    let capturedPublicFetch: ((req: Request) => Promise<Response>) | undefined
+
+    ;(Bun as unknown as { serve: typeof Bun.serve }).serve = mock((opts: any) => {
+      if (opts.port !== 0) {
+        capturedPublicFetch = opts.fetch
+      }
+      return {
+        port: opts.port,
+        stop: () => {},
+      } as ReturnType<typeof Bun.serve>
+    })
+
+    const errors: string[] = []
+    const ctx = makeCtx('project-a', '127.0.0.1', 35610, errors)
+    registry.register(ctx)
+
+    const server = await attachForgeApiServer(ctx, registry)
+    expect(server).not.toBeNull()
+    if (server) servers.push(server)
+    expect(capturedPublicFetch).toBeDefined()
+
+    const repo = createApiRegistryRepo(ctx.db)
+    repo.upsertProjectInstance({
+      instanceId: 'owner-project-b',
+      projectId: 'project-b',
+      directory: '/tmp/project-b',
+      ownerUrl: 'http://127.0.0.1:45678',
+      pid: process.pid,
+      now: Date.now(),
+      ttlMs: 30_000,
+    })
+
+    const originalFetch = global.fetch
+    let proxiedSignal: AbortSignal | undefined
+    global.fetch = mock((_: RequestInfo | URL, init?: RequestInit) => {
+      proxiedSignal = init?.signal ?? undefined
+      return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+    }) as any
+
+    const okResponse = await capturedPublicFetch!(new Request('http://127.0.0.1:35610/api/v1/projects/project-b'))
+    expect(okResponse.status).toBe(200)
+    expect(proxiedSignal).toBeUndefined()
+
+    global.fetch = mock(() => Promise.reject(new Error('owner unavailable'))) as any
+
+    const errorResponse = await capturedPublicFetch!(new Request('http://127.0.0.1:35610/api/v1/projects/project-b'))
+    expect(errorResponse.status).toBe(500)
+    const body = await errorResponse.json() as { ok: boolean; error: { message: string } }
+    expect(body.ok).toBe(false)
+    expect(body.error.message).toBe('owner unavailable')
+
+    global.fetch = originalFetch
+  })
 })

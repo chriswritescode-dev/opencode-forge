@@ -174,6 +174,53 @@ describe('attachForgeApiServer one-port architecture', () => {
     global.fetch = originalFetch
   })
 
+  test('local attachment keeps public listener alive when coordinator stops', async () => {
+    const db1 = new Database(':memory:')
+    const db2 = new Database(':memory:')
+    for (const migration of migrations) {
+      migration.apply(db1)
+      migration.apply(db2)
+    }
+
+    let ownerStops = 0
+    let publicStops = 0
+
+    ;(Bun as unknown as { serve: typeof Bun.serve }).serve = ((opts: any) => {
+      return {
+        port: opts.port,
+        stop: () => {
+          if (opts.port === 0) {
+            ownerStops += 1
+          } else {
+            publicStops += 1
+          }
+        },
+      } as ReturnType<typeof Bun.serve>
+    }) as any
+
+    const projectA = makeCtx('project-a-transfer', '/tmp/project-a-transfer', '127.0.0.1', TEST_PORT + 3, db1)
+    const projectB = makeCtx('project-b-transfer', '/tmp/project-b-transfer', '127.0.0.1', TEST_PORT + 3, db2)
+
+    registry.register(projectA)
+    registry.register(projectB)
+
+    const server1 = await attachForgeApiServer(projectA, registry)
+    const server2 = await attachForgeApiServer(projectB, registry)
+    expect(server1).not.toBeNull()
+    expect(server2).not.toBeNull()
+    servers.push(server1!, server2!)
+
+    await server1!.stop()
+
+    expect(ownerStops).toBe(1)
+    expect(publicStops).toBe(0)
+
+    await server2!.stop()
+
+    expect(ownerStops).toBe(2)
+    expect(publicStops).toBe(1)
+  })
+
   test('stop is idempotent and removes leases', async () => {
     const db1 = new Database(':memory:')
     for (const migration of migrations) {

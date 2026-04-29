@@ -655,28 +655,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           }
         }
         
-        // Wait for graph readiness
-        if (hostWorktreeDir) {
-          try {
-            const { waitForGraphReady } = await import('../utils/tui-graph-status')
-            const waitResult = await waitForGraphReady(ctx.projectId, {
-              cwd: hostWorktreeDir,
-              dbPathOverride: deps.dataDir ? join(deps.dataDir, 'graph.db') : undefined,
-              pollMs: 100,
-              timeoutMs: 5000,
-            })
-            
-            if (waitResult === 'timeout') {
-              deps.logger.log(`handleStartLoop: graph readiness timeout for worktree ${hostWorktreeDir}`)
-            } else if (waitResult === null) {
-              deps.logger.log(`handleStartLoop: graph status unavailable for worktree ${hostWorktreeDir}`)
-            } else {
-              deps.logger.log(`handleStartLoop: graph ready (${waitResult.state}) for worktree ${hostWorktreeDir}`)
-            }
-          } catch (err) {
-            deps.logger.log(`handleStartLoop: graph wait error (non-fatal)`, err)
-          }
-        }
       } else {
         // In-place mode
         const { buildLoopPermissionRuleset } = await import('../constants/loop')
@@ -798,6 +776,30 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         await rollbackLoopStart()
         
         return fail('prompt_failed', 502, 'Loop session created but failed to send prompt')
+      }
+      
+      if (hostWorktreeDir) {
+        void (async () => {
+          try {
+            const { waitForGraphReady } = await import('../utils/tui-graph-status')
+            const waitResult = await waitForGraphReady(ctx.projectId, {
+              cwd: hostWorktreeDir,
+              dbPathOverride: deps.dataDir ? join(deps.dataDir, 'graph.db') : undefined,
+              pollMs: 100,
+              timeoutMs: 5000,
+            })
+            
+            if (waitResult === 'timeout') {
+              deps.logger.log(`handleStartLoop: graph readiness timeout for worktree ${hostWorktreeDir}`)
+            } else if (waitResult === null) {
+              deps.logger.log(`handleStartLoop: graph status unavailable for worktree ${hostWorktreeDir}`)
+            } else {
+              deps.logger.log(`handleStartLoop: graph ready (${waitResult.state}) for worktree ${hostWorktreeDir}`)
+            }
+          } catch (err) {
+            deps.logger.log(`handleStartLoop: graph wait error (non-fatal)`, err)
+          }
+        })()
       }
       
       // Success: start watchdog if requested

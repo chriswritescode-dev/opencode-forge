@@ -1179,6 +1179,59 @@ describe('plan execute API loop dispatch', () => {
     expect(row.sandbox_container).toBe('oc-forge-sandbox-api-worktree-plan')
   })
 
+  test('loop-worktree mode persists state before graph readiness polling', async () => {
+    const { ctx, graphStatusRepo, promptAsync } = createApiDeps()
+    const worktreeDir = `${testDataDir}/slow-graph-worktree`
+    mkdirSync(worktreeDir, { recursive: true })
+    ctx.v2.worktree.create = mock(async () => ({
+      data: { directory: worktreeDir, branch: 'opencode/loop-api-worktree-plan' },
+      error: undefined,
+    })) as unknown as ToolContext['v2']['worktree']['create']
+
+    let resolvePrompt!: () => void
+    const promptHold = new Promise<{ data: Record<string, never> }>((resolve) => {
+      resolvePrompt = () => resolve({ data: {} })
+    })
+    ctx.v2.session.promptAsync = mock(() => promptHold) as unknown as ToolContext['v2']['session']['promptAsync']
+
+    const req = new Request('http://test.local/execute', {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }),
+    })
+
+    const pending = handleExecutePlan(req, apiDeps(ctx), {
+      projectId: 'api-project',
+      sessionId: 'host-session',
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    expect(promptAsync).not.toHaveBeenCalled()
+    expect(ctx.v2.session.promptAsync).toHaveBeenCalled()
+    const row = db.prepare('SELECT loop_name, worktree, worktree_dir FROM loops WHERE project_id = ?').get('api-project') as {
+      loop_name: string
+      worktree: number
+      worktree_dir: string
+    } | null
+    expect(row).not.toBeNull()
+    expect(row?.loop_name).toBe('api-worktree-plan')
+    expect(row?.worktree).toBe(1)
+    expect(row?.worktree_dir).toBe(worktreeDir)
+
+    graphStatusRepo.write({
+      projectId: 'api-project',
+      cwd: worktreeDir,
+      state: 'ready',
+      ready: true,
+      stats: { files: 1, symbols: 1, edges: 0, calls: 0 },
+      message: null,
+    })
+    resolvePrompt()
+
+    const res = await pending
+    expect(res.status).toBe(202)
+  })
+
   test('loop-worktree mode rolls back session and loop state when sandbox startup fails', async () => {
     const sandboxManager = {
       start: mock(async () => { throw new Error('sandbox failed') }),

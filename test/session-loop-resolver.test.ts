@@ -189,7 +189,7 @@ describe('createSessionLoopResolver', () => {
         resolveLoopName: () => null,
         getActiveState: (name: string) =>
           name === 'loop-worktree' ? { loopName: 'loop-worktree', active: true, sandbox: true, worktreeDir: '/worktree' } : null,
-        listActive: () => [{ loopName: 'loop-worktree', worktreeDir: '/worktree', sandbox: true, active: true }],
+        listActive: () => [{ loopName: 'loop-worktree', worktreeDir: '/worktree', sandbox: true, worktree: true, active: true }],
       }
 
       const getSessionDirectory = async (_sessionId: string) => '/worktree'
@@ -212,7 +212,7 @@ describe('createSessionLoopResolver', () => {
         resolveLoopName: () => null,
         getActiveState: (name: string) =>
           name === 'loop-worktree' ? { loopName: 'loop-worktree', active: true, sandbox: true, worktreeDir: '/worktree' } : null,
-        listActive: () => [{ loopName: 'loop-worktree', worktreeDir: '/worktree', sandbox: true, active: true }],
+        listActive: () => [{ loopName: 'loop-worktree', worktreeDir: '/worktree', sandbox: true, worktree: true, active: true }],
       }
 
       const getSessionDirectory = async (_sessionId: string) => '/some-other-dir'
@@ -225,6 +225,29 @@ describe('createSessionLoopResolver', () => {
       })
 
       const result = await resolver.resolveActiveLoopForSession('session-unknown')
+      expect(result).toBeNull()
+    })
+
+    it('does not resolve in-place loops by matching the project directory', async () => {
+      const getParentSessionId = async () => null
+
+      const loopService = {
+        resolveLoopName: () => null,
+        getActiveState: (name: string) =>
+          name === 'loop-in-place' ? { loopName: 'loop-in-place', active: true, sandbox: true, worktree: false, worktreeDir: '/project' } : null,
+        listActive: () => [{ loopName: 'loop-in-place', worktreeDir: '/project', sandbox: true, worktree: false, active: true }],
+      }
+
+      const getSessionDirectory = async (_sessionId: string) => '/project'
+
+      const resolver = createSessionLoopResolver({
+        loopService,
+        getParentSessionId,
+        getSessionDirectory,
+        logger: mockLogger,
+      })
+
+      const result = await resolver.resolveActiveLoopForSession('session-unrelated')
       expect(result).toBeNull()
     })
 
@@ -255,7 +278,7 @@ describe('createSessionLoopResolver', () => {
         resolveLoopName: () => null,
         getActiveState: (name: string) =>
           name === 'loop-worktree' ? { loopName: 'loop-worktree', active: true, sandbox: true, worktreeDir: '/worktree' } : null,
-        listActive: () => [{ loopName: 'loop-worktree', worktreeDir: '/worktree/', sandbox: true, active: true }],
+        listActive: () => [{ loopName: 'loop-worktree', worktreeDir: '/worktree/', sandbox: true, worktree: true, active: true }],
       }
 
       const getSessionDirectory = async (_sessionId: string) => '/worktree'
