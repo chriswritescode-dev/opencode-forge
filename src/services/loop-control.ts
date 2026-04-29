@@ -124,11 +124,13 @@ export async function restartLoopByName(ctx: ToolContext, name: string | undefin
     return fail('conflict', 409, `Cannot restart "${stoppedState.loopName}": worktree directory no longer exists at ${stoppedState.worktreeDir}. The worktree may have been cleaned up.`)
   }
 
+  const restartSandbox = isSandboxEnabled(config, ctx.sandboxManager)
   const permissionRuleset = buildLoopPermissionRuleset({
     isWorktree: !!stoppedState.worktree,
+    isSandbox: restartSandbox,
   })
 
-  const restartSandbox = isSandboxEnabled(config, ctx.sandboxManager)
+
   const previousTermination = stoppedState.terminationReason
   const previousState: LoopState = { ...stoppedState }
   let restartedState: LoopState | null = null

@@ -224,7 +224,7 @@ function PlanViewerDialog(props: {
 
     props.api.ui.toast({ message: result.loopName ? `Loop started: ${result.loopName}` : 'Plan execution started', variant: 'success', duration: 3000 })
     props.onRefresh?.()
-    if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop-worktree')) {
+    if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop-worktree' || apiMode === 'loop')) {
       try { props.api.route.navigate('session', { sessionID: result.sessionId }) } catch {}
     }
   }
