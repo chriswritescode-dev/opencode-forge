@@ -1,3 +1,7 @@
+-- Migration 115: Create coordinator and project instances tables for HTTP control plane
+-- These tables supported the coordinator-based server discovery and slot management
+-- They were replaced by the bus-RPC protocol in migration 116
+
 CREATE TABLE IF NOT EXISTS api_coordinators (
   host TEXT NOT NULL,
   port INTEGER NOT NULL,

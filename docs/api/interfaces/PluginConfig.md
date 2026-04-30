@@ -62,18 +62,6 @@ Custom data directory for plugin storage. Defaults to platform data dir.
 
 ***
 
-### ~~defaultKvTtlMs?~~
-
-> `optional` **defaultKvTtlMs?**: `number`
-
-Defined in: [types.ts:147](https://github.com/chriswritescode-dev/opencode-forge/blob/c09645dde35ca41a909cf5f4e8317593cb9cc279/src/types.ts#L147)
-
-#### Deprecated
-
-Use completedLoopTtlMs instead
-
-***
-
 ### executionModel?
 
 > `optional` **executionModel?**: `string`

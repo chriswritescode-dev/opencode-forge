@@ -1,7 +1,8 @@
 import { describe, test, expect } from 'bun:test'
-import { architectAgent } from '../src/agents/architect'
-import { codeAgent } from '../src/agents/code'
-import { auditorAgent, auditorLoopAgent } from '../src/agents/auditor'
+import { architectAgent, buildArchitectAgent } from '../src/agents/architect'
+import { codeAgent, buildCodeAgent } from '../src/agents/code'
+import { auditorAgent, auditorLoopAgent, buildAuditorAgent, buildAuditorLoopAgent } from '../src/agents/auditor'
+import { buildAgents } from '../src/agents'
 
 describe('Agent definitions', () => {
   describe('metadata stability', () => {
@@ -151,11 +152,12 @@ describe('Agent definitions', () => {
       expect(prompt).toContain('"Loop"')
     })
 
-    test('architect prompt includes pre-plan checkpoint instructions', () => {
+    test('architect prompt directly outputs marked plan after summary', () => {
       const prompt = architectAgent.systemPrompt
-      expect(prompt).toContain('Pre-plan approval')
-      expect(prompt).toContain('present a brief pre-plan summary')
-      expect(prompt).toContain('Do NOT output the marked plan until the user approves')
+      expect(prompt).toContain('Plan summary and execution approval')
+      expect(prompt).toContain('directly output a brief unmarked summary')
+      expect(prompt).toContain('Do not ask for separate approval to write the plan')
+      expect(prompt).toContain('Start with a short unmarked summary')
     })
 
     test('architect prompt requires detailed self-contained plans', () => {
@@ -173,11 +175,12 @@ describe('Agent definitions', () => {
       expect(prompt).not.toContain('plan-edit')
     })
 
-    test('architect prompt includes pre-plan approval section', () => {
+    test('architect prompt asks only for execution approval after capture', () => {
       const prompt = architectAgent.systemPrompt
-      expect(prompt).toContain('## Pre-plan approval')
-      expect(prompt).toContain('present a brief pre-plan summary')
-      expect(prompt).toContain('Should I write the implementation plan?')
+      expect(prompt).toContain('## Plan summary and execution approval')
+      expect(prompt).toContain('ask for execution approval')
+      expect(prompt).toContain('four canonical options')
+      expect(prompt).not.toContain('Should I write the implementation plan?')
     })
   })
 })

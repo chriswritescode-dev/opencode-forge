@@ -25,7 +25,7 @@ Forge has replaced its generic key-value store with dedicated typed tables for l
 - Existing loops, plans, review findings, graph-status entries, and TUI preferences stored in the old `project_kv` table are dropped.
 - Active loops from the previous version will not be resumed (they are already effectively dead due to the schema change and should be considered cancelled).
 - No user action required other than restarting opencode.
-- The config key `defaultKvTtlMs` has been renamed to `completedLoopTtlMs`. The old name still works with a deprecation warning for one release cycle.
+- The config key `defaultKvTtlMs` has been renamed to `completedLoopTtlMs`. The old name is no longer supported.
 
 ## Quick Start
 
@@ -394,7 +394,7 @@ You can edit this file to customize settings. The file is created only if it doe
 
 #### Top-level
 - `dataDir` - Data directory for plugin storage (graph.db, logs). When empty, resolves to `~/.local/share/opencode/forge` (or `XDG_DATA_HOME` equivalent) (default: `""`)
-- `completedLoopTtlMs` - TTL for completed/cancelled/errored/stalled loops before sweep (default: `604800000` / 7 days). Deprecated alias `defaultKvTtlMs` still works for backward compatibility.
+- `completedLoopTtlMs` - TTL for completed/cancelled/errored/stalled loops before sweep (default: `604800000` / 7 days).
 - `executionModel` - Model override for plan execution sessions, format: `provider/model` (e.g. `anthropic/claude-sonnet-4-20250514`). When set, `plan-execute` uses this model for the new Code session. When empty or omitted, OpenCode's default model is used (typically the `model` field from `opencode.json`). **Recommended:** Set this to a fast, cheap model (e.g. Haiku or MiniMax) and use a smart model (e.g. Opus) for the Architect session — planning needs reasoning, execution needs speed. This value is used as a fallback when no per-launch selection is made.
 - `auditorModel` - Model override for the auditor agent (`provider/model`). When set, overrides the auditor agent's default model. When not set, uses platform default (default: `""`). This value is used as a fallback when no per-launch selection is made.
 - `agents` - Per-agent temperature overrides keyed by display name (e.g., `"code"`, `"architect"`, `"auditor"`). Temperature range: `0.0` - `2.0` (default: `undefined`)
@@ -428,7 +428,7 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 - `sandbox.image` - Docker image for sandbox containers (default: `"oc-forge-sandbox:latest"`)
 
 #### Graph
-- `graph.enabled` - Enable graph indexing (default: `true`)
+- `graph.enabled` - Enable graph indexing (default: `true`). When set to `false`, the graph service does not start, the `graph-status`, `graph-query`, `graph-symbols`, and `graph-analyze` tools are not registered, and agent prompts fall back to standard `Read`/`Glob`/`Grep` discovery guidance. Plans, reviews, and loops continue to work without the graph.
 - `graph.autoScan` - Auto-check existing graph cache on startup and scan only when missing/stale (default: `true`)
 - `graph.watch` - Watch for file changes (default: `true`)
 - `graph.debounceMs` - Debounce delay for file watch events (default: `100`)
@@ -813,7 +813,7 @@ Forge has replaced its generic key-value store (`project_kv` table) with typed S
 - No action required from users other than restarting opencode
 
 **Configuration change:**
-- `defaultKvTtlMs` renamed to `completedLoopTtlMs` (backward-compatible, falls back with deprecation warning)
+- `defaultKvTtlMs` renamed to `completedLoopTtlMs`
 
 ## License
 

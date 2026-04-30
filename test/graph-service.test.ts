@@ -110,6 +110,36 @@ describe('GraphService debounce behavior', () => {
     await service.close()
   })
 
+  test('should ignore sibling paths with matching cwd prefix', async () => {
+    const logger = createTestLogger()
+    const service = createGraphService({
+      projectId: testProjectId,
+      dataDir: testDir,
+      cwd: testDir,
+      logger,
+      watch: false,
+      debounceMs: 50,
+    })
+
+    await service.scan()
+
+    const siblingDir = `${testDir}-sibling`
+    mkdirSync(siblingDir, { recursive: true })
+    try {
+      const siblingFile = join(siblingDir, 'outside.ts')
+      writeFileSync(siblingFile, 'export const outside = 1')
+
+      service.onFileChanged(siblingFile)
+      await new Promise(resolve => setTimeout(resolve, 150))
+
+      const symbols = await service.findSymbols('outside')
+      expect(symbols).toHaveLength(0)
+    } finally {
+      rmSync(siblingDir, { recursive: true, force: true })
+      await service.close()
+    }
+  })
+
   test('should ignore paths in ignored directories', async () => {
     const logger = createTestLogger()
     

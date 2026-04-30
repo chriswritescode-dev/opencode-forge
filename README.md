@@ -14,6 +14,18 @@
   <a href="https://github.com/chriswritescode-dev/opencode-forge/blob/main/LICENSE"><img src="https://img.shields.io/github/license/chriswritescode-dev/opencode-forge" alt="License" /></a>
 </p>
 
+## Breaking change (v0.3.0)
+
+Forge no longer runs an HTTP control plane. The TUI plugin now communicates with the server plugin over the opencode bus using `tui.command.execute` events. This removes:
+
+- The HTTP server (port 5552) and all HTTP API endpoints
+- `OPENCODE_SERVER_PASSWORD` requirement for forge operations
+- Coordinator handover and slot management
+- `tui.remoteServer.url` configuration
+- `api` configuration section
+
+On upgrade, the `api_registry`, `api_coordinators`, and `api_project_instances` tables are dropped. No user action is required other than updating your plugin configuration to remove the deprecated `api` and `tui.remoteServer` properties.
+
 ## Breaking change (v0.2.0)
 
 Forge has replaced its generic key-value store with dedicated typed tables for loops, plans, review findings, graph status, and TUI preferences. On upgrade:
@@ -21,7 +33,7 @@ Forge has replaced its generic key-value store with dedicated typed tables for l
 - Existing loops, plans, review findings, graph-status entries, and TUI preferences stored in the old `project_kv` table are dropped.
 - Active loops from the previous version will not be resumed (they are already effectively dead due to the schema change and should be considered cancelled).
 - No user action required other than restarting opencode.
-- The config key `defaultKvTtlMs` has been renamed to `completedLoopTtlMs`. The old name still works with a deprecation warning for one release cycle.
+- The config key `defaultKvTtlMs` has been renamed to `completedLoopTtlMs`. The old name is no longer supported.
 
 ## Quick Start
 
@@ -385,9 +397,6 @@ You can edit this file to customize settings. The file is created only if it doe
       "viewPlan": "Meta+Shift+P",  // View plan dialog
       "executePlan": "Meta+Shift+E", // Execute plan dialog
       "showLoops": "Meta+Shift+L"  // Show loops dialog
-    },
-    "remoteServer": {
-      "url": ""                    // Optional remote OpenCode server URL for TUI actions. Empty/omitted means use local client. URL may include Basic Auth password (http://opencode:password@host:4096). If no URL password is supplied, OPENCODE_SERVER_PASSWORD is used when set.
     }
   },
 
@@ -408,7 +417,7 @@ You can edit this file to customize settings. The file is created only if it doe
 
 #### Top-level
 - `dataDir` - Data directory for plugin storage (graph.db, logs). When empty, resolves to `~/.local/share/opencode/forge` (or `XDG_DATA_HOME` equivalent) (default: `""`)
-- `completedLoopTtlMs` - TTL for completed/cancelled/errored/stalled loops before sweep (default: `604800000` / 7 days). Deprecated alias `defaultKvTtlMs` still works for backward compatibility.
+- `completedLoopTtlMs` - TTL for completed/cancelled/errored/stalled loops before sweep (default: `604800000` / 7 days).
 - `executionModel` - Model override for plan execution sessions, format: `provider/model` (e.g. `anthropic/claude-sonnet-4-20250514`). When set, `plan-execute` uses this model for the new Code session. When empty or omitted, OpenCode's default model is used (typically the `model` field from `opencode.json`). **Recommended:** Set this to a fast, cheap model (e.g. Haiku or MiniMax) and use a smart model (e.g. Opus) for the Architect session — planning needs reasoning, execution needs speed. This value is used as a fallback when no per-launch selection is made.
 - `auditorModel` - Model override for the auditor agent (`provider/model`). When set, overrides the auditor agent's default model. When not set, uses platform default (default: `""`). This value is used as a fallback when no per-launch selection is made.
 - `agents` - Per-agent temperature overrides keyed by display name (e.g., `"code"`, `"architect"`, `"auditor"`). Temperature range: `0.0` - `2.0` (default: `undefined`)
@@ -444,26 +453,16 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 - `sandbox.image` - Docker image for sandbox containers (default: `"oc-forge-sandbox:latest"`)
 
 #### Graph
-- `graph.enabled` - Enable graph indexing (default: `true`)
+- `graph.enabled` - Enable graph indexing (default: `true`). When set to `false`, the graph service does not start, the `graph-status`, `graph-query`, `graph-symbols`, and `graph-analyze` tools are not registered, and agent prompts (architect, code, auditor, explore) fall back to standard `Read`/`Glob`/`Grep` discovery guidance. Plans, reviews, and loops continue to work without the graph.
 - `graph.autoScan` - Auto-check existing graph cache on startup and scan only when missing/stale (default: `true`)
 - `graph.watch` - Watch for file changes (default: `true`)
 - `graph.debounceMs` - Debounce delay for file watch events (default: `100`)
-
-#### Remote API
-- `api.enabled` - Enable the remote HTTP control plane (JSON API) (default: `false`)
-- `api.host` - Bind host for the API server. Only the literal values `"127.0.0.1"` and `"::1"` are treated as localhost; any other value (including the hostname `"localhost"`, LAN IPs, or `"0.0.0.0"`) is treated as non-localhost and requires a password. Default: `"127.0.0.1"`.
-- `api.port` - TCP port for the API server (default: `5552`)
-
-**Authentication:** The API uses HTTP Basic authentication with the password from the `OPENCODE_SERVER_PASSWORD` environment variable. When `api.host` is non-localhost (anything other than `"127.0.0.1"` or `"::1"`) and `OPENCODE_SERVER_PASSWORD` is unset, the API server logs an error and does not start — plugin initialization continues without an API. In localhost-only mode, requests are accepted without credentials when no password is configured; if a password is configured, it is still enforced on every request.
-
-**Note:** Graph indexing runs in batches and processes all files without a fixed file-count cap. Progress is reported during indexing via status updates. On startup, the graph service performs a lightweight freshness check using file count and modification times - a full scan runs only when the cache is missing, stale, or unhealthy. Watcher-driven incremental updates handle post-startup file changes.
 
 #### TUI
 - `tui.sidebar` - Show the forge sidebar widget in OpenCode TUI (default: `true`)
 - `tui.showLoops` - Display active loop status in the sidebar (default: `true`)
 - `tui.showVersion` - Show plugin version number in the sidebar title (default: `true`)
 - `tui.keybinds` - Keyboard shortcut overrides for Forge commands (default: `Meta+Shift+P/E/L`)
-- `tui.remoteServer.url` - Optional remote OpenCode server URL for TUI client actions (default: `""`). When empty or omitted, the local OpenCode TUI client is used. The URL may include Basic Auth credentials (e.g., `http://opencode:password@host:4096`). If no password is embedded in the URL, the `OPENCODE_SERVER_PASSWORD` environment variable is used when set.
 
 ## TUI Plugin
 
@@ -839,7 +838,7 @@ Forge has replaced its generic key-value store (`project_kv` table) with typed S
 - No action required from users other than restarting opencode
 
 **Configuration change:**
-- `defaultKvTtlMs` renamed to `completedLoopTtlMs` (backward-compatible, falls back with deprecation warning)
+- `defaultKvTtlMs` renamed to `completedLoopTtlMs`
 
 ## License
 

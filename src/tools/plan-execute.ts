@@ -19,9 +19,8 @@ export function createPlanExecuteTools(ctx: ToolContext): Record<string, ReturnT
       execute: async (args, context) => {
         logger.log(`plan-execute: ${args.inPlace ? 'switching to code agent' : 'creating session'} titled "${args.title}"`)
 
-        let planText = args.plan
         let source: PlanSource
-        if (!planText) {
+        if (!args.plan) {
           const capture = await captureLatestPlanForSession(
             {
               v2,
@@ -34,18 +33,16 @@ export function createPlanExecuteTools(ctx: ToolContext): Record<string, ReturnT
           )
           
           if (capture.status === 'captured' || capture.status === 'already-current') {
-            planText = capture.planText
             source = { kind: 'stored', sessionId: context.sessionID }
           } else {
             const planRow = plansRepo.getForSession(projectId, context.sessionID)
             if (!planRow) {
               return 'No plan found. Ensure the final plan is wrapped with <!-- forge-plan:start --> and <!-- forge-plan:end --> markers, or pass it directly as the plan argument.'
             }
-            planText = planRow.content
             source = { kind: 'stored', sessionId: context.sessionID }
           }
         } else {
-          source = { kind: 'inline', planText }
+          source = { kind: 'inline', planText: args.plan }
         }
 
         const sessionTitle = args.title.length > 60 ? `${args.title.substring(0, 57)}...` : args.title

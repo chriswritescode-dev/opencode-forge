@@ -156,6 +156,11 @@ rpcServer.register('onFileChanged', async (args: unknown[]) => {
   return repoMap.onFileChanged(path)
 })
 
+rpcServer.register('onFilesChanged', async (args: unknown[]) => {
+  const paths = (args[0] as string[]) || []
+  return repoMap.onFilesChanged(paths)
+})
+
 const db: Database = openGraphDatabase(dbPath)
 
 // Instantiate RepoMap

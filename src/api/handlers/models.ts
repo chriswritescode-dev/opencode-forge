@@ -1,6 +1,5 @@
 import type { ApiDeps } from '../types'
-import { ok } from '../response'
-import { parseJsonBody, ModelPrefsBody } from '../schemas'
+import { ModelPrefsBody, type ModelPrefs } from '../schemas'
 import { fetchAvailableModels } from '../../utils/tui-models'
 import type { ExecutionPreferences } from '../../utils/tui-execution-preferences'
 import {
@@ -27,9 +26,10 @@ function mapModelPrefsMode(mode: string | undefined): ExecutionPreferences['mode
 }
 
 export async function handleListModels(
-  _req: Request,
-  deps: ApiDeps
-): Promise<Response> {
+  deps: ApiDeps,
+  _params: Record<string, string>,
+  _body: unknown
+): Promise<unknown> {
   // Create a minimal TUI API shape for fetchAvailableModels
   const api = {
     client: deps.ctx.v2,
@@ -42,49 +42,57 @@ export async function handleListModels(
   const result = await fetchAvailableModels(api)
 
   if (result.error) {
-    return ok({
+    return {
       providers: result.providers,
       error: result.error,
-    })
+    }
   }
 
-  return ok({
+  return {
     providers: result.providers,
     connectedProviderIds: result.connectedProviderIds,
     configuredProviderIds: result.configuredProviderIds,
-  })
+  }
 }
 
 export async function handleGetModelPreferences(
-  _req: Request,
   deps: ApiDeps,
-  params: Record<string, string>
-): Promise<Response> {
+  params: Record<string, string>,
+  _body: unknown
+): Promise<unknown> {
   const { projectId } = params
   const prefs = readExecutionPreferences(projectId)
   const defaults = resolveExecutionDialogDefaults(deps.ctx.config, prefs)
 
-  return ok({
+  return {
     mode: defaults.mode as ExecutionPreferences['mode'],
     executionModel: defaults.executionModel || undefined,
     auditorModel: defaults.auditorModel || undefined,
-  })
+  }
 }
 
+import { ForgeRpcError } from '../bus-protocol'
+
 export async function handleWriteModelPreferences(
-  req: Request,
   _deps: ApiDeps,
-  params: Record<string, string>
-): Promise<Response> {
+  params: Record<string, string>,
+  body: unknown
+): Promise<unknown> {
   const { projectId } = params
-  const body = await parseJsonBody(req, ModelPrefsBody)
+  
+  let parsed: ModelPrefs
+  try {
+    parsed = ModelPrefsBody.parse(body)
+  } catch {
+    throw new ForgeRpcError('bad_request', 'invalid preference body')
+  }
 
   const prefs: ExecutionPreferences = {
-    mode: mapModelPrefsMode(body.mode),
-    executionModel: body.executionModel,
-    auditorModel: body.auditorModel,
+    mode: mapModelPrefsMode(parsed.mode),
+    executionModel: parsed.executionModel,
+    auditorModel: parsed.auditorModel,
   }
   writeExecutionPreferences(projectId, prefs)
 
-  return ok({ ok: true })
+  return { ok: true }
 }

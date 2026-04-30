@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { Database } from 'bun:sqlite'
 import { launchFreshLoop } from '../src/utils/loop-launch'
+import { createForgeWorktreeAdaptor } from '../src/workspace/forge-worktree'
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 
 const TEST_DIR = '/tmp/opencode-manager-loop-launch-test-' + Date.now()
@@ -84,8 +85,8 @@ function createMockApi(overrides?: Partial<TuiPluginApi>): TuiPluginApi {
       },
       experimental: {
         workspace: {
-          create: mock(async () => ({
-            data: { id: 'mock-workspace-' + Date.now() },
+          create: mock(async (params) => ({
+            data: { id: params.id ?? 'mock-workspace-' + Date.now() },
             error: null,
           })),
           sessionRestore: mock(async () => ({ data: {}, error: null })),
@@ -137,6 +138,29 @@ describe('Fresh Loop Launch', () => {
   const projectId = 'test-project'
   const planText = '# Test Plan\n\nThis is a test plan for loop execution.'
   const title = 'Test Loop'
+
+  test('normalizes forge worktree workspace metadata before display', () => {
+    const adaptor = createForgeWorktreeAdaptor()
+    const configured = adaptor.configure({
+      id: 'test-plan',
+      type: 'forge-worktree',
+      name: 'unknown',
+      branch: null,
+      directory: null,
+      extra: JSON.stringify({
+        loopName: 'test-plan',
+        directory: '/tmp/worktree-test-plan',
+        branch: 'opencode/loop-test-plan',
+      }),
+      projectID: 'test-project',
+    })
+
+    expect(configured).toEqual(expect.objectContaining({
+      name: 'test-plan',
+      directory: '/tmp/worktree-test-plan',
+      branch: 'opencode/loop-test-plan',
+    }))
+  })
 
   beforeEach(() => {
     const result = createTestDb()
@@ -197,7 +221,20 @@ describe('Fresh Loop Launch', () => {
     expect(mockApi.client.worktree.create).toHaveBeenCalledWith({
       worktreeCreateInput: { name: 'test-plan' }, // Falls back to title since no Loop Name field
     })
+    expect(mockApi.client.experimental?.workspace?.create).toHaveBeenCalledWith({
+      id: 'test-plan',
+      type: 'forge-worktree',
+      branch: 'opencode/loop-test-plan',
+      extra: {
+        loopName: 'test-plan',
+        directory: '/tmp/worktree-test-plan',
+        branch: 'opencode/loop-test-plan',
+      },
+    })
     expect(mockApi.client.session.create).toHaveBeenCalled()
+    expect(mockApi.client.session.create).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceID: 'test-plan',
+    }))
   })
 
   test('Persists loop state to loops table for in-place loop', async () => {

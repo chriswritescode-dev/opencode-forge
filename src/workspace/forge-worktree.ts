@@ -24,6 +24,19 @@ export interface ForgeWorktreeExtra {
   branch?: string | null
 }
 
+function readForgeWorktreeExtra(extra: unknown): Partial<ForgeWorktreeExtra> {
+  if (!extra) return {}
+  if (typeof extra === 'string') {
+    try {
+      const parsed = JSON.parse(extra) as unknown
+      return parsed && typeof parsed === 'object' ? parsed as Partial<ForgeWorktreeExtra> : {}
+    } catch {
+      return {}
+    }
+  }
+  return typeof extra === 'object' ? extra as Partial<ForgeWorktreeExtra> : {}
+}
+
 /**
  * Creates a forge worktree workspace adaptor.
  * 
@@ -41,19 +54,19 @@ export function createForgeWorktreeAdaptor(): WorkspaceAdaptor {
     description: 'Workspace adaptor for forge worktree loops',
     
     configure(info: WorkspaceInfo): WorkspaceInfo {
-      // Extract loop metadata from extra payload
-      const extra = (info.extra ?? {}) as Partial<ForgeWorktreeExtra>
+      const extra = readForgeWorktreeExtra(info.extra)
+      const name = extra.loopName ?? (info.name === 'unknown' ? info.id : info.name)
 
       // Normalize workspace info from loop metadata
       return {
         ...info,
-        name: extra.loopName ?? info.name,
+        name,
         directory: extra.directory ?? info.directory,
         branch: extra.branch ?? info.branch,
       }
     },
     
-    async create(_info: WorkspaceInfo, _from?: WorkspaceInfo): Promise<void> {
+    async create(_info: WorkspaceInfo, _env?: Record<string, string | undefined>, _from?: WorkspaceInfo): Promise<void> {
       // No-op: forge worktrees are already created by the time workspace is registered
       // This adaptor only surfaces existing worktrees to the workspace system
       // Do NOT create a second git worktree here
@@ -99,6 +112,7 @@ export async function createLoopWorkspace(
   }
   try {
     const result = await workspaceApi.create({
+      id: options.loopName,
       type: FORGE_WORKTREE_WORKSPACE_TYPE,
       branch: options.branch ?? null,
       extra: {

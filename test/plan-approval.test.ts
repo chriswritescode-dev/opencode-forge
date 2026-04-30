@@ -1188,17 +1188,13 @@ describe('plan execute API loop dispatch', () => {
 
   test('loop mode launches an in-place loop and persists default auditor model', async () => {
     const { ctx, sessionCreate } = createApiDeps()
-    const req = new Request('http://test.local/execute', {
-      method: 'POST',
-      body: JSON.stringify({ mode: 'loop', title: 'API Plan', plan: '# API Plan' }),
-    })
+    const body = { mode: 'loop', title: 'API Plan', plan: '# API Plan' }
 
-    const res = await handleExecutePlan(req, apiDeps(ctx), {
+    const res = await handleExecutePlan(apiDeps(ctx), {
       projectId: 'api-project',
       sessionId: 'host-session',
-    })
+    }, body)
 
-    expect(res.status).toBe(202)
     expect(sessionCreate).toHaveBeenCalledWith(expect.objectContaining({ directory: '/repo' }))
     const row = db.prepare('SELECT worktree, execution_model, auditor_model, host_session_id FROM loops WHERE project_id = ?').get('api-project') as {
       worktree: number
@@ -1214,23 +1210,19 @@ describe('plan execute API loop dispatch', () => {
 
   test('loop-worktree mode launches a worktree loop and honors explicit auditor model', async () => {
     const { ctx, worktreeCreate } = createApiDeps()
-    const req = new Request('http://test.local/execute', {
-      method: 'POST',
-      body: JSON.stringify({
-        mode: 'loop-worktree',
-        title: 'API Worktree Plan',
-        plan: '# API Worktree Plan',
-        executionModel: 'provider/request-exec',
-        auditorModel: 'provider/request-auditor',
-      }),
-    })
+    const body = {
+      mode: 'loop-worktree',
+      title: 'API Worktree Plan',
+      plan: '# API Worktree Plan',
+      executionModel: 'provider/request-exec',
+      auditorModel: 'provider/request-auditor',
+    }
 
-    const res = await handleExecutePlan(req, apiDeps(ctx), {
+    await handleExecutePlan(apiDeps(ctx), {
       projectId: 'api-project',
       sessionId: 'host-session',
-    })
+    }, body)
 
-    expect(res.status).toBe(202)
     expect(worktreeCreate).toHaveBeenCalled()
     const row = db.prepare('SELECT worktree, worktree_dir, execution_model, auditor_model FROM loops WHERE project_id = ?').get('api-project') as {
       worktree: number
@@ -1242,6 +1234,30 @@ describe('plan execute API loop dispatch', () => {
     expect(row.worktree_dir).toBe(`${testDataDir}/worktree`)
     expect(row.execution_model).toBe('provider/request-exec')
     expect(row.auditor_model).toBe('provider/request-auditor')
+  })
+
+  test('loop-worktree mode selects the created workspace when navigating', async () => {
+    const { ctx } = createApiDeps()
+    const selectSession = mock(() => Promise.resolve({ data: {} }))
+    ;(ctx.v2 as any).tui = { selectSession }
+    ;(ctx.v2 as any).experimental = {
+      workspace: {
+        create: mock(async (params: { id?: string }) => ({ data: { id: params.id }, error: undefined })),
+        sessionRestore: mock(async () => ({ data: { total: 0 }, error: undefined })),
+      },
+    }
+
+    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
+
+    await handleExecutePlan(apiDeps(ctx), {
+      projectId: 'api-project',
+      sessionId: 'host-session',
+    }, body)
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(selectSession).toHaveBeenCalledWith(expect.objectContaining({
+      workspace: 'api-worktree-plan',
+    }))
   })
 
   test('loop-worktree mode persists sandbox container name', async () => {
@@ -1257,17 +1273,12 @@ describe('plan execute API loop dispatch', () => {
       } as PluginConfig,
       sandboxManager: sandboxManager as unknown as ToolContext['sandboxManager'],
     })
-    const req = new Request('http://test.local/execute', {
-      method: 'POST',
-      body: JSON.stringify({ mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }),
-    })
+    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
 
-    const res = await handleExecutePlan(req, apiDeps(ctx), {
+    await handleExecutePlan(apiDeps(ctx), {
       projectId: 'api-project',
       sessionId: 'host-session',
-    })
-
-    expect(res.status).toBe(202)
+    }, body)
     const row = db.prepare('SELECT sandbox, sandbox_container FROM loops WHERE project_id = ?').get('api-project') as {
       sandbox: number
       sandbox_container: string | null
@@ -1291,15 +1302,12 @@ describe('plan execute API loop dispatch', () => {
     })
     ctx.v2.session.promptAsync = mock(() => promptHold) as unknown as ToolContext['v2']['session']['promptAsync']
 
-    const req = new Request('http://test.local/execute', {
-      method: 'POST',
-      body: JSON.stringify({ mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }),
-    })
+    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
 
-    const pending = handleExecutePlan(req, apiDeps(ctx), {
+    const pending = handleExecutePlan(apiDeps(ctx), {
       projectId: 'api-project',
       sessionId: 'host-session',
-    })
+    }, body)
 
     await new Promise(resolve => setTimeout(resolve, 50))
 
@@ -1325,8 +1333,7 @@ describe('plan execute API loop dispatch', () => {
     })
     resolvePrompt()
 
-    const res = await pending
-    expect(res.status).toBe(202)
+    await pending
   })
 
   test('loop-worktree mode rolls back session and loop state when sandbox startup fails', async () => {
@@ -1358,17 +1365,14 @@ describe('plan execute API loop dispatch', () => {
       data: { directory: worktreeDir, branch: 'opencode/loop-api-worktree-plan' },
       error: undefined,
     })) as unknown as ToolContext['v2']['worktree']['create']
-    const req = new Request('http://test.local/execute', {
-      method: 'POST',
-      body: JSON.stringify({ mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }),
-    })
+    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
 
     let thrown: unknown
     try {
-      await handleExecutePlan(req, apiDeps(ctx), {
+      await handleExecutePlan(apiDeps(ctx), {
         projectId: 'api-project',
         sessionId: 'host-session',
-      })
+      }, body)
     } catch (err) {
       thrown = err
     }
@@ -1413,18 +1417,17 @@ describe('plan execute API loop dispatch', () => {
       message: null,
     })
 
-    const req = new Request('http://test.local/execute', {
-      method: 'POST',
-      body: JSON.stringify({ mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }),
-    })
+    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
 
-    const res = await handleExecutePlan(req, apiDeps(ctx), {
+    await handleExecutePlan(apiDeps(ctx), {
       projectId: 'api-project',
       sessionId: 'host-session',
-    })
-
-    expect(res.status).toBe(202)
-    const targetStatus = graphStatusRepo.read('api-project', worktreeDir)
+    }, body)
+    let targetStatus = graphStatusRepo.read('api-project', worktreeDir)
+    for (let i = 0; i < 20 && !targetStatus; i++) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+      targetStatus = graphStatusRepo.read('api-project', worktreeDir)
+    }
     expect(targetStatus?.state).toBe('ready')
     expect(targetStatus?.ready).toBe(true)
   })

@@ -13,7 +13,6 @@ import { generateUniqueName } from '../services/loop'
 import { extractLoopNames } from './plan-execution'
 import { resolveDataDir } from '../storage'
 import { buildLoopPermissionRuleset } from '../constants/loop'
-import { waitForGraphReady } from './tui-graph-status'
 import { retryWithModelFallback, parseModelString } from './model-fallback'
 import { loadPluginConfig } from '../setup'
 import { createLoopsRepo } from '../storage/repos/loops-repo'
@@ -108,22 +107,21 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
     hostWorktreeDir = worktreeResult.data.directory
     worktreeBranch = worktreeResult.data.branch
     
-    // Seed graph cache from source repo to worktree scope before session creation
-    const seedResult = await (async () => {
+    void (async () => {
       try {
         const { seedWorktreeGraphScope } = await import('./worktree-graph-seed')
-        return await seedWorktreeGraphScope({
+        const seedResult = await seedWorktreeGraphScope({
           projectId: options.projectId,
           sourceCwd: directory,
           targetCwd: hostWorktreeDir,
           dataDir: resolveDataDir(),
         })
+        console.log(`loop-launch: graph seed ${seedResult.seeded ? 'reused' : 'skipped'} (${seedResult.reason})`)
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err)
-        return { seeded: false, reason }
+        console.log(`loop-launch: graph seed error (non-fatal): ${reason}`)
       }
     })()
-    console.log(`loop-launch: graph seed ${seedResult.seeded ? 'reused' : 'skipped'} (${seedResult.reason})`)
     
     // Optionally create a workspace and bind the session so the worktree loop
     // can be switched to directly from the TUI. If the host runtime doesn't
@@ -274,20 +272,6 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
   // Build prompt
   const promptText = planText
   
-  // Wait for worktree graph to be ready before first prompt (only for worktree mode)
-  if (isWorktree && hostWorktreeDir) {
-    try {
-      await waitForGraphReady(projectId, {
-        dbPathOverride: dbPath,
-        cwd: hostWorktreeDir,
-        pollMs: 100,
-        timeoutMs: 5000,
-      })
-    } catch {
-      // Non-fatal: continue even if wait fails
-    }
-  }
-
   // Wait for sandbox to be ready before first prompt (only for worktree + sandbox mode)
   // Skip if db doesn't exist (no reconciliation can occur) or if skipSandboxWait is set (for testing)
   if (isWorktree && isSandboxEnabled && dbExists && !options.skipSandboxWait) {
@@ -362,6 +346,20 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
   
   if (promptResult.error) {
     return null
+  }
+  
+  if (isWorktree && hostWorktreeDir) {
+    void (async () => {
+      try {
+        const { waitForGraphReady } = await import('./tui-graph-status')
+        await waitForGraphReady(projectId, {
+          dbPathOverride: dbPath,
+          cwd: hostWorktreeDir,
+          pollMs: 100,
+          timeoutMs: 5000,
+        })
+      } catch {}
+    })()
   }
   
   return {

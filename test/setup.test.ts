@@ -1,37 +1,24 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { attachForgeApiServer } from '../src/api/server'
-import { getProjectRegistry } from '../src/api/project-registry'
 import { loadPluginConfig, resolveConfigPath } from '../src/setup'
-import type { ToolContext } from '../src/tools/types'
 import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Database } from 'bun:sqlite'
-import { migrations } from '../src/storage'
 
-const TEST_DIR = '/tmp/opencode-manager-memory-setup-test-' + Date.now()
+const TEST_DIR = '/tmp/opencode-forge-setup-test-' + Date.now()
 
 describe('loadPluginConfig', () => {
   let testConfigDir: string
-  let testDataDir: string
 
   beforeEach(() => {
     testConfigDir = TEST_DIR + '-config-' + Math.random().toString(36).slice(2)
-    testDataDir = TEST_DIR + '-data-' + Math.random().toString(36).slice(2)
     mkdirSync(testConfigDir, { recursive: true })
-    mkdirSync(testDataDir, { recursive: true })
     process.env['XDG_CONFIG_HOME'] = testConfigDir
-    process.env['XDG_DATA_HOME'] = testDataDir
   })
 
   afterEach(() => {
     delete process.env['XDG_CONFIG_HOME']
-    delete process.env['XDG_DATA_HOME']
     if (existsSync(testConfigDir)) {
       rmSync(testConfigDir, { recursive: true, force: true })
-    }
-    if (existsSync(testDataDir)) {
-      rmSync(testDataDir, { recursive: true, force: true })
     }
   })
 
@@ -299,166 +286,5 @@ describe('bundled sample config', () => {
     expect(config.loop?.worktreeLogging).toBeDefined()
     expect(config.loop?.worktreeLogging?.enabled).toBe(true)
     expect(config.loop?.worktreeLogging?.directory).toBe('/tmp/loop-logs')
-  })
-
-  test('bundled config includes api section with defaults', () => {
-    const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
-    const content = readFileSync(bundledConfigPath, 'utf-8')
-    
-    const stripComments = (text: string): string => {
-      let result = text
-      result = result.replace(/\/\*[\s\S]*?\*\//g, '')
-      result = result.replace(/(^|[^:])(\/\/.*$)/gm, '$1')
-      return result
-    }
-    
-    const stripTrailingCommas = (text: string): string => {
-      let result = text
-      result = result.replace(/,(\s*}[ \t\n\r]*)/g, '$1')
-      result = result.replace(/,(\s*][ \t\n\r]*)/g, '$1')
-      return result
-    }
-    
-    const cleaned = stripComments(content)
-    const normalized = stripTrailingCommas(cleaned)
-    const parsed = JSON.parse(normalized)
-    
-    expect(parsed.api).toBeDefined()
-    expect(parsed.api?.enabled).toBe(true)
-    expect(parsed.api?.host).toBe('127.0.0.1')
-    expect(parsed.api?.port).toBe(5552)
-  })
-
-  test('loadPluginConfig surfaces api.enabled as true by default', () => {
-    // Set up test config directory to use bundled config
-    const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
-    mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
-    process.env['XDG_CONFIG_HOME'] = testConfigDir
-
-    // Copy bundled config to test location
-    const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
-    const bundledContent = readFileSync(bundledConfigPath, 'utf-8')
-    writeFileSync(configPath, bundledContent)
-
-    const config = loadPluginConfig()
-    expect(config.api?.enabled).toBe(true)
-  })
-
-  test('loadPluginConfig round-trips user-supplied api block', () => {
-    const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
-    mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
-    process.env['XDG_CONFIG_HOME'] = testConfigDir
-
-    const configWithApi = {
-      api: {
-        enabled: true,
-        host: '0.0.0.0',
-        port: 8080,
-      },
-    }
-
-    writeFileSync(configPath, JSON.stringify(configWithApi))
-
-    const config = loadPluginConfig()
-    expect(config.api?.enabled).toBe(true)
-    expect(config.api?.host).toBe('0.0.0.0')
-    expect(config.api?.port).toBe(8080)
-  })
-
-  test('loadPluginConfig round-trips tui.remoteServer.url', () => {
-    const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
-    mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
-    process.env['XDG_CONFIG_HOME'] = testConfigDir
-
-    const configWithRemoteServer = {
-      tui: {
-        remoteServer: {
-          url: 'http://remote.example:4096',
-        },
-      },
-    }
-
-    writeFileSync(configPath, JSON.stringify(configWithRemoteServer))
-
-    const config = loadPluginConfig()
-    expect(config.tui?.remoteServer?.url).toBe('http://remote.example:4096')
-  })
-})
-
-describe('bundled config documents OPENCODE_SERVER_PASSWORD contract', () => {
-  test('bundled forge-config.jsonc mentions OPENCODE_SERVER_PASSWORD near api block', () => {
-    const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
-    const content = readFileSync(bundledConfigPath, 'utf-8')
-    expect(content).toContain('OPENCODE_SERVER_PASSWORD')
-    expect(content).toContain('"::1"')
-  })
-
-  test('README Remote API section documents ::1 and no-start behavior', () => {
-    const readmePath = join(import.meta.dir, '..', 'README.md')
-    const content = readFileSync(readmePath, 'utf-8')
-    expect(content).toContain('::1')
-    expect(content).toContain('OPENCODE_SERVER_PASSWORD')
-    expect(content).not.toContain('the server refuses to start')
-  })
-
-  test('bundled config and README document tui.remoteServer.url', () => {
-    const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
-    const configContent = readFileSync(bundledConfigPath, 'utf-8')
-    expect(configContent).toContain('remoteServer')
-    expect(configContent).toContain('OPENCODE_SERVER_PASSWORD')
-
-    const readmePath = join(import.meta.dir, '..', 'README.md')
-    const readmeContent = readFileSync(readmePath, 'utf-8')
-    expect(readmeContent).toContain('tui.remoteServer.url')
-  })
-})
-
-describe('remote API startup authentication requirements', () => {
-  const originalPassword = process.env.OPENCODE_SERVER_PASSWORD
-
-  afterEach(() => {
-    if (originalPassword === undefined) {
-      delete process.env.OPENCODE_SERVER_PASSWORD
-    } else {
-      process.env.OPENCODE_SERVER_PASSWORD = originalPassword
-    }
-  })
-
-  test('does not start for non-localhost host without OPENCODE_SERVER_PASSWORD', async () => {
-    delete process.env.OPENCODE_SERVER_PASSWORD
-    const errors: string[] = []
-    const ctx = {
-      projectId: 'test-project',
-      config: {
-        api: {
-          enabled: true,
-          host: '0.0.0.0',
-          port: 5552,
-        },
-      },
-      db: new Database(':memory:'),
-      logger: {
-        log: () => {},
-        debug: () => {},
-        error: (message: string) => {
-          errors.push(message)
-        },
-      },
-    } as unknown as ToolContext
-
-    // Apply migrations
-    for (const migration of migrations) {
-      migration.apply(ctx.db)
-    }
-
-    const registry = getProjectRegistry()
-    registry.register(ctx)
-    const server = await attachForgeApiServer(ctx, registry)
-    registry.unregister(ctx.projectId)
-
-    expect(server).toBeNull()
-    expect(errors).toEqual([
-      '[api] refusing to start: host=0.0.0.0 requires OPENCODE_SERVER_PASSWORD',
-    ])
   })
 })

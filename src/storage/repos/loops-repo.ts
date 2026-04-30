@@ -40,6 +40,7 @@ export interface LoopsRepo {
   getLarge(projectId: string, loopName: string): LoopLargeFields | null
   getBySessionId(projectId: string, sessionId: string): LoopRow | null
   listByStatus(projectId: string, statuses: LoopRow['status'][]): LoopRow[]
+  listAll(projectId: string): LoopRow[]
   updatePhase(projectId: string, loopName: string, phase: 'coding' | 'auditing'): void
   updateIteration(projectId: string, loopName: string, iteration: number): void
   incrementError(projectId: string, loopName: string): number
@@ -364,6 +365,11 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       const stmt = db.prepare(sql)
       const rows = stmt.all(projectId, ...statuses) as LoopRowRaw[]
       return rows.map(mapRow)
+    },
+
+    listAll(projectId: string): LoopRow[] {
+      const allStatuses: LoopRow['status'][] = ['running', 'completed', 'cancelled', 'errored', 'stalled']
+      return this.listByStatus(projectId, allStatuses)
     },
 
     updatePhase(projectId: string, loopName: string, phase: 'coding' | 'auditing'): void {

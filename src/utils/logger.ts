@@ -50,6 +50,11 @@ export function createLogger(config: LoggingConfig) {
   const filePath = config.file
   ensureLogDir(filePath)
 
+  // Clear log file on new loads
+  if (existsSync(filePath)) {
+    writeFileSync(filePath, '', 'utf-8')
+  }
+
   function formatArg(arg: unknown): string {
     if (arg === null) return 'null'
     if (arg === undefined) return 'undefined'

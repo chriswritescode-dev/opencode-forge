@@ -570,11 +570,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         hostWorktreeDir = worktreeResult.data.directory!
         worktreeBranch = worktreeResult.data.branch ?? undefined
         
-        // Seed graph
-        const seedResult = await (async () => {
+        void (async () => {
           try {
             const { seedWorktreeGraphScope } = await import('../utils/worktree-graph-seed')
-            return await seedWorktreeGraphScope({
+            const seedResult = await seedWorktreeGraphScope({
               projectId: ctx.projectId,
               sourceCwd: ctx.directory,
               targetCwd: hostWorktreeDir!,
@@ -582,13 +581,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
               graphStatusRepo: deps.graphStatusRepo,
               logger: deps.logger,
             })
+            deps.logger.log(`handleStartLoop: graph seed ${seedResult.seeded ? 'reused' : 'skipped'} (${seedResult.reason})`)
           } catch (err) {
             const reason = err instanceof Error ? err.message : String(err)
             deps.logger.log(`handleStartLoop: graph seed error (non-fatal): ${reason}`)
-            return { seeded: false, reason }
           }
         })()
-        deps.logger.log(`handleStartLoop: graph seed ${seedResult.seeded ? 'reused' : 'skipped'} (${seedResult.reason})`)
         
         // Create workspace
         const { createLoopWorkspace } = await import('../workspace/forge-worktree')
@@ -809,7 +807,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       
       // Navigate TUI if requested
       if (command.lifecycle?.selectSession && deps.v2.tui) {
-        deps.v2.tui.selectSession({ sessionID: sessionId }).catch((err: unknown) => {
+        deps.v2.tui.selectSession({
+          sessionID: sessionId,
+          ...(createdWorkspaceId ? { workspace: createdWorkspaceId } : {}),
+        }).catch((err: unknown) => {
           deps.logger.error('handleStartLoop: failed to navigate TUI', err as Error)
         })
       }

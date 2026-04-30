@@ -16,13 +16,6 @@ export type { GraphStatusRow, GraphStatusRepo } from './repos/graph-status-repo'
 export { createTuiPrefsRepo } from './repos/tui-prefs-repo'
 export type { TuiPrefsRepo } from './repos/tui-prefs-repo'
 
-export { createApiRegistryRepo } from './repos/api-registry-repo'
-export type {
-  ApiRegistryRepo,
-  ApiCoordinatorRow,
-  ApiProjectInstanceRow,
-} from './repos/api-registry-repo'
-
 export type {
   CompactionConfig,
 } from '../types'

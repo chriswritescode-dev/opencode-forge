@@ -149,9 +149,17 @@ export const migrations: Migration[] = [
   },
   {
     id: '115',
-    description: 'Create API coordinator and project instance registry tables',
+    description: 'Create api_registry table for HTTP control plane (historical - dropped in 116)',
     apply: (db: Database) => {
       db.run(loadSql('115_create_api_registry.sql'))
     },
   },
+  {
+    id: '116',
+    description: 'Drop api_registry table (bus-RPC migration - HTTP control plane removed)',
+    apply: (db: Database) => {
+      db.run(loadSql('116_drop_api_registry.sql'))
+    },
+  },
+
 ]

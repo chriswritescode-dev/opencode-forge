@@ -1,12 +1,12 @@
-import type { PluginConfig } from '../types'
-import { buildOpencodeBasicAuthHeader, sanitizeServerUrl } from './opencode-client'
+import type { ExecutionPreferences } from './tui-execution-preferences'
 import type { LoopInfo } from './tui-refresh-helpers'
 import type { GraphStatusPayload } from './graph-status-store'
-import type { ExecutionPreferences } from './tui-execution-preferences'
-import { execFileSync } from 'node:child_process'
-import { platform } from 'node:os'
-
-type ApiEnvelope<T> = { ok: true; data: T } | { ok: false; error: { code: string; message: string } }
+import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
+import {
+  encodeRequest,
+  decodeReply,
+  newRid,
+} from '../api/bus-protocol'
 
 export type ApiExecutionMode = 'new-session' | 'execute-here' | 'loop' | 'loop-worktree'
 
@@ -73,51 +73,12 @@ export interface ForgeProjectClient {
   readGraphStatus(cwd: string): Promise<GraphStatusPayload | null>
 }
 
-function makeRemoteRequest(baseUrl: string, password?: string, directory?: string) {
-  const root = baseUrl.replace(/\/$/, '')
-  const headers: Record<string, string> = {
-    Accept: 'application/json',
-  }
-  if (password) {
-    headers.Authorization = buildOpencodeBasicAuthHeader(password)
-  }
-  if (directory) {
-    headers['x-opencode-directory'] = directory
-  }
+const DIRECTORY_RESOLUTION_ATTEMPTS = 5
+const DIRECTORY_RESOLUTION_RETRY_MS = 100
+const RPC_TIMEOUT_MS = 5000
 
-  return async function request<T>(path: string, init?: RequestInit): Promise<T> {
-    const res = await fetch(`${root}${path}`, {
-      ...init,
-      headers: {
-        ...headers,
-        ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-        ...(init?.headers ?? {}),
-      },
-    })
-    const envelope = await res.json() as ApiEnvelope<T>
-    if (!res.ok || !envelope.ok) {
-      const message = envelope.ok ? `request failed: ${res.status}` : envelope.error.message
-      throw new Error(message)
-    }
-    return envelope.data
-  }
-}
-
-function readOpencodeServerPasswordFromKeychain(): string | undefined {
-  if (platform() !== 'darwin') return undefined
-  try {
-    return execFileSync('security', ['find-generic-password', '-a', 'opencode', '-s', 'opencode-server-password', '-w'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 1000,
-    }).trim() || undefined
-  } catch {
-    return undefined
-  }
-}
-
-function resolveForgeApiPassword(urlPassword?: string): string | undefined {
-  return urlPassword || process.env['OPENCODE_SERVER_PASSWORD'] || readOpencodeServerPasswordFromKeychain()
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function mapRemoteLoop(input: Record<string, unknown>): LoopInfo {
@@ -148,60 +109,210 @@ function mapPrefMode(label: ExecutionPreferences['mode']): ApiExecutionMode {
     : 'new-session'
 }
 
-export function resolveForgeApiUrl(config: PluginConfig): string {
-  const remoteUrl = config.tui?.remoteServer?.url?.trim()
-  if (remoteUrl) return remoteUrl
-  const host = config.api?.host ?? '127.0.0.1'
-  const port = config.api?.port ?? 5552
-  const formattedHost = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host
-  return `http://${formattedHost}:${port}`
+interface PendingRpc {
+  resolve: (data: unknown) => void
+  reject: (err: Error) => void
+  timer: ReturnType<typeof setTimeout>
 }
 
-function buildClient(
-  projectId: string,
-  request: <T>(path: string, init?: RequestInit) => Promise<T>,
-): ForgeProjectClient {
-  const projectPath = `/api/v1/projects/${encodeURIComponent(projectId)}`
+export async function connectForgeProject(
+  api: TuiPluginApi,
+  directory?: string,
+): Promise<ForgeProjectClient | null> {
+  const pending = new Map<string, PendingRpc>()
+
+  // Subscribe to reply events
+  api.event.on('tui.command.execute', (event) => {
+    const command = event.properties?.command as string | undefined
+    if (!command) return
+
+    const reply = decodeReply(command)
+    if (!reply) return
+
+    const pendingRpc = pending.get(reply.rid)
+    if (!pendingRpc) return
+
+    clearTimeout(pendingRpc.timer)
+    pending.delete(reply.rid)
+
+    if (reply.status === 'ok') {
+      pendingRpc.resolve(reply.data)
+    } else {
+      // For plan.read, errors should resolve to null (swallowed)
+      // This is handled at the call site
+      pendingRpc.reject(new Error(reply.message))
+    }
+  })
+
+  async function discoverProjectIdByDirectory(): Promise<string | null> {
+    let projectId: string | null = null
+
+    for (let attempt = 0; attempt < DIRECTORY_RESOLUTION_ATTEMPTS; attempt += 1) {
+      try {
+        const rid = newRid()
+        const result = await new Promise<{ projects: Array<{ id: string; directory?: string | null }> }>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            pending.delete(rid)
+            reject(new Error('forge rpc timeout'))
+          }, RPC_TIMEOUT_MS)
+
+          pending.set(rid, { resolve: resolve as (data: unknown) => void, reject, timer })
+
+          api.client.tui.publish({
+            directory,
+            body: {
+              type: 'tui.command.execute',
+              properties: {
+                command: encodeRequest({
+                  verb: 'projects.list',
+                  rid,
+                  directory,
+                  projectId: '',
+                  params: {},
+                  body: directory ? { directory } : {},
+                }),
+              },
+            },
+          }).catch((err) => {
+            clearTimeout(timer)
+            pending.delete(rid)
+            reject(err)
+          })
+        })
+
+        if (directory) {
+          const matched = result.projects.find((p) => p.directory === directory)
+          if (matched) {
+            projectId = matched.id
+            break
+          }
+        } else {
+          projectId = result.projects[0]?.id ?? null
+          if (projectId) break
+        }
+      } catch {
+        // ignore and retry
+      }
+
+      if (attempt < DIRECTORY_RESOLUTION_ATTEMPTS - 1) {
+        await sleep(DIRECTORY_RESOLUTION_RETRY_MS)
+      }
+    }
+
+    if (!projectId) {
+      return null
+    }
+
+    return projectId
+  }
+
+  async function rpc<T>(
+    verb: string,
+    params: Record<string, string>,
+    body?: unknown,
+    timeoutMs = RPC_TIMEOUT_MS,
+  ): Promise<T> {
+    const rid = newRid()
+
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pending.delete(rid)
+        reject(new Error('forge rpc timeout'))
+      }, timeoutMs)
+
+      pending.set(rid, { resolve: resolve as (data: unknown) => void, reject, timer })
+
+      api.client.tui.publish({
+        directory,
+        body: {
+          type: 'tui.command.execute',
+          properties: {
+            command: encodeRequest({
+              verb,
+              rid,
+              directory,
+              projectId: projectId ?? undefined,
+              params,
+              body,
+            }),
+          },
+        },
+      }).catch((err) => {
+        clearTimeout(timer)
+        pending.delete(rid)
+        reject(err)
+      })
+    })
+  }
+
+  const projectId = await discoverProjectIdByDirectory()
+  if (!projectId) {
+    return null
+  }
 
   const plan: ForgeProjectClient['plan'] = {
     async read(sessionId) {
       try {
-        const data = await request<{ content: string }>(`${projectPath}/plans/session/${encodeURIComponent(sessionId)}`)
+        const data = await rpc<{ content: string }>(
+          'plan.read.session',
+          { sessionId },
+          undefined,
+        )
         return data.content
-      } catch { return null }
+      } catch {
+        return null
+      }
     },
     async write(sessionId, content) {
       try {
-        await request(`${projectPath}/plans/session/${encodeURIComponent(sessionId)}`, {
-          method: 'PUT',
-          body: JSON.stringify({ content }),
-        })
+        await rpc('plan.write.session', { sessionId }, { content })
         return true
-      } catch { return false }
+      } catch {
+        return false
+      }
     },
     async delete(sessionId) {
       try {
-        await request(`${projectPath}/plans/session/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
+        await rpc('plan.delete.session', { sessionId }, undefined)
         return true
-      } catch { return false }
+      } catch {
+        return false
+      }
     },
     async execute(sessionId, req, prefs) {
       let result: { sessionId?: string; loopName?: string; worktreeDir?: string } | null
       try {
-        result = await request(`${projectPath}/plans/session/${encodeURIComponent(sessionId)}/execute`, {
-          method: 'POST',
-          body: JSON.stringify(req),
-        })
-      } catch { return null }
+        result = await rpc(
+          'plan.execute',
+          { sessionId },
+          {
+            mode: req.mode,
+            title: req.title,
+            plan: req.plan,
+            executionModel: req.executionModel,
+            auditorModel: req.auditorModel,
+            targetSessionId: req.targetSessionId,
+          },
+        )
+      } catch {
+        return null
+      }
 
       // Best-effort prefs save
       try {
         const mode = mapPrefMode(prefs.mode)
-        await request(`${projectPath}/models/preferences`, {
-          method: 'PUT',
-          body: JSON.stringify({ mode, executionModel: prefs.executionModel, auditorModel: prefs.auditorModel }),
-        })
-      } catch { /* ignore */ }
+        await rpc(
+          'models.prefs.write',
+          { projectId },
+          {
+            mode,
+            executionModel: prefs.executionModel,
+            auditorModel: prefs.auditorModel,
+          },
+        )
+      } catch {
+        /* ignore */
+      }
 
       return result
     },
@@ -210,39 +321,66 @@ function buildClient(
   const loops: ForgeProjectClient['loops'] = {
     async list() {
       try {
-        const data = await request<{ loops?: unknown[]; active?: unknown[]; recent?: unknown[] }>(`${projectPath}/loops`)
+        const data = await rpc<{ loops?: unknown[]; active?: unknown[]; recent?: unknown[] }>(
+          'loops.list',
+          {},
+          undefined,
+        )
         const arr = data.loops ?? [...(data.active ?? []), ...(data.recent ?? [])]
         return arr.map((l) => mapRemoteLoop(l as Record<string, unknown>))
-      } catch { return [] }
+      } catch {
+        return []
+      }
     },
     async get(loopName) {
       try {
-        const data = await request<Record<string, unknown>>(`${projectPath}/loops/${encodeURIComponent(loopName)}`)
+        const data = await rpc<Record<string, unknown>>(
+          'loops.get',
+          { loopName },
+          undefined,
+        )
         return mapRemoteLoop(data)
-      } catch { return null }
+      } catch {
+        return null
+      }
     },
     async cancel(loopName) {
       try {
-        await request(`${projectPath}/loops/${encodeURIComponent(loopName)}`, { method: 'DELETE' })
+        await rpc('loops.cancel', { loopName }, undefined)
         return true
-      } catch { return false }
+      } catch {
+        return false
+      }
     },
     async restart(loopName, force) {
       try {
-        const data = await request<{ sessionId?: string }>(`${projectPath}/loops/${encodeURIComponent(loopName)}/restart`, {
-          method: 'POST',
-          body: JSON.stringify({ force }),
-        })
+        const data = await rpc<{ sessionId?: string }>(
+          'loops.restart',
+          { loopName },
+          { force },
+        )
         return data.sessionId ?? null
-      } catch { return null }
+      } catch {
+        return null
+      }
     },
     async start(req) {
       try {
-        return await request(`${projectPath}/loops`, {
-          method: 'POST',
-          body: JSON.stringify(req),
-        })
-      } catch { return null }
+        return await rpc(
+          'loops.start',
+          {},
+          {
+            plan: req.plan,
+            title: req.title,
+            worktree: req.worktree,
+            executionModel: req.executionModel,
+            auditorModel: req.auditorModel,
+            hostSessionId: req.hostSessionId,
+          },
+        )
+      } catch {
+        return null
+      }
     },
   }
 
@@ -252,86 +390,25 @@ function buildClient(
     loops,
     async loadExecutionContext() {
       const [prefsResult, modelsResult] = await Promise.all([
-        request<ExecutionPreferences>(`${projectPath}/models/preferences`).catch(() => null),
-        request<ExecutionContext['models']>(`${projectPath}/models`).catch(() => ({ providers: [], error: 'Failed to load models' })),
+        rpc<ExecutionPreferences>('models.prefs.read', { projectId }, undefined).catch(() => null),
+        rpc<ExecutionContext['models']>('models.list', {}, undefined).catch(() => ({
+          providers: [],
+          error: 'Failed to load models',
+        })),
       ])
       return { preferences: prefsResult, models: modelsResult }
     },
     async readGraphStatus(cwd) {
       try {
-        const query = cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''
-        const data = await request<{ status: GraphStatusPayload | null }>(`${projectPath}/graph/status${query}`)
+        const data = await rpc<{ status: GraphStatusPayload | null }>(
+          'graph.status',
+          { projectId },
+          cwd ? { cwd } : {},
+        )
         return data.status
-      } catch { return null }
+      } catch {
+        return null
+      }
     },
   }
-}
-
-const DIRECTORY_RESOLUTION_ATTEMPTS = 5
-const DIRECTORY_RESOLUTION_RETRY_MS = 100
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-async function resolveProjectId(
-  request: <T>(path: string, init?: RequestInit) => Promise<T>,
-  directory?: string,
-): Promise<string | null> {
-  const query = directory ? `?directory=${encodeURIComponent(directory)}` : ''
-  const data = await request<{ projects: Array<{ id: string; directory?: string | null }> }>(`/api/v1/projects${query}`)
-
-  if (!directory) {
-    return data.projects[0]?.id ?? null
-  }
-
-  return data.projects.find((project) => project.directory === directory)?.id ?? null
-}
-
-async function resolveProjectIdWithRetry(
-  request: <T>(path: string, init?: RequestInit) => Promise<T>,
-  directory?: string,
-): Promise<string | null> {
-  if (!directory) return resolveProjectId(request)
-
-  for (let attempt = 0; attempt < DIRECTORY_RESOLUTION_ATTEMPTS; attempt += 1) {
-    const id = await resolveProjectId(request, directory)
-    if (id) return id
-    if (attempt < DIRECTORY_RESOLUTION_ATTEMPTS - 1) {
-      await sleep(DIRECTORY_RESOLUTION_RETRY_MS)
-    }
-  }
-
-  return null
-}
-
-export async function connectForgeProject(
-  config: PluginConfig,
-  directory?: string
-): Promise<ForgeProjectClient | null> {
-  const rawUrl = resolveForgeApiUrl(config)
-
-  let baseUrl: string
-  let urlPassword: string | undefined
-  try {
-    const sanitized = sanitizeServerUrl(rawUrl)
-    baseUrl = sanitized.baseUrl
-    urlPassword = sanitized.password
-  } catch {
-    return null
-  }
-
-  const password = resolveForgeApiPassword(urlPassword)
-  const request = makeRemoteRequest(baseUrl, password, directory)
-
-  let projectId: string
-  try {
-    const id = await resolveProjectIdWithRetry(request, directory)
-    if (!id) return null
-    projectId = id
-  } catch {
-    return null
-  }
-
-  return buildClient(projectId, request)
 }

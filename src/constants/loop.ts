@@ -20,6 +20,10 @@ type PermissionRule = { permission: string; pattern: string; action: 'allow' | '
  * `src/hooks/loop.ts` -> `writeWorktreeCompletionLog`), so the loop session
  * itself does not need an external_directory allow rule for the log path.
  */
+/**
+ * @param options.isWorktree - Defaults to false (in-place loop). Worktree loops are isolated.
+ * @param options.isSandbox - Defaults to false (non-sandbox). Sandbox provides container isolation.
+ */
 export function buildLoopPermissionRuleset(
   options?: { isWorktree?: boolean; isSandbox?: boolean },
 ): PermissionRule[] {
