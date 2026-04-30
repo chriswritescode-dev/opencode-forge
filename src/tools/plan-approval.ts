@@ -18,9 +18,27 @@ interface PendingExecution {
 }
 
 const pendingExecutions = new Map<string, PendingExecution>()
+const processedApprovalCalls = new WeakMap<ToolContext, Set<string>>()
 
 export { LOOP_BLOCKED_TOOLS }
 export { extractPlanTitle }
+
+function isActiveLoopToolSession(state: { active?: boolean; sessionId?: string; auditSessionId?: string }, sessionID: string): boolean {
+  return state.active === true && (state.sessionId === sessionID || state.auditSessionId === sessionID)
+}
+
+function claimApprovalCall(ctx: ToolContext, input: { sessionID: string; callID: string }, label: string): boolean {
+  let processed = processedApprovalCalls.get(ctx)
+  if (!processed) {
+    processed = new Set<string>()
+    processedApprovalCalls.set(ctx, processed)
+  }
+  const key = `${input.sessionID}:${input.callID}:${label}`
+  if (processed.has(key)) return false
+  if (processed.size > 1000) processed.clear()
+  processed.add(key)
+  return true
+}
 
 async function resolveCurrentSessionPlan(ctx: ToolContext, sessionID: string): Promise<string | null> {
   const capture = await captureLatestPlanForSession(
@@ -50,7 +68,7 @@ export function createToolExecuteBeforeHook(ctx: ToolContext): Hooks['tool.execu
   ) => {
     const loopName = loopService.resolveLoopName(input.sessionID)
     const state = loopName ? loopService.getActiveState(loopName) : null
-    if (!state?.active) return
+    if (!state?.active || !isActiveLoopToolSession(state, input.sessionID)) return
 
     if (!(input.tool in LOOP_BLOCKED_TOOLS)) return
 
@@ -79,6 +97,12 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
           const answer = metadata?.answers?.[0]?.[0]?.trim() ?? output.output.trim()
           const answerLower = answer.toLowerCase()
           const matchedLabel = PLAN_EXECUTION_LABELS.find((l) => answerLower === l.toLowerCase() || answerLower.startsWith(l.toLowerCase()))
+
+          if (matchedLabel && !claimApprovalCall(ctx, input, matchedLabel)) {
+            output.output = 'Plan approval already handled.'
+            logger.log(`Plan approval: duplicate "${matchedLabel}" call ignored for ${input.callID}`)
+            return
+          }
           
           if (matchedLabel?.toLowerCase() === 'execute here') {
             const planText = await resolveCurrentSessionPlan(ctx, input.sessionID)
@@ -94,7 +118,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
               planText,
             })
             
-            ctx.v2.session.abort({ sessionID: input.sessionID }).catch((err) => {
+            v2.session.abort({ sessionID: input.sessionID }).catch((err) => {
               logger.error('Plan approval: failed to abort architect session', err)
             })
             
@@ -114,47 +138,48 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
           
           if (matchedLabel === 'New session') {
             logger.log('Plan approval: "New session" — creating new session')
-            
-            const executionModel = parseModelString(config.executionModel)
-            
-            v2.session.create({ title, directory: ctx.directory }).then((createResult) => {
-              if (createResult.error || !createResult.data) {
-                logger.error('Plan approval: failed to create new session', createResult.error)
-                output.output = 'Creating new session for plan execution... Failed to create session.'
-                return
-              }
-              const newSessionId = createResult.data.id
-              
-              retryWithModelFallback(
-                () => v2.session.promptAsync({
-                  sessionID: newSessionId,
-                  directory: ctx.directory,
-                  agent: 'code',
-                  parts: [{ type: 'text', text: planText }],
-                  ...(executionModel ? { model: executionModel } : {}),
-                }),
-                () => v2.session.promptAsync({
-                  sessionID: newSessionId,
-                  directory: ctx.directory,
-                  agent: 'code',
-                  parts: [{ type: 'text', text: planText }],
-                }),
-                executionModel,
-                logger,
-              ).then(({ result }) => {
-                if (result.error) {
-                  logger.error('Plan approval: failed to send plan to new session', result.error)
-                } else {
-                  v2.tui.selectSession({ sessionID: newSessionId }).catch((err) => {
-                    logger.error('Plan approval: failed to navigate TUI', err)
-                  })
-                }
-              })
-            }).catch((err) => {
-              logger.error('Plan approval: failed to create new session', err)
-              output.output = 'Creating new session for plan execution... Failed to create session.'
+
+            const execCtx: ForgeExecutionRequestContext = {
+              surface: 'approval-hook',
+              projectId: ctx.projectId,
+              directory: ctx.directory,
+              sourceSessionId: input.sessionID,
+            }
+
+            const service = createForgeExecutionService({
+              projectId: ctx.projectId,
+              directory: ctx.directory,
+              config,
+              logger,
+              dataDir: ctx.dataDir,
+              v2: ctx.v2,
+              plansRepo: ctx.plansRepo,
+              loopsRepo: ctx.loopsRepo,
+              graphStatusRepo: ctx.graphStatusRepo,
+              loopService: ctx.loopService,
+              loopHandler: ctx.loopHandler,
+              sandboxManager: ctx.sandboxManager,
             })
-            
+
+            const result = await service.dispatch(execCtx, {
+              type: 'plan.execute.newSession',
+              source: { kind: 'inline', planText },
+              title,
+              executionModel: config.executionModel,
+              lifecycle: {
+                selectSession: true,
+                abortSourceSession: true,
+              },
+            })
+
+            if (!result.ok) {
+              logger.error('Plan approval: failed to create new session', result.error)
+              output.output = 'Creating new session for plan execution... Failed to create session.'
+              return
+            }
+
+            output.output = `Creating new session for plan execution... Started session ${result.data.sessionId}.`
+            logger.log(`Plan approval: new session setup complete (${result.data.sessionId})`)
             return
           }
           
@@ -231,7 +256,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
 
     const loopName = loopService.resolveLoopName(input.sessionID)
     const state = loopName ? loopService.getActiveState(loopName) : null
-    if (!state?.active) return
+    if (!state?.active || !isActiveLoopToolSession(state, input.sessionID)) return
 
     if (!(input.tool in LOOP_BLOCKED_TOOLS)) return
 

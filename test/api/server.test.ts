@@ -60,11 +60,11 @@ describe('attachForgeApiServer', () => {
   test('starts coordinator when public port is available', async () => {
     let serveCalls = 0
     let stopCalls = 0
-    const serveResults: Array<{ hostname: string; port: number }> = []
+    const serveResults: Array<{ hostname: string; port: number; idleTimeout?: number }> = []
     
     ;(Bun as unknown as { serve: typeof Bun.serve }).serve = mock((opts: any) => {
       serveCalls += 1
-      serveResults.push({ hostname: opts.hostname, port: opts.port })
+      serveResults.push({ hostname: opts.hostname, port: opts.port, idleTimeout: opts.idleTimeout })
       return {
         port: opts.port,
         stop: () => {
@@ -84,8 +84,10 @@ describe('attachForgeApiServer', () => {
     expect(serveCalls).toBe(2) // owner server + public server
     expect(serveResults[0].hostname).toBe('127.0.0.1')
     expect(serveResults[0].port).toBe(0) // owner server uses port 0
+    expect(serveResults[0].idleTimeout).toBe(120)
     expect(serveResults[1].hostname).toBe('127.0.0.1')
     expect(serveResults[1].port).toBe(35552)
+    expect(serveResults[1].idleTimeout).toBe(120)
 
     if (server) servers.push(server)
 

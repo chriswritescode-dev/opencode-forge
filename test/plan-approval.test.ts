@@ -11,7 +11,7 @@ import { resolveGraphCacheDir } from '../src/storage/graph-projects'
 import { handleExecutePlan } from '../src/api/handlers/plan-execute'
 import { openForgeDatabase, resolveDataDir } from '../src/storage/database'
 import type { Logger } from '../src/types'
-import { createToolExecuteAfterHook, createPlanApprovalEventHook } from '../src/tools/plan-approval'
+import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from '../src/tools/plan-approval'
 import type { ToolContext } from '../src/tools/types'
 import type { PluginConfig } from '../src/types'
 
@@ -91,6 +91,19 @@ function createTestDb(): Database {
     )
   `)
   db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_branch ON review_findings(project_id, branch)`)
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS graph_status (
+      project_id   TEXT NOT NULL,
+      cwd          TEXT NOT NULL,
+      state        TEXT NOT NULL,
+      ready        INTEGER NOT NULL DEFAULT 0,
+      stats_json   TEXT,
+      message      TEXT,
+      updated_at   INTEGER NOT NULL,
+      PRIMARY KEY (project_id, cwd)
+    )
+  `)
   
   return db
 }
@@ -432,6 +445,67 @@ describe('Plan Approval Tool Interception', () => {
   })
 })
 
+describe('Tool blocking hook', () => {
+  const sessionID = 'outside-session'
+  const loopSessionID = 'loop-session'
+  const auditSessionID = 'audit-session'
+  const loopName = 'active-loop'
+
+  function createContextForLoopState(state: { active: boolean; sessionId: string; auditSessionId?: string } | null): ToolContext {
+    return {
+      loopService: {
+        resolveLoopName: () => state ? loopName : null,
+        getActiveState: () => state,
+      },
+      logger: createMockLogger(),
+    } as unknown as ToolContext
+  }
+
+  test('does not block question when resolved loop belongs to another session', async () => {
+    const hook = createToolExecuteBeforeHook(createContextForLoopState({
+      active: true,
+      sessionId: loopSessionID,
+      auditSessionId: auditSessionID,
+    }))!
+
+    await expect(hook({ tool: 'question', sessionID, callID: 'call-1' }, { args: {} })).resolves.toBeUndefined()
+  })
+
+  test('blocks question for active loop session', async () => {
+    const hook = createToolExecuteBeforeHook(createContextForLoopState({
+      active: true,
+      sessionId: loopSessionID,
+      auditSessionId: auditSessionID,
+    }))!
+
+    await expect(hook({ tool: 'question', sessionID: loopSessionID, callID: 'call-1' }, { args: {} })).rejects.toThrow('question tool is not available')
+  })
+
+  test('blocks question for active audit session', async () => {
+    const hook = createToolExecuteBeforeHook(createContextForLoopState({
+      active: true,
+      sessionId: loopSessionID,
+      auditSessionId: auditSessionID,
+    }))!
+
+    await expect(hook({ tool: 'question', sessionID: auditSessionID, callID: 'call-1' }, { args: {} })).rejects.toThrow('question tool is not available')
+  })
+
+  test('does not rewrite after-hook output when resolved loop belongs to another session', async () => {
+    const hook = createToolExecuteAfterHook(createContextForLoopState({
+      active: true,
+      sessionId: loopSessionID,
+      auditSessionId: auditSessionID,
+    }))!
+    const output = { title: '', output: 'original output', metadata: {} }
+
+    await hook({ tool: 'plan-execute', sessionID, callID: 'call-1', args: {} }, output)
+
+    expect(output.title).toBe('')
+    expect(output.output).toBe('original output')
+  })
+})
+
 describe('Execute here bypass', () => {
   const projectId = 'test-project'
   const sessionID = 'test-session-456'
@@ -465,6 +539,7 @@ describe('Execute here bypass', () => {
     openDbs.push(db)
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const graphStatusRepo = createGraphStatusRepo(db)
     const plansRepo = createPlansRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger)
 
@@ -476,6 +551,9 @@ describe('Execute here bypass', () => {
       db,
       loopService,
       plansRepo,
+      loopsRepo,
+      reviewFindingsRepo,
+      graphStatusRepo,
       v2: mockV2,
       ...overrides,
     } as ToolContext
@@ -683,6 +761,7 @@ describe('Execute here bypass', () => {
     
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const graphStatusRepo = createGraphStatusRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
     
     const ctx = {
@@ -691,6 +770,9 @@ describe('Execute here bypass', () => {
       config: { executionModel: 'test-provider/test-model' } as PluginConfig,
       logger: createMockLogger(),
       plansRepo,
+      loopsRepo,
+      reviewFindingsRepo,
+      graphStatusRepo,
       loopService,
       v2: {
         session: {
@@ -728,12 +810,27 @@ describe('Execute here bypass', () => {
       output
     )
 
+    const duplicateOutput = {
+      title: 'Asked 1 question',
+      output: 'New session',
+      metadata: { answers: [['New session']] },
+    }
+
+    await hook(
+      { tool: 'question', sessionID: testSessionID, callID: 'test-call', args },
+      duplicateOutput
+    )
+
     // Give async operations time to complete
     await new Promise(resolve => setTimeout(resolve, 100))
 
     // Verify plan persists in session-scoped repo after dispatch
     const planAfter = plansRepo.getForSession(projectId, testSessionID)
     expect(planAfter?.content).toBe(originalPlan)
+    expect(createSpy).toHaveBeenCalledTimes(1)
+    expect(promptSpy).toHaveBeenCalledTimes(1)
+    expect(abortSpy).toHaveBeenCalledWith({ sessionID: testSessionID })
+    expect(duplicateOutput.output).toBe('Plan approval already handled.')
   })
 
   test('Execute here path reads plan from session-scoped repo and plan persists after dispatch', async () => {

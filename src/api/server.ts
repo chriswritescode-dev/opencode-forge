@@ -55,6 +55,7 @@ export interface ForgeApiServer {
 const API_LEASE_TTL_MS = 30_000
 const API_HEARTBEAT_MS = 5_000
 const API_COORDINATOR_REQUEST_TIMEOUT_MS = 5_000
+const API_SERVER_IDLE_TIMEOUT_SECONDS = 120
 
 type OwnerServer = {
   url: string
@@ -140,6 +141,7 @@ function startOwnerServer(ctx: ToolContext, registry: ProjectRegistry): OwnerSer
   const server = Bun.serve({
     hostname: '127.0.0.1',
     port: 0,
+    idleTimeout: API_SERVER_IDLE_TIMEOUT_SECONDS,
     fetch: buildFetchHandler(routes, registry, password, localhostOnly, apiRegistryRepo),
   })
   
@@ -562,6 +564,7 @@ export async function attachForgeApiServer(
       const server = Bun.serve({
         hostname: host,
         port,
+        idleTimeout: API_SERVER_IDLE_TIMEOUT_SECONDS,
         fetch: (req) => slot.currentFetchHandler(req),
       })
       slot = {
