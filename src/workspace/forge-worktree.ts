@@ -112,7 +112,6 @@ export async function createLoopWorkspace(
   }
   try {
     const result = await workspaceApi.create({
-      id: options.loopName,
       type: FORGE_WORKTREE_WORKSPACE_TYPE,
       branch: options.branch ?? null,
       extra: {
@@ -127,13 +126,25 @@ export async function createLoopWorkspace(
       return null
     }
 
-    if (!('data' in result) || !result.data) {
-      console.error('Failed to create workspace: no data returned')
+    const rawResult = result as unknown
+    const rawWorkspaceId = rawResult && typeof rawResult === 'object' && 'id' in rawResult && typeof rawResult.id === 'string'
+      ? rawResult.id
+      : null
+
+    const workspaceData = 'data' in result ? result.data as unknown : rawResult
+    const workspaceId = typeof workspaceData === 'string'
+      ? workspaceData
+      : workspaceData && typeof workspaceData === 'object' && 'id' in workspaceData && typeof workspaceData.id === 'string'
+        ? workspaceData.id
+        : rawWorkspaceId
+
+    if (!workspaceId) {
+      console.error('Failed to create workspace: no workspace id returned', result.data)
       return null
     }
 
     return {
-      workspaceId: result.data.id,
+      workspaceId,
     }
   } catch (err) {
     console.error('Failed to create loop workspace', err)
@@ -155,7 +166,7 @@ export async function createLoopWorkspace(
 export async function bindSessionToWorkspace(
   client: OpencodeClient,
   workspaceId: string,
-  sessionId: string
+  sessionId: string,
 ): Promise<void> {
   const workspaceApi = client.experimental?.workspace
   if (!workspaceApi || typeof workspaceApi.sessionRestore !== 'function') {

@@ -222,7 +222,6 @@ describe('Fresh Loop Launch', () => {
       worktreeCreateInput: { name: 'test-plan' }, // Falls back to title since no Loop Name field
     })
     expect(mockApi.client.experimental?.workspace?.create).toHaveBeenCalledWith({
-      id: 'test-plan',
       type: 'forge-worktree',
       branch: 'opencode/loop-test-plan',
       extra: {
@@ -233,7 +232,7 @@ describe('Fresh Loop Launch', () => {
     })
     expect(mockApi.client.session.create).toHaveBeenCalled()
     expect(mockApi.client.session.create).toHaveBeenCalledWith(expect.objectContaining({
-      workspaceID: 'test-plan',
+      workspaceID: expect.stringMatching(/^mock-workspace-/),
     }))
   })
 

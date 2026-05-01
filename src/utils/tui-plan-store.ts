@@ -75,6 +75,58 @@ export function readPlan(projectId: string, sessionID: string, dbPathOverride?: 
   }
 }
 
+export function readPlanForAnyProject(sessionID: string, dbPathOverride?: string): string | null {
+  const dbPath = dbPathOverride || getDbPath()
+
+  if (!existsSync(dbPath)) return null
+
+  let db: Database | null = null
+  try {
+    db = new Database(dbPath, { readonly: true })
+    const rows = db.prepare(`
+      SELECT project_id
+      FROM plans
+      WHERE session_id = ?
+      ORDER BY updated_at DESC
+    `).all(sessionID) as Array<{ project_id: string }>
+
+    for (const row of rows) {
+      const content = readPlan(row.project_id, sessionID, dbPath)
+      if (content) return content
+    }
+
+    return null
+  } catch {
+    return null
+  } finally {
+    try { db?.close() } catch {}
+  }
+}
+
+export function readProjectIdForSession(sessionID: string, dbPathOverride?: string): string | null {
+  const dbPath = dbPathOverride || getDbPath()
+
+  if (!existsSync(dbPath)) return null
+
+  let db: Database | null = null
+  try {
+    db = new Database(dbPath, { readonly: true })
+    const row = db.prepare(`
+      SELECT project_id
+      FROM plans
+      WHERE session_id = ?
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `).get(sessionID) as { project_id: string } | undefined
+
+    return row?.project_id ?? null
+  } catch {
+    return null
+  } finally {
+    try { db?.close() } catch {}
+  }
+}
+
 /**
  * Writes plan content to the plans table for a session.
  * 

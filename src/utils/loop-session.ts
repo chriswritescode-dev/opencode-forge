@@ -25,6 +25,7 @@ export async function createLoopSessionWithWorkspace(
   const createParams: {
     title: string
     directory: string
+    workspace?: string
     permission: ReturnType<typeof buildLoopPermissionRuleset>
     workspaceID?: string
   } = {
@@ -34,6 +35,7 @@ export async function createLoopSessionWithWorkspace(
   }
 
   if (input.workspaceId) {
+    createParams.workspace = input.workspaceId
     createParams.workspaceID = input.workspaceId
   }
 

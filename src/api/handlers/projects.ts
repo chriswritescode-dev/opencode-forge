@@ -88,7 +88,7 @@ export async function handleListProjects(
   const projects = allProjects
 
   if (directoryFilter) {
-    const matched = projects.find((project) => project.active && project.directory === directoryFilter)
+    const matched = projects.find((project) => project.directory === directoryFilter)
     return { projects: matched ? [matched] : [] }
   }
 

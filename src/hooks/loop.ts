@@ -28,7 +28,7 @@ export interface LoopEventHandler {
 
 export function createLoopEventHandler(
   loopService: LoopService,
-  _client: PluginInput['client'],
+  client: PluginInput['client'],
   v2Client: OpencodeClient,
   logger: Logger,
   getConfig: () => PluginConfig,
@@ -47,6 +47,71 @@ export function createLoopEventHandler(
 
   const IDLE_RETRY_DELAY_MS = 1500
   const MAX_IDLE_RETRIES = 1
+
+  async function createAuditSessionWithFallback(input: {
+    loopName: string
+    iteration: number
+    worktreeDir: string
+    workspaceId?: string
+    isSandbox: boolean
+    auditorModel?: { providerID: string; modelID: string }
+    prompt: string
+  }): Promise<{ auditSessionId: string; bindFailed: boolean } | null> {
+    const created = await createAuditSession({
+      v2: v2Client,
+      loopName: input.loopName,
+      iteration: input.iteration,
+      worktreeDir: input.worktreeDir,
+      workspaceId: input.workspaceId,
+      isSandbox: input.isSandbox,
+      auditorModel: input.auditorModel,
+      prompt: input.prompt,
+      logger,
+    })
+    if (created) return created
+
+    try {
+      logger.log(`Loop: falling back to plugin client for audit session creation (${input.loopName})`)
+      const result = await client.session.create({
+        body: { title: `audit: ${input.loopName} #${input.iteration}` },
+        query: { directory: input.worktreeDir },
+      })
+      const session = result.data as { id?: string } | undefined
+      if (!session?.id) return null
+      return { auditSessionId: session.id, bindFailed: true }
+    } catch (err) {
+      logger.error(`Loop: plugin client audit session creation failed`, err)
+      return null
+    }
+  }
+
+  async function promptAuditSessionWithFallback(input: {
+    sessionId: string
+    worktreeDir: string
+    workspaceId?: string
+    prompt: string
+    auditorModel?: { providerID: string; modelID: string }
+  }): Promise<{ ok: true } | { ok: false; error: unknown }> {
+    const result = await promptAuditSession(v2Client, input)
+    if (result.ok) return result
+
+    try {
+      logger.log(`Loop: falling back to plugin client for audit prompt (${input.sessionId})`)
+      const legacyResult = await client.session.promptAsync({
+        path: { id: input.sessionId },
+        query: { directory: input.worktreeDir, ...(input.workspaceId ? { workspace: input.workspaceId } : {}) },
+        body: {
+          agent: 'auditor-loop',
+          parts: [{ type: 'text' as const, text: input.prompt }],
+          ...(input.auditorModel ? { model: input.auditorModel } : {}),
+        },
+      })
+      if (legacyResult.error) return { ok: false, error: legacyResult.error }
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err }
+    }
+  }
 
   function withStateLock<T>(loopName: string, fn: () => Promise<T>): Promise<T> {
     const prev = stateLocks.get(loopName) ?? Promise.resolve()
@@ -668,11 +733,46 @@ export function createLoopEventHandler(
       return
     }
 
-    const { error: assistantError, lastMessageRole } =
-      await getLastAssistantInfo(currentState.sessionId, currentState.worktreeDir)
+    const assistantInfo = await getLastAssistantInfo(currentState.sessionId, currentState.worktreeDir)
+    let assistantError = assistantInfo.error
+    const lastMessageRole = assistantInfo.lastMessageRole
     if (lastMessageRole !== 'assistant') {
-      logger.error(`Loop: assistant message not found in coding phase (last message: ${lastMessageRole}), session may not have responded yet`)
-      return
+      const attempts = idleRetryAttempts.get(loopName) ?? 0
+      if (attempts < MAX_IDLE_RETRIES) {
+        logger.log(`Loop: coding idle without assistant message (last=${lastMessageRole}), retrying in ${IDLE_RETRY_DELAY_MS}ms (attempt ${attempts + 1}/${MAX_IDLE_RETRIES})`)
+        idleRetryAttempts.set(loopName, attempts + 1)
+        const sessionId = currentState.sessionId
+        const t = setTimeout(async () => {
+          idleRetryTimeouts.delete(loopName)
+          await withStateLock(loopName, async () => {
+            const retryState = loopService.getActiveState(loopName)
+            if (!retryState?.active || retryState.phase !== 'coding' || retryState.sessionId !== sessionId) return
+            await handleCodingPhase(loopName, retryState)
+          })
+        }, IDLE_RETRY_DELAY_MS)
+        idleRetryTimeouts.set(loopName, t)
+        return
+      }
+
+      logger.log(`Loop: coding phase proceeding without assistant message for ${loopName} after retry (last message: ${lastMessageRole})`)
+      assistantError = null
+      const pending = idleRetryTimeouts.get(loopName)
+      if (pending) {
+        clearTimeout(pending)
+        idleRetryTimeouts.delete(loopName)
+      }
+      if (idleRetryAttempts.has(loopName)) {
+        idleRetryAttempts.delete(loopName)
+      }
+    }
+
+    const pending = idleRetryTimeouts.get(loopName)
+    if (pending) {
+      clearTimeout(pending)
+      idleRetryTimeouts.delete(loopName)
+    }
+    if (idleRetryAttempts.has(loopName)) {
+      idleRetryAttempts.delete(loopName)
     }
 
     const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantError, 'coding')
@@ -688,8 +788,7 @@ export function createLoopEventHandler(
     const currentConfig = getConfig()
     const auditorModel = resolveLoopAuditorModel(currentConfig, loopService, loopName, logger)
 
-    const created = await createAuditSession({
-      v2: v2Client,
+    const created = await createAuditSessionWithFallback({
       loopName,
       iteration: currentState.iteration ?? 0,
       worktreeDir: currentState.worktreeDir,
@@ -697,7 +796,6 @@ export function createLoopEventHandler(
       isSandbox: currentState.sandbox ?? false,
       auditorModel,
       prompt: loopService.buildAuditPrompt(currentState),
-      logger,
     })
 
     if (!created) {
@@ -714,9 +812,10 @@ export function createLoopEventHandler(
     loopService.registerAuditSession(created.auditSessionId, loopName)
 
     const sendAuditWithModel = async () => {
-      const result = await promptAuditSession(v2Client, {
+      const result = await promptAuditSessionWithFallback({
         sessionId: created.auditSessionId,
         worktreeDir: currentState.worktreeDir,
+        workspaceId: currentState.workspaceId,
         prompt: loopService.buildAuditPrompt(currentState),
         auditorModel,
       })
@@ -724,9 +823,10 @@ export function createLoopEventHandler(
     }
 
     const sendAuditWithoutModel = async () => {
-      const result = await promptAuditSession(v2Client, {
+      const result = await promptAuditSessionWithFallback({
         sessionId: created.auditSessionId,
         worktreeDir: currentState.worktreeDir,
+        workspaceId: currentState.workspaceId,
         prompt: loopService.buildAuditPrompt(currentState),
       })
       return result.ok ? { data: true } : { error: result.error }

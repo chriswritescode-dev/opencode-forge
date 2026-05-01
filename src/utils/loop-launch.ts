@@ -331,15 +331,16 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
   // Send prompt to code agent with model fallback
   const loopModel = parseModelString(options.executionModel) ?? parseModelString(config.executionModel)
   const sessionDir = loopState.worktreeDir
+  const workspaceParam = workspaceId ? { workspace: workspaceId } : {}
   
   console.log(`loop-launch: initial prompt sessionID=${sessionId} dir=${sessionDir} model=${loopModel ? `${loopModel.providerID}/${loopModel.modelID}` : '(default)'}`)
   
   const promptParts = [{ type: 'text' as const, text: promptText }]
   const { result: promptResult } = await retryWithModelFallback(
     () => loopModel
-      ? v2.session.promptAsync({ sessionID: sessionId, directory: sessionDir, agent: 'code', model: loopModel, parts: promptParts })
-      : v2.session.promptAsync({ sessionID: sessionId, directory: sessionDir, agent: 'code', parts: promptParts }),
-    () => v2.session.promptAsync({ sessionID: sessionId, directory: sessionDir, agent: 'code', parts: promptParts }),
+      ? v2.session.promptAsync({ sessionID: sessionId, directory: sessionDir, ...workspaceParam, agent: 'code', model: loopModel, parts: promptParts })
+      : v2.session.promptAsync({ sessionID: sessionId, directory: sessionDir, ...workspaceParam, agent: 'code', parts: promptParts }),
+    () => v2.session.promptAsync({ sessionID: sessionId, directory: sessionDir, ...workspaceParam, agent: 'code', parts: promptParts }),
     loopModel,
     console,
   )

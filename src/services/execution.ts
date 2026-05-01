@@ -655,15 +655,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         
       } else {
         // In-place mode
-        const { buildLoopPermissionRuleset } = await import('../constants/loop')
-        const permissionRuleset = buildLoopPermissionRuleset({
-          isWorktree: false,
-        })
-        
         const createResult = await deps.v2.session.create({
           title: `Loop: ${truncatedTitle}`,
           directory: ctx.directory,
-          permission: permissionRuleset,
         })
         
         if (createResult.error || !createResult.data) {

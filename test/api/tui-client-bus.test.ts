@@ -68,6 +68,19 @@ describe('tui-client bus-RPC integration', () => {
       
       const mockApi = {
         client: {
+          worktree: {
+            create: vi.fn().mockResolvedValue({
+              data: { directory: '/tmp/worktree', branch: 'test-loop' },
+              error: undefined,
+            }),
+          },
+          session: {
+            create: vi.fn().mockResolvedValue({
+              data: { id: 's1' },
+              error: undefined,
+            }),
+            promptAsync: vi.fn().mockResolvedValue({ data: {}, error: undefined }),
+          },
           tui: {
             publish: vi.fn().mockImplementation(async (payload: any) => {
               publishCallCount++
@@ -110,9 +123,22 @@ describe('tui-client bus-RPC integration', () => {
       expect(client?.projectId).toBe('proj1')
     })
 
-    it('returns null when discovery fails after all retries', async () => {
+    it('continues with cwd routing when discovery fails after all retries', async () => {
       const mockApi = {
         client: {
+          worktree: {
+            create: vi.fn().mockResolvedValue({
+              data: { directory: '/tmp/worktree', branch: 'test-loop' },
+              error: undefined,
+            }),
+          },
+          session: {
+            create: vi.fn().mockResolvedValue({
+              data: { id: 's1' },
+              error: undefined,
+            }),
+            promptAsync: vi.fn().mockResolvedValue({ data: {}, error: undefined }),
+          },
           tui: {
             publish: vi.fn().mockResolvedValue(undefined),
           },
@@ -122,10 +148,9 @@ describe('tui-client bus-RPC integration', () => {
         },
       } as unknown as TuiPluginApi
 
-      // Don't trigger any replies - let everything timeout
-      // This test takes ~25s due to 5 retry attempts × 5s timeout each
       const client = await connectForgeProject(mockApi, '/test')
-      expect(client).toBeNull()
+      expect(client).not.toBeNull()
+      expect(client?.projectId).toBe('')
     }, 30000)
 
     it('publishes encoded request and resolves with reply data', async () => {
@@ -137,6 +162,19 @@ describe('tui-client bus-RPC integration', () => {
       
       const mockApi = {
         client: {
+          worktree: {
+            create: vi.fn().mockResolvedValue({
+              data: { directory: '/tmp/worktree', branch: 'test-loop' },
+              error: undefined,
+            }),
+          },
+          session: {
+            create: vi.fn().mockResolvedValue({
+              data: { id: 's1' },
+              error: undefined,
+            }),
+            promptAsync: vi.fn().mockResolvedValue({ data: {}, error: undefined }),
+          },
           tui: {
             publish: vi.fn().mockImplementation(async (payload: any) => {
               publishCallCount++
@@ -291,9 +329,24 @@ describe('tui-client bus-RPC integration', () => {
       let capturedHandler: ((event: any) => void) | undefined
       let publishCallCount = 0
       let lastPublishedPayload: any = null
+      const sessionId = `s-${Date.now()}`
       
       const mockApi = {
         client: {
+          worktree: {
+            create: vi.fn().mockResolvedValue({
+              data: { directory: '/tmp/worktree', branch: 'test-loop' },
+              error: undefined,
+            }),
+          },
+          session: {
+            create: vi.fn().mockResolvedValue({
+              data: { id: sessionId },
+              error: undefined,
+            }),
+            promptAsync: vi.fn().mockResolvedValue({ data: {}, error: undefined }),
+            abort: vi.fn().mockResolvedValue({ data: {}, error: undefined }),
+          },
           tui: {
             publish: vi.fn().mockImplementation(async (payload: any) => {
               publishCallCount++
@@ -336,36 +389,15 @@ describe('tui-client bus-RPC integration', () => {
       const client = await clientPromise
       expect(client).not.toBeNull()
       
-      // Now trigger loops.start
+      // Now trigger loops.start, which launches directly from the TUI API.
       const loopsPromise = client!.loops.start({
         plan: 'test plan',
         title: 'test title',
         worktree: true,
       })
       
-      // Wait for second publish
-      while (publishCallCount < 2) {
-        await new Promise(resolve => setTimeout(resolve, 10))
-      }
-      
-      // Reply to loops.start
-      if (capturedHandler && lastPublishedPayload) {
-        const decoded = decodeRequest(lastPublishedPayload.body.properties.command as string)
-        if (decoded && decoded.verb === 'loops.start') {
-          capturedHandler({
-            properties: {
-              command: encodeReply({
-                rid: decoded.rid,
-                status: 'ok',
-                data: { sessionId: 's1', loopName: 'test-loop', worktreeDir: '/tmp/worktree' },
-              }),
-            },
-          })
-        }
-      }
-      
       const result = await loopsPromise
-      expect(result).toEqual({ sessionId: 's1', loopName: 'test-loop', worktreeDir: '/tmp/worktree' })
+      expect(result).toEqual({ sessionId, loopName: 'test plan', worktreeDir: '/tmp/worktree' })
     })
 
     it('returns null when RPC call times out after 5000ms (plan.read swallows errors)', async () => {
@@ -424,7 +456,7 @@ describe('tui-client bus-RPC integration', () => {
       // Now make an RPC call that will timeout
       // plan.read swallows errors and returns null on timeout
       const startTime = Date.now()
-      const result = await client!.plan.read('s1')
+      const result = await client!.plan.read('session-without-local-plan')
       const elapsed = Date.now() - startTime
       
       expect(result).toBeNull()

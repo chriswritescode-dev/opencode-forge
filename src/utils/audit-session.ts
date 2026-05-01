@@ -47,6 +47,7 @@ export async function promptAuditSession(
   input: {
     sessionId: string
     worktreeDir: string
+    workspaceId?: string
     prompt: string
     auditorModel?: { providerID: string; modelID: string }
   },
@@ -55,6 +56,7 @@ export async function promptAuditSession(
   const result = await v2.session.promptAsync({
     sessionID: input.sessionId,
     directory: input.worktreeDir,
+    ...(input.workspaceId ? { workspace: input.workspaceId } : {}),
     agent: 'auditor-loop',
     parts,
     ...(input.auditorModel ? { model: input.auditorModel } : {}),

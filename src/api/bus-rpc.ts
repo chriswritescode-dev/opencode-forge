@@ -4,6 +4,7 @@ import {
   decodeRequest,
   encodeReply,
   ForgeRpcError,
+  type ForgeRpcReply,
 } from './bus-protocol'
 import type { ApiDeps, Handler } from './types'
 import type { ProjectRegistry } from './project-registry'
@@ -67,6 +68,25 @@ export interface BusRpcDeps {
 export function createBusRpcEventHook(deps: BusRpcDeps) {
   const { registry, logger, v2, instanceDirectory } = deps
 
+  function publishReply(directory: string, verb: string, reply: ForgeRpcReply): void {
+    logger.debug(`[bus-rpc] reply scheduled ${verb} rid=${reply.rid} directory=${directory} status=${reply.status}`)
+    setTimeout(() => {
+      v2.tui.publish({
+        directory,
+        body: {
+          type: 'tui.command.execute',
+          properties: {
+            command: encodeReply(reply),
+          },
+        },
+      }).then(() => {
+        logger.debug(`[bus-rpc] reply published ${verb} rid=${reply.rid} directory=${directory} status=${reply.status}`)
+      }).catch((err) => {
+        logger.error(`[bus-rpc] reply publish failed for ${verb} rid=${reply.rid}`, err)
+      })
+    }, 0)
+  }
+
   return async (input: {
     event: {
       type: string
@@ -90,34 +110,23 @@ export function createBusRpcEventHook(deps: BusRpcDeps) {
       return
     }
 
-    // Extract request fields first
     const { verb, rid, params, body } = req
     const eventDirectory = event.properties?.directory as string | undefined
-    
-    // Resolve target context: prefer projectId from request, then fall back to directory matching
-    // This ensures requests with explicit projectId are routed correctly even if directory differs
-    let targetCtx = null
-    
-    // First, try to resolve by projectId if provided in the request
+    const explicitDirectory = req.directory || eventDirectory
+    const requestDirectory = explicitDirectory || instanceDirectory
+    logger.debug(`[bus-rpc] request ${verb} rid=${rid} directory=${requestDirectory} projectId=${req.projectId ?? 'none'}`)
+
+    let targetCtx = explicitDirectory ? registry.findByDirectory(requestDirectory) : null
     if (req.projectId) {
-      targetCtx = registry.get(req.projectId)
-      
-      // If projectId was provided but not found, silently ignore
-      // This request might be for a different forge instance
-      if (!targetCtx) {
+      targetCtx = targetCtx ?? registry.get(req.projectId)
+      if (!targetCtx && !explicitDirectory) {
         return
       }
     }
-    
-    // If no projectId, fall back to directory matching
-    if (!targetCtx) {
-      const requestDirectory = req.directory || eventDirectory || instanceDirectory
-      if (requestDirectory !== instanceDirectory) {
-        // This request is for a different forge instance - silently ignore
-        return
-      }
-      targetCtx = registry.findByDirectory(instanceDirectory)
-    }
+    targetCtx = targetCtx
+      ?? registry.findByDirectory(instanceDirectory)
+      ?? registry.list()[0]
+      ?? null
     
     if (!targetCtx) {
       // No matching project found - this should not happen as instanceDirectory should always have a context
@@ -136,26 +145,23 @@ export function createBusRpcEventHook(deps: BusRpcDeps) {
         message: `unknown verb: ${verb}`,
       }
 
-      await v2.tui.publish({
-        directory: targetCtx.directory,
-        body: {
-          type: 'tui.command.execute',
-          properties: {
-            command: encodeReply(reply),
-          },
-        },
-      })
+      publishReply(requestDirectory, verb, reply)
       return
     }
 
+    const effectiveProjectId = req.projectId || targetCtx.projectId
+    const effectiveCtx = verb !== 'projects.list' && requestDirectory && requestDirectory !== targetCtx.directory
+      ? { ...targetCtx, projectId: effectiveProjectId, directory: requestDirectory }
+      : targetCtx
+
     const apiDeps: ApiDeps = {
-      ctx: targetCtx,
+      ctx: effectiveCtx,
       logger: targetCtx.logger,
-      projectId: targetCtx.projectId,
+      projectId: effectiveProjectId,
     }
 
     // Merge projectId into params for handlers that expect it
-    const paramsWithProjectId = { ...params, projectId: targetCtx.projectId }
+    const paramsWithProjectId = { ...params, projectId: effectiveProjectId }
 
     try {
       const result = await handler(apiDeps, paramsWithProjectId, body)
@@ -166,15 +172,7 @@ export function createBusRpcEventHook(deps: BusRpcDeps) {
         data: result,
       }
 
-      await v2.tui.publish({
-        directory: targetCtx.directory,
-        body: {
-          type: 'tui.command.execute',
-          properties: {
-            command: encodeReply(reply),
-          },
-        },
-      })
+      publishReply(requestDirectory, verb, reply)
     } catch (err) {
       if (err instanceof ForgeRpcError) {
         const reply = {
@@ -184,15 +182,7 @@ export function createBusRpcEventHook(deps: BusRpcDeps) {
           message: err.message,
         }
 
-        await v2.tui.publish({
-          directory: targetCtx.directory,
-          body: {
-            type: 'tui.command.execute',
-            properties: {
-              command: encodeReply(reply),
-            },
-          },
-        })
+        publishReply(requestDirectory, verb, reply)
       } else {
         // Check if this is a Zod validation error - treat as bad_request
         const isZodError = err instanceof ZodError || (err instanceof Error && err.name === 'ZodError')
@@ -210,15 +200,7 @@ export function createBusRpcEventHook(deps: BusRpcDeps) {
           message,
         }
 
-        await v2.tui.publish({
-          directory: targetCtx.directory,
-          body: {
-            type: 'tui.command.execute',
-            properties: {
-              command: encodeReply(reply),
-            },
-          },
-        })
+        publishReply(requestDirectory, verb, reply)
       }
     }
   }

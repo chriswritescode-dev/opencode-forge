@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from '@opencode-ai/plugin/tui'
-import { createEffect, createMemo, createSignal, onCleanup, Show, For } from 'solid-js'
+import { createEffect, createMemo, createSignal, onCleanup, Show, For, untrack } from 'solid-js'
 import { SyntaxStyle, type TextareaRenderable } from '@opentui/core'
 import { writeFileSync } from 'fs'
 import { join } from 'path'
@@ -34,6 +34,47 @@ type TuiOptions = {
   showVersion: boolean
   keybinds: TuiKeybinds
 }
+
+type ForgeConnectionStatus = 'connecting' | 'connected' | 'unavailable'
+
+function ForgeSidebarStatus(props: { api: TuiPluginApi; opts: TuiOptions; status: () => ForgeConnectionStatus }) {
+  const theme = () => props.api.theme.current
+  const title = createMemo(() => props.opts.showVersion ? `Forge v${VERSION}` : 'Forge')
+  const statusText = createMemo(() => props.status() === 'connecting' ? 'connecting' : 'RPC unavailable')
+
+  return (
+    <Show when={props.opts.sidebar}>
+      <box>
+        <box flexDirection="row" gap={1}>
+          <text fg={theme().text}>
+            <b>{title()}</b>
+          </text>
+          <text fg={theme().textMuted}>· {statusText()}</text>
+        </box>
+      </box>
+    </Show>
+  )
+}
+
+function SidebarContainer(props: {
+  api: TuiPluginApi
+  client: () => ForgeProjectClient | null
+  opts: TuiOptions
+  status: () => ForgeConnectionStatus
+  sessionId?: string
+}) {
+  const currentClient = createMemo(() => props.client())
+
+  return (
+    <Show
+      when={currentClient()}
+      fallback={<ForgeSidebarStatus api={props.api} opts={props.opts} status={props.status} />}
+    >
+      {(client) => <Sidebar api={props.api} client={client()} opts={props.opts} sessionId={props.sessionId} />}
+    </Show>
+  )
+}
+
 function PlanViewerDialog(props: {
   api: TuiPluginApi
   client: ForgeProjectClient
@@ -231,7 +272,15 @@ function PlanViewerDialog(props: {
     props.api.ui.toast({ message: result.loopName ? `Loop started: ${result.loopName}` : 'Plan execution started', variant: 'success', duration: 3000 })
     props.onRefresh?.()
     if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop-worktree' || apiMode === 'loop')) {
-      try { props.api.route.navigate('session', { sessionID: result.sessionId }) } catch {}
+      try {
+        if (result.workspaceId) {
+          const workspaceApi = props.api as unknown as { workspace?: { set?: (workspaceID?: string) => void } }
+          workspaceApi.workspace?.set?.(result.workspaceId)
+        }
+        await props.api.client.tui.selectSession({ sessionID: result.sessionId })
+      } catch {
+        try { props.api.route.navigate('session', { sessionID: result.sessionId }) } catch {}
+      }
     }
   }
 
@@ -479,65 +528,65 @@ function LoopDetailsDialog(props: { api: TuiPluginApi; client: ForgeProjectClien
           }>
             <box flexDirection="column">
               <box>
-                <text fg={theme().text}>
+                <box flexDirection="row">
                   <text fg={theme().textMuted}>Session: </text>
-                  {currentLoop().sessionId.slice(0, 8)}...
-                </text>
+                  <text fg={theme().text}>{currentLoop().sessionId.slice(0, 8)}...</text>
+                </box>
               </box>
               <box>
-                <text fg={theme().text}>
+                <box flexDirection="row">
                   <text fg={theme().textMuted}>Phase: </text>
-                  {currentLoop().phase}
-                </text>
+                  <text fg={theme().text}>{currentLoop().phase}</text>
+                </box>
               </box>
               <Show when={currentLoop().executionModel}>
                 <box>
-                  <text fg={theme().text}>
+                  <box flexDirection="row">
                     <text fg={theme().textMuted}>Execution model: </text>
-                    {currentLoop().executionModel}
-                  </text>
+                    <text fg={theme().text}>{currentLoop().executionModel}</text>
+                  </box>
                 </box>
               </Show>
               <Show when={currentLoop().auditorModel}>
                 <box>
-                  <text fg={theme().text}>
+                  <box flexDirection="row">
                     <text fg={theme().textMuted}>Auditor model: </text>
-                    {currentLoop().auditorModel}
-                  </text>
+                    <text fg={theme().text}>{currentLoop().auditorModel}</text>
+                  </box>
                 </box>
               </Show>
               <box>
-                <text fg={theme().text}>
+                <box flexDirection="row">
                   <text fg={theme().textMuted}>Messages: </text>
-                  {stats()!.messages.total} total ({stats()!.messages.assistant} assistant)
-                </text>
+                  <text fg={theme().text}>{stats()!.messages.total} total ({stats()!.messages.assistant} assistant)</text>
+                </box>
               </box>
               <box>
-                <text fg={theme().text}>
+                <box flexDirection="row">
                   <text fg={theme().textMuted}>Tokens: </text>
-                  {formatTokens(stats()!.tokens.input)} in / {formatTokens(stats()!.tokens.output)} out / {formatTokens(stats()!.tokens.reasoning)} reasoning
-                </text>
+                  <text fg={theme().text}>{formatTokens(stats()!.tokens.input)} in / {formatTokens(stats()!.tokens.output)} out / {formatTokens(stats()!.tokens.reasoning)} reasoning</text>
+                </box>
               </box>
               <box>
-                <text fg={theme().text}>
+                <box flexDirection="row">
                   <text fg={theme().textMuted}>Cost: </text>
-                  ${stats()!.cost.toFixed(4)}
-                </text>
+                  <text fg={theme().text}>${stats()!.cost.toFixed(4)}</text>
+                </box>
               </box>
               <Show when={stats()!.fileChanges}>
                 <box>
-                  <text fg={theme().text}>
+                  <box flexDirection="row">
                     <text fg={theme().textMuted}>Files: </text>
-                    {stats()!.fileChanges!.files} changed (+{stats()!.fileChanges!.additions}/-{stats()!.fileChanges!.deletions})
-                  </text>
+                    <text fg={theme().text}>{stats()!.fileChanges!.files} changed (+{stats()!.fileChanges!.additions}/-{stats()!.fileChanges!.deletions})</text>
+                  </box>
                 </box>
               </Show>
               <Show when={stats()!.timing}>
                 <box>
-                  <text fg={theme().text}>
+                  <box flexDirection="row">
                     <text fg={theme().textMuted}>Duration: </text>
-                    {formatDuration(stats()!.timing!.durationMs, { includeSeconds: true, compact: true })}
-                  </text>
+                    <text fg={theme().text}>{formatDuration(stats()!.timing!.durationMs, { includeSeconds: true, compact: true })}</text>
+                  </box>
                 </box>
               </Show>
             </box>
@@ -673,7 +722,7 @@ function Sidebar(props: { api: TuiPluginApi; client: ForgeProjectClient; opts: T
     // Refresh graph status from KV (scoped to current directory)
     const status = await props.client.readGraphStatus(directory())
     setGraphStatusRaw(status)
-    setGraphStatusFormatted(formatGraphStatus(status))
+    setGraphStatusFormatted(status && status.state !== 'unavailable' ? formatGraphStatus(status) : null)
   }
   
 
@@ -757,11 +806,19 @@ function Sidebar(props: { api: TuiPluginApi; client: ForgeProjectClient; opts: T
           </Show>
           <text fg={theme().text}>
             <b>{title()}</b>
-            {!open() && hasPlan() ? <text fg={theme().info}> · plan</text> : ''}
-            {!open() && graphStatusFormatted() && graphStatusFormatted()!.text.includes('ready') ? <text fg={theme().success}> · ready</text> : ''}
-            {!open() && activeCount() > 0 ? <text fg={theme().textMuted}>{` (${activeCount()} active)`}</text> : ''}
-            {!open() ? <text fg={theme().textMuted}> (local)</text> : ''}
           </text>
+          <Show when={!open() && hasPlan()}>
+            <text fg={theme().info}>· plan</text>
+          </Show>
+          <Show when={!open() && graphStatusFormatted() && graphStatusFormatted()!.text.includes('ready')}>
+            <text fg={theme().success}>· ready</text>
+          </Show>
+          <Show when={!open() && activeCount() > 0}>
+            <text fg={theme().textMuted}>{`(${activeCount()} active)`}</text>
+          </Show>
+          <Show when={!open()}>
+            <text fg={theme().textMuted}>(local)</text>
+          </Show>
         </box>
         <Show when={open()}>
           <Show when={hasPlan()}>
@@ -828,10 +885,8 @@ function Sidebar(props: { api: TuiPluginApi; client: ForgeProjectClient; opts: T
                   }}
                 >
                   <text flexShrink={0} fg={dot(loop)}>•</text>
-                  <text fg={theme().text} wrapMode="word">
-                    {truncateMiddle(loop.name, 25)}{' '}
-                    <text fg={theme().textMuted}>{statusText(loop)}</text>
-                  </text>
+                  <text fg={theme().text} wrapMode="word">{truncateMiddle(loop.name, 25)}</text>
+                  <text fg={theme().textMuted}>{statusText(loop)}</text>
                 </box>
               )}
             </For>
@@ -849,12 +904,6 @@ const tui: TuiPlugin = async (api) => {
   const pluginConfig = loadPluginConfig()
   const tuiConfig = pluginConfig.tui
   const directory = api.state.path.directory
-  const client = await connectForgeProject(api, directory)
-  if (!client) {
-    api.ui.toast({ message: `Forge bus RPC unavailable for ${directory}; TUI disabled`, variant: 'error', duration: 5000 })
-    return
-  }
-
   const opts: TuiOptions = {
     sidebar: tuiConfig?.sidebar ?? true,
     showLoops: tuiConfig?.showLoops ?? true,
@@ -863,6 +912,75 @@ const tui: TuiPlugin = async (api) => {
   }
 
   if (!opts.sidebar) return
+
+  const [client, setClient] = createSignal<ForgeProjectClient | null>(null)
+  const [connectionStatus, setConnectionStatus] = createSignal<ForgeConnectionStatus>('connecting')
+  let connectPromise: Promise<ForgeProjectClient | null> | null = null
+  let disposed = false
+  let unavailableToastShown = false
+  let retryTimer: ReturnType<typeof setTimeout> | null = null
+
+  api.lifecycle.onDispose(() => {
+    disposed = true
+    if (retryTimer) {
+      clearTimeout(retryTimer)
+      retryTimer = null
+    }
+  })
+
+  const showUnavailableToast = () => {
+    if (unavailableToastShown) return
+    unavailableToastShown = true
+    api.ui.toast({ message: `Forge bus RPC unavailable for ${directory}`, variant: 'warning', duration: 5000 })
+  }
+
+  const scheduleClientRetry = () => {
+    if (disposed || retryTimer || untrack(client)) return
+    retryTimer = setTimeout(() => {
+      retryTimer = null
+      if (!disposed && !untrack(client)) void startClientConnection()
+    }, 2000)
+  }
+
+  const startClientConnection = (): Promise<ForgeProjectClient | null> => {
+    if (connectPromise) return connectPromise
+
+    setConnectionStatus('connecting')
+    connectPromise = connectForgeProject(api, directory).then((connected) => untrack(() => {
+      connectPromise = null
+      if (disposed) return connected
+
+      setClient(connected)
+      setConnectionStatus(connected ? 'connected' : 'unavailable')
+      if (!connected) {
+        showUnavailableToast()
+        scheduleClientRetry()
+      }
+      return connected
+    })).catch((err) => untrack(() => {
+      connectPromise = null
+      console.error('[forge] TUI RPC connection failed', err)
+      if (!disposed) {
+        setConnectionStatus('unavailable')
+        showUnavailableToast()
+        scheduleClientRetry()
+      }
+      return null
+    }))
+
+    return connectPromise
+  }
+
+  const ensureClient = async (): Promise<ForgeProjectClient | null> => {
+    const existing = client()
+    if (existing) return existing
+    return startClientConnection()
+  }
+
+  createEffect(() => {
+    if (!api.state.ready || client() || connectPromise) return
+    void startClientConnection()
+  })
 
   api.command.register(() => {
     return [
@@ -873,7 +991,10 @@ const tui: TuiPlugin = async (api) => {
         category: 'Forge',
         keybind: opts.keybinds.showLoops,
         onSelect: async () => {
-          const currentStates = await client.loops.list()
+          const currentClient = await ensureClient()
+          if (!currentClient) return
+
+          const currentStates = await currentClient.loops.list()
           const worktreeLoops = currentStates.filter(l => l.worktree)
           const loopOptions = worktreeLoops.map(l => {
             const status = l.active
@@ -896,11 +1017,11 @@ const tui: TuiPlugin = async (api) => {
                 // eslint-disable-next-line solid/reactivity
                 onSelect={async (opt) => {
                   const loopName = opt.value as string
-                  const freshLoop = await client.loops.get(loopName)
+                  const freshLoop = await currentClient.loops.get(loopName)
                   if (freshLoop) {
                     api.ui.dialog.setSize("medium")
                     api.ui.dialog.replace(() => (
-                      <LoopDetailsDialog api={api} client={client} loop={freshLoop} onBack={showLoopList} onRefresh={() => {}} />
+                      <LoopDetailsDialog api={api} client={currentClient} loop={freshLoop} onBack={showLoopList} onRefresh={() => {}} />
                     ))
                   } else {
                     api.ui.dialog.clear()
@@ -933,14 +1054,17 @@ const tui: TuiPlugin = async (api) => {
       category: 'Forge',
       keybind: opts.keybinds.viewPlan,
       onSelect: async () => {
-        const freshPlan = await client.plan.read(sessionID)
+        const currentClient = await ensureClient()
+        if (!currentClient) return
+
+        const freshPlan = await currentClient.plan.read(sessionID)
         if (!freshPlan) {
           api.ui.toast({ message: 'No plan found for this session', variant: 'info', duration: 3000 })
           return
         }
         api.ui.dialog.setSize("xlarge")
         api.ui.dialog.replace(() => (
-          <PlanViewerDialog api={api} client={client} planContent={freshPlan} sessionId={sessionID} onRefresh={refreshSidebar} />
+          <PlanViewerDialog api={api} client={currentClient} planContent={freshPlan} sessionId={sessionID} onRefresh={refreshSidebar} />
         ))
       },
     }, {
@@ -950,14 +1074,17 @@ const tui: TuiPlugin = async (api) => {
       category: 'Forge',
       keybind: opts.keybinds.executePlan,
       onSelect: async () => {
-        const freshPlan = await client.plan.read(sessionID)
+        const currentClient = await ensureClient()
+        if (!currentClient) return
+
+        const freshPlan = await currentClient.plan.read(sessionID)
         if (!freshPlan) {
           api.ui.toast({ message: 'No plan found for this session', variant: 'info', duration: 3000 })
           return
         }
         api.ui.dialog.setSize("xlarge")
         api.ui.dialog.replace(() => (
-          <PlanViewerDialog api={api} client={client} planContent={freshPlan} sessionId={sessionID} onRefresh={refreshSidebar} startInExecuteMode={true} />
+          <PlanViewerDialog api={api} client={currentClient} planContent={freshPlan} sessionId={sessionID} onRefresh={refreshSidebar} startInExecuteMode={true} />
         ))
       },
     }]
@@ -967,7 +1094,7 @@ const tui: TuiPlugin = async (api) => {
     order: 150,
     slots: {
       sidebar_content(_ctx, slotProps) {
-        return <Sidebar api={api} client={client} opts={opts} sessionId={slotProps.session_id} />
+        return <SidebarContainer api={api} client={client} opts={opts} status={connectionStatus} sessionId={slotProps.session_id} />
       },
     },
   })

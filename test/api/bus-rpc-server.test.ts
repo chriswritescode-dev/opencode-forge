@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'bun:test'
 import { createBusRpcEventHook } from '../../src/api/bus-rpc'
-import { encodeRequest } from '../../src/api/bus-protocol'
+import { decodeReply, encodeRequest } from '../../src/api/bus-protocol'
 import type { ToolContext } from '../../src/tools/types'
 import type { Logger } from '../../src/types'
 import type { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2'
@@ -20,6 +20,10 @@ function createMockV2() {
       get: vi.fn(),
     },
   } as unknown as ReturnType<typeof createV2Client>
+}
+
+function waitForDeferredPublish(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0))
 }
 
 function createMockLogger(): Logger {
@@ -129,6 +133,7 @@ describe('bus-rpc server', () => {
         },
       },
     })
+    await waitForDeferredPublish()
 
     expect(v2.tui.publish).toHaveBeenCalledTimes(1)
     const call = (v2.tui.publish as any).mock.calls[0][0]
@@ -185,6 +190,7 @@ describe('bus-rpc server', () => {
         },
       },
     })
+    await waitForDeferredPublish()
 
     expect(v2.tui.publish).toHaveBeenCalledTimes(1)
     const call = (v2.tui.publish as any).mock.calls[0][0]
@@ -219,8 +225,39 @@ describe('bus-rpc server', () => {
         },
       },
     })
+    await waitForDeferredPublish()
 
     expect(v2.tui.publish).toHaveBeenCalledTimes(1)
+  })
+
+  it('answers projects.list for requested cwd even when plugin instance cwd differs', async () => {
+    const ctx = createMockToolContext('proj1', '/host')
+    registry.register(ctx)
+
+    const hook = createBusRpcEventHook({ registry, logger, v2, instanceDirectory: '/host' })
+
+    await hook({
+      event: {
+        type: 'tui.command.execute',
+        properties: {
+          command: encodeRequest({
+            verb: 'projects.list',
+            rid: 'cwdlookup',
+            directory: '/requested',
+            params: {},
+            body: { directory: '/requested' },
+          }),
+        },
+      },
+    })
+    await waitForDeferredPublish()
+
+    expect(v2.tui.publish).toHaveBeenCalledTimes(1)
+    const call = (v2.tui.publish as any).mock.calls[0][0]
+    expect(call.directory).toBe('/requested')
+
+    const reply = decodeReply(call.body.properties.command as string)
+    expect(reply?.status).toBe('ok')
   })
 
   it('ignores non-forge requests', async () => {
@@ -303,6 +340,7 @@ describe('bus-rpc server', () => {
         },
       },
     })
+    await waitForDeferredPublish()
 
     expect(v2.tui.publish).toHaveBeenCalledTimes(1)
     const call = (v2.tui.publish as any).mock.calls[0][0]

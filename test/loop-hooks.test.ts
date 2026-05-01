@@ -645,6 +645,189 @@ describe('loop-hooks integration', () => {
       rmSync(worktreeDir, { recursive: true, force: true })
     })
 
+    it('retries coding phase when idle event arrives before assistant message', async () => {
+      let callCount = 0
+      let createdAuditSessionId = ''
+      const v2Client = {
+        session: {
+          messages: async () => {
+            callCount++
+            if (callCount === 1) {
+              return {
+                data: [{ info: { role: 'user' }, parts: [{ type: 'text', text: '' }] }],
+              }
+            }
+            return {
+              data: [{ info: { role: 'assistant' }, parts: [{ type: 'text', text: 'Implemented.' }] }],
+            }
+          },
+          promptAsync: async () => ({ data: {}, error: null }),
+          abort: async () => {},
+          status: async () => ({ data: { 'test-session': { type: 'idle' } } }),
+          create: async () => {
+            createdAuditSessionId = 'audit-session-after-retry'
+            return { data: { id: createdAuditSessionId }, error: undefined }
+          },
+          delete: async () => {},
+        },
+        tui: {
+          publish: async () => {},
+          selectSession: async () => {},
+        },
+        worktree: {
+          create: async () => ({ data: { directory: '/mock/worktree', branch: 'mock-branch' }, error: undefined }),
+          remove: async () => {},
+        },
+      } as MockV2Client
+
+      const { handler, service } = createTestHandler(v2Client as any)
+
+      const loopName = 'test-coding-retry'
+      const sessionId = 'test-coding-session-789'
+      const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
+      const loopsRepo = createLoopsRepo(db)
+      const now = Date.now()
+
+      loopsRepo.insert({
+        projectId: testProjectId,
+        loopName,
+        status: 'running',
+        currentSessionId: sessionId,
+        worktree: true,
+        worktreeDir,
+        worktreeBranch: 'loop-coding-retry-branch',
+        projectDir: worktreeDir,
+        maxIterations: 0,
+        iteration: 1,
+        auditCount: 0,
+        errorCount: 0,
+        phase: 'coding',
+        executionModel: null,
+        auditorModel: null,
+        modelFailed: false,
+        sandbox: false,
+        sandboxContainer: null,
+        startedAt: now,
+        completedAt: null,
+        terminationReason: null,
+        completionSummary: null,
+        workspaceId: null,
+        hostSessionId: null,
+        auditSessionId: null,
+      }, {
+        prompt: 'Test prompt',
+        lastAuditResult: null,
+      })
+
+      await handler.onEvent({
+        event: {
+          type: 'session.status' as const,
+          properties: {
+            status: { type: 'idle' as const },
+            sessionID: sessionId,
+          },
+        },
+      })
+
+      expect(callCount).toBe(1)
+
+      await new Promise(resolve => setTimeout(resolve, 1600))
+
+      const state = service.getAnyState(loopName)
+      expect(state?.phase).toBe('auditing')
+      expect(state?.auditSessionId).toBe(createdAuditSessionId)
+
+      rmSync(worktreeDir, { recursive: true, force: true })
+    })
+
+    it('starts audit after coding retry even when messages remain unavailable', async () => {
+      let callCount = 0
+      let createdAuditSessionId = ''
+      const v2Client = {
+        session: {
+          messages: async () => {
+            callCount++
+            return {
+              data: [{ info: { role: 'user' }, parts: [{ type: 'text', text: '' }] }],
+            }
+          },
+          promptAsync: async () => ({ data: {}, error: null }),
+          abort: async () => {},
+          status: async () => ({ data: { 'test-session': { type: 'idle' } } }),
+          create: async () => {
+            createdAuditSessionId = 'audit-session-after-empty-messages'
+            return { data: { id: createdAuditSessionId }, error: undefined }
+          },
+          delete: async () => {},
+        },
+        tui: {
+          publish: async () => {},
+          selectSession: async () => {},
+        },
+        worktree: {
+          create: async () => ({ data: { directory: '/mock/worktree', branch: 'mock-branch' }, error: undefined }),
+          remove: async () => {},
+        },
+      } as MockV2Client
+
+      const { handler, service } = createTestHandler(v2Client as any)
+
+      const loopName = 'test-coding-empty-messages'
+      const sessionId = 'test-coding-session-empty'
+      const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
+      const loopsRepo = createLoopsRepo(db)
+
+      loopsRepo.insert({
+        projectId: testProjectId,
+        loopName,
+        status: 'running',
+        currentSessionId: sessionId,
+        worktree: true,
+        worktreeDir,
+        worktreeBranch: 'loop-coding-empty-branch',
+        projectDir: worktreeDir,
+        maxIterations: 0,
+        iteration: 1,
+        auditCount: 0,
+        errorCount: 0,
+        phase: 'coding',
+        executionModel: null,
+        auditorModel: null,
+        modelFailed: false,
+        sandbox: false,
+        sandboxContainer: null,
+        startedAt: Date.now(),
+        completedAt: null,
+        terminationReason: null,
+        completionSummary: null,
+        workspaceId: null,
+        hostSessionId: null,
+        auditSessionId: null,
+      }, {
+        prompt: 'Test prompt',
+        lastAuditResult: null,
+      })
+
+      await handler.onEvent({
+        event: {
+          type: 'session.status' as const,
+          properties: {
+            status: { type: 'idle' as const },
+            sessionID: sessionId,
+          },
+        },
+      })
+
+      await new Promise(resolve => setTimeout(resolve, 1600))
+
+      const state = service.getAnyState(loopName)
+      expect(callCount).toBe(2)
+      expect(state?.phase).toBe('auditing')
+      expect(state?.auditSessionId).toBe(createdAuditSessionId)
+
+      rmSync(worktreeDir, { recursive: true, force: true })
+    })
+
     it('exhausts retry after two non-assistant responses', async () => {
       const v2Client = {
         session: {
