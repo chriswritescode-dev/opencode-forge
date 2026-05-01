@@ -273,10 +273,6 @@ function PlanViewerDialog(props: {
     props.onRefresh?.()
     if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop-worktree' || apiMode === 'loop')) {
       try {
-        if (result.workspaceId) {
-          const workspaceApi = props.api as unknown as { workspace?: { set?: (workspaceID?: string) => void } }
-          workspaceApi.workspace?.set?.(result.workspaceId)
-        }
         await props.api.client.tui.selectSession({ sessionID: result.sessionId })
       } catch {
         try { props.api.route.navigate('session', { sessionID: result.sessionId }) } catch {}

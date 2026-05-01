@@ -803,7 +803,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       if (command.lifecycle?.selectSession && deps.v2.tui) {
         deps.v2.tui.selectSession({
           sessionID: sessionId,
-          ...(createdWorkspaceId ? { workspace: createdWorkspaceId } : {}),
         }).catch((err: unknown) => {
           deps.logger.error('handleStartLoop: failed to navigate TUI', err as Error)
         })
