@@ -73,12 +73,18 @@ export function createLoopEventHandler(
     try {
       logger.log(`Loop: falling back to plugin client for audit session creation (${input.loopName})`)
       const result = await client.session.create({
-        body: { title: `audit: ${input.loopName} #${input.iteration}` },
-        query: { directory: input.worktreeDir },
-      })
+        body: {
+          title: `audit: ${input.loopName} #${input.iteration}`,
+          ...(input.workspaceId ? { workspaceID: input.workspaceId } : {}),
+        },
+        query: {
+          directory: input.worktreeDir,
+          ...(input.workspaceId ? { workspace: input.workspaceId } : {}),
+        },
+      } as Parameters<typeof client.session.create>[0])
       const session = result.data as { id?: string } | undefined
       if (!session?.id) return null
-      return { auditSessionId: session.id, bindFailed: true }
+      return { auditSessionId: session.id, bindFailed: !input.workspaceId }
     } catch (err) {
       logger.error(`Loop: plugin client audit session creation failed`, err)
       return null
