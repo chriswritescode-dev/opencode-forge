@@ -462,11 +462,26 @@ export function createLoopEventHandler(
 
   async function getLastAssistantInfo(sessionId: string, worktreeDir: string): Promise<{ text: string | null; error: string | null; lastMessageRole: string }> {
     try {
-      const messagesResult = await v2Client.session.messages({
+      let messagesResult = await v2Client.session.messages({
         sessionID: sessionId,
         directory: worktreeDir,
         limit: 4,
       })
+
+      if (messagesResult.error || !messagesResult.data?.length) {
+        try {
+          logger.log(`Loop: falling back to plugin client for session messages (${sessionId})`)
+          const legacyResult = await client.session.messages({
+            path: { id: sessionId },
+            query: { directory: worktreeDir, limit: 4 },
+          })
+          if (!legacyResult.error) {
+            messagesResult = legacyResult as typeof messagesResult
+          }
+        } catch (fallbackErr) {
+          logger.error(`Loop: plugin client session messages fallback failed for ${sessionId}`, fallbackErr)
+        }
+      }
 
       const messages = (messagesResult.data ?? []) as Array<{
         info: { role: string; error?: { name?: string; data?: { message?: string } } }
@@ -603,9 +618,9 @@ export function createLoopEventHandler(
       logger.debug(`Loop: audit clear gate blocked by auditCount<1`)
       return false
     }
-    const bugFindings = loopService.getOutstandingFindings(currentState.worktreeBranch, 'bug')
-    if (bugFindings.length > 0) {
-      logger.log(`Loop: audit complete but ${bugFindings.length} bug finding(s) remain, continuing`)
+    const findings = loopService.getOutstandingFindings(currentState.worktreeBranch)
+    if (findings.length > 0) {
+      logger.log(`Loop: audit complete but ${findings.length} review finding(s) remain, continuing`)
       return false
     }
     logger.log(`Loop: audit all-clear, terminating loop=${loopName} iteration=${currentState.iteration} audits=${currentState.auditCount ?? 0}`)

@@ -206,7 +206,7 @@ describe('loop-hooks integration', () => {
     }
   })
 
-  function createTestHandler(v2Client: MockV2Client) {
+  function createTestHandler(v2Client: MockV2Client, pluginClient: unknown = {}) {
     const logger = createTestLogger()
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
@@ -217,7 +217,7 @@ describe('loop-hooks integration', () => {
     const getConfig = () => testConfig as PluginConfig
     
     return {
-      handler: createLoopEventHandler(service, {} as any, v2Client as any, logger, getConfig),
+      handler: createLoopEventHandler(service, pluginClient as any, v2Client as any, logger, getConfig),
       logger,
       service: service,
     }
@@ -463,7 +463,7 @@ describe('loop-hooks integration', () => {
       rmSync(worktreeDir, { recursive: true, force: true })
     })
 
-    it('does not write log when bug findings block termination', async () => {
+    it('does not terminate while branch review findings remain', async () => {
       const v2Client = createMockV2Client({
         messagesCalls: [{ lastMessageRole: 'assistant', text: 'Code reviewed.' }],
         statusType: 'idle',
@@ -516,8 +516,8 @@ describe('loop-hooks integration', () => {
         projectId: testProjectId,
         file: 'test.ts',
         line: 10,
-        severity: 'bug',
-        description: 'Test bug finding',
+        severity: 'warning',
+        description: 'Test review finding',
         scenario: 'Test scenario',
         branch: worktreeBranch,
       })
@@ -538,11 +538,116 @@ describe('loop-hooks integration', () => {
       
       const state = service.getAnyState(loopName)
       expect(state?.active).toBe(true)
+      expect(state?.phase).toBe('coding')
       expect(state?.terminationReason).toBeUndefined()
       
       const logFiles = readdirSync(testLogDir).filter(f => f.endsWith('.md'))
       expect(logFiles.length).toBe(0)
       
+      rmSync(worktreeDir, { recursive: true, force: true })
+    })
+
+    it('continues in-place loops when v2 message reads fail but plugin client can read audit results', async () => {
+      let promptCalls = 0
+      const v2Client = {
+        session: {
+          messages: async () => ({ error: new Error('v2 unavailable') }),
+          promptAsync: async () => {
+            promptCalls++
+            return { data: {}, error: null }
+          },
+          abort: async () => {},
+          status: async () => ({ data: { 'coding-session': { type: 'idle' } } }),
+          create: async () => ({ data: { id: 'next-coding-session' }, error: undefined }),
+          delete: async () => {},
+        },
+        tui: {
+          publish: async () => {},
+          selectSession: async () => {},
+        },
+        worktree: {
+          create: async () => ({ data: { directory: '/mock/worktree', branch: 'mock-branch' }, error: undefined }),
+          remove: async () => {},
+        },
+      } as MockV2Client
+
+      const pluginClient = {
+        session: {
+          messages: async () => ({
+            data: [{ info: { role: 'assistant' }, parts: [{ type: 'text', text: 'Found issues to fix.' }] }],
+          }),
+        },
+      }
+
+      const { handler, service } = createTestHandler(v2Client as any, pluginClient)
+      const loopName = 'test-in-place-fallback-continuation'
+      const auditSessionId = 'audit-session-fallback'
+      const worktreeDir = mkdtempSync(join(tmpdir(), 'in-place-loop-'))
+      const loopsRepo = createLoopsRepo(db)
+      const reviewFindingsRepo = createReviewFindingsRepo(db)
+      const now = Date.now()
+
+      loopsRepo.insert({
+        projectId: testProjectId,
+        loopName,
+        status: 'running',
+        currentSessionId: 'coding-session',
+        auditSessionId,
+        worktree: false,
+        worktreeDir,
+        worktreeBranch: null,
+        projectDir: worktreeDir,
+        maxIterations: 0,
+        iteration: 1,
+        auditCount: 0,
+        errorCount: 0,
+        phase: 'auditing',
+        executionModel: null,
+        auditorModel: null,
+        modelFailed: false,
+        sandbox: false,
+        sandboxContainer: null,
+        startedAt: now,
+        completedAt: null,
+        terminationReason: null,
+        completionSummary: null,
+        workspaceId: null,
+        hostSessionId: null,
+      }, {
+        prompt: 'Test prompt',
+        lastAuditResult: null,
+      })
+
+      reviewFindingsRepo.write({
+        projectId: testProjectId,
+        file: 'test.ts',
+        line: 10,
+        severity: 'bug',
+        description: 'Test bug finding',
+        scenario: 'Test scenario',
+        branch: null,
+      })
+
+      await handler.onEvent({
+        event: {
+          type: 'session.status' as const,
+          properties: {
+            status: { type: 'idle' as const },
+            sessionID: auditSessionId,
+          },
+        },
+      })
+
+      await new Promise(resolve => setTimeout(resolve, 100))
+
+      const state = service.getAnyState(loopName)
+      expect(state?.active).toBe(true)
+      expect(state?.phase).toBe('coding')
+      expect(state?.iteration).toBe(2)
+      expect(state?.auditCount).toBe(1)
+      expect(state?.sessionId).toBe('next-coding-session')
+      expect(promptCalls).toBeGreaterThan(0)
+
       rmSync(worktreeDir, { recursive: true, force: true })
     })
 
