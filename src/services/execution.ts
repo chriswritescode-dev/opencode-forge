@@ -400,7 +400,6 @@ interface SessionPromptInput {
   parts: Array<{ type: 'text'; text: string }>
   agent: string
   model?: { providerID: string; modelID: string }
-  workspace?: string
 }
 
 interface SessionPromptResult {
@@ -483,7 +482,6 @@ async function promptSessionWithFallback(
       parts: input.parts,
       agent: input.agent,
       ...(model ? { model } : {}),
-      ...(input.workspace ? { workspace: input.workspace } : {}),
     })
     
     if (!result.error) {
@@ -516,7 +514,6 @@ async function promptSessionWithFallback(
       path: { id: input.sessionID },
       query: {
         directory: input.directory,
-        ...(input.workspace ? { workspace: input.workspace } : {}),
       },
       body: {
         agent: input.agent,
@@ -562,11 +559,11 @@ async function selectSessionWithFallback(
     if (deps.v2.tui) {
       await deps.v2.tui.publish({
         directory: deps.directory,
+        ...(selection.workspace ? { workspace: selection.workspace } : {}),
         body: {
           type: 'tui.session.select',
           properties: {
             sessionID: selection.sessionID,
-            ...(selection.workspace ? { workspace: selection.workspace } : {}),
           },
         },
       })
@@ -590,11 +587,11 @@ async function selectSessionWithFallback(
   try {
     // Fallback to publish with tui.session.select event
     await deps.legacyClient.tui.publish({
+      ...(selection.workspace ? { workspace: selection.workspace } : {}),
       body: {
         type: 'tui.session.select',
         properties: {
           sessionID: selection.sessionID,
-          ...(selection.workspace ? { workspace: selection.workspace } : {}),
         },
       },
     } as unknown as Parameters<typeof deps.legacyClient.tui.publish>[0])
@@ -1077,59 +1074,60 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // Send initial prompt with fallback
       const sessionDir = state.worktreeDir
       const promptParts = [{ type: 'text' as const, text: planText }]
-      const workspaceParam = createdWorkspaceId ? { workspace: createdWorkspaceId } : {}
       
       // For worktree mode with a configured model, use retryWithModelFallback
-      const promptResultWithModel = command.mode === 'worktree' && loopModel
-        ? await retryWithModelFallback(
-            async () => {
-              const { result } = await promptSessionWithFallback(
-                deps,
-                {
-                  sessionID: sessionId,
-                  directory: sessionDir,
-                  parts: promptParts,
-                  agent: 'code',
-                  ...workspaceParam,
-                },
-                loopModel,
-              )
-              return result
-            },
-            async () => {
-              const { result } = await promptSessionWithFallback(
-                deps,
-                {
-                  sessionID: sessionId,
-                  directory: sessionDir,
-                  parts: promptParts,
-                  agent: 'code',
-                  ...workspaceParam,
-                },
-                undefined,
-              )
-              return result
-            },
-            loopModel,
-            deps.logger as unknown as Console,
-          )
-        : await promptSessionWithFallback(
-            deps,
-            {
-              sessionID: sessionId,
-              directory: sessionDir,
-              parts: promptParts,
-              agent: 'code',
-              ...workspaceParam,
-            },
-            loopModel,
-          )
+      let promptResult: { result: SessionPromptResult; usedModel?: typeof loopModel }
+      let actualModel: typeof loopModel | null = null
       
-      const promptResult = promptResultWithModel.result
-      const actualModel = promptResultWithModel.usedModel
+      if (command.mode === 'worktree' && loopModel) {
+        const retryResult = await retryWithModelFallback(
+          async () => {
+            const { result } = await promptSessionWithFallback(
+              deps,
+              {
+                sessionID: sessionId,
+                directory: sessionDir,
+                parts: promptParts,
+                agent: 'code',
+              },
+              loopModel,
+            )
+            return result
+          },
+          async () => {
+            const { result } = await promptSessionWithFallback(
+              deps,
+              {
+                sessionID: sessionId,
+                directory: sessionDir,
+                parts: promptParts,
+                agent: 'code',
+              },
+              undefined,
+            )
+            return result
+          },
+          loopModel,
+          deps.logger as unknown as Console,
+        )
+        promptResult = retryResult
+        actualModel = retryResult.usedModel ?? null
+      } else {
+        promptResult = await promptSessionWithFallback(
+          deps,
+          {
+            sessionID: sessionId,
+            directory: sessionDir,
+            parts: promptParts,
+            agent: 'code',
+          },
+          loopModel,
+        )
+        actualModel = promptResult.usedModel ?? null
+      }
       
-      if (promptResult.error) {
-        deps.logger.error('handleStartLoop: failed to send prompt', promptResult.error)
+      if (promptResult.result.error) {
+        deps.logger.error('handleStartLoop: failed to send prompt', promptResult.result.error)
         await rollbackLoopStart()
         
         return fail('prompt_failed', 502, 'Loop session created but failed to send prompt')

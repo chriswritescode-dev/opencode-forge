@@ -4,7 +4,11 @@ import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 
 test('createLoopWorkspace: logger receives success line on happy path', async () => {
   let capturedArgs: unknown[] = []
-  const mockCreate = () => Promise.resolve({ data: { id: 'ws-server-generated' } })
+  let capturedCreateParams: unknown = undefined
+  const mockCreate = (params: unknown) => {
+    capturedCreateParams = params
+    return Promise.resolve({ data: { id: 'ws-server-generated' } })
+  }
   const mockClient = {
     experimental: {
       workspace: {
@@ -28,6 +32,14 @@ test('createLoopWorkspace: logger receives success line on happy path', async ()
   expect(capturedArgs.length).toBeGreaterThan(0)
   expect(capturedArgs[0]).toContain('ws-server-generated')
   expect(capturedArgs[0]).toContain('test-loop')
+  
+  // Assert the create call did NOT include an id field
+  expect(capturedCreateParams).toBeDefined()
+  const paramsObj = capturedCreateParams as Record<string, unknown>
+  expect(paramsObj).toHaveProperty('type')
+  expect(paramsObj).toHaveProperty('branch')
+  expect(paramsObj).toHaveProperty('extra')
+  expect(paramsObj).not.toHaveProperty('id')
 })
 
 test('createLoopWorkspace: logger receives error line when SDK returns error', async () => {
