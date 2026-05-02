@@ -400,7 +400,6 @@ interface SessionPromptInput {
   parts: Array<{ type: 'text'; text: string }>
   agent: string
   model?: { providerID: string; modelID: string }
-  workspace?: string
 }
 
 interface SessionPromptResult {
@@ -483,7 +482,6 @@ async function promptSessionWithFallback(
       parts: input.parts,
       agent: input.agent,
       ...(model ? { model } : {}),
-      ...(input.workspace ? { workspace: input.workspace } : {}),
     })
     
     if (!result.error) {
@@ -516,7 +514,6 @@ async function promptSessionWithFallback(
       path: { id: input.sessionID },
       query: {
         directory: input.directory,
-        ...(input.workspace ? { workspace: input.workspace } : {}),
       },
       body: {
         agent: input.agent,
