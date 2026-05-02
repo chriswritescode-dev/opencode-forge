@@ -226,6 +226,7 @@ describe('loop-status tool restart path', () => {
       loopHandler,
       logger,
       plansRepo,
+      loopsRepo,
       projectId,
       dataDir: dbPath,
     } as any)
@@ -306,6 +307,7 @@ describe('loop-status tool restart path', () => {
       loopHandler,
       logger,
       plansRepo,
+      loopsRepo,
       projectId,
       dataDir: dbPath,
     } as any)
@@ -391,6 +393,7 @@ describe('loop-status tool restart path', () => {
       loopHandler,
       logger,
       plansRepo,
+      loopsRepo,
       projectId,
       dataDir: dbPath,
     } as any)
@@ -471,6 +474,7 @@ describe('loop-status tool restart path', () => {
       loopHandler,
       logger,
       plansRepo,
+      loopsRepo,
       projectId,
       dataDir: dbPath,
     } as any)

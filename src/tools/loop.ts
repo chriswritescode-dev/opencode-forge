@@ -5,8 +5,7 @@ import { slugify } from '../utils/logger'
 import { formatSessionOutput, formatAuditResult } from '../utils/loop-format'
 import { fetchSessionOutput, MAX_RETRIES, type LoopSessionOutput } from '../services/loop'
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
-import { cancelLoopByName, restartLoopByName } from '../services/loop-control'
-import { createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
+import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
 import { captureLatestPlanForSession } from '../services/plan-capture'
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
 
@@ -14,6 +13,31 @@ const z = tool.schema
 
 export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
   const { v2, loopService, loopHandler, config, logger } = ctx
+
+  function makeService(sourceSessionId?: string) {
+    const execCtx: ForgeExecutionRequestContext = {
+      surface: 'tool',
+      projectId: ctx.projectId,
+      directory: ctx.directory,
+      sourceSessionId,
+    }
+    const service = createForgeExecutionService({
+      projectId: ctx.projectId,
+      directory: ctx.directory,
+      config,
+      logger,
+      dataDir: ctx.dataDir,
+      v2: ctx.v2,
+      legacyClient: ctx.input?.client,
+      plansRepo: ctx.plansRepo,
+      loopsRepo: ctx.loopsRepo,
+      graphStatusRepo: ctx.graphStatusRepo,
+      loopService: ctx.loopService,
+      loopHandler: ctx.loopHandler,
+      sandboxManager: ctx.sandboxManager,
+    })
+    return { service, execCtx }
+  }
 
   return {
     loop: tool({
@@ -26,10 +50,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         hostSessionId: z.string().optional().describe('Host session ID for post-completion redirect'),
       },
       execute: async (args, context) => {
-        if (config.loop?.enabled === false) {
-          return 'Loops are disabled in plugin config. Use plan-execute instead.'
-        }
-
         logger.log(`loop: creating ${args.worktree ? 'worktree' : 'in-place'} loop for plan="${args.title}"`)
 
         let source: PlanSource
@@ -64,33 +84,9 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         const auditorModel = config.auditorModel
         const loopName = args.loopName ? slugify(args.loopName) : slugify(sessionTitle)
 
-        // Build execution request context
-        const execCtx: ForgeExecutionRequestContext = {
-          surface: 'tool',
-          projectId: ctx.projectId,
-          directory: ctx.directory,
-          sourceSessionId: context.sessionID,
-        }
+        const { service, execCtx } = makeService(context.sessionID)
 
-        // Create execution service
-        const service = createForgeExecutionService({
-          projectId: ctx.projectId,
-          directory: ctx.directory,
-          config,
-          logger,
-          dataDir: ctx.dataDir,
-          v2: ctx.v2,
-          legacyClient: ctx.input?.client,
-          plansRepo: ctx.plansRepo,
-          loopsRepo: ctx.loopsRepo,
-          graphStatusRepo: ctx.graphStatusRepo,
-          loopService: ctx.loopService,
-          loopHandler: ctx.loopHandler,
-          sandboxManager: ctx.sandboxManager,
-        })
-
-        const result = await service.dispatch(execCtx, {
-          type: 'loop.start',
+        const command = buildStartLoopCommand({
           source,
           title: sessionTitle,
           loopName,
@@ -104,6 +100,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             startWatchdog: true,
           },
         })
+        const result = await service.dispatch(execCtx, command)
 
         if (!result.ok) {
           logger.error('loop: failed to start loop', result.error)
@@ -149,12 +146,20 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         name: z.string().optional().describe('Worktree name of the loop to cancel'),
       },
       execute: async (args) => {
-        const result = await cancelLoopByName(ctx, args.name)
-        if (result.ok) return result.message
-        if (result.candidates?.length) {
-          return `${result.message}\n${result.candidates.map((candidate) => `- ${candidate}`).join('\n')}`
+        const { service, execCtx } = makeService()
+        const result = await service.dispatch(execCtx, {
+          type: 'loop.cancel',
+          selector: args.name ? { kind: 'partial', name: args.name } : { kind: 'only-active' },
+        })
+        if (!result.ok) {
+          const candidates = result.error.candidates
+          if (candidates?.length) return `${result.error.message}\n${candidates.map(c => `- ${c}`).join('\n')}`
+          return result.error.message
         }
-        return result.message
+        const d = result.data
+        const modeInfo = !d.worktree ? ' (in-place)' : ''
+        const branchInfo = d.worktreeBranch ? `\nBranch: ${d.worktreeBranch}` : ''
+        return `Cancelled loop "${d.loopName}"${modeInfo} (was at iteration ${d.iteration}).\nDirectory: ${d.worktreeDir}${branchInfo}`
       },
     }),
 
@@ -169,13 +174,32 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         const active = loopService.listActive()
 
         if (args.restart) {
-          const result = await restartLoopByName(ctx, args.name, args.force)
-          if (result.ok) return result.message
-          if (result.candidates?.length) {
-            const label = result.code === 'not_found' ? 'Available loops' : 'Matches'
-            return `${result.message}\n\n${label}:\n${result.candidates.map((candidate) => `- ${candidate}`).join('\n')}`
+          if (!args.name) {
+            return 'Specify a loop name to restart. Use loop-status to see available loops.'
           }
-          return result.message
+          const { service, execCtx } = makeService()
+          const result = await service.dispatch(execCtx, {
+            type: 'loop.restart',
+            selector: { kind: 'partial', name: args.name },
+            force: args.force,
+          })
+          if (!result.ok) {
+            const label = result.error.code === 'not_found' ? 'Available loops' : 'Matches'
+            const candidates = result.error.candidates
+            if (candidates?.length) return `${result.error.message}\n\n${label}:\n${candidates.map(c => `- ${c}`).join('\n')}`
+            return result.error.message
+          }
+          const d = result.data
+          const modeInfo = !d.worktree ? ' (in-place)' : ''
+          const branchInfo = d.worktreeBranch ? `\nBranch: ${d.worktreeBranch}` : ''
+          return [
+            `Restarted loop "${d.loopName}"${modeInfo}`,
+            '',
+            `New session: ${d.sessionId}`,
+            `Continuing from iteration: ${d.iteration}`,
+            `Previous termination: ${d.previousTermination ?? 'unknown'}`,
+            `Directory: ${d.worktreeDir}${branchInfo}`,
+          ].join('\n')
         }
 
         if (!args.name) {

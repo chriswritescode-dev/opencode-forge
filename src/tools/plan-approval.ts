@@ -2,7 +2,7 @@ import type { ToolContext } from './types'
 import type { Hooks } from '@opencode-ai/plugin'
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
 import { extractPlanTitle, extractLoopNames, PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
-import { createForgeExecutionService, type ForgeExecutionRequestContext } from '../services/execution'
+import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext } from '../services/execution'
 
 
 
@@ -209,29 +209,30 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
           }
           const title = extractPlanTitle(planText)
           
+          const execCtx: ForgeExecutionRequestContext = {
+            surface: 'approval-hook',
+            projectId: ctx.projectId,
+            directory: ctx.directory,
+            sourceSessionId: input.sessionID,
+          }
+          const service = createForgeExecutionService({
+            projectId: ctx.projectId,
+            directory: ctx.directory,
+            config,
+            logger,
+            dataDir: ctx.dataDir,
+            v2: ctx.v2,
+            legacyClient: ctx.input?.client,
+            plansRepo: ctx.plansRepo,
+            loopsRepo: ctx.loopsRepo,
+            graphStatusRepo: ctx.graphStatusRepo,
+            loopService: ctx.loopService,
+            loopHandler: ctx.loopHandler,
+            sandboxManager: ctx.sandboxManager,
+          })
+          
           if (matchedLabel === 'New session') {
             logger.log('Plan approval: "New session" — scheduling service.dispatch(plan.execute.newSession)')
-            const execCtx: ForgeExecutionRequestContext = {
-              surface: 'approval-hook',
-              projectId: ctx.projectId,
-              directory: ctx.directory,
-              sourceSessionId: input.sessionID,
-            }
-            const service = createForgeExecutionService({
-              projectId: ctx.projectId,
-              directory: ctx.directory,
-              config,
-              logger,
-              dataDir: ctx.dataDir,
-              v2: ctx.v2,
-              legacyClient: ctx.input?.client,
-              plansRepo: ctx.plansRepo,
-              loopsRepo: ctx.loopsRepo,
-              graphStatusRepo: ctx.graphStatusRepo,
-              loopService: ctx.loopService,
-              loopHandler: ctx.loopHandler,
-              sandboxManager: ctx.sandboxManager,
-            })
             scheduleApprovalDispatch('New session', async () => {
               logger.log(`Plan approval [New session]: starting service.dispatch`)
               const result = await service.dispatch(execCtx, {
@@ -272,34 +273,10 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
             const executionModel = config.executionModel
             const auditorModel = config.auditorModel
 
-            const execCtx: ForgeExecutionRequestContext = {
-              surface: 'approval-hook',
-              projectId: ctx.projectId,
-              directory: ctx.directory,
-              sourceSessionId: input.sessionID,
-            }
-
-            const service = createForgeExecutionService({
-              projectId: ctx.projectId,
-              directory: ctx.directory,
-              config,
-              logger,
-              dataDir: ctx.dataDir,
-              v2: ctx.v2,
-              legacyClient: ctx.input?.client,
-              plansRepo: ctx.plansRepo,
-              loopsRepo: ctx.loopsRepo,
-              graphStatusRepo: ctx.graphStatusRepo,
-              loopService: ctx.loopService,
-              loopHandler: ctx.loopHandler,
-              sandboxManager: ctx.sandboxManager,
-            })
-
             // Schedule dispatch FIRST
             scheduleApprovalDispatch(matchedLabel, async () => {
               logger.log(`Plan approval [${matchedLabel}]: starting service.dispatch for "${uniqueLoopName}"`)
-              const result = await service.dispatch(execCtx, {
-                type: 'loop.start',
+              const command = buildStartLoopCommand({
                 source: { kind: 'inline', planText },
                 title,
                 loopName: uniqueLoopName,
@@ -309,11 +286,12 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
                 auditorModel,
                 hostSessionId: input.sessionID,
                 lifecycle: {
-                  selectSession: false,
+                  selectSession: true,
                   startWatchdog: true,
                   abortSourceSessionOnSuccess: false,
                 },
               })
+              const result = await service.dispatch(execCtx, command)
               logger.log(`Plan approval [${matchedLabel}]: service.dispatch returned ok=${result.ok}`)
               if (!result.ok) {
                 logger.error('Plan approval: loop setup failed', result.error)

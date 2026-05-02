@@ -15,11 +15,15 @@ import type { LoopService } from '../services/loop'
 import type { createLoopEventHandler } from '../hooks'
 import type { SandboxManager } from '../sandbox/manager'
 import { extractPlanTitle, extractLoopNames } from '../utils/plan-execution'
-import { parseModelString } from '../utils/model-fallback'
+import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
 import { generateUniqueName } from '../services/loop'
 import { resolveCurrentGitBranch } from '../utils/git-branch'
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
 import { buildLoopPermissionRuleset } from '../constants/loop'
+import { findPartialMatch } from '../utils/partial-match'
+import { isSandboxEnabled } from '../sandbox/context'
+import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
+import { existsSync } from 'fs'
 
 // ============================================================================
 // Surface Types - Identifies the caller boundary
@@ -98,6 +102,33 @@ export interface StartLoopCommand {
     selectSessionTiming?: 'after-create' | 'after-prompt'
     startWatchdog?: boolean
     abortSourceSessionOnSuccess?: boolean
+  }
+}
+
+export interface BuildStartLoopCommandInput {
+  source: PlanSource
+  title?: string
+  loopName?: string
+  mode: 'in-place' | 'worktree'
+  maxIterations?: number
+  executionModel?: string
+  auditorModel?: string
+  hostSessionId?: string
+  lifecycle?: StartLoopCommand['lifecycle']
+}
+
+export function buildStartLoopCommand(input: BuildStartLoopCommandInput): StartLoopCommand {
+  return {
+    type: 'loop.start',
+    source: input.source,
+    title: input.title,
+    loopName: input.loopName,
+    mode: input.mode,
+    maxIterations: input.maxIterations,
+    executionModel: input.executionModel,
+    auditorModel: input.auditorModel,
+    hostSessionId: input.hostSessionId,
+    lifecycle: input.lifecycle,
   }
 }
 
@@ -185,6 +216,7 @@ export interface LoopRestartedResult {
   previousTermination?: string
   worktreeDir?: string
   worktreeBranch?: string
+  worktree: boolean
   sandbox: boolean
   bindFailed: boolean
   iteration: number
@@ -197,6 +229,8 @@ export interface LoopCancelledResult {
   iteration: number
   worktreeDir?: string
   worktreeRemoved: boolean
+  worktree: boolean
+  worktreeBranch?: string
 }
 
 export interface LoopStatusView {
@@ -720,6 +754,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     ctx: ForgeExecutionRequestContext,
     command: StartLoopCommand,
   ): Promise<ForgeExecutionResponse<LoopStartedResult>> {
+    // Check if loops are disabled in plugin config
+    if (deps.config.loop?.enabled === false) {
+      return fail('disabled', 403, 'Loops are disabled in plugin config')
+    }
+
     // Resolve plan text
     const planResult = await resolvePlanSource(ctx, command.source, deps)
     if (!planResult.ok) return { ok: false, error: planResult.error }
@@ -843,8 +882,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
         
         // Build permissions
-        const { buildLoopPermissionRuleset } = await import('../constants/loop')
-        const { isSandboxEnabled } = await import('../sandbox/context')
         const sandboxEnabled = isSandboxEnabled(deps.config, deps.sandboxManager)
         sandboxEnabledForLoop = sandboxEnabled
         
@@ -854,7 +891,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         })
         
         // Create session
-        const { createLoopSessionWithWorkspace } = await import('../utils/loop-session')
         const createResult = await createLoopSessionWithWorkspace({
           v2: deps.v2,
           title: sessionTitle,
@@ -1120,7 +1156,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     
     // Apply selector filtering
     if (command.selector?.kind === 'exact' || command.selector?.kind === 'partial') {
-      const { findPartialMatch } = await import('../utils/partial-match')
       const { match, candidates } = findPartialMatch(
         command.selector.name,
         states,
@@ -1191,19 +1226,275 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
   }
   
   async function handleLoopCancel(
-    _ctx: ForgeExecutionRequestContext,
-    _command: CancelLoopCommand,
+    ctx: ForgeExecutionRequestContext,
+    command: CancelLoopCommand,
   ): Promise<ForgeExecutionResponse<LoopCancelledResult>> {
-    // TODO: Implement in Phase 4
-    return fail('internal_error', 500, 'Not yet implemented')
+    if (!deps.loopService || !deps.loopHandler) {
+      return fail('internal_error', 500, 'Loop service not available')
+    }
+
+    let state: import('../services/loop').LoopState
+
+    // Resolve loop by selector
+    if (!command.selector || command.selector.kind === 'only-active') {
+      const active = deps.loopService.listActive()
+      if (active.length === 0) return fail('not_found', 404, 'No active loops.')
+      if (active.length !== 1) {
+        return fail('conflict', 409, 'Multiple active loops. Specify a name.', undefined, active.map(s => s.loopName))
+      }
+      state = active[0]
+    } else {
+      const name = command.selector.name
+      const { match, candidates } = deps.loopService.findMatchByName(name)
+      if (!match) {
+        if (candidates.length > 0) {
+          return fail('conflict', 409, `Multiple loops match "${name}". Be more specific.`, undefined, candidates.map(s => s.loopName))
+        }
+        const recent = deps.loopService.listRecent()
+        const foundRecent = recent.find(s => s.loopName === name || (s.worktreeBranch && s.worktreeBranch.toLowerCase().includes(name.toLowerCase())))
+        if (foundRecent) {
+          return fail('conflict', 409, `Loop "${foundRecent.loopName}" has already completed.`)
+        }
+        return fail('not_found', 404, `No active loop found for loop "${name}".`)
+      }
+      state = match
+      if (!state.active) {
+        return fail('conflict', 409, `Loop "${state.loopName}" has already completed.`)
+      }
+    }
+
+    await deps.loopHandler.cancelBySessionId(state.sessionId)
+    deps.logger.log(`loop-cancel: cancelled loop for session=${state.sessionId} at iteration ${state.iteration}`)
+
+    let worktreeRemoved = false
+    const cleanupRequested = command.cleanupWorktree ?? deps.config.loop?.cleanupWorktree
+    if (cleanupRequested && state.worktree && state.worktreeDir) {
+      const { cleanupLoopWorktree } = await import('../utils/worktree-cleanup')
+      const result = await cleanupLoopWorktree({
+        worktreeDir: state.worktreeDir,
+        projectId: ctx.projectId,
+        dataDir: deps.dataDir,
+        logPrefix: 'loop-cancel',
+        logger: deps.logger,
+      })
+      worktreeRemoved = result.removed
+    }
+
+    return ok({
+      operation: 'loop.cancel',
+      loopName: state.loopName,
+      sessionId: state.sessionId,
+      iteration: state.iteration,
+      worktreeDir: state.worktreeDir,
+      worktreeRemoved,
+      worktree: !!state.worktree,
+      worktreeBranch: state.worktreeBranch,
+    })
   }
   
   async function handleLoopRestart(
     _ctx: ForgeExecutionRequestContext,
-    _command: RestartLoopCommand,
+    command: RestartLoopCommand,
   ): Promise<ForgeExecutionResponse<LoopRestartedResult>> {
-    // TODO: Implement in Phase 4
-    return fail('internal_error', 500, 'Not yet implemented')
+    if (!deps.loopService || !deps.loopHandler) {
+      return fail('internal_error', 500, 'Loop service not available')
+    }
+
+    if (command.selector.kind === 'only-active') {
+      return fail('bad_request', 400, 'Specify a loop name to restart. Use loop-status to see available loops.')
+    }
+
+    const name = command.selector.name
+    const active = deps.loopService.listActive()
+    const recent = deps.loopService.listRecent()
+    const allStates = [...active, ...recent]
+    const { match: stoppedState, candidates } = findPartialMatch(name, allStates, s => [s.loopName, s.worktreeBranch])
+    if (!stoppedState && candidates.length > 0) {
+      return fail('conflict', 409, `Multiple loops match "${name}". Be more specific.`, undefined, candidates.map(s => s.loopName))
+    }
+    if (!stoppedState) {
+      return fail('not_found', 404, `No loop found for "${name}".`, undefined, allStates.map(s => s.loopName))
+    }
+    if (stoppedState.active && !command.force) {
+      return fail('conflict', 409, `Loop "${stoppedState.loopName}" is currently active. Use force=true to force-restart a stuck loop.`)
+    }
+    if (stoppedState.terminationReason === 'completed') {
+      return fail('conflict', 409, `Loop "${stoppedState.loopName}" completed successfully and cannot be restarted.`)
+    }
+    if (stoppedState.worktree && stoppedState.worktreeDir) {
+      if (!existsSync(stoppedState.worktreeDir)) {
+        return fail('conflict', 409, `Cannot restart "${stoppedState.loopName}": worktree directory no longer exists at ${stoppedState.worktreeDir}.`)
+      }
+    }
+
+    const restartSandbox = isSandboxEnabled(deps.config, deps.sandboxManager)
+    const permissionRuleset = buildLoopPermissionRuleset({ isWorktree: !!stoppedState.worktree, isSandbox: restartSandbox })
+    const previousTermination = stoppedState.terminationReason
+    const previousState = { ...stoppedState }
+    let restartedState: import('../services/loop').LoopState | null = null
+    let bindFailed = false
+
+    type RestartOutcome =
+      | { ok: true; newSessionId: string; previousSessionId: string; sandbox: boolean; bindFailed: boolean }
+      | { ok: false; error: string }
+
+    const outcome = await deps.loopHandler.runExclusive<RestartOutcome>(stoppedState.loopName, async () => {
+      if (stoppedState.active) {
+        const latestState = deps.loopService!.getActiveState(stoppedState.loopName)
+        if (latestState?.active) {
+          try { await deps.v2.session.abort({ sessionID: latestState.sessionId }) } catch {}
+          deps.loopHandler!.clearLoopTimers(stoppedState.loopName)
+          deps.loopService!.unregisterLoopSession(latestState.sessionId)
+          // Sync stoppedState with latest persisted values
+          Object.assign(stoppedState, {
+            sessionId: latestState.sessionId,
+            iteration: latestState.iteration,
+            prompt: latestState.prompt,
+            worktreeDir: latestState.worktreeDir,
+            projectDir: latestState.projectDir,
+            worktreeBranch: latestState.worktreeBranch,
+            maxIterations: latestState.maxIterations,
+            executionModel: latestState.executionModel,
+            auditorModel: latestState.auditorModel,
+            workspaceId: latestState.workspaceId,
+            hostSessionId: latestState.hostSessionId,
+            sandbox: latestState.sandbox,
+          })
+        }
+      }
+
+      const previousSessionId = stoppedState.sessionId
+
+      if (stoppedState.auditSessionId) {
+        try {
+          await deps.v2.session.delete({ sessionID: stoppedState.auditSessionId, directory: stoppedState.worktreeDir })
+          deps.logger.log(`Loop restart: deleted stale audit session ${stoppedState.auditSessionId}`)
+        } catch (err) {
+          deps.logger.error(`Loop restart: failed to delete stale audit session ${stoppedState.auditSessionId}`, err)
+        }
+        deps.loopService!.setAuditSessionId(stoppedState.loopName, null)
+      }
+
+      const createResult = await createLoopSessionWithWorkspace({
+        v2: deps.v2,
+        title: formatLoopSessionTitle(stoppedState.loopName),
+        directory: stoppedState.worktreeDir,
+        permission: permissionRuleset,
+        workspaceId: stoppedState.workspaceId,
+        logPrefix: 'loop-restart',
+        logger: deps.logger,
+      })
+
+      if (!createResult) return { ok: false, error: 'Failed to create new session for restart.' }
+
+      const newSessionId = createResult.sessionId
+      if (createResult.bindFailed) {
+        stoppedState.workspaceId = undefined
+        bindFailed = true
+      }
+
+      if (restartSandbox && deps.sandboxManager) {
+        try {
+          const sbxResult = await deps.sandboxManager.start(stoppedState.loopName, stoppedState.worktreeDir)
+          deps.logger.log(`loop-restart: started sandbox container ${sbxResult.containerName}`)
+        } catch (err) {
+          deps.logger.error('loop-restart: failed to start sandbox container', err)
+          return { ok: false, error: 'Restart failed: could not start sandbox container.' }
+        }
+      }
+
+      const newState: import('../services/loop').LoopState = {
+        active: true,
+        sessionId: newSessionId,
+        loopName: stoppedState.loopName,
+        worktreeDir: stoppedState.worktreeDir,
+        projectDir: stoppedState.projectDir || stoppedState.worktreeDir,
+        worktreeBranch: stoppedState.worktreeBranch,
+        iteration: stoppedState.iteration,
+        maxIterations: stoppedState.maxIterations,
+        startedAt: new Date().toISOString(),
+        prompt: stoppedState.prompt,
+        phase: 'coding',
+        errorCount: 0,
+        auditCount: 0,
+        worktree: stoppedState.worktree,
+        sandbox: restartSandbox,
+        sandboxContainer: restartSandbox ? deps.sandboxManager?.docker.containerName(stoppedState.loopName) : undefined,
+        executionModel: stoppedState.executionModel,
+        auditorModel: stoppedState.auditorModel,
+        workspaceId: stoppedState.workspaceId,
+        hostSessionId: stoppedState.hostSessionId,
+      }
+      restartedState = newState
+      return { ok: true, newSessionId, previousSessionId, sandbox: restartSandbox, bindFailed }
+    })
+
+    if (!outcome.ok) return fail('internal_error', 500, outcome.error)
+
+    if (outcome.bindFailed) {
+      publishWorkspaceDetachedToast({
+        v2: deps.v2,
+        directory: stoppedState.projectDir ?? stoppedState.worktreeDir,
+        loopName: stoppedState.loopName,
+        logger: deps.logger,
+        context: 'on restart',
+      })
+    }
+
+    const promptText = stoppedState.prompt ?? ''
+    const loopModel = parseModelString(stoppedState.executionModel) ?? parseModelString(deps.config.executionModel)
+
+    const { result: promptResult } = await retryWithModelFallback(
+      () => deps.v2.session.promptAsync({
+        sessionID: outcome.newSessionId,
+        directory: stoppedState.worktreeDir,
+        parts: [{ type: 'text' as const, text: promptText }],
+        agent: 'code',
+        model: loopModel!,
+      }),
+      () => deps.v2.session.promptAsync({
+        sessionID: outcome.newSessionId,
+        directory: stoppedState.worktreeDir,
+        parts: [{ type: 'text' as const, text: promptText }],
+        agent: 'code',
+      }),
+      loopModel,
+      deps.logger,
+    )
+
+    if (promptResult.error) {
+      deps.logger.error('loop-restart: failed to send prompt', promptResult.error)
+      deps.loopService.deleteState(stoppedState.loopName)
+      try {
+        deps.loopService.setState(previousState.loopName, previousState)
+        if (previousState.active) deps.loopService.registerLoopSession(previousState.sessionId, previousState.loopName)
+      } catch (restoreErr) {
+        deps.logger.error('loop-restart: failed to restore previous loop state', restoreErr)
+      }
+      if (restartSandbox && deps.sandboxManager) {
+        await deps.sandboxManager.stop(stoppedState.loopName).catch(() => {})
+      }
+      return fail('internal_error', 500, 'Restart failed: could not send prompt to new session.')
+    }
+
+    deps.loopService.deleteState(stoppedState.loopName)
+    deps.loopService.setState(stoppedState.loopName, restartedState!)
+    deps.loopService.registerLoopSession(outcome.newSessionId, stoppedState.loopName)
+    deps.loopHandler.startWatchdog(stoppedState.loopName)
+
+    return ok({
+      operation: 'loop.restart',
+      loopName: stoppedState.loopName,
+      sessionId: outcome.newSessionId,
+      previousSessionId: outcome.previousSessionId,
+      previousTermination,
+      worktreeDir: stoppedState.worktreeDir,
+      worktreeBranch: stoppedState.worktreeBranch,
+      worktree: !!stoppedState.worktree,
+      sandbox: outcome.sandbox,
+      bindFailed: outcome.bindFailed,
+      iteration: stoppedState.iteration,
+    })
   }
   
   async function dispatch<C extends ForgeExecutionCommand>(

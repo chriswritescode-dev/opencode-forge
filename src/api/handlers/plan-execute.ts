@@ -1,7 +1,8 @@
 import type { ApiDeps } from '../types'
 import { ForgeRpcError } from '../bus-protocol'
 import { PlanExecuteBody } from '../schemas'
-import { createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource, type ForgeExecutionCommand } from '../../services/execution'
+import { buildStartLoopCommand, type PlanSource, type ForgeExecutionCommand } from '../../services/execution'
+import { buildService } from './_shared'
 
 export async function handleExecutePlan(
   deps: ApiDeps,
@@ -27,30 +28,7 @@ export async function handleExecutePlan(
   const executionModel = parsed.executionModel || ctx.config.executionModel
   const auditorModel = parsed.auditorModel || ctx.config.auditorModel
 
-  // Build execution request context
-  const execCtx: ForgeExecutionRequestContext = {
-    surface: 'api',
-    projectId,
-    directory: ctx.directory,
-    sourceSessionId: sessionId,
-  }
-
-  // Create execution service
-  const service = createForgeExecutionService({
-    projectId,
-    directory: ctx.directory,
-    config: ctx.config,
-    logger: ctx.logger,
-    dataDir: ctx.dataDir,
-    v2: ctx.v2,
-    legacyClient: ctx.input?.client,
-    plansRepo: ctx.plansRepo,
-    loopsRepo: ctx.loopsRepo,
-    graphStatusRepo: ctx.graphStatusRepo,
-    loopService: ctx.loopService,
-    loopHandler: ctx.loopHandler,
-    sandboxManager: ctx.sandboxManager,
-  })
+  const { service, execCtx } = buildService(deps, projectId)
 
   switch (parsed.mode) {
     case 'new-session': {
@@ -107,8 +85,7 @@ export async function handleExecutePlan(
     case 'loop-worktree': {
       const isWorktree = parsed.mode === 'loop-worktree'
 
-      const command: ForgeExecutionCommand = {
-        type: 'loop.start',
+      const command = buildStartLoopCommand({
         source,
         mode: isWorktree ? 'worktree' : 'in-place',
         executionModel,
@@ -119,7 +96,7 @@ export async function handleExecutePlan(
           selectSession: true,
           startWatchdog: true,
         },
-      }
+      })
 
       const result = await service.dispatch(execCtx, command)
 
@@ -133,6 +110,7 @@ export async function handleExecutePlan(
         loopName: result.data.loopName,
         displayName: result.data.displayName,
         worktreeDir: result.data.worktreeDir,
+        workspaceId: result.data.workspaceId,
       }
     }
 

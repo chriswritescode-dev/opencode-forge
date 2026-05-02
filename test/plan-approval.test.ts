@@ -18,6 +18,7 @@ import { createGraphStatusRepo } from '../src/storage/repos/graph-status-repo'
 import { resolveGraphCacheDir } from '../src/storage/graph-projects'
 import { handleExecutePlan } from '../src/api/handlers/plan-execute'
 import { openForgeDatabase, resolveDataDir } from '../src/storage/database'
+import { createLoopEventHandler } from '../src/hooks/loop'
 import type { Logger } from '../src/types'
 import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from '../src/tools/plan-approval'
 import type { ToolContext } from '../src/tools/types'
@@ -1809,7 +1810,7 @@ describe('plan execute API loop dispatch', () => {
       ...overrides,
     } as ToolContext
 
-    return { ctx, promptAsync, sessionCreate, sessionAbort, worktreeCreate, graphStatusRepo }
+    return { ctx, promptAsync, sessionCreate, sessionAbort, worktreeCreate, graphStatusRepo, loopsRepo, plansRepo, reviewFindingsRepo }
   }
 
   function apiDeps(ctx: ToolContext) {
@@ -2065,6 +2066,95 @@ describe('plan execute API loop dispatch', () => {
     }
     expect(targetStatus?.state).toBe('ready')
     expect(targetStatus?.ready).toBe(true)
+  })
+
+  test('loop mode started through plan.execute advances to audit on coding idle', async () => {
+    const { ctx, graphStatusRepo, loopsRepo, plansRepo, reviewFindingsRepo } = createApiDeps()
+    const sessionMessages = mock(() => Promise.resolve({
+      data: [{
+        info: { role: 'assistant', finish: 'stop' },
+        parts: [{ type: 'text', text: 'Implemented plan.' }],
+      }],
+    }))
+    ;(ctx.v2 as any).session.messages = sessionMessages
+
+    const loopServiceForHandler = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'api-project', ctx.logger)
+    const loopHandler = createLoopEventHandler(
+      loopServiceForHandler,
+      {} as never,
+      ctx.v2,
+      ctx.logger,
+      () => ctx.config,
+      undefined,
+      'api-project',
+      ctx.dataDir,
+    )
+    ;(ctx as any).loopHandler = loopHandler
+
+    const res = await handleExecutePlan(apiDeps(ctx), {
+      projectId: 'api-project',
+      sessionId: 'host-session',
+    }, {
+      mode: 'loop',
+      title: 'API Plan',
+      plan: '# API Plan\n\nImplement this.',
+    }) as { sessionId: string; loopName: string }
+
+    await loopHandler.onEvent({
+      event: {
+        type: 'session.status',
+        properties: {
+          sessionID: res.sessionId,
+          directory: '/repo',
+          status: { type: 'idle' },
+        },
+      },
+    })
+
+    const row = db.prepare(
+      'SELECT phase, audit_session_id, current_session_id, worktree FROM loops WHERE project_id = ? AND loop_name = ?',
+    ).get('api-project', res.loopName) as {
+      phase: string
+      audit_session_id: string | null
+      current_session_id: string
+      worktree: number
+    }
+
+    expect(row.worktree).toBe(0)
+    expect(row.current_session_id).toBe(res.sessionId)
+    expect(row.phase).toBe('auditing')
+    expect(row.audit_session_id).toBeDefined()
+    expect(row.audit_session_id).not.toBeNull()
+  })
+
+  test('loop mode is disabled when config.loop.enabled is false', async () => {
+    const { ctx } = createApiDeps({
+      config: {
+        executionModel: 'provider/default-exec',
+        auditorModel: 'provider/default-auditor',
+        loop: { enabled: false },
+      } as PluginConfig,
+    })
+
+    let thrown: unknown
+    try {
+      await handleExecutePlan(apiDeps(ctx), {
+        projectId: 'api-project',
+        sessionId: 'host-session',
+      }, {
+        mode: 'loop',
+        title: 'Disabled Plan',
+        plan: '# Disabled Plan',
+      })
+    } catch (err) {
+      thrown = err
+    }
+
+    expect(thrown).toBeDefined()
+    expect((thrown as Error).message).toContain('disabled')
+
+    const rows = db.prepare('SELECT COUNT(*) as count FROM loops WHERE project_id = ?').get('api-project') as { count: number }
+    expect(rows.count).toBe(0)
   })
 })
 

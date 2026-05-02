@@ -1,5 +1,4 @@
 import { tool } from '@opencode-ai/plugin'
-import type { ZodType } from 'zod'
 import { z as zod } from 'zod'
 
 const z = tool.schema
@@ -52,12 +51,4 @@ export const LoopRestartBody = z.object({
   force: z.boolean().optional(),
 })
 
-type InferType<T extends ZodType> = zod.infer<T>
-
-export type PlanWrite = InferType<typeof PlanWriteBody>
-export type PlanPatch = InferType<typeof PlanPatchBody>
-export type PlanExecute = InferType<typeof PlanExecuteBody>
-export type LoopStart = InferType<typeof LoopStartBody>
-export type ModelPrefs = InferType<typeof ModelPrefsBody>
-export type FindingWrite = InferType<typeof FindingWriteBody>
-export type LoopRestart = InferType<typeof LoopRestartBody>
+export type ModelPrefs = zod.infer<typeof ModelPrefsBody>

@@ -5,11 +5,10 @@ import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 import { appendFileSync, mkdirSync } from 'fs'
 import { dirname } from 'path'
 import { resolveLogPath } from '../storage'
-import { readPlan, readPlanForAnyProject, readProjectIdForSession } from './tui-plan-store'
+import { readPlan, readPlanForAnyProject } from './tui-plan-store'
 import { fetchAvailableModels } from './tui-models'
 import { readExecutionPreferences, writeExecutionPreferences } from './tui-execution-preferences'
 import { parseModelString } from './model-fallback'
-import { launchFreshLoop } from './loop-launch'
 import {
   encodeRequest,
   decodeReply,
@@ -72,7 +71,7 @@ export interface ForgeProjectClient {
     get(loopName: string): Promise<LoopInfo | null>
     cancel(loopName: string): Promise<boolean>
     restart(loopName: string, force: boolean): Promise<string | null>
-    start(req: StartLoopRequest): Promise<{ sessionId: string; loopName: string; worktreeDir?: string } | null>
+    start(req: StartLoopRequest): Promise<{ sessionId: string; loopName: string; worktreeDir?: string; workspaceId?: string } | null>
   }
 
   /** Single round-trip pair: read preferences and list models. */
@@ -118,13 +117,6 @@ function mapRemoteLoop(input: Record<string, unknown>): LoopInfo {
     workspaceId: input.workspaceId as string | undefined,
     hostSessionId: input.hostSessionId as string | undefined,
   }
-}
-
-function mapPrefMode(label: ExecutionPreferences['mode']): ApiExecutionMode {
-  return label === 'Execute here' ? 'execute-here'
-    : label === 'Loop' ? 'loop'
-    : label === 'Loop (worktree)' ? 'loop-worktree'
-    : 'new-session'
 }
 
 interface PendingRpc {
@@ -381,66 +373,34 @@ export async function connectForgeProject(
       }
 
       if (req.mode === 'loop' || req.mode === 'loop-worktree') {
-        const loopProjectId = projectId || readProjectIdForSession(sessionId) || ''
-        const loopDirectory = directory ?? api.state.path.directory
-        const result = await launchFreshLoop({
-          planText: req.plan,
-          title: req.title,
-          directory: loopDirectory,
-          projectId: loopProjectId,
-          isWorktree: req.mode === 'loop-worktree',
-          v2: api.client,
-          executionModel: req.executionModel,
-          auditorModel: req.auditorModel,
-          hostSessionId: sessionId,
-          skipSandboxWait: true,
-        })
-
-        if (!result) return null
+        let result: { sessionId?: string; loopName?: string; worktreeDir?: string; workspaceId?: string } | null
+        try {
+          result = await rpc(
+            'plan.execute',
+            { sessionId },
+            {
+              mode: req.mode,
+              title: req.title,
+              plan: req.plan,
+              executionModel: req.executionModel,
+              auditorModel: req.auditorModel,
+              targetSessionId: req.targetSessionId,
+            },
+            60_000, // longer timeout for loop start (worktree + sandbox)
+          )
+        } catch {
+          return null
+        }
         if (projectId) writeExecutionPreferences(projectId, prefs)
         return {
-          sessionId: result.sessionId,
-          loopName: result.loopName,
-          worktreeDir: result.worktreeDir,
-          workspaceId: result.workspaceId,
+          sessionId: result?.sessionId,
+          loopName: result?.loopName,
+          worktreeDir: result?.worktreeDir,
+          workspaceId: result?.workspaceId,
         }
       }
 
-      let result: { sessionId?: string; loopName?: string; worktreeDir?: string; workspaceId?: string } | null
-      try {
-        result = await rpc(
-          'plan.execute',
-          { sessionId },
-          {
-            mode: req.mode,
-            title: req.title,
-            plan: req.plan,
-            executionModel: req.executionModel,
-            auditorModel: req.auditorModel,
-            targetSessionId: req.targetSessionId,
-          },
-        )
-      } catch {
-        return null
-      }
-
-      // Best-effort prefs save
-      try {
-        const mode = mapPrefMode(prefs.mode)
-        await rpc(
-          'models.prefs.write',
-          projectId ? { projectId } : {},
-          {
-            mode,
-            executionModel: prefs.executionModel,
-            auditorModel: prefs.auditorModel,
-          },
-        )
-      } catch {
-        /* ignore */
-      }
-
-      return result
+      return null
     },
   }
 
@@ -492,27 +452,24 @@ export async function connectForgeProject(
     },
     async start(req) {
       try {
-        const loopProjectId = projectId || (req.hostSessionId ? readProjectIdForSession(req.hostSessionId) : null) || ''
-        const loopDirectory = directory ?? api.state.path.directory
-        const result = await launchFreshLoop({
-          planText: req.plan,
-          title: req.title,
-          directory: loopDirectory,
-          projectId: loopProjectId,
-          isWorktree: req.worktree,
-          v2: api.client,
-          executionModel: req.executionModel,
-          auditorModel: req.auditorModel,
-          hostSessionId: req.hostSessionId,
-          skipSandboxWait: true,
-        })
-
-        if (!result) return null
+        const data = await rpc<{ sessionId: string; loopName: string; worktreeDir?: string; workspaceId?: string }>(
+          'loops.start',
+          {},
+          {
+            plan: req.plan,
+            title: req.title,
+            worktree: req.worktree,
+            executionModel: req.executionModel,
+            auditorModel: req.auditorModel,
+            hostSessionId: req.hostSessionId,
+          },
+          60_000,
+        )
         return {
-          sessionId: result.sessionId,
-          loopName: result.loopName,
-          worktreeDir: result.worktreeDir,
-          workspaceId: result.workspaceId,
+          sessionId: data.sessionId,
+          loopName: data.loopName,
+          worktreeDir: data.worktreeDir,
+          workspaceId: data.workspaceId,
         }
       } catch {
         return null

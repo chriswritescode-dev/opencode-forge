@@ -1,8 +1,8 @@
 import type { ApiDeps } from '../types'
 import { ForgeRpcError } from '../bus-protocol'
 import { LoopStartBody, LoopRestartBody } from '../schemas'
-import { cancelLoopByName, restartLoopByName } from '../../services/loop-control'
-import { createForgeExecutionService, type ForgeExecutionRequestContext, type ForgeExecutionCommand } from '../../services/execution'
+import { buildStartLoopCommand } from '../../services/execution'
+import { buildService } from './_shared'
 import type { LoopInfo } from '../../utils/tui-refresh-helpers'
 import type { LoopRow } from '../../storage/repos/loops-repo'
 
@@ -67,34 +67,9 @@ export async function handleStartLoop(
   const { projectId } = params
   const parsed = LoopStartBody.parse(body)
 
-  const { ctx } = deps
+  const { service, execCtx } = buildService(deps, projectId)
 
-  // Build execution request context
-  const execCtx: ForgeExecutionRequestContext = {
-    surface: 'api',
-    projectId,
-    directory: ctx.directory,
-  }
-
-  // Create execution service
-  const service = createForgeExecutionService({
-    projectId,
-    directory: ctx.directory,
-    config: ctx.config,
-    logger: ctx.logger,
-    dataDir: ctx.dataDir,
-    v2: ctx.v2,
-    legacyClient: ctx.input?.client,
-    plansRepo: ctx.plansRepo,
-    loopsRepo: ctx.loopsRepo,
-    graphStatusRepo: ctx.graphStatusRepo,
-    loopService: ctx.loopService,
-    loopHandler: ctx.loopHandler,
-    sandboxManager: ctx.sandboxManager,
-  })
-
-  const command: ForgeExecutionCommand = {
-    type: 'loop.start',
+  const command = buildStartLoopCommand({
     source: { kind: 'inline', planText: parsed.plan },
     title: parsed.title,
     mode: parsed.worktree ?? false ? 'worktree' : 'in-place',
@@ -105,7 +80,7 @@ export async function handleStartLoop(
       selectSession: true,
       startWatchdog: true,
     },
-  }
+  })
 
   const result = await service.dispatch(execCtx, command)
 
@@ -118,6 +93,7 @@ export async function handleStartLoop(
     sessionId: result.data.sessionId,
     worktreeDir: result.data.worktreeDir,
     displayName: result.data.displayName,
+    workspaceId: result.data.workspaceId,
   }
 }
 
@@ -127,13 +103,12 @@ export async function handleCancelLoop(
   _body: unknown
 ): Promise<unknown> {
   const { loopName } = params
-
-  const result = await cancelLoopByName(deps.ctx, loopName)
-
-  if (!result.ok) {
-    throw new ForgeRpcError(result.code, result.message)
-  }
-
+  const { service, execCtx } = buildService(deps, params.projectId)
+  const result = await service.dispatch(execCtx, {
+    type: 'loop.cancel',
+    selector: { kind: 'exact', name: loopName },
+  })
+  if (!result.ok) throw new ForgeRpcError(result.error.code, result.error.message)
   return { loopName, status: 'cancelled' }
 }
 
@@ -144,21 +119,21 @@ export async function handleRestartLoop(
 ): Promise<unknown> {
   const { loopName } = params
   const parsed = LoopRestartBody.parse(body)
-
-  const result = await restartLoopByName(deps.ctx, loopName, parsed.force ?? false)
-
-  if (!result.ok) {
-    throw new ForgeRpcError(result.code, result.message)
-  }
-
+  const { service, execCtx } = buildService(deps, params.projectId)
+  const result = await service.dispatch(execCtx, {
+    type: 'loop.restart',
+    selector: { kind: 'exact', name: loopName },
+    force: parsed.force ?? false,
+  })
+  if (!result.ok) throw new ForgeRpcError(result.error.code, result.error.message)
   return {
     loopName,
     status: 'restarted',
     force: parsed.force ?? false,
-    sessionId: result.newSessionId,
-    worktreeDir: result.state.worktreeDir,
-    iteration: result.state.iteration,
-    sandbox: result.sandbox,
-    bindFailed: result.bindFailed,
+    sessionId: result.data.sessionId,
+    worktreeDir: result.data.worktreeDir,
+    iteration: result.data.iteration,
+    sandbox: result.data.sandbox,
+    bindFailed: result.data.bindFailed,
   }
 }

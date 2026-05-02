@@ -195,13 +195,18 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 
     const serverUrl = input.serverUrl
     
-    // Extract legacy fetch for in-process dispatch
-    const legacyHttp = (client as unknown as { _client?: { getConfig: () => { fetch?: typeof fetch } } })._client
-    const legacyFetch = legacyHttp?.getConfig?.().fetch
+    // Extract legacy fetch and auth headers from the plugin-provided client so
+    // the v2 client can dispatch in-process AND satisfy the server's Basic auth
+    // requirement (introduced for keychain-backed auth in TUI/server).
+    const legacyHttp = (client as unknown as { _client?: { getConfig: () => { fetch?: typeof fetch; headers?: Headers } } })._client
+    const legacyConfig = legacyHttp?.getConfig?.()
+    const legacyFetch = legacyConfig?.fetch
+    const legacyAuthHeader = legacyConfig?.headers?.get?.('authorization') ?? legacyConfig?.headers?.get?.('Authorization')
     const v2ClientConfig: Parameters<typeof createV2Client>[0] = {
       baseUrl: serverUrl.toString(),
       directory,
       ...(legacyFetch ? { fetch: legacyFetch } : {}),
+      ...(legacyAuthHeader ? { headers: { Authorization: legacyAuthHeader } } : {}),
     }
     const v2 = createV2Client(v2ClientConfig)
 
@@ -212,7 +217,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       debug: loggingConfig?.debug ?? false,
     })
     logger.log(`Initializing plugin for directory: ${directory}, projectId: ${projectId}`)
-    logger.log(`v2 client fetch: ${legacyFetch ? 'in-process' : 'globalThis'}`)
+    logger.log(`v2 client fetch: ${legacyFetch ? 'in-process' : 'globalThis'}; auth: ${legacyAuthHeader ? 'inherited' : 'none'}`)
 
     const dataDir = config.dataDir || resolveDataDir()
     

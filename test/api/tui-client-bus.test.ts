@@ -330,23 +330,10 @@ describe('tui-client bus-RPC integration', () => {
       let publishCallCount = 0
       let lastPublishedPayload: any = null
       const sessionId = `s-${Date.now()}`
+      const workspaceId = 'ws-123'
       
       const mockApi = {
         client: {
-          worktree: {
-            create: vi.fn().mockResolvedValue({
-              data: { directory: '/tmp/worktree', branch: 'test-loop' },
-              error: undefined,
-            }),
-          },
-          session: {
-            create: vi.fn().mockResolvedValue({
-              data: { id: sessionId },
-              error: undefined,
-            }),
-            promptAsync: vi.fn().mockResolvedValue({ data: {}, error: undefined }),
-            abort: vi.fn().mockResolvedValue({ data: {}, error: undefined }),
-          },
           tui: {
             publish: vi.fn().mockImplementation(async (payload: any) => {
               publishCallCount++
@@ -389,15 +376,41 @@ describe('tui-client bus-RPC integration', () => {
       const client = await clientPromise
       expect(client).not.toBeNull()
       
-      // Now trigger loops.start, which launches directly from the TUI API.
+      // Now trigger loops.start - it should publish to the bus
       const loopsPromise = client!.loops.start({
         plan: 'test plan',
         title: 'test title',
         worktree: true,
       })
       
+      // Wait for loops.start publish
+      while (publishCallCount < 2) {
+        await new Promise(resolve => setTimeout(resolve, 10))
+      }
+      
+      // Reply to loops.start
+      if (capturedHandler && lastPublishedPayload) {
+        const decoded = decodeRequest(lastPublishedPayload.body.properties.command as string)
+        if (decoded && decoded.verb === 'loops.start') {
+          capturedHandler({
+            properties: {
+              command: encodeReply({
+                rid: decoded.rid,
+                status: 'ok',
+                data: {
+                  sessionId,
+                  loopName: 'test plan',
+                  worktreeDir: '/tmp/worktree',
+                  workspaceId,
+                },
+              }),
+            },
+          })
+        }
+      }
+      
       const result = await loopsPromise
-      expect(result).toEqual({ sessionId, loopName: 'test plan', worktreeDir: '/tmp/worktree' })
+      expect(result).toEqual({ sessionId, loopName: 'test plan', worktreeDir: '/tmp/worktree', workspaceId })
     })
 
     it('returns null when RPC call times out after 5000ms (plan.read swallows errors)', async () => {
