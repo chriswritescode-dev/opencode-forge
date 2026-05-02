@@ -33,8 +33,9 @@ interface MockV2Client {
 }
 
 function createMockV2Client(options: {
-  messagesCalls?: Array<{ lastMessageRole: string; text?: string }>
+  messagesCalls?: Array<{ lastMessageRole: string; text?: string; finish?: string }>
   promptAsyncResult?: { error: unknown | null }
+  promptAsyncCalls?: Array<{ agent?: string; sessionID?: string }>
   statusType?: string
 }): MockV2Client {
   const callIndex = { value: 0 }
@@ -49,13 +50,14 @@ function createMockV2Client(options: {
         return {
           data: [
             {
-              info: { role },
+              info: { role, ...(callConfig.finish ? { finish: callConfig.finish } : {}) },
               parts: [{ type: 'text' as const, text }],
             },
           ],
         }
       },
-      promptAsync: async () => {
+      promptAsync: async (opts: { agent?: string; sessionID?: string }) => {
+        options.promptAsyncCalls?.push({ agent: opts.agent, sessionID: opts.sessionID })
         return { data: {}, error: options.promptAsyncResult?.error ?? null }
       },
       abort: async () => {},
@@ -162,14 +164,14 @@ describe('loop-hooks integration', () => {
     db.run(`
       CREATE TABLE review_findings (
         project_id TEXT NOT NULL,
+        branch TEXT NOT NULL DEFAULT '',
         file TEXT NOT NULL,
         line INTEGER NOT NULL,
         severity TEXT NOT NULL,
         description TEXT NOT NULL,
         scenario TEXT,
-        branch TEXT,
         created_at INTEGER NOT NULL,
-        PRIMARY KEY (project_id, file, line)
+        PRIMARY KEY (project_id, branch, file, line)
       )
     `)
     
@@ -464,8 +466,10 @@ describe('loop-hooks integration', () => {
     })
 
     it('does not terminate while branch review findings remain', async () => {
+      const promptAsyncCalls: Array<{ agent?: string; sessionID?: string }> = []
       const v2Client = createMockV2Client({
         messagesCalls: [{ lastMessageRole: 'assistant', text: 'Code reviewed.' }],
+        promptAsyncCalls,
         statusType: 'idle',
       })
       
@@ -540,7 +544,8 @@ describe('loop-hooks integration', () => {
       expect(state?.active).toBe(true)
       expect(state?.phase).toBe('coding')
       expect(state?.terminationReason).toBeUndefined()
-      
+      expect(promptAsyncCalls).toContainEqual({ agent: 'code', sessionID: state?.sessionId })
+       
       const logFiles = readdirSync(testLogDir).filter(f => f.endsWith('.md'))
       expect(logFiles.length).toBe(0)
       
@@ -548,12 +553,12 @@ describe('loop-hooks integration', () => {
     })
 
     it('continues in-place loops when v2 message reads fail but plugin client can read audit results', async () => {
-      let promptCalls = 0
+      const promptCalls: Array<{ agent?: string; sessionID?: string }> = []
       const v2Client = {
         session: {
           messages: async () => ({ error: new Error('v2 unavailable') }),
-          promptAsync: async () => {
-            promptCalls++
+          promptAsync: async (opts: { agent?: string; sessionID?: string }) => {
+            promptCalls.push({ agent: opts.agent, sessionID: opts.sessionID })
             return { data: {}, error: null }
           },
           abort: async () => {},
@@ -646,8 +651,75 @@ describe('loop-hooks integration', () => {
       expect(state?.iteration).toBe(2)
       expect(state?.auditCount).toBe(1)
       expect(state?.sessionId).toBe('next-coding-session')
-      expect(promptCalls).toBeGreaterThan(0)
+      expect(promptCalls).toContainEqual({ agent: 'code', sessionID: 'next-coding-session' })
 
+      rmSync(worktreeDir, { recursive: true, force: true })
+    })
+
+    it('does not complete audit while the latest assistant message is still making tool calls', async () => {
+      const v2Client = createMockV2Client({
+        messagesCalls: [{ lastMessageRole: 'assistant', text: 'Still reviewing.', finish: 'tool-calls' }],
+        statusType: 'idle',
+      })
+
+      const { handler, service } = createTestHandler(v2Client as any)
+      const loopName = 'test-loop-audit-tool-calls'
+      const sessionId = 'coding-session-tool-calls'
+      const auditSessionId = 'audit-session-tool-calls'
+      const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
+      const loopsRepo = createLoopsRepo(db)
+      const now = Date.now()
+
+      loopsRepo.insert({
+        projectId: testProjectId,
+        loopName,
+        status: 'running',
+        currentSessionId: sessionId,
+        auditSessionId,
+        worktree: false,
+        worktreeDir,
+        worktreeBranch: 'dev',
+        projectDir: worktreeDir,
+        maxIterations: 0,
+        iteration: 1,
+        auditCount: 0,
+        errorCount: 0,
+        phase: 'auditing',
+        executionModel: null,
+        auditorModel: null,
+        modelFailed: false,
+        sandbox: false,
+        sandboxContainer: null,
+        startedAt: now,
+        completedAt: null,
+        terminationReason: null,
+        completionSummary: null,
+        workspaceId: null,
+        hostSessionId: null,
+      }, {
+        prompt: 'Test prompt',
+        lastAuditResult: null,
+      })
+
+      await handler.onEvent({
+        event: {
+          type: 'session.status' as const,
+          properties: {
+            status: { type: 'idle' as const },
+            sessionID: auditSessionId,
+          },
+        },
+      })
+
+      await new Promise(resolve => setTimeout(resolve, 100))
+
+      const state = service.getAnyState(loopName)
+      expect(state?.active).toBe(true)
+      expect(state?.phase).toBe('auditing')
+      expect(state?.auditCount).toBe(0)
+      expect(state?.terminationReason).toBeUndefined()
+
+      handler.clearLoopTimers(loopName)
       rmSync(worktreeDir, { recursive: true, force: true })
     })
 
@@ -1095,6 +1167,7 @@ describe('loop-hooks integration', () => {
       const workspaceId = 'test-workspace-123'
       let bindCalled = false
       let boundSessionId: string | null = null
+      let createArgs: any = null
       
       const v2Client = {
         session: {
@@ -1103,6 +1176,7 @@ describe('loop-hooks integration', () => {
           abort: async () => {},
           status: async () => ({ data: { 'test-session': { type: 'idle' } } }),
           create: async (opts: any) => {
+            createArgs = opts
             const newId = `mock-session-${Date.now()}`
             return { data: { id: newId }, error: undefined }
           },
@@ -1202,6 +1276,10 @@ describe('loop-hooks integration', () => {
       expect(boundSessionId).not.toBeNull()
       const newState = service.getAnyState(loopName)
       expect(newState?.workspaceId).toBe(workspaceId)
+      expect(createArgs).toEqual(expect.objectContaining({
+        workspaceID: workspaceId,
+      }))
+      expect(createArgs).not.toHaveProperty('parentID')
       
       rmSync(worktreeDir, { recursive: true, force: true })
     })
@@ -1210,6 +1288,7 @@ describe('loop-hooks integration', () => {
       const workspaceId = 'test-workspace-fail'
       const hostSessionId = 'host-preserve-456'
       const toastCalls: Array<{ variant?: string; message?: string }> = []
+      let createArgs: any = null
 
       const v2Client = {
         session: {
@@ -1217,7 +1296,10 @@ describe('loop-hooks integration', () => {
           promptAsync: async () => ({ data: {}, error: null }),
           abort: async () => {},
           status: async () => ({ data: { 'test-session': { type: 'idle' } } }),
-          create: async () => ({ data: { id: `mock-session-${Date.now()}` }, error: undefined }),
+          create: async (opts: any) => {
+            createArgs = opts
+            return { data: { id: `mock-session-${Date.now()}` }, error: undefined }
+          },
           delete: async () => {},
         },
         tui: {
@@ -1319,6 +1401,8 @@ describe('loop-hooks integration', () => {
       const warningToasts = toastCalls.filter((t) => t.variant === 'warning')
       expect(warningToasts.length).toBeGreaterThan(0)
       expect(warningToasts[0].message).toContain('Workspace attachment lost')
+      // Rotated session should not have parentID
+      expect(createArgs).not.toHaveProperty('parentID')
 
       rmSync(worktreeDir, { recursive: true, force: true })
     })

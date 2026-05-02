@@ -42,6 +42,7 @@ describe('createAuditSession', () => {
     const callArgs = (mockV2.session.create as any).mock.calls[0][0]
     expect(callArgs.permission).toEqual(buildAuditSessionPermissionRuleset({ isSandbox: true }))
     expect(callArgs.title).toBe('audit: test-loop #1')
+    expect(callArgs).not.toHaveProperty('parentID')
   })
 
   test('returns null on session creation error', async () => {
@@ -78,6 +79,27 @@ describe('createAuditSession', () => {
 
     const callArgs = (mockV2.session.create as any).mock.calls[0][0]
     expect(callArgs.permission).toEqual(buildAuditSessionPermissionRuleset({ isSandbox: false }))
+  })
+
+  test('creates audit session as top-level session even when previous code session exists', async () => {
+    const mockV2 = createMockV2Client()
+    const logger = { log: mock(), error: mock() } as unknown as Logger
+
+    await createAuditSession({
+      v2: mockV2 as any,
+      loopName: 'test-loop',
+      iteration: 2,
+      worktreeDir: '/tmp/test',
+      workspaceId: 'workspace-1',
+      isSandbox: false,
+      prompt: 'test prompt',
+      logger,
+    })
+
+    const callArgs = (mockV2.session.create as any).mock.calls[0][0]
+    expect(callArgs.workspace).toBe('workspace-1')
+    expect(callArgs.workspaceID).toBe('workspace-1')
+    expect(callArgs).not.toHaveProperty('parentID')
   })
 })
 

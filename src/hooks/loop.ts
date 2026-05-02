@@ -12,6 +12,7 @@ import { buildLoopPermissionRuleset } from '../constants/loop'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { createAuditSession, promptAuditSession, deleteAuditSession } from '../utils/audit-session'
+import { formatAuditSessionTitle, formatLoopSessionTitle } from '../utils/session-titles'
 
 export interface LoopEventHandler {
   onEvent(input: { event: { type: string; properties?: Record<string, unknown> } }): Promise<void>
@@ -74,7 +75,7 @@ export function createLoopEventHandler(
       logger.log(`Loop: falling back to plugin client for audit session creation (${input.loopName})`)
       const result = await client.session.create({
         body: {
-          title: `audit: ${input.loopName} #${input.iteration}`,
+          title: formatAuditSessionTitle(input.loopName, input.iteration),
           ...(input.workspaceId ? { workspaceID: input.workspaceId } : {}),
         },
         query: {
@@ -484,7 +485,7 @@ export function createLoopEventHandler(
       }
 
       const messages = (messagesResult.data ?? []) as Array<{
-        info: { role: string; error?: { name?: string; data?: { message?: string } } }
+        info: { role: string; finish?: string; error?: { name?: string; data?: { message?: string } } }
         parts: Array<{ type: string; text?: string }>
       }>
 
@@ -495,6 +496,11 @@ export function createLoopEventHandler(
         const role = lastMessage?.info.role ?? 'none'
         logger.log(`Loop: no assistant message found in session ${sessionId}, last message role: ${role}`)
         return { text: null, error: null, lastMessageRole: role }
+      }
+
+      if (lastAssistant.info.finish && lastAssistant.info.finish !== 'stop') {
+        logger.log(`Loop: assistant message in session ${sessionId} is not final yet (finish=${lastAssistant.info.finish})`)
+        return { text: null, error: null, lastMessageRole: `assistant:${lastAssistant.info.finish}` }
       }
 
       const text = lastAssistant.parts
@@ -522,7 +528,7 @@ export function createLoopEventHandler(
 
     const createResult = await createLoopSessionWithWorkspace({
       v2: v2Client,
-      title: state.loopName,
+      title: formatLoopSessionTitle(state.loopName),
       directory: sessionDir,
       permission: permissionRuleset,
       workspaceId: state.workspaceId,
@@ -684,10 +690,13 @@ export function createLoopEventHandler(
         throw new Error('loop_cancelled')
       }
       const sessionDir = freshState.worktreeDir
+      const workspaceParam = freshState.workspaceId ? { workspace: freshState.workspaceId } : {}
       logger.debug(`loop prompt: sessionID=${activeSessionId} dir=${sessionDir} agent=code model=${loopModel ? `${loopModel.providerID}/${loopModel.modelID}` : '(session default)'}`)
       const result = await v2Client.session.promptAsync({
         sessionID: activeSessionId,
         directory: sessionDir,
+        ...workspaceParam,
+        agent: 'code',
         parts: [{ type: 'text' as const, text: continuationPrompt }],
         model: loopModel,
       })
@@ -700,10 +709,13 @@ export function createLoopEventHandler(
         throw new Error('loop_cancelled')
       }
       const sessionDir = freshState.worktreeDir
+      const workspaceParam = freshState.workspaceId ? { workspace: freshState.workspaceId } : {}
       logger.debug(`loop prompt: sessionID=${activeSessionId} dir=${sessionDir} agent=code model=(default)`)
       const result = await v2Client.session.promptAsync({
         sessionID: activeSessionId,
         directory: sessionDir,
+        ...workspaceParam,
+        agent: 'code',
         parts: [{ type: 'text' as const, text: continuationPrompt }],
       })
       return { data: result.data, error: result.error }

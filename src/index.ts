@@ -194,7 +194,15 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const projectId = project.id
 
     const serverUrl = input.serverUrl
-    const v2ClientConfig: Parameters<typeof createV2Client>[0] = { baseUrl: serverUrl.toString(), directory }
+    
+    // Extract legacy fetch for in-process dispatch
+    const legacyHttp = (client as unknown as { _client?: { getConfig: () => { fetch?: typeof fetch } } })._client
+    const legacyFetch = legacyHttp?.getConfig?.().fetch
+    const v2ClientConfig: Parameters<typeof createV2Client>[0] = {
+      baseUrl: serverUrl.toString(),
+      directory,
+      ...(legacyFetch ? { fetch: legacyFetch } : {}),
+    }
     const v2 = createV2Client(v2ClientConfig)
 
     const loggingConfig = config.logging
@@ -204,6 +212,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       debug: loggingConfig?.debug ?? false,
     })
     logger.log(`Initializing plugin for directory: ${directory}, projectId: ${projectId}`)
+    logger.log(`v2 client fetch: ${legacyFetch ? 'in-process' : 'globalThis'}`)
 
     const dataDir = config.dataDir || resolveDataDir()
     

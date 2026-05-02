@@ -19,6 +19,8 @@ import { createLoopsRepo } from '../storage/repos/loops-repo'
 import type { LoopRow, LoopLargeFields } from '../storage/repos/loops-repo'
 import { createLoopWorkspace } from '../workspace/forge-worktree'
 import { createLoopSessionWithWorkspace } from './loop-session'
+import { resolveCurrentGitBranch } from './git-branch'
+import { formatLoopSessionTitle } from './session-titles'
 
 interface FreshLoopOptions {
   planText: string
@@ -146,7 +148,7 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
 
     const createResult = await createLoopSessionWithWorkspace({
       v2,
-      title: `Loop: ${title}`,
+      title: formatLoopSessionTitle(title),
       directory: hostWorktreeDir,
       permission: permissionRuleset,
       workspaceId: workspace?.workspaceId,
@@ -165,12 +167,13 @@ export async function launchFreshLoop(options: FreshLoopOptions): Promise<Launch
       console.error('loop-launch: continuing without workspace backing')
     }
   } else {
+    worktreeBranch = resolveCurrentGitBranch(directory)
     const permissionRuleset = buildLoopPermissionRuleset({
       isWorktree: false,
     })
     
     const createResult = await v2.session.create({
-      title: `Loop: ${title}`,
+      title: formatLoopSessionTitle(title),
       directory,
       permission: permissionRuleset,
     })

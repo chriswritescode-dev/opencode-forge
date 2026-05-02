@@ -43,6 +43,7 @@ export async function handleExecutePlan(
     logger: ctx.logger,
     dataDir: ctx.dataDir,
     v2: ctx.v2,
+    legacyClient: ctx.input?.client,
     plansRepo: ctx.plansRepo,
     loopsRepo: ctx.loopsRepo,
     graphStatusRepo: ctx.graphStatusRepo,

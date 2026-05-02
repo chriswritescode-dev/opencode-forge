@@ -112,6 +112,7 @@ export async function createLoopWorkspace(
   }
   try {
     const result = await workspaceApi.create({
+      id: options.loopName,
       type: FORGE_WORKTREE_WORKSPACE_TYPE,
       branch: options.branch ?? null,
       extra: {

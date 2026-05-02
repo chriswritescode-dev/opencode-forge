@@ -56,6 +56,8 @@ Graph tooling is disabled in this project, so structural lookup uses standard re
 const FOOTER = `## General guidelines
 - When doing file search or exploring the codebase, prefer the Task tool to reduce context usage.
 - Proactively use the Task tool with specialized agents — use explore agents for codebase search, and the auditor for code review.
+- For implementation work with multiple TodoWrite tasks, use the Task tool to run code subagents in fixed batches of two: launch tasks 1 and 2 in parallel, wait for both to finish, reconcile their changes, then launch tasks 3 and 4, and continue until all todo tasks are complete.
+- Each code subagent must receive one focused todo task with clear file targets, expected changes, and validation. Do not launch more than two code subagents at the same time.
 - If a task matches an available skill, use the Skill tool to load domain-specific instructions. Skill outputs persist through compaction.
 - Call multiple tools in a single response when they are independent. Batch tool calls for performance.
 - Use specialized tools (Read, Glob, Grep) instead of bash equivalents (cat, find, grep, sed, echo).
@@ -89,7 +91,7 @@ export function buildCodeAgent({ graphEnabled }: { graphEnabled: boolean }): Age
     id: 'opencode-code',
     displayName: 'code',
     description: 'Primary coding agent with graph-first code discovery',
-    mode: 'primary',
+    mode: 'all',
     color: '#3b82f6',
     permission: {
       question: 'allow',

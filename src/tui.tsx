@@ -8,13 +8,15 @@ import { VERSION } from './version'
 import { loadPluginConfig } from './setup'
 import { fetchSessionStats, type SessionStats } from './utils/session-stats'
 import { slugify } from './utils/logger'
-import { extractPlanTitle, PLAN_EXECUTION_LABELS, matchExecutionLabel, type PlanExecutionLabel } from './utils/plan-execution'
+import { extractPlanTitle } from './utils/plan-execution'
 import { formatGraphStatus } from './utils/tui-graph-status'
 import { shouldPollSidebar, type LoopInfo } from './utils/tui-refresh-helpers'
-import { resolveExecutionDialogDefaults } from './utils/tui-execution-preferences'
-import { flattenProviders, buildDialogSelectOptions, getModelDisplayLabel, sortModelsByPriority, type ModelInfo } from './utils/tui-models'
+import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
+import { createExecutionContextCache } from './utils/tui-execution-context-cache'
+import type { PluginConfig } from './types'
+import { ExecutePlanPanel } from './tui/execute-plan-panel'
 import { formatDuration, formatTokens, truncate, truncateMiddle } from './utils/format'
-import { connectForgeProject, type ApiExecutionMode, type ForgeProjectClient } from './utils/tui-client'
+import { connectForgeProject, type ForgeProjectClient } from './utils/tui-client'
 
 type TuiKeybinds = {
   viewPlan: string
@@ -59,6 +61,8 @@ function ForgeSidebarStatus(props: { api: TuiPluginApi; opts: TuiOptions; status
 function SidebarContainer(props: {
   api: TuiPluginApi
   client: () => ForgeProjectClient | null
+  cache: () => ExecutionContextCache | null
+  pluginConfig: PluginConfig
   opts: TuiOptions
   status: () => ForgeConnectionStatus
   sessionId?: string
@@ -70,7 +74,7 @@ function SidebarContainer(props: {
       when={currentClient()}
       fallback={<ForgeSidebarStatus api={props.api} opts={props.opts} status={props.status} />}
     >
-      {(client) => <Sidebar api={props.api} client={client()} opts={props.opts} sessionId={props.sessionId} />}
+      {(client) => <Sidebar api={props.api} client={client()} cache={props.cache} pluginConfig={props.pluginConfig} opts={props.opts} sessionId={props.sessionId} />}
     </Show>
   )
 }
@@ -78,9 +82,11 @@ function SidebarContainer(props: {
 function PlanViewerDialog(props: {
   api: TuiPluginApi
   client: ForgeProjectClient
+  cache: ExecutionContextCache | null
+  pluginConfig: PluginConfig
   planContent: string
   sessionId: string
-  onRefresh?: () => void | Promise<void>
+  onRefresh: () => void | Promise<void>
   startInExecuteMode?: boolean
   initialExecutionModel?: string
   initialAuditorModel?: string
@@ -93,54 +99,7 @@ function PlanViewerDialog(props: {
   const initialAuditorModelValue = () => props.initialAuditorModel ?? ''
   const [executing, setExecuting] = createSignal(startInExecuteModeValue())
   const [content, setContent] = createSignal(planContentValue())
-  const [defaultsLoaded, setDefaultsLoaded] = createSignal(false)
-  const [allModels, setAllModels] = createSignal<ModelInfo[]>([])
-  const [modelsLoaded, setModelsLoaded] = createSignal(false)
-  const [modelsError, setModelsError] = createSignal<string | undefined>(undefined)
-  const [executionModel, setExecutionModel] = createSignal<string>(initialExecutionModelValue())
-  const [auditorModel, setAuditorModel] = createSignal<string>(initialAuditorModelValue())
-  const [recentModelIds, setRecentModelIds] = createSignal<string[]>([])
   let textareaRef: TextareaRenderable | undefined
-
-  const hasInitialOverrides = props.initialExecutionModel !== undefined || props.initialAuditorModel !== undefined
-
-  const loadContext = async () => {
-    const ctx = await props.client.loadExecutionContext()
-    // defaults
-    const defaults = resolveExecutionDialogDefaults(
-      { logging: { enabled: false, file: '' } },
-      ctx.preferences,
-    )
-    if (!hasInitialOverrides) {
-      setExecutionModel(defaults.executionModel)
-      setAuditorModel(defaults.auditorModel)
-    }
-    setDefaultsLoaded(true)
-    // models
-    if (ctx.models.error) {
-      setModelsError(ctx.models.error)
-      setModelsLoaded(true)
-      return
-    }
-    const allModelList = flattenProviders(ctx.models.providers as Parameters<typeof flattenProviders>[0])
-    const recents: string[] = []
-    setRecentModelIds(recents)
-    const sorted = sortModelsByPriority(allModelList, {
-      recents,
-      connectedProviderIds: ctx.models.connectedProviderIds,
-      configuredProviderIds: ctx.models.configuredProviderIds,
-    })
-    setAllModels(sorted)
-    setModelsLoaded(true)
-  }
-
-  createEffect(() => {
-    void loadContext().catch((err) => {
-      console.error('[forge] PlanViewerDialog: loadContext failed', err)
-      setDefaultsLoaded(true)
-      setModelsLoaded(true)
-    })
-  })
 
   const handleSave = async () => {
     const text = textareaRef?.plainText ?? content()
@@ -179,108 +138,6 @@ function PlanViewerDialog(props: {
       })
     }
   }
-
-  const openModelDialog = (target: 'execution' | 'auditor') => {
-    if (!modelsLoaded()) return
-
-    const models = allModels()
-    if (modelsError() || models.length === 0) {
-      props.api.ui.toast({ message: modelsError() || 'No models available', variant: 'error', duration: 3000 })
-      return
-    }
-
-    const options = buildDialogSelectOptions(models, recentModelIds())
-    const title = target === 'execution' ? 'Execution Model' : 'Auditor Model'
-    const currentValue = target === 'execution' ? executionModel() : auditorModel()
-
-    props.api.ui.dialog.setSize('large')
-    props.api.ui.dialog.replace(() => (
-      <props.api.ui.DialogSelect
-        title={title}
-        options={options}
-        current={currentValue || ''}
-        onSelect={(opt) => {
-          const selectedModel = typeof opt.value === 'string' ? opt.value : ''
-          props.api.ui.dialog.setSize('xlarge')
-          props.api.ui.dialog.replace(() => (
-            <PlanViewerDialog
-              api={props.api}
-              client={props.client}
-              planContent={content()}
-              sessionId={props.sessionId}
-              onRefresh={props.onRefresh}
-              startInExecuteMode={true}
-              initialExecutionModel={target === 'execution' ? selectedModel : executionModel()}
-              initialAuditorModel={target === 'auditor' ? selectedModel : auditorModel()}
-            />
-          ))
-        }}
-      />
-    ))
-  }
-
-  function getModeDescription(label: string): string {
-    switch (label) {
-      case 'New session':
-        return 'Create a new session and send the plan to the code agent'
-      case 'Execute here':
-        return 'Execute the plan in the current session using the code agent'
-      case 'Loop (worktree)':
-        return 'Execute using iterative development loop in an isolated git worktree'
-      case 'Loop':
-        return 'Execute using iterative development loop in the current directory'
-      default:
-        return ''
-    }
-  }
-
-  const handleExecuteMode = async (mode: string, executionModel?: string, auditorModel?: string) => {
-    const planText = content()
-    const title = extractPlanTitle(planText)
-
-    // Use canonical label matching instead of fragile string comparison
-    const matchedLabel = matchExecutionLabel(mode)
-
-    const apiMode: ApiExecutionMode = matchedLabel === 'Execute here'
-      ? 'execute-here'
-      : matchedLabel === 'Loop'
-        ? 'loop'
-        : matchedLabel === 'Loop (worktree)'
-          ? 'loop-worktree'
-          : 'new-session'
-
-    props.api.ui.dialog.clear()
-    props.api.ui.toast({ message: 'Executing plan...', variant: 'info', duration: 3000 })
-    const result = await props.client.plan.execute(props.sessionId, {
-      mode: apiMode,
-      title,
-      plan: planText,
-      executionModel,
-      auditorModel,
-      targetSessionId: props.sessionId,
-    }, {
-      mode: matchedLabel as PlanExecutionLabel,
-      executionModel,
-      auditorModel,
-    })
-
-    if (!result) {
-      props.api.ui.toast({ message: 'Failed to execute plan', variant: 'error', duration: 3000 })
-      return
-    }
-
-    props.api.ui.toast({ message: result.loopName ? `Loop started: ${result.loopName}` : 'Plan execution started', variant: 'success', duration: 3000 })
-    props.onRefresh?.()
-    if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop-worktree' || apiMode === 'loop')) {
-      try {
-        await props.api.client.tui.selectSession({ sessionID: result.sessionId })
-      } catch {
-        try { props.api.route.navigate('session', { sessionID: result.sessionId }) } catch {}
-      }
-    }
-  }
-
-
 
   const tabIndex = () => executing() ? 2 : editing() ? 1 : 0
   let tabRef: import('@opentui/core').TabSelectRenderable | undefined
@@ -346,62 +203,35 @@ function PlanViewerDialog(props: {
       </Show>
       
       <Show when={executing()}>
-        <box flexDirection="column" paddingBottom={1} gap={1} minHeight={20} maxHeight="75%">
-          <box paddingBottom={1}>
-            <text fg={theme().text}><b>Configure and Run Plan</b></text>
-          </box>
-          <Show when={defaultsLoaded()} fallback={
-            <box flexDirection="column" gap={1} paddingBottom={1}>
-              <text fg={theme().textMuted}>Loading...</text>
-            </box>
-          }>
-            <select
-              focused={true}
-              selectedIndex={0}
-              options={[
-                {
-                  name: `Execution model: ${modelsLoaded() ? getModelDisplayLabel(executionModel(), allModels()) : 'loading...'}`,
-                  description: 'Press enter to change',
-                  value: 'model:execution',
-                },
-                {
-                  name: `Auditor model: ${modelsLoaded() ? getModelDisplayLabel(auditorModel(), allModels()) : 'loading...'}`,
-                  description: 'Press enter to change',
-                  value: 'model:auditor',
-                },
-                ...PLAN_EXECUTION_LABELS.map(label => ({
-                  name: label,
-                  description: getModeDescription(label),
-                  value: `mode:${label}`,
-                })),
-              ]}
-              onSelect={(_, option) => {
-                if (option?.value) {
-                  if (option.value === 'model:execution') {
-                    openModelDialog('execution')
-                    return
-                  }
-                  if (option.value === 'model:auditor') {
-                    openModelDialog('auditor')
-                    return
-                  }
-                  if (typeof option.value === 'string' && option.value.startsWith('mode:')) {
-                    handleExecuteMode(option.value.slice(5), executionModel(), auditorModel())
-                  }
-                }
-              }}
-              showDescription={true}
-              itemSpacing={1}
-              wrapSelection={true}
-              textColor={theme().text}
-              focusedTextColor={theme().text}
-              selectedTextColor="#ffffff"
-              selectedBackgroundColor={theme().borderActive}
-              minHeight={16}
-              flexGrow={1}
-            />
-          </Show>
-        </box>
+        <ExecutePlanPanel
+          api={props.api}
+          client={props.client}
+          cache={props.cache}
+          pluginConfig={props.pluginConfig}
+          planContent={content()}
+          sessionId={props.sessionId}
+          initialExecutionModel={initialExecutionModelValue()}
+          initialAuditorModel={initialAuditorModelValue()}
+          onBack={() => setExecuting(false)}
+          onExecuted={props.onRefresh}
+          onModelSelected={({ target, selectedModel, executionModel, auditorModel }) => {
+            props.api.ui.dialog.setSize('xlarge')
+            props.api.ui.dialog.replace(() => (
+              <PlanViewerDialog
+                api={props.api}
+                client={props.client}
+                cache={props.cache}
+                pluginConfig={props.pluginConfig}
+                planContent={content()}
+                sessionId={props.sessionId}
+                onRefresh={props.onRefresh}
+                startInExecuteMode={true}
+                initialExecutionModel={target === 'execution' ? selectedModel : executionModel}
+                initialAuditorModel={target === 'auditor' ? selectedModel : auditorModel}
+              />
+            ))
+          }}
+        />
       </Show>
       
       <box paddingTop={1} flexShrink={0} flexDirection="row" gap={2}>
@@ -625,7 +455,14 @@ function LoopDetailsDialog(props: { api: TuiPluginApi; client: ForgeProjectClien
   )
 }
 
-function Sidebar(props: { api: TuiPluginApi; client: ForgeProjectClient; opts: TuiOptions; sessionId?: string }) {
+function Sidebar(props: {
+  api: TuiPluginApi
+  client: ForgeProjectClient
+  cache: () => ExecutionContextCache | null
+  pluginConfig: PluginConfig
+  opts: TuiOptions
+  sessionId?: string
+}) {
   const [open, setOpen] = createSignal(true)
   const [loops, setLoops] = createSignal<LoopInfo[]>([])
   const [hasPlan, setHasPlan] = createSignal(false)
@@ -831,7 +668,15 @@ function Sidebar(props: { api: TuiPluginApi; client: ForgeProjectClient; opts: T
                 const refreshSidebar = refreshSidebarData
                 props.api.ui.dialog.setSize("xlarge")
                 props.api.ui.dialog.replace(() => (
-                  <PlanViewerDialog api={props.api} client={props.client} planContent={plan} sessionId={props.sessionId!} onRefresh={refreshSidebar} />
+                  <PlanViewerDialog
+                    api={props.api}
+                    client={props.client}
+                    cache={props.cache()}
+                    pluginConfig={props.pluginConfig}
+                    planContent={plan}
+                    sessionId={props.sessionId!}
+                    onRefresh={refreshSidebar}
+                  />
                 ))
               }}
             >
@@ -911,6 +756,7 @@ const tui: TuiPlugin = async (api) => {
 
   const [client, setClient] = createSignal<ForgeProjectClient | null>(null)
   const [connectionStatus, setConnectionStatus] = createSignal<ForgeConnectionStatus>('connecting')
+  const [executionContextCache, setExecutionContextCache] = createSignal<ExecutionContextCache | null>(null)
   let connectPromise: Promise<ForgeProjectClient | null> | null = null
   let disposed = false
   let unavailableToastShown = false
@@ -951,6 +797,14 @@ const tui: TuiPlugin = async (api) => {
       if (!connected) {
         showUnavailableToast()
         scheduleClientRetry()
+      } else if (connected && connected.projectId) {
+        const cache = createExecutionContextCache(
+          connected.projectId,
+          pluginConfig,
+          () => connected.loadExecutionContext(),
+        )
+        void cache.ensureLoaded().catch((err) => console.error('[forge] execution context preload failed', err))
+        setExecutionContextCache(cache)
       }
       return connected
     })).catch((err) => untrack(() => {
@@ -1058,9 +912,18 @@ const tui: TuiPlugin = async (api) => {
           api.ui.toast({ message: 'No plan found for this session', variant: 'info', duration: 3000 })
           return
         }
+        const cache = executionContextCache()
         api.ui.dialog.setSize("xlarge")
         api.ui.dialog.replace(() => (
-          <PlanViewerDialog api={api} client={currentClient} planContent={freshPlan} sessionId={sessionID} onRefresh={refreshSidebar} />
+          <PlanViewerDialog
+            api={api}
+            client={currentClient}
+            cache={cache}
+            pluginConfig={pluginConfig}
+            planContent={freshPlan}
+            sessionId={sessionID}
+            onRefresh={refreshSidebar}
+          />
         ))
       },
     }, {
@@ -1078,9 +941,19 @@ const tui: TuiPlugin = async (api) => {
           api.ui.toast({ message: 'No plan found for this session', variant: 'info', duration: 3000 })
           return
         }
+        const cache = executionContextCache()
         api.ui.dialog.setSize("xlarge")
         api.ui.dialog.replace(() => (
-          <PlanViewerDialog api={api} client={currentClient} planContent={freshPlan} sessionId={sessionID} onRefresh={refreshSidebar} startInExecuteMode={true} />
+          <PlanViewerDialog
+            api={api}
+            client={currentClient}
+            cache={cache}
+            pluginConfig={pluginConfig}
+            planContent={freshPlan}
+            sessionId={sessionID}
+            onRefresh={refreshSidebar}
+            startInExecuteMode={true}
+          />
         ))
       },
     }]
@@ -1090,7 +963,15 @@ const tui: TuiPlugin = async (api) => {
     order: 150,
     slots: {
       sidebar_content(_ctx, slotProps) {
-        return <SidebarContainer api={api} client={client} opts={opts} status={connectionStatus} sessionId={slotProps.session_id} />
+        return <SidebarContainer
+          api={api}
+          client={client}
+          cache={executionContextCache}
+          pluginConfig={pluginConfig}
+          opts={opts}
+          status={connectionStatus}
+          sessionId={slotProps.session_id}
+        />
       },
     },
   })

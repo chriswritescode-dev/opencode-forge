@@ -75,7 +75,7 @@ function createTestDb(): Database {
       scenario TEXT,
       branch TEXT,
       created_at INTEGER NOT NULL,
-      PRIMARY KEY (project_id, file, line)
+      PRIMARY KEY (project_id, branch, file, line)
     )
   `)
   return db

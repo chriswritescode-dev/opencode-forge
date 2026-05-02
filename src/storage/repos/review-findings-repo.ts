@@ -21,14 +21,22 @@ export interface ReviewFindingsRepo {
   listAll(projectId: string): ReviewFindingRow[]
   listByBranch(projectId: string, branch: string | null): ReviewFindingRow[]
   listByFile(projectId: string, file: string): ReviewFindingRow[]
-  delete(projectId: string, file: string, line: number): boolean
+  delete(projectId: string, file: string, line: number, branch?: string | null): boolean
 }
 
 export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
+  function branchToDb(branch: string | null | undefined): string {
+    return branch ?? ''
+  }
+
+  function branchFromDb(branch: string): string | null {
+    return branch === '' ? null : branch
+  }
+
   const stmtWrite = db.prepare(`
-    INSERT INTO review_findings (project_id, file, line, severity, description, scenario, branch, created_at)
+    INSERT INTO review_findings (project_id, branch, file, line, severity, description, scenario, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT (project_id, file, line) DO NOTHING
+    ON CONFLICT (project_id, branch, file, line) DO NOTHING
     RETURNING 1
   `)
 
@@ -49,7 +57,7 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
   const stmtListByBranch = db.prepare(`
     SELECT project_id, file, line, severity, description, scenario, branch, created_at
     FROM review_findings
-    WHERE project_id = ? AND (branch = ? OR (branch IS NULL AND ? IS NULL))
+    WHERE project_id = ? AND branch = ?
     ORDER BY file, line
   `)
 
@@ -65,15 +73,20 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
     WHERE project_id = ? AND file = ? AND line = ?
   `)
 
+  const stmtDeleteWithBranch = db.prepare(`
+    DELETE FROM review_findings
+    WHERE project_id = ? AND branch = ? AND file = ? AND line = ?
+  `)
+
   function write(row: Omit<ReviewFindingRow, 'createdAt' | 'scenario'> & { scenario?: string | null }): WriteFindingResult {
     const result = stmtWrite.run(
       row.projectId,
+      branchToDb(row.branch),
       row.file,
       row.line,
       row.severity,
       row.description,
       toScenario(row.scenario),
-      row.branch,
       Date.now()
     )
     if (result.changes > 0) {
@@ -90,7 +103,7 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
       severity: 'bug' | 'warning'
       description: string
       scenario: string | null
-      branch: string | null
+      branch: string
       created_at: number
     }>
     return rows.map(row => ({
@@ -100,20 +113,21 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
       severity: row.severity,
       description: row.description,
       scenario: row.scenario,
-      branch: row.branch,
+      branch: branchFromDb(row.branch),
       createdAt: row.created_at,
     }))
   }
 
   function listByBranch(projectId: string, branch: string | null): ReviewFindingRow[] {
-    const rows = stmtListByBranch.all(projectId, branch, branch) as Array<{
+    const dbBranch = branchToDb(branch)
+    const rows = stmtListByBranch.all(projectId, dbBranch) as Array<{
       project_id: string
       file: string
       line: number
       severity: 'bug' | 'warning'
       description: string
       scenario: string | null
-      branch: string | null
+      branch: string
       created_at: number
     }>
     return rows.map(row => ({
@@ -123,7 +137,7 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
       severity: row.severity,
       description: row.description,
       scenario: row.scenario,
-      branch: row.branch,
+      branch: branchFromDb(row.branch),
       createdAt: row.created_at,
     }))
   }
@@ -136,7 +150,7 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
       severity: 'bug' | 'warning'
       description: string
       scenario: string | null
-      branch: string | null
+      branch: string
       created_at: number
     }>
     return rows.map(row => ({
@@ -146,12 +160,16 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
       severity: row.severity,
       description: row.description,
       scenario: row.scenario,
-      branch: row.branch,
+      branch: branchFromDb(row.branch),
       createdAt: row.created_at,
     }))
   }
 
-  function deleteFinding(projectId: string, file: string, line: number): boolean {
+  function deleteFinding(projectId: string, file: string, line: number, branch?: string | null): boolean {
+    if (branch !== undefined) {
+      const result = stmtDeleteWithBranch.run(projectId, branchToDb(branch), file, line)
+      return result.changes > 0
+    }
     const result = stmtDelete.run(projectId, file, line)
     return result.changes > 0
   }

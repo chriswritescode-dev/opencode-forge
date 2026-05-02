@@ -12,7 +12,7 @@ import {
   type ModelInfo,
 } from '../src/utils/tui-models'
 
-function createMockApi(listFn: any, configProviders?: string[]): TuiPluginApi {
+function createMockApi(listFn: any, configProviders?: string[], configProvidersFn?: any): TuiPluginApi {
   return {
     state: {
       config: {
@@ -25,6 +25,9 @@ function createMockApi(listFn: any, configProviders?: string[]): TuiPluginApi {
     client: {
       provider: {
         list: listFn,
+      } as any,
+      config: {
+        providers: configProvidersFn,
       } as any,
     } as any,
     ui: {
@@ -48,7 +51,7 @@ function createMockApi(listFn: any, configProviders?: string[]): TuiPluginApi {
 }
 
 describe('fetchAvailableModels', () => {
-  test('returns providers array on success', async () => {
+  test('returns providers array on success using config.providers', async () => {
     const mockProviders: any = [
       {
         id: 'anthropic',
@@ -67,38 +70,24 @@ describe('fetchAvailableModels', () => {
           },
         },
       },
-      {
-        id: 'openai',
-        name: 'OpenAI',
-        models: {
-          'gpt-4-turbo': {
-            id: 'gpt-4-turbo',
-            name: 'GPT-4 Turbo',
-            capabilities: {
-              temperature: true,
-              toolcall: true,
-              reasoning: false,
-              attachment: false,
-            },
-            cost: { input: 0.01, output: 0.03 },
-          },
-        },
-      },
     ]
 
-    const mockApi = createMockApi(mock(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } })), ['openai'])
+    const configProvidersMock = mock(() => Promise.resolve({ data: { providers: mockProviders } }))
+    const listFn = mock(() => Promise.resolve({ data: { all: [], connected: [] } }))
+    const mockApi = createMockApi(listFn, ['anthropic'], configProvidersMock)
 
     const result = await fetchAvailableModels(mockApi)
 
     expect(result.error).toBeUndefined()
-    expect(result.providers).toHaveLength(2)
+    expect(result.providers).toHaveLength(1)
     expect(result.providers[0].id).toBe('anthropic')
     expect(result.providers[0].name).toBe('Anthropic')
     expect(result.providers[0].models).toHaveLength(1)
     expect(result.providers[0].models[0].fullName).toBe('anthropic/claude-sonnet-4-20250514')
-    expect(result.providers[1].id).toBe('openai')
     expect(result.connectedProviderIds).toEqual(['anthropic'])
-    expect(result.configuredProviderIds).toEqual(['openai'])
+    expect(result.configuredProviderIds).toEqual(['anthropic'])
+    expect(configProvidersMock).toHaveBeenCalled()
+    expect(listFn).not.toHaveBeenCalled()
   })
 
   test('returns empty providers array when no providers exist', async () => {
@@ -155,13 +144,102 @@ describe('fetchAvailableModels', () => {
       },
     ]
 
-    const mockApi = createMockApi(mock(() => Promise.resolve({ data: { all: mockProviders, connected: [] } })))
+    const configProvidersMock = mock(() => Promise.resolve({ data: { providers: mockProviders } }))
+    const mockApi = createMockApi(mock(() => {}), [], configProvidersMock)
 
     const result = await fetchAvailableModels(mockApi)
 
     expect(result.error).toBeUndefined()
     expect(result.providers).toHaveLength(1)
     expect(result.providers[0].models).toHaveLength(0)
+  })
+
+  test('falls back to provider.list when config.providers is unavailable', async () => {
+    const mockProviders: any = [
+      {
+        id: 'anthropic',
+        name: 'Anthropic',
+        models: {
+          'claude-sonnet': {
+            id: 'claude-sonnet',
+            name: 'Claude Sonnet',
+            capabilities: { temperature: true, toolcall: true, reasoning: false, attachment: true },
+          },
+        },
+      },
+      {
+        id: 'openai',
+        name: 'OpenAI',
+        models: {
+          'gpt-4': {
+            id: 'gpt-4',
+            name: 'GPT-4',
+            capabilities: { temperature: true, toolcall: true, reasoning: false, attachment: false },
+          },
+        },
+      },
+      {
+        id: 'google',
+        name: 'Google',
+        models: {
+          'gemini': {
+            id: 'gemini',
+            name: 'Gemini',
+            capabilities: { temperature: true, toolcall: true, reasoning: false, attachment: false },
+          },
+        },
+      },
+    ]
+
+    const listFn = mock(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
+    const mockApi = createMockApi(listFn, ['anthropic'], undefined)
+
+    const result = await fetchAvailableModels(mockApi)
+
+    expect(result.error).toBeUndefined()
+    expect(result.providers).toHaveLength(1)
+    expect(result.providers[0].id).toBe('anthropic')
+    expect(result.connectedProviderIds).toEqual(['anthropic'])
+  })
+
+  test('returns empty favorites when state has no favorite models', async () => {
+    const configProvidersMock = mock(() => Promise.resolve({ data: { providers: [] } }))
+    const mockApi = createMockApi(mock(() => {}), [], configProvidersMock)
+    ;(mockApi.state as any).local = {}
+
+    const result = await fetchAvailableModels(mockApi)
+
+    expect(result.favoriteModels).toEqual([])
+  })
+
+  test('reads favorite models from state.local.model.favorite', async () => {
+    const mockProviders: any = [
+      {
+        id: 'anthropic',
+        name: 'Anthropic',
+        models: {
+          'claude': {
+            id: 'claude',
+            name: 'Claude',
+            capabilities: { temperature: true, toolcall: true, reasoning: false, attachment: true },
+          },
+        },
+      },
+    ]
+
+    const configProvidersMock = mock(() => Promise.resolve({ data: { providers: mockProviders } }))
+    const mockApi = createMockApi(mock(() => {}), [], configProvidersMock)
+    ;(mockApi.state as any).local = {
+      model: {
+        favorite: [
+          { providerID: 'anthropic', modelID: 'claude' },
+        ],
+      },
+    }
+
+    const result = await fetchAvailableModels(mockApi)
+
+    expect(result.favoriteModels).toEqual(['anthropic/claude'])
   })
 })
 
@@ -476,6 +554,68 @@ describe('buildDialogSelectOptions', () => {
     expect(result.filter(r => r.value === 'anthropic/claude')).toHaveLength(1)
     expect(result.filter(r => r.value === 'openai/gpt-4')).toHaveLength(1)
   })
+
+  test('shows favorites before recents with Favorites category', () => {
+    const models: ModelInfo[] = [
+      {
+        id: 'claude',
+        name: 'Claude',
+        providerID: 'anthropic',
+        providerName: 'Anthropic',
+        fullName: 'anthropic/claude',
+      },
+      {
+        id: 'gpt-4',
+        name: 'GPT-4',
+        providerID: 'openai',
+        providerName: 'OpenAI',
+        fullName: 'openai/gpt-4',
+      },
+      {
+        id: 'gemini',
+        name: 'Gemini',
+        providerID: 'google',
+        providerName: 'Google',
+        fullName: 'google/gemini',
+      },
+    ]
+
+    const result = buildDialogSelectOptions(
+      models,
+      ['google/gemini', 'openai/gpt-4'], // recents
+      ['openai/gpt-4'] // favorites
+    )
+
+    expect(result[0].title).toBe('Use default')
+    expect(result[1].title).toBe('GPT-4')
+    expect(result[1].category).toBe('Favorites')
+    expect(result[2].title).toBe('Gemini')
+    expect(result[2].category).toBe('Recent')
+    expect(result[3].title).toBe('Claude')
+    expect(result[3].category).toBe('Anthropic')
+  })
+
+  test('hides disconnected favorites and recents from options', () => {
+    const models: ModelInfo[] = [
+      {
+        id: 'claude',
+        name: 'Claude',
+        providerID: 'anthropic',
+        providerName: 'Anthropic',
+        fullName: 'anthropic/claude',
+      },
+    ]
+
+    const result = buildDialogSelectOptions(
+      models,
+      ['google/gemini'], // recents (disconnected)
+      ['openai/gpt-4'] // favorites (disconnected)
+    )
+
+    expect(result).toHaveLength(2) // Use default + Claude
+    expect(result[0].title).toBe('Use default')
+    expect(result[1].title).toBe('Claude')
+  })
 })
 
 describe('sortModelsByPriority', () => {
@@ -552,6 +692,71 @@ describe('sortModelsByPriority', () => {
       'openai/gpt-4',
       'google/gemini',
     ])
+  })
+
+  test('prioritizes favorites before recents', () => {
+    const models: ModelInfo[] = [
+      {
+        id: 'claude',
+        name: 'Claude',
+        providerID: 'anthropic',
+        providerName: 'Anthropic',
+        fullName: 'anthropic/claude',
+      },
+      {
+        id: 'gpt-4',
+        name: 'GPT-4',
+        providerID: 'openai',
+        providerName: 'OpenAI',
+        fullName: 'openai/gpt-4',
+      },
+      {
+        id: 'gemini',
+        name: 'Gemini',
+        providerID: 'google',
+        providerName: 'Google',
+        fullName: 'google/gemini',
+      },
+    ]
+
+    const result = sortModelsByPriority(models, {
+      favorites: ['openai/gpt-4'],
+      recents: ['google/gemini'],
+      connectedProviderIds: ['anthropic', 'openai'],
+    })
+
+    expect(result.map(model => model.fullName)).toEqual([
+      'openai/gpt-4', // favorite
+      'google/gemini', // recent
+      'anthropic/claude', // connected provider
+    ])
+  })
+
+  test('does not mutate input array', () => {
+    const models: ModelInfo[] = [
+      {
+        id: 'claude',
+        name: 'Claude',
+        providerID: 'anthropic',
+        providerName: 'Anthropic',
+        fullName: 'anthropic/claude',
+      },
+      {
+        id: 'gpt-4',
+        name: 'GPT-4',
+        providerID: 'openai',
+        providerName: 'OpenAI',
+        fullName: 'openai/gpt-4',
+      },
+    ]
+    const original = [...models]
+
+    sortModelsByPriority(models, {
+      recents: ['openai/gpt-4'],
+      connectedProviderIds: ['anthropic'],
+    })
+
+    expect(models).toEqual(original)
   })
 })
 

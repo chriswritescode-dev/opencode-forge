@@ -71,14 +71,14 @@ function createTestDb(): Database {
   db.run(`
     CREATE TABLE IF NOT EXISTS review_findings (
       project_id   TEXT NOT NULL,
+      branch       TEXT NOT NULL DEFAULT '',
       file         TEXT NOT NULL,
       line         INTEGER NOT NULL,
       severity     TEXT NOT NULL CHECK(severity IN ('bug','warning')),
       description  TEXT NOT NULL,
       scenario     TEXT,
-      branch       TEXT,
       created_at   INTEGER NOT NULL,
-      PRIMARY KEY (project_id, file, line)
+      PRIMARY KEY (project_id, branch, file, line)
     )
   `)
   db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_branch ON review_findings(project_id, branch)`)
@@ -107,9 +107,11 @@ const mockLogger: Logger = {
 
 function createToolContext(db: Database, reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>, loopService: ReturnType<typeof createLoopService>) {
   const plansRepo = createPlansRepo(db)
+  const loopsRepo = createLoopsRepo(db)
   return {
     reviewFindingsRepo,
     plansRepo,
+    loopsRepo,
     projectId: 'test-project',
     logger: mockLogger,
     loopService,

@@ -12,6 +12,7 @@ import { join } from 'path'
 import { resolveDataDir } from '../../storage'
 import { listLoopStatesFromDb } from '../../storage/cli-helpers'
 import { createLoopSessionWithWorkspace } from '../../utils/loop-session'
+import { formatLoopSessionTitle } from '../../utils/session-titles'
 
 interface RestartArgs {
   dbPath?: string
@@ -117,7 +118,7 @@ export async function run(argv: RestartArgs): Promise<void> {
 
     const createResult = await createLoopSessionWithWorkspace({
       v2: client,
-      title: state.loopName,
+      title: formatLoopSessionTitle(state.loopName),
       directory: sessionDir,
       permission: permissionRuleset,
       workspaceId: state.workspaceId,

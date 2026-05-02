@@ -222,6 +222,7 @@ describe('Fresh Loop Launch', () => {
       worktreeCreateInput: { name: 'test-plan' }, // Falls back to title since no Loop Name field
     })
     expect(mockApi.client.experimental?.workspace?.create).toHaveBeenCalledWith({
+      id: 'test-plan',
       type: 'forge-worktree',
       branch: 'opencode/loop-test-plan',
       extra: {
@@ -232,7 +233,7 @@ describe('Fresh Loop Launch', () => {
     })
     expect(mockApi.client.session.create).toHaveBeenCalled()
     expect(mockApi.client.session.create).toHaveBeenCalledWith(expect.objectContaining({
-      workspaceID: expect.stringMatching(/^mock-workspace-/),
+      workspace: 'test-plan',
     }))
   })
 
@@ -898,6 +899,82 @@ describe('Fresh Loop Launch', () => {
 
     // Verify first prompt was sent
     expect(promptAsyncSpy).toHaveBeenCalled()
+  })
+
+  test('Creates in-place loop with hostSessionId metadata but no parentID', async () => {
+    const mockApi = createMockApi()
+    const sessionCreateSpy = mock(async () => ({ data: { id: 'test-session' } }))
+    mockApi.client.session.create = sessionCreateSpy as any
+    
+    const hostSessionId = 'host-session-123'
+    
+    const result = await launchFreshLoop({
+      planText,
+      title,
+      directory: TEST_DIR,
+      projectId,
+      isWorktree: false,
+      hostSessionId,
+      v2: mockApi.client,
+      dbPath,
+    })
+
+    expect(result).toBeDefined()
+    
+    // Verify session.create was called without parentID
+    const createArgs = (mockApi.client.session.create as ReturnType<typeof mock>).mock.calls[0]?.[0]
+    expect(createArgs).toEqual(expect.objectContaining({
+      title: expect.stringContaining('Loop:'),
+      directory: TEST_DIR,
+    }))
+    expect(createArgs).not.toHaveProperty('parentID')
+    
+    // Verify host_session_id persists in loop row
+    const loopRow = db.prepare(
+      'SELECT host_session_id FROM loops WHERE project_id = ? AND loop_name LIKE ?'
+    ).get(projectId, 'test-plan%') as { host_session_id: string | null } | null
+    
+    expect(loopRow).toBeDefined()
+    expect(loopRow?.host_session_id).toBe(hostSessionId)
+  })
+
+  test('Creates worktree loop with hostSessionId metadata but no parentID', async () => {
+    const mockApi = createMockApi()
+    const sessionCreateSpy = mock(async () => ({ data: { id: 'test-session' } }))
+    mockApi.client.session.create = sessionCreateSpy as any
+    
+    const hostSessionId = 'host-session-456'
+    
+    const result = await launchFreshLoop({
+      planText,
+      title,
+      directory: TEST_DIR,
+      projectId,
+      isWorktree: true,
+      hostSessionId,
+      sandboxEnabled: false,
+      skipSandboxWait: true,
+      v2: mockApi.client,
+      dbPath,
+    })
+
+    expect(result).toBeDefined()
+    expect(result?.isWorktree).toBe(true)
+    
+    // Verify session.create was called without parentID
+    const createArgs = (mockApi.client.session.create as ReturnType<typeof mock>).mock.calls[0]?.[0]
+    expect(createArgs).toEqual(expect.objectContaining({
+      title: expect.stringContaining('Loop:'),
+    }))
+    expect(createArgs).not.toHaveProperty('parentID')
+    
+    // Verify host_session_id persists in loop row
+    const loopRow = db.prepare(
+      'SELECT host_session_id FROM loops WHERE project_id = ? AND loop_name LIKE ?'
+    ).get(projectId, 'test-plan%') as { host_session_id: string | null } | null
+    
+    expect(loopRow).toBeDefined()
+    expect(loopRow?.host_session_id).toBe(hostSessionId)
   })
   
   test('retryWithModelFallback retries and falls back to default model', async () => {

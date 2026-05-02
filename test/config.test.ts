@@ -182,6 +182,18 @@ describe('createConfigHandler', () => {
       expect(tools['review-delete']).toBe(false)
     })
 
+    test('code agent is available as both primary and subagent', async () => {
+      const configHandler = createConfigHandler(agents)
+      const config: Record<string, unknown> = {}
+
+      await configHandler(config)
+
+      const agentConfigs = config.agent as Record<string, unknown>
+      const code = agentConfigs.code as Record<string, unknown>
+
+      expect(code.mode).toBe('all')
+    })
+
     test('code agent excluded tools are mirrored to permission: deny (opencode enforces via permission, not tools)', async () => {
       const configHandler = createConfigHandler(agents)
       const config: Record<string, unknown> = {}

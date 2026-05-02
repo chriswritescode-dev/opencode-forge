@@ -33,6 +33,11 @@ export interface ProviderInfo {
   models: ModelInfo[]
 }
 
+export interface ModelKey {
+  providerID: string
+  modelID: string
+}
+
 /**
  * Result of fetching available models, distinguishing success from failure.
  */
@@ -40,13 +45,72 @@ export interface FetchModelsResult {
   providers: ProviderInfo[]
   connectedProviderIds: string[]
   configuredProviderIds: string[]
+  favoriteModels?: string[]
   error?: string
 }
 
 export interface ModelSortOptions {
   recents?: string[]
+  favorites?: string[]
   connectedProviderIds?: string[]
   configuredProviderIds?: string[]
+  connectedOnly?: boolean
+}
+
+/**
+ * Converts a ModelKey to its full name representation.
+ */
+export function toFullModelName(key: ModelKey): string {
+  return `${key.providerID}/${key.modelID}`
+}
+
+/**
+ * Normalizes an unknown input to a ModelKey if possible.
+ * Returns null for malformed values.
+ */
+export function normalizeModelKey(input: unknown): ModelKey | null {
+  if (!input || typeof input !== 'object') return null
+  const obj = input as Record<string, unknown>
+  if (typeof obj.providerID !== 'string' || typeof obj.modelID !== 'string') return null
+  return { providerID: obj.providerID, modelID: obj.modelID }
+}
+
+/**
+ * Reads favorite models from OpenCode TUI state if exposed.
+ * Probes multiple possible state shapes defensively.
+ * Returns full model names (provider/model).
+ */
+export function readOpenCodeFavoriteModels(api: TuiPluginApi): string[] {
+  const state = api.state as Record<string, unknown>
+  
+  // Probe supported shapes in order
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stateAny = state as any
+  const candidates = [
+    stateAny?.local?.model?.favorite,
+    stateAny?.model?.favorite,
+    stateAny?.models?.favorite,
+  ]
+  
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) {
+      const normalized = candidate.map(normalizeModelKey).filter((k): k is ModelKey => k !== null)
+      return normalized.map(toFullModelName)
+    }
+    if (typeof candidate === 'function') {
+      try {
+        const result = candidate()
+        if (Array.isArray(result)) {
+          const normalized = result.map(normalizeModelKey).filter((k): k is ModelKey => k !== null)
+          return normalized.map(toFullModelName)
+        }
+      } catch {
+        // Ignore function call errors
+      }
+    }
+  }
+  
+  return []
 }
 
 /**
@@ -59,6 +123,59 @@ export async function fetchAvailableModels(api: TuiPluginApi): Promise<FetchMode
   try {
     const directory = api.state.path.directory
     const configuredProviderIds = Object.keys(api.state.config?.provider ?? {})
+    const favoriteModels = readOpenCodeFavoriteModels(api)
+    
+    // Try config.providers first (OpenCode approach)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const configProvidersFn = api.client.config?.providers as any
+    const configProvidersResult = configProvidersFn
+      ? await configProvidersFn({ directory }).catch(() => null)
+      : null
+    
+    if (configProvidersResult && !configProvidersResult.error && configProvidersResult.data?.providers) {
+      const providers: ProviderInfo[] = []
+      const connectedProviderIds = (configProvidersResult.data.providers as Array<Record<string, unknown>>).map((p) => (p.id as string) ?? '').filter(Boolean)
+      
+      for (const provider of configProvidersResult.data.providers as Array<Record<string, unknown>>) {
+        const models: ModelInfo[] = []
+        
+        if ((provider.models as Record<string, unknown> | undefined)) {
+          for (const modelData of Object.values(provider.models as Record<string, unknown>)) {
+            const md = modelData as Record<string, unknown>
+            models.push({
+              id: md.id as string,
+              name: md.name as string,
+              providerID: provider.id as string,
+              providerName: provider.name as string,
+              fullName: `${provider.id}/${md.id as string}`,
+              releaseDate: md.release_date as string | undefined,
+              capabilities: {
+                temperature: (md.capabilities as Record<string, unknown> | undefined)?.temperature as boolean | undefined,
+                toolcall: (md.capabilities as Record<string, unknown> | undefined)?.toolcall as boolean | undefined,
+                reasoning: (md.capabilities as Record<string, unknown> | undefined)?.reasoning as boolean | undefined,
+                attachment: (md.capabilities as Record<string, unknown> | undefined)?.attachment as boolean | undefined,
+              },
+              cost: md.cost as { input?: number; output?: number } | undefined,
+            })
+          }
+        }
+        
+        providers.push({
+          id: provider.id as string,
+          name: provider.name as string,
+          models,
+        })
+      }
+      
+      return {
+        providers,
+        connectedProviderIds,
+        configuredProviderIds,
+        favoriteModels,
+      }
+    }
+    
+    // Fallback to provider.list
     const result = await api.client.provider.list({ directory })
     
     if (result.error) {
@@ -68,6 +185,7 @@ export async function fetchAvailableModels(api: TuiPluginApi): Promise<FetchMode
         providers: [],
         connectedProviderIds: [],
         configuredProviderIds,
+        favoriteModels,
         error: nestedErrorMsg || errorMsg,
       }
     }
@@ -77,14 +195,19 @@ export async function fetchAvailableModels(api: TuiPluginApi): Promise<FetchMode
         providers: [],
         connectedProviderIds: [],
         configuredProviderIds,
+        favoriteModels,
         error: 'No provider data returned',
       }
     }
     
     const providers: ProviderInfo[] = []
     const allModels = result.data.all || []
+    const connected = result.data.connected || []
     
+    // Filter to only connected providers
     for (const provider of allModels) {
+      if (!connected.includes(provider.id)) continue
+      
       const models: ModelInfo[] = []
       
       if (provider.models) {
@@ -116,14 +239,16 @@ export async function fetchAvailableModels(api: TuiPluginApi): Promise<FetchMode
     
     return {
       providers,
-      connectedProviderIds: result.data.connected || [],
+      connectedProviderIds: connected,
       configuredProviderIds,
+      favoriteModels,
     }
   } catch (err) {
     return { 
       providers: [], 
       connectedProviderIds: [],
       configuredProviderIds: Object.keys(api.state.config?.provider ?? {}),
+      favoriteModels: readOpenCodeFavoriteModels(api),
       error: err instanceof Error ? err.message : 'Failed to fetch providers' 
     }
   }
@@ -170,6 +295,7 @@ export function buildModelOptions(
 export function buildDialogSelectOptions(
   models: ModelInfo[],
   recents: string[] = [],
+  favorites: string[] = [],
 ): Array<{ title: string; value: string; description?: string; category?: string }> {
   const defaultOption = {
     title: 'Use default',
@@ -180,6 +306,22 @@ export function buildDialogSelectOptions(
   const modelMap = new Map(models.map(m => [m.fullName, m]))
   const usedInSections = new Set<string>()
 
+  // Build favorite options first
+  const favoriteOptions = favorites
+    .filter(fn => !usedInSections.has(fn))
+    .map(fn => modelMap.get(fn))
+    .filter((m): m is ModelInfo => !!m)
+    .map(m => {
+      usedInSections.add(m.fullName)
+      return {
+        title: m.name,
+        value: m.fullName,
+        description: m.providerName,
+        category: 'Favorites',
+      }
+    })
+
+  // Build recent options next
   const recentOptions = recents
     .filter(fn => !usedInSections.has(fn))
     .map(fn => modelMap.get(fn))
@@ -194,6 +336,7 @@ export function buildDialogSelectOptions(
       }
     })
 
+  // Build provider options last (excluding usedInSections)
   const providerOptions = models
     .filter(m => !usedInSections.has(m.fullName))
     .map(m => ({
@@ -203,7 +346,7 @@ export function buildDialogSelectOptions(
       category: m.providerName,
     }))
 
-  return [defaultOption, ...recentOptions, ...providerOptions]
+  return [defaultOption, ...favoriteOptions, ...recentOptions, ...providerOptions]
 }
 
 /**
@@ -286,15 +429,22 @@ export function recordRecentModel(projectId: string, modelFullName: string, dbPa
 }
 
 /**
- * Sorts models by priority: recent first, then alphabetically.
+ * Sorts models by priority: favorites first, then recents, then by provider priority.
+ * Returns a sorted copy without mutating the input array.
  */
 export function sortModelsByPriority(
   models: ModelInfo[],
   options: ModelSortOptions = {}
 ): ModelInfo[] {
+  const favoriteSet = new Set(options.favorites ?? [])
   const recentSet = new Set(options.recents ?? [])
   const connectedProviderSet = new Set(options.connectedProviderIds ?? [])
   const configuredProviderSet = new Set(options.configuredProviderIds ?? [])
+  
+  // Filter to connected-only if requested and connectedProviderIds is not empty
+  const sortable = options.connectedOnly && connectedProviderSet.size > 0
+    ? models.filter(model => connectedProviderSet.has(model.providerID))
+    : [...models]
 
   const getProviderPriority = (model: ModelInfo) => {
     if (connectedProviderSet.has(model.providerID)) return 0
@@ -302,11 +452,17 @@ export function sortModelsByPriority(
     return 2
   }
   
-  return models.sort((a, b) => {
+  return sortable.sort((a, b) => {
+    const aIsFavorite = favoriteSet.has(a.fullName)
+    const bIsFavorite = favoriteSet.has(b.fullName)
     const aIsRecent = recentSet.has(a.fullName)
     const bIsRecent = recentSet.has(b.fullName)
 
-    // Recents first
+    // Favorites first
+    if (aIsFavorite && !bIsFavorite) return -1
+    if (!aIsFavorite && bIsFavorite) return 1
+
+    // Then recents
     if (aIsRecent && !bIsRecent) return -1
     if (!aIsRecent && bIsRecent) return 1
 

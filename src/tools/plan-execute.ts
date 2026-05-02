@@ -2,6 +2,7 @@ import { tool } from '@opencode-ai/plugin'
 import type { ToolContext } from './types'
 import { createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
 import { captureLatestPlanForSession } from '../services/plan-capture'
+import { formatPlanSessionTitle } from '../utils/session-titles'
 
 const z = tool.schema
 
@@ -45,7 +46,7 @@ export function createPlanExecuteTools(ctx: ToolContext): Record<string, ReturnT
           source = { kind: 'inline', planText: args.plan }
         }
 
-        const sessionTitle = args.title.length > 60 ? `${args.title.substring(0, 57)}...` : args.title
+        const sessionTitle = formatPlanSessionTitle(args.title)
         const executionModel = config.executionModel
 
         // Build execution request context
@@ -64,6 +65,7 @@ export function createPlanExecuteTools(ctx: ToolContext): Record<string, ReturnT
           logger,
           dataDir: ctx.dataDir,
           v2,
+          legacyClient: ctx.input?.client,
           plansRepo,
           loopsRepo: ctx.loopsRepo,
           graphStatusRepo: ctx.graphStatusRepo,

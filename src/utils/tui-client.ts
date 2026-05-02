@@ -24,6 +24,7 @@ export interface ExecutionContext {
     providers: unknown[]
     connectedProviderIds?: string[]
     configuredProviderIds?: string[]
+    favoriteModels?: string[]
     error?: string
   }
 }
@@ -526,7 +527,11 @@ export async function connectForgeProject(
     loops,
     async loadExecutionContext() {
       const [prefsResult, modelsResult] = await Promise.all([
-        Promise.resolve(projectId ? readExecutionPreferences(projectId) : null),
+        rpc<ExecutionPreferences>(
+          'models.prefs.read',
+          projectId ? { projectId } : {},
+          undefined,
+        ).catch(() => projectId ? readExecutionPreferences(projectId) : null),
         fetchAvailableModels(api),
       ])
       return { preferences: prefsResult, models: modelsResult }

@@ -7,6 +7,7 @@ import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '.
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
 import type { LoopState } from './loop'
+import { formatLoopSessionTitle } from '../utils/session-titles'
 
 export type LoopControlErrorCode = 'bad_request' | 'not_found' | 'conflict' | 'internal_error'
 
@@ -175,7 +176,7 @@ export async function restartLoopByName(ctx: ToolContext, name: string | undefin
 
     const createResult = await createLoopSessionWithWorkspace({
       v2,
-      title: stoppedState.loopName,
+      title: formatLoopSessionTitle(stoppedState.loopName),
       directory: stoppedState.worktreeDir,
       permission: permissionRuleset,
       workspaceId: stoppedState.workspaceId,

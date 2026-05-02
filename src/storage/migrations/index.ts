@@ -161,5 +161,17 @@ export const migrations: Migration[] = [
       db.run(loadSql('116_drop_api_registry.sql'))
     },
   },
+  {
+    id: '117',
+    description: 'Add branch to primary key for review_findings table (branch-scoped findings)',
+    apply: (db: Database) => {
+      // Guard: check if branch is already in primary key
+      const pkInfo = db.prepare('PRAGMA table_info(review_findings)').all() as Array<{ name: string; pk: number }>
+      const hasBranchInPk = pkInfo.some((c) => c.name === 'branch' && c.pk > 0)
+      if (hasBranchInPk) return
+
+      db.run(loadSql('117_branch_scope_review_findings.sql'))
+    },
+  },
 
 ]

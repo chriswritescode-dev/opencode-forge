@@ -8,6 +8,7 @@ import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 import { cancelLoopByName, restartLoopByName } from '../services/loop-control'
 import { createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
 import { captureLatestPlanForSession } from '../services/plan-capture'
+import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
 
 const z = tool.schema
 
@@ -57,7 +58,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           source = { kind: 'inline', planText: args.plan }
         }
 
-        const sessionTitle = args.title.length > 60 ? `${args.title.substring(0, 57)}...` : args.title
+        const sessionTitle = formatPlanSessionTitle(args.title)
         const executionModel = config.executionModel
         const auditorModel = config.auditorModel
         const loopName = args.loopName ? slugify(args.loopName) : slugify(sessionTitle)
@@ -78,6 +79,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           logger,
           dataDir: ctx.dataDir,
           v2: ctx.v2,
+          legacyClient: ctx.input?.client,
           plansRepo: ctx.plansRepo,
           loopsRepo: ctx.loopsRepo,
           graphStatusRepo: ctx.graphStatusRepo,
@@ -116,7 +118,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           `Memory loop activated!${modeInfo}`,
           '',
           `Session: ${result.data.sessionId}`,
-          `Title: Loop: ${sessionTitle}`,
+          `Title: ${formatLoopSessionTitle(sessionTitle)}`,
         ]
 
         if (result.data.mode === 'worktree') {

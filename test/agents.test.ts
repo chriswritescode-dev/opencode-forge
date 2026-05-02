@@ -17,7 +17,7 @@ describe('Agent definitions', () => {
       expect(codeAgent.role).toBe('code')
       expect(codeAgent.id).toBe('opencode-code')
       expect(codeAgent.displayName).toBe('code')
-      expect(codeAgent.mode).toBe('primary')
+      expect(codeAgent.mode).toBe('all')
     })
 
     test('auditor agent has stable metadata', () => {
@@ -42,6 +42,14 @@ describe('Agent definitions', () => {
       expect(codeAgent.tools?.exclude).toContain('plan-execute')
       expect(codeAgent.tools?.exclude).not.toContain('loop-cancel')
       expect(codeAgent.tools?.exclude).not.toContain('loop-status')
+    })
+
+    test('code agent prompt requires two-at-a-time code subagents for todo implementation', () => {
+      const prompt = codeAgent.systemPrompt
+      expect(prompt).toContain('use the Task tool to run code subagents in fixed batches of two')
+      expect(prompt).toContain('launch tasks 1 and 2 in parallel')
+      expect(prompt).toContain('then launch tasks 3 and 4')
+      expect(prompt).toContain('Do not launch more than two code subagents at the same time')
     })
 
     test('auditor-loop agent has stable metadata and primary mode', () => {
