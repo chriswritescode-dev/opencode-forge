@@ -760,6 +760,11 @@ export function createLoopEventHandler(
       return
     }
 
+    if (currentState.phase !== 'coding') {
+      logger.log(`Loop: handleCodingPhase invoked while phase=${currentState.phase} for ${loopName}, ignoring`)
+      return
+    }
+
     if (!currentState.worktreeDir) {
       logger.error(`Loop: loop ${loopName} missing worktreeDir in coding phase, terminating`)
       await terminateLoop(loopName, currentState, 'missing_worktree_dir')
@@ -894,6 +899,11 @@ export function createLoopEventHandler(
     let currentState = loopService.getActiveState(loopName)
     if (!currentState?.active) {
       logger.log(`Loop: loop ${loopName} no longer active, skipping auditing phase`)
+      return
+    }
+
+    if (currentState.phase !== 'auditing') {
+      logger.log(`Loop: handleAuditingPhase invoked while phase=${currentState.phase} for ${loopName}, ignoring`)
       return
     }
 

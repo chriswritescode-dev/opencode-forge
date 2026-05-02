@@ -37,6 +37,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           const capture = await captureLatestPlanForSession(
             {
               v2: ctx.v2,
+              client: ctx.input.client,
               plansRepo: ctx.plansRepo,
               projectId: ctx.projectId,
               directory: ctx.directory,

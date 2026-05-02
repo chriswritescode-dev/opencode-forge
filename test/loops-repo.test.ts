@@ -453,4 +453,61 @@ describe('LoopsRepo', () => {
       expect(retrieved!.auditSessionId).toBe(auditSessionId)
     })
   })
+
+  describe('applyRotation', () => {
+    test('should clear audit_session_id when transitioning to coding', () => {
+      const row: LoopRow = {
+        ...testRow,
+        loopName: 'loop-rotation-test',
+        currentSessionId: 'L1',
+        auditSessionId: 'A1',
+        phase: 'auditing',
+        iteration: 1,
+        auditCount: 0,
+      }
+      
+      repo.insert(row, testLarge)
+      
+      repo.applyRotation(row.projectId, row.loopName, {
+        sessionId: 'L2',
+        iteration: 2,
+        phase: 'coding',
+        auditCount: 1,
+      })
+      
+      const retrieved = repo.get(row.projectId, row.loopName)
+      expect(retrieved!.currentSessionId).toBe('L2')
+      expect(retrieved!.iteration).toBe(2)
+      expect(retrieved!.phase).toBe('coding')
+      expect(retrieved!.auditCount).toBe(1)
+      expect(retrieved!.auditSessionId).toBeNull()
+    })
+
+    test('should not clear audit_session_id when phase is undefined', () => {
+      const row: LoopRow = {
+        ...testRow,
+        loopName: 'loop-rotation-preserve',
+        currentSessionId: 'L1',
+        auditSessionId: 'A1',
+        phase: 'coding',
+        iteration: 1,
+        auditCount: 0,
+      }
+      
+      repo.insert(row, testLarge)
+      
+      repo.applyRotation(row.projectId, row.loopName, {
+        sessionId: 'L2',
+        iteration: 2,
+        phase: undefined,
+        auditCount: 1,
+      })
+      
+      const retrieved = repo.get(row.projectId, row.loopName)
+      expect(retrieved!.currentSessionId).toBe('L2')
+      expect(retrieved!.iteration).toBe(2)
+      expect(retrieved!.auditCount).toBe(1)
+      expect(retrieved!.auditSessionId).toBe('A1')
+    })
+  })
 })

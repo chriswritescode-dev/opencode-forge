@@ -281,7 +281,11 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       current_session_id = ?,
       iteration = ?,
       phase = COALESCE(?, phase),
-      audit_count = COALESCE(?, audit_count)
+      audit_count = COALESCE(?, audit_count),
+      audit_session_id = CASE
+        WHEN ? = 'coding' THEN NULL
+        ELSE audit_session_id
+      END
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -454,6 +458,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
           opts.iteration,
           opts.phase ?? null,
           opts.auditCount ?? null,
+          opts.phase ?? null,
           projectId,
           loopName
         )

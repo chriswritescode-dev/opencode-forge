@@ -19,6 +19,7 @@ import { parseModelString } from '../utils/model-fallback'
 import { generateUniqueName } from '../services/loop'
 import { resolveCurrentGitBranch } from '../utils/git-branch'
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
+import { buildLoopPermissionRuleset } from '../constants/loop'
 
 // ============================================================================
 // Surface Types - Identifies the caller boundary
@@ -351,6 +352,7 @@ async function resolvePlanSource(
 interface SessionCreateInput {
   title: string
   directory: string
+  permission?: ReturnType<typeof import('../constants/loop').buildLoopPermissionRuleset>
 }
 
 interface SessionCreateResult {
@@ -380,6 +382,7 @@ async function createSessionWithFallback(
     const result = await deps.v2.session.create({
       title: input.title,
       directory: input.directory,
+      ...(input.permission ? { permission: input.permission } : {}),
     })
     
     if (result.data) {
@@ -413,6 +416,7 @@ async function createSessionWithFallback(
     const result = await deps.legacyClient.session.create({
       body: {
         title: input.title,
+        ...(input.permission ? { permission: input.permission } : {}),
       },
       query: {
         directory: input.directory,
@@ -893,10 +897,14 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       } else {
         // In-place mode
         worktreeBranch = resolveCurrentGitBranch(ctx.directory)
+        const permissionRuleset = buildLoopPermissionRuleset({
+          isWorktree: false,
+        })
         
         const createResult = await createSessionWithFallback(deps, {
           title: sessionTitle,
           directory: ctx.directory,
+          permission: permissionRuleset,
         })
         
         if (!createResult.data) {
