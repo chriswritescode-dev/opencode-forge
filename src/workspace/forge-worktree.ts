@@ -96,6 +96,7 @@ export function createForgeWorktreeAdaptor(): WorkspaceAdaptor {
  * 
  * @param client - OpenCode v2 client
  * @param options - Workspace creation options
+ * @param logger - Optional logger for diagnostic output
  * @returns Promise resolving to workspace ID or null on failure
  */
 export async function createLoopWorkspace(
@@ -104,15 +105,16 @@ export async function createLoopWorkspace(
     loopName: string
     directory: string
     branch?: string | null
-  }
+  },
+  logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void }
 ): Promise<{ workspaceId: string } | null> {
   const workspaceApi = client.experimental?.workspace
   if (!workspaceApi || typeof workspaceApi.create !== 'function') {
+    (logger ?? console).log?.('createLoopWorkspace: experimental.workspace API not available on this host')
     return null
   }
   try {
     const result = await workspaceApi.create({
-      id: options.loopName,
       type: FORGE_WORKTREE_WORKSPACE_TYPE,
       branch: options.branch ?? null,
       extra: {
@@ -123,7 +125,7 @@ export async function createLoopWorkspace(
     })
 
     if ('error' in result && result.error) {
-      console.error('Failed to create workspace', result.error)
+      (logger ?? console).error('createLoopWorkspace: workspace.create returned error', result.error)
       return null
     }
 
@@ -140,15 +142,17 @@ export async function createLoopWorkspace(
         : rawWorkspaceId
 
     if (!workspaceId) {
-      console.error('Failed to create workspace: no workspace id returned', result.data)
+      (logger ?? console).error('createLoopWorkspace: workspace.create returned no workspace id', result.data)
       return null
     }
+
+    (logger ?? console).log?.(`createLoopWorkspace: workspace ${workspaceId} created for ${options.loopName}`)
 
     return {
       workspaceId,
     }
   } catch (err) {
-    console.error('Failed to create loop workspace', err)
+    (logger ?? console).error('createLoopWorkspace: workspace.create threw', err)
     return null
   }
 }
@@ -163,14 +167,17 @@ export async function createLoopWorkspace(
  * @param client - OpenCode v2 client
  * @param workspaceId - The workspace ID
  * @param sessionId - The session ID
+ * @param logger - Optional logger for diagnostic output
  */
 export async function bindSessionToWorkspace(
   client: OpencodeClient,
   workspaceId: string,
   sessionId: string,
+  logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void }
 ): Promise<void> {
   const workspaceApi = client.experimental?.workspace
   if (!workspaceApi || typeof workspaceApi.sessionRestore !== 'function') {
+    (logger ?? console).log?.('bindSessionToWorkspace: experimental.workspace.sessionRestore not available')
     throw new Error('experimental.workspace.sessionRestore not available on this host')
   }
   const result = await workspaceApi.sessionRestore({
@@ -179,6 +186,7 @@ export async function bindSessionToWorkspace(
   })
 
   if ('error' in result && result.error) {
+    (logger ?? console).error(`bindSessionToWorkspace: sessionRestore failed for workspace=${workspaceId} session=${sessionId}`, result.error)
     throw new Error(`Session restore failed: ${JSON.stringify(result.error)}`)
   }
 }

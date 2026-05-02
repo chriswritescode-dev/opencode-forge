@@ -25,7 +25,6 @@ export async function createLoopSessionWithWorkspace(
   const createParams: {
     title: string
     directory: string
-    workspace?: string
     permission: ReturnType<typeof buildLoopPermissionRuleset>
     workspaceID?: string
   } = {
@@ -35,7 +34,6 @@ export async function createLoopSessionWithWorkspace(
   }
 
   if (input.workspaceId) {
-    createParams.workspace = input.workspaceId
     createParams.workspaceID = input.workspaceId
   }
 
@@ -52,7 +50,7 @@ export async function createLoopSessionWithWorkspace(
 
   if (input.workspaceId) {
     try {
-      await bindSessionToWorkspace(input.v2, input.workspaceId, result.sessionId)
+      await bindSessionToWorkspace(input.v2, input.workspaceId, result.sessionId, input.logger)
       result.boundWorkspaceId = input.workspaceId
       input.logger.log(`${input.logPrefix}: workspace ${input.workspaceId} bound to session ${result.sessionId}`)
     } catch (bindErr) {

@@ -1878,7 +1878,7 @@ describe('plan execute API loop dispatch', () => {
     ;(ctx.v2 as any).tui = { selectSession }
     ;(ctx.v2 as any).experimental = {
       workspace: {
-        create: mock(async (params: { id?: string }) => ({ data: { id: params.id }, error: undefined })),
+        create: mock(async (params: { id?: string }) => ({ data: { id: 'server-generated-ws-id' }, error: undefined })),
         sessionRestore: mock(async () => ({ data: { total: 0 }, error: undefined })),
       },
     }
@@ -1892,7 +1892,8 @@ describe('plan execute API loop dispatch', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(selectSession).toHaveBeenCalledWith(expect.objectContaining({
-      workspace: 'api-worktree-plan',
+      sessionID: expect.any(String),
+      workspace: 'server-generated-ws-id',
     }))
   })
 

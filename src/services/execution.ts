@@ -400,6 +400,7 @@ interface SessionPromptInput {
   parts: Array<{ type: 'text'; text: string }>
   agent: string
   model?: { providerID: string; modelID: string }
+  workspace?: string
 }
 
 interface SessionPromptResult {
@@ -482,6 +483,7 @@ async function promptSessionWithFallback(
       parts: input.parts,
       agent: input.agent,
       ...(model ? { model } : {}),
+      ...(input.workspace ? { workspace: input.workspace } : {}),
     })
     
     if (!result.error) {
@@ -514,6 +516,7 @@ async function promptSessionWithFallback(
       path: { id: input.sessionID },
       query: {
         directory: input.directory,
+        ...(input.workspace ? { workspace: input.workspace } : {}),
       },
       body: {
         agent: input.agent,
@@ -874,7 +877,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           loopName: uniqueLoopName,
           directory: hostWorktreeDir!,
           branch: worktreeBranch,
-        })
+        }, deps.logger)
         
         if (workspace) {
           deps.logger.log(`handleStartLoop: workspace ${workspace.workspaceId} created for ${uniqueLoopName}`)
@@ -1026,6 +1029,40 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       
       deps.logger.log(`handleStartLoop: state stored for loop=${uniqueLoopName}`)
       
+      // Wait for sandbox readiness in worktree+sandbox mode (after persistence)
+      if (command.mode === 'worktree' && sandboxEnabledForLoop && deps.sandboxManager && deps.dataDir) {
+        const dbPath = join(deps.dataDir, 'graph.db')
+        if (existsSync(dbPath)) {
+          const { waitForSandboxReady } = await import('../utils/sandbox-ready')
+          const waitResult = await waitForSandboxReady({
+            projectId: ctx.projectId,
+            loopName: uniqueLoopName,
+            dbPath,
+            pollMs: 200,
+            timeoutMs: 15_000,
+          })
+          
+          if (!waitResult.ready) {
+            deps.logger.error(`handleStartLoop: sandbox not ready (${waitResult.reason})`)
+            // Best-effort: stop reconciled container
+            try {
+              const { createDockerService } = await import('../sandbox/docker')
+              const docker = createDockerService(deps.logger as unknown as Console)
+              const cn = docker.containerName(uniqueLoopName)
+              if (await docker.isRunning(cn)) {
+                await docker.removeContainer(cn)
+              }
+            } catch (cleanupErr) {
+              deps.logger.error('handleStartLoop: failed to remove sandbox container after timeout', cleanupErr)
+            }
+            await rollbackLoopStart()
+            return fail('internal_error', 503, `Sandbox not ready: ${waitResult.reason}`)
+          }
+          
+          deps.logger.log(`handleStartLoop: sandbox ready (${waitResult.containerName})`)
+        }
+      }
+      
       // Navigate TUI if requested with early timing
       if (command.lifecycle?.selectSession && command.lifecycle.selectSessionTiming === 'after-create') {
         const selection = createdWorkspaceId
@@ -1039,16 +1076,57 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       
       // Send initial prompt with fallback
       const sessionDir = state.worktreeDir
-      const { result: promptResult, usedModel: actualModel } = await promptSessionWithFallback(
-        deps,
-        {
-          sessionID: sessionId,
-          directory: sessionDir,
-          parts: [{ type: 'text' as const, text: planText }],
-          agent: 'code',
-        },
-        loopModel!,
-      )
+      const promptParts = [{ type: 'text' as const, text: planText }]
+      const workspaceParam = createdWorkspaceId ? { workspace: createdWorkspaceId } : {}
+      
+      // For worktree mode with a configured model, use retryWithModelFallback
+      const promptResultWithModel = command.mode === 'worktree' && loopModel
+        ? await retryWithModelFallback(
+            async () => {
+              const { result } = await promptSessionWithFallback(
+                deps,
+                {
+                  sessionID: sessionId,
+                  directory: sessionDir,
+                  parts: promptParts,
+                  agent: 'code',
+                  ...workspaceParam,
+                },
+                loopModel,
+              )
+              return result
+            },
+            async () => {
+              const { result } = await promptSessionWithFallback(
+                deps,
+                {
+                  sessionID: sessionId,
+                  directory: sessionDir,
+                  parts: promptParts,
+                  agent: 'code',
+                  ...workspaceParam,
+                },
+                undefined,
+              )
+              return result
+            },
+            loopModel,
+            deps.logger as unknown as Console,
+          )
+        : await promptSessionWithFallback(
+            deps,
+            {
+              sessionID: sessionId,
+              directory: sessionDir,
+              parts: promptParts,
+              agent: 'code',
+              ...workspaceParam,
+            },
+            loopModel,
+          )
+      
+      const promptResult = promptResultWithModel.result
+      const actualModel = promptResultWithModel.usedModel
       
       if (promptResult.error) {
         deps.logger.error('handleStartLoop: failed to send prompt', promptResult.error)
@@ -1104,7 +1182,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         })
       }
       
-      const modelUsed = actualModel
+      const modelUsed = actualModel && 'providerID' in actualModel
         ? `${actualModel.providerID}/${actualModel.modelID}`
         : null
       
@@ -1443,6 +1521,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
     const promptText = stoppedState.prompt ?? ''
     const loopModel = parseModelString(stoppedState.executionModel) ?? parseModelString(deps.config.executionModel)
+    const workspaceParam = stoppedState.workspaceId ? { workspace: stoppedState.workspaceId } : {}
 
     const { result: promptResult } = await retryWithModelFallback(
       () => deps.v2.session.promptAsync({
@@ -1451,12 +1530,14 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         parts: [{ type: 'text' as const, text: promptText }],
         agent: 'code',
         model: loopModel!,
+        ...workspaceParam,
       }),
       () => deps.v2.session.promptAsync({
         sessionID: outcome.newSessionId,
         directory: stoppedState.worktreeDir,
         parts: [{ type: 'text' as const, text: promptText }],
         agent: 'code',
+        ...workspaceParam,
       }),
       loopModel,
       deps.logger,
