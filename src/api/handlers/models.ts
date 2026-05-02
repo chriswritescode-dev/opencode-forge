@@ -45,7 +45,6 @@ export async function handleListModels(
     return {
       providers: result.providers,
       error: result.error,
-      favoriteModels: result.favoriteModels,
     }
   }
 
@@ -53,7 +52,6 @@ export async function handleListModels(
     providers: result.providers,
     connectedProviderIds: result.connectedProviderIds,
     configuredProviderIds: result.configuredProviderIds,
-    favoriteModels: result.favoriteModels,
   }
 }
 

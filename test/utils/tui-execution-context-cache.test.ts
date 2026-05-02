@@ -40,7 +40,6 @@ describe('createExecutionContextCache', () => {
       providers: unknown[]
       connectedProviderIds?: string[]
       configuredProviderIds?: string[]
-      favoriteModels?: string[]
       error?: string
     }
   }>>()
@@ -168,25 +167,7 @@ describe('createExecutionContextCache', () => {
       })
       const snap = await cache.ensureLoaded()
 
-      expect(snap.favorites).toEqual([])
-    })
-
-    it('favorites are loaded from models.favoriteModels', async () => {
-      mockLoadFn.mockResolvedValue({
-        preferences: null,
-        models: {
-          providers: mockProviders,
-          favoriteModels: ['anthropic/claude-sonnet-4'],
-        },
-      })
-
-      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, mockLoadFn, {
-        getRecentModels: mockGetRecentModels,
-        recordRecentModel: mockRecordRecentModel,
-      })
-      const snap = await cache.ensureLoaded()
-
-      expect(snap.favorites).toEqual(['anthropic/claude-sonnet-4'])
+      expect(snap).toBeDefined()
     })
   })
 
@@ -314,6 +295,31 @@ describe('createExecutionContextCache', () => {
       cache.recordRecent('anthropic/claude-sonnet-4')
 
       expect(listener).not.toHaveBeenCalled()
+    })
+
+    it('onChange delivers existing snapshot to listeners that subscribe after refresh', async () => {
+      mockLoadFn.mockResolvedValue({
+        preferences: {
+          mode: 'Loop',
+          executionModel: 'anthropic/claude-sonnet-4',
+          auditorModel: 'anthropic/claude-3-5-sonnet',
+        },
+        models: { providers: mockProviders },
+      })
+
+      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, mockLoadFn, {
+        getRecentModels: mockGetRecentModels,
+        recordRecentModel: mockRecordRecentModel,
+      })
+      await cache.ensureLoaded()
+
+      const seen: Array<unknown> = []
+      cache.onChange((s) => seen.push(s))
+
+      await new Promise(resolve => queueMicrotask(() => resolve(undefined)))
+
+      expect(seen).toHaveLength(1)
+      expect((seen[0] as { defaults: { executionModel: string } }).defaults.executionModel).toBe('anthropic/claude-sonnet-4')
     })
   })
 

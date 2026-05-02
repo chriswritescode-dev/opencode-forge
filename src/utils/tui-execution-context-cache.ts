@@ -19,7 +19,6 @@ export interface ExecutionContextSnapshot {
   modelsError?: string
   connectedProviderIds: string[]
   configuredProviderIds: string[]
-  favorites: string[]
   recents: string[]
   defaults: {
     executionModel: string
@@ -47,7 +46,6 @@ interface LoadExecutionContextResult {
     providers: unknown[]
     connectedProviderIds?: string[]
     configuredProviderIds?: string[]
-    favoriteModels?: string[]
     error?: string
   }
 }
@@ -90,13 +88,10 @@ export function createExecutionContextCache(
     
     const allModelList = flattenProviders(result.models.providers as Parameters<typeof flattenProviders>[0])
     const recents = readRecents(projectId)
-    const favorites = result.models.favoriteModels || []
     const sorted = sortModelsByPriority(allModelList, {
-      favorites,
       recents,
       connectedProviderIds: result.models.connectedProviderIds || [],
       configuredProviderIds: result.models.configuredProviderIds || [],
-      connectedOnly: true,
     })
     
     const defaults = resolveExecutionDialogDefaults(pluginConfig, result.preferences)
@@ -107,13 +102,12 @@ export function createExecutionContextCache(
       modelsError: result.models.error,
       connectedProviderIds: result.models.connectedProviderIds || [],
       configuredProviderIds: result.models.configuredProviderIds || [],
-      favorites,
       recents,
       defaults,
     }
     
     notifyListeners()
-    return currentSnapshot
+    return currentSnapshot!
   }
 
   function ensureLoaded(): Promise<ExecutionContextSnapshot> {
@@ -150,6 +144,11 @@ export function createExecutionContextCache(
 
   function onChange(listener: (snap: ExecutionContextSnapshot) => void): () => void {
     listeners.add(listener)
+    if (currentSnapshot) {
+      queueMicrotask(() => {
+        if (listeners.has(listener) && currentSnapshot) listener(currentSnapshot)
+      })
+    }
     return () => {
       listeners.delete(listener)
     }

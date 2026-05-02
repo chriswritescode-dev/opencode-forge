@@ -424,6 +424,52 @@ describe('createForgePlugin', () => {
     }
   })
 
+  test('graph.enabled=false disables worker, tools, prompts, and persists unavailable status', async () => {
+    const config: PluginConfig = {
+      dataDir: `${testDir}/.opencode/memory`,
+      graph: { enabled: false },
+    }
+
+    const plugin = createForgePlugin(config)
+
+    const mockInput = {
+      directory: testDir,
+      worktree: testDir,
+      client: {} as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    const hooks = await plugin(mockInput)
+    currentHooks = hooks as { getCleanup?: () => Promise<void> }
+
+    // Graph tools must NOT be registered
+    expect(hooks.tool?.['graph-status']).toBeUndefined()
+    expect(hooks.tool?.['graph-query']).toBeUndefined()
+    expect(hooks.tool?.['graph-symbols']).toBeUndefined()
+    expect(hooks.tool?.['graph-analyze']).toBeUndefined()
+
+    // Agent prompts and explore permissions must NOT mention graph tools
+    const userConfig: Record<string, unknown> = {}
+    await (hooks.config as (cfg: Record<string, unknown>) => Promise<void>)(userConfig)
+    const agentMap = userConfig.agent as Record<string, { prompt?: string; permission?: Record<string, string> }>
+    expect(agentMap.code.prompt).not.toContain('graph-query')
+    expect(agentMap.code.prompt).toContain('Graph tooling is disabled')
+    expect(agentMap.explore?.permission?.['graph-query']).toBeUndefined()
+    expect(agentMap.explore?.permission?.['graph-symbols']).toBeUndefined()
+    expect(agentMap.explore?.permission?.['graph-analyze']).toBeUndefined()
+
+    // Graph status must be persisted as 'unavailable'
+    const { createGraphStatusRepo } = await import('../src/storage/repos/graph-status-repo')
+    const { initializeDatabase } = await import('../src/storage')
+    const db = initializeDatabase(`${testDir}/.opencode/memory`)
+    const repo = createGraphStatusRepo(db)
+    const status = repo.read(TEST_PROJECT_ID, testDir)
+    expect(status?.state).toBe('unavailable')
+    db.close()
+  })
+
   test('REGRESSION: repeated plugin instances after disposal maintain stable cleanup', async () => {
     const config: PluginConfig = {
       dataDir: `${testDir}/.opencode/memory`,

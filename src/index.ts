@@ -282,8 +282,10 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         graphService = null
       }
     } else {
-      // Graph is disabled - persist unavailable status
-      writeGraphStatus(graphStatusRepo, projectId, UNAVAILABLE_STATUS)
+      // Graph is disabled - persist unavailable status scoped to the current
+      // directory so TUI sidebar reads (which are directory-scoped) resolve
+      // consistently with the enabled path that scopes via the status callback.
+      writeGraphStatus(graphStatusRepo, projectId, UNAVAILABLE_STATUS, directory)
     }
 
     const compactionConfig: CompactionConfig | undefined = config.compaction
