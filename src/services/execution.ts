@@ -400,6 +400,7 @@ interface SessionPromptInput {
   parts: Array<{ type: 'text'; text: string }>
   agent: string
   model?: { providerID: string; modelID: string }
+  workspace?: string
 }
 
 interface SessionPromptResult {
@@ -482,6 +483,7 @@ async function promptSessionWithFallback(
       parts: input.parts,
       agent: input.agent,
       ...(model ? { model } : {}),
+      ...(input.workspace ? { workspace: input.workspace } : {}),
     })
     
     if (!result.error) {
@@ -514,6 +516,7 @@ async function promptSessionWithFallback(
       path: { id: input.sessionID },
       query: {
         directory: input.directory,
+        ...(input.workspace ? { workspace: input.workspace } : {}),
       },
       body: {
         agent: input.agent,
@@ -1074,6 +1077,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // Send initial prompt with fallback
       const sessionDir = state.worktreeDir
       const promptParts = [{ type: 'text' as const, text: planText }]
+      const workspaceParam = createdWorkspaceId ? { workspace: createdWorkspaceId } : {}
       
       // For worktree mode with a configured model, use retryWithModelFallback
       let promptResult: { result: SessionPromptResult; usedModel?: typeof loopModel }
@@ -1089,6 +1093,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
                 directory: sessionDir,
                 parts: promptParts,
                 agent: 'code',
+                ...workspaceParam,
               },
               loopModel,
             )
@@ -1102,6 +1107,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
                 directory: sessionDir,
                 parts: promptParts,
                 agent: 'code',
+                ...workspaceParam,
               },
               undefined,
             )
@@ -1120,6 +1126,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             directory: sessionDir,
             parts: promptParts,
             agent: 'code',
+            ...workspaceParam,
           },
           loopModel,
         )
