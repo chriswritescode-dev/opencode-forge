@@ -7,7 +7,7 @@ import { formatPlanSessionTitle } from '../utils/session-titles'
 const z = tool.schema
 
 export function createPlanExecuteTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
-  const { directory, config, logger, v2, plansRepo, projectId } = ctx
+  const { directory, config, logger, v2, plansRepo, projectId, input: { client } } = ctx
 
   return {
     'plan-execute': tool({
@@ -25,6 +25,7 @@ export function createPlanExecuteTools(ctx: ToolContext): Record<string, ReturnT
           const capture = await captureLatestPlanForSession(
             {
               v2,
+              client,
               plansRepo,
               projectId,
               directory,

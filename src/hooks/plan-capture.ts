@@ -2,7 +2,7 @@ import type { ToolContext } from '../tools/types'
 import { captureLatestPlanForSession, captureMarkedPlanTextForSession } from '../services/plan-capture'
 
 export function createPlanCaptureEventHook(ctx: ToolContext) {
-  const { v2, logger, plansRepo, projectId, directory } = ctx
+  const { v2, input: { client }, logger, plansRepo, projectId, directory } = ctx
 
   return async (eventInput: { event: { type: string; properties?: Record<string, unknown> } }) => {
     if (eventInput.event?.type === 'message.part.updated') {
@@ -41,6 +41,7 @@ export function createPlanCaptureEventHook(ctx: ToolContext) {
       const result = await captureLatestPlanForSession(
         {
           v2,
+          client,
           plansRepo,
           projectId,
           directory,

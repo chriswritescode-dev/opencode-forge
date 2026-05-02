@@ -2,10 +2,12 @@ import type { ToolContext } from '../tools/types'
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { Logger } from '../types'
 import type { PlanCaptureMessage } from '../utils/plan-capture'
+import type { PluginInput } from '@opencode-ai/plugin'
 import { extractLatestMarkedPlan, extractMarkedPlan } from '../utils/plan-capture'
 
 export interface CaptureLatestPlanDeps {
   v2: ToolContext['v2']
+  client: PluginInput['client']
   plansRepo: PlansRepo
   projectId: string
   directory: string
@@ -66,11 +68,26 @@ export async function captureLatestPlanForSession(
   sessionID: string
 ): Promise<CaptureLatestPlanResult> {
   try {
-    const messagesResult = await deps.v2.session.messages({
+    let messagesResult = await deps.v2.session.messages({
       sessionID,
       directory: deps.directory,
       limit: 20,
     })
+
+    if (messagesResult.error || !messagesResult.data || messagesResult.data.length === 0) {
+      try {
+        deps.logger.log(`plan-capture: v2 messages empty/error, falling back to legacy client for ${sessionID}`)
+        const legacyResult = await deps.client.session.messages({
+          path: { id: sessionID },
+          query: { directory: deps.directory, limit: 20 },
+        })
+        if (!legacyResult.error && legacyResult.data) {
+          messagesResult = legacyResult as typeof messagesResult
+        }
+      } catch (fallbackErr) {
+        deps.logger.error(`plan-capture: legacy client messages fallback failed for ${sessionID}`, fallbackErr as Error)
+      }
+    }
 
     if (!messagesResult.data || messagesResult.data.length === 0) {
       deps.logger.log(`plan-capture: no messages found for session ${sessionID}`)

@@ -7,7 +7,7 @@ import {
   PLAN_END_MARKER,
   type PlanCaptureMessage,
 } from '../src/utils/plan-capture'
-import { captureMarkedPlanTextForSession } from '../src/services/plan-capture'
+import { captureMarkedPlanTextForSession, captureLatestPlanForSession } from '../src/services/plan-capture'
 import { createPlanCaptureEventHook } from '../src/hooks/plan-capture'
 
 describe('extractMarkedPlan', () => {
@@ -315,6 +315,7 @@ Outro`
     const plansRepo = createFakePlansRepo()
     const hook = createPlanCaptureEventHook({
       v2: { session: { messages: async () => ({ data: [] }) } },
+      input: { client: { session: { messages: async () => ({ data: [] }) } } },
       plansRepo,
       projectId: 'test-project',
       directory: '/tmp/project',
@@ -352,5 +353,83 @@ Outro`
     })
 
     expect(plansRepo.getForSession('test-project', 'session-2')?.content).toBe('# Event Plan\n\n## Verification\n- pnpm typecheck')
+  })
+})
+
+describe('captureLatestPlanForSession legacy client fallback', () => {
+  function createFakePlansRepo() {
+    const plans = new Map<string, { content: string; updatedAt: number }>()
+    return {
+      writeForSession: (_projectId: string, sessionId: string, content: string) => {
+        plans.set(sessionId, { content, updatedAt: Date.now() })
+      },
+      getForSession: (_projectId: string, sessionId: string) => {
+        const row = plans.get(sessionId)
+        if (!row) return null
+        return { projectId: 'test-project', loopName: null, sessionId, content: row.content, updatedAt: row.updatedAt }
+      },
+    }
+  }
+
+  const logger = {
+    log: () => {},
+    error: () => {},
+    debug: () => {},
+  }
+
+  const planMessage = {
+    info: { role: 'assistant', id: 'msg-1' },
+    parts: [{ type: 'text', text: `${PLAN_START_MARKER}\nFallback Plan\n${PLAN_END_MARKER}` }],
+  }
+
+  test('falls back to legacy client when v2 returns empty data', async () => {
+    const plansRepo = createFakePlansRepo()
+    const deps = {
+      v2: { session: { messages: async () => ({ data: [] }) } },
+      client: { session: { messages: async () => ({ data: [planMessage] }) } },
+      plansRepo,
+      projectId: 'test-project',
+      directory: '/tmp/project',
+      logger,
+    }
+
+    const result = await captureLatestPlanForSession(deps as any, 'session-fb-1')
+
+    expect(result.status).toBe('captured')
+    expect(plansRepo.getForSession('test-project', 'session-fb-1')?.content).toBe('Fallback Plan')
+  })
+
+  test('falls back to legacy client when v2 returns an error', async () => {
+    const plansRepo = createFakePlansRepo()
+    const deps = {
+      v2: { session: { messages: async () => ({ error: { message: 'boom' }, data: undefined }) } },
+      client: { session: { messages: async () => ({ data: [planMessage] }) } },
+      plansRepo,
+      projectId: 'test-project',
+      directory: '/tmp/project',
+      logger,
+    }
+
+    const result = await captureLatestPlanForSession(deps as any, 'session-fb-2')
+
+    expect(result.status).toBe('captured')
+    expect(plansRepo.getForSession('test-project', 'session-fb-2')?.content).toBe('Fallback Plan')
+  })
+
+  test('returns not-found when both v2 and legacy return empty', async () => {
+    const plansRepo = createFakePlansRepo()
+    const deps = {
+      v2: { session: { messages: async () => ({ data: [] }) } },
+      client: { session: { messages: async () => ({ data: [] }) } },
+      plansRepo,
+      projectId: 'test-project',
+      directory: '/tmp/project',
+      logger,
+    }
+
+    const result = await captureLatestPlanForSession(deps as any, 'session-fb-3')
+
+    expect(result.status).toBe('not-found')
+    expect(plansRepo.getForSession('test-project', 'session-fb-3')).toBeNull()
   })
 })
