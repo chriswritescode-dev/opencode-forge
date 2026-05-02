@@ -6,7 +6,7 @@ import { extractPlanTitle } from '../utils/plan-execution'
 import { buildDialogSelectOptions, flattenProviders, getModelDisplayLabel, sortModelsByPriority, type ModelInfo } from '../utils/tui-models'
 import { resolveExecutionDialogDefaults } from '../utils/tui-execution-preferences'
 import type { ForgeProjectClient } from '../utils/tui-client'
-import type { ExecutionContextCache } from '../utils/tui-execution-context-cache'
+import type { ExecutionContextCache, ExecutionContextSnapshot } from '../utils/tui-execution-context-cache'
 import type { PluginConfig } from '../types'
 
 export function ExecutePlanPanel(props: {
@@ -29,6 +29,8 @@ export function ExecutePlanPanel(props: {
 }) {
   const theme = () => props.api.theme.current
 
+  const openCodeDefaultModel = () => props.api.state.config?.model ?? ''
+
   const initialSnapshot = props.cache?.snapshot() ?? null
   const initialDefaults = initialSnapshot?.defaults
     ?? resolveExecutionDialogDefaults(props.pluginConfig, initialSnapshot?.preferences ?? null)
@@ -43,69 +45,65 @@ export function ExecutePlanPanel(props: {
   )
   const [models, setModels] = createSignal<ModelInfo[]>(initialSnapshot?.models ?? [])
   const [recents, setRecents] = createSignal<string[]>(initialSnapshot?.recents ?? [])
-  const [favorites, setFavorites] = createSignal<string[]>(initialSnapshot?.favorites ?? [])
   const [modelsError, setModelsError] = createSignal<string | undefined>(initialSnapshot?.modelsError)
   const [modelsLoaded, setModelsLoaded] = createSignal(!!initialSnapshot)
 
-  const loadContext = async () => {
-    if (props.cache) {
-      const snap = await props.cache.ensureLoaded()
-      if (!hasInitialOverrides() && !props.initialExecutionModel && !executionModel()) {
-        setExecutionModel(snap.defaults.executionModel)
-      }
-      if (!hasInitialOverrides() && !props.initialAuditorModel && !auditorModel()) {
-        setAuditorModel(snap.defaults.auditorModel)
-      }
-      setModels(snap.models)
-      setRecents(snap.recents)
-      setFavorites(snap.favorites)
-      setModelsError(snap.modelsError)
-      setModelsLoaded(true)
-    } else {
+  const applyDefaults = (defaults: { executionModel: string; auditorModel: string }) => {
+    if (!hasInitialOverrides() && !props.initialExecutionModel && !executionModel()) {
+      setExecutionModel(defaults.executionModel)
+    }
+    if (!hasInitialOverrides() && !props.initialAuditorModel && !auditorModel()) {
+      setAuditorModel(defaults.auditorModel)
+    }
+  }
+
+  const applySnapshot = (snap: ExecutionContextSnapshot) => {
+    applyDefaults(snap.defaults)
+    setModels(snap.models)
+    setRecents(snap.recents)
+    setModelsError(snap.modelsError)
+    setModelsLoaded(true)
+  }
+
+  const loadInline = async () => {
+    try {
       const ctx = await props.client.loadExecutionContext()
+      const inlineDefaults = resolveExecutionDialogDefaults(props.pluginConfig, ctx.preferences)
       if (ctx.models.error) {
         setModelsError(ctx.models.error)
+        applyDefaults(inlineDefaults)
         setModelsLoaded(true)
         return
       }
       const allModelList = flattenProviders(ctx.models.providers as Parameters<typeof flattenProviders>[0])
       const recentsList: string[] = []
-      const favoritesList = ctx.models.favoriteModels || []
-      setRecents(recentsList)
-      setFavorites(favoritesList)
       const sorted = sortModelsByPriority(allModelList, {
-        favorites: favoritesList,
         recents: recentsList,
         connectedProviderIds: ctx.models.connectedProviderIds,
         configuredProviderIds: ctx.models.configuredProviderIds,
       })
+      setRecents(recentsList)
       setModels(sorted)
+      applyDefaults(inlineDefaults)
+      setModelsLoaded(true)
+    } catch (err) {
+      setModelsError(err instanceof Error ? err.message : 'Failed to load models')
       setModelsLoaded(true)
     }
   }
 
-    
   createEffect(() => {
     if (props.cache) {
-      const unsub = props.cache.onChange(() => {
-        const snap = props.cache?.snapshot()
-        if (snap) {
-          if (!hasInitialOverrides() && !props.initialExecutionModel && executionModel() === initialDefaults.executionModel) {
-            setExecutionModel(snap.defaults.executionModel)
-          }
-          if (!hasInitialOverrides() && !props.initialAuditorModel && auditorModel() === initialDefaults.auditorModel) {
-            setAuditorModel(snap.defaults.auditorModel)
-          }
-          setModels(snap.models)
-          setRecents(snap.recents)
-          setFavorites(snap.favorites)
-          setModelsError(snap.modelsError)
-          setModelsLoaded(true)
-        }
-      })
+      const unsub = props.cache.onChange((snap) => applySnapshot(snap))
       onCleanup(unsub)
+      const existing = props.cache.snapshot()
+      if (existing) {
+        applySnapshot(existing)
+      } else {
+        void props.cache.ensureLoaded().catch(() => { void loadInline() })
+      }
     } else {
-      void loadContext()
+      void loadInline()
     }
   })
 
@@ -119,7 +117,7 @@ export function ExecutePlanPanel(props: {
       return
     }
 
-    const options = buildDialogSelectOptions(currentModels, recents(), favorites())
+    const options = buildDialogSelectOptions(currentModels, recents())
     const title = target === 'execution' ? 'Execution Model' : 'Auditor Model'
     const currentValue = target === 'execution' ? executionModel() : auditorModel()
 
@@ -216,12 +214,12 @@ export function ExecutePlanPanel(props: {
         selectedIndex={0}
         options={[
           {
-            name: `Execution model: ${getModelDisplayLabel(executionModel(), models())}`,
+            name: `Execution model: ${getModelDisplayLabel(executionModel(), models(), openCodeDefaultModel())}`,
             description: 'Press enter to change',
             value: 'model:execution',
           },
           {
-            name: `Auditor model: ${getModelDisplayLabel(auditorModel(), models())}`,
+            name: `Auditor model: ${getModelDisplayLabel(auditorModel(), models(), openCodeDefaultModel())}`,
             description: 'Press enter to change',
             value: 'model:auditor',
           },

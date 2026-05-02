@@ -8,6 +8,11 @@ import { existsSync } from 'fs'
 import { join } from 'path'
 import { resolveDataDir, createTuiPrefsRepo } from '../storage'
 
+export interface ModelKey {
+  providerID: string
+  modelID: string
+}
+
 export interface ModelInfo {
   id: string
   name: string
@@ -33,11 +38,6 @@ export interface ProviderInfo {
   models: ModelInfo[]
 }
 
-export interface ModelKey {
-  providerID: string
-  modelID: string
-}
-
 /**
  * Result of fetching available models, distinguishing success from failure.
  */
@@ -45,16 +45,14 @@ export interface FetchModelsResult {
   providers: ProviderInfo[]
   connectedProviderIds: string[]
   configuredProviderIds: string[]
-  favoriteModels?: string[]
+  favoriteModels: string[]
   error?: string
 }
 
 export interface ModelSortOptions {
   recents?: string[]
-  favorites?: string[]
   connectedProviderIds?: string[]
   configuredProviderIds?: string[]
-  connectedOnly?: boolean
 }
 
 /**
@@ -105,7 +103,7 @@ export function readOpenCodeFavoriteModels(api: TuiPluginApi): string[] {
           return normalized.map(toFullModelName)
         }
       } catch {
-        // Ignore function call errors
+        // ignore
       }
     }
   }
@@ -120,136 +118,61 @@ export function readOpenCodeFavoriteModels(api: TuiPluginApi): string[] {
  * - Failed fetch with an error message
  */
 export async function fetchAvailableModels(api: TuiPluginApi): Promise<FetchModelsResult> {
+  const directory = api.state.path.directory
+  const configuredProviderIds = Object.keys(api.state.config?.provider ?? {})
+  const favoriteModels = readOpenCodeFavoriteModels(api)
   try {
-    const directory = api.state.path.directory
-    const configuredProviderIds = Object.keys(api.state.config?.provider ?? {})
-    const favoriteModels = readOpenCodeFavoriteModels(api)
-    
-    // Try config.providers first (OpenCode approach)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const configProvidersFn = api.client.config?.providers as any
-    const configProvidersResult = configProvidersFn
-      ? await configProvidersFn({ directory }).catch(() => null)
-      : null
-    
-    if (configProvidersResult && !configProvidersResult.error && configProvidersResult.data?.providers) {
-      const providers: ProviderInfo[] = []
-      const connectedProviderIds = (configProvidersResult.data.providers as Array<Record<string, unknown>>).map((p) => (p.id as string) ?? '').filter(Boolean)
-      
-      for (const provider of configProvidersResult.data.providers as Array<Record<string, unknown>>) {
-        const models: ModelInfo[] = []
-        
-        if ((provider.models as Record<string, unknown> | undefined)) {
-          for (const modelData of Object.values(provider.models as Record<string, unknown>)) {
-            const md = modelData as Record<string, unknown>
-            models.push({
-              id: md.id as string,
-              name: md.name as string,
-              providerID: provider.id as string,
-              providerName: provider.name as string,
-              fullName: `${provider.id}/${md.id as string}`,
-              releaseDate: md.release_date as string | undefined,
-              capabilities: {
-                temperature: (md.capabilities as Record<string, unknown> | undefined)?.temperature as boolean | undefined,
-                toolcall: (md.capabilities as Record<string, unknown> | undefined)?.toolcall as boolean | undefined,
-                reasoning: (md.capabilities as Record<string, unknown> | undefined)?.reasoning as boolean | undefined,
-                attachment: (md.capabilities as Record<string, unknown> | undefined)?.attachment as boolean | undefined,
-              },
-              cost: md.cost as { input?: number; output?: number } | undefined,
-            })
-          }
-        }
-        
-        providers.push({
-          id: provider.id as string,
-          name: provider.name as string,
-          models,
-        })
-      }
-      
-      return {
-        providers,
-        connectedProviderIds,
-        configuredProviderIds,
-        favoriteModels,
-      }
-    }
-    
-    // Fallback to provider.list
     const result = await api.client.provider.list({ directory })
-    
     if (result.error) {
-      const errorMsg = (result.error as { message?: string })?.message || 'Failed to fetch providers'
-      const nestedErrorMsg = (result.error as { data?: { message?: string } })?.data?.message
-      return {
-        providers: [],
-        connectedProviderIds: [],
-        configuredProviderIds,
-        favoriteModels,
-        error: nestedErrorMsg || errorMsg,
-      }
+      const errorMsg =
+        (result.error as { data?: { message?: string }; message?: string })?.data?.message
+        ?? (result.error as { message?: string })?.message
+        ?? 'Failed to fetch providers'
+      return { providers: [], connectedProviderIds: [], configuredProviderIds, favoriteModels, error: errorMsg }
     }
-    
     if (!result.data) {
-      return {
-        providers: [],
-        connectedProviderIds: [],
-        configuredProviderIds,
-        favoriteModels,
-        error: 'No provider data returned',
-      }
+      return { providers: [], connectedProviderIds: [], configuredProviderIds, favoriteModels, error: 'No provider data returned' }
     }
-    
     const providers: ProviderInfo[] = []
     const allModels = result.data.all || []
     const connected = result.data.connected || []
-    
-    // Filter to only connected providers
     for (const provider of allModels) {
       if (!connected.includes(provider.id)) continue
-      
       const models: ModelInfo[] = []
-      
       if (provider.models) {
         for (const modelData of Object.values(provider.models)) {
+          const md = modelData as Record<string, unknown>
           models.push({
-            id: modelData.id,
-            name: modelData.name,
+            id: md.id as string,
+            name: md.name as string,
             providerID: provider.id,
             providerName: provider.name,
-            fullName: `${provider.id}/${modelData.id}`,
-            releaseDate: (modelData as { release_date?: string }).release_date,
+            fullName: `${provider.id}/${md.id as string}`,
+            releaseDate: (md as { release_date?: string }).release_date,
             capabilities: {
-              temperature: modelData.capabilities?.temperature,
-              toolcall: modelData.capabilities?.toolcall,
-              reasoning: modelData.capabilities?.reasoning,
-              attachment: modelData.capabilities?.attachment,
+              temperature: (md.capabilities as Record<string, unknown> | undefined)?.temperature as boolean | undefined,
+              toolcall: (md.capabilities as Record<string, unknown> | undefined)?.toolcall as boolean | undefined,
+              reasoning: (md.capabilities as Record<string, unknown> | undefined)?.reasoning as boolean | undefined,
+              attachment: (md.capabilities as Record<string, unknown> | undefined)?.attachment as boolean | undefined,
             },
-            cost: modelData.cost,
+            cost: md.cost as { input?: number; output?: number } | undefined,
           })
         }
       }
-      
       providers.push({
         id: provider.id,
         name: provider.name,
         models,
       })
     }
-    
+    return { providers, connectedProviderIds: connected, configuredProviderIds, favoriteModels }
+  } catch (err) {
     return {
-      providers,
-      connectedProviderIds: connected,
+      providers: [],
+      connectedProviderIds: [],
       configuredProviderIds,
       favoriteModels,
-    }
-  } catch (err) {
-    return { 
-      providers: [], 
-      connectedProviderIds: [],
-      configuredProviderIds: Object.keys(api.state.config?.provider ?? {}),
-      favoriteModels: readOpenCodeFavoriteModels(api),
-      error: err instanceof Error ? err.message : 'Failed to fetch providers' 
+      error: err instanceof Error ? err.message : 'Failed to fetch providers',
     }
   }
 }
@@ -295,31 +218,15 @@ export function buildModelOptions(
 export function buildDialogSelectOptions(
   models: ModelInfo[],
   recents: string[] = [],
-  favorites: string[] = [],
 ): Array<{ title: string; value: string; description?: string; category?: string }> {
   const defaultOption = {
     title: 'Use default',
     value: '',
-    description: 'Use config default model',
+    description: 'Use config default',
   }
 
   const modelMap = new Map(models.map(m => [m.fullName, m]))
   const usedInSections = new Set<string>()
-
-  // Build favorite options first
-  const favoriteOptions = favorites
-    .filter(fn => !usedInSections.has(fn))
-    .map(fn => modelMap.get(fn))
-    .filter((m): m is ModelInfo => !!m)
-    .map(m => {
-      usedInSections.add(m.fullName)
-      return {
-        title: m.name,
-        value: m.fullName,
-        description: m.providerName,
-        category: 'Favorites',
-      }
-    })
 
   // Build recent options next
   const recentOptions = recents
@@ -346,17 +253,28 @@ export function buildDialogSelectOptions(
       category: m.providerName,
     }))
 
-  return [defaultOption, ...favoriteOptions, ...recentOptions, ...providerOptions]
+  return [defaultOption, ...recentOptions, ...providerOptions]
 }
 
 /**
  * Returns a display label for a model value.
- * Shows the model name if found, "default" if empty, or the raw value as fallback.
+ * Shows the model name if found, "default" if empty (no fallback), or the raw value as fallback.
+ * If `value` is empty and `fallbackFullName` is provided, attempts to resolve the fallback's display name.
  */
-export function getModelDisplayLabel(value: string, models: ModelInfo[]): string {
-  if (!value) return 'default'
-  const model = models.find(m => m.fullName === value)
-  return model ? model.name : value
+export function getModelDisplayLabel(
+  value: string,
+  models: ModelInfo[],
+  fallbackFullName?: string,
+): string {
+  if (value) {
+    const model = models.find(m => m.fullName === value)
+    return model ? model.name : value
+  }
+  if (fallbackFullName) {
+    const fallbackModel = models.find(m => m.fullName === fallbackFullName)
+    return fallbackModel ? fallbackModel.name : fallbackFullName
+  }
+  return 'default'
 }
 
 /**
@@ -429,22 +347,18 @@ export function recordRecentModel(projectId: string, modelFullName: string, dbPa
 }
 
 /**
- * Sorts models by priority: favorites first, then recents, then by provider priority.
+ * Sorts models by priority: recents first, then by provider priority.
  * Returns a sorted copy without mutating the input array.
  */
 export function sortModelsByPriority(
   models: ModelInfo[],
   options: ModelSortOptions = {}
 ): ModelInfo[] {
-  const favoriteSet = new Set(options.favorites ?? [])
   const recentSet = new Set(options.recents ?? [])
   const connectedProviderSet = new Set(options.connectedProviderIds ?? [])
   const configuredProviderSet = new Set(options.configuredProviderIds ?? [])
-  
-  // Filter to connected-only if requested and connectedProviderIds is not empty
-  const sortable = options.connectedOnly && connectedProviderSet.size > 0
-    ? models.filter(model => connectedProviderSet.has(model.providerID))
-    : [...models]
+
+  const sortable = [...models]
 
   const getProviderPriority = (model: ModelInfo) => {
     if (connectedProviderSet.has(model.providerID)) return 0
@@ -453,16 +367,10 @@ export function sortModelsByPriority(
   }
   
   return sortable.sort((a, b) => {
-    const aIsFavorite = favoriteSet.has(a.fullName)
-    const bIsFavorite = favoriteSet.has(b.fullName)
     const aIsRecent = recentSet.has(a.fullName)
     const bIsRecent = recentSet.has(b.fullName)
 
-    // Favorites first
-    if (aIsFavorite && !bIsFavorite) return -1
-    if (!aIsFavorite && bIsFavorite) return 1
-
-    // Then recents
+    // Recents first
     if (aIsRecent && !bIsRecent) return -1
     if (!aIsRecent && bIsRecent) return 1
 
