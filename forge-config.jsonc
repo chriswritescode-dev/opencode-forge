@@ -48,15 +48,14 @@
     "image": "oc-forge-sandbox:latest"
   },
 
-  // Native fallow tooling (powered by @fallow-cli/fallow-node).
-  // When enabled, all four agents (code, architect, auditor, auditor-loop)
-  // get the fallow-* tools for structural code analysis.
-  "fallow": {
+  // Native ast-grep tooling (powered by @ast-grep/napi).
+  // When enabled, agents get ast-grep tools for AST search, inspection,
+  // and rewrite previews across all bundled ast-grep languages.
+  "astGrep": {
     "enabled": true,
-    // Subset of fallow-* tools to expose. Empty/omitted = all six.
-    // Available: "fallow-dead-code", "fallow-circular-deps",
-    //            "fallow-boundary-violations", "fallow-dupes",
-    //            "fallow-health", "fallow-complexity"
+    // Subset of ast-grep tools to expose. Empty/omitted = all.
+    // Available: "ast-grep-search", "ast-grep-inspect",
+    //            "ast-grep-rewrite-preview"
     "allowedTools": []
   },
 

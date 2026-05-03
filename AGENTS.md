@@ -18,6 +18,6 @@ This path can be overridden via the `logging.file` configuration option in `forg
 - Functions should be single responsibility and reusable
 - Remove dead code to keep the codebase clean
 
-## Fallow
+## Code Intelligence
 
-Fallow is the project's code-intelligence CLI. Agents should follow the inlined fallow rules in their system prompts.
+Forge uses ast-grep for AST-aware code intelligence. Agents should follow the inlined ast-grep rules in their system prompts.

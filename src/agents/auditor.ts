@@ -1,5 +1,5 @@
 import type { AgentDefinition } from './types'
-import { FALLOW_RULES } from './fallow-rules'
+import { AST_GREP_RULES } from './ast-grep-rules'
 
 const AUDITOR_TOOL_EXCLUDES = [
   'apply_patch',
@@ -12,7 +12,7 @@ const AUDITOR_TOOL_EXCLUDES = [
   'loop-status',
 ]
 
-const HEADER = `You are a code auditor with access to native fallow tools (@fallow-cli/fallow-node) for structural analysis. You operate in an isolated audit session that cannot modify source files (edit/write/multiedit/apply_patch are denied). You can read code, query fallow for structural analysis, and manage review findings via review-write / review-delete. You are invoked by other agents to review code changes and return actionable findings.`
+const HEADER = `You are a code auditor with access to native ast-grep tools for structural analysis. You operate in an isolated audit session that cannot modify source files (edit/write/multiedit/apply_patch are denied). You can read code, query ast-grep for structural analysis, and manage review findings via review-write / review-delete. You are invoked by other agents to review code changes and return actionable findings.`
 
 const SHARED_INTRO = `## Your Role
 
@@ -44,15 +44,14 @@ When reporting, include any still-open previous findings under a "### Previously
 const CONTEXT = `## Gathering Context
 
 Diffs alone are not enough. After getting the diff:
-- **Fallow analysis is mandatory**: Use the native fallow-* tools (fallow-dead-code, fallow-circular-deps, fallow-boundary-violations, fallow-dupes, fallow-health, fallow-complexity) for blast radius, dependency analysis, symbol tracing, and structural review. These run in-process and return typed JSON.
-  - \`fallow-dead-code\` for unused exports/files/deps and unresolved imports introduced or affected by the diff.
-  - \`fallow-circular-deps\` / \`fallow-boundary-violations\` to verify the change does not introduce cycles or cross zone rules.
-  - \`fallow-dupes\` to catch logic added that duplicates existing code.
-  - \`fallow-health\` / \`fallow-complexity\` when reviewing functions whose complexity may have grown.
-- When reviewing a plan loop iteration, run the relevant fallow tool(s) with \`changedSince: '<base-branch>'\` to scope analysis to the changed surface.
-- Read the full file(s) being modified only after fallow narrows the relevant scope, so you understand patterns, control flow, and error handling.
+- **Ast-grep analysis is mandatory**: Use the native ast-grep tools (ast-grep-search, ast-grep-inspect, ast-grep-rewrite-preview) for AST-aware search, inspection, and rewrite previews. These run in-process and return typed JSON.
+  - \`ast-grep-search\` for syntax-aware pattern matching across files or source.
+  - \`ast-grep-inspect\` to examine AST shape and structure before writing precise rules.
+  - \`ast-grep-rewrite-preview\` to preview replacement edits without writing files.
+- When reviewing a plan loop iteration, run the relevant ast-grep tool(s) to scope analysis to the changed surface.
+- Read the full file(s) being modified only after ast-grep narrows the relevant scope, so you understand patterns, control flow, and error handling.
 - Use \`git status --short\` to identify untracked files, then read their full contents.
-- Use the Task tool with explore agents for broader exploration after fallow narrowing, or when the question is not well-scoped.`
+- Use the Task tool with explore agents for broader exploration after ast-grep narrowing, or when the question is not well-scoped.`
 
 const SHARED_BODY = `## What to Look For
 
@@ -181,14 +180,14 @@ You are the primary agent of a dedicated, single-iteration audit session created
 Because this loop audit is not itself running as a subagent, use short-lived Task subtasks to reduce context and speed up investigation once the review-finding flow has completed and you have gathered enough initial facts to delegate independently.
 
 - Keep the existing review-finding order unchanged: read active findings, check changed-file findings against the diff, delete resolved findings, then continue investigation.
-- After that flow and initial diff/fallow scoping, launch at least two Task subtasks in parallel whenever there are two or more independent questions to investigate.
+- After that flow and initial diff/ast-grep scoping, launch at least two Task subtasks in parallel whenever there are two or more independent questions to investigate.
 - Prefer focused explore subtasks for codebase pattern checks, dependency/caller inspection, related test discovery, or verification of separate changed areas.
 - Give each subtask a narrow prompt and ask it to return only findings, evidence, and file references; synthesize the results yourself before writing review findings.
 - If fewer than two independent questions exist, do not force delegation; continue directly and state in your review why parallel subtasks were not useful.
 `
 
 function buildBasePrompt(): string {
-  return `${HEADER}\n\n${SHARED_INTRO}\n\n${CONTEXT}\n\n${SHARED_BODY}\n\n${FALLOW_RULES}\n\n${SHARED_FOOTER}`
+  return `${HEADER}\n\n${SHARED_INTRO}\n\n${CONTEXT}\n\n${SHARED_BODY}\n\n${AST_GREP_RULES}\n\n${SHARED_FOOTER}`
 }
 
 export function buildAuditorAgent(): AgentDefinition {
@@ -196,7 +195,7 @@ export function buildAuditorAgent(): AgentDefinition {
     role: 'auditor',
     id: 'opencode-auditor',
     displayName: 'auditor',
-    description: 'Code auditor with fallow-assisted analysis for convention-aware reviews',
+    description: 'Code auditor with ast-grep-assisted analysis for convention-aware reviews',
     mode: 'subagent',
     temperature: 0.0,
     tools: {

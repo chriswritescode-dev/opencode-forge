@@ -1,5 +1,5 @@
 import type { AgentRole, AgentDefinition, AgentConfig } from './agents'
-import { FALLOW_RULES } from './agents/fallow-rules'
+import { AST_GREP_RULES } from './agents/ast-grep-rules'
 import { readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
@@ -13,7 +13,7 @@ const REPLACED_BUILTIN_AGENTS = ['build', 'plan']
 const ENHANCED_BUILTIN_AGENTS: Record<string, { permission: Record<string, string>; prompt?: string }> = {
   explore: {
     permission: {},
-    prompt: FALLOW_RULES,
+    prompt: AST_GREP_RULES,
   },
 }
 

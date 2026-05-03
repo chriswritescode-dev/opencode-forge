@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
-import { createEffect, createSignal, onCleanup } from 'solid-js'
+import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { PLAN_EXECUTION_LABELS, matchExecutionLabel, type PlanExecutionLabel } from '../utils/plan-execution'
 import { extractPlanTitle } from '../utils/plan-execution'
 import { buildDialogSelectOptions, flattenProviders, getModelDisplayLabel, sortModelsByPriority, type ModelInfo } from '../utils/tui-models'
@@ -27,13 +27,15 @@ export function ExecutePlanPanel(props: {
     auditorModel: string
   }) => void
 }) {
+  const cache = untrack(() => props.cache)
+  const pluginConfig = untrack(() => props.pluginConfig)
   const theme = () => props.api.theme.current
 
   const openCodeDefaultModel = () => props.api.state.config?.model ?? ''
 
-  const initialSnapshot = props.cache?.snapshot() ?? null
+  const initialSnapshot = cache?.snapshot() ?? null
   const initialDefaults = initialSnapshot?.defaults
-    ?? resolveExecutionDialogDefaults(props.pluginConfig, initialSnapshot?.preferences ?? null)
+    ?? resolveExecutionDialogDefaults(pluginConfig, initialSnapshot?.preferences ?? null)
 
   const hasInitialOverrides = () => props.initialExecutionModel !== undefined || props.initialAuditorModel !== undefined
 
@@ -68,7 +70,7 @@ export function ExecutePlanPanel(props: {
   const loadInline = async () => {
     try {
       const ctx = await props.client.loadExecutionContext()
-      const inlineDefaults = resolveExecutionDialogDefaults(props.pluginConfig, ctx.preferences)
+      const inlineDefaults = resolveExecutionDialogDefaults(pluginConfig, ctx.preferences)
       if (ctx.models.error) {
         setModelsError(ctx.models.error)
         applyDefaults(inlineDefaults)
@@ -93,14 +95,14 @@ export function ExecutePlanPanel(props: {
   }
 
   createEffect(() => {
-    if (props.cache) {
-      const unsub = props.cache.onChange((snap) => applySnapshot(snap))
+    if (cache) {
+      const unsub = cache.onChange((snap) => untrack(() => applySnapshot(snap)))
       onCleanup(unsub)
-      const existing = props.cache.snapshot()
+      const existing = cache.snapshot()
       if (existing) {
         applySnapshot(existing)
       } else {
-        void props.cache.ensureLoaded().catch(() => { void loadInline() })
+        void cache.ensureLoaded().catch(() => { void untrack(() => loadInline()) })
       }
     } else {
       void loadInline()
@@ -190,8 +192,8 @@ export function ExecutePlanPanel(props: {
       return
     }
 
-    props.cache?.recordRecent(execModel || '')
-    props.cache?.recordRecent(auditModel || '')
+    cache?.recordRecent(execModel || '')
+    cache?.recordRecent(auditModel || '')
 
     props.api.ui.toast({ message: result.loopName ? `Loop started: ${result.loopName}` : 'Plan execution started', variant: 'success', duration: 3000 })
     await props.onExecuted?.()

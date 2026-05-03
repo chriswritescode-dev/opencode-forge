@@ -102,15 +102,15 @@ Loop search dialog:
 
 ## Agents
 
-The plugin bundles three agents that integrate with fallow for code intelligence:
+The plugin bundles three agents that integrate with ast-grep for code intelligence:
 
 | Agent | Mode | Description |
 |-------|------|-------------|
-| **code** | primary | Primary coding agent with code intelligence-driven discovery. Uses fallow tools to explore code structure before diving into unfamiliar code. |
+| **code** | primary | Primary coding agent with code intelligence-driven discovery. Uses ast-grep tools to explore code structure before diving into unfamiliar code. |
 | **architect** | primary | Read-only planning agent. Researches the codebase using intelligence-driven discovery, designs implementation plans, and caches them for user approval before execution. |
-| **auditor** | subagent | Read-only code auditor with access to fallow code intelligence for convention-aware reviews. Invoked via Task tool to review diffs, commits, branches, or PRs against stored conventions and decisions. |
+| **auditor** | subagent | Read-only code auditor with access to ast-grep code intelligence for convention-aware reviews. Invoked via Task tool to review diffs, commits, branches, or PRs against stored conventions and decisions. |
 
-The auditor agent is a read-only subagent (`temperature: 0.0`) that can read fallow data but cannot write, edit, or delete entries or execute plans. It is invoked by other agents via the Task tool to review code changes against stored project conventions and decisions.
+The auditor agent is a read-only subagent (`temperature: 0.0`) that cannot write, edit, or delete entries or execute plans. It is invoked by other agents via the Task tool to review code changes against stored project conventions and decisions.
 
 **Tool restrictions:** The auditor cannot use `plan-execute` or `loop` tools to prevent interference with active workflows.
 
@@ -557,7 +557,7 @@ Model selection follows this priority order:
 ### Troubleshooting
 
 - **No plan found** — Ensure the architect output included the forge plan markers, or open the Plan Viewer for the current session.
-- **Code intelligence tools missing** — Check `fallow.enabled`; when false, code intelligence tools are not registered.
+- **Code intelligence tools missing** — Check `astGrep.enabled`; when false, ast-grep tools are not registered.
 - **TUI shows no plan** — The plan is session-scoped; use `Forge: View plan` in the session where the architect produced it.
 - **Need logs** — Set `logging.enabled` to `true`, and optionally `logging.debug` for verbose output.
 

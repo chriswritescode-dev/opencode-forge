@@ -83,20 +83,32 @@ describe('Agent definitions', () => {
     })
   })
 
-  describe('fallow policy in system prompts', () => {
-    test('architect prompt contains "fallow"', () => {
-      expect(architectAgent.systemPrompt).toContain('fallow')
-      expect(architectAgent.systemPrompt).toContain('native fallow tools')
+  describe('ast-grep policy in system prompts', () => {
+    test('architect prompt contains "ast-grep"', () => {
+      expect(architectAgent.systemPrompt).toContain('ast-grep')
+      expect(architectAgent.systemPrompt).toContain('native ast-grep tools')
     })
 
-    test('code prompt contains "fallow"', () => {
-      expect(codeAgent.systemPrompt).toContain('fallow')
-      expect(codeAgent.systemPrompt).toContain('native fallow tools')
+    test('code prompt contains "ast-grep"', () => {
+      expect(codeAgent.systemPrompt).toContain('ast-grep')
+      expect(codeAgent.systemPrompt).toContain('native ast-grep tools')
     })
 
-    test('auditor prompt contains "fallow"', () => {
-      expect(auditorAgent.systemPrompt).toContain('fallow')
-      expect(auditorAgent.systemPrompt).toContain('native fallow tools')
+    test('auditor prompt contains "ast-grep"', () => {
+      expect(auditorAgent.systemPrompt).toContain('ast-grep')
+      expect(auditorAgent.systemPrompt).toContain('native ast-grep tools')
+    })
+
+    test('prompts do not contain legacy graph tool names', () => {
+      expect(architectAgent.systemPrompt).not.toContain('graph-query')
+      expect(architectAgent.systemPrompt).not.toContain('graph-symbols')
+      expect(architectAgent.systemPrompt).not.toContain('graph-analyze')
+      expect(codeAgent.systemPrompt).not.toContain('graph-query')
+      expect(codeAgent.systemPrompt).not.toContain('graph-symbols')
+      expect(codeAgent.systemPrompt).not.toContain('graph-analyze')
+      expect(auditorAgent.systemPrompt).not.toContain('graph-query')
+      expect(auditorAgent.systemPrompt).not.toContain('graph-symbols')
+      expect(auditorAgent.systemPrompt).not.toContain('graph-analyze')
     })
 
     test('agent prompts avoid deprecated graph tooling names', () => {

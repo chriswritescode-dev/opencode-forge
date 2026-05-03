@@ -5,7 +5,7 @@
 <h1 align="center">OpenCode Forge</h1>
 
 <p align="center">
-  <strong>Loops, plans, sandboxing, and fallow-assisted code intelligence for <a href="https://opencode.ai">OpenCode</a> AI agents</strong>
+  <strong>Loops, plans, sandboxing, and ast-grep code intelligence for <a href="https://opencode.ai">OpenCode</a> AI agents</strong>
 </p>
 
 <p align="center">
@@ -71,7 +71,7 @@ Loop search dialog:
 - **Plans** — architect produces marked plans that are auto-captured to SQL storage
 - **Execution** — `New session`, `Execute here`, `Loop`, and `Loop (worktree)` launch paths for approved plans
 - **Loops** — iterative coding/auditing with optional worktree isolation and sandbox support
-- **Code Intelligence (fallow)** — agents use the external [fallow](https://www.npmjs.com/package/fallow) CLI for structural discovery (dead code, duplicates, blast radius, dependency health, complexity)
+- **Code Intelligence (ast-grep)** — agents use native ast-grep tools powered by `@ast-grep/napi` and official `@ast-grep/lang-*` parsers for AST-aware search, inspection, and rewrite previews across all supported languages
 - **Review Findings** — persistent, branch-aware review findings across loop sessions
 - **TUI** — sidebar, plan viewer/editor, execution dialog, and loop details
 - **CLI** — loop management through `oc-forge`
@@ -79,13 +79,13 @@ Loop search dialog:
 
 ## Agents
 
-The plugin bundles three agents that use the fallow CLI for structural code intelligence:
+The plugin bundles three agents that use ast-grep for structural code intelligence:
 
 | Agent | Mode | Description |
 |-------|------|-------------|
-| **code** | primary | Primary coding agent with fallow-assisted discovery. Uses the fallow CLI to surface structural issues before diving into unfamiliar code. |
-| **architect** | primary | Read-only planning agent with fallow-assisted discovery. Researches the codebase, designs implementation plans, and caches them for user approval before execution. |
-| **auditor** | subagent | Read-only code auditor with fallow-assisted analysis for convention-aware reviews. Invoked via Task tool to review diffs, commits, branches, or PRs against stored conventions and decisions. |
+| **code** | primary | Primary coding agent with ast-grep-assisted discovery. Uses ast-grep tools to surface structural issues before diving into unfamiliar code. |
+| **architect** | primary | Read-only planning agent with ast-grep-assisted discovery. Researches the codebase, designs implementation plans, and caches them for user approval before execution. |
+| **auditor** | subagent | Read-only code auditor with ast-grep-assisted analysis for convention-aware reviews. Invoked via Task tool to review diffs, commits, branches, or PRs against stored conventions and decisions. |
 
 The auditor agent is a read-only subagent (`temperature: 0.0`) that cannot edit files or execute plans. It is invoked by other agents via the Task tool to review code changes against stored project conventions and decisions.
 
@@ -127,7 +127,15 @@ Iterative development loops with automatic auditing. Defaults to current directo
 
 ### Code Intelligence
 
-Forge does not register code structure tools. Instead, the architect, code, and auditor agents are prompted (via `src/agents/fallow-rules.ts`) to use the external [fallow](https://www.npmjs.com/package/fallow) CLI for structural analysis: dead code, duplicates, dependency health, blast radius, and complexity hotspots. Run fallow directly from your project root via `pnpm exec fallow ...`.
+Forge registers preview-only ast-grep tools powered by `@ast-grep/napi`.
+
+| Tool | Description |
+|------|-------------|
+| `ast-grep-search` | Search source, files, or directories with AST patterns/rules. |
+| `ast-grep-inspect` | Inspect the first match and optional AST context to refine rules. |
+| `ast-grep-rewrite-preview` | Return replacement edits and transformed output without writing files. |
+
+These tools support all bundled ast-grep language packages, including Bash, C/C++, C#, CSS, Dart, Elixir, Go, HTML, Java, JavaScript/TypeScript/TSX, JSON, Kotlin, PHP, Python, Ruby, Rust, Scala, Swift, TOML, and YAML.
 
 ## Slash Commands
 

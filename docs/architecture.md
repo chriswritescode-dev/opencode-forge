@@ -40,11 +40,11 @@ The TUI plugin provides a sidebar widget that displays:
 
 The TUI plugin reads loop state from the KV store and renders it reactively.
 
-## Code Intelligence (fallow)
+## Code Intelligence (ast-grep)
 
-Fallow is the bundled code intelligence layer. Agents use fallow to explore unfamiliar code, understand dependencies, and perform convention-aware reviews.
+Forge exposes native ast-grep tools through `@ast-grep/napi`. Agents use them for AST-aware search, inspection, and rewrite previews while keeping file writes under the normal edit/write tool permission model.
 
-See [fallow](../fallow/README.md) for detailed documentation.
+The implementation uses `parseAsync` for source/file parsing, `findInFiles` for multi-file search, and preview-only rewrite output that never writes files directly.
 
 ## Loop System
 
