@@ -10,10 +10,10 @@ OpenCode Forge is a dual-plugin: it exports both a server plugin (`src/index.ts`
 
 The server plugin is the core of the plugin. It:
 
-1. Initializes services (KV, Loop, Graph, Sandbox)
+1. Initializes services (KV, Loop, Sandbox)
 2. Registers tools for OpenCode to use
 3. Registers hooks for session management and event handling
-4. Manages the lifecycle of loops, graph indexing, and sandbox containers
+4. Manages the lifecycle of loops and sandbox containers
 
 Key exports:
 - `createForgePlugin(config: PluginConfig): Plugin` - Factory function
@@ -40,40 +40,11 @@ The TUI plugin provides a sidebar widget that displays:
 
 The TUI plugin reads loop state from the KV store and renders it reactively.
 
-## Graph System
+## Code Intelligence (fallow)
 
-The graph system provides code structure indexing and querying capabilities.
+Fallow is the bundled code intelligence layer. Agents use fallow to explore unfamiliar code, understand dependencies, and perform convention-aware reviews.
 
-### Components
-
-- **Tree-sitter Indexer** (`graph/tree-sitter.ts`) - Parses code and extracts symbols using tree-sitter
-- **Graph Worker** (`graph/worker.ts`) - Web worker for offloading indexing work
-- **Graph Service** (`graph/service.ts`) - Main interface for graph operations
-- **Graph Client** (`graph/client.ts`) - RPC client for communicating with the worker
-- **SQLite Storage** (`graph/database.ts`) - Persists indexed data
-
-### Flow
-
-1. On startup with `graph.autoScan` enabled, `GraphService.ensureStartupIndex()` performs a freshness check
-2. If the graph cache is missing, stale, or unhealthy, a full scan is triggered; otherwise the existing cache is reused
-3. The service batches files and sends them to the worker
-4. The worker uses tree-sitter to parse files and extract:
-   - Symbols (functions, classes, interfaces, etc.)
-   - Imports and exports
-   - Call relationships between symbols
-5. Results are stored in a SQLite database per project
-6. The filesystem watcher monitors for changes and triggers re-indexing
-7. PageRank and other derived metrics are computed after initial scan
-
-### Query Tools
-
-Agents access the graph through these tools:
-- `graph-status` - Check indexing status or trigger scan
-- `graph-query` - File-level queries (dependencies, dependents, co-changes)
-- `graph-symbols` - Symbol-level queries (find, search, callers, callees)
-- `graph-analyze` - Code quality analysis (unused exports, duplication)
-
-See [graph-system.md](graph-system.md) for detailed documentation.
+See [fallow](../fallow/README.md) for detailed documentation.
 
 ## Loop System
 
@@ -145,7 +116,7 @@ OpenCode Forge integrates with OpenCode through several hook points.
 ### Tool Hooks
 
 - `tool.execute.before` - Sandbox tool redirection, logging
-- `tool.execute.after` - Sandbox cleanup, graph update triggers
+- `tool.execute.after` - Sandbox cleanup
 
 ### Permission Hooks
 
@@ -165,16 +136,6 @@ The KV store (`services/kv.ts`) provides key-value persistence with TTL support:
 - Supports TTL for automatic expiration
 - Used for loop state, plans, review findings
 
-### Graph Database
-
-The graph database (`graph/database.ts`) uses SQLite for code graph storage:
-
-- File records with metadata and pagerank
-- Symbol records with locations and signatures
-- Import/export relationships
-- Call graph edges
-- Co-change patterns
-
 ### Configuration
 
 Plugin configuration is stored at `~/.config/opencode/forge-config.jsonc` (JSONC format). On first run, a bundled default config is copied if none exists.
@@ -186,8 +147,7 @@ Plugin configuration is stored at `~/.config/opencode/forge-config.jsonc` (JSONC
 3. KV Service - Enable state persistence
 4. Loop Service - Restore previous loops
 5. Sandbox Manager - If enabled
-6. Graph Service - If enabled
-7. Tools and Hooks - Final registration
+6. Tools and Hooks - Final registration
 
 ## Cleanup
 
@@ -196,5 +156,4 @@ On plugin shutdown (`server.instance.disposed` event):
 1. Stop all active sandbox containers
 2. Terminate all active loops
 3. Clear retry timeouts
-4. Close graph service (stops watcher, closes database)
-5. Close database connections
+4. Close database connections

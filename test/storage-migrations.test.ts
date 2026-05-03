@@ -22,7 +22,6 @@ test('openForgeDatabase creates all new tables', () => {
   expect(tableNames).toContain('loop_large_fields')
   expect(tableNames).toContain('plans')
   expect(tableNames).toContain('review_findings')
-  expect(tableNames).toContain('graph_status')
   expect(tableNames).toContain('tui_preferences')
   expect(tableNames).toContain('migrations')
 
@@ -42,7 +41,6 @@ test('migrations are recorded exactly once', () => {
   expect(ids).toContain('101')
   expect(ids).toContain('102')
   expect(ids).toContain('103')
-  expect(ids).toContain('104')
   expect(ids).toContain('105')
   expect(ids).toContain('106')
 

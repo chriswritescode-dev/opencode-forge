@@ -34,7 +34,7 @@ export function createLoopEventHandler(
   logger: Logger,
   getConfig: () => PluginConfig,
   sandboxManager?: ReturnType<typeof createSandboxManager>,
-  projectId?: string,
+  _projectId?: string,
   dataDir?: string,
 ): LoopEventHandler {
   const retryTimeouts = new Map<string, NodeJS.Timeout>()
@@ -171,8 +171,6 @@ export function createLoopEventHandler(
     if (state.worktreeDir && state.worktreeBranch) {
       const result = await cleanupLoopWorktree({
         worktreeDir: state.worktreeDir,
-        projectId,
-        dataDir,
         logPrefix: 'Loop',
         logger,
       })

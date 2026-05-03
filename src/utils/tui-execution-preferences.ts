@@ -24,7 +24,7 @@ const TTL_MS = 30 * 24 * 60 * 60 * 1000 // 30 days
  * Gets the database path used by the memory plugin.
  */
 function getDbPath(): string {
-  return join(resolveDataDir(), 'graph.db')
+  return join(resolveDataDir(), 'forge.db')
 }
 
 /**

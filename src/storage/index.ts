@@ -10,9 +10,6 @@ export type { PlanRow, PlansRepo } from './repos/plans-repo'
 export { createReviewFindingsRepo } from './repos/review-findings-repo'
 export type { ReviewFindingRow, ReviewFindingsRepo, WriteFindingResult } from './repos/review-findings-repo'
 
-export { createGraphStatusRepo } from './repos/graph-status-repo'
-export type { GraphStatusRow, GraphStatusRepo } from './repos/graph-status-repo'
-
 export { createTuiPrefsRepo } from './repos/tui-prefs-repo'
 export type { TuiPrefsRepo } from './repos/tui-prefs-repo'
 

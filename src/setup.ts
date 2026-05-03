@@ -23,7 +23,6 @@ export function resolveConfigPath(): string {
 function resolveLegacyConfigPaths(): string[] {
   return [
     join(resolveConfigDir(), 'memory-config.jsonc'),
-    join(resolveConfigDir(), 'graph-config.jsonc'),
   ]
 }
 
@@ -125,6 +124,5 @@ function normalizeConfig(config: PluginConfig): PluginConfig {
     tui: config.tui,
     agents: config.agents,
     sandbox: config.sandbox,
-    graph: config.graph,
   }
 }

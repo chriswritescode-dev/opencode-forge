@@ -31,7 +31,6 @@ import { handleWriteFinding } from './handlers/findings'
 import { handleDeleteFinding } from './handlers/findings'
 import { handleListProjects } from './handlers/projects'
 import { handleGetProject } from './handlers/projects'
-import { handleGetGraphStatus } from './handlers/projects'
 
 const HANDLERS = new Map<string, Handler>([
   ['plan.read.session', handleGetSessionPlan],
@@ -55,7 +54,6 @@ const HANDLERS = new Map<string, Handler>([
   ['findings.delete', handleDeleteFinding],
   ['projects.list', handleListProjects],
   ['projects.get', handleGetProject],
-  ['graph.status', handleGetGraphStatus],
 ])
 
 export interface BusRpcDeps {

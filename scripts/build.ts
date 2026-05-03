@@ -29,21 +29,6 @@ const result = await Bun.build({
   external: ['@opentui/solid', '@opentui/core', '@opencode-ai/plugin/tui', 'solid-js'],
 })
 
-console.log('Bundling graph worker...')
-const workerResult = await Bun.build({
-  entrypoints: [join(__dirname, '..', 'src', 'graph', 'worker.ts')],
-  outdir: join(__dirname, '..', 'dist', 'graph'),
-  target: 'node',
-  format: 'esm',
-})
-
-if (!workerResult.success) {
-  for (const log of workerResult.logs) {
-    console.error(log)
-  }
-  process.exit(1)
-}
-
 if (!result.success) {
   for (const log of result.logs) {
     console.error(log)

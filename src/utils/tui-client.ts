@@ -1,6 +1,5 @@
 import type { ExecutionPreferences } from './tui-execution-preferences'
 import type { LoopInfo } from './tui-refresh-helpers'
-import type { GraphStatusPayload } from './graph-status-store'
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 import { appendFileSync, mkdirSync } from 'fs'
 import { dirname } from 'path'
@@ -76,8 +75,6 @@ export interface ForgeProjectClient {
 
   /** Single round-trip pair: read preferences and list models. */
   loadExecutionContext(): Promise<ExecutionContext>
-
-  readGraphStatus(cwd: string): Promise<GraphStatusPayload | null>
 }
 
 const DIRECTORY_RESOLUTION_ATTEMPTS = 3
@@ -487,18 +484,6 @@ export async function connectForgeProject(
         fetchAvailableModels(api),
       ])
       return { preferences: prefsResult, models: modelsResult }
-    },
-    async readGraphStatus(cwd) {
-      try {
-        const data = await rpc<{ status: GraphStatusPayload | null }>(
-          'graph.status',
-          projectId ? { projectId } : {},
-          cwd ? { cwd } : {},
-        )
-        return data.status
-      } catch {
-        return null
-      }
     },
   }
 }

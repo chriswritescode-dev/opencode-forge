@@ -14,8 +14,7 @@ import { createLoopService, generateUniqueName } from '../src/services/loop'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
-import { createGraphStatusRepo } from '../src/storage/repos/graph-status-repo'
-import { resolveGraphCacheDir } from '../src/storage/graph-projects'
+
 import { handleExecutePlan } from '../src/api/handlers/plan-execute'
 import { openForgeDatabase, resolveDataDir } from '../src/storage/database'
 import { createLoopEventHandler } from '../src/hooks/loop'
@@ -102,20 +101,6 @@ function createTestDb(): Database {
   `)
   db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_branch ON review_findings(project_id, branch)`)
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS graph_status (
-      project_id   TEXT NOT NULL,
-      branch       TEXT NOT NULL DEFAULT '',
-      cwd          TEXT NOT NULL,
-      state        TEXT NOT NULL,
-      ready        INTEGER NOT NULL DEFAULT 0,
-      stats_json   TEXT,
-      message      TEXT,
-      updated_at   INTEGER NOT NULL,
-      PRIMARY KEY (project_id, cwd)
-    )
-  `)
-  
   return db
 }
 
@@ -384,7 +369,7 @@ describe('Plan Approval Tool Interception', () => {
     const output = { title: '', output: 'Some result', metadata: {} }
     const originalOutput = output.output
 
-    simulateToolExecuteAfter('graph-status', {}, output)
+    simulateToolExecuteAfter('plan-read', {}, output)
 
     expect(output.output).toBe(originalOutput)
     expect(output.output).not.toContain('<system-reminder>')
@@ -440,7 +425,7 @@ describe('Plan Approval Tool Interception', () => {
   test('Loop blocking does not affect non-blocked tools', () => {
     const output = { title: '', output: 'test', metadata: {} }
 
-    simulateToolExecuteAfter('graph-status', {}, output, true)
+    simulateToolExecuteAfter('plan-read', {}, output, true)
 
     expect(output.title).toBe('')
     expect(output.output).toBe('test')
@@ -494,7 +479,6 @@ describe('Plan Approval Tool Interception', () => {
       },
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo: createLoopsRepo(db),
       reviewFindingsRepo: createReviewFindingsRepo(db),
       sandboxManager: null,
@@ -560,7 +544,6 @@ describe('Plan Approval Tool Interception', () => {
       input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo: createLoopsRepo(db),
       reviewFindingsRepo: createReviewFindingsRepo(db),
       sandboxManager: null,
@@ -626,7 +609,6 @@ describe('Plan Approval Tool Interception', () => {
       input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo: createLoopsRepo(db),
       reviewFindingsRepo: createReviewFindingsRepo(db),
       sandboxManager: null,
@@ -691,7 +673,6 @@ describe('Plan Approval Tool Interception', () => {
       input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo: createLoopsRepo(db),
       reviewFindingsRepo: createReviewFindingsRepo(db),
       sandboxManager: null,
@@ -758,7 +739,6 @@ describe('Plan Approval Tool Interception', () => {
       input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo: createLoopsRepo(db),
       reviewFindingsRepo: createReviewFindingsRepo(db),
       sandboxManager: null,
@@ -824,7 +804,6 @@ describe('Plan Approval Tool Interception', () => {
       input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo: createLoopsRepo(db),
       reviewFindingsRepo: createReviewFindingsRepo(db),
       sandboxManager: null,
@@ -891,7 +870,6 @@ describe('Plan Approval Tool Interception', () => {
       input: { messages: [], systemPrompt: '', client: { session: { promptAsync: async () => ({ data: {} }) } } as any },
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo,
       reviewFindingsRepo,
       sandboxManager: null,
@@ -958,7 +936,6 @@ describe('Plan Approval Tool Interception', () => {
       input: { messages: [], systemPrompt: '', client: { session: { promptAsync: async () => ({ data: {} }) } } as any },
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo,
       reviewFindingsRepo,
       sandboxManager: null,
@@ -1092,7 +1069,6 @@ describe('Execute here bypass', () => {
     openDbs.push(db)
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const graphStatusRepo = createGraphStatusRepo(db)
     const plansRepo = createPlansRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger)
 
@@ -1106,7 +1082,6 @@ describe('Execute here bypass', () => {
       plansRepo,
       loopsRepo,
       reviewFindingsRepo,
-      graphStatusRepo,
       v2: mockV2,
       input: { messages: [], systemPrompt: '', client: { session: { promptAsync: async () => ({ data: {} }) } } as any },
       ...overrides,
@@ -1334,7 +1309,6 @@ describe('Execute here bypass', () => {
     
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const graphStatusRepo = createGraphStatusRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
     
     const ctx = {
@@ -1345,7 +1319,6 @@ describe('Execute here bypass', () => {
       plansRepo,
       loopsRepo,
       reviewFindingsRepo,
-      graphStatusRepo,
       loopService,
       v2: {
         session: {
@@ -1530,7 +1503,6 @@ describe('Execute here bypass', () => {
       input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo,
       reviewFindingsRepo,
       sandboxManager: null,
@@ -1628,7 +1600,6 @@ describe('Execute here bypass', () => {
       input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo,
       reviewFindingsRepo,
       sandboxManager: null,
@@ -1735,7 +1706,7 @@ describe('plan execute API loop dispatch', () => {
     mkdirSync(`${testConfigDir}/opencode`, { recursive: true })
     writeFileSync(`${testConfigDir}/opencode/forge-config.jsonc`, JSON.stringify({ sandbox: { mode: 'none' } }))
     mkdirSync(resolveDataDir(), { recursive: true })
-    db = openForgeDatabase(`${resolveDataDir()}/graph.db`)
+    db = openForgeDatabase(`${resolveDataDir()}/forge.db`)
   })
 
   afterEach(() => {
@@ -1762,7 +1733,6 @@ describe('plan execute API loop dispatch', () => {
     const plansRepo = createPlansRepo(db)
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const graphStatusRepo = createGraphStatusRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'api-project', createMockLogger())
     const promptAsync = mock(() => Promise.resolve({ data: {} }))
     const sessionCreate = mock(() => Promise.resolve({ data: { id: `session-${Math.random().toString(36).slice(2)}` } }))
@@ -1770,14 +1740,6 @@ describe('plan execute API loop dispatch', () => {
     const worktreeCreate = mock(async () => {
       const directory = `${testDataDir}/worktree`
       mkdirSync(directory, { recursive: true })
-      createGraphStatusRepo(db).write({
-        projectId: 'api-project',
-        cwd: directory,
-        state: 'ready',
-        ready: true,
-        stats: { files: 1, symbols: 1, edges: 0, calls: 0 },
-        message: null,
-      })
       return { data: { directory, branch: 'opencode/loop-api-plan' }, error: undefined }
     })
 
@@ -1794,7 +1756,6 @@ describe('plan execute API loop dispatch', () => {
       plansRepo,
       loopsRepo,
       reviewFindingsRepo,
-      graphStatusRepo,
       loopService,
       sandboxManager: null,
       v2: {
@@ -1810,7 +1771,7 @@ describe('plan execute API loop dispatch', () => {
       ...overrides,
     } as ToolContext
 
-    return { ctx, promptAsync, sessionCreate, sessionAbort, worktreeCreate, graphStatusRepo, loopsRepo, plansRepo, reviewFindingsRepo }
+    return { ctx, promptAsync, sessionCreate, sessionAbort, worktreeCreate, loopsRepo, plansRepo, reviewFindingsRepo }
   }
 
   function apiDeps(ctx: ToolContext) {
@@ -1924,9 +1885,9 @@ describe('plan execute API loop dispatch', () => {
     expect(row.sandbox_container).toBe('oc-forge-sandbox-api-worktree-plan')
   })
 
-  test('loop-worktree mode persists state before graph readiness polling', async () => {
-    const { ctx, graphStatusRepo, promptAsync } = createApiDeps()
-    const worktreeDir = `${testDataDir}/slow-graph-worktree`
+  test('loop-worktree mode persists state before readiness polling', async () => {
+    const { ctx, promptAsync } = createApiDeps()
+    const worktreeDir = `${testDataDir}/slow-worktree`
     mkdirSync(worktreeDir, { recursive: true })
     ctx.v2.worktree.create = mock(async () => ({
       data: { directory: worktreeDir, branch: 'opencode/loop-api-worktree-plan' },
@@ -1960,14 +1921,6 @@ describe('plan execute API loop dispatch', () => {
     expect(row?.worktree).toBe(1)
     expect(row?.worktree_dir).toBe(worktreeDir)
 
-    graphStatusRepo.write({
-      projectId: 'api-project',
-      cwd: worktreeDir,
-      state: 'ready',
-      ready: true,
-      stats: { files: 1, symbols: 1, edges: 0, calls: 0 },
-      message: null,
-    })
     resolvePrompt()
 
     await pending
@@ -2022,55 +1975,10 @@ describe('plan execute API loop dispatch', () => {
     expect(row).toBeNull()
   })
 
-  test('loop-worktree mode passes graph status repo for seeded worktree status', async () => {
-    const { ctx, graphStatusRepo } = createApiDeps()
-    const worktreeDir = `${testDataDir}/seeded-worktree`
-    mkdirSync(worktreeDir, { recursive: true })
-    const worktreeCreate = mock(async () => ({
-      data: { directory: worktreeDir, branch: 'opencode/loop-api-worktree-plan' },
-      error: undefined,
-    }))
-    ctx.v2.worktree.create = worktreeCreate as unknown as ToolContext['v2']['worktree']['create']
 
-    const sourceCacheDir = resolveGraphCacheDir('api-project', '/repo', ctx.dataDir)
-    mkdirSync(sourceCacheDir, { recursive: true })
-    const sourceGraphDb = new Database(join(sourceCacheDir, 'graph.db'))
-    sourceGraphDb.run('CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY, path TEXT, mtimeMs INTEGER)')
-    sourceGraphDb.close()
-    writeFileSync(join(sourceCacheDir, 'graph-metadata.json'), JSON.stringify({
-      projectId: 'api-project',
-      cwd: '/repo',
-      createdAt: Date.now() - 1000,
-      lastIndexedAt: Date.now() - 500,
-      indexedFileCount: 0,
-      indexedMaxMtimeMs: 0,
-    }))
-    graphStatusRepo.write({
-      projectId: 'api-project',
-      cwd: '/repo',
-      state: 'ready',
-      ready: true,
-      stats: { files: 0, symbols: 0, edges: 0, calls: 0 },
-      message: null,
-    })
-
-    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
-
-    await handleExecutePlan(apiDeps(ctx), {
-      projectId: 'api-project',
-      sessionId: 'host-session',
-    }, body)
-    let targetStatus = graphStatusRepo.read('api-project', worktreeDir)
-    for (let i = 0; i < 20 && !targetStatus; i++) {
-      await new Promise(resolve => setTimeout(resolve, 10))
-      targetStatus = graphStatusRepo.read('api-project', worktreeDir)
-    }
-    expect(targetStatus?.state).toBe('ready')
-    expect(targetStatus?.ready).toBe(true)
-  })
 
   test('loop mode started through plan.execute advances to audit on coding idle', async () => {
-    const { ctx, graphStatusRepo, loopsRepo, plansRepo, reviewFindingsRepo } = createApiDeps()
+    const { ctx, loopsRepo, plansRepo, reviewFindingsRepo } = createApiDeps()
     const sessionMessages = mock(() => Promise.resolve({
       data: [{
         info: { role: 'assistant', finish: 'stop' },
@@ -2194,7 +2102,6 @@ describe('Fire-and-forget dispatch behavior', () => {
     openDbs.push(db)
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const graphStatusRepo = createGraphStatusRepo(db)
     const plansRepo = createPlansRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger)
 
@@ -2208,7 +2115,6 @@ describe('Fire-and-forget dispatch behavior', () => {
       plansRepo,
       loopsRepo,
       reviewFindingsRepo,
-      graphStatusRepo,
       v2: mockV2,
       loopHandler: {
         startWatchdog: mock(() => {}),
@@ -2551,7 +2457,6 @@ describe('Fire-and-forget dispatch behavior', () => {
       input: { messages: [], systemPrompt: '', client: undefined } as any,
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo: createLoopsRepo(db),
       reviewFindingsRepo: createReviewFindingsRepo(db),
       sandboxManager: null,
@@ -2622,7 +2527,6 @@ describe('Fire-and-forget dispatch behavior', () => {
       input: { messages: [], systemPrompt: '', client: undefined } as any,
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo: createLoopsRepo(db),
       reviewFindingsRepo: createReviewFindingsRepo(db),
       sandboxManager: null,

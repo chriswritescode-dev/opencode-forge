@@ -72,7 +72,7 @@ export function buildLoopPermissionRuleset(
  *
  * Audit sessions run the auditor agent in an isolated session that cannot
  * modify source files. The ruleset allows read-only operations (read, grep,
- * glob, graph-*, codesearch, webfetch, websearch, list, task) and review
+ * glob, codesearch, webfetch, websearch, list, task) and review
  * tools (review-write, review-delete), but denies all code mutation tools.
  *
  * - isSandbox: controls external_directory access (same as coding sessions)

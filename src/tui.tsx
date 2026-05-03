@@ -9,7 +9,6 @@ import { loadPluginConfig } from './setup'
 import { fetchSessionStats, type SessionStats } from './utils/session-stats'
 import { slugify } from './utils/logger'
 import { extractPlanTitle } from './utils/plan-execution'
-import { formatGraphStatus } from './utils/tui-graph-status'
 import { shouldPollSidebar, type LoopInfo } from './utils/tui-refresh-helpers'
 import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
 import { createExecutionContextCache } from './utils/tui-execution-context-cache'
@@ -466,10 +465,7 @@ function Sidebar(props: {
   const [open, setOpen] = createSignal(true)
   const [loops, setLoops] = createSignal<LoopInfo[]>([])
   const [hasPlan, setHasPlan] = createSignal(false)
-  const [graphStatusFormatted, setGraphStatusFormatted] = createSignal<ReturnType<typeof formatGraphStatus> | null>(null)
-  const [graphStatusRaw, setGraphStatusRaw] = createSignal<Parameters<typeof formatGraphStatus>[0] | null>(null)
   const theme = () => props.api.theme.current
-  const directory = createMemo(() => props.api.state.path.directory)
 
   const title = createMemo(() => {
     return props.opts.showVersion ? `Forge v${VERSION}` : 'Forge'
@@ -495,16 +491,15 @@ function Sidebar(props: {
   }
 
   /**
-   * Refreshes all sidebar-visible data: loops, plan presence, and graph status.
-   * This is the single source of truth for sidebar state updates.
-   * 
-   * Triggers:
-   * - session.status events
-   * - Loop/plan mutation actions (save, delete, execute, cancel, restart)
-   * - Periodic polling for active worktree loops (5s interval)
-   * - Periodic polling for transient graph states (5s interval)
-   * - Manual onRefresh callbacks from dialogs
-   */
+    * Refreshes all sidebar-visible data: loops and plan presence.
+    * This is the single source of truth for sidebar state updates.
+    *
+    * Triggers:
+    * - session.status events
+    * - Loop/plan mutation actions (save, delete, execute, cancel, restart)
+    * - Periodic polling for active worktree loops (5s interval)
+    * - Manual onRefresh callbacks from dialogs
+    */
   const redirectedSessions = new Set<string>()
 
   async function refreshSidebarData() {
@@ -551,13 +546,7 @@ function Sidebar(props: {
         }
       }
     }
-    
-    // Refresh graph status from KV (scoped to current directory)
-    const status = await props.client.readGraphStatus(directory())
-    setGraphStatusRaw(status)
-    setGraphStatusFormatted(status && status.state !== 'unavailable' ? formatGraphStatus(status) : null)
   }
-  
 
   // Event subscriptions - wrapped to handle reactivity properly
   // eslint-disable-next-line solid/reactivity
@@ -596,15 +585,8 @@ function Sidebar(props: {
     void refreshSidebarData()
   })
 
-  // Re-check after a short delay to catch graph status that wasn't written yet at mount time
-  const initTimer = setTimeout(() => {
-    if (!graphStatusRaw()) {
-      void refreshSidebarData()
-    }
-  }, 2000)
-
   createEffect(() => {
-    if (shouldPollSidebar(loops(), graphStatusRaw())) {
+    if (shouldPollSidebar(loops())) {
       startPolling()
     } else {
       stopPolling()
@@ -616,13 +598,11 @@ function Sidebar(props: {
     unsubDeleted()
     unsubUpdated()
     stopPolling()
-    clearTimeout(initTimer)
   })
 
   const hasContent = createMemo(() => {
     if (hasPlan()) return true
     if (props.opts.showLoops && loops().length > 0) return true
-    if (graphStatusFormatted()) return true
     return false
   })
   
@@ -642,9 +622,6 @@ function Sidebar(props: {
           </text>
           <Show when={!open() && hasPlan()}>
             <text fg={theme().info}>· plan</text>
-          </Show>
-          <Show when={!open() && graphStatusFormatted() && graphStatusFormatted()!.text.includes('ready')}>
-            <text fg={theme().success}>· ready</text>
           </Show>
           <Show when={!open() && activeCount() > 0}>
             <text fg={theme().textMuted}>{`(${activeCount()} active)`}</text>
@@ -682,17 +659,6 @@ function Sidebar(props: {
             >
               <text flexShrink={0} fg={theme().info}>📋</text>
               <text fg={theme().text}>Plan</text>
-            </box>
-          </Show>
-          <Show when={graphStatusFormatted()}>
-            <box
-              flexDirection="row"
-              gap={1}
-            >
-              <text flexShrink={0} fg={theme()[graphStatusFormatted()!.color]}>•</text>
-              <text fg={theme().text} wrapMode="word">
-                {graphStatusFormatted()!.text}
-              </text>
             </box>
           </Show>
           <Show when={props.opts.showLoops && loops().length > 0}>

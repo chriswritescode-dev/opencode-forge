@@ -52,7 +52,7 @@ describe('tui-client bus-RPC integration', () => {
     })
 
     it('returns null for non-forge command', () => {
-      expect(decodeRequest('graph.scan')).toBeNull()
+      expect(decodeRequest('unknown.verb')).toBeNull()
     })
 
     it('returns null for malformed base64', () => {

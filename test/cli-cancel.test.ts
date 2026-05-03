@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite'
 import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs'
 import { execSync } from 'child_process'
 import { join, resolve } from 'path'
-import { resolveGraphCacheDir } from '../src/storage/graph-projects'
+
 
 function createTestDb(tempDir: string): Database {
   const dbPath = join(tempDir, 'memory.db')
@@ -335,14 +335,11 @@ describe('CLI Cancel', () => {
     expect(output).toContain('loop-auth-fix')
   })
 
-  test('loop cancel --cleanup deletes graph cache scope and terminates via LoopsRepo', async () => {
+  test('loop cancel --cleanup terminates via LoopsRepo', async () => {
     const db = createTestDb(tempDir)
     const projectId = 'test-project'
     const loopName = 'cleanup-loop'
     const { worktreeDir } = createWorktreeRepo(tempDir, 'cleanup-worktree')
-    const graphCacheDir = resolveGraphCacheDir(projectId, worktreeDir, tempDir)
-    mkdirSync(graphCacheDir, { recursive: true })
-    writeFileSync(join(graphCacheDir, 'graph.db'), 'cache')
 
     insertLoopState(db, projectId, loopName, { worktreeDir })
     db.close()
@@ -364,17 +361,13 @@ describe('CLI Cancel', () => {
     expect(row.termination_reason).toBe('cancelled')
     expect(row.completed_at).toBeTruthy()
     expect(existsSync(worktreeDir)).toBe(false)
-    expect(existsSync(graphCacheDir)).toBe(false)
   })
 
-  test('loop cancel without --cleanup preserves graph cache scope and worktree dir', async () => {
+  test('loop cancel without --cleanup preserves worktree dir', async () => {
     const db = createTestDb(tempDir)
     const projectId = 'test-project'
     const loopName = 'no-cleanup-loop'
     const { worktreeDir } = createWorktreeRepo(tempDir, 'no-cleanup-worktree')
-    const graphCacheDir = resolveGraphCacheDir(projectId, worktreeDir, tempDir)
-    mkdirSync(graphCacheDir, { recursive: true })
-    writeFileSync(join(graphCacheDir, 'graph.db'), 'cache')
 
     insertLoopState(db, projectId, loopName, { worktreeDir })
     db.close()
@@ -388,6 +381,5 @@ describe('CLI Cancel', () => {
     })
 
     expect(existsSync(worktreeDir)).toBe(true)
-    expect(existsSync(graphCacheDir)).toBe(true)
   })
 })

@@ -84,17 +84,12 @@ test('sweepExpiredLoops cascades to loop_large_fields and plans', () => {
   db.close()
 })
 
-test('sweepExpiredLoops leaves graph_status and review_findings untouched', () => {
+test('sweepExpiredLoops leaves review_findings untouched', () => {
   const dbPath = createTempDb()
   const db = openForgeDatabase(dbPath)
 
   const now = Date.now()
   const eightDaysAgo = now - (8 * 24 * 60 * 60 * 1000)
-
-  db.run(`
-    INSERT INTO graph_status (project_id, cwd, state, ready, updated_at)
-    VALUES ('proj1', '', 'ready', 1, ?)
-  `, [eightDaysAgo])
 
   db.run(`
     INSERT INTO review_findings (project_id, file, line, severity, description, scenario, branch, created_at)
@@ -103,9 +98,6 @@ test('sweepExpiredLoops leaves graph_status and review_findings untouched', () =
 
   const ttlMs = 7 * 24 * 60 * 60 * 1000
   sweepExpiredLoops(db, ttlMs)
-
-  const graphStatus = db.prepare('SELECT COUNT(*) as count FROM graph_status WHERE project_id = ?').get('proj1') as { count: number }
-  expect(graphStatus.count).toBe(1)
 
   const findings = db.prepare('SELECT COUNT(*) as count FROM review_findings WHERE project_id = ?').get('proj1') as { count: number }
   expect(findings.count).toBe(1)

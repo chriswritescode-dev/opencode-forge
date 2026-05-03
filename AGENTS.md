@@ -17,3 +17,7 @@ This path can be overridden via the `logging.file` configuration option in `forg
 - Always check for existing patterns before adding new code
 - Functions should be single responsibility and reusable
 - Remove dead code to keep the codebase clean
+
+## Fallow
+
+Fallow is the project's code-intelligence CLI. Agents should follow the inlined fallow rules in their system prompts.

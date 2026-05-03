@@ -203,7 +203,7 @@ export async function run(argv: RestartArgs): Promise<void> {
 
     // Wait for sandbox to be ready before first prompt (only for worktree + sandbox mode)
     if (state.worktree && state.sandbox) {
-      const dbPath = join(resolveDataDir(), 'graph.db')
+      const dbPath = join(resolveDataDir(), 'forge.db')
       const dbExists = existsSync(dbPath)
       
       if (dbExists) {

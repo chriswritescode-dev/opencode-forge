@@ -108,20 +108,6 @@ export interface AgentOverrideConfig {
 }
 
 /**
- * Configuration for code graph indexing and queries.
- */
-export interface GraphConfig {
-  /** Enable graph indexing. Defaults to true. */
-  enabled?: boolean
-  /** Auto-check existing graph cache on startup and scan only when missing/stale. Defaults to true. */
-  autoScan?: boolean
-  /** Watch filesystem for changes. */
-  watch?: boolean
-  /** Debounce delay in ms for file change events. */
-  debounceMs?: number
-}
-
-/**
  * Complete plugin configuration for opencode-forge.
  */
 export interface PluginConfig {
@@ -149,6 +135,4 @@ export interface PluginConfig {
   agents?: Record<string, AgentOverrideConfig>
   /** Sandbox execution configuration. */
   sandbox?: SandboxConfig
-  /** Graph indexing configuration. */
-  graph?: GraphConfig
 }

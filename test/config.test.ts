@@ -4,7 +4,7 @@ import { agents } from '../src/agents'
 
 describe('createConfigHandler', () => {
   describe('built-in explore agent enhancement', () => {
-    test('explore agent receives three graph tool permissions', async () => {
+    test('explore enhancement contains fallow discovery rule and no graph-tool names', async () => {
       const configHandler = createConfigHandler(agents)
       const config: Record<string, unknown> = {}
 
@@ -14,31 +14,11 @@ describe('createConfigHandler', () => {
       const explore = exploreConfig?.explore as Record<string, unknown>
 
       expect(explore).toBeDefined()
-      expect(explore.permission).toBeDefined()
-
-      const permission = explore.permission as Record<string, string>
-      expect(permission['graph-query']).toBe('allow')
-      expect(permission['graph-symbols']).toBe('allow')
-      expect(permission['graph-analyze']).toBe('allow')
-    })
-
-    test('explore agent receives graph-first prompt suffix', async () => {
-      const configHandler = createConfigHandler(agents)
-      const config: Record<string, unknown> = {}
-      
-      await configHandler(config)
-      
-      const exploreConfig = config.agent as Record<string, unknown>
-      const explore = exploreConfig?.explore as Record<string, unknown>
-      
-      expect(explore).toBeDefined()
-      expect(explore.prompt).toBeDefined()
-      
       const prompt = explore.prompt as string
-      expect(prompt).toContain('graph-query')
-      expect(prompt).toContain('graph-symbols')
-      expect(prompt).toContain('graph-analyze')
-      expect(prompt).toContain('Graph-first discovery hierarchy')
+      expect(prompt).toContain('fallow')
+      expect(prompt).not.toContain('graph-query')
+      expect(prompt).not.toContain('graph-symbols')
+      expect(prompt).not.toContain('graph-analyze')
     })
 
     test('explore prompt does not include architect-specific plan workflow text', async () => {
@@ -75,7 +55,7 @@ describe('createConfigHandler', () => {
       
       const prompt = explore.prompt as string
       expect(prompt).toContain('Custom explore prompt prefix')
-      expect(prompt).toMatch(/graph-first|Graph-first/i)
+      expect(prompt).toContain('fallow')
     })
 
     test('explore prompt includes fallback guidance for Glob/Grep', async () => {
@@ -88,7 +68,7 @@ describe('createConfigHandler', () => {
       const explore = exploreConfig?.explore as Record<string, unknown>
       
       const prompt = explore.prompt as string
-      expect(prompt).toMatch(/fallback.*glob.*grep|glob.*grep.*fallback/i)
+      expect(prompt).toMatch(/glob.*pattern|filename.*pattern/i)
     })
 
     test('explore prompt includes Read as direct inspection step', async () => {
@@ -101,7 +81,7 @@ describe('createConfigHandler', () => {
       const explore = exploreConfig?.explore as Record<string, unknown>
       
       const prompt = explore.prompt as string
-      expect(prompt).toMatch(/read.*inspect|direct.*inspection/i)
+      expect(prompt).toMatch(/read.*directly|targeted.*file/i)
     })
   })
 
@@ -124,7 +104,7 @@ describe('createConfigHandler', () => {
       const explore = exploreConfig?.explore as Record<string, unknown>
       
       expect(explore.prompt).toContain('Original explore prompt')
-      expect(explore.prompt).toMatch(/graph-first|Graph-first/i)
+      expect(explore.prompt).toContain('fallow')
       expect(explore.temperature).toBe(0.5)
     })
 
@@ -148,9 +128,9 @@ describe('createConfigHandler', () => {
       const permission = explore.permission as Record<string, string>
 
       expect(permission['existing-tool']).toBe('allow')
-      expect(permission['graph-query']).toBe('allow')
-      expect(permission['graph-symbols']).toBe('allow')
-      expect(permission['graph-analyze']).toBe('allow')
+      expect(permission['graph-query']).toBeUndefined()
+      expect(permission['graph-symbols']).toBeUndefined()
+      expect(permission['graph-analyze']).toBeUndefined()
     })
 
     test('built-in agents without enhancement are hidden if in REPLACED_BUILTIN_AGENTS', async () => {

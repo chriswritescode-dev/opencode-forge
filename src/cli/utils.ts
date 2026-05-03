@@ -10,24 +10,10 @@ import { findPartialMatch } from '../utils/partial-match'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 
 function resolveDefaultDbPath(): string {
-  const localForgePath = join(process.cwd(), '.opencode', 'state', 'opencode', 'forge', 'graph.db')
-  if (existsSync(localForgePath)) {
-    return localForgePath
-  }
-
-  const localPath = join(process.cwd(), '.opencode', 'state', 'opencode', 'graph', 'graph.db')
-  if (existsSync(localPath)) {
-    return localPath
-  }
-
   const defaultBase = join(homedir(), platform() === 'win32' ? 'AppData' : '.local', 'share')
   const xdgDataHome = process.env['XDG_DATA_HOME'] || defaultBase
-  const forgeDir = join(xdgDataHome, 'opencode', 'forge')
-  if (existsSync(join(forgeDir, 'graph.db'))) {
-    return join(forgeDir, 'graph.db')
-  }
-  const dataDir = join(xdgDataHome, 'opencode', 'graph')
-  return join(dataDir, 'graph.db')
+  const dataDir = join(xdgDataHome, 'opencode', 'forge')
+  return join(dataDir, 'forge.db')
 }
 
 export function openDatabase(dbPath?: string): Database {

@@ -16,9 +16,7 @@ const FORGE_PRAGMAS = [
 export function resolveDataDir(): string {
   const defaultBase = join(homedir(), platform() === 'win32' ? 'AppData' : '.local', 'share')
   const xdgDataHome = process.env['XDG_DATA_HOME'] || defaultBase
-  const forgeDir = join(xdgDataHome, 'opencode', 'forge')
-  const legacyGraphDir = join(xdgDataHome, 'opencode', 'graph')
-  return existsSync(legacyGraphDir) && !existsSync(forgeDir) ? legacyGraphDir : forgeDir
+  return join(xdgDataHome, 'opencode', 'forge')
 }
 
 export function resolveLogPath(): string {
@@ -90,7 +88,7 @@ export function initializeDatabase(dataDir: string, options?: ForgeDatabaseOptio
     mkdirSync(dataDir, { recursive: true })
   }
 
-  const dbPath = `${dataDir}/graph.db`
+  const dbPath = `${dataDir}/forge.db`
   const key = cacheKey(dbPath, options)
   const cached = dbCache.get(key)
   if (cached) {

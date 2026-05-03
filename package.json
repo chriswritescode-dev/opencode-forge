@@ -37,11 +37,10 @@
     "url": "https://github.com/chriswritescode-dev/opencode-forge.git"
   },
   "author": "Chris Scott",
-  "description": "OpenCode Forge - autonomous dev loops, plan storage, code graph indexing, and sandboxing for OpenCode",
+  "description": "OpenCode Forge - autonomous dev loops, plan storage, and sandboxing for OpenCode",
   "image": "https://raw.githubusercontent.com/chriswritescode-dev/opencode-forge/main/opengraph-image.png",
   "keywords": [
     "opencode",
-    "graph",
     "iterative-loops",
     "ai-agent",
     "plugin",
@@ -52,8 +51,7 @@
   "dependencies": {
     "@opencode-ai/plugin": "^1.14.30",
     "@opencode-ai/sdk": "^1.14.30",
-    "tree-sitter-wasms": "0.1.13",
-    "web-tree-sitter": "0.25.10"
+    "fallow": "^2.62.0"
   },
   "peerDependencies": {
     "@opentui/core": ">=0.1.105",

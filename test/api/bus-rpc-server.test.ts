@@ -78,7 +78,6 @@ function createMockToolContext(projectId: string, directory: string): ToolContex
     cleanup: vi.fn(),
     input: {} as any,
     sandboxManager: null,
-    graphService: null,
     plansRepo: {
       getForSession: vi.fn(),
       getForLoop: vi.fn(),
@@ -88,7 +87,6 @@ function createMockToolContext(projectId: string, directory: string): ToolContex
       deleteForLoop: vi.fn(),
     } as any,
     reviewFindingsRepo: {} as any,
-    graphStatusRepo: {} as any,
     loopsRepo: {} as any,
   }
 }
@@ -270,7 +268,7 @@ describe('bus-rpc server', () => {
       event: {
         type: 'tui.command.execute',
         properties: {
-          command: 'graph.scan',
+          command: 'unknown.verb',
         },
       },
     })

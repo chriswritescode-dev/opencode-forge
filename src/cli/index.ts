@@ -40,59 +40,6 @@ const loopCommands: Record<string, CommandModule> = {
   },
 }
 
-const graphCommands: Record<string, CommandModule> = {
-  status: {
-    cli: async (args, globalOpts) => {
-      const { cli } = await import('./commands/graph')
-      await cli(['status', ...args], globalOpts)
-    },
-    help: async () => {
-      const { help } = await import('./commands/graph')
-      help()
-    },
-  },
-  scan: {
-    cli: async (args, globalOpts) => {
-      const { cli } = await import('./commands/graph')
-      await cli(['scan', ...args], globalOpts)
-    },
-    help: async () => {
-      const { help } = await import('./commands/graph')
-      help()
-    },
-  },
-  list: {
-    cli: async (args, globalOpts) => {
-      const { cli } = await import('./commands/graph')
-      await cli(['list', ...args], globalOpts)
-    },
-    help: async () => {
-      const { help } = await import('./commands/graph')
-      help()
-    },
-  },
-  remove: {
-    cli: async (args, globalOpts) => {
-      const { cli } = await import('./commands/graph')
-      await cli(['remove', ...args], globalOpts)
-    },
-    help: async () => {
-      const { help } = await import('./commands/graph')
-      help()
-    },
-  },
-  cleanup: {
-    cli: async (args, globalOpts) => {
-      const { cli } = await import('./commands/graph')
-      await cli(['cleanup', ...args], globalOpts)
-    },
-    help: async () => {
-      const { help } = await import('./commands/graph')
-      help()
-    },
-  },
-}
-
 const commands: Record<string, CommandModule> = {
   upgrade: {
     cli: async (_args, _globalOpts) => {
@@ -121,23 +68,6 @@ const commands: Record<string, CommandModule> = {
     },
     help: () => printLoopHelp(),
   },
-  graph: {
-    cli: async (args, globalOpts) => {
-      const subcommandName = args[0]
-      if (!subcommandName || subcommandName === 'help') {
-        printGraphHelp()
-        return
-      }
-      const subcommand = graphCommands[subcommandName]
-      if (!subcommand) {
-        console.error(`Unknown graph command: ${subcommandName}`)
-        printGraphHelp()
-        process.exit(1)
-      }
-      await subcommand.cli(args.slice(1), globalOpts)
-    },
-    help: () => printGraphHelp(),
-  },
 }
 
 function printMainHelp(): void {
@@ -150,7 +80,7 @@ Usage:
 Commands:
   upgrade         Check for and install plugin updates
   loop <command>  Manage iterative development loops
-  graph <command> Check graph status or trigger a scan
+
 
 Global Options:
   --project, -p <name>   Project name or SHA (auto-detected from git)
@@ -176,21 +106,6 @@ Commands:
   `.trim())
 }
 
-function printGraphHelp(): void {
-  console.log(`
-Manage graph indexing
-
-Usage:
-  oc-forge graph <command> [options]
-
-Commands:
-  status    Show graph indexing status
-  scan      Trigger a graph scan
-  list      List all persisted graph cache entries
-  remove    Remove a graph cache entry
-  cleanup   Remove graph cache entries older than N days
-  `.trim())
-}
 
 function resolveProjectId(input: string): string {
   const isSha = /^[0-9a-f]{40}$/.test(input)
@@ -238,7 +153,7 @@ async function runCli(): Promise<void> {
     ? [...remainingArgs.slice(1), '--help']
     : remainingArgs.slice(1)
 
-  if (hasHelpFlag(commandArgs) && commandName !== 'graph' && commandName !== 'loop') {
+  if (hasHelpFlag(commandArgs) && commandName !== 'loop') {
     await command.help()
     process.exit(0)
   }

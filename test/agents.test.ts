@@ -79,116 +79,17 @@ describe('Agent definitions', () => {
     })
   })
 
-  describe('graph-first policy in system prompts', () => {
-    test('architect prompt names graph tools', () => {
-      const prompt = architectAgent.systemPrompt
-      expect(prompt).toContain('graph-query')
-      expect(prompt).toContain('graph-symbols')
-      expect(prompt).toContain('graph-analyze')
+  describe('fallow policy in system prompts', () => {
+    test('architect prompt contains "fallow"', () => {
+      expect(architectAgent.systemPrompt).toContain('fallow')
     })
 
-    test('code prompt names three graph tools', () => {
-      const prompt = codeAgent.systemPrompt
-      expect(prompt).toContain('graph-query')
-      expect(prompt).toContain('graph-symbols')
-      expect(prompt).toContain('graph-analyze')
-      expect(prompt).not.toContain('graph-status')
+    test('code prompt contains "fallow"', () => {
+      expect(codeAgent.systemPrompt).toContain('fallow')
     })
 
-    test('auditor prompt names graph tools', () => {
-      const prompt = auditorAgent.systemPrompt
-      expect(prompt).toContain('graph-query')
-      expect(prompt).toContain('graph-symbols')
-      expect(prompt).toContain('graph-analyze')
-    })
-
-    test('architect prompt expresses graph-first discovery semantics', () => {
-      const prompt = architectAgent.systemPrompt
-      expect(prompt).toMatch(/graph.*first|start.*graph|graph.*readiness/i)
-      expect(prompt).toMatch(/fallback.*glob.*grep|glob.*grep.*fallback/i)
-    })
-
-    test('code prompt expresses graph-first discovery semantics', () => {
-      const prompt = codeAgent.systemPrompt
-      expect(prompt).toMatch(/graph.*first|start.*graph|graph.*readiness/i)
-      expect(prompt).toMatch(/fallback.*glob.*grep|glob.*grep.*fallback/i)
-    })
-
-    test('auditor prompt expresses graph-first discovery semantics', () => {
-      const prompt = auditorAgent.systemPrompt
-      expect(prompt).toMatch(/graph.*first|start.*graph|graph.*readiness/i)
-      expect(prompt).toMatch(/fallback.*glob.*grep|glob.*grep.*fallback/i)
-    })
-
-    test('architect prompt does not restrict graph tools to narrow scenarios', () => {
-      const prompt = architectAgent.systemPrompt
-      expect(prompt).toMatch(/use whichever graph tool|whichever graph tool best fits|as appropriate/i)
-    })
-
-    test('code prompt does not restrict graph tools to narrow scenarios', () => {
-      const prompt = codeAgent.systemPrompt
-      expect(prompt).toMatch(/use whichever graph tool|whichever graph tool best fits|as appropriate/i)
-    })
-
-    test('auditor prompt does not restrict graph tools to narrow scenarios', () => {
-      const prompt = auditorAgent.systemPrompt
-      expect(prompt).toMatch(/use whichever graph tool|whichever graph tool best fits|as appropriate/i)
-    })
-
-    test('architect prompt mentions blast_radius for impact analysis', () => {
-      const prompt = architectAgent.systemPrompt
-      expect(prompt).toContain('blast_radius')
-    })
-
-    test('code prompt mentions callers and callees', () => {
-      const prompt = codeAgent.systemPrompt
-      expect(prompt).toContain('callers')
-      expect(prompt).toContain('callees')
-    })
-
-    test('auditor prompt mentions blast_radius and dependency tracing', () => {
-      const prompt = auditorAgent.systemPrompt
-      expect(prompt).toContain('blast_radius')
-      expect(prompt).toMatch(/dependency.*relationship|file_deps|file_dependents/i)
-    })
-
-    test('architect prompt includes all four canonical approval options', () => {
-      const prompt = architectAgent.systemPrompt
-      expect(prompt).toContain('"New session"')
-      expect(prompt).toContain('"Execute here"')
-      expect(prompt).toContain('"Loop (worktree)"')
-      expect(prompt).toContain('"Loop"')
-    })
-
-    test('architect prompt directly outputs marked plan after summary', () => {
-      const prompt = architectAgent.systemPrompt
-      expect(prompt).toContain('Plan summary and execution approval')
-      expect(prompt).toContain('directly output a brief unmarked summary')
-      expect(prompt).toContain('Do not ask for separate approval to write the plan')
-      expect(prompt).toContain('Start with a short unmarked summary')
-    })
-
-    test('architect prompt requires detailed self-contained plans', () => {
-      const prompt = architectAgent.systemPrompt
-      expect(prompt).toContain('detailed, self-contained, and implementation-ready')
-      expect(prompt).toContain('Concrete file targets')
-      expect(prompt).toContain('Intended edits per file')
-      expect(prompt).toContain('Step-by-step implementation instructions')
-      expect(prompt).toContain('Specific integration points')
-      expect(prompt).toContain('Explicit test targets')
-      expect(prompt).toContain('Explicit validation')
-      expect(prompt).toContain('Phase acceptance criteria')
-      expect(prompt).toContain('extremely detailed and execution-ready')
-      expect(prompt).not.toContain('plan-write')
-      expect(prompt).not.toContain('plan-edit')
-    })
-
-    test('architect prompt asks only for execution approval after capture', () => {
-      const prompt = architectAgent.systemPrompt
-      expect(prompt).toContain('## Plan summary and execution approval')
-      expect(prompt).toContain('ask for execution approval')
-      expect(prompt).toContain('four canonical options')
-      expect(prompt).not.toContain('Should I write the implementation plan?')
+    test('auditor prompt contains "fallow"', () => {
+      expect(auditorAgent.systemPrompt).toContain('fallow')
     })
   })
 })

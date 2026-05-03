@@ -31,7 +31,7 @@ describe('bus-protocol', () => {
   })
 
   it('returns null for non-forge command', () => {
-    expect(decodeRequest('graph.scan')).toBeNull()
+    expect(decodeRequest('unknown.verb')).toBeNull()
   })
 
   it('returns null for malformed base64', () => {
@@ -62,7 +62,7 @@ describe('bus-protocol', () => {
   })
 
   it('returns null for non-forge reply', () => {
-    expect(decodeReply('graph.status:ok:abc')).toBeNull()
+    expect(decodeReply('unknown.status:ok:abc')).toBeNull()
   })
 
   it('handles large payloads (~50 KB)', () => {

@@ -11,19 +11,14 @@ const REPLACED_BUILTIN_AGENTS = ['build', 'plan']
 
 const ENHANCED_BUILTIN_AGENTS: Record<string, { permission: Record<string, string>; prompt?: string }> = {
   explore: {
-    permission: {
-      'graph-query': 'allow',
-      'graph-symbols': 'allow',
-      'graph-analyze': 'allow',
-    },
-    prompt: `# Graph-first discovery hierarchy
-You have access to four graph tools: graph-status, graph-query, graph-symbols, and graph-analyze. Use whichever graph tool best fits the question — these prompts prioritize graph usage without constraining which graph tool you use.
+    permission: {},
+    prompt: `# Discovery hierarchy
 
-1. **File-level topology**: Use graph-query for structural questions: top_files (most important files), file_symbols (what symbols live in a file), file_deps (what a file depends on), file_dependents (what depends on a file), cochanges (files that change together), blast_radius (impact analysis), packages (external package usage).
-2. **Symbol lookup**: Use graph-symbols for symbol-level queries: find (locate a symbol), search (search by pattern), signature (get symbol signature), callers (who calls this), callees (what this calls).
-3. **Code quality analysis**: Use graph-analyze for structural quality insights: unused_exports (exported but never imported), duplication (duplicate code structures), near_duplicates (near-duplicate code patterns).
-4. **Direct inspection**: Use Read to inspect the narrowed files directly.
-5. **Fallback**: Use Glob/Grep only for literal filename/content searches or when the graph cannot answer the question.
+1. **Code intelligence (dead code, dupes, deps, complexity, boundaries)**: Use the fallow CLI first — it is faster and more accurate than grep-based heuristics.
+2. **Targeted file/symbol questions**: Use Read directly when you already know the file path and symbol.
+3. **Open-ended codebase research**: Use Task/explore agents in parallel.
+4. **File search**: Use Glob for filename pattern matches.
+5. **Content search**: Use Grep for literal string/regex matches.
 
 ## General guidelines
 - When exploring the codebase, prefer the Task tool to reduce context usage.
@@ -113,10 +108,8 @@ $ARGUMENTS`,
 
 export function createConfigHandler(
   agents: Record<AgentRole, AgentDefinition>,
-  agentOverrides?: Record<string, { temperature?: number }>,
-  options?: { graphEnabled?: boolean }
+  agentOverrides?: Record<string, { temperature?: number }>
 ) {
-  const graphEnabled = options?.graphEnabled ?? true
   return async (config: Record<string, unknown>) => {
     const effectiveAgents = { ...agents }
     if (agentOverrides) {
@@ -171,22 +164,20 @@ export function createConfigHandler(
       mergedAgents[name] = { ...mergedAgents[name], hidden: true }
     }
 
-    if (graphEnabled) {
-      for (const [name, enhancement] of Object.entries(ENHANCED_BUILTIN_AGENTS)) {
-        const existing = mergedAgents[name] as AgentConfig | undefined
-        const existingPermission = (existing?.permission ?? {}) as Record<string, unknown>
-        const existingPrompt = existing?.prompt ?? ''
-        const newPrompt = enhancement.prompt
-          ? existingPrompt
-            ? `${existingPrompt}\n\n${enhancement.prompt}`
-            : enhancement.prompt
-          : existingPrompt
-        mergedAgents[name] = {
-          ...existing,
-          permission: { ...existingPermission, ...enhancement.permission },
-          prompt: newPrompt,
-        } as AgentConfig
-      }
+    for (const [name, enhancement] of Object.entries(ENHANCED_BUILTIN_AGENTS)) {
+      const existing = mergedAgents[name] as AgentConfig | undefined
+      const existingPermission = (existing?.permission ?? {}) as Record<string, unknown>
+      const existingPrompt = existing?.prompt ?? ''
+      const newPrompt = enhancement.prompt
+        ? existingPrompt
+          ? `${existingPrompt}\n\n${enhancement.prompt}`
+          : enhancement.prompt
+        : existingPrompt
+      mergedAgents[name] = {
+        ...existing,
+        permission: { ...existingPermission, ...enhancement.permission },
+        prompt: newPrompt,
+      } as AgentConfig
     }
 
     config.agent = mergedAgents

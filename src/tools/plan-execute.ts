@@ -69,7 +69,6 @@ export function createPlanExecuteTools(ctx: ToolContext): Record<string, ReturnT
           legacyClient: ctx.input?.client,
           plansRepo,
           loopsRepo: ctx.loopsRepo,
-          graphStatusRepo: ctx.graphStatusRepo,
           loopService: ctx.loopService,
           loopHandler: ctx.loopHandler,
           sandboxManager: ctx.sandboxManager,

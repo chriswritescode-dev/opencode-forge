@@ -298,7 +298,7 @@ const RECENT_MODELS_MAX = 10
 const RECENT_MODELS_TTL_MS = 90 * 24 * 60 * 60 * 1000 // 90 days
 
 function getDbPath(): string {
-  return join(resolveDataDir(), 'graph.db')
+  return join(resolveDataDir(), 'forge.db')
 }
 
 /**

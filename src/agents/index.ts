@@ -10,17 +10,12 @@ export const agents: Record<AgentRole, AgentDefinition> = {
   'auditor-loop': auditorLoopAgent,
 }
 
-/**
- * Builds the agent map with prompts tailored to whether graph tooling is enabled.
- * When `graphEnabled` is false, agent system prompts omit graph-tool instructions
- * and substitute standard read/search-based discovery guidance.
- */
-export function buildAgents({ graphEnabled }: { graphEnabled: boolean }): Record<AgentRole, AgentDefinition> {
+export function buildAgents(): Record<AgentRole, AgentDefinition> {
   return {
-    code: buildCodeAgent({ graphEnabled }),
-    architect: buildArchitectAgent({ graphEnabled }),
-    auditor: buildAuditorAgent({ graphEnabled }),
-    'auditor-loop': buildAuditorLoopAgent({ graphEnabled }),
+    code: buildCodeAgent(),
+    architect: buildArchitectAgent(),
+    auditor: buildAuditorAgent(),
+    'auditor-loop': buildAuditorLoopAgent(),
   }
 }
 

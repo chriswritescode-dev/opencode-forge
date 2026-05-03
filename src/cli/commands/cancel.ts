@@ -4,7 +4,6 @@ import {
   resolveLoopByNameOrExit,
   printBlock,
 } from '../utils'
-import { dirname } from 'path'
 import { existsSync } from 'fs'
 import { createLoopsRepo } from '../../storage/repos/loops-repo'
 import { cleanupLoopWorktree } from '../../utils/worktree-cleanup'
@@ -81,11 +80,8 @@ export async function run(argv: CancelArgs): Promise<void> {
 
     if (argv.cleanup && state.worktreeDir && state.worktree) {
       if (existsSync(state.worktreeDir)) {
-        const dataDir = argv.dbPath ? dirname(argv.dbPath) : undefined
         const result = await cleanupLoopWorktree({
           worktreeDir: state.worktreeDir,
-          projectId: loopToCancel.row.project_id,
-          dataDir,
           logPrefix: 'oc-forge loop cancel',
           logger: console,
         })

@@ -97,7 +97,6 @@ describe('createAuditSession', () => {
     })
 
     const callArgs = (mockV2.session.create as any).mock.calls[0][0]
-    expect(callArgs.workspace).toBe('workspace-1')
     expect(callArgs.workspaceID).toBe('workspace-1')
     expect(callArgs).not.toHaveProperty('parentID')
   })

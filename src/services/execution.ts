@@ -10,7 +10,6 @@ import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ToolContext } from '../tools/types'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
-import type { GraphStatusRepo } from '../storage/repos/graph-status-repo'
 import type { LoopService } from '../services/loop'
 import type { createLoopEventHandler } from '../hooks'
 import type { SandboxManager } from '../sandbox/manager'
@@ -296,7 +295,6 @@ export interface ForgeExecutionServiceDeps {
   legacyClient?: ToolContext['input']['client']
   plansRepo: PlansRepo
   loopsRepo: LoopsRepo
-  graphStatusRepo?: GraphStatusRepo
   loopService?: LoopService
   loopHandler?: ReturnType<typeof createLoopEventHandler>
   sandboxManager?: SandboxManager | null
@@ -821,8 +819,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         const { cleanupLoopWorktree } = await import('../utils/worktree-cleanup')
         await cleanupLoopWorktree({
           worktreeDir: hostWorktreeDir,
-          projectId: ctx.projectId,
-          dataDir: deps.dataDir,
           logPrefix: 'handleStartLoop',
           logger: deps.logger,
         })
@@ -849,24 +845,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         
         hostWorktreeDir = worktreeResult.data.directory!
         worktreeBranch = worktreeResult.data.branch ?? undefined
-        
-        void (async () => {
-          try {
-            const { seedWorktreeGraphScope } = await import('../utils/worktree-graph-seed')
-            const seedResult = await seedWorktreeGraphScope({
-              projectId: ctx.projectId,
-              sourceCwd: ctx.directory,
-              targetCwd: hostWorktreeDir!,
-              dataDir: deps.dataDir,
-              graphStatusRepo: deps.graphStatusRepo,
-              logger: deps.logger,
-            })
-            deps.logger.log(`handleStartLoop: graph seed ${seedResult.seeded ? 'reused' : 'skipped'} (${seedResult.reason})`)
-          } catch (err) {
-            const reason = err instanceof Error ? err.message : String(err)
-            deps.logger.log(`handleStartLoop: graph seed error (non-fatal): ${reason}`)
-          }
-        })()
         
         // Create workspace
         const { createLoopWorkspace } = await import('../workspace/forge-worktree')
@@ -1028,7 +1006,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       
       // Wait for sandbox readiness in worktree+sandbox mode (after persistence)
       if (command.mode === 'worktree' && sandboxEnabledForLoop && deps.sandboxManager && deps.dataDir) {
-        const dbPath = join(deps.dataDir, 'graph.db')
+        const dbPath = join(deps.dataDir, 'forge.db')
         if (existsSync(dbPath)) {
           const { waitForSandboxReady } = await import('../utils/sandbox-ready')
           const waitResult = await waitForSandboxReady({
@@ -1135,30 +1113,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         await rollbackLoopStart()
         
         return fail('prompt_failed', 502, 'Loop session created but failed to send prompt')
-      }
-      
-      if (hostWorktreeDir) {
-        void (async () => {
-          try {
-            const { waitForGraphReady } = await import('../utils/tui-graph-status')
-            const waitResult = await waitForGraphReady(ctx.projectId, {
-              cwd: hostWorktreeDir,
-              dbPathOverride: deps.dataDir ? join(deps.dataDir, 'graph.db') : undefined,
-              pollMs: 100,
-              timeoutMs: 5000,
-            })
-            
-            if (waitResult === 'timeout') {
-              deps.logger.log(`handleStartLoop: graph readiness timeout for worktree ${hostWorktreeDir}`)
-            } else if (waitResult === null) {
-              deps.logger.log(`handleStartLoop: graph status unavailable for worktree ${hostWorktreeDir}`)
-            } else {
-              deps.logger.log(`handleStartLoop: graph ready (${waitResult.state}) for worktree ${hostWorktreeDir}`)
-            }
-          } catch (err) {
-            deps.logger.log(`handleStartLoop: graph wait error (non-fatal)`, err)
-          }
-        })()
       }
       
       // Success: start watchdog if requested
@@ -1306,7 +1260,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
   }
   
   async function handleLoopCancel(
-    ctx: ForgeExecutionRequestContext,
+    _ctx: ForgeExecutionRequestContext,
     command: CancelLoopCommand,
   ): Promise<ForgeExecutionResponse<LoopCancelledResult>> {
     if (!deps.loopService || !deps.loopHandler) {
@@ -1352,8 +1306,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       const { cleanupLoopWorktree } = await import('../utils/worktree-cleanup')
       const result = await cleanupLoopWorktree({
         worktreeDir: state.worktreeDir,
-        projectId: ctx.projectId,
-        dataDir: deps.dataDir,
         logPrefix: 'loop-cancel',
         logger: deps.logger,
       })

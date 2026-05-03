@@ -1,5 +1,5 @@
 {
-  // Data directory for plugin storage (graph.db, KV store, logs)
+  // Data directory for plugin storage (forge.db, logs)
   // When empty, resolves to ~/.local/share/opencode/forge (or XDG_DATA_HOME equivalent)
   "dataDir": "",
 
@@ -16,7 +16,7 @@
     "maxContextTokens": 0
   },
 
-  // Messages transform hook for graph injection and read-only enforcement
+  // Messages transform hook for read-only enforcement
   "messagesTransform": {
     "enabled": true,
     "debug": false
@@ -46,17 +46,6 @@
   "sandbox": {
     "mode": "off",
     "image": "oc-forge-sandbox:latest"
-  },
-
-  // Graph indexing configuration.
-  // Set "enabled": false to turn off the code graph entirely. Plans, reviews,
-  // and loops continue to work; agent prompts and the explore agent fall back
-  // to standard Read/Glob/Grep guidance and the graph-* tools are not exposed.
-  "graph": {
-    "enabled": true,
-    "autoScan": true,
-    "watch": true,
-    "debounceMs": 100
   },
 
   // TUI sidebar widget configuration

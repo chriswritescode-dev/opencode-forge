@@ -4,15 +4,12 @@ import type { Logger } from '../types'
 
 interface WorktreeCleanupInput {
   worktreeDir: string
-  projectId?: string
-  dataDir?: string
   logPrefix: string
   logger: Logger | Console
 }
 
 interface WorktreeCleanupResult {
   removed: boolean
-  graphScopeDeleted: boolean
   error?: string
 }
 
@@ -21,7 +18,6 @@ export async function cleanupLoopWorktree(
 ): Promise<WorktreeCleanupResult> {
   const result: WorktreeCleanupResult = {
     removed: false,
-    graphScopeDeleted: false,
   }
 
   try {
@@ -35,13 +31,7 @@ export async function cleanupLoopWorktree(
     result.removed = true
     input.logger.log(`${input.logPrefix}: removed worktree ${input.worktreeDir}`)
 
-    if (input.projectId && input.dataDir) {
-      const { deleteGraphCacheScope } = await import('../storage/graph-projects')
-      result.graphScopeDeleted = deleteGraphCacheScope(input.projectId, input.worktreeDir, input.dataDir)
-      if (result.graphScopeDeleted) {
-        input.logger.log(`${input.logPrefix}: deleted graph cache for worktree ${input.worktreeDir}`)
-      }
-    }
+
   } catch (err) {
     result.error = err instanceof Error ? err.message : String(err)
     input.logger.error(`${input.logPrefix}: failed to cleanup worktree`, err)

@@ -83,19 +83,6 @@ function createTestDb(): Database {
   `)
   db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_branch ON review_findings(project_id, branch)`)
   
-  db.run(`
-    CREATE TABLE IF NOT EXISTS graph_status (
-      project_id   TEXT NOT NULL,
-      cwd          TEXT NOT NULL DEFAULT '',
-      state        TEXT NOT NULL,
-      ready        INTEGER NOT NULL,
-      stats_json   TEXT,
-      message      TEXT,
-      updated_at   INTEGER NOT NULL,
-      PRIMARY KEY (project_id, cwd)
-    )
-  `)
-  
   return db
 }
 
@@ -122,10 +109,8 @@ function createToolContext(db: Database, reviewFindingsRepo: ReturnType<typeof c
     cleanup: async () => {},
     input: {} as any,
     sandboxManager: null,
-    graphService: null,
     v2: {} as any,
     loopHandler: {} as any,
-    graphStatusRepo: {} as any,
   }
 }
 

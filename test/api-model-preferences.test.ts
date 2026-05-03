@@ -25,7 +25,7 @@ describe('model preferences API', () => {
     testDataDir = TEST_DIR + '-' + Math.random().toString(36).slice(2)
     process.env.XDG_DATA_HOME = testDataDir
     mkdirSync(resolveDataDir(), { recursive: true })
-    const db = openForgeDatabase(join(resolveDataDir(), 'graph.db'))
+    const db = openForgeDatabase(join(resolveDataDir(), 'forge.db'))
     db.close()
   })
 

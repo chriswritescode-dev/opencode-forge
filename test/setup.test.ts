@@ -61,23 +61,6 @@ describe('loadPluginConfig', () => {
     expect(config.logging).toBeDefined()
   })
 
-  test('loads config with graph settings', () => {
-    const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
-    mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
-
-    const graphConfig = {
-      graph: {
-        enabled: true,
-        watch: true,
-      },
-    }
-
-    writeFileSync(configPath, JSON.stringify(graphConfig))
-
-    const config = loadPluginConfig()
-    expect(config.graph?.enabled).toBe(true)
-  })
-
   test('loads config with sandbox settings', () => {
     const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
     mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
@@ -183,7 +166,6 @@ describe('bundled sample config', () => {
     expect(parsed.auditorModel).toBeDefined()
     expect(parsed.loop).toBeDefined()
     expect(parsed.sandbox).toBeDefined()
-    expect(parsed.graph).toBeDefined()
     expect(parsed.tui).toBeDefined()
     expect(parsed.completedLoopTtlMs).toBeDefined()
   })

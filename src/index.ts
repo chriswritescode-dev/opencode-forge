@@ -5,7 +5,6 @@ import { createConfigHandler } from './config'
 import { createSessionHooks, createLoopEventHandler } from './hooks'
 import { initializeDatabase, resolveDataDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo } from './storage'
 import { createLoopService } from './services/loop'
-import { createGraphService } from './graph'
 import { loadPluginConfig } from './setup'
 import { resolveLogPath } from './storage'
 import { createLogger } from './utils/logger'
@@ -15,12 +14,7 @@ import { reconcileSandboxes } from './sandbox/reconcile'
 import type { PluginConfig, CompactionConfig } from './types'
 import { createTools, createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from './tools'
 import { createSandboxToolBeforeHook, createSandboxToolAfterHook } from './hooks/sandbox-tools'
-import { createGraphCommandEventHook } from './hooks/graph-command'
-import { createGraphToolBeforeHook, createGraphToolAfterHook } from './hooks/graph-tools'
 import type { ToolContext } from './tools'
-import type { GraphService } from './graph'
-import { createGraphStatusCallback, writeGraphStatus, UNAVAILABLE_STATUS } from './utils/graph-status-store'
-import { createGraphStatusRepo } from './storage'
 import { FORGE_WORKTREE_WORKSPACE_TYPE, createForgeWorktreeAdaptor } from './workspace/forge-worktree'
 import { LRUCache } from './utils/lru-cache'
 import { createSessionLoopResolver } from './services/session-loop-resolver'
@@ -183,9 +177,9 @@ export function createSessionDirectoryLookup({
 
 
 /**
- * Creates an OpenCode plugin instance with loop management, graph indexing, and sandboxing.
+ * Creates an OpenCode plugin instance with loop management and sandboxing.
  * 
- * @param config - Plugin configuration including loop, graph, sandbox, and logging settings
+ * @param config - Plugin configuration including loop, sandbox, and logging settings
  * @returns OpenCode Plugin instance with hooks for tools, events, and session management
  */
 export function createForgePlugin(config: PluginConfig): Plugin {
@@ -254,44 +248,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 
     const loopHandler = createLoopEventHandler(loopService, client, v2, logger, () => config, sandboxManager || undefined, projectId, dataDir)
 
-    // Initialize graph service if enabled
-    const graphEnabled = config.graph?.enabled ?? true
-    const agents = buildAgents({ graphEnabled })
-    let graphService: GraphService | null = null
-    const graphStatusRepo = createGraphStatusRepo(db)
-    
-    if (graphEnabled) {
-      try {
-        // Create status callback for persisting graph state (scoped to cwd for worktree sessions)
-        const graphStatusCallback = createGraphStatusCallback(graphStatusRepo, projectId, directory)
-        
-        graphService = createGraphService({
-          projectId,
-          dataDir,
-          cwd: directory,
-          logger,
-          watch: config.graph?.watch ?? true,
-          debounceMs: config.graph?.debounceMs,
-          onStatusChange: graphStatusCallback,
-        })
-        
-        // Guarded auto-scan if enabled - checks cache freshness before scanning
-        const autoScan = config.graph?.autoScan ?? true
-        if (autoScan) {
-          graphService.ensureStartupIndex().catch((err: unknown) => {
-            logger.error('Graph startup index check failed', err)
-          })
-        }
-      } catch (err) {
-        logger.error('Failed to initialize graph service', err)
-        graphService = null
-      }
-    } else {
-      // Graph is disabled - persist unavailable status scoped to the current
-      // directory so TUI sidebar reads (which are directory-scoped) resolve
-      // consistently with the enabled path that scopes via the status callback.
-      writeGraphStatus(graphStatusRepo, projectId, UNAVAILABLE_STATUS, directory)
-    }
+    const agents = buildAgents()
 
     const compactionConfig: CompactionConfig | undefined = config.compaction
     const messagesTransformConfig = config.messagesTransform
@@ -324,11 +281,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         
         loopHandler.clearAllRetryTimeouts()
         
-        if (graphService) {
-          await graphService.close()
-          logger.log('Graph service closed')
-        }
-        
         closeDatabase(db)
         logger.log('Plugin cleanup complete')
       })()
@@ -358,10 +310,8 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       cleanup,
       input,
       sandboxManager,
-      graphService: graphService || null,
       plansRepo,
       reviewFindingsRepo,
-      graphStatusRepo,
       loopsRepo,
     }
 
@@ -406,17 +356,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       resolveSandboxForSession,
       logger,
     })
-    const graphBeforeHook = createGraphToolBeforeHook({
-      graphService: graphService || null,
-      logger,
-      cwd: directory,
-    })
-    const graphAfterHook = createGraphToolAfterHook({
-      graphService: graphService || null,
-      logger,
-      cwd: directory,
-    })
-    const graphCommandHook = createGraphCommandEventHook(graphService || null, logger)
 
     const parentSessionLookup = createParentSessionLookup({ v2, directory, loopService, logger })
     const sessionDirectoryLookup = createSessionDirectoryLookup({ v2, directory, loopService })
@@ -443,7 +382,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     return {
       getCleanup,
       tool: tools,
-      config: createConfigHandler(agents, config.agents, { graphEnabled }),
+      config: createConfigHandler(agents, config.agents),
       'chat.message': async (input, output) => {
         await sessionHooks.onMessage(input, output)
       },
@@ -457,7 +396,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         await sessionHooks.onEvent(eventInput)
         await planCaptureEventHook(eventInput)
         await planApprovalEventHook(eventInput)
-        await graphCommandHook(eventInput)
         await busRpcHook(eventInput)
       },
       'tool.execute.before': async (input, output) => {
@@ -465,9 +403,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         if (resolved) {
           logger.log(`[tool-before] ${input.tool} callID=${input.callID} session=${input.sessionID} loop=${resolved.loopName} sandbox=${resolved.sandbox ? 'yes' : 'no'}`)
         }
-        // Graph hook must run BEFORE sandbox hook to inspect original command
-        // Graph hook must also run BEFORE toolExecuteBeforeHook to capture original args
-        await graphBeforeHook!(input, output)
         await toolExecuteBeforeHook!(input, output)
         await sandboxBeforeHook!(input, output)
       },
@@ -478,7 +413,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         }
         await sandboxAfterHook!(input, output)
         await toolExecuteAfterHook!(input, output)
-        await graphAfterHook!(input, output)
       },
       'permission.ask': permissionAskHandler,
       'experimental.session.compacting': async (input, output) => {

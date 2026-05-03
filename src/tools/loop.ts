@@ -31,7 +31,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
       legacyClient: ctx.input?.client,
       plansRepo: ctx.plansRepo,
       loopsRepo: ctx.loopsRepo,
-      graphStatusRepo: ctx.graphStatusRepo,
       loopService: ctx.loopService,
       loopHandler: ctx.loopHandler,
       sandboxManager: ctx.sandboxManager,

@@ -3,7 +3,6 @@ import { Database } from 'bun:sqlite'
 import { homedir, platform } from 'os'
 import { join, basename } from 'path'
 import { existsSync } from 'fs'
-import { readGraphStatus } from '../../utils/tui-graph-status'
 
 function withOpencodeProjectDb<T>(fn: (db: Database) => T): T | null {
   try {
@@ -106,13 +105,3 @@ export async function handleGetProject(
   return { id: projectId, directory }
 }
 
-export async function handleGetGraphStatus(
-  _deps: ApiDeps,
-  params: Record<string, string>,
-  body: unknown
-): Promise<unknown> {
-  const { projectId } = params
-  const queryParams = body as Record<string, string> | undefined
-  const cwd = queryParams?.cwd ?? undefined
-  return { status: readGraphStatus(projectId, undefined, cwd) }
-}

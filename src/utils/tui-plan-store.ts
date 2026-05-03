@@ -18,7 +18,7 @@ import { createLoopsRepo } from '../storage/repos/loops-repo'
  * Exported for testing purposes.
  */
 function getDbPath(): string {
-  return join(resolveDataDir(), 'graph.db')
+  return join(resolveDataDir(), 'forge.db')
 }
 
 /**

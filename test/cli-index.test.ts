@@ -13,14 +13,5 @@ describe('CLI index routing', () => {
     expect(result.stdout).toContain('oc-forge loop status')
   })
 
-  test('nested graph help reaches the graph command', () => {
-    const result = spawnSync('bun', ['src/cli/index.ts', 'graph', 'scan', '--help'], {
-      cwd: process.cwd(),
-      encoding: 'utf-8',
-    })
 
-    expect(result.status).toBe(0)
-    expect(result.stdout).toContain('Manage graph indexing')
-    expect(result.stdout).toContain('oc-forge graph scan')
-  })
 })

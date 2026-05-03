@@ -47,13 +47,6 @@ export const migrations: Migration[] = [
     },
   },
   {
-    id: '104',
-    description: 'Create graph_status table for graph indexing state',
-    apply: (db: Database) => {
-      db.run(loadSql('104_create_graph_status.sql'))
-    },
-  },
-  {
     id: '105',
     description: 'Create tui_preferences table for TUI recent models and execution preferences',
     apply: (db: Database) => {

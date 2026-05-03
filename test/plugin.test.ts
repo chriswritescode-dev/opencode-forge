@@ -35,191 +35,13 @@ describe('createForgePlugin', () => {
     expect(typeof plugin).toBe('function')
   })
 
-  test('REGRESSION: two plugin instances with different worktree directories must use separate graph cache paths', async () => {
-    const sharedDataDir = `${testDir}/shared-data`
-    const config: PluginConfig = {
-      dataDir: sharedDataDir,
-      graph: { enabled: true, autoScan: false },
-    }
 
-    const worktree1Dir = join(testDir, 'worktree1')
-    const worktree2Dir = join(testDir, 'worktree2')
-    mkdirSync(worktree1Dir, { recursive: true })
-    mkdirSync(worktree2Dir, { recursive: true })
 
-    const mockInput1 = {
-      directory: worktree1Dir,
-      worktree: worktree1Dir,
-      client: {} as never,
-      project: { id: TEST_PROJECT_ID } as never,
-      serverUrl: new URL('http://localhost:5551'),
-      $: {} as never,
-    }
 
-    const mockInput2 = {
-      directory: worktree2Dir,
-      worktree: worktree2Dir,
-      client: {} as never,
-      project: { id: TEST_PROJECT_ID } as never,
-      serverUrl: new URL('http://localhost:5551'),
-      $: {} as never,
-    }
 
-    const plugin = createForgePlugin(config)
 
-    const hooks1 = await plugin(mockInput1)
-    const hooks2 = await plugin(mockInput2)
 
-    const { hashGraphCacheScope } = await import('../src/storage/graph-projects')
-    const cacheHash1 = hashGraphCacheScope(TEST_PROJECT_ID, worktree1Dir)
-    const cacheHash2 = hashGraphCacheScope(TEST_PROJECT_ID, worktree2Dir)
-    
-    const dbPath1 = join(sharedDataDir, 'graph', cacheHash1, 'graph.db')
-    const dbPath2 = join(sharedDataDir, 'graph', cacheHash2, 'graph.db')
 
-    expect(cacheHash1).not.toBe(cacheHash2)
-
-    const typedHooks1 = hooks1 as { getCleanup?: () => Promise<void> }
-    const typedHooks2 = hooks2 as { getCleanup?: () => Promise<void> }
-    if (typedHooks1.getCleanup) await typedHooks1.getCleanup()
-    if (typedHooks2.getCleanup) await typedHooks2.getCleanup()
-  })
-
-  test('REGRESSION: plugin startup with autoScan reuses existing cache when files unchanged', async () => {
-    const sharedDataDir = `${testDir}/shared-data`
-    const config: PluginConfig = {
-      dataDir: sharedDataDir,
-      graph: { enabled: true, autoScan: true },
-    }
-
-    const worktreeDir = join(testDir, 'worktree-for-reuse')
-    mkdirSync(worktreeDir, { recursive: true })
-
-    // Create a test file
-    const testFile = join(worktreeDir, 'index.ts')
-    writeFileSync(testFile, 'export const value = 1')
-
-    const mockInput = {
-      directory: worktreeDir,
-      worktree: worktreeDir,
-      client: {} as never,
-      project: { id: TEST_PROJECT_ID } as never,
-      serverUrl: new URL('http://localhost:5551'),
-      $: {} as never,
-    }
-
-    const plugin = createForgePlugin(config)
-
-    // First initialization - builds the cache
-    const hooks1 = await plugin(mockInput)
-    const typedHooks1 = hooks1 as { getCleanup?: () => Promise<void> }
-    
-    // Wait for scan to complete
-    await new Promise(resolve => setTimeout(resolve, 500))
-    
-    if (typedHooks1.getCleanup) await typedHooks1.getCleanup()
-
-    // Second initialization - should reuse cache
-    const hooks2 = await plugin(mockInput)
-    const typedHooks2 = hooks2 as { getCleanup?: () => Promise<void> }
-    
-    // Wait for startup check to complete
-    await new Promise(resolve => setTimeout(resolve, 500))
-    
-    if (typedHooks2.getCleanup) await typedHooks2.getCleanup()
-
-    // Verify cache exists and was not recreated
-    const { hashGraphCacheScope } = await import('../src/storage/graph-projects')
-    const cacheHash = hashGraphCacheScope(TEST_PROJECT_ID, worktreeDir)
-    const cachePath = join(sharedDataDir, 'graph', cacheHash)
-    
-    expect(existsSync(cachePath)).toBe(true)
-  })
-
-  test('REGRESSION: plugin startup rescans when files change', async () => {
-    const sharedDataDir = `${testDir}/shared-data`
-    const config: PluginConfig = {
-      dataDir: sharedDataDir,
-      graph: { enabled: true, autoScan: true },
-    }
-
-    const worktreeDir = join(testDir, 'worktree-for-rescan')
-    mkdirSync(worktreeDir, { recursive: true })
-
-    // Create initial test file
-    const testFile = join(worktreeDir, 'index.ts')
-    writeFileSync(testFile, 'export const value = 1')
-
-    const mockInput = {
-      directory: worktreeDir,
-      worktree: worktreeDir,
-      client: {} as never,
-      project: { id: TEST_PROJECT_ID } as never,
-      serverUrl: new URL('http://localhost:5551'),
-      $: {} as never,
-    }
-
-    const plugin = createForgePlugin(config)
-
-    // First initialization - builds the cache
-    const hooks1 = await plugin(mockInput)
-    const typedHooks1 = hooks1 as { getCleanup?: () => Promise<void> }
-    
-    // Wait for scan to complete
-    await new Promise(resolve => setTimeout(resolve, 500))
-    
-    if (typedHooks1.getCleanup) await typedHooks1.getCleanup()
-
-    // Modify the file
-    await new Promise(resolve => setTimeout(resolve, 10))
-    writeFileSync(testFile, 'export const value = 2')
-
-    // Second initialization - should detect change and rescan
-    const hooks2 = await plugin(mockInput)
-    const typedHooks2 = hooks2 as { getCleanup?: () => Promise<void> }
-    
-    // Wait for startup check and potential rescan
-    await new Promise(resolve => setTimeout(resolve, 500))
-    
-    if (typedHooks2.getCleanup) await typedHooks2.getCleanup()
-
-    // Verify cache still exists
-    const { hashGraphCacheScope } = await import('../src/storage/graph-projects')
-    const cacheHash = hashGraphCacheScope(TEST_PROJECT_ID, worktreeDir)
-    const cachePath = join(sharedDataDir, 'graph', cacheHash)
-    
-    expect(existsSync(cachePath)).toBe(true)
-  })
-
-  test('REGRESSION: worktree loop startup uses worktree directory as session and graph root', async () => {
-    const testDataDir = `${testDir}/plugin-test-data`
-    const config: PluginConfig = {
-      dataDir: testDataDir,
-      graph: { enabled: true, autoScan: false },
-    }
-
-    const worktreeDir = join(testDir, 'worktree-for-graph')
-    mkdirSync(worktreeDir, { recursive: true })
-
-    const mockInput = {
-      directory: worktreeDir,
-      worktree: worktreeDir,
-      client: {} as never,
-      project: { id: TEST_PROJECT_ID } as never,
-      serverUrl: new URL('http://localhost:5551'),
-      $: {} as never,
-    }
-
-    const plugin = createForgePlugin(config)
-    const hooks = await plugin(mockInput) as { getCleanup?: () => Promise<void> }
-
-    const { hashGraphCacheScope } = await import('../src/storage/graph-projects')
-    const cacheHash = hashGraphCacheScope(TEST_PROJECT_ID, worktreeDir)
-    
-    expect(cacheHash).toBeDefined()
-
-    if (hooks.getCleanup) await hooks.getCleanup()
-  })
 
   test('Plugin initialization creates database file', async () => {
     const config: PluginConfig = {
@@ -240,7 +62,7 @@ describe('createForgePlugin', () => {
     const hooks = await plugin(mockInput)
     currentHooks = hooks as { getCleanup?: () => Promise<void> }
 
-    const dbPath = `${testDir}/.opencode/memory/graph.db`
+    const dbPath = `${testDir}/.opencode/memory/forge.db`
     expect(existsSync(dbPath)).toBe(true)
   })
 
@@ -264,16 +86,11 @@ describe('createForgePlugin', () => {
     currentHooks = hooks as { getCleanup?: () => Promise<void> }
 
     expect(hooks.tool).toBeDefined()
-    // Memory CRUD tools are NOT registered in graph-only mode
+    // Memory CRUD tools are NOT registered
     expect(hooks.tool?.['memory-read']).toBeUndefined()
     expect(hooks.tool?.['memory-write']).toBeUndefined()
     expect(hooks.tool?.['memory-delete']).toBeUndefined()
     expect(hooks.tool?.['memory-health']).toBeUndefined()
-    // Graph tools should be registered
-    expect(hooks.tool?.['graph-status']).toBeDefined()
-    expect(hooks.tool?.['graph-query']).toBeDefined()
-    expect(hooks.tool?.['graph-symbols']).toBeDefined()
-    expect(hooks.tool?.['graph-analyze']).toBeDefined()
     // Plan/review tools should be registered
     expect(hooks.tool?.['plan-read']).toBeDefined()
     expect(hooks.tool?.['plan-edit']).toBeUndefined()
@@ -385,7 +202,6 @@ describe('createForgePlugin', () => {
   test('REGRESSION: server.instance.disposed event awaits cleanup and removes process listeners', async () => {
     const config: PluginConfig = {
       dataDir: `${testDir}/.opencode/memory`,
-      graph: { enabled: true, autoScan: false },
     }
 
     const plugin = createForgePlugin(config)
@@ -424,56 +240,11 @@ describe('createForgePlugin', () => {
     }
   })
 
-  test('graph.enabled=false disables worker, tools, prompts, and persists unavailable status', async () => {
-    const config: PluginConfig = {
-      dataDir: `${testDir}/.opencode/memory`,
-      graph: { enabled: false },
-    }
 
-    const plugin = createForgePlugin(config)
-
-    const mockInput = {
-      directory: testDir,
-      worktree: testDir,
-      client: {} as never,
-      project: { id: TEST_PROJECT_ID } as never,
-      serverUrl: new URL('http://localhost:5551'),
-      $: {} as never,
-    }
-
-    const hooks = await plugin(mockInput)
-    currentHooks = hooks as { getCleanup?: () => Promise<void> }
-
-    // Graph tools must NOT be registered
-    expect(hooks.tool?.['graph-status']).toBeUndefined()
-    expect(hooks.tool?.['graph-query']).toBeUndefined()
-    expect(hooks.tool?.['graph-symbols']).toBeUndefined()
-    expect(hooks.tool?.['graph-analyze']).toBeUndefined()
-
-    // Agent prompts and explore permissions must NOT mention graph tools
-    const userConfig: Record<string, unknown> = {}
-    await (hooks.config as (cfg: Record<string, unknown>) => Promise<void>)(userConfig)
-    const agentMap = userConfig.agent as Record<string, { prompt?: string; permission?: Record<string, string> }>
-    expect(agentMap.code.prompt).not.toContain('graph-query')
-    expect(agentMap.code.prompt).toContain('Graph tooling is disabled')
-    expect(agentMap.explore?.permission?.['graph-query']).toBeUndefined()
-    expect(agentMap.explore?.permission?.['graph-symbols']).toBeUndefined()
-    expect(agentMap.explore?.permission?.['graph-analyze']).toBeUndefined()
-
-    // Graph status must be persisted as 'unavailable'
-    const { createGraphStatusRepo } = await import('../src/storage/repos/graph-status-repo')
-    const { initializeDatabase } = await import('../src/storage')
-    const db = initializeDatabase(`${testDir}/.opencode/memory`)
-    const repo = createGraphStatusRepo(db)
-    const status = repo.read(TEST_PROJECT_ID, testDir)
-    expect(status?.state).toBe('unavailable')
-    db.close()
-  })
 
   test('REGRESSION: repeated plugin instances after disposal maintain stable cleanup', async () => {
     const config: PluginConfig = {
       dataDir: `${testDir}/.opencode/memory`,
-      graph: { enabled: true, autoScan: false },
     }
 
     const baselineSigintListeners = process.listenerCount('SIGINT')
@@ -532,16 +303,7 @@ describe('PluginConfig', () => {
     expect(config.loop?.enabled).toBe(true)
   })
 
-  test('Accepts graph config', () => {
-    const config: PluginConfig = {
-      graph: {
-        enabled: true,
-        watch: true,
-      },
-    }
 
-    expect(config.graph?.enabled).toBe(true)
-  })
 
   test('Accepts sandbox config', () => {
     const config: PluginConfig = {
