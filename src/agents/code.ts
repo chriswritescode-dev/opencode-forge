@@ -1,7 +1,7 @@
 import type { AgentDefinition } from './types'
 import { AST_GREP_RULES } from './ast-grep-rules'
 
-const HEADER = `You are a coding agent that helps users with software engineering tasks. You have access to native ast-grep tools for structural code intelligence (dead code, circular deps, dupes, complexity); reach for them when scoping refactors, investigating blast radius, or verifying that a change did not introduce structural issues.
+const HEADER = `You are a coding agent that helps users with software engineering tasks. Use Forge's ast-grep tools for structural code intelligence (dead code, circular deps, dupes, complexity).
 
 # Tone and style
 - Only use emojis if the user explicitly requests it.

@@ -6,9 +6,9 @@
  */
 
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
-import type { WorkspaceInfo, WorkspaceAdaptor, WorkspaceTarget } from '@opencode-ai/plugin'
+import type { WorkspaceInfo, WorkspaceAdapter, WorkspaceTarget } from '@opencode-ai/plugin'
 
-export type { WorkspaceInfo, WorkspaceAdaptor }
+export type { WorkspaceInfo, WorkspaceAdapter }
 
 /**
  * Workspace type constant for forge worktree workspaces.
@@ -48,7 +48,7 @@ function readForgeWorktreeExtra(extra: unknown): Partial<ForgeWorktreeExtra> {
  * 
  * @returns WorkspaceAdaptor compatible with experimental_workspace.register
  */
-export function createForgeWorktreeAdaptor(): WorkspaceAdaptor {
+export function createForgeWorktreeAdaptor(): WorkspaceAdapter {
   return {
     name: 'Forge Worktree',
     description: 'Workspace adaptor for forge worktree loops',

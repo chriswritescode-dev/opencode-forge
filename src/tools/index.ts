@@ -10,7 +10,7 @@ export { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanAppr
 export type { ToolContext } from './types'
 
 /**
- * Creates all plugin tools by combining review, plan, plan-execute, loop, and ast-grep tools.
+ * Creates all plugin tools by combining review, plan, plan-execute, and loop tools.
  *
  * @param ctx - Tool context with access to plugin services.
  * @returns Record of tool name to tool implementation.

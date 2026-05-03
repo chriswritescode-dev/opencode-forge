@@ -97,6 +97,12 @@ describe('createForgePlugin', () => {
     expect(hooks.tool?.['plan-write']).toBeUndefined()
     expect(hooks.tool?.['review-read']).toBeDefined()
     expect(hooks.tool?.['review-write']).toBeDefined()
+    // Ast-grep CLI tools should be registered (search + scan only)
+    expect(hooks.tool?.['ast-grep-search']).toBeDefined()
+    expect(hooks.tool?.['ast-grep-scan']).toBeDefined()
+    expect(hooks.tool?.['ast-grep-dead-code']).toBeUndefined()
+    expect(hooks.tool?.['ast-grep-dupes']).toBeUndefined()
+    expect(hooks.tool?.['ast-grep-health']).toBeUndefined()
     // Loop tools should be registered
     expect(hooks.tool?.['loop']).toBeDefined()
     expect(hooks.tool?.['loop-cancel']).toBeDefined()

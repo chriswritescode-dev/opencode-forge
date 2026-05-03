@@ -48,17 +48,6 @@
     "image": "oc-forge-sandbox:latest"
   },
 
-  // Native ast-grep tooling (powered by @ast-grep/napi).
-  // When enabled, agents get ast-grep tools for AST search, inspection,
-  // and rewrite previews across all bundled ast-grep languages.
-  "astGrep": {
-    "enabled": true,
-    // Subset of ast-grep tools to expose. Empty/omitted = all.
-    // Available: "ast-grep-search", "ast-grep-inspect",
-    //            "ast-grep-rewrite-preview"
-    "allowedTools": []
-  },
-
   // TUI sidebar widget configuration
   "tui": {
     "sidebar": true,

@@ -68,8 +68,7 @@ describe('createConfigHandler', () => {
       const explore = exploreConfig?.explore as Record<string, unknown>
       
       const prompt = explore.prompt as string
-      // AST_GREP_RULES mentions using ast-grep-search with paths for targeted file inspection
-      expect(prompt).toMatch(/ast-grep-search.*paths|Use Read or Grep/i)
+      expect(prompt).toMatch(/ast-grep-search|ast-grep-scan|Use Read or Grep/i)
     })
 
     test('explore prompt includes Read as direct inspection step', async () => {
@@ -82,8 +81,8 @@ describe('createConfigHandler', () => {
       const explore = exploreConfig?.explore as Record<string, unknown>
       
       const prompt = explore.prompt as string
-      // AST_GREP_RULES mentions "Use Read or Grep on that path to drill in"
-      expect(prompt).toMatch(/Use Read or Grep/i)
+      // AST_GREP_RULES mentions "Read/Grep/Glob"
+      expect(prompt).toMatch(/Read.*Grep.*Glob/i)
     })
   })
 

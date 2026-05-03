@@ -59,16 +59,6 @@ export interface SandboxConfig {
 }
 
 /**
- * Configuration for ast-grep native tools (powered by @ast-grep/napi).
- */
-export interface AstGrepConfig {
-  /** Enable ast-grep plugin tools. Defaults to true. */
-  enabled?: boolean
-  /** Subset of ast-grep tool names to expose. Defaults to all tools. */
-  allowedTools?: string[]
-}
-
-/**
  * Configuration for session compaction behavior.
  */
 export interface CompactionConfig {
@@ -145,6 +135,4 @@ export interface PluginConfig {
   agents?: Record<string, AgentOverrideConfig>
   /** Sandbox execution configuration. */
   sandbox?: SandboxConfig
-  /** ast-grep native tool configuration. */
-  astGrep?: AstGrepConfig
 }
