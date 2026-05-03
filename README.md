@@ -5,7 +5,7 @@
 <h1 align="center">OpenCode Forge</h1>
 
 <p align="center">
-  <strong>Loops, plans, sandboxing, and graph tooling for <a href="https://opencode.ai">OpenCode</a> AI agents</strong>
+  <strong>Loops, plans, sandboxing, and fallow-assisted code intelligence for <a href="https://opencode.ai">OpenCode</a> AI agents</strong>
 </p>
 
 <p align="center">
@@ -44,9 +44,9 @@ Forge ships three user-facing surfaces:
 
 - **Server plugin** — enabled through OpenCode plugin config in `opencode.json`. The package declares the `server` oc-plugin surface and exports `./server` for the server entrypoint.
 - **TUI plugin** — enabled separately in `tui.json`. The package declares the `tui` oc-plugin surface and exports `./tui` for the terminal UI entrypoint.
-- **CLI** — the `oc-forge` binary manages loops and graph operations from the terminal.
+- **CLI** — the `oc-forge` binary manages loops from the terminal.
 
-The server plugin provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, graph indexing, and sandbox support. The TUI plugin layers on sidebar, plan, execution, and loop dialogs. The CLI is source-backed by the package binary and the CLI entrypoint.
+The server plugin provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, and sandbox support. The TUI plugin layers on sidebar, plan, execution, and loop dialogs. The CLI is source-backed by the package binary and the CLI entrypoint and exposes `upgrade` and `loop` subcommands.
 
 ## Screenshots
 
@@ -68,26 +68,26 @@ Loop search dialog:
 
 ## Features
 
-- **Graph Indexing** — conditional graph tools plus auto-scan and watch behavior when graphing is enabled
 - **Plans** — architect produces marked plans that are auto-captured to SQL storage
 - **Execution** — `New session`, `Execute here`, `Loop`, and `Loop (worktree)` launch paths for approved plans
 - **Loops** — iterative coding/auditing with optional worktree isolation and sandbox support
+- **Code Intelligence (fallow)** — agents use the external [fallow](https://www.npmjs.com/package/fallow) CLI for structural discovery (dead code, duplicates, blast radius, dependency health, complexity)
 - **Review Findings** — persistent, branch-aware review findings across loop sessions
 - **TUI** — sidebar, plan viewer/editor, execution dialog, and loop details
-- **CLI** — loop and graph management through `oc-forge`
+- **CLI** — loop management through `oc-forge`
 - **Sandbox** — Docker worktree loop isolation with bind-mounted project files
 
 ## Agents
 
-The plugin bundles three agents that integrate with the graph system:
+The plugin bundles three agents that use the fallow CLI for structural code intelligence:
 
 | Agent | Mode | Description |
 |-------|------|-------------|
-| **code** | primary | Primary coding agent with graph-first code discovery. Uses graph tools to explore code structure before diving into unfamiliar code. |
-| **architect** | primary | Read-only planning agent. Researches the codebase using graph-first discovery, designs implementation plans, and caches them for user approval before execution. |
-| **auditor** | subagent | Read-only code auditor with access to project graph for convention-aware reviews. Invoked via Task tool to review diffs, commits, branches, or PRs against stored conventions and decisions. |
+| **code** | primary | Primary coding agent with fallow-assisted discovery. Uses the fallow CLI to surface structural issues before diving into unfamiliar code. |
+| **architect** | primary | Read-only planning agent with fallow-assisted discovery. Researches the codebase, designs implementation plans, and caches them for user approval before execution. |
+| **auditor** | subagent | Read-only code auditor with fallow-assisted analysis for convention-aware reviews. Invoked via Task tool to review diffs, commits, branches, or PRs against stored conventions and decisions. |
 
-The auditor agent is a read-only subagent (`temperature: 0.0`) that can read the graph but cannot write, edit, or delete graph entries or execute plans. It is invoked by other agents via the Task tool to review code changes against stored project conventions and decisions.
+The auditor agent is a read-only subagent (`temperature: 0.0`) that cannot edit files or execute plans. It is invoked by other agents via the Task tool to review code changes against stored project conventions and decisions.
 
 **Tool restrictions:** The auditor cannot use `plan-execute` or `loop` tools to prevent interference with active workflows.
 
@@ -125,91 +125,9 @@ Iterative development loops with automatic auditing. Defaults to current directo
 | `loop-cancel` | Cancel an active loop by worktree name |
 | `loop-status` | List all active loops or get detailed status by worktree name. Supports `restart` to resume inactive loops. |
 
-### Graph Tools
+### Code Intelligence
 
-Code structure graph with file watching and symbol tracking.
-
-| Tool | Description |
-|------|-------------|
-| `graph-status` | Check graph indexing status or trigger re-scan. Actions: `status`, `scan` |
-| `graph-query` | Query file-level graph information. Actions: `top_files`, `file_deps`, `file_dependents`, `cochanges`, `blast_radius`, `packages`, `file_symbols`, `change_impact` |
-| `graph-symbols` | Query symbol-level graph information. Actions: `find`, `search`, `signature`, `callers`, `callees`, `references` |
-| `graph-analyze` | Analyze code quality. Actions: `unused_exports`, `duplication`, `near_duplicates`, `orphan_files`, `circular_deps` |
-
-### Graph Tool Details
-
-#### graph-status
-Check graph indexing status or trigger re-scan.
-
-```typescript
-graph-status { action: "status" | "scan" }
-```
-
-**Actions:**
-- `status` - Show current graph statistics (files, symbols, edges, calls)
-- `scan` - Trigger a full codebase scan to build/update the graph
-
-#### graph-query
-Query file-level graph information.
-
-```typescript
-graph-query {
-  action: "top_files" | "file_deps" | "file_dependents" | "cochanges" | "blast_radius" | "packages" | "file_symbols" | "change_impact",
-  file?: string,
-  files?: string,
-  limit?: number
-}
-```
-
-**Actions:**
-- `top_files` - Get most important files by PageRank
-- `file_deps` - Get dependencies of a file
-- `file_dependents` - Get files that depend on a given file
-- `cochanges` - Get files that change together with a given file
-- `blast_radius` - Calculate blast radius for a file
-- `packages` - List external packages used
-- `file_symbols` - Get symbols defined in a file
-- `change_impact` - Analyze the impact of changing multiple files simultaneously (use `files` as a comma-separated list of file paths)
-
-#### graph-symbols
-Query symbol-level graph information.
-
-```typescript
-graph-symbols {
-  action: "find" | "search" | "signature" | "callers" | "callees" | "references",
-  name?: string,
-  file?: string,
-  kind?: string,
-  limit?: number
-}
-```
-
-**Actions:**
-- `find` - Find symbols by name
-- `search` - Full-text search symbols
-- `signature` - Get symbol signature
-- `callers` - Find all callers of a symbol
-- `callees` - Find all callees of a symbol
-- `references` - Find all references to a symbol
-
-#### graph-analyze
-Analyze code quality issues.
-
-```typescript
-graph-analyze {
-  action: "unused_exports" | "duplication" | "near_duplicates" | "orphan_files" | "circular_deps",
-  file?: string,
-  limit?: number,
-  threshold?: number
-}
-```
-
-**Actions:**
-- `unused_exports` - Find exported symbols that are never imported
-- `duplication` - Find duplicate code structures
-- `near_duplicates` - Find near-duplicate code patterns (configurable threshold)
-- `orphan_files` - Find files with no dependencies and no dependents
-- `circular_deps` - Find circular dependency chains
+Forge does not register code structure tools. Instead, the architect, code, and auditor agents are prompted (via `src/agents/fallow-rules.ts`) to use the external [fallow](https://www.npmjs.com/package/fallow) CLI for structural analysis: dead code, duplicates, dependency health, blast radius, and complexity hotspots. Run fallow directly from your project root via `pnpm exec fallow ...`.
 
 ## Slash Commands
 
@@ -222,7 +140,7 @@ graph-analyze {
 
 ## CLI
 
-Manage loops and graph operations using the `oc-forge` CLI. The CLI auto-detects the project ID from git.
+Manage loops using the `oc-forge` CLI. The CLI auto-detects the project ID from git.
 
 ```bash
 oc-forge <command> [options]
@@ -288,26 +206,6 @@ oc-forge loop restart --project my-project my-worktree-name
 | `--force` | Force restart an active loop without confirmation |
 | `--server <url>` | OpenCode server URL (default: http://localhost:5551) |
 
-#### graph
-
-Check graph status, trigger a scan, list cache entries, remove entries, or clean up old entries.
-
-```bash
-oc-forge graph status
-oc-forge graph scan
-oc-forge graph list
-oc-forge graph remove <target>
-oc-forge graph cleanup --days <n>
-```
-
-| Flag | Description |
-|------|-------------|
-| `--project, -p <name>` | Project name or SHA (auto-detected from git) |
-| `--dir, -d <path>` | Project directory for graph scanning |
-| `--target, -t <id>` | Target for removal (project ID or hash directory) |
-| `--days <n>` | Number of days for cleanup (required for cleanup) |
-| `--yes, -y` | Skip confirmation prompt for removal/cleanup |
-
 ## Configuration
 
 On first run, the plugin automatically copies the bundled config to your config directory:
@@ -331,7 +229,7 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
 
 ```jsonc
 {
-  // Data directory for plugin storage (graph.db, SQL stores, logs)
+  // Data directory for plugin storage (SQL stores, logs)
   // When empty, resolves to ~/.local/share/opencode/forge (or XDG_DATA_HOME equivalent)
   "dataDir": "",
 
@@ -348,7 +246,7 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
     "maxContextTokens": 0           // Max tokens for context (0 = unlimited)
   },
 
-  // Messages transform hook for graph injection and read-only enforcement
+  // Messages transform hook for read-only enforcement
   "messagesTransform": {
     "enabled": true,               // Enable transform hook
     "debug": false                 // Enable debug logging
@@ -379,14 +277,6 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
     "image": "oc-forge-sandbox:latest"  // Docker image for sandbox containers
   },
 
-  // Graph indexing configuration
-  "graph": {
-    "enabled": true,               // Enable graph indexing
-    "autoScan": true,              // Auto-scan on startup
-    "watch": true,                 // Watch for file changes
-    "debounceMs": 100              // Debounce delay for file watches
-  },
-
   // TUI sidebar widget configuration
   "tui": {
     "sidebar": true,               // Show Forge sidebar in OpenCode TUI
@@ -415,7 +305,7 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
 ### Options
 
 #### Top-level
-- `dataDir` - Data directory for plugin storage (graph.db, logs). When empty, resolves to `~/.local/share/opencode/forge` (or `XDG_DATA_HOME` equivalent) (default: `""`)
+- `dataDir` - Data directory for plugin storage (SQL stores, logs). When empty, resolves to `~/.local/share/opencode/forge` (or `XDG_DATA_HOME` equivalent) (default: `""`)
 - `completedLoopTtlMs` - TTL for completed/cancelled/errored/stalled loops before sweep (default: `604800000` / 7 days).
 - `executionModel` - Model override for plan execution sessions, format: `provider/model` (e.g. `anthropic/claude-sonnet-4-20250514`). When set, `plan-execute` uses this model for the new Code session. When empty or omitted, OpenCode's default model is used (typically the `model` field from `opencode.json`). **Recommended:** Set this to a fast, cheap model (e.g. Haiku or MiniMax) and use a smart model (e.g. Opus) for the Architect session — planning needs reasoning, execution needs speed. This value is used as a fallback when no per-launch selection is made.
 - `auditorModel` - Model override for the auditor agent (`provider/model`). When set, overrides the auditor agent's default model. When not set, uses platform default (default: `""`). This value is used as a fallback when no per-launch selection is made.
@@ -433,7 +323,7 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 - `compaction.maxContextTokens` - Maximum tokens for context during compaction (default: `0` / unlimited)
 
 #### Messages Transform
-- `messagesTransform.enabled` - Enable the messages transform hook that handles graph injection and Architect read-only enforcement (default: `true`)
+- `messagesTransform.enabled` - Enable the messages transform hook for Architect read-only enforcement (default: `true`)
 - `messagesTransform.debug` - Enable debug logging for messages transform (default: `false`)
 
 #### Loop
@@ -450,12 +340,6 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 #### Sandbox
 - `sandbox.mode` - Sandbox mode: `"off"` or `"docker"` (default: `"off"`)
 - `sandbox.image` - Docker image for sandbox containers (default: `"oc-forge-sandbox:latest"`)
-
-#### Graph
-- `graph.enabled` - Enable graph indexing (default: `true`). When set to `false`, the graph service does not start, the `graph-status`, `graph-query`, `graph-symbols`, and `graph-analyze` tools are not registered, and agent prompts (architect, code, auditor, explore) fall back to standard `Read`/`Glob`/`Grep` discovery guidance. Plans, reviews, and loops continue to work without the graph.
-- `graph.autoScan` - Auto-check existing graph cache on startup and scan only when missing/stale (default: `true`)
-- `graph.watch` - Watch for file changes (default: `true`)
-- `graph.debounceMs` - Debounce delay for file watch events (default: `100`)
 
 #### TUI
 - `tui.sidebar` - Show the forge sidebar widget in OpenCode TUI (default: `true`)
@@ -655,7 +539,6 @@ Model selection follows this priority order:
 ### Troubleshooting
 
 - **No plan found** — Ensure the architect output included the forge plan markers, or open the Plan Viewer for the current session.
-- **Graph tools missing** — Check `graph.enabled`; when false, graph tools are not registered.
 - **TUI shows no plan** — The plan is session-scoped; use `Forge: View plan` in the session where the architect produced it.
 - **Need logs** — Set `logging.enabled` to `true`, and optionally `logging.debug` for verbose output.
 
@@ -838,14 +721,13 @@ pnpm typecheck  # Type check without emitting
 
 ### v0.2.0 - Typed Storage Schema
 
-Forge has replaced its generic key-value store (`project_kv` table) with typed SQL-schema tables for loops, plans, review findings, and graph status. This eliminates whole-object read-modify-write concurrency bugs, adds real indexes for branch-scoped and status-scoped queries, and removes the silent 7-day TTL on all persisted data.
+Forge has replaced its generic key-value store (`project_kv` table) with typed SQL-schema tables for loops, plans, and review findings. This eliminates whole-object read-modify-write concurrency bugs, adds real indexes for branch-scoped and status-scoped queries, and removes the silent 7-day TTL on all persisted data.
 
 **What changed:**
 - `loops` table - stores loop state with atomic updates for counters (error_count, audit_count, iteration)
 - `loop_large_fields` table - stores prompt and last_audit_result (lazy-loaded)
 - `plans` table - supports both session-staged and loop-bound plans with explicit promotion
 - `review_findings` table - write-once per (file, line), existence = open
-- `graph_status` table - graph indexing status with last-write-wins semantics
 
 **Upgrade impact:**
 - Existing `project_kv` data is dropped on upgrade
