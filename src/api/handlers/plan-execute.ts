@@ -95,6 +95,9 @@ export async function handleExecutePlan(
         lifecycle: {
           selectSession: true,
           startWatchdog: true,
+          onStarted: (info) => {
+            deps.eventPublisher?.('loop.started', info)
+          },
         },
       })
 

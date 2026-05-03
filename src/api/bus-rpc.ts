@@ -3,6 +3,7 @@ import type { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2
 import {
   decodeRequest,
   encodeReply,
+  encodeEvent,
   ForgeRpcError,
   type ForgeRpcReply,
 } from './bus-protocol'
@@ -85,6 +86,25 @@ export function createBusRpcEventHook(deps: BusRpcDeps) {
     }, 0)
   }
 
+  function publishEvent(directory: string, name: string, rid: string, data: unknown): void {
+    logger.debug(`[bus-rpc] event scheduled name=${name} rid=${rid} directory=${directory}`)
+    setTimeout(() => {
+      v2.tui.publish({
+        directory,
+        body: {
+          type: 'tui.command.execute',
+          properties: {
+            command: encodeEvent({ rid, name, data }),
+          },
+        },
+      }).then(() => {
+        logger.debug(`[bus-rpc] event published name=${name} rid=${rid} directory=${directory}`)
+      }).catch((err) => {
+        logger.error(`[bus-rpc] event publish failed for name=${name} rid=${rid}`, err)
+      })
+    }, 0)
+  }
+
   return async (input: {
     event: {
       type: string
@@ -156,6 +176,9 @@ export function createBusRpcEventHook(deps: BusRpcDeps) {
       ctx: effectiveCtx,
       logger: targetCtx.logger,
       projectId: effectiveProjectId,
+      eventPublisher: (name: string, data: unknown) => {
+        publishEvent(requestDirectory, name, rid, data)
+      },
     }
 
     // Merge projectId into params for handlers that expect it

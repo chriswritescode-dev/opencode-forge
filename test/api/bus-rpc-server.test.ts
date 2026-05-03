@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'bun:test'
 import { createBusRpcEventHook } from '../../src/api/bus-rpc'
-import { decodeReply, encodeRequest } from '../../src/api/bus-protocol'
+import { decodeReply, encodeRequest, decodeEvent, encodeEvent } from '../../src/api/bus-protocol'
 import type { ToolContext } from '../../src/tools/types'
 import type { Logger } from '../../src/types'
 import type { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2'
 import type { ProjectRegistry } from '../../src/api/project-registry'
+import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
+import type { LoopService } from '../../src/services/loop'
+import type { PlansRepo } from '../../src/storage/repos/plans-repo'
+import type { ReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
+import * as loopsHandler from '../../src/api/handlers/loops'
 
 // Mock bun:sqlite for vitest compatibility
 vi.mock('bun:sqlite', () => ({
@@ -72,8 +77,19 @@ function createMockToolContext(projectId: string, directory: string): ToolContex
     logger: createMockLogger(),
     db: {} as any,
     dataDir: '/tmp',
-    loopService: {} as any,
-    loopHandler: {} as any,
+    loopService: {
+      generateUniqueLoopName: vi.fn((base: string) => `${base}-1`),
+      getActiveState: vi.fn(),
+      resolveLoopName: vi.fn(),
+      listActive: vi.fn(() => []),
+      listRecent: vi.fn(() => []),
+      findMatchByName: vi.fn(),
+      setState: vi.fn(),
+      deleteState: vi.fn(),
+      registerLoopSession: vi.fn(),
+      getPlanText: vi.fn(() => ''),
+    } as unknown as LoopService,
+    loopHandler: vi.fn(),
     v2: createMockV2(),
     cleanup: vi.fn(),
     input: {} as any,
@@ -85,9 +101,22 @@ function createMockToolContext(projectId: string, directory: string): ToolContex
       writeForLoop: vi.fn(),
       deleteForSession: vi.fn(),
       deleteForLoop: vi.fn(),
-    } as any,
-    reviewFindingsRepo: {} as any,
-    loopsRepo: {} as any,
+    } as unknown as PlansRepo,
+    loopsRepo: {
+      write: vi.fn(),
+      read: vi.fn(),
+      delete: vi.fn(),
+      list: vi.fn(() => []),
+      findById: vi.fn(),
+      findLatest: vi.fn(),
+    } as unknown as LoopsRepo,
+    reviewFindingsRepo: {
+      write: vi.fn(),
+      read: vi.fn(),
+      delete: vi.fn(),
+      list: vi.fn(() => []),
+      findById: vi.fn(),
+    } as unknown as ReviewFindingsRepo,
   }
 }
 
@@ -303,21 +332,17 @@ describe('bus-rpc server', () => {
   it('two registered projects only handle events matched by directory', async () => {
     const ctx1 = createMockToolContext('proj1', '/project-alpha')
     const ctx2 = createMockToolContext('proj2', '/project-beta')
-    registry.register(ctx1)
-    registry.register(ctx2)
-
-    vi.spyOn(ctx1.plansRepo, 'getForSession').mockReturnValue({
-      sessionId: 's1',
-      loopName: null,
-      content: 'alpha plan',
-      updatedAt: 123,
-    } as any)
+    
+    // Set up mock for ctx2's plansRepo
     vi.spyOn(ctx2.plansRepo, 'getForSession').mockReturnValue({
       sessionId: 's2',
       loopName: null,
-      content: 'beta plan',
-      updatedAt: 456,
+      content: 'beta plan content',
+      updatedAt: 123,
     } as any)
+    
+    registry.register(ctx1)
+    registry.register(ctx2)
 
     const hook = createBusRpcEventHook({ registry, logger, v2, instanceDirectory: '/project-beta' })
 
@@ -348,6 +373,96 @@ describe('bus-rpc server', () => {
     const parts = replyCmd.split(':')
     const b64 = parts.slice(3).join(':')
     const decoded = Buffer.from(b64, 'base64url').toString('utf8')
-    expect(decoded).toContain('beta plan')
+    expect(decoded).toContain('beta plan content')
+  })
+
+  it('loop-worktree mode: publishes loop.started event before final reply', async () => {
+    const ctx = createMockToolContext('proj1', '/test')
+    registry.register(ctx)
+
+    const hook = createBusRpcEventHook({ registry, logger, v2, instanceDirectory: '/test' })
+
+    const req = {
+      verb: 'plan.execute',
+      rid: 'loop-test-123',
+      projectId: 'proj1',
+      params: { sessionId: 's1' },
+      body: {
+        mode: 'loop-worktree',
+        plan: 'test plan content',
+        title: 'Test Loop',
+        executionModel: 'test-model',
+      },
+    }
+
+    // Mock the execution service to capture the command and invoke onStarted
+    const mockResult = {
+      ok: true as const,
+      data: {
+        loopName: 'test-loop-1',
+        sessionId: 'test-session-1',
+        displayName: 'Test Loop',
+        worktreeDir: '/tmp/worktree',
+        workspaceId: 'ws-1',
+        modelUsed: 'test-model',
+      },
+    }
+
+    const executionModule = await import('../../src/services/execution')
+    vi.spyOn(executionModule, 'createForgeExecutionService').mockImplementation((deps: any) => {
+      return {
+        dispatch: vi.fn().mockImplementation(async (execCtx: any, command: any) => {
+          // Invoke onStarted callback immediately after "persisting state"
+          command.lifecycle?.onStarted?.({
+            mode: command.mode,
+            sessionId: 'test-session-1',
+            loopName: 'test-loop-1',
+            displayName: 'Test Loop',
+            worktreeDir: '/tmp/worktree',
+            workspaceId: 'ws-1',
+          })
+          return mockResult
+        }),
+      } as any
+    })
+
+    await hook({
+      event: {
+        type: 'tui.command.execute',
+        properties: {
+          command: encodeRequest(req),
+        },
+      },
+    })
+
+    // Wait for deferred publishes
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    // Should have 2 publishes: event first, then reply
+    expect(v2.tui.publish).toHaveBeenCalledTimes(2)
+    
+    // First publish should be the loop.started event
+    const eventCall = (v2.tui.publish as any).mock.calls[0][0]
+    const eventCmd = eventCall.body.properties.command as string
+    expect(eventCmd).toContain('forge.evt:loop.started:loop-test-123:')
+    
+    const decodedEvent = decodeEvent(eventCmd)
+    expect(decodedEvent).toBeTruthy()
+    expect(decodedEvent?.name).toBe('loop.started')
+    expect(decodedEvent?.rid).toBe('loop-test-123')
+    expect(decodedEvent?.data).toHaveProperty('sessionId')
+    expect(decodedEvent?.data).toHaveProperty('loopName')
+    
+    // Second publish should be the reply
+    const replyCall = (v2.tui.publish as any).mock.calls[1][0]
+    const replyCmd = replyCall.body.properties.command as string
+    expect(replyCmd).toContain('forge.rep:loop-test-123:ok:')
+    
+    const decodedReply = decodeReply(replyCmd)
+    expect(decodedReply).toBeTruthy()
+    if (decodedReply && decodedReply.status === 'ok') {
+      expect(decodedReply.data).toHaveProperty('loopName')
+      expect(decodedReply.data).toHaveProperty('sessionId')
+    }
   })
 })

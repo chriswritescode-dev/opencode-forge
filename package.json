@@ -52,7 +52,8 @@
     "@fallow-cli/fallow-node": "^2.62.0",
     "@opencode-ai/plugin": "^1.14.30",
     "@opencode-ai/sdk": "^1.14.30",
-    "fallow": "^2.62.0"
+    "fallow": "^2.62.0",
+    "zod": "^3.25.76"
   },
   "peerDependencies": {
     "@opentui/core": ">=0.1.105",

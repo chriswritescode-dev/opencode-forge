@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { encodeRequest, decodeRequest, encodeReply, decodeReply, newRid } from '../../src/api/bus-protocol'
+import { encodeRequest, decodeRequest, encodeReply, decodeReply, newRid, encodeEvent, decodeEvent } from '../../src/api/bus-protocol'
 
 describe('bus-protocol', () => {
   it('round-trips a request with string body', () => {
@@ -97,5 +97,32 @@ describe('bus-protocol', () => {
     const encoded = encodeRequest({ ...req, directory: undefined, projectId: undefined })
     const decoded = decodeRequest(encoded)
     expect(decoded).toEqual({ ...req, directory: undefined, projectId: undefined })
+  })
+
+  it('round-trips an event', () => {
+    const evt = {
+      rid: 'abc123',
+      name: 'loop.started',
+      data: { sessionId: 's1', loopName: 'test-loop' },
+    }
+    const encoded = encodeEvent(evt)
+    const decoded = decodeEvent(encoded)
+    expect(decoded).toEqual(evt)
+  })
+
+  it('returns null for non-forge event', () => {
+    expect(decodeEvent('forge.rep:abc:ok:base64')).toBeNull()
+    expect(decodeEvent('unknown.prefix:loop.started:abc:base64')).toBeNull()
+  })
+
+  it('returns null for malformed event string', () => {
+    expect(decodeEvent('forge.evt:loop.started:abc')).toBeNull()
+    expect(decodeEvent('forge.evt:loop.started:abc:!!!invalid!!!')).toBeNull()
+  })
+
+  it('does not collide with reply decoder', () => {
+    const replyStr = encodeReply({ rid: 'abc', status: 'ok', data: { test: 1 } })
+    expect(decodeEvent(replyStr)).toBeNull()
+    expect(decodeReply(replyStr)).toBeTruthy()
   })
 })

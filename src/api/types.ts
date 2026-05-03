@@ -5,6 +5,7 @@ export interface ApiDeps {
   ctx: ToolContext
   logger: Logger
   projectId: string
+  eventPublisher?: (name: string, data: unknown) => void
 }
 
 export type Handler = (

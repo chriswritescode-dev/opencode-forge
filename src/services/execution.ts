@@ -101,6 +101,14 @@ export interface StartLoopCommand {
     selectSessionTiming?: 'after-create' | 'after-prompt'
     startWatchdog?: boolean
     abortSourceSessionOnSuccess?: boolean
+    onStarted?: (info: {
+      mode: 'in-place' | 'worktree'
+      sessionId: string
+      loopName: string
+      displayName: string
+      worktreeDir?: string
+      workspaceId?: string
+    }) => void
   }
 }
 
@@ -1003,6 +1011,16 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       }
       
       deps.logger.log(`handleStartLoop: state stored for loop=${uniqueLoopName}`)
+      
+      // Emit early event for TUI to resolve RPC without waiting for full loop start
+      command.lifecycle?.onStarted?.({
+        mode: command.mode,
+        sessionId,
+        loopName: uniqueLoopName,
+        displayName,
+        worktreeDir: hostWorktreeDir,
+        workspaceId: createdWorkspaceId,
+      })
       
       // Wait for sandbox readiness in worktree+sandbox mode (after persistence)
       if (command.mode === 'worktree' && sandboxEnabledForLoop && deps.sandboxManager && deps.dataDir) {

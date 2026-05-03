@@ -24,6 +24,12 @@ export type ForgeRpcReplyErr = {
 
 export type ForgeRpcReply = ForgeRpcReplyOk | ForgeRpcReplyErr
 
+export type ForgeRpcEvent = {
+  rid: string
+  name: string
+  data: unknown
+}
+
 export class ForgeRpcError extends Error {
   constructor(public code: string, message: string) {
     super(message)
@@ -112,4 +118,31 @@ export function decodeReply(command: string): ForgeRpcReply | null {
   } else {
     return { rid, status, code: payload.code ?? 'unknown', message: payload.message ?? 'unknown error' }
   }
+}
+
+export function encodeEvent(evt: ForgeRpcEvent): string {
+  const { rid, name, data } = evt
+  return `forge.evt:${name}:${rid}:${encode({ data })}`
+}
+
+export function decodeEvent(command: string): ForgeRpcEvent | null {
+  if (!command.startsWith('forge.evt:')) {
+    return null
+  }
+
+  const parts = command.split(':')
+  if (parts.length < 4) {
+    return null
+  }
+
+  const name = parts[1]
+  const rid = parts[2]
+  const b64 = parts.slice(3).join(':')
+
+  const payload = decode<{ data?: unknown }>(b64)
+  if (!payload) {
+    return null
+  }
+
+  return { rid, name, data: payload.data ?? null }
 }

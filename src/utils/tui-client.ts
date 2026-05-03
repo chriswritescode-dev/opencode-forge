@@ -11,6 +11,7 @@ import { parseModelString } from './model-fallback'
 import {
   encodeRequest,
   decodeReply,
+  decodeEvent,
   newRid,
 } from '../api/bus-protocol'
 
@@ -133,6 +134,20 @@ export async function connectForgeProject(
     const command = event.properties?.command as string | undefined
     if (!command) {
       tuiDebug('event received without command')
+      return
+    }
+
+    // Check for early event first (loop.started)
+    const evt = decodeEvent(command)
+    if (evt) {
+      const pendingRpc = pending.get(evt.rid)
+      if (pendingRpc && evt.name === 'loop.started') {
+        tuiDebug(`event matched rid=${evt.rid} name=${evt.name}`)
+        clearTimeout(pendingRpc.timer)
+        pending.delete(evt.rid)
+        pendingRpc.resolve(evt.data)
+        return
+      }
       return
     }
 
@@ -385,7 +400,10 @@ export async function connectForgeProject(
             },
             60_000, // longer timeout for loop start (worktree + sandbox)
           )
-        } catch {
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          const kind = msg.includes('timeout') ? 'timeout' : 'other'
+          tuiDebug(`plan.execute loop catch kind=${kind} mode=${req.mode} message=${msg}`)
           return null
         }
         if (projectId) writeExecutionPreferences(projectId, prefs)
