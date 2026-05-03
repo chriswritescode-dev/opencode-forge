@@ -1,4 +1,5 @@
 import type { AgentRole, AgentDefinition, AgentConfig } from './agents'
+import { FALLOW_RULES } from './agents/fallow-rules'
 import { readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
@@ -12,19 +13,7 @@ const REPLACED_BUILTIN_AGENTS = ['build', 'plan']
 const ENHANCED_BUILTIN_AGENTS: Record<string, { permission: Record<string, string>; prompt?: string }> = {
   explore: {
     permission: {},
-    prompt: `# Discovery hierarchy
-
-1. **Code intelligence (dead code, dupes, deps, complexity, boundaries)**: Use the fallow CLI first — it is faster and more accurate than grep-based heuristics.
-2. **Targeted file/symbol questions**: Use Read directly when you already know the file path and symbol.
-3. **Open-ended codebase research**: Use Task/explore agents in parallel.
-4. **File search**: Use Glob for filename pattern matches.
-5. **Content search**: Use Grep for literal string/regex matches.
-
-## General guidelines
-- When exploring the codebase, prefer the Task tool to reduce context usage.
-- Call multiple tools in a single response when they are independent. Batch tool calls for performance.
-- Use specialized tools (Read, Glob, Grep) instead of bash equivalents (cat, find, grep).
-`,
+    prompt: FALLOW_RULES,
   },
 }
 

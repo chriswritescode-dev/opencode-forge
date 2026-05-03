@@ -30,6 +30,10 @@ describe('Agent definitions', () => {
 
     test('auditor agent has expected tool exclusions', () => {
       expect(auditorAgent.tools?.exclude).toBeDefined()
+      expect(auditorAgent.tools?.exclude).toContain('apply_patch')
+      expect(auditorAgent.tools?.exclude).toContain('edit')
+      expect(auditorAgent.tools?.exclude).toContain('write')
+      expect(auditorAgent.tools?.exclude).toContain('multiedit')
       expect(auditorAgent.tools?.exclude).toContain('plan-execute')
       expect(auditorAgent.tools?.exclude).toContain('loop')
       expect(auditorAgent.tools?.exclude).toContain('loop-cancel')
@@ -82,14 +86,25 @@ describe('Agent definitions', () => {
   describe('fallow policy in system prompts', () => {
     test('architect prompt contains "fallow"', () => {
       expect(architectAgent.systemPrompt).toContain('fallow')
+      expect(architectAgent.systemPrompt).toContain('fallow` skill')
     })
 
     test('code prompt contains "fallow"', () => {
       expect(codeAgent.systemPrompt).toContain('fallow')
+      expect(codeAgent.systemPrompt).toContain('fallow` skill')
     })
 
     test('auditor prompt contains "fallow"', () => {
       expect(auditorAgent.systemPrompt).toContain('fallow')
+      expect(auditorAgent.systemPrompt).toContain('Load the `fallow` skill')
+    })
+
+    test('agent prompts avoid deprecated graph tooling names', () => {
+      for (const agent of [architectAgent, codeAgent, auditorAgent, auditorLoopAgent]) {
+        expect(agent.systemPrompt).not.toContain('graph-query')
+        expect(agent.systemPrompt).not.toContain('graph-symbols')
+        expect(agent.systemPrompt).not.toContain('graph-analyze')
+      }
     })
   })
 })

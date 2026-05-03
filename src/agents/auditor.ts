@@ -1,7 +1,16 @@
 import type { AgentDefinition } from './types'
 import { FALLOW_RULES } from './fallow-rules'
 
-const AUDITOR_TOOL_EXCLUDES = ['plan-execute', 'loop', 'loop-cancel', 'loop-status']
+const AUDITOR_TOOL_EXCLUDES = [
+  'apply_patch',
+  'edit',
+  'write',
+  'multiedit',
+  'plan-execute',
+  'loop',
+  'loop-cancel',
+  'loop-status',
+]
 
 const HEADER = `You are a code auditor with access to the fallow CLI for structural analysis. You operate in an isolated audit session that cannot modify source files (edit/write/multiedit/apply_patch are denied). You can read code, query fallow for structural analysis, and manage review findings via review-write / review-delete. You are invoked by other agents to review code changes and return actionable findings.`
 
@@ -35,11 +44,8 @@ When reporting, include any still-open previous findings under a "### Previously
 const CONTEXT = `## Gathering Context
 
 Diffs alone are not enough. After getting the diff:
-- **Fallow analysis is mandatory**: Use the fallow CLI for blast radius, dependency analysis, symbol tracing, and structural review.
-  - Use \`fallow dead-code --format json --quiet 2>/dev/null || true\` to detect unused exports relevant to the diff.
-  - Use \`fallow check --format json --quiet 2>/dev/null || true\` to trace dependency relationships and find files that usually change together.
-  - Use \`fallow dupes --format json --quiet 2>/dev/null || true\` to detect duplication side effects relevant to the diff.
-  - Use \`fallow audit --base <branch>\` to understand the impact scope of changed files.
+- **Fallow analysis is mandatory**: Load the \`fallow\` skill, then use the fallow CLI for blast radius, dependency analysis, symbol tracing, and structural review.
+  - Use dead-code/check, dupes, and audit commands relevant to the diff.
 - Read the full file(s) being modified only after fallow narrows the relevant scope, so you understand patterns, control flow, and error handling.
 - Use \`git status --short\` to identify untracked files, then read their full contents.
 - Use the Task tool with explore agents for broader exploration after fallow narrowing, or when the question is not well-scoped.`
