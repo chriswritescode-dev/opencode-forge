@@ -27,8 +27,7 @@
     "forge-config.jsonc",
     "scripts",
     "README.md",
-    "src/command/template",
-    "src/skills"
+    "src/command/template"
   ],
   "bin": {
     "oc-forge": "./dist/cli/index.js"

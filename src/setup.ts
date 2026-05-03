@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, mkdirSync, copyFileSync, cpSync } from 'fs'
+import { readFileSync, existsSync, mkdirSync, copyFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
@@ -14,15 +14,6 @@ function resolveConfigDir(): string {
   const defaultBase = join(homedir(), platform() === 'win32' ? 'AppData' : '.config')
   const xdgConfigHome = process.env['XDG_CONFIG_HOME'] || defaultBase
   return join(xdgConfigHome, 'opencode')
-}
-
-function resolveBundledSkillsDir(): string {
-  const pluginDir = dirname(fileURLToPath(import.meta.url))
-  return join(pluginDir, 'skills')
-}
-
-export function resolveSkillsDir(): string {
-  return join(resolveConfigDir(), 'skills')
 }
 
 export function resolveConfigPath(): string {
@@ -57,21 +48,6 @@ function ensureGlobalConfig(): void {
   const bundledConfigPath = resolveBundledConfigPath()
   if (existsSync(bundledConfigPath)) {
     copyFileSync(bundledConfigPath, newConfigPath)
-  }
-}
-
-function ensureBundledSkills(): void {
-  const bundledSkillsDir = resolveBundledSkillsDir()
-  if (!existsSync(bundledSkillsDir)) return
-
-  const targetSkillsDir = resolveSkillsDir()
-  if (!existsSync(targetSkillsDir)) {
-    mkdirSync(targetSkillsDir, { recursive: true })
-  }
-
-  const fallowSkillTarget = join(targetSkillsDir, 'fallow')
-  if (!existsSync(fallowSkillTarget)) {
-    cpSync(join(bundledSkillsDir, 'fallow'), fallowSkillTarget, { recursive: true })
   }
 }
 
@@ -111,8 +87,7 @@ function parseJsonc<T = unknown>(content: string): T {
 
 export function loadPluginConfig(): PluginConfig {
   ensureGlobalConfig()
-  ensureBundledSkills()
-  
+
   const configPath = resolveConfigPath()
 
   if (!existsSync(configPath)) {

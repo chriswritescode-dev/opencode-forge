@@ -86,17 +86,17 @@ describe('Agent definitions', () => {
   describe('fallow policy in system prompts', () => {
     test('architect prompt contains "fallow"', () => {
       expect(architectAgent.systemPrompt).toContain('fallow')
-      expect(architectAgent.systemPrompt).toContain('fallow` skill')
+      expect(architectAgent.systemPrompt).toContain('pnpm exec fallow')
     })
 
     test('code prompt contains "fallow"', () => {
       expect(codeAgent.systemPrompt).toContain('fallow')
-      expect(codeAgent.systemPrompt).toContain('fallow` skill')
+      expect(codeAgent.systemPrompt).toContain('pnpm exec fallow')
     })
 
     test('auditor prompt contains "fallow"', () => {
       expect(auditorAgent.systemPrompt).toContain('fallow')
-      expect(auditorAgent.systemPrompt).toContain('Load the `fallow` skill')
+      expect(auditorAgent.systemPrompt).toContain('Use the fallow CLI')
     })
 
     test('agent prompts avoid deprecated graph tooling names', () => {

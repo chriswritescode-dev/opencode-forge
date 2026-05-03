@@ -44,7 +44,7 @@ When reporting, include any still-open previous findings under a "### Previously
 const CONTEXT = `## Gathering Context
 
 Diffs alone are not enough. After getting the diff:
-- **Fallow analysis is mandatory**: Load the \`fallow\` skill, then use the fallow CLI for blast radius, dependency analysis, symbol tracing, and structural review.
+- **Fallow analysis is mandatory**: Use the fallow CLI for blast radius, dependency analysis, symbol tracing, and structural review.
   - Use dead-code/check, dupes, and audit commands relevant to the diff.
 - Read the full file(s) being modified only after fallow narrows the relevant scope, so you understand patterns, control flow, and error handling.
 - Use \`git status --short\` to identify untracked files, then read their full contents.

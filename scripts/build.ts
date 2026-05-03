@@ -49,12 +49,6 @@ const distTemplateDir = join(__dirname, '..', 'dist', 'command', 'template')
 mkdirSync(distTemplateDir, { recursive: true })
 cpSync(srcTemplateDir, distTemplateDir, { recursive: true })
 
-console.log('Copying skill files...')
-const srcSkillsDir = join(__dirname, '..', 'src', 'skills')
-const distSkillsDir = join(__dirname, '..', 'dist', 'skills')
-mkdirSync(distSkillsDir, { recursive: true })
-cpSync(srcSkillsDir, distSkillsDir, { recursive: true })
-
 console.log('Copying migration SQL files...')
 const srcMigrationsDir = join(__dirname, '..', 'src', 'storage', 'migrations')
 const distMigrationsDir = join(__dirname, '..', 'dist', 'storage', 'migrations')

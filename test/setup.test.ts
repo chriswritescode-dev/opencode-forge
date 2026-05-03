@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { loadPluginConfig, resolveConfigPath, resolveSkillsDir } from '../src/setup'
+import { loadPluginConfig, resolveConfigPath } from '../src/setup'
 import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
@@ -49,33 +49,6 @@ describe('loadPluginConfig', () => {
     expect(config.logging?.enabled).toBe(true)
     expect(config.logging?.debug).toBe(true)
     expect(config.loop?.enabled).toBe(true)
-  })
-
-  test('installs bundled fallow skill when missing', () => {
-    const skillPath = join(testConfigDir, 'opencode', 'skills', 'fallow', 'SKILL.md')
-
-    expect(existsSync(skillPath)).toBe(false)
-
-    loadPluginConfig()
-
-    expect(resolveSkillsDir()).toBe(join(testConfigDir, 'opencode', 'skills'))
-    expect(existsSync(skillPath)).toBe(true)
-
-    const skill = readFileSync(skillPath, 'utf-8')
-    expect(skill).toContain('pnpm exec fallow')
-    expect(skill).not.toContain('fallow fix')
-    expect(skill).not.toContain('graph-query')
-  })
-
-  test('does not overwrite an existing user fallow skill', () => {
-    const skillDir = join(testConfigDir, 'opencode', 'skills', 'fallow')
-    const skillPath = join(skillDir, 'SKILL.md')
-    mkdirSync(skillDir, { recursive: true })
-    writeFileSync(skillPath, 'custom skill')
-
-    loadPluginConfig()
-
-    expect(readFileSync(skillPath, 'utf-8')).toBe('custom skill')
   })
 
   test('returns defaults when file contains invalid JSON', () => {
