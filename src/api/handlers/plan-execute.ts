@@ -1,8 +1,22 @@
 import type { ApiDeps } from '../types'
 import { ForgeRpcError } from '../bus-protocol'
 import { PlanExecuteBody } from '../schemas'
-import { buildStartLoopCommand, type PlanSource, type ForgeExecutionCommand } from '../../services/execution'
+import { buildStartLoopCommand, type PlanSource, type ForgeExecutionCommand, type StartLoopCommand } from '../../services/execution'
 import { buildService } from './_shared'
+
+type LoopStartedInfo = Parameters<NonNullable<NonNullable<StartLoopCommand['lifecycle']>['onStarted']>>[0]
+type PlanLoopMode = 'loop' | 'loop-worktree'
+
+function toPlanLoopResponse(mode: PlanLoopMode, info: LoopStartedInfo) {
+  return {
+    mode,
+    sessionId: info.sessionId,
+    loopName: info.loopName,
+    displayName: info.displayName,
+    worktreeDir: info.worktreeDir,
+    workspaceId: info.workspaceId,
+  }
+}
 
 export async function handleExecutePlan(
   deps: ApiDeps,
@@ -85,6 +99,12 @@ export async function handleExecutePlan(
     case 'loop-worktree': {
       const isWorktree = parsed.mode === 'loop-worktree'
 
+      let started = false
+      let resolveStarted!: (info: LoopStartedInfo) => void
+      const startedPromise = new Promise<LoopStartedInfo>((resolve) => {
+        resolveStarted = resolve
+      })
+
       const command = buildStartLoopCommand({
         source,
         mode: isWorktree ? 'worktree' : 'in-place',
@@ -94,26 +114,47 @@ export async function handleExecutePlan(
         title: parsed.title,
         lifecycle: {
           selectSession: true,
+          selectSessionTiming: 'after-create',
           startWatchdog: true,
-          onStarted: (info) => {
-            deps.eventPublisher?.('loop.started', info)
-          },
+            onStarted: (info) => {
+              started = true
+              const response = toPlanLoopResponse(parsed.mode as PlanLoopMode, info)
+              deps.eventPublisher?.('loop.started', response)
+              resolveStarted(info)
+            },
         },
       })
 
-      const result = await service.dispatch(execCtx, command)
+      const dispatchPromise = service.dispatch(execCtx, command)
 
-      if (!result.ok) {
-        throw new ForgeRpcError(result.error.code, result.error.message)
+      void dispatchPromise.then((result) => {
+        if (!result.ok && started) {
+          deps.logger.error(`plan.execute loop failed after start: ${result.error.message}`)
+        }
+      }).catch((err) => {
+        deps.logger.error('plan.execute loop dispatch rejected after start', err)
+      })
+
+      const outcome = await Promise.race([
+        startedPromise.then((info) => ({ kind: 'started' as const, info })),
+        dispatchPromise.then((result) => ({ kind: 'complete' as const, result })),
+      ])
+
+      if (outcome.kind === 'started') {
+        return toPlanLoopResponse(parsed.mode, outcome.info)
+      }
+
+      if (!outcome.result.ok) {
+        throw new ForgeRpcError(outcome.result.error.code, outcome.result.error.message)
       }
 
       return {
         mode: parsed.mode,
-        sessionId: result.data.sessionId,
-        loopName: result.data.loopName,
-        displayName: result.data.displayName,
-        worktreeDir: result.data.worktreeDir,
-        workspaceId: result.data.workspaceId,
+        sessionId: outcome.result.data.sessionId,
+        loopName: outcome.result.data.loopName,
+        displayName: outcome.result.data.displayName,
+        worktreeDir: outcome.result.data.worktreeDir,
+        workspaceId: outcome.result.data.workspaceId,
       }
     }
 

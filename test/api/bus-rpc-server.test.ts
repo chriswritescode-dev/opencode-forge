@@ -395,7 +395,11 @@ describe('bus-rpc server', () => {
       },
     }
 
-    // Mock the execution service to capture the command and invoke onStarted
+    let resolveDispatch!: () => void
+    const dispatchDeferred = new Promise<void>((resolve) => {
+      resolveDispatch = resolve
+    })
+
     const mockResult = {
       ok: true as const,
       data: {
@@ -412,7 +416,6 @@ describe('bus-rpc server', () => {
     vi.spyOn(executionModule, 'createForgeExecutionService').mockImplementation((deps: any) => {
       return {
         dispatch: vi.fn().mockImplementation(async (execCtx: any, command: any) => {
-          // Invoke onStarted callback immediately after "persisting state"
           command.lifecycle?.onStarted?.({
             mode: command.mode,
             sessionId: 'test-session-1',
@@ -421,12 +424,13 @@ describe('bus-rpc server', () => {
             worktreeDir: '/tmp/worktree',
             workspaceId: 'ws-1',
           })
+          await dispatchDeferred
           return mockResult
         }),
       } as any
     })
 
-    await hook({
+    hook({
       event: {
         type: 'tui.command.execute',
         properties: {
@@ -435,34 +439,40 @@ describe('bus-rpc server', () => {
       },
     })
 
-    // Wait for deferred publishes
+    // Wait for deferred publishes - both event and reply should be scheduled before dispatch completes
     await new Promise(resolve => setTimeout(resolve, 50))
 
-    // Should have 2 publishes: event first, then reply
+    // Should have 2 publishes: event first, then reply - BEFORE dispatch resolves
     expect(v2.tui.publish).toHaveBeenCalledTimes(2)
-    
+
     // First publish should be the loop.started event
     const eventCall = (v2.tui.publish as any).mock.calls[0][0]
     const eventCmd = eventCall.body.properties.command as string
     expect(eventCmd).toContain('forge.evt:loop.started:loop-test-123:')
-    
+
     const decodedEvent = decodeEvent(eventCmd)
     expect(decodedEvent).toBeTruthy()
-    expect(decodedEvent?.name).toBe('loop.started')
-    expect(decodedEvent?.rid).toBe('loop-test-123')
-    expect(decodedEvent?.data).toHaveProperty('sessionId')
-    expect(decodedEvent?.data).toHaveProperty('loopName')
-    
-    // Second publish should be the reply
+    if (decodedEvent && 'rid' in decodedEvent) {
+      expect(decodedEvent.name).toBe('loop.started')
+      expect(decodedEvent.rid).toBe('loop-test-123')
+      const eventData = decodedEvent.data as { sessionId?: string; loopName?: string }
+      expect(eventData?.sessionId).toBe('test-session-1')
+      expect(eventData?.loopName).toBe('test-loop-1')
+    }
+
+    // Second publish should be the reply (published early, before dispatch completes)
     const replyCall = (v2.tui.publish as any).mock.calls[1][0]
     const replyCmd = replyCall.body.properties.command as string
     expect(replyCmd).toContain('forge.rep:loop-test-123:ok:')
-    
+
     const decodedReply = decodeReply(replyCmd)
     expect(decodedReply).toBeTruthy()
-    if (decodedReply && decodedReply.status === 'ok') {
-      expect(decodedReply.data).toHaveProperty('loopName')
-      expect(decodedReply.data).toHaveProperty('sessionId')
-    }
+    expect(decodedReply?.status).toBe('ok')
+    const replyData = decodedReply?.data as { sessionId?: string; loopName?: string }
+    expect(replyData?.sessionId).toBe('test-session-1')
+    expect(replyData?.loopName).toBe('test-loop-1')
+
+    // Now let dispatch complete to avoid async leaks
+    resolveDispatch()
   })
 })

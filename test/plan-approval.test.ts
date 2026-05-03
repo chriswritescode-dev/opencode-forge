@@ -1977,7 +1977,49 @@ describe('plan execute API loop dispatch', () => {
     expect(row).toBeNull()
   })
 
+  test('loop-worktree mode returns early at loop.started without waiting for prompt', async () => {
+    const { ctx, promptAsync } = createApiDeps()
+    const selectSession = mock(async () => ({ data: {} }))
+    ;(ctx.v2 as any).tui = { selectSession }
 
+    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
+
+    const pending = handleExecutePlan(apiDeps(ctx), {
+      projectId: 'api-project',
+      sessionId: 'host-session',
+    }, body)
+
+    const early = await Promise.race([
+      pending,
+      new Promise((resolve) => setTimeout(() => resolve(null), 100)),
+    ])
+
+    expect(early).not.toBeNull()
+    expect(early).toMatchObject({
+      mode: 'loop-worktree',
+      sessionId: expect.any(String),
+      loopName: 'api-worktree-plan',
+      worktreeDir: expect.any(String),
+    })
+
+    // promptAsync may or may not have been called yet within 100ms
+    // (depends on background dispatch timing), but the key is that
+    // handleExecutePlan returned early without waiting for it
+    expect(selectSession).toHaveBeenCalledWith(expect.objectContaining({
+      sessionID: expect.any(String),
+    }))
+
+    // The loop row should be persisted
+    const row = db.prepare('SELECT loop_name, worktree FROM loops WHERE project_id = ?').get('api-project') as {
+      loop_name: string
+      worktree: number
+    } | null
+    expect(row).not.toBeNull()
+    expect(row?.loop_name).toBe('api-worktree-plan')
+    expect(row?.worktree).toBe(1)
+
+    await pending
+  })
 
   test('loop mode started through plan.execute advances to audit on coding idle', async () => {
     const { ctx, loopsRepo, plansRepo, reviewFindingsRepo } = createApiDeps()

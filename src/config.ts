@@ -54,7 +54,7 @@ $ARGUMENTS`,
     description: 'Check status of all active loops',
     agent: 'code',
     subtask: false,
-    template: `Check the status of all memory loops.
+    template: `Check the status of all loops.
 
 ## Step 1: List Active Loops
 
