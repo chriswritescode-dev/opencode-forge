@@ -14,26 +14,6 @@
   <a href="https://github.com/chriswritescode-dev/opencode-forge/blob/main/LICENSE"><img src="https://img.shields.io/github/license/chriswritescode-dev/opencode-forge" alt="License" /></a>
 </p>
 
-## Breaking change (v0.3.0)
-
-Forge no longer runs an HTTP control plane. The TUI plugin now communicates with the server plugin over the opencode bus using `tui.command.execute` events. This removes:
-
-- The HTTP server (port 5552) and all HTTP API endpoints
-- `OPENCODE_SERVER_PASSWORD` requirement for forge operations
-- Coordinator handover and slot management
-- `tui.remoteServer.url` configuration
-- `api` configuration section
-
-On upgrade, the `api_registry`, `api_coordinators`, and `api_project_instances` tables are dropped. No user action is required other than updating your plugin configuration to remove the deprecated `api` and `tui.remoteServer` properties.
-
-## Breaking change (v0.2.0)
-
-Forge has replaced its generic key-value store with dedicated typed tables for loops, plans, review findings, graph status, and TUI preferences. On upgrade:
-
-- Existing loops, plans, review findings, graph-status entries, and TUI preferences stored in the old `project_kv` table are dropped.
-- Active loops from the previous version will not be resumed (they are already effectively dead due to the schema change and should be considered cancelled).
-- No user action required other than restarting opencode.
-- The config key `defaultKvTtlMs` has been renamed to `completedLoopTtlMs`. The old name is no longer supported.
 
 ## Quick Start
 
