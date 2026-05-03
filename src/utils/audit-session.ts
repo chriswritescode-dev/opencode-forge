@@ -20,6 +20,7 @@ export interface RunAuditSessionResult {
   auditSessionId: string
   boundWorkspaceId?: string
   bindFailed: boolean
+  bindError?: unknown
 }
 
 export async function createAuditSession(
@@ -40,6 +41,7 @@ export async function createAuditSession(
     auditSessionId: created.sessionId,
     boundWorkspaceId: created.boundWorkspaceId,
     bindFailed: created.bindFailed,
+    bindError: created.bindError,
   }
 }
 

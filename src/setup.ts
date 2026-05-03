@@ -112,17 +112,5 @@ export function loadPluginConfig(): PluginConfig {
 }
 
 function normalizeConfig(config: PluginConfig): PluginConfig {
-  return {
-    dataDir: config.dataDir,
-    completedLoopTtlMs: config.completedLoopTtlMs,
-    logging: config.logging,
-    compaction: config.compaction,
-    messagesTransform: config.messagesTransform,
-    executionModel: config.executionModel,
-    auditorModel: config.auditorModel,
-    loop: config.loop,
-    tui: config.tui,
-    agents: config.agents,
-    sandbox: config.sandbox,
-  }
+  return { ...config }
 }

@@ -17,6 +17,7 @@ interface CreateLoopSessionResult {
   sessionId: string
   boundWorkspaceId?: string
   bindFailed: boolean
+  bindError?: unknown
 }
 
 export async function createLoopSessionWithWorkspace(
@@ -81,6 +82,7 @@ export async function createLoopSessionWithWorkspace(
     } catch (bindErr) {
       input.logger.error(`${input.logPrefix}: failed to bind session to workspace; clearing workspace id`, bindErr)
       result.bindFailed = true
+      result.bindError = bindErr
     }
   }
 

@@ -59,6 +59,16 @@ export interface SandboxConfig {
 }
 
 /**
+ * Configuration for fallow native tools (powered by @fallow-cli/fallow-node).
+ */
+export interface FallowConfig {
+  /** Enable fallow-* plugin tools. Defaults to true. */
+  enabled?: boolean
+  /** Subset of fallow-* tool names to expose. Defaults to all six. */
+  allowedTools?: string[]
+}
+
+/**
  * Configuration for session compaction behavior.
  */
 export interface CompactionConfig {
@@ -135,4 +145,6 @@ export interface PluginConfig {
   agents?: Record<string, AgentOverrideConfig>
   /** Sandbox execution configuration. */
   sandbox?: SandboxConfig
+  /** Fallow native tool configuration. */
+  fallow?: FallowConfig
 }

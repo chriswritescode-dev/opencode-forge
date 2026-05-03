@@ -13,6 +13,7 @@ import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '.
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { createAuditSession, promptAuditSession, deleteAuditSession } from '../utils/audit-session'
 import { formatAuditSessionTitle, formatLoopSessionTitle } from '../utils/session-titles'
+import { bindSessionToWorkspace } from '../workspace/forge-worktree'
 
 export interface LoopEventHandler {
   onEvent(input: { event: { type: string; properties?: Record<string, unknown> } }): Promise<void>
@@ -26,6 +27,11 @@ export interface LoopEventHandler {
 }
 
 
+
+export function isWorkspaceNotFoundError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : typeof err === 'string' ? err : JSON.stringify(err ?? '')
+  return /Workspace not found/i.test(msg)
+}
 
 export function createLoopEventHandler(
   loopService: LoopService,
@@ -57,7 +63,7 @@ export function createLoopEventHandler(
     isSandbox: boolean
     auditorModel?: { providerID: string; modelID: string }
     prompt: string
-  }): Promise<{ auditSessionId: string; bindFailed: boolean } | null> {
+  }): Promise<{ auditSessionId: string; bindFailed: boolean; bindError?: unknown } | null> {
     const created = await createAuditSession({
       v2: v2Client,
       loopName: input.loopName,
@@ -69,7 +75,7 @@ export function createLoopEventHandler(
       prompt: input.prompt,
       logger,
     })
-    if (created) return created
+    if (created) return { auditSessionId: created.auditSessionId, bindFailed: created.bindFailed, bindError: created.bindError }
 
     try {
       logger.log(`Loop: falling back to plugin client for audit session creation (${input.loopName})`)
@@ -85,7 +91,7 @@ export function createLoopEventHandler(
       } as Parameters<typeof client.session.create>[0])
       const session = result.data as { id?: string } | undefined
       if (!session?.id) return null
-      return { auditSessionId: session.id, bindFailed: !input.workspaceId }
+      return { auditSessionId: session.id, bindFailed: false }
     } catch (err) {
       logger.error(`Loop: plugin client audit session creation failed`, err)
       return null
@@ -515,6 +521,67 @@ export function createLoopEventHandler(
     }
   }
 
+  function detachFromWorkspace(
+    loopName: string,
+    state: LoopState,
+    context?: string,
+  ): void {
+    loopService.clearWorkspaceId(loopName)
+    state.workspaceId = undefined
+    publishWorkspaceDetachedToast({
+      v2: v2Client,
+      directory: state.projectDir ?? state.worktreeDir,
+      loopName,
+      logger,
+      context,
+    })
+  }
+
+  async function recoverFromMissingWorkspace(
+    loopName: string,
+    state: LoopState,
+    auditSessionId: string,
+    bindError?: unknown,
+  ): Promise<{ workspaceId?: string; recovered: boolean }> {
+    if (!state.workspaceId) {
+      return { recovered: false }
+    }
+
+    if (bindError && !isWorkspaceNotFoundError(bindError)) {
+      logger.log(`Loop: skipping workspace re-provision for ${loopName} because bind error is not "workspace not found"`)
+      return { recovered: false }
+    }
+
+    detachFromWorkspace(loopName, state, 'during audit bind')
+
+    const createLoopWorkspaceMod = await import('../workspace/forge-worktree')
+    const newWorkspace = await createLoopWorkspaceMod.createLoopWorkspace(
+      v2Client,
+      {
+        loopName,
+        directory: state.worktreeDir,
+        branch: state.worktreeBranch ?? null,
+      },
+      logger,
+    )
+
+    if (!newWorkspace) {
+      logger.error(`Loop: workspace re-provision failed for ${loopName}, continuing without workspace backing`)
+      return { recovered: false }
+    }
+
+    try {
+      await bindSessionToWorkspace(v2Client, newWorkspace.workspaceId, auditSessionId, logger)
+      loopService.setWorkspaceId(loopName, newWorkspace.workspaceId)
+      state.workspaceId = newWorkspace.workspaceId
+      logger.log(`Loop: re-provisioned workspace ${newWorkspace.workspaceId} for ${loopName} after stale id`)
+      return { workspaceId: newWorkspace.workspaceId, recovered: true }
+    } catch (err) {
+      logger.error(`Loop: failed to bind session to re-provisioned workspace ${newWorkspace.workspaceId}`, err)
+      return { recovered: false }
+    }
+  }
+
   async function rotateSession(loopName: string, state: LoopState): Promise<string> {
     const oldSessionId = state.sessionId
     const sessionDir = state.worktreeDir
@@ -545,14 +612,7 @@ export function createLoopEventHandler(
     const newSessionId = createResult.sessionId
 
     if (createResult.bindFailed) {
-      loopService.clearWorkspaceId(loopName)
-      state.workspaceId = undefined
-      publishWorkspaceDetachedToast({
-        v2: v2Client,
-        directory: state.projectDir ?? state.worktreeDir,
-        loopName,
-        logger,
-      })
+      detachFromWorkspace(loopName, state, 'during session rotation')
     }
 
     const oldRetryTimeout = retryTimeouts.get(loopName)
@@ -851,23 +911,39 @@ export function createLoopEventHandler(
     loopService.setAuditSessionId(loopName, created.auditSessionId)
     loopService.registerAuditSession(created.auditSessionId, loopName)
 
+    if (created.bindFailed && currentState.workspaceId) {
+      const recovered = await recoverFromMissingWorkspace(loopName, currentState, created.auditSessionId, created.bindError)
+      currentState = loopService.getActiveState(loopName) ?? currentState
+      if (!recovered.recovered) {
+        logger.log(`Loop: workspace re-provision failed for ${loopName}, continuing without workspace backing`)
+      }
+    }
+
     const sendAuditWithModel = async () => {
+      const freshState = loopService.getActiveState(loopName)
+      if (!freshState?.active) {
+        throw new Error('loop_cancelled')
+      }
       const result = await promptAuditSessionWithFallback({
         sessionId: created.auditSessionId,
-        worktreeDir: currentState.worktreeDir,
-        workspaceId: currentState.workspaceId,
-        prompt: loopService.buildAuditPrompt(currentState),
+        worktreeDir: freshState.worktreeDir,
+        workspaceId: freshState.workspaceId,
+        prompt: loopService.buildAuditPrompt(freshState),
         auditorModel,
       })
       return result.ok ? { data: true } : { error: result.error }
     }
 
     const sendAuditWithoutModel = async () => {
+      const freshState = loopService.getActiveState(loopName)
+      if (!freshState?.active) {
+        throw new Error('loop_cancelled')
+      }
       const result = await promptAuditSessionWithFallback({
         sessionId: created.auditSessionId,
-        worktreeDir: currentState.worktreeDir,
-        workspaceId: currentState.workspaceId,
-        prompt: loopService.buildAuditPrompt(currentState),
+        worktreeDir: freshState.worktreeDir,
+        workspaceId: freshState.workspaceId,
+        prompt: loopService.buildAuditPrompt(freshState),
       })
       return result.ok ? { data: true } : { error: result.error }
     }
@@ -880,9 +956,21 @@ export function createLoopEventHandler(
     )
 
     if (promptResult.error) {
+      if (isWorkspaceNotFoundError(promptResult.error) && currentState.workspaceId) {
+        const recovered = await recoverFromMissingWorkspace(loopName, currentState, created.auditSessionId)
+        currentState = loopService.getActiveState(loopName) ?? currentState
+        if (recovered.recovered || !currentState.workspaceId) {
+          const retryResult = await sendAuditWithoutModel()
+          if ('data' in retryResult && retryResult.data === true) {
+            logger.log(`Loop: recovered audit prompt after workspace re-bind for ${loopName}`)
+            consecutiveStalls.set(loopName, 0)
+            return
+          }
+        }
+      }
       const retryFn = async () => {
         const retry = await sendAuditWithoutModel()
-        if (retry.error) throw retry.error
+        if ('error' in retry) throw retry.error
       }
       await handlePromptError(loopName, { ...currentState, phase: 'auditing' }, 'failed to send audit prompt', promptResult.error, retryFn)
       return

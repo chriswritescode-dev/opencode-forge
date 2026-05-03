@@ -68,7 +68,8 @@ describe('createConfigHandler', () => {
       const explore = exploreConfig?.explore as Record<string, unknown>
       
       const prompt = explore.prompt as string
-      expect(prompt).toMatch(/glob.*pattern|filename.*pattern/i)
+      // FALLOW_RULES mentions using fallow-dead-code with files: [...] for targeted file inspection
+      expect(prompt).toMatch(/fallow-dead-code.*files|Use Read or Grep/i)
     })
 
     test('explore prompt includes Read as direct inspection step', async () => {
@@ -81,7 +82,8 @@ describe('createConfigHandler', () => {
       const explore = exploreConfig?.explore as Record<string, unknown>
       
       const prompt = explore.prompt as string
-      expect(prompt).toMatch(/read.*directly|targeted.*file/i)
+      // FALLOW_RULES mentions "Use Read or Grep on that path to drill in"
+      expect(prompt).toMatch(/Use Read or Grep/i)
     })
   })
 

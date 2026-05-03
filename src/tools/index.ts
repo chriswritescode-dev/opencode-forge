@@ -3,6 +3,7 @@ import { createReviewTools } from './review'
 import { createPlanTools } from './plan-kv'
 import { createPlanExecuteTools } from './plan-execute'
 import { createLoopTools } from './loop'
+import { createFallowTools } from './fallow'
 import type { ToolContext } from './types'
 
 export { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from './plan-approval'
@@ -20,5 +21,6 @@ export function createTools(ctx: ToolContext): Record<string, ReturnType<typeof 
     ...createPlanTools(ctx),
     ...createPlanExecuteTools(ctx),
     ...createLoopTools(ctx),
+    ...createFallowTools(ctx),
   }
 }

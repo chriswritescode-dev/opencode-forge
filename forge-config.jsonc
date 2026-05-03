@@ -48,6 +48,18 @@
     "image": "oc-forge-sandbox:latest"
   },
 
+  // Native fallow tooling (powered by @fallow-cli/fallow-node).
+  // When enabled, all four agents (code, architect, auditor, auditor-loop)
+  // get the fallow-* tools for structural code analysis.
+  "fallow": {
+    "enabled": true,
+    // Subset of fallow-* tools to expose. Empty/omitted = all six.
+    // Available: "fallow-dead-code", "fallow-circular-deps",
+    //            "fallow-boundary-violations", "fallow-dupes",
+    //            "fallow-health", "fallow-complexity"
+    "allowedTools": []
+  },
+
   // TUI sidebar widget configuration
   "tui": {
     "sidebar": true,

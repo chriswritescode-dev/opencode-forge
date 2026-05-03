@@ -78,6 +78,36 @@ describe('loadPluginConfig', () => {
     expect(config.sandbox?.mode).toBe('docker')
     expect(config.sandbox?.image).toBe('custom-image:latest')
   })
+
+  test('preserves user-provided fallow config', () => {
+    const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
+    mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
+    const userConfig = {
+      fallow: {
+        enabled: false,
+        allowedTools: ['fallow-dead-code'],
+      },
+    }
+    writeFileSync(configPath, JSON.stringify(userConfig))
+    const config = loadPluginConfig()
+    expect(config.fallow?.enabled).toBe(false)
+    expect(config.fallow?.allowedTools).toEqual(['fallow-dead-code'])
+  })
+
+  test('preserves fallow enabled true round-trip', () => {
+    const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
+    mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
+    const userConfig = {
+      fallow: {
+        enabled: true,
+        allowedTools: ['fallow-dead-code', 'fallow-health'],
+      },
+    }
+    writeFileSync(configPath, JSON.stringify(userConfig))
+    const config = loadPluginConfig()
+    expect(config.fallow?.enabled).toBe(true)
+    expect(config.fallow?.allowedTools).toEqual(['fallow-dead-code', 'fallow-health'])
+  })
 })
 
 describe('resolveConfigPath', () => {
