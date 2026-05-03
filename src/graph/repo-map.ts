@@ -1453,51 +1453,40 @@ export class RepoMap {
   }
 
   async onFileChanged(path: string): Promise<{ status: string }> {
-    const absPath = resolve(path)
-    const relPath = relative(this.cwd, absPath)
-    
+    return this.onFilesChanged([path])
+  }
+
+  async onFilesChanged(paths: string[]): Promise<{ status: string; processed: number }> {
+    let processed = 0
+
     try {
-      // Check if file still exists
-      try {
-        statSync(absPath)
-      } catch {
-        // File was deleted - remove from graph
-        await this.removeFile(relPath)
-        // Rebuild all derived state after deletion
-        await this.buildEdges()
+      for (const path of paths) {
+        const absPath = resolve(path)
+        const relPath = relative(this.cwd, absPath)
+
+        try {
+          statSync(absPath)
+        } catch {
+          await this.removeFile(relPath)
+          processed++
+          continue
+        }
+
+        await this.indexFile(relPath)
+        processed++
+      }
+
+      if (processed > 0) {
         await this.resolveUnresolvedRefs()
+        await this.buildEdges()
         await this.computePageRank()
         await this.buildCallGraph()
-        return { status: 'ok' }
       }
-      
-      // Re-index the file
-      await this.indexFile(relPath)
-      
-      // Rebuild all derived state for correctness
-      const file = this.stmts.getFileByPath.get(relPath) as IndexedFile | undefined
-      if (file) {
-        // Remove stale edges
-        this.stmts.deleteEdgesBySource.run([file.id])
-        this.stmts.deleteEdgesByTarget.run([file.id])
-        
-        // Resolve any unresolved refs after reindexing
-        await this.resolveUnresolvedRefs()
-        
-        // Rebuild edges from all refs (not just this file's outgoing)
-        await this.buildEdges()
-        
-        // Recompute PageRank
-        await this.computePageRank()
-        
-        // Rebuild call graph
-        await this.buildCallGraph()
-      }
-      
-      return { status: 'ok' }
+
+      return { status: 'ok', processed }
     } catch (err) {
-      console.error('Error updating file:', err)
-      return { status: 'error' }
+      console.error('Error updating files:', err)
+      return { status: 'error', processed }
     }
   }
 

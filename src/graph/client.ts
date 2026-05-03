@@ -204,6 +204,14 @@ export class GraphClient {
     await this.client.call<void>('onFileChanged', [absPath])
   }
 
+  async onFilesChanged(absPaths: string[]): Promise<void> {
+    if (!this.client) return
+    if (!this.ready) {
+      throw new Error('Graph client not ready - worker may be unavailable')
+    }
+    await this.client.call<void>('onFilesChanged', [absPaths])
+  }
+
   async close(): Promise<void> {
     if (this.client) {
       this.client.terminate()

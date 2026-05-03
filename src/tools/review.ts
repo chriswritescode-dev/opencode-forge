@@ -4,6 +4,21 @@ import { injectBranchField } from '../utils/git-branch'
 
 const z = tool.schema
 
+function resolveLoopBranchForToolContext(
+  loopService: ToolContext['loopService'],
+  toolCtx?: { sessionID?: string; directory?: string; worktree?: string },
+): string | null | undefined {
+  if (!toolCtx?.sessionID) {
+    return undefined
+  }
+  const loopName = loopService.resolveLoopName(toolCtx.sessionID)
+  if (!loopName) {
+    return undefined
+  }
+  const state = loopService.getActiveState(loopName)
+  return state?.worktreeBranch ?? null
+}
+
 export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
   const { reviewFindingsRepo, projectId, logger, loopService } = ctx
 
@@ -18,7 +33,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         scenario: z.string().optional().describe('The specific conditions under which this issue manifests'),
         status: z.string().default('open').describe('The status of the finding (default: "open")'),
       },
-      execute: async (args) => {
+      execute: async (args, toolCtx) => {
         const row = {
           projectId,
           file: args.file,
@@ -29,7 +44,8 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
           branch: null as string | null,
         }
 
-        injectBranchField(row, ctx.directory, loopService)
+        const executionDirectory = toolCtx?.directory ?? toolCtx?.worktree ?? ctx.directory
+        injectBranchField(row, executionDirectory, loopService, toolCtx?.sessionID)
 
         const result = reviewFindingsRepo.write(row)
         if (!result.ok && result.conflict) {
@@ -48,8 +64,12 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         file: z.string().optional().describe('Filter findings by file path'),
         pattern: z.string().optional().describe('Regex pattern to search across findings'),
       },
-      execute: async (args) => {
-        let findings = reviewFindingsRepo.listAll(projectId)
+      execute: async (args, toolCtx) => {
+        // If invoked from a loop session, scope to that branch
+        const loopBranch = resolveLoopBranchForToolContext(loopService, toolCtx)
+        let findings = loopBranch !== undefined
+          ? reviewFindingsRepo.listByBranch(projectId, loopBranch)
+          : reviewFindingsRepo.listAll(projectId)
 
         if (args.file) {
           findings = findings.filter((f) => f.file === args.file)
@@ -92,8 +112,12 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         file: z.string().describe('The file path of the finding to delete'),
         line: z.number().describe('The line number of the finding to delete'),
       },
-      execute: async (args) => {
-        const deleted = reviewFindingsRepo.delete(projectId, args.file, args.line)
+      execute: async (args, toolCtx) => {
+        // If invoked from a loop session, scope to that branch
+        const loopBranch = resolveLoopBranchForToolContext(loopService, toolCtx)
+        const deleted = loopBranch !== undefined
+          ? reviewFindingsRepo.delete(projectId, args.file, args.line, loopBranch)
+          : reviewFindingsRepo.delete(projectId, args.file, args.line)
         if (!deleted) {
           return `No review finding found at ${args.file}:${args.line}`
         }

@@ -1,6 +1,6 @@
 import { GraphClient } from './client'
 import { ensureGraphDirectory, readGraphCacheMetadata, writeGraphCacheMetadata } from './database'
-import { join, relative, dirname, isAbsolute } from 'path'
+import { join, relative, dirname, isAbsolute, sep } from 'path'
 import { watch, existsSync } from 'fs'
 import type { Logger } from '../types'
 import { collectIndexFingerprint } from './utils'
@@ -333,9 +333,8 @@ export function createGraphService(config: GraphServiceConfig): GraphService {
     }
   }
 
-  function shouldIndexPath(absPath: string, relPath: string): boolean {
-    // Check if path is within project root
-    if (!absPath.startsWith(cwd)) {
+  function shouldIndexPath(relPath: string): boolean {
+    if (relPath === '..' || relPath.startsWith(`..${sep}`) || isAbsolute(relPath)) {
       return false
     }
 
@@ -361,7 +360,7 @@ export function createGraphService(config: GraphServiceConfig): GraphService {
 
   function normalizePath(absPath: string): { absPath: string; relPath: string } | null {
     const relPath = relative(cwd, absPath)
-    if (!shouldIndexPath(absPath, relPath)) {
+    if (!shouldIndexPath(relPath)) {
       return null
     }
     return { absPath, relPath }
@@ -393,20 +392,19 @@ export function createGraphService(config: GraphServiceConfig): GraphService {
     pendingQueue.clear()
 
     try {
-      for (const change of pathsToFlush.values()) {
-        try {
-          await client.onFileChanged(change.absPath)
-          logger.debug(`Graph flushed: ${change.relPath}`)
-        } catch (err) {
-          logger.error(`Failed to update graph for ${change.relPath}`, err)
-          workerHealthy = false
-          client.markWorkerDead(err instanceof Error ? err : new Error(String(err)))
-          pendingQueue.clear()
-          // Persist error status to KV so TUI can display degraded state
-          const errorMessage = err instanceof Error ? err.message : String(err)
-          emitStatus('error', undefined, `Worker flush failed: ${errorMessage}`)
-          break
-        }
+      const changes = [...pathsToFlush.values()]
+      try {
+        await client.onFilesChanged(changes.map(change => change.absPath))
+        const preview = changes.slice(0, 5).map(change => change.relPath).join(', ')
+        const suffix = changes.length > 5 ? `, +${changes.length - 5} more` : ''
+        logger.debug(`Graph flushed ${changes.length} file(s): ${preview}${suffix}`)
+      } catch (err) {
+        logger.error(`Failed to update graph for ${changes.length} file(s)`, err)
+        workerHealthy = false
+        client.markWorkerDead(err instanceof Error ? err : new Error(String(err)))
+        pendingQueue.clear()
+        const errorMessage = err instanceof Error ? err.message : String(err)
+        emitStatus('error', undefined, `Worker flush failed: ${errorMessage}`)
       }
 
       if (workerHealthy && initialized) {
@@ -475,7 +473,6 @@ export function createGraphService(config: GraphServiceConfig): GraphService {
       timestamp: Date.now(),
     })
 
-    logger.debug(`Graph watcher: enqueued ${relPath}`)
     scheduleFlush()
   }
 

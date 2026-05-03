@@ -7,67 +7,6 @@ export function createPlanTools(ctx: ToolContext): Record<string, ReturnType<typ
   const { plansRepo, loopsRepo, projectId, logger, loopService } = ctx
 
   return {
-    'plan-write': tool({
-      description: 'Write or overwrite the entire plan content for the current session. Auto-resolves key to plan:{sessionID}.',
-      args: {
-        content: z.string().describe('The plan content to write'),
-      },
-      execute: async (args, context) => {
-        const loopName = loopService.resolveLoopName(context.sessionID)
-        if (loopName) {
-          loopsRepo.updatePrompt(projectId, loopName, args.content)
-        } else {
-          plansRepo.writeForSession(projectId, context.sessionID, args.content)
-        }
-        
-        const lineCount = args.content.split('\n').length
-        logger.log(`plan-write: stored plan for session ${context.sessionID} (${lineCount} lines)`)
-        
-        return `Plan stored (${lineCount} lines)`
-      },
-    }),
-
-    'plan-edit': tool({
-      description: 'Edit the plan by finding old_string and replacing with new_string. Fails if old_string is not found or is not unique.',
-      args: {
-        old_string: z.string().describe('The string to find in the plan'),
-        new_string: z.string().describe('The string to replace it with'),
-      },
-      execute: async (args, context) => {
-        const existingLoopName = loopService.resolveLoopName(context.sessionID)
-        let existing: string | undefined
-        if (existingLoopName) {
-          existing = loopsRepo.getLarge(projectId, existingLoopName)?.prompt ?? plansRepo.getForLoop(projectId, existingLoopName)?.content
-        } else {
-          existing = plansRepo.getForSession(projectId, context.sessionID)?.content
-        }
-        
-        if (!existing) {
-          return `No plan found for session ${context.sessionID}`
-        }
-
-        const occurrences = existing.split(args.old_string).length - 1
-        if (occurrences === 0) {
-          return `old_string not found in plan`
-        }
-        if (occurrences > 1) {
-          return `old_string found ${occurrences} times - must be unique`
-        }
-
-        const updated = existing.replace(args.old_string, args.new_string)
-        if (existingLoopName) {
-          loopsRepo.updatePrompt(projectId, existingLoopName, updated)
-        } else {
-          plansRepo.writeForSession(projectId, context.sessionID, updated)
-        }
-        
-        const lineCount = updated.split('\n').length
-        logger.log(`plan-edit: updated plan for session ${context.sessionID} (${lineCount} lines)`)
-        
-        return `Plan updated (${lineCount} lines)`
-      },
-    }),
-
     'plan-read': tool({
       description: 'Read the plan for the current session or a specified loop name. Supports pagination with offset/limit and pattern search.',
       args: {

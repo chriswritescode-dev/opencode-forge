@@ -1,15 +1,26 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { Database } from 'bun:sqlite'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { join } from 'path'
+
+// Mock ForgeRpcError for error handling
+class MockForgeRpcError extends Error {
+  constructor(public code: string | undefined, message: string) {
+    super(message)
+  }
+}
+
 import { createLoopService, generateUniqueName } from '../src/services/loop'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
 import { createGraphStatusRepo } from '../src/storage/repos/graph-status-repo'
+import { resolveGraphCacheDir } from '../src/storage/graph-projects'
 import { handleExecutePlan } from '../src/api/handlers/plan-execute'
 import { openForgeDatabase, resolveDataDir } from '../src/storage/database'
+import { createLoopEventHandler } from '../src/hooks/loop'
 import type { Logger } from '../src/types'
-import { createToolExecuteAfterHook, createPlanApprovalEventHook } from '../src/tools/plan-approval'
+import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from '../src/tools/plan-approval'
 import type { ToolContext } from '../src/tools/types'
 import type { PluginConfig } from '../src/types'
 
@@ -64,6 +75,7 @@ function createTestDb(): Database {
   db.run(`
     CREATE TABLE IF NOT EXISTS plans (
       project_id   TEXT NOT NULL,
+      branch       TEXT NOT NULL DEFAULT '',
       loop_name    TEXT,
       session_id   TEXT,
       content      TEXT NOT NULL,
@@ -78,17 +90,31 @@ function createTestDb(): Database {
   db.run(`
     CREATE TABLE IF NOT EXISTS review_findings (
       project_id   TEXT NOT NULL,
+      branch       TEXT NOT NULL DEFAULT '',
       file         TEXT NOT NULL,
       line         INTEGER NOT NULL,
       severity     TEXT NOT NULL CHECK(severity IN ('bug','warning')),
       description  TEXT NOT NULL,
       scenario     TEXT,
-      branch       TEXT,
       created_at   INTEGER NOT NULL,
-      PRIMARY KEY (project_id, file, line)
+      PRIMARY KEY (project_id, branch, file, line)
     )
   `)
   db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_branch ON review_findings(project_id, branch)`)
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS graph_status (
+      project_id   TEXT NOT NULL,
+      branch       TEXT NOT NULL DEFAULT '',
+      cwd          TEXT NOT NULL,
+      state        TEXT NOT NULL,
+      ready        INTEGER NOT NULL DEFAULT 0,
+      stats_json   TEXT,
+      message      TEXT,
+      updated_at   INTEGER NOT NULL,
+      PRIMARY KEY (project_id, cwd)
+    )
+  `)
   
   return db
 }
@@ -428,6 +454,608 @@ describe('Plan Approval Tool Interception', () => {
     expect(output.title).toBe('')
     expect(output.output).toBe('test')
   })
+
+  test('Matches metadata answer exactly', async () => {
+    const v2AbortSpy = mock<ToolContext['v2']['session']['abort']>(() => Promise.resolve({ data: {} }))
+    const legacyAbortSpy = mock(() => Promise.resolve({ data: {} } as any))
+    const ctx = {
+      loopService: {
+        resolveLoopName: () => 'test-loop',
+        getActiveState: () => null,
+      },
+      logger: createMockLogger(),
+      v2: {
+        session: {
+          abort: v2AbortSpy,
+          promptAsync: async () => ({ data: {} }),
+          create: async () => ({ data: { id: 'new-session-id' } }),
+        },
+        tui: {
+          selectSession: async () => ({ data: {} }),
+          publish: async () => ({ data: {} }),
+        },
+      } as unknown as ToolContext['v2'],
+      plansRepo,
+      config: {} as PluginConfig,
+      projectId,
+      directory: '/test',
+      dataDir: TEST_DIR,
+      cleanup: async () => {},
+      input: {
+        messages: [],
+        systemPrompt: '',
+        client: {
+          session: {
+            abort: legacyAbortSpy,
+            create: async () => ({ data: { id: 'new-session-id' } }),
+            promptAsync: async () => ({ data: {} }),
+          },
+        } as any,
+      },
+      systemPrompt: '',
+      messages: [],
+      graphStatusRepo: createGraphStatusRepo(db),
+      loopsRepo: createLoopsRepo(db),
+      reviewFindingsRepo: createReviewFindingsRepo(db),
+      sandboxManager: null,
+    } as unknown as ToolContext
+
+    // Write a plan for the session so resolveCurrentSessionPlan succeeds
+    plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
+
+    const hook = createToolExecuteAfterHook(ctx)
+
+    const args = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop (worktree)', description: 'Loop worktree' },
+          { label: 'Loop', description: 'Loop in place' },
+        ],
+      }],
+    }
+    const output = {
+      title: 'Asked 1 question',
+      output: 'Execute here',
+      metadata: { answers: [['Execute here']] },
+    }
+
+    await expect(hook(
+      { tool: 'question', sessionID, callID: 'test-call', args },
+      output
+    )).resolves.toBeUndefined()
+
+    expect(output.output).toBe('Execute here')
+    expect((output.metadata as any).forgePlanApprovalHandled).toBe(true)
+    expect(legacyAbortSpy).toHaveBeenCalled()
+  })
+
+  test('Matches metadata answer by prefix', async () => {
+    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const ctx = {
+      loopService: {
+        resolveLoopName: () => 'test-loop',
+        getActiveState: () => null,
+      },
+      logger: createMockLogger(),
+      v2: {
+        session: {
+          abort: abortSpy,
+          promptAsync: async () => ({ data: {} }),
+          create: async () => ({ data: { id: 'new-session-id' } }),
+        },
+        tui: {
+          selectSession: async () => ({ data: {} }),
+          publish: async () => ({ data: {} }),
+        },
+      } as unknown as ToolContext['v2'],
+      plansRepo,
+      config: {} as PluginConfig,
+      projectId,
+      directory: '/test',
+      dataDir: TEST_DIR,
+      cleanup: async () => {},
+      input: { messages: [], systemPrompt: '' },
+      systemPrompt: '',
+      messages: [],
+      graphStatusRepo: createGraphStatusRepo(db),
+      loopsRepo: createLoopsRepo(db),
+      reviewFindingsRepo: createReviewFindingsRepo(db),
+      sandboxManager: null,
+    } as unknown as ToolContext
+
+    // Write a plan for the session so resolveCurrentSessionPlan succeeds
+    plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
+
+    const hook = createToolExecuteAfterHook(ctx)
+
+    const args = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop (worktree)', description: 'Loop worktree' },
+          { label: 'Loop', description: 'Loop in place' },
+        ],
+      }],
+    }
+    const output = {
+      title: 'Asked 1 question',
+      output: 'User has answered your questions: ...',
+      metadata: { answers: [['New session (Recommended)']] },
+    }
+
+    await expect(hook(
+      { tool: 'question', sessionID, callID: 'test-call', args },
+      output
+    )).resolves.toBeUndefined()
+
+    expect(output.output).toBe('User has answered your questions: ...')
+    expect((output.metadata as any).forgePlanApprovalHandled).toBe(true)
+    expect(abortSpy).toHaveBeenCalledWith({ sessionID, directory: "/test" })
+  })
+
+  test('Does not match middle-of-string text', async () => {
+    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const ctx = {
+      loopService: {
+        resolveLoopName: () => 'test-loop',
+        getActiveState: () => null,
+      },
+      logger: createMockLogger(),
+      v2: {
+        session: {
+          abort: abortSpy,
+          promptAsync: async () => ({ data: {} }),
+          create: async () => ({ data: { id: 'new-session-id' } }),
+        },
+        tui: {
+          selectSession: async () => ({ data: {} }),
+          publish: async () => ({ data: {} }),
+        },
+      } as unknown as ToolContext['v2'],
+      plansRepo,
+      config: {} as PluginConfig,
+      projectId,
+      directory: '/test',
+      dataDir: TEST_DIR,
+      cleanup: async () => {},
+      input: { messages: [], systemPrompt: '' },
+      systemPrompt: '',
+      messages: [],
+      graphStatusRepo: createGraphStatusRepo(db),
+      loopsRepo: createLoopsRepo(db),
+      reviewFindingsRepo: createReviewFindingsRepo(db),
+      sandboxManager: null,
+    } as unknown as ToolContext
+
+    // Write a plan for the session so resolveCurrentSessionPlan succeeds
+    plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
+
+    const hook = createToolExecuteAfterHook(ctx)
+
+    const args = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop (worktree)', description: 'Loop worktree' },
+          { label: 'Loop', description: 'Loop in place' },
+        ],
+      }],
+    }
+    const output = {
+      title: 'Asked 1 question',
+      output: 'User has answered your questions: ...',
+      metadata: { answers: [['Please use New session']] },
+    }
+
+    await hook(
+      { tool: 'question', sessionID, callID: 'test-call', args },
+      output
+    )
+
+    expect(output.output).toContain('<system-reminder>')
+    expect(abortSpy).not.toHaveBeenCalled()
+  })
+
+  test('Falls back to output when metadata answers are missing', async () => {
+    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const ctx = {
+      loopService: {
+        resolveLoopName: () => 'test-loop',
+        getActiveState: () => null,
+      },
+      logger: createMockLogger(),
+      v2: {
+        session: {
+          abort: abortSpy,
+          promptAsync: async () => ({ data: {} }),
+          create: async () => ({ data: { id: 'new-session-id' } }),
+        },
+        tui: {
+          selectSession: async () => ({ data: {} }),
+          publish: async () => ({ data: {} }),
+        },
+      } as unknown as ToolContext['v2'],
+      plansRepo,
+      config: {} as PluginConfig,
+      projectId,
+      directory: '/test',
+      dataDir: TEST_DIR,
+      cleanup: async () => {},
+      input: { messages: [], systemPrompt: '' },
+      systemPrompt: '',
+      messages: [],
+      graphStatusRepo: createGraphStatusRepo(db),
+      loopsRepo: createLoopsRepo(db),
+      reviewFindingsRepo: createReviewFindingsRepo(db),
+      sandboxManager: null,
+    } as unknown as ToolContext
+
+    // Write a plan for the session so resolveCurrentSessionPlan succeeds
+    plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
+
+    const hook = createToolExecuteAfterHook(ctx)
+
+    const args = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop (worktree)', description: 'Loop worktree' },
+          { label: 'Loop', description: 'Loop in place' },
+        ],
+      }],
+    }
+    const output = {
+      title: 'Asked 1 question',
+      output: 'New session',
+      metadata: {},
+    }
+
+    await expect(hook(
+      { tool: 'question', sessionID, callID: 'test-call', args },
+      output
+    )).resolves.toBeUndefined()
+
+    expect(output.output).toContain('New session')
+    expect((output.metadata as any).forgePlanApprovalHandled).toBe(true)
+    
+    expect(abortSpy).toHaveBeenCalledWith({ sessionID, directory: "/test" })
+  })
+
+  test('Execute here approval schedules source abort and returns without throwing', async () => {
+    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const ctx = {
+      loopService: {
+        resolveLoopName: () => 'test-loop',
+        getActiveState: () => null,
+      },
+      logger: createMockLogger(),
+      v2: {
+        session: {
+          abort: abortSpy,
+          promptAsync: async () => ({ data: {} }),
+          create: async () => ({ data: { id: 'new-session-id' } }),
+        },
+        tui: {
+          selectSession: async () => ({ data: {} }),
+          publish: async () => ({ data: {} }),
+        },
+      } as unknown as ToolContext['v2'],
+      plansRepo,
+      config: {} as PluginConfig,
+      projectId,
+      directory: '/test',
+      dataDir: TEST_DIR,
+      cleanup: async () => {},
+      input: { messages: [], systemPrompt: '' },
+      systemPrompt: '',
+      messages: [],
+      graphStatusRepo: createGraphStatusRepo(db),
+      loopsRepo: createLoopsRepo(db),
+      reviewFindingsRepo: createReviewFindingsRepo(db),
+      sandboxManager: null,
+    } as unknown as ToolContext
+
+    plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
+
+    const hook = createToolExecuteAfterHook(ctx)
+
+    const args = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop (worktree)', description: 'Loop worktree' },
+          { label: 'Loop', description: 'Loop in place' },
+        ],
+      }],
+    }
+    const output = {
+      title: 'Asked 1 question',
+      output: 'Execute here',
+      metadata: { answers: [['Execute here']] },
+    }
+
+    await expect(hook(
+      { tool: 'question', sessionID, callID: 'test-call', args },
+      output
+    )).resolves.toBeUndefined()
+
+    expect(output.output).toBe('Execute here')
+    expect((output.metadata as any).forgePlanApprovalHandled).toBe(true)
+    
+    expect(abortSpy).toHaveBeenCalledWith({ sessionID, directory: "/test" })
+  })
+
+  test('New session approval schedules source abort and returns without throwing', async () => {
+    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const ctx = {
+      loopService: {
+        resolveLoopName: () => 'test-loop',
+        getActiveState: () => null,
+      },
+      logger: createMockLogger(),
+      v2: {
+        session: {
+          abort: abortSpy,
+          promptAsync: async () => ({ data: {} }),
+          create: async () => ({ data: { id: 'new-session-id' } }),
+        },
+        tui: {
+          selectSession: async () => ({ data: {} }),
+          publish: async () => ({ data: {} }),
+        },
+      } as unknown as ToolContext['v2'],
+      plansRepo,
+      config: {} as PluginConfig,
+      projectId,
+      directory: '/test',
+      dataDir: TEST_DIR,
+      cleanup: async () => {},
+      input: { messages: [], systemPrompt: '' },
+      systemPrompt: '',
+      messages: [],
+      graphStatusRepo: createGraphStatusRepo(db),
+      loopsRepo: createLoopsRepo(db),
+      reviewFindingsRepo: createReviewFindingsRepo(db),
+      sandboxManager: null,
+    } as unknown as ToolContext
+
+    plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
+
+    const hook = createToolExecuteAfterHook(ctx)
+
+    const args = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop (worktree)', description: 'Loop worktree' },
+          { label: 'Loop', description: 'Loop in place' },
+        ],
+      }],
+    }
+    const output = {
+      title: 'Asked 1 question',
+      output: 'New session',
+      metadata: { answers: [['New session']] },
+    }
+
+    await expect(hook(
+      { tool: 'question', sessionID, callID: 'test-call', args },
+      output
+    )).resolves.toBeUndefined()
+
+    expect(output.output).toContain('New session')
+    expect((output.metadata as any).forgePlanApprovalHandled).toBe(true)
+    
+    expect(abortSpy).toHaveBeenCalledWith({ sessionID, directory: "/test" })
+  })
+
+  test('Loop approval schedules source abort and returns without throwing', async () => {
+    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const loopsRepo = createLoopsRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
+    
+    const ctx = {
+      loopService,
+      logger: createMockLogger(),
+      v2: {
+        session: {
+          abort: abortSpy,
+          promptAsync: async () => ({ data: {} }),
+          create: async () => ({ data: { id: 'new-session-id' } }),
+        },
+        tui: {
+          selectSession: async () => ({ data: {} }),
+          publish: async () => ({ data: {} }),
+        },
+      } as unknown as ToolContext['v2'],
+      plansRepo,
+      config: {} as PluginConfig,
+      projectId,
+      directory: '/test',
+      dataDir: TEST_DIR,
+      cleanup: async () => {},
+      input: { messages: [], systemPrompt: '', client: { session: { promptAsync: async () => ({ data: {} }) } } as any },
+      systemPrompt: '',
+      messages: [],
+      graphStatusRepo: createGraphStatusRepo(db),
+      loopsRepo,
+      reviewFindingsRepo,
+      sandboxManager: null,
+    } as unknown as ToolContext
+
+    plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
+
+    const hook = createToolExecuteAfterHook(ctx)
+
+    const args = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop (worktree)', description: 'Loop worktree' },
+          { label: 'Loop', description: 'Loop in place' },
+        ],
+      }],
+    }
+    const output = {
+      title: 'Asked 1 question',
+      output: 'Loop',
+      metadata: { answers: [['Loop']] },
+    }
+
+    await expect(hook(
+      { tool: 'question', sessionID, callID: 'test-call', args },
+      output
+    )).resolves.toBeUndefined()
+
+    expect(output.output).toBe('Loop')
+    expect((output.metadata as any).forgePlanApprovalHandled).toBe(true)
+    
+    expect(abortSpy).toHaveBeenCalledWith({ sessionID, directory: "/test" })
+  })
+
+  test('Loop (worktree) approval returns without throwing after scheduling', async () => {
+    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const loopsRepo = createLoopsRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
+    
+    const ctx = {
+      loopService,
+      logger: createMockLogger(),
+      v2: {
+        session: {
+          abort: abortSpy,
+          promptAsync: async () => ({ data: {} }),
+          create: async () => ({ data: { id: 'new-session-id' } }),
+        },
+        tui: {
+          selectSession: async () => ({ data: {} }),
+          publish: async () => ({ data: {} }),
+        },
+      } as unknown as ToolContext['v2'],
+      plansRepo,
+      config: {} as PluginConfig,
+      projectId,
+      directory: '/test',
+      dataDir: TEST_DIR,
+      cleanup: async () => {},
+      input: { messages: [], systemPrompt: '', client: { session: { promptAsync: async () => ({ data: {} }) } } as any },
+      systemPrompt: '',
+      messages: [],
+      graphStatusRepo: createGraphStatusRepo(db),
+      loopsRepo,
+      reviewFindingsRepo,
+      sandboxManager: null,
+    } as unknown as ToolContext
+
+    plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
+
+    const hook = createToolExecuteAfterHook(ctx)
+
+    const args = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop (worktree)', description: 'Loop worktree' },
+          { label: 'Loop', description: 'Loop in place' },
+        ],
+      }],
+    }
+    const output = {
+      title: 'Asked 1 question',
+      output: 'Loop (worktree)',
+      metadata: { answers: [['Loop (worktree)']] },
+    }
+
+    await expect(hook(
+      { tool: 'question', sessionID, callID: 'test-call', args },
+      output
+    )).resolves.toBeUndefined()
+
+    expect(output.output).toBe('Loop (worktree)')
+    expect((output.metadata as any).forgePlanApprovalHandled).toBe(true)
+    
+    expect(abortSpy).toHaveBeenCalledWith({ sessionID, directory: "/test" })
+  })
+})
+
+describe('Tool blocking hook', () => {
+  const sessionID = 'outside-session'
+  const loopSessionID = 'loop-session'
+  const auditSessionID = 'audit-session'
+  const loopName = 'active-loop'
+
+  function createContextForLoopState(state: { active: boolean; sessionId: string; auditSessionId?: string } | null): ToolContext {
+    return {
+      loopService: {
+        resolveLoopName: () => state ? loopName : null,
+        getActiveState: () => state,
+      },
+      logger: createMockLogger(),
+    } as unknown as ToolContext
+  }
+
+  test('does not block question when resolved loop belongs to another session', async () => {
+    const hook = createToolExecuteBeforeHook(createContextForLoopState({
+      active: true,
+      sessionId: loopSessionID,
+      auditSessionId: auditSessionID,
+    }))!
+
+    await expect(hook({ tool: 'question', sessionID, callID: 'call-1' }, { args: {} })).resolves.toBeUndefined()
+  })
+
+  test('blocks question for active loop session', async () => {
+    const hook = createToolExecuteBeforeHook(createContextForLoopState({
+      active: true,
+      sessionId: loopSessionID,
+      auditSessionId: auditSessionID,
+    }))!
+
+    await expect(hook({ tool: 'question', sessionID: loopSessionID, callID: 'call-1' }, { args: {} })).rejects.toThrow('question tool is not available')
+  })
+
+  test('blocks question for active audit session', async () => {
+    const hook = createToolExecuteBeforeHook(createContextForLoopState({
+      active: true,
+      sessionId: loopSessionID,
+      auditSessionId: auditSessionID,
+    }))!
+
+    await expect(hook({ tool: 'question', sessionID: auditSessionID, callID: 'call-1' }, { args: {} })).rejects.toThrow('question tool is not available')
+  })
+
+  test('does not rewrite after-hook output when resolved loop belongs to another session', async () => {
+    const hook = createToolExecuteAfterHook(createContextForLoopState({
+      active: true,
+      sessionId: loopSessionID,
+      auditSessionId: auditSessionID,
+    }))!
+    const output = { title: '', output: 'original output', metadata: {} }
+
+    await hook({ tool: 'plan-execute', sessionID, callID: 'call-1', args: {} }, output)
+
+    expect(output.title).toBe('')
+    expect(output.output).toBe('original output')
+  })
 })
 
 describe('Execute here bypass', () => {
@@ -450,6 +1078,7 @@ describe('Execute here bypass', () => {
       },
       tui: {
         selectSession: async () => ({ data: {} }),
+        publish: async () => ({ data: {} }),
       },
     } as unknown as ToolContext['v2']
 
@@ -463,6 +1092,7 @@ describe('Execute here bypass', () => {
     openDbs.push(db)
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const graphStatusRepo = createGraphStatusRepo(db)
     const plansRepo = createPlansRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger)
 
@@ -474,7 +1104,11 @@ describe('Execute here bypass', () => {
       db,
       loopService,
       plansRepo,
+      loopsRepo,
+      reviewFindingsRepo,
+      graphStatusRepo,
       v2: mockV2,
+      input: { messages: [], systemPrompt: '', client: { session: { promptAsync: async () => ({ data: {} }) } } as any },
       ...overrides,
     } as ToolContext
   }
@@ -515,29 +1149,42 @@ describe('Execute here bypass', () => {
       metadata: { answers: [['Execute here']] },
     }
 
-    await hook(
+    await expect(hook(
       { tool: 'question', sessionID, callID: 'test-call', args },
       output
-    )
+    )).resolves.toBeUndefined()
 
-    expect(output.output).not.toContain('<system-reminder>')
-    expect(output.output).toContain('Switching to code agent')
-    expect(abortSpy).toHaveBeenCalledWith({ sessionID })
+    expect(output.output).toBe('Execute here')
+    expect((output.metadata as any).forgePlanApprovalHandled).toBe(true)
+    
+    expect(abortSpy).toHaveBeenCalledWith({ sessionID, directory: "/test/dir" })
   })
 
   test('session.idle event triggers promptAsync for pending execution', async () => {
-    const promptSpy = mock(() => Promise.resolve({ data: {} }))
+    const v2PromptSpy = mock(() => Promise.resolve({ data: {} }))
+    const legacyPromptSpy = mock(() => Promise.resolve({ data: {} } as any))
     const ctx = createMockContext({
       v2: {
         session: {
           abort: async () => ({ data: {} }),
-          promptAsync: promptSpy,
+          promptAsync: v2PromptSpy,
           create: async () => ({ data: { id: 'new-session-id' } }),
         },
         tui: {
           selectSession: async () => ({ data: {} }),
         },
       } as unknown as ToolContext['v2'],
+      input: {
+        messages: [],
+        systemPrompt: '',
+        client: {
+          session: {
+            abort: async () => ({ data: {} } as any),
+            promptAsync: legacyPromptSpy,
+            create: async () => ({ data: { id: 'new-session-id' } }),
+          },
+        } as any,
+      },
       config: { executionModel: 'test-provider/test-model' } as PluginConfig,
     })
 
@@ -563,10 +1210,10 @@ describe('Execute here bypass', () => {
       metadata: { answers: [['Execute here']] },
     }
 
-    await afterHook(
+    await expect(afterHook(
       { tool: 'question', sessionID, callID: 'test-call', args },
       output
-    )
+    )).resolves.toBeUndefined()
 
     await eventHook({
       event: {
@@ -575,11 +1222,11 @@ describe('Execute here bypass', () => {
       },
     })
 
-    expect(promptSpy).toHaveBeenCalled()
-    const callArgs = promptSpy.mock.calls[0][0]
-    expect(callArgs.sessionID).toBe(sessionID)
-    expect(callArgs.agent).toBe('code')
-    expect(callArgs.parts[0].text).toContain('The architect agent has created an implementation plan')
+    expect(legacyPromptSpy).toHaveBeenCalled()
+    const callArgs = (legacyPromptSpy.mock.calls[0]?.[0] as any)
+    expect(callArgs?.path?.id).toBe(sessionID)
+    expect(callArgs?.body?.agent).toBe('code')
+    expect(callArgs?.body?.parts[0].text).toContain('The architect agent has created an implementation plan')
 
     await eventHook({
       event: {
@@ -588,7 +1235,7 @@ describe('Execute here bypass', () => {
       },
     })
 
-    expect(promptSpy).toHaveBeenCalledTimes(1)
+    expect(legacyPromptSpy).toHaveBeenCalledTimes(1)
   })
 
   test('Other approval labels do not inject directives (programmatic dispatch)', async () => {
@@ -602,13 +1249,18 @@ describe('Execute here bypass', () => {
         },
         tui: {
           selectSession: async () => ({ data: {} }),
+          publish: async () => ({ data: {} }),
         },
       } as unknown as ToolContext['v2'],
     })
 
+    ctx.plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
+
     const hook = createToolExecuteAfterHook(ctx)
 
-    for (const label of ['New session', 'Loop (worktree)', 'Loop']) {
+    const labels = ['New session', 'Loop (worktree)', 'Loop']
+    for (let i = 0; i < labels.length; i++) {
+      const label = labels[i]
       const args = {
         questions: [{
           question: 'How would you like to proceed?',
@@ -626,14 +1278,14 @@ describe('Execute here bypass', () => {
         metadata: { answers: [[label]] },
       }
 
-      await hook(
-        { tool: 'question', sessionID, callID: 'test-call', args },
+      await expect(hook(
+        { tool: 'question', sessionID, callID: `test-call-${i}`, args },
         output
-      )
+      )).resolves.toBeUndefined()
 
       expect(output.output).not.toContain('<system-reminder>')
-      expect(abortSpy).not.toHaveBeenCalled()
-      abortSpy.mockClear()
+      expect(output.output).toBe(label)
+      expect(abortSpy).toHaveBeenCalledTimes(i + 1)
     }
   })
 
@@ -648,6 +1300,7 @@ describe('Execute here bypass', () => {
         },
         tui: {
           selectSession: async () => ({ data: {} }),
+          publish: async () => ({ data: {} }),
         },
       } as unknown as ToolContext['v2'],
     })
@@ -675,12 +1328,13 @@ describe('Execute here bypass', () => {
     const originalPlan = '# Test Plan\n\nThis is a test plan.'
     plansRepo.writeForSession(projectId, testSessionID, originalPlan)
     
-    const createSpy = mock(() => Promise.resolve({ data: { id: 'new-session-123' } }))
-    const promptSpy = mock(() => Promise.resolve({ data: {} }))
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const legacyCreateSpy = mock(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
+    const legacyPromptSpy = mock(() => Promise.resolve({ data: {} } as any))
+    const legacyAbortSpy = mock(() => Promise.resolve({ data: {} } as any))
     
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const graphStatusRepo = createGraphStatusRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
     
     const ctx = {
@@ -689,17 +1343,32 @@ describe('Execute here bypass', () => {
       config: { executionModel: 'test-provider/test-model' } as PluginConfig,
       logger: createMockLogger(),
       plansRepo,
+      loopsRepo,
+      reviewFindingsRepo,
+      graphStatusRepo,
       loopService,
       v2: {
         session: {
-          abort: abortSpy,
-          promptAsync: promptSpy,
-          create: createSpy,
+          abort: async () => ({ data: {} }),
+          promptAsync: async () => ({ data: {} }),
+          create: async () => ({ data: { id: 'unused' } }),
         },
         tui: {
           selectSession: async () => ({ data: {} }),
+          publish: async () => ({ data: {} }),
         },
       } as unknown as ToolContext['v2'],
+      input: {
+        messages: [] as any,
+        systemPrompt: '',
+        client: {
+          session: {
+            abort: legacyAbortSpy,
+            promptAsync: legacyPromptSpy,
+            create: legacyCreateSpy,
+          },
+        } as any,
+      } as any,
     } as ToolContext
 
     const hook = createToolExecuteAfterHook(ctx)
@@ -721,10 +1390,21 @@ describe('Execute here bypass', () => {
       metadata: { answers: [['New session']] },
     }
 
-    await hook(
+    await expect(hook(
       { tool: 'question', sessionID: testSessionID, callID: 'test-call', args },
       output
-    )
+    )).resolves.toBeUndefined()
+
+    const duplicateOutput = {
+      title: 'Asked 1 question',
+      output: 'New session',
+      metadata: { answers: [['New session']] },
+    }
+
+    await expect(hook(
+      { tool: 'question', sessionID: testSessionID, callID: 'test-call', args },
+      duplicateOutput
+    )).resolves.toBeUndefined()
 
     // Give async operations time to complete
     await new Promise(resolve => setTimeout(resolve, 100))
@@ -732,6 +1412,11 @@ describe('Execute here bypass', () => {
     // Verify plan persists in session-scoped repo after dispatch
     const planAfter = plansRepo.getForSession(projectId, testSessionID)
     expect(planAfter?.content).toBe(originalPlan)
+    // Abort should have been called (legacy abort is used by the hook directly)
+    expect(legacyAbortSpy).toHaveBeenCalled()
+    // Duplicate should preserve original output and add duplicate metadata
+    expect(duplicateOutput.output).toBe('New session')
+    expect((duplicateOutput.metadata as any).forgePlanApprovalDuplicate).toBe(true)
   })
 
   test('Execute here path reads plan from session-scoped repo and plan persists after dispatch', async () => {
@@ -788,10 +1473,10 @@ describe('Execute here bypass', () => {
       metadata: { answers: [['Execute here']] },
     }
 
-    await hook(
+    await expect(hook(
       { tool: 'question', sessionID: testSessionID, callID: 'test-call', args },
       output
-    )
+    )).resolves.toBeUndefined()
 
     // Give async operations time to complete
     await new Promise(resolve => setTimeout(resolve, 100))
@@ -838,8 +1523,18 @@ describe('Execute here bypass', () => {
         tui: {
           selectSession: selectSessionSpy,
         },
-      } as unknown as ToolContext['v2'],
-    } as ToolContext
+      },
+      db,
+      dataDir: TEST_DIR,
+      cleanup: async () => {},
+      input: { messages: [], systemPrompt: '' },
+      systemPrompt: '',
+      messages: [],
+      graphStatusRepo: createGraphStatusRepo(db),
+      loopsRepo,
+      reviewFindingsRepo,
+      sandboxManager: null,
+    } as unknown as ToolContext
 
     const hook = createToolExecuteAfterHook(ctx)
 
@@ -860,13 +1555,23 @@ describe('Execute here bypass', () => {
       metadata: { answers: [['Loop']] },
     }
 
-    await hook(
+    await expect(hook(
       { tool: 'question', sessionID: testSessionID, callID: 'test-call', args },
       output
-    )
+    )).resolves.toBeUndefined()
 
-    // Give async operations time to complete
-    await new Promise(resolve => setTimeout(resolve, 100))
+    // Abort is called synchronously (awaited in hook)
+    expect(abortSpy).toHaveBeenCalledWith({ sessionID: testSessionID, directory: "/test/dir" })
+
+    // Wait for dispatch IIFE to complete
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    // Verify loop session was created without parentID
+    const createArgs = createSpy.mock.calls[0]?.[0]
+    expect(createArgs).toEqual(expect.objectContaining({
+      title: expect.stringContaining('Loop:'),
+    }))
+    expect(createArgs).not.toHaveProperty('parentID')
 
     // Verify plan persists in session-scoped repo after loop setup
     const planAfter = plansRepo.getForSession(projectId, testSessionID)
@@ -916,8 +1621,18 @@ describe('Execute here bypass', () => {
         tui: {
           selectSession: mock(() => Promise.resolve({ data: {} })),
         },
-      } as unknown as ToolContext['v2'],
-    } as ToolContext
+      },
+      db,
+      dataDir: TEST_DIR,
+      cleanup: async () => {},
+      input: { messages: [], systemPrompt: '' },
+      systemPrompt: '',
+      messages: [],
+      graphStatusRepo: createGraphStatusRepo(db),
+      loopsRepo,
+      reviewFindingsRepo,
+      sandboxManager: null,
+    } as unknown as ToolContext
 
     const hook = createToolExecuteAfterHook(ctx)
 
@@ -938,13 +1653,28 @@ describe('Execute here bypass', () => {
       metadata: { answers: [['Loop']] },
     }
 
-    await hook(
+    const tuiPublishSpy = mock(() => Promise.resolve() as any)
+    ;(ctx.v2.tui as any).publish = tuiPublishSpy
+
+    await expect(hook(
       { tool: 'question', sessionID: testSessionID, callID: 'test-call', args },
       output
-    )
+    )).resolves.toBeUndefined()
 
-    // Give async operations time to complete
-    await new Promise(resolve => setTimeout(resolve, 100))
+    // Abort is called synchronously (awaited in hook)
+    expect(abortSpy).toHaveBeenCalledTimes(1)
+
+    // Verify output is preserved (canonical approval acknowledged)
+    expect(output.output).toBe('Loop')
+    
+    // Wait for dispatch IIFE to complete
+    await new Promise(resolve => setTimeout(resolve, 50))
+    
+    // Verify failure is surfaced via toast
+    expect(tuiPublishSpy).toHaveBeenCalled()
+    const publishCall = (tuiPublishSpy.mock.calls[0] as any)[0]
+    expect(publishCall?.body?.type).toBe('tui.toast.show')
+    expect(publishCall?.body?.properties?.variant).toBe('error')
 
     // Verify plan persists in session-scoped repo after failed loop setup
     const planAfter = plansRepo.getForSession(projectId, testSessionID)
@@ -1032,11 +1762,14 @@ describe('plan execute API loop dispatch', () => {
     const plansRepo = createPlansRepo(db)
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const graphStatusRepo = createGraphStatusRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'api-project', createMockLogger())
     const promptAsync = mock(() => Promise.resolve({ data: {} }))
     const sessionCreate = mock(() => Promise.resolve({ data: { id: `session-${Math.random().toString(36).slice(2)}` } }))
+    const sessionAbort = mock(() => Promise.resolve({ data: {} }))
     const worktreeCreate = mock(async () => {
       const directory = `${testDataDir}/worktree`
+      mkdirSync(directory, { recursive: true })
       createGraphStatusRepo(db).write({
         projectId: 'api-project',
         cwd: directory,
@@ -1057,13 +1790,18 @@ describe('plan execute API loop dispatch', () => {
       } as PluginConfig,
       logger: createMockLogger(),
       db,
+      dataDir: resolveDataDir(),
       plansRepo,
+      loopsRepo,
+      reviewFindingsRepo,
+      graphStatusRepo,
       loopService,
+      sandboxManager: null,
       v2: {
         session: {
           create: sessionCreate,
           promptAsync,
-          abort: async () => ({ data: {} }),
+          abort: sessionAbort,
         },
         worktree: {
           create: worktreeCreate,
@@ -1072,23 +1810,28 @@ describe('plan execute API loop dispatch', () => {
       ...overrides,
     } as ToolContext
 
-    return { ctx, promptAsync, sessionCreate, worktreeCreate }
+    return { ctx, promptAsync, sessionCreate, sessionAbort, worktreeCreate, graphStatusRepo, loopsRepo, plansRepo, reviewFindingsRepo }
+  }
+
+  function apiDeps(ctx: ToolContext) {
+    return { ctx, logger: ctx.logger, projectId: 'api-project', registry: {} as never }
   }
 
   test('loop mode launches an in-place loop and persists default auditor model', async () => {
     const { ctx, sessionCreate } = createApiDeps()
-    const req = new Request('http://test.local/execute', {
-      method: 'POST',
-      body: JSON.stringify({ mode: 'loop', title: 'API Plan', plan: '# API Plan' }),
-    })
+    const body = { mode: 'loop', title: 'API Plan', plan: '# API Plan' }
 
-    const res = await handleExecutePlan(req, { ctx, logger: ctx.logger, projectId: 'api-project' }, {
+    const res = await handleExecutePlan(apiDeps(ctx), {
       projectId: 'api-project',
       sessionId: 'host-session',
-    })
+    }, body)
 
-    expect(res.status).toBe(202)
-    expect(sessionCreate).toHaveBeenCalledWith(expect.objectContaining({ directory: '/repo' }))
+    const createArgs = sessionCreate.mock.calls[0]?.[0]
+    expect(createArgs).toEqual(expect.objectContaining({
+      directory: '/repo',
+    }))
+    expect(createArgs).not.toHaveProperty('parentID')
+    
     const row = db.prepare('SELECT worktree, execution_model, auditor_model, host_session_id FROM loops WHERE project_id = ?').get('api-project') as {
       worktree: number
       execution_model: string
@@ -1103,23 +1846,19 @@ describe('plan execute API loop dispatch', () => {
 
   test('loop-worktree mode launches a worktree loop and honors explicit auditor model', async () => {
     const { ctx, worktreeCreate } = createApiDeps()
-    const req = new Request('http://test.local/execute', {
-      method: 'POST',
-      body: JSON.stringify({
-        mode: 'loop-worktree',
-        title: 'API Worktree Plan',
-        plan: '# API Worktree Plan',
-        executionModel: 'provider/request-exec',
-        auditorModel: 'provider/request-auditor',
-      }),
-    })
+    const body = {
+      mode: 'loop-worktree',
+      title: 'API Worktree Plan',
+      plan: '# API Worktree Plan',
+      executionModel: 'provider/request-exec',
+      auditorModel: 'provider/request-auditor',
+    }
 
-    const res = await handleExecutePlan(req, { ctx, logger: ctx.logger, projectId: 'api-project' }, {
+    await handleExecutePlan(apiDeps(ctx), {
       projectId: 'api-project',
       sessionId: 'host-session',
-    })
+    }, body)
 
-    expect(res.status).toBe(202)
     expect(worktreeCreate).toHaveBeenCalled()
     const row = db.prepare('SELECT worktree, worktree_dir, execution_model, auditor_model FROM loops WHERE project_id = ?').get('api-project') as {
       worktree: number
@@ -1131,5 +1870,791 @@ describe('plan execute API loop dispatch', () => {
     expect(row.worktree_dir).toBe(`${testDataDir}/worktree`)
     expect(row.execution_model).toBe('provider/request-exec')
     expect(row.auditor_model).toBe('provider/request-auditor')
+  })
+
+  test('loop-worktree mode selects the created workspace when navigating', async () => {
+    const { ctx } = createApiDeps()
+    const selectSession = mock(() => Promise.resolve({ data: {} }))
+    ;(ctx.v2 as any).tui = { selectSession }
+    ;(ctx.v2 as any).experimental = {
+      workspace: {
+        create: mock(async (params: { id?: string }) => ({ data: { id: 'server-generated-ws-id' }, error: undefined })),
+        sessionRestore: mock(async () => ({ data: { total: 0 }, error: undefined })),
+      },
+    }
+
+    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
+
+    await handleExecutePlan(apiDeps(ctx), {
+      projectId: 'api-project',
+      sessionId: 'host-session',
+    }, body)
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(selectSession).toHaveBeenCalledWith(expect.objectContaining({
+      sessionID: expect.any(String),
+      workspace: 'server-generated-ws-id',
+    }))
+  })
+
+  test('loop-worktree mode persists sandbox container name', async () => {
+    const sandboxManager = {
+      start: mock(async () => ({ containerName: 'oc-forge-sandbox-api-worktree-plan' })),
+      stop: mock(async () => {}),
+    }
+    const { ctx } = createApiDeps({
+      config: {
+        executionModel: 'provider/default-exec',
+        auditorModel: 'provider/default-auditor',
+        sandbox: { mode: 'docker' },
+      } as PluginConfig,
+      sandboxManager: sandboxManager as unknown as ToolContext['sandboxManager'],
+    })
+    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
+
+    await handleExecutePlan(apiDeps(ctx), {
+      projectId: 'api-project',
+      sessionId: 'host-session',
+    }, body)
+    const row = db.prepare('SELECT sandbox, sandbox_container FROM loops WHERE project_id = ?').get('api-project') as {
+      sandbox: number
+      sandbox_container: string | null
+    }
+    expect(row.sandbox).toBe(1)
+    expect(row.sandbox_container).toBe('oc-forge-sandbox-api-worktree-plan')
+  })
+
+  test('loop-worktree mode persists state before graph readiness polling', async () => {
+    const { ctx, graphStatusRepo, promptAsync } = createApiDeps()
+    const worktreeDir = `${testDataDir}/slow-graph-worktree`
+    mkdirSync(worktreeDir, { recursive: true })
+    ctx.v2.worktree.create = mock(async () => ({
+      data: { directory: worktreeDir, branch: 'opencode/loop-api-worktree-plan' },
+      error: undefined,
+    })) as unknown as ToolContext['v2']['worktree']['create']
+
+    let resolvePrompt!: () => void
+    const promptHold = new Promise<{ data: Record<string, never> }>((resolve) => {
+      resolvePrompt = () => resolve({ data: {} })
+    })
+    ctx.v2.session.promptAsync = mock(() => promptHold) as unknown as ToolContext['v2']['session']['promptAsync']
+
+    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
+
+    const pending = handleExecutePlan(apiDeps(ctx), {
+      projectId: 'api-project',
+      sessionId: 'host-session',
+    }, body)
+
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    expect(promptAsync).not.toHaveBeenCalled()
+    expect(ctx.v2.session.promptAsync).toHaveBeenCalled()
+    const row = db.prepare('SELECT loop_name, worktree, worktree_dir FROM loops WHERE project_id = ?').get('api-project') as {
+      loop_name: string
+      worktree: number
+      worktree_dir: string
+    } | null
+    expect(row).not.toBeNull()
+    expect(row?.loop_name).toBe('api-worktree-plan')
+    expect(row?.worktree).toBe(1)
+    expect(row?.worktree_dir).toBe(worktreeDir)
+
+    graphStatusRepo.write({
+      projectId: 'api-project',
+      cwd: worktreeDir,
+      state: 'ready',
+      ready: true,
+      stats: { files: 1, symbols: 1, edges: 0, calls: 0 },
+      message: null,
+    })
+    resolvePrompt()
+
+    await pending
+  })
+
+  test('loop-worktree mode rolls back session and loop state when sandbox startup fails', async () => {
+    const sandboxManager = {
+      start: mock(async () => { throw new Error('sandbox failed') }),
+      stop: mock(async () => {}),
+    }
+    const { ctx, sessionAbort } = createApiDeps({
+      config: {
+        executionModel: 'provider/default-exec',
+        auditorModel: 'provider/default-auditor',
+        sandbox: { mode: 'docker' },
+      } as PluginConfig,
+      sandboxManager: sandboxManager as unknown as ToolContext['sandboxManager'],
+    })
+    const repoDir = `${testDataDir}/rollback-repo`
+    const worktreeDir = `${testDataDir}/rollback-worktree`
+    const runGit = (args: string[], cwd: string) => {
+      const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'ignore', stderr: 'ignore' })
+      expect(result.exitCode).toBe(0)
+    }
+    mkdirSync(repoDir, { recursive: true })
+    runGit(['init'], repoDir)
+    writeFileSync(join(repoDir, 'README.md'), 'test\n')
+    runGit(['add', 'README.md'], repoDir)
+    runGit(['-c', 'user.email=test@example.com', '-c', 'user.name=Test User', 'commit', '-m', 'init'], repoDir)
+    runGit(['worktree', 'add', worktreeDir, '-b', `rollback-${Date.now()}`], repoDir)
+    ctx.v2.worktree.create = mock(async () => ({
+      data: { directory: worktreeDir, branch: 'opencode/loop-api-worktree-plan' },
+      error: undefined,
+    })) as unknown as ToolContext['v2']['worktree']['create']
+    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
+
+    let thrown: unknown
+    try {
+      await handleExecutePlan(apiDeps(ctx), {
+        projectId: 'api-project',
+        sessionId: 'host-session',
+      }, body)
+    } catch (err) {
+      thrown = err
+    }
+
+    expect(thrown).toBeDefined()
+    expect(sessionAbort).toHaveBeenCalled()
+    expect(sandboxManager.stop).toHaveBeenCalledWith('api-worktree-plan')
+    expect(existsSync(worktreeDir)).toBe(false)
+    const row = db.prepare('SELECT loop_name FROM loops WHERE project_id = ?').get('api-project')
+    expect(row).toBeNull()
+  })
+
+  test('loop-worktree mode passes graph status repo for seeded worktree status', async () => {
+    const { ctx, graphStatusRepo } = createApiDeps()
+    const worktreeDir = `${testDataDir}/seeded-worktree`
+    mkdirSync(worktreeDir, { recursive: true })
+    const worktreeCreate = mock(async () => ({
+      data: { directory: worktreeDir, branch: 'opencode/loop-api-worktree-plan' },
+      error: undefined,
+    }))
+    ctx.v2.worktree.create = worktreeCreate as unknown as ToolContext['v2']['worktree']['create']
+
+    const sourceCacheDir = resolveGraphCacheDir('api-project', '/repo', ctx.dataDir)
+    mkdirSync(sourceCacheDir, { recursive: true })
+    const sourceGraphDb = new Database(join(sourceCacheDir, 'graph.db'))
+    sourceGraphDb.run('CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY, path TEXT, mtimeMs INTEGER)')
+    sourceGraphDb.close()
+    writeFileSync(join(sourceCacheDir, 'graph-metadata.json'), JSON.stringify({
+      projectId: 'api-project',
+      cwd: '/repo',
+      createdAt: Date.now() - 1000,
+      lastIndexedAt: Date.now() - 500,
+      indexedFileCount: 0,
+      indexedMaxMtimeMs: 0,
+    }))
+    graphStatusRepo.write({
+      projectId: 'api-project',
+      cwd: '/repo',
+      state: 'ready',
+      ready: true,
+      stats: { files: 0, symbols: 0, edges: 0, calls: 0 },
+      message: null,
+    })
+
+    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
+
+    await handleExecutePlan(apiDeps(ctx), {
+      projectId: 'api-project',
+      sessionId: 'host-session',
+    }, body)
+    let targetStatus = graphStatusRepo.read('api-project', worktreeDir)
+    for (let i = 0; i < 20 && !targetStatus; i++) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+      targetStatus = graphStatusRepo.read('api-project', worktreeDir)
+    }
+    expect(targetStatus?.state).toBe('ready')
+    expect(targetStatus?.ready).toBe(true)
+  })
+
+  test('loop mode started through plan.execute advances to audit on coding idle', async () => {
+    const { ctx, graphStatusRepo, loopsRepo, plansRepo, reviewFindingsRepo } = createApiDeps()
+    const sessionMessages = mock(() => Promise.resolve({
+      data: [{
+        info: { role: 'assistant', finish: 'stop' },
+        parts: [{ type: 'text', text: 'Implemented plan.' }],
+      }],
+    }))
+    ;(ctx.v2 as any).session.messages = sessionMessages
+
+    const loopServiceForHandler = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'api-project', ctx.logger)
+    const loopHandler = createLoopEventHandler(
+      loopServiceForHandler,
+      {} as never,
+      ctx.v2,
+      ctx.logger,
+      () => ctx.config,
+      undefined,
+      'api-project',
+      ctx.dataDir,
+    )
+    ;(ctx as any).loopHandler = loopHandler
+
+    const res = await handleExecutePlan(apiDeps(ctx), {
+      projectId: 'api-project',
+      sessionId: 'host-session',
+    }, {
+      mode: 'loop',
+      title: 'API Plan',
+      plan: '# API Plan\n\nImplement this.',
+    }) as { sessionId: string; loopName: string }
+
+    await loopHandler.onEvent({
+      event: {
+        type: 'session.status',
+        properties: {
+          sessionID: res.sessionId,
+          directory: '/repo',
+          status: { type: 'idle' },
+        },
+      },
+    })
+
+    const row = db.prepare(
+      'SELECT phase, audit_session_id, current_session_id, worktree FROM loops WHERE project_id = ? AND loop_name = ?',
+    ).get('api-project', res.loopName) as {
+      phase: string
+      audit_session_id: string | null
+      current_session_id: string
+      worktree: number
+    }
+
+    expect(row.worktree).toBe(0)
+    expect(row.current_session_id).toBe(res.sessionId)
+    expect(row.phase).toBe('auditing')
+    expect(row.audit_session_id).toBeDefined()
+    expect(row.audit_session_id).not.toBeNull()
+  })
+
+  test('loop mode is disabled when config.loop.enabled is false', async () => {
+    const { ctx } = createApiDeps({
+      config: {
+        executionModel: 'provider/default-exec',
+        auditorModel: 'provider/default-auditor',
+        loop: { enabled: false },
+      } as PluginConfig,
+    })
+
+    let thrown: unknown
+    try {
+      await handleExecutePlan(apiDeps(ctx), {
+        projectId: 'api-project',
+        sessionId: 'host-session',
+      }, {
+        mode: 'loop',
+        title: 'Disabled Plan',
+        plan: '# Disabled Plan',
+      })
+    } catch (err) {
+      thrown = err
+    }
+
+    expect(thrown).toBeDefined()
+    expect((thrown as Error).message).toContain('disabled')
+
+    const rows = db.prepare('SELECT COUNT(*) as count FROM loops WHERE project_id = ?').get('api-project') as { count: number }
+    expect(rows.count).toBe(0)
+  })
+})
+
+describe('Fire-and-forget dispatch behavior', () => {
+  const projectId = 'test-project-fire-forget'
+  const sessionID = 'test-session-fire-forget'
+  const testDir = '/test/dir'
+  const openDbs: Database[] = []
+
+  afterEach(() => {
+    for (const db of openDbs) db.close()
+    openDbs.length = 0
+  })
+
+  function createMockContext(overrides?: Partial<ToolContext>): ToolContext {
+    const mockV2 = {
+      session: {
+        abort: async () => ({ data: {} }),
+        promptAsync: async () => ({ data: {} }),
+        create: async () => ({ data: { id: 'new-session-id' } }),
+      },
+      tui: {
+        selectSession: async () => ({ data: {} }),
+        publish: async () => ({ data: {} }),
+      },
+    } as unknown as ToolContext['v2']
+
+    const mockConfig = {
+      executionModel: 'test-provider/test-model',
+      loop: { defaultMaxIterations: 5 },
+    } as PluginConfig
+
+    const mockLogger = createMockLogger()
+
+    const db = createTestDb()
+    openDbs.push(db)
+    const loopsRepo = createLoopsRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const graphStatusRepo = createGraphStatusRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger)
+
+    return {
+      projectId,
+      directory: testDir,
+      config: mockConfig,
+      logger: mockLogger,
+      db,
+      loopService,
+      plansRepo,
+      loopsRepo,
+      reviewFindingsRepo,
+      graphStatusRepo,
+      v2: mockV2,
+      loopHandler: {
+        startWatchdog: mock(() => {}),
+      },
+      sandboxManager: null,
+      dataDir: TEST_DIR,
+      cleanup: async () => {},
+      input: { messages: [], systemPrompt: '' },
+      systemPrompt: '',
+      messages: [],
+      ...overrides,
+    } as ToolContext
+  }
+
+  test('New session approval returns before promptAsync resolves', async () => {
+    let resolvePrompt: () => void
+    const pendingPromise = new Promise<any>((resolve) => {
+      resolvePrompt = resolve
+    })
+    
+    const promptSpy = mock(() => pendingPromise)
+    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    
+    const ctx = createMockContext({
+      v2: {
+        session: {
+          abort: abortSpy,
+          promptAsync: promptSpy,
+          create: () => pendingPromise,
+        },
+        tui: {
+          selectSession: async () => ({ data: {} }),
+          publish: async () => ({ data: {} }),
+        },
+      } as unknown as ToolContext['v2'],
+    })
+
+    ctx.plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
+
+    const hook = createToolExecuteAfterHook(ctx)
+
+    const args = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop (worktree)', description: 'Loop worktree' },
+          { label: 'Loop', description: 'Loop in place' },
+        ],
+      }],
+    }
+    const output = {
+      title: 'Asked 1 question',
+      output: 'New session',
+      metadata: { answers: [['New session']] },
+    }
+
+    // Race hook against short timeout - hook should reject immediately
+    const hookPromise = hook(
+      { tool: 'question', sessionID, callID: 'test-call', args },
+      output
+    )
+
+    const timeoutPromise = new Promise<void>((resolve) => {
+      setTimeout(() => resolve(), 50)
+    })
+
+    // Hook should resolve before timeout
+    await Promise.race([
+      hookPromise.then(() => {
+        // Hook resolved as expected
+      }),
+      timeoutPromise.then(() => {
+        throw new Error('Hook did not resolve in time')
+      }),
+    ])
+    
+    // Output should be preserved immediately
+    expect(output.output).toContain('New session')
+    
+    
+    // Abort should be called
+    expect(abortSpy).toHaveBeenCalled()
+    
+    // Clean up pending promise
+    resolvePrompt!()
+  })
+
+  test('Loop approval returns before promptAsync resolves', async () => {
+    let resolvePrompt: () => void
+    const pendingPromise = new Promise<any>((resolve) => {
+      resolvePrompt = resolve
+    })
+    
+    const promptSpy = mock(() => pendingPromise)
+    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    
+    const ctx = createMockContext({
+      v2: {
+        session: {
+          abort: abortSpy,
+          promptAsync: promptSpy,
+          create: () => pendingPromise,
+        },
+        tui: {
+          selectSession: async () => ({ data: {} }),
+          publish: async () => ({ data: {} }),
+        },
+      } as unknown as ToolContext['v2'],
+      config: { executionModel: 'test-provider/test-model', loop: { defaultMaxIterations: 5 } } as PluginConfig,
+    })
+
+    ctx.plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
+
+    const hook = createToolExecuteAfterHook(ctx)
+
+    const args = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop (worktree)', description: 'Loop worktree' },
+          { label: 'Loop', description: 'Loop in place' },
+        ],
+      }],
+    }
+    const output = {
+      title: 'Asked 1 question',
+      output: 'Loop',
+      metadata: { answers: [['Loop']] },
+    }
+
+    // Race hook against short timeout - hook should resolve immediately
+    const hookPromise = hook(
+      { tool: 'question', sessionID, callID: 'test-call', args },
+      output
+    )
+
+    const timeoutPromise = new Promise<void>((resolve) => {
+      setTimeout(() => resolve(), 50)
+    })
+
+    // Hook should resolve before timeout
+    await Promise.race([
+      hookPromise.then(() => {
+        // Hook resolved as expected
+      }),
+      timeoutPromise.then(() => {
+        throw new Error('Hook did not resolve in time')
+      }),
+    ])
+    
+    // Output should be preserved immediately
+    expect(output.output).toBe('Loop')
+    
+    
+    // Abort should be called
+    expect(abortSpy).toHaveBeenCalled()
+    
+    // Clean up pending promise
+    resolvePrompt!()
+  })
+
+  test('Duplicate New session approval schedules one dispatch', async () => {
+    const legacyCreateSpy = mock(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
+    const legacyPromptSpy = mock(() => Promise.resolve({ data: {} } as any))
+    const legacyAbortSpy = mock(() => Promise.resolve({ data: {} } as any))
+    
+    const ctx = createMockContext({
+      v2: {
+        session: {
+          abort: async () => ({ data: {} }),
+          promptAsync: async () => ({ data: {} }),
+          create: async () => ({ data: { id: 'unused' } }),
+        },
+        tui: {
+          selectSession: async () => ({ data: {} }),
+          publish: async () => ({ data: {} }),
+        },
+      } as unknown as ToolContext['v2'],
+      input: {
+        messages: [] as any,
+        systemPrompt: '',
+        client: {
+          session: {
+            abort: legacyAbortSpy,
+            promptAsync: legacyPromptSpy,
+            create: legacyCreateSpy,
+          },
+        } as any,
+      } as any,
+    })
+
+    ctx.plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
+
+    const hook = createToolExecuteAfterHook(ctx)
+
+    const args = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop (worktree)', description: 'Loop worktree' },
+          { label: 'Loop', description: 'Loop in place' },
+        ],
+      }],
+    }
+    const output = {
+      title: 'Asked 1 question',
+      output: 'New session',
+      metadata: { answers: [['New session']] },
+    }
+
+    // First call
+    await expect(hook(
+      { tool: 'question', sessionID, callID: 'test-call-1', args },
+      output
+    )).resolves.toBeUndefined()
+
+    // Duplicate call with same callID
+    const duplicateOutput = {
+      title: 'Asked 1 question',
+      output: 'New session',
+      metadata: { answers: [['New session']] },
+    }
+
+    await expect(hook(
+      { tool: 'question', sessionID, callID: 'test-call-1', args },
+      duplicateOutput
+    )).resolves.toBeUndefined()
+
+    // Give async operations time to complete
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    // Abort is called for each approval call (both original and duplicate)
+    expect(legacyAbortSpy).toHaveBeenCalledTimes(2)
+    // Duplicate should preserve original output and add duplicate metadata
+    expect(duplicateOutput.output).toBe('New session')
+    expect((duplicateOutput.metadata as any).forgePlanApprovalDuplicate).toBe(true)
+  })
+
+  test('Dispatch IIFE survives slow source-session abort', async () => {
+    let resolveAbort: () => void
+    const abortPromise = new Promise<{ data: {} }>((resolve) => {
+      resolveAbort = () => resolve({ data: {} })
+    })
+    const legacyCreateSpy = mock(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
+    const legacyPromptSpy = mock(() => Promise.resolve({ data: {} } as any))
+    const legacyAbortSpy = mock(() => abortPromise as any)
+
+    const ctx = createMockContext({
+      v2: {
+        session: {
+          abort: async () => ({ data: {} }),
+          promptAsync: async () => ({ data: {} }),
+          create: async () => ({ data: { id: 'unused' } }),
+        },
+        tui: {
+          selectSession: async () => ({ data: {} }),
+          publish: async () => ({ data: {} }),
+        },
+      } as unknown as ToolContext['v2'],
+      input: {
+        messages: [] as any,
+        systemPrompt: '',
+        client: {
+          session: {
+            abort: legacyAbortSpy,
+            promptAsync: legacyPromptSpy,
+            create: legacyCreateSpy,
+          },
+        } as any,
+      } as any,
+    })
+
+    ctx.plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\n')
+
+    const hook = createToolExecuteAfterHook(ctx)
+
+    const args = {
+      questions: [{
+        question: '?',
+        options: [
+          { label: 'New session', description: '' },
+          { label: 'Execute here', description: '' },
+          { label: 'Loop (worktree)', description: '' },
+          { label: 'Loop', description: '' },
+        ],
+      }],
+    }
+    const output = {
+      title: '',
+      output: 'New session',
+      metadata: { answers: [['New session']] },
+    }
+
+    // Start the hook (will block on abort)
+    const hookPromise = hook(
+      { tool: 'question', sessionID, callID: 'test-call', args },
+      output
+    )
+
+    // Now resolve the abort
+    resolveAbort!()
+
+    // Hook should resolve
+    await expect(hookPromise).resolves.toBeUndefined()
+  })
+
+  test('Falls back to v2 client when legacy client is unavailable', async () => {
+    const db = createTestDb()
+    const testPlansRepo = createPlansRepo(db)
+    const v2AbortSpy = mock(() => Promise.resolve({ data: {} }))
+    const ctx = {
+      loopService: {
+        resolveLoopName: () => 'test-loop',
+        getActiveState: () => null,
+      },
+      logger: createMockLogger(),
+      v2: {
+        session: {
+          abort: v2AbortSpy,
+          promptAsync: async () => ({ data: {} }),
+          create: async () => ({ data: { id: 'new-session-id' } }),
+        },
+        tui: {
+          selectSession: async () => ({ data: {} }),
+          publish: async () => ({ data: {} }),
+        },
+      } as unknown as ToolContext['v2'],
+      plansRepo: testPlansRepo,
+      config: {} as PluginConfig,
+      projectId,
+      directory: '/test',
+      dataDir: TEST_DIR,
+      cleanup: async () => {},
+      input: { messages: [], systemPrompt: '', client: undefined } as any,
+      systemPrompt: '',
+      messages: [],
+      graphStatusRepo: createGraphStatusRepo(db),
+      loopsRepo: createLoopsRepo(db),
+      reviewFindingsRepo: createReviewFindingsRepo(db),
+      sandboxManager: null,
+    } as unknown as ToolContext
+
+    testPlansRepo.writeForSession(projectId, sessionID, '# plan')
+
+    const hook = createToolExecuteAfterHook(ctx)
+
+    const args = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop (worktree)', description: 'Loop worktree' },
+          { label: 'Loop', description: 'Loop in place' },
+        ],
+      }],
+    }
+    const output = {
+      title: 'Asked 1 question',
+      output: 'Execute here',
+      metadata: { answers: [['Execute here']] },
+    }
+
+    await expect(hook(
+      { tool: 'question', sessionID, callID: 'test-call', args },
+      output
+    )).resolves.toBeUndefined()
+
+    expect(v2AbortSpy).toHaveBeenCalled()
+    db.close()
+  })
+
+  test('Treats v2 abort returning {error,...} as a failure (logs error)', async () => {
+    const db = createTestDb()
+    const testPlansRepo = createPlansRepo(db)
+    const v2AbortSpy = mock(() => Promise.resolve({ data: undefined, error: 'Unable to connect' }))
+    const errors: unknown[] = []
+    const ctx = {
+      loopService: {
+        resolveLoopName: () => 'test-loop',
+        getActiveState: () => null,
+      },
+      logger: {
+        log: () => {},
+        error: (...args: unknown[]) => { errors.push(args) },
+        debug: () => {},
+      } as Logger,
+      v2: {
+        session: {
+          abort: v2AbortSpy,
+          promptAsync: async () => ({ data: {} }),
+          create: async () => ({ data: { id: 'new-session-id' } }),
+        },
+        tui: {
+          selectSession: async () => ({ data: {} }),
+          publish: async () => ({ data: {} }),
+        },
+      } as unknown as ToolContext['v2'],
+      plansRepo: testPlansRepo,
+      config: {} as PluginConfig,
+      projectId,
+      directory: '/test',
+      dataDir: TEST_DIR,
+      cleanup: async () => {},
+      input: { messages: [], systemPrompt: '', client: undefined } as any,
+      systemPrompt: '',
+      messages: [],
+      graphStatusRepo: createGraphStatusRepo(db),
+      loopsRepo: createLoopsRepo(db),
+      reviewFindingsRepo: createReviewFindingsRepo(db),
+      sandboxManager: null,
+    } as unknown as ToolContext
+
+    testPlansRepo.writeForSession(projectId, sessionID, '# plan')
+
+    const hook = createToolExecuteAfterHook(ctx)
+
+    const args = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop (worktree)', description: 'Loop worktree' },
+          { label: 'Loop', description: 'Loop in place' },
+        ],
+      }],
+    }
+    const output = {
+      title: 'Asked 1 question',
+      output: 'Execute here',
+      metadata: { answers: [['Execute here']] },
+    }
+
+    await expect(hook(
+      { tool: 'question', sessionID, callID: 'test-call', args },
+      output
+    )).resolves.toBeUndefined()
+
+    expect(errors.some(e => JSON.stringify(e).includes('Unable to connect'))).toBe(true)
+    db.close()
   })
 })

@@ -1,9 +1,9 @@
 /**
  * TUI plan store helper for resolving plan keys with loop-session awareness.
- * 
- * This module provides plan reading/writing with session → loop resolution.
+ *
+ * This module provides plan reading with session → loop resolution.
  * Reads prefer loop_large_fields.prompt (execution store), then fall back to
- * the plans table. Writes update both stores to stay in sync.
+ * the plans table.
  */
 
 import { Database } from 'bun:sqlite'
@@ -75,76 +75,32 @@ export function readPlan(projectId: string, sessionID: string, dbPathOverride?: 
   }
 }
 
-/**
- * Writes plan content to the plans table for a session.
- * 
- * @param projectId - The project ID (git commit hash)
- * @param sessionID - The session ID to write plan for
- * @param content - The plan content to write
- * @param dbPathOverride - Optional database path override (for testing)
- * @returns true if successful, false otherwise
- */
-export function writePlan(projectId: string, sessionID: string, content: string, dbPathOverride?: string): boolean {
+export function readPlanForAnyProject(sessionID: string, dbPathOverride?: string): string | null {
   const dbPath = dbPathOverride || getDbPath()
 
-  if (!existsSync(dbPath)) return false
+  if (!existsSync(dbPath)) return null
 
   let db: Database | null = null
   try {
-    db = new Database(dbPath)
-    db.run('PRAGMA busy_timeout=5000')
-    const plansRepo = createPlansRepo(db)
-    const loopsRepo = createLoopsRepo(db)
-    
-    // Check if session maps to a loop - if so, write only to execution store (loop_large_fields.prompt)
-    // Otherwise write to session-scoped draft store
-    const loopName = resolveLoopNameForSession(db, projectId, sessionID)
-    if (loopName) {
-      loopsRepo.updatePrompt(projectId, loopName, content)
-    } else {
-      plansRepo.writeForSession(projectId, sessionID, content)
+    db = new Database(dbPath, { readonly: true })
+    const rows = db.prepare(`
+      SELECT project_id
+      FROM plans
+      WHERE session_id = ?
+      ORDER BY updated_at DESC
+    `).all(sessionID) as Array<{ project_id: string }>
+
+    for (const row of rows) {
+      const content = readPlan(row.project_id, sessionID, dbPath)
+      if (content) return content
     }
-    return true
+
+    return null
   } catch {
-    return false
+    return null
   } finally {
     try { db?.close() } catch {}
   }
 }
 
-/**
- * Deletes plan content from the plans table for a session.
- * 
- * @param projectId - The project ID (git commit hash)
- * @param sessionID - The session ID to delete plan for
- * @param dbPathOverride - Optional database path override (for testing)
- * @returns true if a row was deleted, false otherwise
- */
-export function deletePlan(projectId: string, sessionID: string, dbPathOverride?: string): boolean {
-  const dbPath = dbPathOverride || getDbPath()
 
-  if (!existsSync(dbPath)) return false
-
-  let db: Database | null = null
-  try {
-    db = new Database(dbPath)
-    db.run('PRAGMA busy_timeout=5000')
-    const plansRepo = createPlansRepo(db)
-    const loopsRepo = createLoopsRepo(db)
-    
-    // Check if session maps to a loop - if so, delete only from execution store (loop_large_fields.prompt)
-    // Otherwise delete from session-scoped draft store
-    const loopName = resolveLoopNameForSession(db, projectId, sessionID)
-    if (loopName) {
-      loopsRepo.updatePrompt(projectId, loopName, '')
-      return true
-    } else {
-      plansRepo.deleteForSession(projectId, sessionID)
-      return true
-    }
-  } catch {
-    return false
-  } finally {
-    try { db?.close() } catch {}
-  }
-}

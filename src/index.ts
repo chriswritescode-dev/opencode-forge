@@ -1,6 +1,6 @@
 import type { Plugin, PluginInput, Hooks } from '@opencode-ai/plugin'
 import { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2'
-import { agents } from './agents'
+import { buildAgents } from './agents'
 import { createConfigHandler } from './config'
 import { createSessionHooks, createLoopEventHandler } from './hooks'
 import { initializeDatabase, resolveDataDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo } from './storage'
@@ -25,9 +25,10 @@ import { FORGE_WORKTREE_WORKSPACE_TYPE, createForgeWorktreeAdaptor } from './wor
 import { LRUCache } from './utils/lru-cache'
 import { createSessionLoopResolver } from './services/session-loop-resolver'
 import { createPermissionAskHandler } from './hooks/permission-ask'
-import { attachForgeApiServer, type ForgeApiServer } from './api/server'
 import { getProjectRegistry } from './api/project-registry'
 import type { ProjectRegistry } from './api/project-registry'
+import { createPlanCaptureEventHook } from './hooks/plan-capture'
+import { createBusRpcEventHook } from './api/bus-rpc'
 
 export async function cleanupSandboxOrphansAcrossRegistry(
   registry: ProjectRegistry,
@@ -193,15 +194,19 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const projectId = project.id
 
     const serverUrl = input.serverUrl
-    const serverPassword = serverUrl.password || process.env['OPENCODE_SERVER_PASSWORD']
-    const cleanUrl = new URL(serverUrl.toString())
-    cleanUrl.username = ''
-    cleanUrl.password = ''
-    const v2ClientConfig: Parameters<typeof createV2Client>[0] = { baseUrl: cleanUrl.toString(), directory }
-    if (serverPassword) {
-      v2ClientConfig.headers = {
-        Authorization: `Basic ${Buffer.from(`opencode:${serverPassword}`).toString('base64')}`,
-      }
+    
+    // Extract legacy fetch and auth headers from the plugin-provided client so
+    // the v2 client can dispatch in-process AND satisfy the server's Basic auth
+    // requirement (introduced for keychain-backed auth in TUI/server).
+    const legacyHttp = (client as unknown as { _client?: { getConfig: () => { fetch?: typeof fetch; headers?: Headers } } })._client
+    const legacyConfig = legacyHttp?.getConfig?.()
+    const legacyFetch = legacyConfig?.fetch
+    const legacyAuthHeader = legacyConfig?.headers?.get?.('authorization') ?? legacyConfig?.headers?.get?.('Authorization')
+    const v2ClientConfig: Parameters<typeof createV2Client>[0] = {
+      baseUrl: serverUrl.toString(),
+      directory,
+      ...(legacyFetch ? { fetch: legacyFetch } : {}),
+      ...(legacyAuthHeader ? { headers: { Authorization: legacyAuthHeader } } : {}),
     }
     const v2 = createV2Client(v2ClientConfig)
 
@@ -212,6 +217,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       debug: loggingConfig?.debug ?? false,
     })
     logger.log(`Initializing plugin for directory: ${directory}, projectId: ${projectId}`)
+    logger.log(`v2 client fetch: ${legacyFetch ? 'in-process' : 'globalThis'}; auth: ${legacyAuthHeader ? 'inherited' : 'none'}`)
 
     const dataDir = config.dataDir || resolveDataDir()
     
@@ -250,6 +256,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 
     // Initialize graph service if enabled
     const graphEnabled = config.graph?.enabled ?? true
+    const agents = buildAgents({ graphEnabled })
     let graphService: GraphService | null = null
     const graphStatusRepo = createGraphStatusRepo(db)
     
@@ -280,16 +287,16 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         graphService = null
       }
     } else {
-      // Graph is disabled - persist unavailable status
-      writeGraphStatus(graphStatusRepo, projectId, UNAVAILABLE_STATUS)
+      // Graph is disabled - persist unavailable status scoped to the current
+      // directory so TUI sidebar reads (which are directory-scoped) resolve
+      // consistently with the enabled path that scopes via the status callback.
+      writeGraphStatus(graphStatusRepo, projectId, UNAVAILABLE_STATUS, directory)
     }
 
     const compactionConfig: CompactionConfig | undefined = config.compaction
     const messagesTransformConfig = config.messagesTransform
     const sessionHooks = createSessionHooks(projectId, logger, input, compactionConfig)
     const registry = getProjectRegistry()
-
-    let apiServer: ForgeApiServer | null = null
 
     let cleanupPromise: Promise<void> | null = null
 
@@ -311,34 +318,9 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           sandboxReconcileInterval = null
         }
 
-        if (sandboxManager) {
-          const activeLoops = loopService.listActive()
-          for (const state of activeLoops) {
-            if (state.sandbox && sandboxManager) {
-              try {
-                 await sandboxManager.stop(state.loopName!)
-                 logger.log(`Cleanup: stopped sandbox for ${state.loopName}`)
-               } catch (err) {
-                 logger.error(`Cleanup: failed to stop sandbox for ${state.loopName}`, err)
-               }
-            }
-          }
-        }
-
-        // Stop the API server if it was started
-        if (apiServer) {
-          try {
-            await apiServer.stop()
-            logger.log('API server released')
-          } catch (err) {
-            logger.error('Failed to stop API server', err)
-          }
-        }
-
         registry.unregister(projectId)
 
-        loopHandler.terminateAll()
-        logger.log('Loop: all active loops terminated')
+        logger.log('Loop: active loops preserved during plugin cleanup')
         
         loopHandler.clearAllRetryTimeouts()
         
@@ -408,13 +390,14 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       }, 2000)
     }
 
-    // Start the remote HTTP API server if enabled
-    apiServer = attachForgeApiServer(ctx, registry)
+    // Create bus-RPC event hook for handling TUI plugin RPC calls
+    const busRpcHook = createBusRpcEventHook({ registry, logger, v2, instanceDirectory: directory })
 
     const tools = createTools(ctx)
     const toolExecuteBeforeHook = createToolExecuteBeforeHook(ctx)
     const toolExecuteAfterHook = createToolExecuteAfterHook(ctx)
     const planApprovalEventHook = createPlanApprovalEventHook(ctx)
+    const planCaptureEventHook = createPlanCaptureEventHook(ctx)
     const sandboxBeforeHook = createSandboxToolBeforeHook({
       resolveSandboxForSession,
       logger,
@@ -443,7 +426,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       getSessionDirectory: sessionDirectoryLookup,
       logger,
     })
-    const permissionAskHandler = createPermissionAskHandler({ resolver: sessionLoopResolver, logger })
+    const permissionAskHandler = createPermissionAskHandler({ resolver: sessionLoopResolver, logger, v2 })
 
     // Resolves sandbox context for a session by following parent hops until an
     // active sandbox loop is found. Returns null if no sandbox is active for
@@ -460,7 +443,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     return {
       getCleanup,
       tool: tools,
-      config: createConfigHandler(agents, config.agents),
+      config: createConfigHandler(agents, config.agents, { graphEnabled }),
       'chat.message': async (input, output) => {
         await sessionHooks.onMessage(input, output)
       },
@@ -472,8 +455,10 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         }
         await loopHandler.onEvent(eventInput)
         await sessionHooks.onEvent(eventInput)
+        await planCaptureEventHook(eventInput)
         await planApprovalEventHook(eventInput)
         await graphCommandHook(eventInput)
+        await busRpcHook(eventInput)
       },
       'tool.execute.before': async (input, output) => {
         const resolved = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
@@ -529,20 +514,11 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           text: `<system-reminder>
 You are in READ-ONLY mode for file system operations. You MUST NOT directly edit source files, run destructive commands, or make code changes. You may only read, search, and analyze the codebase.
 
-However, you CAN and SHOULD:
-- Use \`plan-write\` to write the plan
-- Use \`plan-edit\` to make targeted updates to the plan
-- Use \`plan-read\` to review the plan, including by explicit \`loop_name\` when needed
-- Use \`plan-execute\` or \`loop\` ONLY AFTER:
-  1. The plan has been written via \`plan-write\`
-  2. The user explicitly approves via the question tool
+Ask clarifying questions during research on scope, intent, or tradeoffs.
 
-Follow the two-step approval flow:
-1. After research/design, present findings and next steps, then use the \`question\` tool to ask whether to write the plan
-2. Only after the user approves writing the plan, call \`plan-write\` to persist it
-3. After the plan is written, present a summary and use the \`question\` tool to collect execution approval with the four canonical options
+After research/design, output a brief intention/goal/approach summary followed immediately by exactly one final plan wrapped with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` markers. The plan must include Objective, Loop Name, Phases, Verification, Decisions, Conventions, and Key Context.
 
-Never execute a plan without both a written plan and explicit approval via the question tool.
+use the \`question\` tool to request execution approval with: "New session", "Execute here", "Loop (worktree)", or "Loop". Never execute without a marked plan and explicit approval via the question tool.
 </system-reminder>`,
           synthetic: true,
         })
@@ -565,8 +541,9 @@ const plugin: Plugin = async (input: PluginInput): Promise<Hooks> => {
   if (workspaceApi) {
     try {
       workspaceApi.register(FORGE_WORKTREE_WORKSPACE_TYPE, createForgeWorktreeAdaptor())
-    } catch (err) {
-      console.error('Failed to register forge worktree workspace adaptor', err)
+    } catch {
+      // Workspace adaptor registration is optional — silently ignore failures
+      // (e.g., duplicate registration, unsupported runtime, older opencode version)
     }
   }
 

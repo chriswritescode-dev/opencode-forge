@@ -11,6 +11,19 @@ import { formatSessionOutput, formatAuditResult } from '../../utils/loop-format'
 import { fetchSessionOutput } from '../../services/loop'
 import { filterByPartial } from '../../utils/partial-match'
 
+/**
+ * CLI loop status reads from the database via listLoopStatesFromDb.
+ * This follows the same "CLI adapter" pattern used by the execution service itself
+ * (see src/services/execution.ts:867) when loopService is unavailable.
+ * 
+ * The CLI is an external tool that runs independently of the opencode server process.
+ * While the plugin has access to the in-memory LoopService, the CLI accesses the
+ * database directly as the source of truth for persistent loop state.
+ * 
+ * For real-time session output/status, the CLI fetches via the SDK client
+ * (see tryFetchSessionOutput and tryFetchSessionStatus).
+ */
+
 interface StatusArgs {
   dbPath?: string
   resolvedProjectId?: string
@@ -152,8 +165,8 @@ export async function run(argv: StatusArgs): Promise<void> {
 
   try {
     if (argv.listWorktrees) {
-      const rows = db.prepare('SELECT loop_name, worktree_branch FROM loops WHERE project_id = ?').all(argv.resolvedProjectId ?? '') as Array<{ loop_name: string; worktree_branch: string | null }>
-      const names = rows.map(r => r.loop_name)
+      const loops = listLoopStatesFromDb(db, argv.resolvedProjectId)
+      const names = loops.map(l => l.state.loopName)
       const filtered = filterByPartial(argv.listWorktreesFilter, names, (n) => [n])
       for (const name of filtered) {
         console.log(name)

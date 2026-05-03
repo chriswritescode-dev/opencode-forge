@@ -113,8 +113,10 @@ $ARGUMENTS`,
 
 export function createConfigHandler(
   agents: Record<AgentRole, AgentDefinition>,
-  agentOverrides?: Record<string, { temperature?: number }>
+  agentOverrides?: Record<string, { temperature?: number }>,
+  options?: { graphEnabled?: boolean }
 ) {
+  const graphEnabled = options?.graphEnabled ?? true
   return async (config: Record<string, unknown>) => {
     const effectiveAgents = { ...agents }
     if (agentOverrides) {
@@ -169,20 +171,22 @@ export function createConfigHandler(
       mergedAgents[name] = { ...mergedAgents[name], hidden: true }
     }
 
-    for (const [name, enhancement] of Object.entries(ENHANCED_BUILTIN_AGENTS)) {
-      const existing = mergedAgents[name] as AgentConfig | undefined
-      const existingPermission = (existing?.permission ?? {}) as Record<string, unknown>
-      const existingPrompt = existing?.prompt ?? ''
-      const newPrompt = enhancement.prompt
-        ? existingPrompt
-          ? `${existingPrompt}\n\n${enhancement.prompt}`
-          : enhancement.prompt
-        : existingPrompt
-      mergedAgents[name] = {
-        ...existing,
-        permission: { ...existingPermission, ...enhancement.permission },
-        prompt: newPrompt,
-      } as AgentConfig
+    if (graphEnabled) {
+      for (const [name, enhancement] of Object.entries(ENHANCED_BUILTIN_AGENTS)) {
+        const existing = mergedAgents[name] as AgentConfig | undefined
+        const existingPermission = (existing?.permission ?? {}) as Record<string, unknown>
+        const existingPrompt = existing?.prompt ?? ''
+        const newPrompt = enhancement.prompt
+          ? existingPrompt
+            ? `${existingPrompt}\n\n${enhancement.prompt}`
+            : enhancement.prompt
+          : existingPrompt
+        mergedAgents[name] = {
+          ...existing,
+          permission: { ...existingPermission, ...enhancement.permission },
+          prompt: newPrompt,
+        } as AgentConfig
+      }
     }
 
     config.agent = mergedAgents

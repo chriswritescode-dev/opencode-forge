@@ -1,122 +1,121 @@
 import type { ApiDeps } from '../types'
-import { ok } from '../response'
-import { notFound, badRequest, conflict } from '../errors'
-import { parseJsonBody, PlanWriteBody, PlanPatchBody } from '../schemas'
+import { ForgeRpcError } from '../bus-protocol'
+import { PlanWriteBody, PlanPatchBody } from '../schemas'
 import { applyPlanPatch } from '../../utils/plan-patch'
 
 export async function handleGetSessionPlan(
-  _req: Request,
   deps: ApiDeps,
-  params: Record<string, string>
-): Promise<Response> {
+  params: Record<string, string>,
+  _body: unknown
+): Promise<unknown> {
   const { projectId, sessionId } = params
   const result = deps.ctx.plansRepo.getForSession(projectId, sessionId)
 
   if (!result) {
-    throw notFound('plan not found')
+    throw new ForgeRpcError('not_found', 'plan not found')
   }
 
-  return ok({
+  return {
     sessionId: result.sessionId ?? undefined,
     loopName: result.loopName ?? undefined,
     content: result.content,
     updatedAt: result.updatedAt,
-  })
+  }
 }
 
 export async function handleGetLoopPlan(
-  _req: Request,
   deps: ApiDeps,
-  params: Record<string, string>
-): Promise<Response> {
+  params: Record<string, string>,
+  _body: unknown
+): Promise<unknown> {
   const { projectId, loopName } = params
   const result = deps.ctx.plansRepo.getForLoop(projectId, loopName)
 
   if (!result) {
-    throw notFound('plan not found')
+    throw new ForgeRpcError('not_found', 'plan not found')
   }
 
-  return ok({
+  return {
     sessionId: result.sessionId ?? undefined,
     loopName: result.loopName ?? undefined,
     content: result.content,
     updatedAt: result.updatedAt,
-  })
+  }
 }
 
 export async function handleWriteSessionPlan(
-  req: Request,
   deps: ApiDeps,
-  params: Record<string, string>
-): Promise<Response> {
+  params: Record<string, string>,
+  body: unknown
+): Promise<unknown> {
   const { projectId, sessionId } = params
-  const body = await parseJsonBody(req, PlanWriteBody)
+  const parsed = PlanWriteBody.parse(body)
 
-  deps.ctx.plansRepo.writeForSession(projectId, sessionId, body.content)
+  deps.ctx.plansRepo.writeForSession(projectId, sessionId, parsed.content)
 
-  return ok({ sessionId, content: body.content }, 201)
+  return { sessionId, content: parsed.content }
 }
 
 export async function handleWriteLoopPlan(
-  req: Request,
   deps: ApiDeps,
-  params: Record<string, string>
-): Promise<Response> {
+  params: Record<string, string>,
+  body: unknown
+): Promise<unknown> {
   const { projectId, loopName } = params
-  const body = await parseJsonBody(req, PlanWriteBody)
+  const parsed = PlanWriteBody.parse(body)
 
-  deps.ctx.plansRepo.writeForLoop(projectId, loopName, body.content)
+  deps.ctx.plansRepo.writeForLoop(projectId, loopName, parsed.content)
 
-  return ok({ loopName, content: body.content }, 201)
+  return { loopName, content: parsed.content }
 }
 
 export async function handlePatchSessionPlan(
-  req: Request,
   deps: ApiDeps,
-  params: Record<string, string>
-): Promise<Response> {
+  params: Record<string, string>,
+  body: unknown
+): Promise<unknown> {
   const { projectId, sessionId } = params
-  const body = await parseJsonBody(req, PlanPatchBody)
+  const parsed = PlanPatchBody.parse(body)
 
   const existing = deps.ctx.plansRepo.getForSession(projectId, sessionId)
 
   if (!existing) {
-    throw notFound('plan not found')
+    throw new ForgeRpcError('not_found', 'plan not found')
   }
 
-  const result = applyPlanPatch(existing.content, body.old_string, body.new_string)
+  const result = applyPlanPatch(existing.content, parsed.old_string, parsed.new_string)
 
   if (!result.success) {
     if (result.error?.includes('not found')) {
-      throw notFound(result.error)
+      throw new ForgeRpcError('not_found', result.error)
     }
     if (result.error?.includes('times')) {
-      throw conflict(result.error || 'patch failed')
+      throw new ForgeRpcError('conflict', result.error || 'patch failed')
     }
-    throw badRequest(result.error || 'patch failed')
+    throw new ForgeRpcError('bad_request', result.error || 'patch failed')
   }
 
   deps.ctx.plansRepo.writeForSession(projectId, sessionId, result.updated!)
 
-  return ok({ sessionId, content: result.updated! })
+  return { sessionId, content: result.updated! }
 }
 
 export async function handleDeleteSessionPlan(
-  _req: Request,
   deps: ApiDeps,
-  params: Record<string, string>
-): Promise<Response> {
+  params: Record<string, string>,
+  _body: unknown
+): Promise<unknown> {
   const { projectId, sessionId } = params
   deps.ctx.plansRepo.deleteForSession(projectId, sessionId)
-  return ok({ deleted: true })
+  return { deleted: true }
 }
 
 export async function handleDeleteLoopPlan(
-  _req: Request,
   deps: ApiDeps,
-  params: Record<string, string>
-): Promise<Response> {
+  params: Record<string, string>,
+  _body: unknown
+): Promise<unknown> {
   const { projectId, loopName } = params
   deps.ctx.plansRepo.deleteForLoop(projectId, loopName)
-  return ok({ deleted: true })
+  return { deleted: true }
 }

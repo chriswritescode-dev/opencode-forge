@@ -145,8 +145,7 @@ export function parseGlobalOptions(args: string[]): ParsedGlobalOptions {
 }
 
 /**
- * Builds an OpencodeClient from a server URL, extracting Basic Auth credentials
- * from the URL or falling back to `OPENCODE_SERVER_PASSWORD` env var.
+ * Builds an OpencodeClient from a server URL.
  */
 export function createOpencodeClientFromServer(serverUrl: string, directory: string): OpencodeClient {
   return createClientFromServer({ serverUrl, directory })

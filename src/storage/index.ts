@@ -1,4 +1,5 @@
 export { initializeDatabase, closeDatabase, resolveDataDir, resolveLogPath } from './database'
+export { migrations } from './migrations'
 
 export { createLoopsRepo } from './repos/loops-repo'
 export type { LoopRow, LoopLargeFields, LoopsRepo } from './repos/loops-repo'

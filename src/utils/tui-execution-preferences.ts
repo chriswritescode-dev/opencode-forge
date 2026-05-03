@@ -96,15 +96,13 @@ export function writeExecutionPreferences(
  * 
  * Priority order for executionModel:
  * 1. stored.executionModel
- * 2. config.loop?.model
- * 3. config.executionModel
+ * 2. config.executionModel
  * 
  * Priority order for auditorModel:
  * 1. stored.auditorModel
  * 2. config.auditorModel
  * 3. stored.executionModel
- * 4. config.loop?.model
- * 5. config.executionModel
+ * 4. config.executionModel
  * 
  * @param config - Plugin config
  * @param storedPrefs - Last-used preferences from KV
@@ -117,14 +115,12 @@ export function resolveExecutionDialogDefaults(
   const mode = storedPrefs?.mode ?? 'Loop (worktree)'
   
   const executionModel = storedPrefs?.executionModel
-    ?? config.loop?.model
     ?? config.executionModel
     ?? ''
   
   const auditorModel = storedPrefs?.auditorModel
     ?? config.auditorModel
     ?? storedPrefs?.executionModel
-    ?? config.loop?.model
     ?? config.executionModel
     ?? ''
   

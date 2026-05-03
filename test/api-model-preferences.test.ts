@@ -2,12 +2,20 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import { existsSync, mkdirSync, rmSync } from 'fs'
 import { join } from 'path'
 import { handleWriteModelPreferences } from '../src/api/handlers/models'
-import { errorResponse } from '../src/api/response'
 import { openForgeDatabase, resolveDataDir } from '../src/storage/database'
 import { readExecutionPreferences } from '../src/utils/tui-execution-preferences'
 import type { ApiDeps } from '../src/api/types'
+import type { ToolContext } from '../src/tools/types'
 
 const TEST_DIR = '/tmp/opencode-forge-api-model-preferences-' + Date.now()
+
+function createMockApiDeps(projectId: string): ApiDeps {
+  return {
+    ctx: {} as ToolContext,
+    logger: { log: () => {}, error: () => {}, debug: () => {} },
+    projectId,
+  }
+}
 
 describe('model preferences API', () => {
   const originalDataHome = process.env.XDG_DATA_HOME
@@ -42,13 +50,10 @@ describe('model preferences API', () => {
 
     for (const [mode, expected] of cases) {
       const projectId = `project-${mode}`
-      const req = new Request('http://test.local/preferences', {
-        method: 'POST',
-        body: JSON.stringify({ mode }),
-      })
+      const body = { mode }
 
-      const res = await handleWriteModelPreferences(req, {} as ApiDeps, { projectId })
-      expect(res.status).toBe(200)
+      const result = await handleWriteModelPreferences(createMockApiDeps(projectId), { projectId }, body)
+      expect(result).toEqual({ ok: true })
 
       const prefs = readExecutionPreferences(projectId)
       expect(prefs?.mode).toBe(expected)
@@ -57,34 +62,25 @@ describe('model preferences API', () => {
 
   test('defaults omitted mode to new session', async () => {
     const projectId = 'project-omitted-mode'
-    const req = new Request('http://test.local/preferences', {
-      method: 'POST',
-      body: JSON.stringify({ executionModel: 'test/model' }),
-    })
+    const body = { executionModel: 'test/model' }
 
-    const res = await handleWriteModelPreferences(req, {} as ApiDeps, { projectId })
-    expect(res.status).toBe(200)
+    const result = await handleWriteModelPreferences(createMockApiDeps(projectId), { projectId }, body)
+    expect(result).toEqual({ ok: true })
 
     const prefs = readExecutionPreferences(projectId)
     expect(prefs?.mode).toBe('New session')
     expect(prefs?.executionModel).toBe('test/model')
   })
 
-  test('invalid preference body returns bad request error', async () => {
-    const req = new Request('http://test.local/preferences', {
-      method: 'POST',
-      body: JSON.stringify({ mode: 'invalid-mode' }),
-    })
+  test('invalid preference body throws bad_request error', async () => {
+    const projectId = 'project-invalid-mode'
+    const body = { mode: 'invalid-mode' }
 
-    let res: Response
     try {
-      res = await handleWriteModelPreferences(req, {} as ApiDeps, { projectId: 'project-invalid-mode' })
-    } catch (err) {
-      res = errorResponse(err)
+      await handleWriteModelPreferences(createMockApiDeps(projectId), { projectId }, body)
+      throw new Error('expected bad_request error')
+    } catch (err: any) {
+      expect(err.code).toBe('bad_request')
     }
-
-    expect(res.status).toBe(400)
-    const body = await res.json() as { error: { code: string } }
-    expect(body.error.code).toBe('bad_request')
   })
 })

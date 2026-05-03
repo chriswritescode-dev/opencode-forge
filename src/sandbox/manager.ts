@@ -33,18 +33,29 @@ export function createSandboxManager(
 
   function detectGitMount(projectDir: string): string[] {
     try {
-      const result = spawnSync('git', ['rev-parse', '--git-common-dir'], {
+      const gitDirResult = spawnSync('git', ['rev-parse', '--git-dir'], {
         cwd: projectDir,
         encoding: 'utf-8',
       })
-      if (result.status !== 0 || !result.stdout) return []
-      
-      const gitCommonDir = resolve(projectDir, result.stdout.trim())
-      
-      // If the git dir is already inside the project dir being mounted, no extra mount needed
-      if (gitCommonDir.startsWith(projectDir + '/')) return []
-      
-      return [`${gitCommonDir}:${gitCommonDir}:ro`]
+      const commonDirResult = spawnSync('git', ['rev-parse', '--git-common-dir'], {
+        cwd: projectDir,
+        encoding: 'utf-8',
+      })
+      if (gitDirResult.status !== 0 || commonDirResult.status !== 0 || !gitDirResult.stdout || !commonDirResult.stdout) return []
+
+      const mounts = new Set<string>()
+      const gitDir = resolve(projectDir, gitDirResult.stdout.trim())
+      const gitCommonDir = resolve(projectDir, commonDirResult.stdout.trim())
+
+      if (!gitDir.startsWith(projectDir + '/')) {
+        mounts.add(`${gitDir}:${gitDir}`)
+      }
+
+      if (!gitCommonDir.startsWith(projectDir + '/')) {
+        mounts.add(`${gitCommonDir}:${gitCommonDir}`)
+      }
+
+      return [...mounts]
     } catch {
       logger.log(`[sandbox] could not detect git common dir for ${projectDir}, skipping extra mount`)
       return []
@@ -80,7 +91,7 @@ export function createSandboxManager(
     }
     const extraMounts = detectGitMount(absoluteProjectDir)
     if (extraMounts.length > 0) {
-      logger.log(`Sandbox: mounting git common dir: ${extraMounts[0]}`)
+      logger.log(`Sandbox: mounting git metadata: ${extraMounts.join(', ')}`)
     }
     logger.log(`Creating sandbox container ${containerName} for ${absoluteProjectDir}`)
     await docker.createContainer(containerName, absoluteProjectDir, config.image, extraMounts)

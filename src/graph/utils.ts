@@ -11,6 +11,7 @@ export const IGNORED_DIRS = new Set([
   'dist',
   'build',
   'coverage',
+  '.opencode',
   '.next',
   'nuxt',
   'vendor',
@@ -275,5 +276,4 @@ export function kindTag(kind: SymbolKind): string {
       return ''
   }
 }
-
 

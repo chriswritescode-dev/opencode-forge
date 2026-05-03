@@ -73,6 +73,7 @@ describe('LoopService', () => {
     db.run(`
       CREATE TABLE plans (
         project_id   TEXT NOT NULL,
+      branch       TEXT NOT NULL DEFAULT '',
         loop_name    TEXT,
         session_id   TEXT,
         content      TEXT NOT NULL,
@@ -94,7 +95,7 @@ describe('LoopService', () => {
         scenario TEXT,
         branch TEXT,
         created_at INTEGER NOT NULL,
-        PRIMARY KEY (project_id, file, line)
+        PRIMARY KEY (project_id, branch, file, line)
       )
     `)
 

@@ -58,6 +58,7 @@ function createTestDb(): Database {
   db.run(`
     CREATE TABLE IF NOT EXISTS plans (
       project_id   TEXT NOT NULL,
+      branch       TEXT NOT NULL DEFAULT '',
       loop_name    TEXT,
       session_id   TEXT,
       content      TEXT NOT NULL,
@@ -72,14 +73,14 @@ function createTestDb(): Database {
   db.run(`
     CREATE TABLE IF NOT EXISTS review_findings (
       project_id   TEXT NOT NULL,
+      branch       TEXT NOT NULL DEFAULT '',
       file         TEXT NOT NULL,
       line         INTEGER NOT NULL,
       severity     TEXT NOT NULL CHECK(severity IN ('bug','warning')),
       description  TEXT NOT NULL,
       scenario     TEXT,
-      branch       TEXT,
       created_at   INTEGER NOT NULL,
-      PRIMARY KEY (project_id, file, line)
+      PRIMARY KEY (project_id, branch, file, line)
     )
   `)
   db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_branch ON review_findings(project_id, branch)`)
@@ -92,195 +93,6 @@ const mockLogger: Logger = {
   error: () => {},
   debug: () => {},
 }
-
-describe('plan-write', () => {
-  let db: Database
-  let plansRepo: ReturnType<typeof createPlansRepo>
-  let loopsRepo: ReturnType<typeof createLoopsRepo>
-  let loopService: ReturnType<typeof createLoopService>
-  let tools: ReturnType<typeof createPlanTools>
-
-  beforeEach(() => {
-    db = createTestDb()
-    loopsRepo = createLoopsRepo(db)
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
-    plansRepo = createPlansRepo(db)
-    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
-    const ctx = {
-      plansRepo,
-      loopsRepo,
-      projectId: 'test-project',
-      logger: mockLogger,
-      loopService,
-      directory: TEST_DIR,
-      config: {} as any,
-      db,
-      dataDir: TEST_DIR,
-      cleanup: async () => {},
-      input: {} as any,
-      sandboxManager: null,
-      graphService: null,
-      v2: {} as any,
-      loopHandler: {} as any,
-      reviewFindingsRepo,
-      graphStatusRepo: {} as any,
-    }
-    tools = createPlanTools(ctx)
-  })
-
-  afterEach(() => {
-    db.close()
-  })
-
-  test('writes plan content and auto-resolves key to session ID', async () => {
-    const planContent = `# Implementation Plan
-
-## Phase 1: Setup
-- Create directory structure
-- Initialize configuration
-
-## Phase 2: Implementation
-- Write core logic
-- Add tests
-
-## Verification
-- Run tests
-- Check types
-`
-
-    const result = await tools['plan-write'].execute(
-      { content: planContent },
-      { sessionID: 'test-session', directory: TEST_DIR } as any
-    )
-
-    expect(result).toContain('Plan stored')
-    expect(result).toContain('lines')
-
-    const stored = plansRepo.getForSession('test-project', 'test-session')
-    expect(stored?.content).toBe(planContent)
-  })
-
-  test('overwrites existing plan', async () => {
-    const initialPlan = '# Old Plan\n\nContent here'
-    plansRepo.writeForSession('test-project', 'test-session', initialPlan)
-
-    const newPlan = '# New Plan\n\nNew content'
-    await tools['plan-write'].execute(
-      { content: newPlan },
-      { sessionID: 'test-session', directory: TEST_DIR } as any
-    )
-
-    const stored = plansRepo.getForSession('test-project', 'test-session')
-    expect(stored?.content).toBe(newPlan)
-  })
-})
-
-describe('plan-edit', () => {
-  let db: Database
-  let plansRepo: ReturnType<typeof createPlansRepo>
-  let loopService: ReturnType<typeof createLoopService>
-  let tools: ReturnType<typeof createPlanTools>
-
-  beforeEach(() => {
-    db = createTestDb()
-    const loopsRepo = createLoopsRepo(db)
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
-    plansRepo = createPlansRepo(db)
-    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
-    tools = createPlanTools({
-      plansRepo,
-      projectId: 'test-project',
-      logger: mockLogger,
-      loopService,
-      directory: TEST_DIR,
-      sessionID: 'test-session',
-      config: {} as any,
-      sandboxManager: {} as any,
-    } as any)
-
-    // Seed with initial plan
-    const initialPlan = `# Implementation Plan
-
-## Phase 1: Setup
-- Create directory structure
-- Initialize configuration
-
-## Phase 2: Implementation
-- Write core logic
-- Add tests
-`
-    plansRepo.writeForSession('test-project', 'test-session', initialPlan)
-  })
-
-  afterEach(() => {
-    db.close()
-  })
-
-  test('edits plan by replacing old_string with new_string', async () => {
-    const result = await tools['plan-edit'].execute(
-      {
-        old_string: '- Create directory structure',
-        new_string: '- Create directory structure\n- Set up TypeScript',
-      },
-      { sessionID: 'test-session', directory: TEST_DIR } as any
-    )
-
-    expect(result).toContain('Plan updated')
-
-    const stored = plansRepo.getForSession('test-project', 'test-session')
-    expect(stored?.content).toContain('- Create directory structure')
-    expect(stored?.content).toContain('- Set up TypeScript')
-  })
-
-  test('fails if old_string is not found', async () => {
-    const result = await tools['plan-edit'].execute(
-      {
-        old_string: 'Non-existent string',
-        new_string: 'New content',
-      },
-      { sessionID: 'test-session', directory: TEST_DIR } as any
-    )
-
-    expect(result).toContain('old_string not found')
-  })
-
-  test('fails if old_string is not unique', async () => {
-    const duplicatePlan = `# Plan
-
-## Phase 1
-- Item 1
-
-## Phase 2
-- Item 1
-`
-    plansRepo.writeForSession('test-project', 'test-session', duplicatePlan)
-
-    const result = await tools['plan-edit'].execute(
-      {
-        old_string: '- Item 1',
-        new_string: '- Updated item',
-      },
-      { sessionID: 'test-session', directory: TEST_DIR } as any
-    )
-
-    expect(result).toContain('found 2 times')
-    expect(result).toContain('must be unique')
-  })
-
-  test('fails if no plan exists', async () => {
-    plansRepo.deleteForSession('test-project', 'test-session')
-
-    const result = await tools['plan-edit'].execute(
-      {
-        old_string: 'Something',
-        new_string: 'New',
-      },
-      { sessionID: 'test-session', directory: TEST_DIR } as any
-    )
-
-    expect(result).toContain('No plan found')
-  })
-})
 
 describe('plan-read', () => {
   let db: Database
@@ -356,7 +168,7 @@ describe('plan-read', () => {
       { sessionID: 'test-session', directory: TEST_DIR } as any
     )
 
-    const lines = result.split('\n').filter((l) => l.match(/^\d+:/))
+    const lines = String(result).split('\n').filter((l) => l.match(/^\d+:/))
     expect(lines.length).toBe(3)
   })
 
@@ -494,77 +306,5 @@ describe('plan-read with loop session', () => {
     )
 
     expect(result).toContain('# Regular Plan')
-  })
-
-  test('plan-write stores under worktree name for loop sessions', async () => {
-    // First create the loop row so updatePrompt can work
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const testLoopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
-    const state = {
-      active: true,
-      sessionId: 'loop-session-123',
-      loopName: 'my-loop',
-      worktreeDir: '/tmp/test',
-      projectDir: '/tmp/test',
-      worktreeBranch: 'test-branch',
-      iteration: 1,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: '# Initial Plan',
-      phase: 'coding' as const,
-
-      errorCount: 0,
-      auditCount: 0,
-      worktree: true,
-      sandbox: false,
-      executionModel: undefined,
-      auditorModel: undefined,
-    }
-    testLoopService.setState('my-loop', state)
-
-    await tools['plan-write'].execute(
-      { content: '# Updated Loop Plan' },
-      { sessionID: 'loop-session-123', directory: TEST_DIR } as any
-    )
-
-    // Check loop_large_fields first (primary storage for loops)
-    const stored = loopsRepo.getLarge('test-project', 'my-loop')
-    expect(stored?.prompt).toBe('# Updated Loop Plan')
-  })
-
-  test('plan-edit edits plan under worktree name for loop sessions', async () => {
-    // First create the loop row so updatePrompt can work
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const testLoopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
-    const state = {
-      active: true,
-      sessionId: 'loop-session-123',
-      loopName: 'my-loop',
-      worktreeDir: '/tmp/test',
-      projectDir: '/tmp/test',
-      worktreeBranch: 'test-branch',
-      iteration: 1,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: '# Loop Plan\n\n## Phase 1\n- Do the thing',
-      phase: 'coding' as const,
-
-      errorCount: 0,
-      auditCount: 0,
-      worktree: true,
-      sandbox: false,
-      executionModel: undefined,
-      auditorModel: undefined,
-    }
-    testLoopService.setState('my-loop', state)
-
-    await tools['plan-edit'].execute(
-      { old_string: '- Do the thing', new_string: '- Do the updated thing' },
-      { sessionID: 'loop-session-123', directory: TEST_DIR } as any
-    )
-
-    // Check loop_large_fields first (primary storage for loops)
-    const stored = loopsRepo.getLarge('test-project', 'my-loop')
-    expect(stored?.prompt).toContain('- Do the updated thing')
   })
 })

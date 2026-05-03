@@ -1,116 +1,120 @@
 import type { ApiDeps } from '../types'
-import { ok } from '../response'
-import { notFound, badRequest } from '../errors'
-import { parseJsonBody, PlanExecuteBody } from '../schemas'
-import { runPlanExecution } from '../../utils/plan-execution-runner'
-import { launchFreshLoop } from '../../utils/loop-launch'
+import { ForgeRpcError } from '../bus-protocol'
+import { PlanExecuteBody } from '../schemas'
+import { buildStartLoopCommand, type PlanSource, type ForgeExecutionCommand } from '../../services/execution'
+import { buildService } from './_shared'
 
 export async function handleExecutePlan(
-  req: Request,
   deps: ApiDeps,
-  params: Record<string, string>
-): Promise<Response> {
+  params: Record<string, string>,
+  body: unknown
+): Promise<unknown> {
   const { projectId, sessionId } = params
-  const body = await parseJsonBody(req, PlanExecuteBody)
+  const parsed = PlanExecuteBody.parse(body)
 
   // Get plan content - either from body override or from storage
-  let planText = body.plan
-  if (!planText) {
+  let source: PlanSource
+  if (!parsed.plan) {
     const planRow = deps.ctx.plansRepo.getForSession(projectId, sessionId)
     if (!planRow) {
-      throw notFound('plan not found')
+      throw new ForgeRpcError('not_found', 'plan not found')
     }
-    planText = planRow.content
+    source = { kind: 'stored', sessionId }
+  } else {
+    source = { kind: 'inline', planText: parsed.plan }
   }
 
   const { ctx } = deps
-  const executionModel = body.executionModel || ctx.config.loop?.model || ctx.config.executionModel
-  const auditorModel = body.auditorModel || ctx.config.auditorModel
+  const executionModel = parsed.executionModel || ctx.config.executionModel
+  const auditorModel = parsed.auditorModel || ctx.config.auditorModel
 
-  switch (body.mode) {
+  const { service, execCtx } = buildService(deps, projectId)
+
+  switch (parsed.mode) {
     case 'new-session': {
-      const result = await runPlanExecution({
-        planText,
-        title: body.title,
-        directory: ctx.directory,
-        projectId,
-        sessionId,
+      const command: ForgeExecutionCommand = {
+        type: 'plan.execute.newSession',
+        source,
         executionModel,
-        v2: ctx.v2,
-        logger: ctx.logger,
-        mode: 'new-session',
-      })
-
-      return ok(
-        {
-          mode: result.mode,
-          sessionId: result.sessionId,
-          modelUsed: result.modelUsed,
+        title: parsed.title,
+        lifecycle: {
+          selectSession: false,
         },
-        202
-      )
+      }
+
+      const result = await service.dispatch(execCtx, command)
+
+      if (!result.ok) {
+        throw new ForgeRpcError(result.error.code, result.error.message)
+      }
+
+      return {
+        mode: 'new-session',
+        sessionId: result.data.sessionId,
+        modelUsed: result.data.modelUsed,
+      }
     }
 
     case 'execute-here': {
-      if (!body.targetSessionId) {
-        throw badRequest('execute-here mode requires targetSessionId')
+      if (!parsed.targetSessionId) {
+        throw new ForgeRpcError('bad_request', 'execute-here mode requires targetSessionId')
       }
 
-      const result = await runPlanExecution({
-        planText,
-        title: body.title,
-        directory: ctx.directory,
-        projectId,
-        sessionId,
+      const command: ForgeExecutionCommand = {
+        type: 'plan.execute.here',
+        source,
+        targetSessionId: parsed.targetSessionId,
         executionModel,
-        v2: ctx.v2,
-        logger: ctx.logger,
-        mode: 'execute-here',
-        targetSessionId: body.targetSessionId,
-      })
+        title: parsed.title,
+      }
 
-      return ok(
-        {
-          mode: result.mode,
-          sessionId: result.sessionId,
-          modelUsed: result.modelUsed,
-        },
-        202
-      )
+      const result = await service.dispatch(execCtx, command)
+
+      if (!result.ok) {
+        throw new ForgeRpcError(result.error.code, result.error.message)
+      }
+
+      return {
+        mode: 'execute-here',
+        sessionId: result.data.sessionId,
+        modelUsed: result.data.modelUsed,
+      }
     }
 
     case 'loop':
     case 'loop-worktree': {
-      const isWorktree = body.mode === 'loop-worktree'
+      const isWorktree = parsed.mode === 'loop-worktree'
 
-      const launchResult = await launchFreshLoop({
-        planText,
-        title: body.title,
-        directory: ctx.directory,
-        projectId,
-        isWorktree,
-        v2: ctx.v2,
+      const command = buildStartLoopCommand({
+        source,
+        mode: isWorktree ? 'worktree' : 'in-place',
         executionModel,
         auditorModel,
         hostSessionId: sessionId,
+        title: parsed.title,
+        lifecycle: {
+          selectSession: true,
+          startWatchdog: true,
+        },
       })
 
-      if (!launchResult) {
-        throw new Error('Failed to launch loop')
+      const result = await service.dispatch(execCtx, command)
+
+      if (!result.ok) {
+        throw new ForgeRpcError(result.error.code, result.error.message)
       }
 
-      return ok(
-        {
-          mode: body.mode,
-          sessionId: launchResult.sessionId,
-          loopName: launchResult.loopName,
-          worktreeDir: launchResult.worktreeDir,
-        },
-        202
-      )
+      return {
+        mode: parsed.mode,
+        sessionId: result.data.sessionId,
+        loopName: result.data.loopName,
+        displayName: result.data.displayName,
+        worktreeDir: result.data.worktreeDir,
+        workspaceId: result.data.workspaceId,
+      }
     }
 
     default:
-      throw badRequest(`unknown mode: ${body.mode}`)
+      throw new ForgeRpcError('bad_request', `unknown mode: ${parsed.mode}`)
   }
 }

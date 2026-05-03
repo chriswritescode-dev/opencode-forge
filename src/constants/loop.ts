@@ -20,6 +20,10 @@ type PermissionRule = { permission: string; pattern: string; action: 'allow' | '
  * `src/hooks/loop.ts` -> `writeWorktreeCompletionLog`), so the loop session
  * itself does not need an external_directory allow rule for the log path.
  */
+/**
+ * @param options.isWorktree - Defaults to false (in-place loop). Worktree loops are isolated.
+ * @param options.isSandbox - Defaults to false (non-sandbox). Sandbox provides container isolation.
+ */
 export function buildLoopPermissionRuleset(
   options?: { isWorktree?: boolean; isSandbox?: boolean },
 ): PermissionRule[] {
@@ -49,8 +53,6 @@ export function buildLoopPermissionRuleset(
   rules.push(
     { permission: 'review-write',  pattern: '*', action: 'deny' },
     { permission: 'review-delete', pattern: '*', action: 'deny' },
-    { permission: 'plan-write',    pattern: '*', action: 'deny' },
-    { permission: 'plan-edit',     pattern: '*', action: 'deny' },
     { permission: 'plan-execute',  pattern: '*', action: 'deny' },
     { permission: 'loop',          pattern: '*', action: 'deny' },
   )
@@ -97,8 +99,6 @@ export function buildAuditSessionPermissionRuleset(
     // Auditors must never launch loops, execute plans, or manage other loops.
     { permission: 'loop',         pattern: '*', action: 'deny' },
     { permission: 'plan-execute', pattern: '*', action: 'deny' },
-    { permission: 'plan-write',   pattern: '*', action: 'deny' },
-    { permission: 'plan-edit',    pattern: '*', action: 'deny' },
     { permission: 'loop-cancel',  pattern: '*', action: 'deny' },
     { permission: 'loop-status',  pattern: '*', action: 'deny' },
   ]

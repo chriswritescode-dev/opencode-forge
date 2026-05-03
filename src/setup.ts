@@ -58,11 +58,6 @@ function getDefaultConfig(): PluginConfig {
       enabled: false,
       file: resolveLogPath(),
     },
-    api: {
-      enabled: true,
-      host: '127.0.0.1',
-      port: 5552,
-    },
   }
 }
 
@@ -118,36 +113,18 @@ export function loadPluginConfig(): PluginConfig {
 }
 
 function normalizeConfig(config: PluginConfig): PluginConfig {
-  // Emit deprecation warning before coalescing
-  if (config.defaultKvTtlMs !== undefined && config.completedLoopTtlMs === undefined) {
-    console.warn('[forge] Config: "defaultKvTtlMs" is deprecated, please rename to "completedLoopTtlMs". Compatibility shim will be removed in a future release.')
-  }
-
   return {
     dataDir: config.dataDir,
-    completedLoopTtlMs: config.completedLoopTtlMs ?? config.defaultKvTtlMs,
+    completedLoopTtlMs: config.completedLoopTtlMs,
     logging: config.logging,
     compaction: config.compaction,
     messagesTransform: config.messagesTransform,
     executionModel: config.executionModel,
     auditorModel: config.auditorModel,
     loop: config.loop,
-    tui: config.tui
-      ? {
-          sidebar: config.tui.sidebar,
-          showLoops: config.tui.showLoops,
-          showVersion: config.tui.showVersion,
-          keybinds: config.tui.keybinds,
-          remoteServer: config.tui.remoteServer,
-        }
-      : undefined,
+    tui: config.tui,
     agents: config.agents,
     sandbox: config.sandbox,
     graph: config.graph,
-    api: {
-      enabled: config.api?.enabled ?? true,
-      host: config.api?.host ?? '127.0.0.1',
-      port: config.api?.port ?? 5552,
-    },
   }
 }

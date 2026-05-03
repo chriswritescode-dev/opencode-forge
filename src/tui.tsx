@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from '@opencode-ai/plugin/tui'
-import { createEffect, createMemo, createSignal, onCleanup, Show, For } from 'solid-js'
+import { createEffect, createMemo, createSignal, onCleanup, Show, For, untrack } from 'solid-js'
 import { SyntaxStyle, type TextareaRenderable } from '@opentui/core'
 import { writeFileSync } from 'fs'
 import { join } from 'path'
@@ -8,13 +8,15 @@ import { VERSION } from './version'
 import { loadPluginConfig } from './setup'
 import { fetchSessionStats, type SessionStats } from './utils/session-stats'
 import { slugify } from './utils/logger'
-import { extractPlanTitle, PLAN_EXECUTION_LABELS, matchExecutionLabel, type PlanExecutionLabel } from './utils/plan-execution'
+import { extractPlanTitle } from './utils/plan-execution'
 import { formatGraphStatus } from './utils/tui-graph-status'
 import { shouldPollSidebar, type LoopInfo } from './utils/tui-refresh-helpers'
-import { resolveExecutionDialogDefaults } from './utils/tui-execution-preferences'
-import { flattenProviders, buildDialogSelectOptions, getModelDisplayLabel, sortModelsByPriority, type ModelInfo } from './utils/tui-models'
+import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
+import { createExecutionContextCache } from './utils/tui-execution-context-cache'
+import type { PluginConfig } from './types'
+import { ExecutePlanPanel } from './tui/execute-plan-panel'
 import { formatDuration, formatTokens, truncate, truncateMiddle } from './utils/format'
-import { resolveForgeApiUrl, connectForgeProject, type ApiExecutionMode, type ForgeProjectClient } from './utils/tui-client'
+import { connectForgeProject, type ForgeProjectClient } from './utils/tui-client'
 
 type TuiKeybinds = {
   viewPlan: string
@@ -34,66 +36,70 @@ type TuiOptions = {
   showVersion: boolean
   keybinds: TuiKeybinds
 }
+
+type ForgeConnectionStatus = 'connecting' | 'connected' | 'unavailable'
+
+function ForgeSidebarStatus(props: { api: TuiPluginApi; opts: TuiOptions; status: () => ForgeConnectionStatus }) {
+  const theme = () => props.api.theme.current
+  const title = createMemo(() => props.opts.showVersion ? `Forge v${VERSION}` : 'Forge')
+  const statusText = createMemo(() => props.status() === 'connecting' ? 'connecting' : 'RPC unavailable')
+
+  return (
+    <Show when={props.opts.sidebar}>
+      <box>
+        <box flexDirection="row" gap={1}>
+          <text fg={theme().text}>
+            <b>{title()}</b>
+          </text>
+          <text fg={theme().textMuted}>· {statusText()}</text>
+        </box>
+      </box>
+    </Show>
+  )
+}
+
+function SidebarContainer(props: {
+  api: TuiPluginApi
+  client: () => ForgeProjectClient | null
+  cache: () => ExecutionContextCache | null
+  pluginConfig: PluginConfig
+  opts: TuiOptions
+  status: () => ForgeConnectionStatus
+  sessionId?: string
+}) {
+  const currentClient = createMemo(() => props.client())
+
+  return (
+    <Show
+      when={currentClient()}
+      fallback={<ForgeSidebarStatus api={props.api} opts={props.opts} status={props.status} />}
+    >
+      {(client) => <Sidebar api={props.api} client={client()} cache={props.cache} pluginConfig={props.pluginConfig} opts={props.opts} sessionId={props.sessionId} />}
+    </Show>
+  )
+}
+
 function PlanViewerDialog(props: {
   api: TuiPluginApi
   client: ForgeProjectClient
+  cache: ExecutionContextCache | null
+  pluginConfig: PluginConfig
   planContent: string
   sessionId: string
-  onRefresh?: () => void | Promise<void>
+  onRefresh: () => void | Promise<void>
   startInExecuteMode?: boolean
   initialExecutionModel?: string
   initialAuditorModel?: string
 }) {
   const theme = () => props.api.theme.current
   const [editing, setEditing] = createSignal(false)
-  const [executing, setExecuting] = createSignal(props.startInExecuteMode ?? false)
-  const [content, setContent] = createSignal(props.planContent)
-  const [defaultsLoaded, setDefaultsLoaded] = createSignal(false)
-  const [allModels, setAllModels] = createSignal<ModelInfo[]>([])
-  const [modelsLoaded, setModelsLoaded] = createSignal(false)
-  const [modelsError, setModelsError] = createSignal<string | undefined>(undefined)
-  const [executionModel, setExecutionModel] = createSignal<string>(props.initialExecutionModel ?? '')
-  const [auditorModel, setAuditorModel] = createSignal<string>(props.initialAuditorModel ?? '')
-  const [recentModelIds, setRecentModelIds] = createSignal<string[]>([])
+  const startInExecuteModeValue = () => !!props.startInExecuteMode
+  const planContentValue = () => props.planContent
+  const initialExecutionModelValue = () => props.initialExecutionModel ?? ''
+  const initialAuditorModelValue = () => props.initialAuditorModel ?? ''
+  const [executing, setExecuting] = createSignal(startInExecuteModeValue())
+  const [content, setContent] = createSignal(planContentValue())
   let textareaRef: TextareaRenderable | undefined
-
-  const hasInitialOverrides = props.initialExecutionModel !== undefined || props.initialAuditorModel !== undefined
-
-  const loadContext = async () => {
-    const ctx = await props.client.loadExecutionContext()
-    // defaults
-    const defaults = resolveExecutionDialogDefaults(
-      { logging: { enabled: false, file: '' } },
-      ctx.preferences,
-    )
-    if (!hasInitialOverrides) {
-      setExecutionModel(defaults.executionModel)
-      setAuditorModel(defaults.auditorModel)
-    }
-    setDefaultsLoaded(true)
-    // models
-    if (ctx.models.error) {
-      setModelsError(ctx.models.error)
-      setModelsLoaded(true)
-      return
-    }
-    const allModelList = flattenProviders(ctx.models.providers as Parameters<typeof flattenProviders>[0])
-    const recents: string[] = []
-    setRecentModelIds(recents)
-    const sorted = sortModelsByPriority(allModelList, {
-      recents,
-      connectedProviderIds: ctx.models.connectedProviderIds,
-      configuredProviderIds: ctx.models.configuredProviderIds,
-    })
-    setAllModels(sorted)
-    setModelsLoaded(true)
-  }
-
-  void loadContext().catch((err) => {
-    console.error('[forge] PlanViewerDialog: loadContext failed', err)
-    setDefaultsLoaded(true)
-    setModelsLoaded(true)
-  })
 
   const handleSave = async () => {
     const text = textareaRef?.plainText ?? content()
@@ -132,104 +138,6 @@ function PlanViewerDialog(props: {
       })
     }
   }
-
-  const openModelDialog = (target: 'execution' | 'auditor') => {
-    if (!modelsLoaded()) return
-
-    const models = allModels()
-    if (modelsError() || models.length === 0) {
-      props.api.ui.toast({ message: modelsError() || 'No models available', variant: 'error', duration: 3000 })
-      return
-    }
-
-    const options = buildDialogSelectOptions(models, recentModelIds())
-    const title = target === 'execution' ? 'Execution Model' : 'Auditor Model'
-    const currentValue = target === 'execution' ? executionModel() : auditorModel()
-
-    props.api.ui.dialog.setSize('large')
-    props.api.ui.dialog.replace(() => (
-      <props.api.ui.DialogSelect
-        title={title}
-        options={options}
-        current={currentValue || ''}
-        onSelect={(opt) => {
-          const selectedModel = typeof opt.value === 'string' ? opt.value : ''
-          props.api.ui.dialog.setSize('xlarge')
-          props.api.ui.dialog.replace(() => (
-            <PlanViewerDialog
-              api={props.api}
-              client={props.client}
-              planContent={content()}
-              sessionId={props.sessionId}
-              onRefresh={props.onRefresh}
-              startInExecuteMode={true}
-              initialExecutionModel={target === 'execution' ? selectedModel : executionModel()}
-              initialAuditorModel={target === 'auditor' ? selectedModel : auditorModel()}
-            />
-          ))
-        }}
-      />
-    ))
-  }
-
-  function getModeDescription(label: string): string {
-    switch (label) {
-      case 'New session':
-        return 'Create a new session and send the plan to the code agent'
-      case 'Execute here':
-        return 'Execute the plan in the current session using the code agent'
-      case 'Loop (worktree)':
-        return 'Execute using iterative development loop in an isolated git worktree'
-      case 'Loop':
-        return 'Execute using iterative development loop in the current directory'
-      default:
-        return ''
-    }
-  }
-
-  const handleExecuteMode = async (mode: string, executionModel?: string, auditorModel?: string) => {
-    const planText = content()
-    const title = extractPlanTitle(planText)
-
-    // Use canonical label matching instead of fragile string comparison
-    const matchedLabel = matchExecutionLabel(mode)
-
-    const apiMode: ApiExecutionMode = matchedLabel === 'Execute here'
-      ? 'execute-here'
-      : matchedLabel === 'Loop'
-        ? 'loop'
-        : matchedLabel === 'Loop (worktree)'
-          ? 'loop-worktree'
-          : 'new-session'
-
-    props.api.ui.dialog.clear()
-    props.api.ui.toast({ message: 'Executing plan...', variant: 'info', duration: 3000 })
-    const result = await props.client.plan.execute(props.sessionId, {
-      mode: apiMode,
-      title,
-      plan: planText,
-      executionModel,
-      auditorModel,
-      targetSessionId: props.sessionId,
-    }, {
-      mode: matchedLabel as PlanExecutionLabel,
-      executionModel,
-      auditorModel,
-    })
-
-    if (!result) {
-      props.api.ui.toast({ message: 'Failed to execute plan', variant: 'error', duration: 3000 })
-      return
-    }
-
-    props.api.ui.toast({ message: result.loopName ? `Loop started: ${result.loopName}` : 'Plan execution started', variant: 'success', duration: 3000 })
-    props.onRefresh?.()
-    if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop-worktree')) {
-      try { props.api.route.navigate('session', { sessionID: result.sessionId }) } catch {}
-    }
-  }
-
-
 
   const tabIndex = () => executing() ? 2 : editing() ? 1 : 0
   let tabRef: import('@opentui/core').TabSelectRenderable | undefined
@@ -295,62 +203,35 @@ function PlanViewerDialog(props: {
       </Show>
       
       <Show when={executing()}>
-        <box flexDirection="column" paddingBottom={1} gap={1} minHeight={20} maxHeight="75%">
-          <box paddingBottom={1}>
-            <text fg={theme().text}><b>Configure and Run Plan</b></text>
-          </box>
-          <Show when={defaultsLoaded()} fallback={
-            <box flexDirection="column" gap={1} paddingBottom={1}>
-              <text fg={theme().textMuted}>Loading...</text>
-            </box>
-          }>
-            <select
-              focused={true}
-              selectedIndex={0}
-              options={[
-                {
-                  name: `Execution model: ${modelsLoaded() ? getModelDisplayLabel(executionModel(), allModels()) : 'loading...'}`,
-                  description: 'Press enter to change',
-                  value: 'model:execution',
-                },
-                {
-                  name: `Auditor model: ${modelsLoaded() ? getModelDisplayLabel(auditorModel(), allModels()) : 'loading...'}`,
-                  description: 'Press enter to change',
-                  value: 'model:auditor',
-                },
-                ...PLAN_EXECUTION_LABELS.map(label => ({
-                  name: label,
-                  description: getModeDescription(label),
-                  value: `mode:${label}`,
-                })),
-              ]}
-              onSelect={(_, option) => {
-                if (option?.value) {
-                  if (option.value === 'model:execution') {
-                    openModelDialog('execution')
-                    return
-                  }
-                  if (option.value === 'model:auditor') {
-                    openModelDialog('auditor')
-                    return
-                  }
-                  if (typeof option.value === 'string' && option.value.startsWith('mode:')) {
-                    handleExecuteMode(option.value.slice(5), executionModel(), auditorModel())
-                  }
-                }
-              }}
-              showDescription={true}
-              itemSpacing={1}
-              wrapSelection={true}
-              textColor={theme().text}
-              focusedTextColor={theme().text}
-              selectedTextColor="#ffffff"
-              selectedBackgroundColor={theme().borderActive}
-              minHeight={16}
-              flexGrow={1}
-            />
-          </Show>
-        </box>
+        <ExecutePlanPanel
+          api={props.api}
+          client={props.client}
+          cache={props.cache}
+          pluginConfig={props.pluginConfig}
+          planContent={content()}
+          sessionId={props.sessionId}
+          initialExecutionModel={initialExecutionModelValue()}
+          initialAuditorModel={initialAuditorModelValue()}
+          onBack={() => setExecuting(false)}
+          onExecuted={props.onRefresh}
+          onModelSelected={({ target, selectedModel, executionModel, auditorModel }) => {
+            props.api.ui.dialog.setSize('xlarge')
+            props.api.ui.dialog.replace(() => (
+              <PlanViewerDialog
+                api={props.api}
+                client={props.client}
+                cache={props.cache}
+                pluginConfig={props.pluginConfig}
+                planContent={content()}
+                sessionId={props.sessionId}
+                onRefresh={props.onRefresh}
+                startInExecuteMode={true}
+                initialExecutionModel={target === 'execution' ? selectedModel : executionModel}
+                initialAuditorModel={target === 'auditor' ? selectedModel : auditorModel}
+              />
+            ))
+          }}
+        />
       </Show>
       
       <box paddingTop={1} flexShrink={0} flexDirection="row" gap={2}>
@@ -368,31 +249,34 @@ function PlanViewerDialog(props: {
 
 function LoopDetailsDialog(props: { api: TuiPluginApi; client: ForgeProjectClient; loop: LoopInfo; onBack?: () => void; onRefresh?: () => void | Promise<void> }) {
   const theme = () => props.api.theme.current
+  // eslint-disable-next-line solid/reactivity
   const [currentLoop, setCurrentLoop] = createSignal<LoopInfo>(props.loop)
   const [stats, setStats] = createSignal<SessionStats | null>(null)
   const [loading, setLoading] = createSignal(true)
 
-  const directory = props.api.state.path.directory
-
   // Re-read loop state when dialog opens and on refresh requests
   // This ensures the dialog shows fresh data, not a stale snapshot
   const refreshLoopState = async () => {
-    if (currentLoop().name) {
-      const freshLoop = await props.client.loops.get(currentLoop().name)
+    const loopName = currentLoop().name
+    if (loopName) {
+      const freshLoop = await props.client.loops.get(loopName)
       if (freshLoop) {
         setCurrentLoop(freshLoop)
       }
     }
   }
   
-  // Initial refresh on mount
-  refreshLoopState()
+  // Initial refresh on mount - wrap in createEffect for reactivity
+  createEffect(() => {
+    void refreshLoopState()
+  })
 
   createEffect(() => {
     const loop = currentLoop()
-    if (loop.sessionId && directory) {
+    const dir = props.api.state.path.directory
+    if (loop.sessionId && dir) {
       setLoading(true)
-      fetchSessionStats(props.api, loop.sessionId, directory).then((result) => {
+      fetchSessionStats(props.api, loop.sessionId, dir).then((result) => {
         setStats(result)
         setLoading(false)
       }).catch(() => {
@@ -470,65 +354,65 @@ function LoopDetailsDialog(props: { api: TuiPluginApi; client: ForgeProjectClien
           }>
             <box flexDirection="column">
               <box>
-                <text fg={theme().text}>
-                  <span style={{ fg: theme().textMuted }}>Session: </span>
-                  {currentLoop().sessionId.slice(0, 8)}...
-                </text>
+                <box flexDirection="row">
+                  <text fg={theme().textMuted}>Session: </text>
+                  <text fg={theme().text}>{currentLoop().sessionId.slice(0, 8)}...</text>
+                </box>
               </box>
               <box>
-                <text fg={theme().text}>
-                  <span style={{ fg: theme().textMuted }}>Phase: </span>
-                  {currentLoop().phase}
-                </text>
+                <box flexDirection="row">
+                  <text fg={theme().textMuted}>Phase: </text>
+                  <text fg={theme().text}>{currentLoop().phase}</text>
+                </box>
               </box>
               <Show when={currentLoop().executionModel}>
                 <box>
-                  <text fg={theme().text}>
-                    <span style={{ fg: theme().textMuted }}>Execution model: </span>
-                    {currentLoop().executionModel}
-                  </text>
+                  <box flexDirection="row">
+                    <text fg={theme().textMuted}>Execution model: </text>
+                    <text fg={theme().text}>{currentLoop().executionModel}</text>
+                  </box>
                 </box>
               </Show>
               <Show when={currentLoop().auditorModel}>
                 <box>
-                  <text fg={theme().text}>
-                    <span style={{ fg: theme().textMuted }}>Auditor model: </span>
-                    {currentLoop().auditorModel}
-                  </text>
+                  <box flexDirection="row">
+                    <text fg={theme().textMuted}>Auditor model: </text>
+                    <text fg={theme().text}>{currentLoop().auditorModel}</text>
+                  </box>
                 </box>
               </Show>
               <box>
-                <text fg={theme().text}>
-                  <span style={{ fg: theme().textMuted }}>Messages: </span>
-                  {stats()!.messages.total} total ({stats()!.messages.assistant} assistant)
-                </text>
+                <box flexDirection="row">
+                  <text fg={theme().textMuted}>Messages: </text>
+                  <text fg={theme().text}>{stats()!.messages.total} total ({stats()!.messages.assistant} assistant)</text>
+                </box>
               </box>
               <box>
-                <text fg={theme().text}>
-                  <span style={{ fg: theme().textMuted }}>Tokens: </span>
-                  {formatTokens(stats()!.tokens.input)} in / {formatTokens(stats()!.tokens.output)} out / {formatTokens(stats()!.tokens.reasoning)} reasoning
-                </text>
+                <box flexDirection="row">
+                  <text fg={theme().textMuted}>Tokens: </text>
+                  <text fg={theme().text}>{formatTokens(stats()!.tokens.input)} in / {formatTokens(stats()!.tokens.output)} out / {formatTokens(stats()!.tokens.reasoning)} reasoning</text>
+                </box>
               </box>
               <box>
-                <text fg={theme().text}>
-                  <span style={{ fg: theme().textMuted }}>Cost: </span>
-                  ${stats()!.cost.toFixed(4)}
-                </text>
+                <box flexDirection="row">
+                  <text fg={theme().textMuted}>Cost: </text>
+                  <text fg={theme().text}>${stats()!.cost.toFixed(4)}</text>
+                </box>
               </box>
               <Show when={stats()!.fileChanges}>
                 <box>
-                  <text fg={theme().text}>
-                    <span style={{ fg: theme().textMuted }}>Files: </span>
-                    {stats()!.fileChanges!.files} changed (+{stats()!.fileChanges!.additions}/-{stats()!.fileChanges!.deletions})
-                  </text>
+                  <box flexDirection="row">
+                    <text fg={theme().textMuted}>Files: </text>
+                    <text fg={theme().text}>{stats()!.fileChanges!.files} changed (+{stats()!.fileChanges!.additions}/-{stats()!.fileChanges!.deletions})</text>
+                  </box>
                 </box>
               </Show>
               <Show when={stats()!.timing}>
                 <box>
-                  <text fg={theme().text}>
-                    <span style={{ fg: theme().textMuted }}>Duration: </span>
-                    {formatDuration(stats()!.timing!.durationMs, { includeSeconds: true, compact: true })}
-                  </text>
+                  <box flexDirection="row">
+                    <text fg={theme().textMuted}>Duration: </text>
+                    <text fg={theme().text}>{formatDuration(stats()!.timing!.durationMs, { includeSeconds: true, compact: true })}</text>
+                  </box>
                 </box>
               </Show>
             </box>
@@ -571,32 +455,27 @@ function LoopDetailsDialog(props: { api: TuiPluginApi; client: ForgeProjectClien
   )
 }
 
-function Sidebar(props: { api: TuiPluginApi; client: ForgeProjectClient; opts: TuiOptions; sessionId?: string; remoteUrl?: string }) {
+function Sidebar(props: {
+  api: TuiPluginApi
+  client: ForgeProjectClient
+  cache: () => ExecutionContextCache | null
+  pluginConfig: PluginConfig
+  opts: TuiOptions
+  sessionId?: string
+}) {
   const [open, setOpen] = createSignal(true)
   const [loops, setLoops] = createSignal<LoopInfo[]>([])
   const [hasPlan, setHasPlan] = createSignal(false)
   const [graphStatusFormatted, setGraphStatusFormatted] = createSignal<ReturnType<typeof formatGraphStatus> | null>(null)
   const [graphStatusRaw, setGraphStatusRaw] = createSignal<Parameters<typeof formatGraphStatus>[0] | null>(null)
   const theme = () => props.api.theme.current
-  const directory = props.api.state.path.directory
+  const directory = createMemo(() => props.api.state.path.directory)
 
   const title = createMemo(() => {
     return props.opts.showVersion ? `Forge v${VERSION}` : 'Forge'
   })
 
-  const remoteInfo = createMemo(() => {
-    const url = props.remoteUrl?.trim()
-    if (!url) return null
-    try {
-      const urlObj = new URL(url)
-      return {
-        hostname: urlObj.hostname,
-        protocol: urlObj.protocol.replace(':', ''),
-      }
-    } catch {
-      return null
-    }
-  })
+
 
   const dot = (loop: LoopInfo) => {
     if (!loop.active) {
@@ -674,24 +553,27 @@ function Sidebar(props: { api: TuiPluginApi; client: ForgeProjectClient; opts: T
     }
     
     // Refresh graph status from KV (scoped to current directory)
-    const status = await props.client.readGraphStatus(directory)
+    const status = await props.client.readGraphStatus(directory())
     setGraphStatusRaw(status)
-    setGraphStatusFormatted(formatGraphStatus(status))
+    setGraphStatusFormatted(status && status.state !== 'unavailable' ? formatGraphStatus(status) : null)
   }
   
 
-  
-  const unsubStatus = props.api.event.on('session.status', () => {
-    refreshSidebarData()
+  // Event subscriptions - wrapped to handle reactivity properly
+  // eslint-disable-next-line solid/reactivity
+  const unsubStatus = props.api.event.on('session.status', async () => {
+    await refreshSidebarData()
   })
   // session.deleted fires when terminateLoop cleans up a completed worktree loop's session,
   // session.updated fires on status transitions. Both should refresh the sidebar immediately
   // so completed loops don't keep their stale sessionId/workspaceId in the list.
-  const unsubDeleted = props.api.event.on('session.deleted', () => {
-    refreshSidebarData()
+  // eslint-disable-next-line solid/reactivity
+  const unsubDeleted = props.api.event.on('session.deleted', async () => {
+    await refreshSidebarData()
   })
-  const unsubUpdated = props.api.event.on('session.updated', () => {
-    refreshSidebarData()
+  // eslint-disable-next-line solid/reactivity
+  const unsubUpdated = props.api.event.on('session.updated', async () => {
+    await refreshSidebarData()
   })
 
   let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -710,7 +592,9 @@ function Sidebar(props: { api: TuiPluginApi; client: ForgeProjectClient; opts: T
     }
   }
 
-  void refreshSidebarData()
+  createEffect(() => {
+    void refreshSidebarData()
+  })
 
   // Re-check after a short delay to catch graph status that wasn't written yet at mount time
   const initTimer = setTimeout(() => {
@@ -755,12 +639,19 @@ function Sidebar(props: { api: TuiPluginApi; client: ForgeProjectClient; opts: T
           </Show>
           <text fg={theme().text}>
             <b>{title()}</b>
-            {!open() && hasPlan() ? <span style={{ fg: theme().info }}> · plan</span> : ''}
-            {!open() && graphStatusFormatted() && graphStatusFormatted()!.text.includes('ready') ? <span style={{ fg: theme().success }}> · ready</span> : ''}
-            {!open() && activeCount() > 0 ? <span style={{ fg: theme().textMuted }}>{` (${activeCount()} active)`}</span> : ''}
-            {!open() && remoteInfo() ? <span style={{ fg: theme().warning }}>{` (${remoteInfo()!.hostname})`}</span> : ''}
-            {!open() && !remoteInfo() ? <span style={{ fg: theme().textMuted }}> (local)</span> : ''}
           </text>
+          <Show when={!open() && hasPlan()}>
+            <text fg={theme().info}>· plan</text>
+          </Show>
+          <Show when={!open() && graphStatusFormatted() && graphStatusFormatted()!.text.includes('ready')}>
+            <text fg={theme().success}>· ready</text>
+          </Show>
+          <Show when={!open() && activeCount() > 0}>
+            <text fg={theme().textMuted}>{`(${activeCount()} active)`}</text>
+          </Show>
+          <Show when={!open()}>
+            <text fg={theme().textMuted}>(local)</text>
+          </Show>
         </box>
         <Show when={open()}>
           <Show when={hasPlan()}>
@@ -777,11 +668,19 @@ function Sidebar(props: { api: TuiPluginApi; client: ForgeProjectClient; opts: T
                 const refreshSidebar = refreshSidebarData
                 props.api.ui.dialog.setSize("xlarge")
                 props.api.ui.dialog.replace(() => (
-                  <PlanViewerDialog api={props.api} client={props.client} planContent={plan} sessionId={props.sessionId!} onRefresh={refreshSidebar} />
+                  <PlanViewerDialog
+                    api={props.api}
+                    client={props.client}
+                    cache={props.cache()}
+                    pluginConfig={props.pluginConfig}
+                    planContent={plan}
+                    sessionId={props.sessionId!}
+                    onRefresh={refreshSidebar}
+                  />
                 ))
               }}
             >
-              <text flexShrink={0} style={{ fg: theme().info }}>📋</text>
+              <text flexShrink={0} fg={theme().info}>📋</text>
               <text fg={theme().text}>Plan</text>
             </box>
           </Show>
@@ -790,7 +689,7 @@ function Sidebar(props: { api: TuiPluginApi; client: ForgeProjectClient; opts: T
               flexDirection="row"
               gap={1}
             >
-              <text flexShrink={0} style={{ fg: theme()[graphStatusFormatted()!.color] }}>•</text>
+              <text flexShrink={0} fg={theme()[graphStatusFormatted()!.color]}>•</text>
               <text fg={theme().text} wrapMode="word">
                 {graphStatusFormatted()!.text}
               </text>
@@ -826,11 +725,9 @@ function Sidebar(props: { api: TuiPluginApi; client: ForgeProjectClient; opts: T
                     }
                   }}
                 >
-                  <text flexShrink={0} style={{ fg: dot(loop) }}>•</text>
-                  <text fg={theme().text} wrapMode="word">
-                    {truncateMiddle(loop.name, 25)}{' '}
-                    <span style={{ fg: theme().textMuted }}>{statusText(loop)}</span>
-                  </text>
+                  <text flexShrink={0} fg={dot(loop)}>•</text>
+                  <text fg={theme().text} wrapMode="word">{truncateMiddle(loop.name, 25)}</text>
+                  <text fg={theme().textMuted}>{statusText(loop)}</text>
                 </box>
               )}
             </For>
@@ -847,14 +744,7 @@ const tui: TuiPlugin = async (api) => {
 
   const pluginConfig = loadPluginConfig()
   const tuiConfig = pluginConfig.tui
-  const remoteUrl = resolveForgeApiUrl(pluginConfig)
   const directory = api.state.path.directory
-  const client = await connectForgeProject(pluginConfig, directory)
-  if (!client) {
-    api.ui.toast({ message: `Forge API unavailable for ${directory}; TUI disabled`, variant: 'error', duration: 5000 })
-    return
-  }
-
   const opts: TuiOptions = {
     sidebar: tuiConfig?.sidebar ?? true,
     showLoops: tuiConfig?.showLoops ?? true,
@@ -863,6 +753,84 @@ const tui: TuiPlugin = async (api) => {
   }
 
   if (!opts.sidebar) return
+
+  const [client, setClient] = createSignal<ForgeProjectClient | null>(null)
+  const [connectionStatus, setConnectionStatus] = createSignal<ForgeConnectionStatus>('connecting')
+  const [executionContextCache, setExecutionContextCache] = createSignal<ExecutionContextCache | null>(null)
+  let connectPromise: Promise<ForgeProjectClient | null> | null = null
+  let disposed = false
+  let unavailableToastShown = false
+  let retryTimer: ReturnType<typeof setTimeout> | null = null
+
+  api.lifecycle.onDispose(() => {
+    disposed = true
+    if (retryTimer) {
+      clearTimeout(retryTimer)
+      retryTimer = null
+    }
+  })
+
+  const showUnavailableToast = () => {
+    if (unavailableToastShown) return
+    unavailableToastShown = true
+    api.ui.toast({ message: `Forge bus RPC unavailable for ${directory}`, variant: 'warning', duration: 5000 })
+  }
+
+  const scheduleClientRetry = () => {
+    if (disposed || retryTimer || untrack(client)) return
+    retryTimer = setTimeout(() => {
+      retryTimer = null
+      if (!disposed && !untrack(client)) void startClientConnection()
+    }, 2000)
+  }
+
+  const startClientConnection = (): Promise<ForgeProjectClient | null> => {
+    if (connectPromise) return connectPromise
+
+    setConnectionStatus('connecting')
+    connectPromise = connectForgeProject(api, directory).then((connected) => untrack(() => {
+      connectPromise = null
+      if (disposed) return connected
+
+      setClient(connected)
+      setConnectionStatus(connected ? 'connected' : 'unavailable')
+      if (!connected) {
+        showUnavailableToast()
+        scheduleClientRetry()
+      } else if (connected && connected.projectId) {
+        const cache = createExecutionContextCache(
+          connected.projectId,
+          pluginConfig,
+          () => connected.loadExecutionContext(),
+        )
+        void cache.ensureLoaded().catch((err) => console.error('[forge] execution context preload failed', err))
+        setExecutionContextCache(cache)
+      }
+      return connected
+    })).catch((err) => untrack(() => {
+      connectPromise = null
+      console.error('[forge] TUI RPC connection failed', err)
+      if (!disposed) {
+        setConnectionStatus('unavailable')
+        showUnavailableToast()
+        scheduleClientRetry()
+      }
+      return null
+    }))
+
+    return connectPromise
+  }
+
+  const ensureClient = async (): Promise<ForgeProjectClient | null> => {
+    const existing = client()
+    if (existing) return existing
+    return startClientConnection()
+  }
+
+  createEffect(() => {
+    if (!api.state.ready || client() || connectPromise) return
+    void startClientConnection()
+  })
 
   api.command.register(() => {
     return [
@@ -873,7 +841,10 @@ const tui: TuiPlugin = async (api) => {
         category: 'Forge',
         keybind: opts.keybinds.showLoops,
         onSelect: async () => {
-          const currentStates = await client.loops.list()
+          const currentClient = await ensureClient()
+          if (!currentClient) return
+
+          const currentStates = await currentClient.loops.list()
           const worktreeLoops = currentStates.filter(l => l.worktree)
           const loopOptions = worktreeLoops.map(l => {
             const status = l.active
@@ -893,13 +864,14 @@ const tui: TuiPlugin = async (api) => {
               <api.ui.DialogSelect
                 title="Loops"
                 options={loopOptions}
+                // eslint-disable-next-line solid/reactivity
                 onSelect={async (opt) => {
                   const loopName = opt.value as string
-                  const freshLoop = await client.loops.get(loopName)
+                  const freshLoop = await currentClient.loops.get(loopName)
                   if (freshLoop) {
                     api.ui.dialog.setSize("medium")
                     api.ui.dialog.replace(() => (
-                      <LoopDetailsDialog api={api} client={client} loop={freshLoop} onBack={showLoopList} onRefresh={() => {}} />
+                      <LoopDetailsDialog api={api} client={currentClient} loop={freshLoop} onBack={showLoopList} onRefresh={() => {}} />
                     ))
                   } else {
                     api.ui.dialog.clear()
@@ -932,14 +904,26 @@ const tui: TuiPlugin = async (api) => {
       category: 'Forge',
       keybind: opts.keybinds.viewPlan,
       onSelect: async () => {
-        const freshPlan = await client.plan.read(sessionID)
+        const currentClient = await ensureClient()
+        if (!currentClient) return
+
+        const freshPlan = await currentClient.plan.read(sessionID)
         if (!freshPlan) {
           api.ui.toast({ message: 'No plan found for this session', variant: 'info', duration: 3000 })
           return
         }
+        const cache = executionContextCache()
         api.ui.dialog.setSize("xlarge")
         api.ui.dialog.replace(() => (
-          <PlanViewerDialog api={api} client={client} planContent={freshPlan} sessionId={sessionID} onRefresh={refreshSidebar} />
+          <PlanViewerDialog
+            api={api}
+            client={currentClient}
+            cache={cache}
+            pluginConfig={pluginConfig}
+            planContent={freshPlan}
+            sessionId={sessionID}
+            onRefresh={refreshSidebar}
+          />
         ))
       },
     }, {
@@ -949,14 +933,27 @@ const tui: TuiPlugin = async (api) => {
       category: 'Forge',
       keybind: opts.keybinds.executePlan,
       onSelect: async () => {
-        const freshPlan = await client.plan.read(sessionID)
+        const currentClient = await ensureClient()
+        if (!currentClient) return
+
+        const freshPlan = await currentClient.plan.read(sessionID)
         if (!freshPlan) {
           api.ui.toast({ message: 'No plan found for this session', variant: 'info', duration: 3000 })
           return
         }
+        const cache = executionContextCache()
         api.ui.dialog.setSize("xlarge")
         api.ui.dialog.replace(() => (
-          <PlanViewerDialog api={api} client={client} planContent={freshPlan} sessionId={sessionID} onRefresh={refreshSidebar} startInExecuteMode={true} />
+          <PlanViewerDialog
+            api={api}
+            client={currentClient}
+            cache={cache}
+            pluginConfig={pluginConfig}
+            planContent={freshPlan}
+            sessionId={sessionID}
+            onRefresh={refreshSidebar}
+            startInExecuteMode={true}
+          />
         ))
       },
     }]
@@ -966,7 +963,15 @@ const tui: TuiPlugin = async (api) => {
     order: 150,
     slots: {
       sidebar_content(_ctx, slotProps) {
-        return <Sidebar api={api} client={client} opts={opts} sessionId={slotProps.session_id} remoteUrl={remoteUrl} />
+        return <SidebarContainer
+          api={api}
+          client={client}
+          cache={executionContextCache}
+          pluginConfig={pluginConfig}
+          opts={opts}
+          status={connectionStatus}
+          sessionId={slotProps.session_id}
+        />
       },
     },
   })

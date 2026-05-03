@@ -9,14 +9,14 @@ function createTestDb(): Database {
   db.run(`
     CREATE TABLE IF NOT EXISTS review_findings (
       project_id   TEXT NOT NULL,
+      branch       TEXT NOT NULL DEFAULT '',
       file         TEXT NOT NULL,
       line         INTEGER NOT NULL,
       severity     TEXT NOT NULL CHECK(severity IN ('bug','warning')),
       description  TEXT NOT NULL,
       scenario     TEXT,
-      branch       TEXT,
       created_at   INTEGER NOT NULL,
-      PRIMARY KEY (project_id, file, line)
+      PRIMARY KEY (project_id, branch, file, line)
     )
   `)
   db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_branch ON review_findings(project_id, branch)`)
@@ -62,7 +62,38 @@ describe('ReviewFindingsRepo', () => {
       expect(findings[0].createdAt).toBeGreaterThan(now - 1000)
     })
 
-    test('returns conflict on duplicate file:line', () => {
+    test('returns conflict on duplicate file:line on same branch', () => {
+      repo.write({
+        projectId,
+        file: 'src/example.ts',
+        line: 12,
+        severity: 'bug',
+        description: 'First finding',
+        scenario: 'Scenario 1',
+        branch: 'main',
+      })
+
+      const result = repo.write({
+        projectId,
+        file: 'src/example.ts',
+        line: 12,
+        severity: 'warning',
+        description: 'Second finding',
+        scenario: 'Scenario 2',
+        branch: 'main',
+      })
+
+      expect(result.ok).toBe(false)
+      expect(result.conflict).toBe(true)
+
+      // Original finding should be unchanged
+      const findings = repo.listAll(projectId)
+      expect(findings).toHaveLength(1)
+      expect(findings[0].description).toBe('First finding')
+      expect(findings[0].severity).toBe('bug')
+    })
+
+    test('allows same file:line on different branches', () => {
       repo.write({
         projectId,
         file: 'src/example.ts',
@@ -83,14 +114,38 @@ describe('ReviewFindingsRepo', () => {
         branch: 'feature',
       })
 
-      expect(result.ok).toBe(false)
-      expect(result.conflict).toBe(true)
+      expect(result.ok).toBe(true)
+      expect(result.conflict).toBeUndefined()
 
-      // Original finding should be unchanged
       const findings = repo.listAll(projectId)
-      expect(findings).toHaveLength(1)
-      expect(findings[0].description).toBe('First finding')
-      expect(findings[0].severity).toBe('bug')
+      expect(findings).toHaveLength(2)
+      expect(findings.some(f => f.description === 'First finding')).toBe(true)
+      expect(findings.some(f => f.description === 'Second finding')).toBe(true)
+    })
+
+    test('allows same file:line with null branch and string branch', () => {
+      repo.write({
+        projectId,
+        file: 'src/example.ts',
+        line: 12,
+        severity: 'bug',
+        description: 'Null branch',
+        scenario: 'Scenario 1',
+        branch: null,
+      })
+
+      const result = repo.write({
+        projectId,
+        file: 'src/example.ts',
+        line: 12,
+        severity: 'warning',
+        description: 'String branch',
+        scenario: 'Scenario 2',
+        branch: 'feature',
+      })
+
+      expect(result.ok).toBe(true)
+      expect(repo.listAll(projectId)).toHaveLength(2)
     })
 
     test('allows different lines in same file', () => {
@@ -351,6 +406,87 @@ describe('ReviewFindingsRepo', () => {
       expect(deleted).toBe(true)
       expect(repo.listAll(projectId)).toHaveLength(1)
       expect(repo.listAll(projectId)[0].description).toBe('Keep')
+    })
+
+    test('delete with branch parameter only deletes that branch', () => {
+      repo.write({
+        projectId,
+        file: 'src/a.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Main finding',
+        scenario: 'S',
+        branch: 'main',
+      })
+      repo.write({
+        projectId,
+        file: 'src/a.ts',
+        line: 1,
+        severity: 'warning',
+        description: 'Feature finding',
+        scenario: 'S',
+        branch: 'feature',
+      })
+
+      const deleted = repo.delete(projectId, 'src/a.ts', 1, 'main')
+      expect(deleted).toBe(true)
+      
+      const remaining = repo.listAll(projectId)
+      expect(remaining).toHaveLength(1)
+      expect(remaining[0].branch).toBe('feature')
+    })
+
+    test('delete without branch parameter deletes all branches', () => {
+      repo.write({
+        projectId,
+        file: 'src/a.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Main finding',
+        scenario: 'S',
+        branch: 'main',
+      })
+      repo.write({
+        projectId,
+        file: 'src/a.ts',
+        line: 1,
+        severity: 'warning',
+        description: 'Feature finding',
+        scenario: 'S',
+        branch: 'feature',
+      })
+
+      const deleted = repo.delete(projectId, 'src/a.ts', 1)
+      expect(deleted).toBe(true)
+      expect(repo.listAll(projectId)).toEqual([])
+    })
+
+    test('delete with null branch parameter only deletes null branch', () => {
+      repo.write({
+        projectId,
+        file: 'src/a.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Null branch',
+        scenario: 'S',
+        branch: null,
+      })
+      repo.write({
+        projectId,
+        file: 'src/a.ts',
+        line: 1,
+        severity: 'warning',
+        description: 'String branch',
+        scenario: 'S',
+        branch: 'feature',
+      })
+
+      const deleted = repo.delete(projectId, 'src/a.ts', 1, null)
+      expect(deleted).toBe(true)
+      
+      const remaining = repo.listAll(projectId)
+      expect(remaining).toHaveLength(1)
+      expect(remaining[0].branch).toBe('feature')
     })
   })
 })

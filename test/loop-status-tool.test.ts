@@ -77,7 +77,7 @@ function createTestDb(): { db: Database; path: string } {
       scenario TEXT,
       branch TEXT,
       created_at INTEGER NOT NULL,
-      PRIMARY KEY (project_id, file, line)
+      PRIMARY KEY (project_id, branch, file, line)
     )
   `)
   db.run(`CREATE INDEX IF NOT EXISTS idx_loops_status ON loops(project_id, status)`)
@@ -226,6 +226,7 @@ describe('loop-status tool restart path', () => {
       loopHandler,
       logger,
       plansRepo,
+      loopsRepo,
       projectId,
       dataDir: dbPath,
     } as any)
@@ -244,11 +245,10 @@ describe('loop-status tool restart path', () => {
     const createCalls = (v2Client.session.create as ReturnType<typeof mock>).mock.calls
     expect(createCalls.length).toBeGreaterThan(0)
     const lastCreateCall = createCalls[createCalls.length - 1][0]
-    expect(lastCreateCall).toMatchObject({
-      title: loopName,
-      directory: worktreeDir,
-      workspaceID: workspaceId,
-    })
+    expect(lastCreateCall.directory).toBe(worktreeDir)
+    expect(lastCreateCall.workspaceID).toBe(workspaceId)
+    expect(lastCreateCall.title).toContain(loopName)
+    expect(lastCreateCall).not.toHaveProperty('parentID')
     
     // Verify workspace binding was called
     expect(v2Client.experimental?.workspace?.sessionRestore).toHaveBeenCalledWith({
@@ -307,6 +307,7 @@ describe('loop-status tool restart path', () => {
       loopHandler,
       logger,
       plansRepo,
+      loopsRepo,
       projectId,
       dataDir: dbPath,
     } as any)
@@ -325,6 +326,8 @@ describe('loop-status tool restart path', () => {
     const createCalls = (v2Client.session.create as ReturnType<typeof mock>).mock.calls
     // Should have exactly one create call for the restart
     expect(createCalls.length).toBe(1)
+    const createArgs = createCalls[0][0]
+    expect(createArgs).not.toHaveProperty('parentID')
     
     // Verify old session was unregistered
     const resolvedOld = loopService.resolveLoopName(oldSessionId)
@@ -390,6 +393,7 @@ describe('loop-status tool restart path', () => {
       loopHandler,
       logger,
       plansRepo,
+      loopsRepo,
       projectId,
       dataDir: dbPath,
     } as any)
@@ -401,6 +405,11 @@ describe('loop-status tool restart path', () => {
     }, { sessionID: 'test-session' } as any)
 
     expect(result).toContain('Restarted loop')
+
+    const createCalls = (v2Client.session.create as ReturnType<typeof mock>).mock.calls
+    expect(createCalls.length).toBeGreaterThan(0)
+    const createArgs = createCalls[0][0]
+    expect(createArgs).not.toHaveProperty('parentID')
 
     const newState = loopService.getActiveState(loopName)
     expect(newState).toBeDefined()
@@ -465,6 +474,7 @@ describe('loop-status tool restart path', () => {
       loopHandler,
       logger,
       plansRepo,
+      loopsRepo,
       projectId,
       dataDir: dbPath,
     } as any)
@@ -482,5 +492,11 @@ describe('loop-status tool restart path', () => {
     const newState = loopService.getActiveState(loopName)
     expect(newState?.workspaceId).toBe(workspaceId)
     expect(newState?.hostSessionId).toBe(hostSessionId)
+    
+    // Verify restart session was created without parentID
+    const createCalls = (v2Client.session.create as ReturnType<typeof mock>).mock.calls
+    expect(createCalls.length).toBeGreaterThan(0)
+    const createArgs = createCalls[0][0]
+    expect(createArgs).not.toHaveProperty('parentID')
   })
 })

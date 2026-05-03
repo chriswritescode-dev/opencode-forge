@@ -1,7 +1,8 @@
 import { describe, test, expect } from 'bun:test'
-import { architectAgent } from '../src/agents/architect'
-import { codeAgent } from '../src/agents/code'
-import { auditorAgent, auditorLoopAgent } from '../src/agents/auditor'
+import { architectAgent, buildArchitectAgent } from '../src/agents/architect'
+import { codeAgent, buildCodeAgent } from '../src/agents/code'
+import { auditorAgent, auditorLoopAgent, buildAuditorAgent, buildAuditorLoopAgent } from '../src/agents/auditor'
+import { buildAgents } from '../src/agents'
 
 describe('Agent definitions', () => {
   describe('metadata stability', () => {
@@ -16,7 +17,7 @@ describe('Agent definitions', () => {
       expect(codeAgent.role).toBe('code')
       expect(codeAgent.id).toBe('opencode-code')
       expect(codeAgent.displayName).toBe('code')
-      expect(codeAgent.mode).toBe('primary')
+      expect(codeAgent.mode).toBe('all')
     })
 
     test('auditor agent has stable metadata', () => {
@@ -41,6 +42,14 @@ describe('Agent definitions', () => {
       expect(codeAgent.tools?.exclude).toContain('plan-execute')
       expect(codeAgent.tools?.exclude).not.toContain('loop-cancel')
       expect(codeAgent.tools?.exclude).not.toContain('loop-status')
+    })
+
+    test('code agent prompt requires two-at-a-time code subagents for todo implementation', () => {
+      const prompt = codeAgent.systemPrompt
+      expect(prompt).toContain('use the Task tool to run code subagents in fixed batches of two')
+      expect(prompt).toContain('launch tasks 1 and 2 in parallel')
+      expect(prompt).toContain('then launch tasks 3 and 4')
+      expect(prompt).toContain('Do not launch more than two code subagents at the same time')
     })
 
     test('auditor-loop agent has stable metadata and primary mode', () => {
@@ -151,11 +160,12 @@ describe('Agent definitions', () => {
       expect(prompt).toContain('"Loop"')
     })
 
-    test('architect prompt includes pre-plan checkpoint instructions', () => {
+    test('architect prompt directly outputs marked plan after summary', () => {
       const prompt = architectAgent.systemPrompt
-      expect(prompt).toContain('Pre-plan approval')
-      expect(prompt).toContain('present a brief pre-plan summary')
-      expect(prompt).toContain('Do NOT call `plan-write` until the user has approved writing the plan')
+      expect(prompt).toContain('Plan summary and execution approval')
+      expect(prompt).toContain('directly output a brief unmarked summary')
+      expect(prompt).toContain('Do not ask for separate approval to write the plan')
+      expect(prompt).toContain('Start with a short unmarked summary')
     })
 
     test('architect prompt requires detailed self-contained plans', () => {
@@ -163,16 +173,22 @@ describe('Agent definitions', () => {
       expect(prompt).toContain('detailed, self-contained, and implementation-ready')
       expect(prompt).toContain('Concrete file targets')
       expect(prompt).toContain('Intended edits per file')
+      expect(prompt).toContain('Step-by-step implementation instructions')
       expect(prompt).toContain('Specific integration points')
       expect(prompt).toContain('Explicit test targets')
+      expect(prompt).toContain('Explicit validation')
       expect(prompt).toContain('Phase acceptance criteria')
+      expect(prompt).toContain('extremely detailed and execution-ready')
+      expect(prompt).not.toContain('plan-write')
+      expect(prompt).not.toContain('plan-edit')
     })
 
-    test('architect prompt includes pre-plan approval section', () => {
+    test('architect prompt asks only for execution approval after capture', () => {
       const prompt = architectAgent.systemPrompt
-      expect(prompt).toContain('## Pre-plan approval')
-      expect(prompt).toContain('present a brief pre-plan summary')
-      expect(prompt).toContain('Should I write the implementation plan?')
+      expect(prompt).toContain('## Plan summary and execution approval')
+      expect(prompt).toContain('ask for execution approval')
+      expect(prompt).toContain('four canonical options')
+      expect(prompt).not.toContain('Should I write the implementation plan?')
     })
   })
 })

@@ -2,6 +2,7 @@ import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import type { Logger } from '../types'
 import { createLoopSessionWithWorkspace } from './loop-session'
 import { buildAuditSessionPermissionRuleset } from '../constants/loop'
+import { formatAuditSessionTitle } from './session-titles'
 
 export interface RunAuditSessionInput {
   v2: OpencodeClient
@@ -27,7 +28,7 @@ export async function createAuditSession(
   const permission = buildAuditSessionPermissionRuleset({ isSandbox: input.isSandbox })
   const created = await createLoopSessionWithWorkspace({
     v2: input.v2,
-    title: `audit: ${input.loopName} #${input.iteration}`,
+    title: formatAuditSessionTitle(input.loopName, input.iteration),
     directory: input.worktreeDir,
     permission,
     workspaceId: input.workspaceId,
@@ -47,6 +48,7 @@ export async function promptAuditSession(
   input: {
     sessionId: string
     worktreeDir: string
+    workspaceId?: string
     prompt: string
     auditorModel?: { providerID: string; modelID: string }
   },
@@ -55,6 +57,7 @@ export async function promptAuditSession(
   const result = await v2.session.promptAsync({
     sessionID: input.sessionId,
     directory: input.worktreeDir,
+    ...(input.workspaceId ? { workspace: input.workspaceId } : {}),
     agent: 'auditor-loop',
     parts,
     ...(input.auditorModel ? { model: input.auditorModel } : {}),

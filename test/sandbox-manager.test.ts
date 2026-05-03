@@ -1,4 +1,8 @@
 import { describe, test, expect } from 'bun:test'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join, resolve } from 'path'
+import { execSync } from 'child_process'
 import { createSandboxManager } from '../src/sandbox/manager'
 import type { DockerService } from '../src/sandbox/docker'
 import type { Logger } from '../src/types'
@@ -13,7 +17,7 @@ function createMockLogger(): Logger {
 
 function createMockDockerService() {
   const removeContainerCalls: string[] = []
-  const createContainerCalls: Array<[string, string, string]> = []
+  const createContainerCalls: Array<[string, string, string, string[] | undefined]> = []
   let containers = ['oc-forge-sandbox-foo', 'oc-forge-sandbox-bar']
   let runningContainers = new Set<string>()
   let shouldDockerBeAvailable = true
@@ -24,8 +28,8 @@ function createMockDockerService() {
     checkDocker: async () => shouldDockerBeAvailable,
     imageExists: async () => shouldImageExist,
     buildImage: async () => {},
-    createContainer: async (name: string, projectDir: string, image: string) => {
-      createContainerCalls.push([name, projectDir, image])
+    createContainer: async (name: string, projectDir: string, image: string, extraMounts?: string[]) => {
+      createContainerCalls.push([name, projectDir, image, extraMounts])
       runningContainers.add(name)
     },
     removeContainer: async (name: string) => {
@@ -251,6 +255,42 @@ describe('SandboxManager', () => {
       const active = manager.getActive('test')
       expect(active).not.toBeNull()
       expect(active?.containerName).toBe('oc-forge-sandbox-test')
+    })
+
+    test('mounts linked worktree git metadata writable', async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), 'sandbox-worktree-'))
+      try {
+        const worktreeDir = join(tempDir, 'worktree')
+        execSync('git init', { cwd: tempDir })
+        execSync('git config user.email test@example.com', { cwd: tempDir })
+        execSync('git config user.name Test', { cwd: tempDir })
+        execSync('git commit --allow-empty -m init', { cwd: tempDir })
+        execSync(`git worktree add "${worktreeDir}" -b feature-test`, { cwd: tempDir })
+
+        const mockDocker = createMockDockerService()
+        const logger = createMockLogger()
+        const manager = createSandboxManager(
+          mockDocker as unknown as DockerService,
+          { image: 'oc-forge-sandbox:latest' },
+          logger
+        )
+
+        await manager.start('test', worktreeDir)
+
+        const createCalls = mockDocker.getCreateContainerCalls()
+        expect(createCalls.length).toBe(1)
+        const mounts = createCalls[0][3] ?? []
+        const gitDir = execSync('git rev-parse --git-dir', { cwd: worktreeDir, encoding: 'utf-8' }).trim()
+        const commonDir = execSync('git rev-parse --git-common-dir', { cwd: worktreeDir, encoding: 'utf-8' }).trim()
+        const absoluteGitDir = resolve(worktreeDir, gitDir)
+        const absoluteCommonDir = resolve(worktreeDir, commonDir)
+
+        expect(mounts).toContain(`${absoluteGitDir}:${absoluteGitDir}`)
+        expect(mounts).toContain(`${absoluteCommonDir}:${absoluteCommonDir}`)
+        expect(mounts.some(mount => mount.endsWith(':ro'))).toBe(false)
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true })
+      }
     })
   })
 

@@ -12,6 +12,7 @@ import { join } from 'path'
 import { resolveDataDir } from '../../storage'
 import { listLoopStatesFromDb } from '../../storage/cli-helpers'
 import { createLoopSessionWithWorkspace } from '../../utils/loop-session'
+import { formatLoopSessionTitle } from '../../utils/session-titles'
 
 interface RestartArgs {
   dbPath?: string
@@ -108,6 +109,10 @@ export async function run(argv: RestartArgs): Promise<void> {
       }
     }
 
+    console.log(
+      `[perm-diag] cli restart loop=${state.loopName} worktree=${String(state.worktree)} sandbox=${String(state.sandbox)}`
+    )
+
     const permissionRuleset = buildLoopPermissionRuleset({
       isWorktree: !!state.worktree,
       isSandbox: !!state.sandbox,
@@ -117,7 +122,7 @@ export async function run(argv: RestartArgs): Promise<void> {
 
     const createResult = await createLoopSessionWithWorkspace({
       v2: client,
-      title: state.loopName,
+      title: formatLoopSessionTitle(state.loopName),
       directory: sessionDir,
       permission: permissionRuleset,
       workspaceId: state.workspaceId,

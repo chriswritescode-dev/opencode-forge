@@ -40,6 +40,7 @@ export interface LoopsRepo {
   getLarge(projectId: string, loopName: string): LoopLargeFields | null
   getBySessionId(projectId: string, sessionId: string): LoopRow | null
   listByStatus(projectId: string, statuses: LoopRow['status'][]): LoopRow[]
+  listAll(projectId: string): LoopRow[]
   updatePhase(projectId: string, loopName: string, phase: 'coding' | 'auditing'): void
   updateIteration(projectId: string, loopName: string, iteration: number): void
   incrementError(projectId: string, loopName: string): number
@@ -280,7 +281,11 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       current_session_id = ?,
       iteration = ?,
       phase = COALESCE(?, phase),
-      audit_count = COALESCE(?, audit_count)
+      audit_count = COALESCE(?, audit_count),
+      audit_session_id = CASE
+        WHEN ? = 'coding' THEN NULL
+        ELSE audit_session_id
+      END
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -366,6 +371,11 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       return rows.map(mapRow)
     },
 
+    listAll(projectId: string): LoopRow[] {
+      const allStatuses: LoopRow['status'][] = ['running', 'completed', 'cancelled', 'errored', 'stalled']
+      return this.listByStatus(projectId, allStatuses)
+    },
+
     updatePhase(projectId: string, loopName: string, phase: 'coding' | 'auditing'): void {
       updatePhaseStmt.run(phase, projectId, loopName)
     },
@@ -448,6 +458,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
           opts.iteration,
           opts.phase ?? null,
           opts.auditCount ?? null,
+          opts.phase ?? null,
           projectId,
           loopName
         )

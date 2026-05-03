@@ -182,6 +182,18 @@ describe('createConfigHandler', () => {
       expect(tools['review-delete']).toBe(false)
     })
 
+    test('code agent is available as both primary and subagent', async () => {
+      const configHandler = createConfigHandler(agents)
+      const config: Record<string, unknown> = {}
+
+      await configHandler(config)
+
+      const agentConfigs = config.agent as Record<string, unknown>
+      const code = agentConfigs.code as Record<string, unknown>
+
+      expect(code.mode).toBe('all')
+    })
+
     test('code agent excluded tools are mirrored to permission: deny (opencode enforces via permission, not tools)', async () => {
       const configHandler = createConfigHandler(agents)
       const config: Record<string, unknown> = {}
@@ -193,7 +205,7 @@ describe('createConfigHandler', () => {
       const permission = code.permission as Record<string, string>
 
       expect(permission).toBeDefined()
-      for (const tool of ['review-write', 'review-delete', 'plan-execute', 'plan-write', 'plan-edit', 'loop']) {
+      for (const tool of ['review-write', 'review-delete', 'plan-execute', 'loop']) {
         expect(permission[tool]).toBe('deny')
       }
     })
@@ -218,7 +230,7 @@ describe('createConfigHandler', () => {
 
       expect(permission['review-delete']).toBe('deny')
       // Other excludes should still be denied.
-      expect(permission['plan-write']).toBe('deny')
+      expect(permission['plan-execute']).toBe('deny')
     })
 
     test('user tool override preserves built-in excludes during merge', async () => {

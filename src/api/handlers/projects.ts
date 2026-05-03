@@ -1,5 +1,4 @@
 import type { ApiDeps } from '../types'
-import { ok } from '../response'
 import { Database } from 'bun:sqlite'
 import { homedir, platform } from 'os'
 import { join, basename } from 'path'
@@ -43,59 +42,77 @@ export function listKnownProjects(): Array<{ id: string; name: string | null; di
 }
 
 export async function handleListProjects(
-  req: Request,
-  deps: ApiDeps
-): Promise<Response> {
-  const url = new URL(req.url)
-  const directoryFilter = url.searchParams.get('directory')
+  deps: ApiDeps,
+  _params: Record<string, string>,
+  body: unknown
+): Promise<unknown> {
+  const queryParams = body as Record<string, string> | undefined
+  const directoryFilter = queryParams?.directory
 
-  const registered = deps.registry.list()
   const known = listKnownProjects()
-  const registeredIds = new Set(registered.map((ctx) => ctx.projectId))
-
-  const projects = [
-    ...registered.map((ctx) => ({
-      id: ctx.projectId,
-      name: basename(ctx.directory),
-      directory: ctx.directory,
-      active: true,
-    })),
-    ...known
-      .filter((project) => !registeredIds.has(project.id))
-      .map((project) => ({
-        id: project.id,
-        name: project.name,
-        directory: project.directory,
-        active: false,
-      })),
-  ]
-
-  if (directoryFilter) {
-    const matched = projects.find((project) => project.active && project.directory === directoryFilter)
-    return ok({ projects: matched ? [matched] : [] })
+  
+  // Always include the current active project from deps.ctx with its current directory.
+  // This ensures the TUI can match the active directory even if the opencode DB has a stale entry.
+  const activeProject = {
+    id: deps.ctx.projectId,
+    name: deps.ctx.directory.split('/').pop() ?? deps.ctx.directory,
+    directory: deps.ctx.directory,
+    active: true,
   }
 
-  return ok({ projects })
+  // Merge known projects with active project, avoiding duplicates by id.
+  // If the active project id exists in known projects, update its directory to the current one.
+  const knownProjects = known.map((project) => {
+    if (project.id === deps.ctx.projectId) {
+      return {
+        id: project.id,
+        name: activeProject.name,
+        directory: activeProject.directory,
+        active: true,
+      }
+    }
+    return {
+      id: project.id,
+      name: project.name,
+      directory: project.directory,
+      active: false,
+    }
+  })
+  
+  // Ensure active project is included even if not in known projects
+  const knownIds = new Set(known.map(p => p.id))
+  const allProjects = knownIds.has(activeProject.id)
+    ? knownProjects
+    : [...knownProjects, activeProject]
+  
+  const projects = allProjects
+
+  if (directoryFilter) {
+    const matched = projects.find((project) => project.directory === directoryFilter)
+    return { projects: matched ? [matched] : [] }
+  }
+
+  return { projects }
 }
 
 export async function handleGetProject(
-  _req: Request,
   deps: ApiDeps,
-  params: Record<string, string>
-): Promise<Response> {
+  params: Record<string, string>,
+  _body: unknown
+): Promise<unknown> {
   const { projectId } = params
   const { directory } = deps.ctx
 
-  return ok({ id: projectId, directory })
+  return { id: projectId, directory }
 }
 
 export async function handleGetGraphStatus(
-  req: Request,
   _deps: ApiDeps,
-  params: Record<string, string>
-): Promise<Response> {
+  params: Record<string, string>,
+  body: unknown
+): Promise<unknown> {
   const { projectId } = params
-  const url = new URL(req.url)
-  const cwd = url.searchParams.get('cwd') ?? undefined
-  return ok({ status: readGraphStatus(projectId, undefined, cwd) })
+  const queryParams = body as Record<string, string> | undefined
+  const cwd = queryParams?.cwd ?? undefined
+  return { status: readGraphStatus(projectId, undefined, cwd) }
 }

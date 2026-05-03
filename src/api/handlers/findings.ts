@@ -1,17 +1,16 @@
 import type { ApiDeps } from '../types'
-import { ok } from '../response'
-import { notFound } from '../errors'
-import { parseJsonBody, FindingWriteBody } from '../schemas'
+import { ForgeRpcError } from '../bus-protocol'
+import { FindingWriteBody } from '../schemas'
 
 export async function handleListFindings(
-  req: Request,
   deps: ApiDeps,
-  params: Record<string, string>
-): Promise<Response> {
+  params: Record<string, string>,
+  body: unknown
+): Promise<unknown> {
   const { projectId } = params
-  const url = new URL(req.url)
-  const branch = url.searchParams.get('branch')
-  const file = url.searchParams.get('file')
+  const queryParams = body as Record<string, string> | undefined
+  const branch = queryParams?.branch
+  const file = queryParams?.file
 
   let findings
   if (branch) {
@@ -22,61 +21,61 @@ export async function handleListFindings(
     findings = deps.ctx.reviewFindingsRepo.listAll(projectId)
   }
 
-  return ok({ findings })
+  return { findings }
 }
 
 export async function handleWriteFinding(
-  req: Request,
   deps: ApiDeps,
-  params: Record<string, string>
-): Promise<Response> {
+  params: Record<string, string>,
+  body: unknown
+): Promise<unknown> {
   const { projectId } = params
-  const body = await parseJsonBody(req, FindingWriteBody)
+  const parsed = FindingWriteBody.parse(body)
 
   const result = deps.ctx.reviewFindingsRepo.write({
     projectId,
-    file: body.file,
-    line: body.line,
-    severity: body.severity,
-    description: body.description,
-    scenario: body.scenario ?? null,
-    branch: body.branch ?? null,
+    file: parsed.file,
+    line: parsed.line,
+    severity: parsed.severity,
+    description: parsed.description,
+    scenario: parsed.scenario ?? null,
+    branch: parsed.branch ?? null,
   })
 
   if (!result.ok) {
     if (result.conflict) {
-      throw new Error('finding already exists for this file and line')
+      throw new ForgeRpcError('conflict', 'finding already exists for this file and line')
     }
-    throw new Error('failed to write finding')
+    throw new ForgeRpcError('internal', 'failed to write finding')
   }
 
-  return ok({ file: body.file, line: body.line }, 201)
+  return { file: parsed.file, line: parsed.line }
 }
 
 export async function handleDeleteFinding(
-  req: Request,
   deps: ApiDeps,
-  params: Record<string, string>
-): Promise<Response> {
+  params: Record<string, string>,
+  body: unknown
+): Promise<unknown> {
   const { projectId } = params
-  const url = new URL(req.url)
-  const file = url.searchParams.get('file')
-  const lineParam = url.searchParams.get('line')
+  const queryParams = body as Record<string, string> | undefined
+  const file = queryParams?.file
+  const lineParam = queryParams?.line
 
   if (!file || !lineParam) {
-    throw notFound('file and line query params required')
+    throw new ForgeRpcError('not_found', 'file and line query params required')
   }
 
   const line = parseInt(lineParam, 10)
   if (isNaN(line)) {
-    throw notFound('invalid line number')
+    throw new ForgeRpcError('not_found', 'invalid line number')
   }
 
   const deleted = deps.ctx.reviewFindingsRepo.delete(projectId, file, line)
 
   if (!deleted) {
-    throw notFound('finding not found')
+    throw new ForgeRpcError('not_found', 'finding not found')
   }
 
-  return ok({ deleted: true })
+  return { deleted: true }
 }

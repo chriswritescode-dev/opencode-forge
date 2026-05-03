@@ -1,159 +1,139 @@
 import type { ApiDeps } from '../types'
-import { ok } from '../response'
-import { ApiError, notFound } from '../errors'
-import { parseJsonBody, LoopStartBody, LoopRestartBody } from '../schemas'
-import { listLoopStatesFromDb } from '../../storage/cli-helpers'
-import { openDatabase } from '../../cli/utils'
-import { launchFreshLoop } from '../../utils/loop-launch'
-import { cancelLoopByName, restartLoopByName } from '../../services/loop-control'
+import { ForgeRpcError } from '../bus-protocol'
+import { LoopStartBody, LoopRestartBody } from '../schemas'
+import { buildStartLoopCommand } from '../../services/execution'
+import { buildService } from './_shared'
 import type { LoopInfo } from '../../utils/tui-refresh-helpers'
+import type { LoopRow } from '../../storage/repos/loops-repo'
 
-function toLoopInfo(entry: ReturnType<typeof listLoopStatesFromDb>[number]): LoopInfo & { loopName: string; status: string } {
-  const state = entry.state
+function loopRowToLoopInfo(row: LoopRow): LoopInfo & { loopName: string; status: string } {
   return {
-    loopName: entry.row.loop_name,
-    name: entry.row.loop_name,
-    status: state.active ? 'running' : (state.terminationReason ?? 'unknown'),
-    phase: state.phase,
-    iteration: state.iteration,
-    maxIterations: state.maxIterations,
-    sessionId: state.sessionId,
-    active: state.active,
-    startedAt: state.startedAt,
-    completedAt: state.completedAt,
-    terminationReason: state.terminationReason,
-    worktree: state.worktree,
-    worktreeDir: state.worktreeDir,
-    worktreeBranch: state.worktreeBranch,
-    executionModel: state.executionModel,
-    auditorModel: state.auditorModel,
-    workspaceId: state.workspaceId,
-    hostSessionId: state.hostSessionId,
+    loopName: row.loopName,
+    name: row.loopName,
+    status: row.status === 'running' ? 'running' : (row.terminationReason ?? 'unknown'),
+    phase: row.phase,
+    iteration: row.iteration,
+    maxIterations: row.maxIterations,
+    sessionId: row.currentSessionId,
+    active: row.status === 'running',
+    startedAt: new Date(row.startedAt).toISOString(),
+    completedAt: row.completedAt ? new Date(row.completedAt).toISOString() : undefined,
+    terminationReason: row.terminationReason ?? undefined,
+    worktree: row.worktree,
+    worktreeDir: row.worktreeDir,
+    worktreeBranch: row.worktreeBranch ?? undefined,
+    executionModel: row.executionModel ?? undefined,
+    auditorModel: row.auditorModel ?? undefined,
+    workspaceId: row.workspaceId ?? undefined,
+    hostSessionId: row.hostSessionId ?? undefined,
   }
 }
 
 export async function handleListLoops(
-  _req: Request,
-  _deps: ApiDeps,
-  params: Record<string, string>
-): Promise<Response> {
+  deps: ApiDeps,
+  params: Record<string, string>,
+  _body: unknown
+): Promise<unknown> {
   const { projectId } = params
-  const db = openDatabase()
-
-  if (!db) {
-    throw notFound('database not found')
-  }
-
-  const loopStates = listLoopStatesFromDb(db, projectId)
-
-  // Separate active and recent (non-active)
-  const loops = loopStates.map(toLoopInfo)
+  const rows = deps.ctx.loopsRepo.listAll(projectId)
+  
+  const loops = rows.map(loopRowToLoopInfo)
   const active = loops.filter((entry) => entry.active)
-
   const recent = loops.filter((entry) => !entry.active)
 
-  return ok({ loops, active, recent })
+  return { loops, active, recent }
 }
 
 export async function handleGetLoop(
-  _req: Request,
-  _deps: ApiDeps,
-  params: Record<string, string>
-): Promise<Response> {
+  deps: ApiDeps,
+  params: Record<string, string>,
+  _body: unknown
+): Promise<unknown> {
   const { projectId, loopName } = params
-  const db = openDatabase()
+  const row = deps.ctx.loopsRepo.get(projectId, loopName)
 
-  if (!db) {
-    throw notFound('database not found')
+  if (!row) {
+    throw new ForgeRpcError('not_found', 'loop not found')
   }
 
-  const loopStates = listLoopStatesFromDb(db, projectId)
-  const entry = loopStates.find((e) => e.row.loop_name === loopName)
-
-  if (!entry) {
-    throw notFound('loop not found')
-  }
-
-  return ok(toLoopInfo(entry))
+  return loopRowToLoopInfo(row)
 }
 
 export async function handleStartLoop(
-  req: Request,
   deps: ApiDeps,
-  params: Record<string, string>
-): Promise<Response> {
+  params: Record<string, string>,
+  body: unknown
+): Promise<unknown> {
   const { projectId } = params
-  const body = await parseJsonBody(req, LoopStartBody)
+  const parsed = LoopStartBody.parse(body)
 
-  const { ctx } = deps
+  const { service, execCtx } = buildService(deps, projectId)
 
-  const result = await launchFreshLoop({
-    planText: body.plan,
-    title: body.title,
-    directory: ctx.directory,
-    projectId,
-    isWorktree: body.worktree ?? false,
-    v2: ctx.v2,
-    executionModel: body.executionModel,
-    auditorModel: body.auditorModel,
-    hostSessionId: body.hostSessionId,
+  const command = buildStartLoopCommand({
+    source: { kind: 'inline', planText: parsed.plan },
+    title: parsed.title,
+    mode: parsed.worktree ?? false ? 'worktree' : 'in-place',
+    executionModel: parsed.executionModel,
+    auditorModel: parsed.auditorModel,
+    hostSessionId: parsed.hostSessionId,
+    lifecycle: {
+      selectSession: true,
+      startWatchdog: true,
+    },
   })
 
-  if (!result) {
-    throw new Error('Failed to launch loop')
+  const result = await service.dispatch(execCtx, command)
+
+  if (!result.ok) {
+    throw new ForgeRpcError(result.error.code, result.error.message)
   }
 
-  return ok(
-    {
-      loopName: result.loopName,
-      sessionId: result.sessionId,
-      worktreeDir: result.worktreeDir,
-    },
-    202
-  )
+  return {
+    loopName: result.data.loopName,
+    sessionId: result.data.sessionId,
+    worktreeDir: result.data.worktreeDir,
+    displayName: result.data.displayName,
+    workspaceId: result.data.workspaceId,
+  }
 }
 
 export async function handleCancelLoop(
-  _req: Request,
   deps: ApiDeps,
-  params: Record<string, string>
-): Promise<Response> {
+  params: Record<string, string>,
+  _body: unknown
+): Promise<unknown> {
   const { loopName } = params
-
-  const result = await cancelLoopByName(deps.ctx, loopName)
-
-  if (!result.ok) {
-    throw new ApiError(result.status, result.code, result.message)
-  }
-
-  return ok({ loopName, status: 'cancelled' })
+  const { service, execCtx } = buildService(deps, params.projectId)
+  const result = await service.dispatch(execCtx, {
+    type: 'loop.cancel',
+    selector: { kind: 'exact', name: loopName },
+  })
+  if (!result.ok) throw new ForgeRpcError(result.error.code, result.error.message)
+  return { loopName, status: 'cancelled' }
 }
 
 export async function handleRestartLoop(
-  _req: Request,
   deps: ApiDeps,
-  params: Record<string, string>
-): Promise<Response> {
+  params: Record<string, string>,
+  body: unknown
+): Promise<unknown> {
   const { loopName } = params
-  const body = await parseJsonBody(_req, LoopRestartBody)
-
-  const result = await restartLoopByName(deps.ctx, loopName, body.force ?? false)
-
-  if (!result.ok) {
-    throw new ApiError(result.status, result.code, result.message)
+  const parsed = LoopRestartBody.parse(body)
+  const { service, execCtx } = buildService(deps, params.projectId)
+  const result = await service.dispatch(execCtx, {
+    type: 'loop.restart',
+    selector: { kind: 'exact', name: loopName },
+    force: parsed.force ?? false,
+  })
+  if (!result.ok) throw new ForgeRpcError(result.error.code, result.error.message)
+  return {
+    loopName,
+    status: 'restarted',
+    force: parsed.force ?? false,
+    sessionId: result.data.sessionId,
+    worktreeDir: result.data.worktreeDir,
+    iteration: result.data.iteration,
+    sandbox: result.data.sandbox,
+    bindFailed: result.data.bindFailed,
   }
-
-  return ok(
-    {
-      loopName,
-      status: 'restarted',
-      force: body.force ?? false,
-      sessionId: result.newSessionId,
-      worktreeDir: result.state.worktreeDir,
-      iteration: result.state.iteration,
-      sandbox: result.sandbox,
-      bindFailed: result.bindFailed,
-    },
-    202
-  )
 }

@@ -4,8 +4,8 @@ import { resolve } from 'path'
 export interface SessionLoopResolverDeps {
   loopService: {
     resolveLoopName(sessionId: string): string | null
-    getActiveState(name: string): { loopName: string; active: boolean; sandbox?: boolean; worktreeDir?: string } | null
-    listActive(): Array<{ loopName: string; worktreeDir: string; sandbox?: boolean; active: boolean }>
+    getActiveState(name: string): { loopName: string; active: boolean; sandbox?: boolean; worktree?: boolean; worktreeDir?: string } | null
+    listActive?(): Array<{ loopName: string; worktreeDir: string; sandbox?: boolean; worktree?: boolean; active: boolean }>
   }
   getParentSessionId(sessionId: string): Promise<string | null>
   getSessionDirectory?(sessionId: string): Promise<string | null>
@@ -16,6 +16,7 @@ export interface ResolvedLoop {
   loopName: string
   active: boolean
   sandbox?: boolean
+  worktree?: boolean
   worktreeDir?: string
 }
 
@@ -48,11 +49,12 @@ export function createSessionLoopResolver(deps: SessionLoopResolverDeps): {
         }
       }
 
-      if (deps.getSessionDirectory) {
+      if (deps.getSessionDirectory && deps.loopService.listActive) {
         const dir = await deps.getSessionDirectory(sessionId)
         if (dir) {
           const normalized = resolve(dir)
           for (const state of deps.loopService.listActive()) {
+            if (!state.worktree) continue
             if (resolve(state.worktreeDir) === normalized) {
               deps.logger.log(`[session-resolver] session=${sessionId} resolved via directory match loop=${state.loopName}`)
               const full = deps.loopService.getActiveState(state.loopName)

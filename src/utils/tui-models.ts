@@ -8,6 +8,11 @@ import { existsSync } from 'fs'
 import { join } from 'path'
 import { resolveDataDir, createTuiPrefsRepo } from '../storage'
 
+export interface ModelKey {
+  providerID: string
+  modelID: string
+}
+
 export interface ModelInfo {
   id: string
   name: string
@@ -40,6 +45,7 @@ export interface FetchModelsResult {
   providers: ProviderInfo[]
   connectedProviderIds: string[]
   configuredProviderIds: string[]
+  favoriteModels: string[]
   error?: string
 }
 
@@ -50,81 +56,123 @@ export interface ModelSortOptions {
 }
 
 /**
+ * Converts a ModelKey to its full name representation.
+ */
+export function toFullModelName(key: ModelKey): string {
+  return `${key.providerID}/${key.modelID}`
+}
+
+/**
+ * Normalizes an unknown input to a ModelKey if possible.
+ * Returns null for malformed values.
+ */
+export function normalizeModelKey(input: unknown): ModelKey | null {
+  if (!input || typeof input !== 'object') return null
+  const obj = input as Record<string, unknown>
+  if (typeof obj.providerID !== 'string' || typeof obj.modelID !== 'string') return null
+  return { providerID: obj.providerID, modelID: obj.modelID }
+}
+
+/**
+ * Reads favorite models from OpenCode TUI state if exposed.
+ * Probes multiple possible state shapes defensively.
+ * Returns full model names (provider/model).
+ */
+export function readOpenCodeFavoriteModels(api: TuiPluginApi): string[] {
+  const state = api.state as Record<string, unknown>
+  
+  // Probe supported shapes in order
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stateAny = state as any
+  const candidates = [
+    stateAny?.local?.model?.favorite,
+    stateAny?.model?.favorite,
+    stateAny?.models?.favorite,
+  ]
+  
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) {
+      const normalized = candidate.map(normalizeModelKey).filter((k): k is ModelKey => k !== null)
+      return normalized.map(toFullModelName)
+    }
+    if (typeof candidate === 'function') {
+      try {
+        const result = candidate()
+        if (Array.isArray(result)) {
+          const normalized = result.map(normalizeModelKey).filter((k): k is ModelKey => k !== null)
+          return normalized.map(toFullModelName)
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+  
+  return []
+}
+
+/**
  * Fetches all available providers and their models from the OpenCode API.
  * Returns a structured result that distinguishes between:
  * - Successful fetch with providers (may be empty if no providers have models)
  * - Failed fetch with an error message
  */
 export async function fetchAvailableModels(api: TuiPluginApi): Promise<FetchModelsResult> {
+  const directory = api.state.path.directory
+  const configuredProviderIds = Object.keys(api.state.config?.provider ?? {})
+  const favoriteModels = readOpenCodeFavoriteModels(api)
   try {
-    const directory = api.state.path.directory
-    const configuredProviderIds = Object.keys(api.state.config?.provider ?? {})
     const result = await api.client.provider.list({ directory })
-    
     if (result.error) {
-      const errorMsg = (result.error as { message?: string })?.message || 'Failed to fetch providers'
-      const nestedErrorMsg = (result.error as { data?: { message?: string } })?.data?.message
-      return {
-        providers: [],
-        connectedProviderIds: [],
-        configuredProviderIds,
-        error: nestedErrorMsg || errorMsg,
-      }
+      const errorMsg =
+        (result.error as { data?: { message?: string }; message?: string })?.data?.message
+        ?? (result.error as { message?: string })?.message
+        ?? 'Failed to fetch providers'
+      return { providers: [], connectedProviderIds: [], configuredProviderIds, favoriteModels, error: errorMsg }
     }
-    
     if (!result.data) {
-      return {
-        providers: [],
-        connectedProviderIds: [],
-        configuredProviderIds,
-        error: 'No provider data returned',
-      }
+      return { providers: [], connectedProviderIds: [], configuredProviderIds, favoriteModels, error: 'No provider data returned' }
     }
-    
     const providers: ProviderInfo[] = []
     const allModels = result.data.all || []
-    
+    const connected = result.data.connected || []
     for (const provider of allModels) {
+      if (!connected.includes(provider.id)) continue
       const models: ModelInfo[] = []
-      
       if (provider.models) {
         for (const modelData of Object.values(provider.models)) {
+          const md = modelData as Record<string, unknown>
           models.push({
-            id: modelData.id,
-            name: modelData.name,
+            id: md.id as string,
+            name: md.name as string,
             providerID: provider.id,
             providerName: provider.name,
-            fullName: `${provider.id}/${modelData.id}`,
-            releaseDate: (modelData as { release_date?: string }).release_date,
+            fullName: `${provider.id}/${md.id as string}`,
+            releaseDate: (md as { release_date?: string }).release_date,
             capabilities: {
-              temperature: modelData.capabilities?.temperature,
-              toolcall: modelData.capabilities?.toolcall,
-              reasoning: modelData.capabilities?.reasoning,
-              attachment: modelData.capabilities?.attachment,
+              temperature: (md.capabilities as Record<string, unknown> | undefined)?.temperature as boolean | undefined,
+              toolcall: (md.capabilities as Record<string, unknown> | undefined)?.toolcall as boolean | undefined,
+              reasoning: (md.capabilities as Record<string, unknown> | undefined)?.reasoning as boolean | undefined,
+              attachment: (md.capabilities as Record<string, unknown> | undefined)?.attachment as boolean | undefined,
             },
-            cost: modelData.cost,
+            cost: md.cost as { input?: number; output?: number } | undefined,
           })
         }
       }
-      
       providers.push({
         id: provider.id,
         name: provider.name,
         models,
       })
     }
-    
-    return {
-      providers,
-      connectedProviderIds: result.data.connected || [],
-      configuredProviderIds,
-    }
+    return { providers, connectedProviderIds: connected, configuredProviderIds, favoriteModels }
   } catch (err) {
-    return { 
-      providers: [], 
+    return {
+      providers: [],
       connectedProviderIds: [],
-      configuredProviderIds: Object.keys(api.state.config?.provider ?? {}),
-      error: err instanceof Error ? err.message : 'Failed to fetch providers' 
+      configuredProviderIds,
+      favoriteModels,
+      error: err instanceof Error ? err.message : 'Failed to fetch providers',
     }
   }
 }
@@ -174,12 +222,13 @@ export function buildDialogSelectOptions(
   const defaultOption = {
     title: 'Use default',
     value: '',
-    description: 'Use config default model',
+    description: 'Use config default',
   }
 
   const modelMap = new Map(models.map(m => [m.fullName, m]))
   const usedInSections = new Set<string>()
 
+  // Build recent options next
   const recentOptions = recents
     .filter(fn => !usedInSections.has(fn))
     .map(fn => modelMap.get(fn))
@@ -194,6 +243,7 @@ export function buildDialogSelectOptions(
       }
     })
 
+  // Build provider options last (excluding usedInSections)
   const providerOptions = models
     .filter(m => !usedInSections.has(m.fullName))
     .map(m => ({
@@ -208,12 +258,23 @@ export function buildDialogSelectOptions(
 
 /**
  * Returns a display label for a model value.
- * Shows the model name if found, "default" if empty, or the raw value as fallback.
+ * Shows the model name if found, "default" if empty (no fallback), or the raw value as fallback.
+ * If `value` is empty and `fallbackFullName` is provided, attempts to resolve the fallback's display name.
  */
-export function getModelDisplayLabel(value: string, models: ModelInfo[]): string {
-  if (!value) return 'default'
-  const model = models.find(m => m.fullName === value)
-  return model ? model.name : value
+export function getModelDisplayLabel(
+  value: string,
+  models: ModelInfo[],
+  fallbackFullName?: string,
+): string {
+  if (value) {
+    const model = models.find(m => m.fullName === value)
+    return model ? model.name : value
+  }
+  if (fallbackFullName) {
+    const fallbackModel = models.find(m => m.fullName === fallbackFullName)
+    return fallbackModel ? fallbackModel.name : fallbackFullName
+  }
+  return 'default'
 }
 
 /**
@@ -286,7 +347,8 @@ export function recordRecentModel(projectId: string, modelFullName: string, dbPa
 }
 
 /**
- * Sorts models by priority: recent first, then alphabetically.
+ * Sorts models by priority: recents first, then by provider priority.
+ * Returns a sorted copy without mutating the input array.
  */
 export function sortModelsByPriority(
   models: ModelInfo[],
@@ -296,13 +358,15 @@ export function sortModelsByPriority(
   const connectedProviderSet = new Set(options.connectedProviderIds ?? [])
   const configuredProviderSet = new Set(options.configuredProviderIds ?? [])
 
+  const sortable = [...models]
+
   const getProviderPriority = (model: ModelInfo) => {
     if (connectedProviderSet.has(model.providerID)) return 0
     if (configuredProviderSet.has(model.providerID)) return 1
     return 2
   }
   
-  return models.sort((a, b) => {
+  return sortable.sort((a, b) => {
     const aIsRecent = recentSet.has(a.fullName)
     const bIsRecent = recentSet.has(b.fullName)
 

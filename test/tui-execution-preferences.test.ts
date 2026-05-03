@@ -107,7 +107,7 @@ describe('Execution Preferences', () => {
 
     const result = resolveExecutionDialogDefaults(config, null)
     expect(result.mode).toBe('Loop (worktree)')
-    expect(result.executionModel).toBe('anthropic/claude-3-sonnet')
+    expect(result.executionModel).toBe('anthropic/claude-3-haiku')
     expect(result.auditorModel).toBe('anthropic/claude-3-opus')
   })
 
