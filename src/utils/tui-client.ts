@@ -74,6 +74,10 @@ export interface ForgeProjectClient {
     start(req: StartLoopRequest): Promise<{ sessionId: string; loopName: string; worktreeDir?: string; workspaceId?: string } | null>
   }
 
+  events: {
+    onLoopsChanged(handler: (payload: { reason: string; loopName: string }) => void): () => void
+  }
+
   /** Single round-trip pair: read preferences and list models. */
   loadExecutionContext(): Promise<ExecutionContext>
 }
@@ -130,6 +134,11 @@ export async function connectForgeProject(
   const pending = new Map<string, PendingRpc>()
   tuiDebug(`connect start directory=${directory ?? 'none'}`)
 
+  const eventHandlers = new Map<string, Set<(payload: unknown) => void>>()
+
+  // Hoist projectId to avoid TDZ - events can arrive before discovery completes
+  let projectId: string | null = null
+
   api.event.on('tui.command.execute', (event) => {
     const command = event.properties?.command as string | undefined
     if (!command) {
@@ -152,28 +161,54 @@ export async function connectForgeProject(
     }
 
     const reply = decodeReply(command)
-    if (!reply) {
-      if (command.startsWith('forge.')) tuiDebug(`event decode skipped command=${command.slice(0, 48)}`)
+    if (reply) {
+      const pendingRpc = pending.get(reply.rid)
+      if (!pendingRpc) {
+        tuiDebug(`reply received without pending rid=${reply.rid} status=${reply.status}`)
+        return
+      }
+
+      tuiDebug(`reply matched rid=${reply.rid} status=${reply.status}`)
+
+      clearTimeout(pendingRpc.timer)
+      pending.delete(reply.rid)
+
+      if (reply.status === 'ok') {
+        pendingRpc.resolve(reply.data)
+      } else {
+        // For plan.read, errors should resolve to null (swallowed)
+        // This is handled at the call site
+        pendingRpc.reject(new Error(reply.message))
+      }
       return
     }
 
-    const pendingRpc = pending.get(reply.rid)
-    if (!pendingRpc) {
-      tuiDebug(`reply received without pending rid=${reply.rid} status=${reply.status}`)
+    // Not a reply - check if it's an event
+    const evt = decodeEvent(command)
+    if (!evt) {
       return
     }
 
-    tuiDebug(`reply matched rid=${reply.rid} status=${reply.status}`)
+    // Filter by projectId if client has one
+    if (projectId && evt.projectId && evt.projectId !== projectId) {
+      return
+    }
 
-    clearTimeout(pendingRpc.timer)
-    pending.delete(reply.rid)
+    // Filter by directory if projectId is not set
+    if (!projectId && evt.directory && evt.directory !== directory) {
+      return
+    }
 
-    if (reply.status === 'ok') {
-      pendingRpc.resolve(reply.data)
-    } else {
-      // For plan.read, errors should resolve to null (swallowed)
-      // This is handled at the call site
-      pendingRpc.reject(new Error(reply.message))
+    // Dispatch to handlers for this event name
+    const handlers = eventHandlers.get(evt.name)
+    if (handlers) {
+      for (const handler of handlers) {
+        try {
+          handler(evt.payload ?? {})
+        } catch (err) {
+          tuiDebug(`event handler error for ${evt.name}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
     }
   })
 
@@ -283,7 +318,7 @@ export async function connectForgeProject(
     })
   }
 
-  const projectId = await discoverProjectIdByDirectory()
+  projectId = await discoverProjectIdByDirectory()
   if (!projectId) {
     tuiDebug(`discovery failed; continuing with cwd routing directory=${directory ?? 'none'}`)
   }
@@ -492,10 +527,22 @@ export async function connectForgeProject(
     },
   }
 
+  const events: ForgeProjectClient['events'] = {
+    onLoopsChanged(handler: (payload: { reason: string; loopName: string }) => void): () => void {
+      const handlers = eventHandlers.get('loops.changed') ?? new Set()
+      eventHandlers.set('loops.changed', handlers)
+      handlers.add(handler as (payload: unknown) => void)
+      return () => {
+        handlers.delete(handler as (payload: unknown) => void)
+      }
+    },
+  }
+
   return {
     projectId: projectId ?? '',
     plan,
     loops,
+    events,
     async loadExecutionContext() {
       const [prefsResult, modelsResult] = await Promise.all([
         Promise.resolve(projectId ? readExecutionPreferences(projectId) : null),

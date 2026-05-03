@@ -19,7 +19,7 @@ export function ExecutePlanPanel(props: {
   initialExecutionModel?: string
   initialAuditorModel?: string
   onBack: () => void
-  onExecuted: () => void | Promise<void>
+  onExecuted?: () => void | Promise<void>
   onModelSelected: (args: {
     target: 'execution' | 'auditor'
     selectedModel: string
@@ -194,7 +194,7 @@ export function ExecutePlanPanel(props: {
     props.cache?.recordRecent(auditModel || '')
 
     props.api.ui.toast({ message: result.loopName ? `Loop started: ${result.loopName}` : 'Plan execution started', variant: 'success', duration: 3000 })
-    await props.onExecuted()
+    await props.onExecuted?.()
     if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop-worktree' || apiMode === 'loop')) {
       try {
         await props.api.client.tui.selectSession({ sessionID: result.sessionId })

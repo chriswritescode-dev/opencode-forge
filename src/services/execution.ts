@@ -811,11 +811,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         await deps.v2.session.abort({ sessionID: createdSessionId }).catch(() => {})
       }
       if (loopStatePersisted) {
-        if (deps.loopService) {
-          deps.loopService.deleteState(uniqueLoopName)
-        } else {
-          deps.loopsRepo.delete(ctx.projectId, uniqueLoopName)
-        }
+        deps.loopService!.deleteState(uniqueLoopName)
         loopStatePersisted = false
       }
       if ((sandboxStarted || sandboxStartAttempted) && deps.sandboxManager) {
@@ -962,53 +958,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         hostSessionId,
       }
       
-      if (deps.loopService) {
-        deps.loopService.setState(uniqueLoopName, state)
-        loopStatePersisted = true
-        deps.loopService.registerLoopSession(sessionId, uniqueLoopName)
-      } else {
-        // CLI adapter: use loopsRepo directly
-        const row: import('../storage/repos/loops-repo').LoopRow = {
-          projectId: ctx.projectId,
-          loopName: uniqueLoopName,
-          status: 'running',
-          currentSessionId: sessionId,
-          auditSessionId: null,
-          worktree: command.mode === 'worktree',
-          worktreeDir: hostWorktreeDir ?? ctx.directory,
-          worktreeBranch: worktreeBranch ?? null,
-          projectDir: ctx.directory,
-          maxIterations,
-          iteration: 1,
-          auditCount: 0,
-          errorCount: 0,
-          phase: 'coding',
-          executionModel: resolvedExecutionModel ?? null,
-          auditorModel: resolvedAuditorModel ?? null,
-          modelFailed: false,
-          sandbox: sandboxEnabledForLoop,
-          sandboxContainer,
-          startedAt: Date.now(),
-          completedAt: null,
-          terminationReason: null,
-          completionSummary: null,
-          workspaceId: createdWorkspaceId ?? null,
-          hostSessionId: hostSessionId ?? null,
-        }
-        
-        const large: import('../storage/repos/loops-repo').LoopLargeFields = {
-          prompt: planText,
-          lastAuditResult: null,
-        }
-        
-        const inserted = deps.loopsRepo.insert(row, large)
-        if (!inserted) {
-          deps.logger.error('handleStartLoop: failed to persist loop state')
-          await rollbackLoopStart()
-          return fail('internal_error', 500, 'Failed to persist loop state')
-        }
-        loopStatePersisted = true
-      }
+      deps.loopService!.setState(uniqueLoopName, state)
+      loopStatePersisted = true
+      deps.loopService!.registerLoopSession(sessionId, uniqueLoopName)
       
       deps.logger.log(`handleStartLoop: state stored for loop=${uniqueLoopName}`)
       
