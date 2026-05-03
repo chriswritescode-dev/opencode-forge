@@ -4,6 +4,15 @@ import type { LoopsRepo, LoopRow, LoopLargeFields } from '../storage/repos/loops
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo, ReviewFindingRow } from '../storage/repos/review-findings-repo'
 
+export type LoopChangeReason =
+  | 'insert' | 'delete' | 'terminate'
+  | 'rotate' | 'phase' | 'iteration'
+  | 'status' | 'session' | 'audit-session'
+  | 'sandbox' | 'workspace' | 'audit-result'
+  | 'model-failed' | 'error' | 'reconcile'
+
+export type LoopChangeNotifier = (reason: LoopChangeReason, loopName: string) => void
+
 export const MAX_RETRIES = 3
 const STALL_TIMEOUT_MS = 60_000
 export const MAX_CONSECUTIVE_STALLS = 5
@@ -117,7 +126,10 @@ export function createLoopService(
   projectId: string,
   logger: Logger,
   loopConfig?: LoopConfig,
+  notify?: LoopChangeNotifier,
 ): LoopService {
+  const notifyLoopChange: LoopChangeNotifier = notify ?? (() => {})
+
   function stateToRow(state: LoopState): LoopRow {
     return {
       projectId,
@@ -178,22 +190,27 @@ export function createLoopService(
     if (!ok) {
       throw new Error(`setState: loop "${name}" already exists`)
     }
+    notifyLoopChange('insert', name)
   }
 
   function deleteState(name: string): void {
     loopsRepo.delete(projectId, name)
+    notifyLoopChange('delete', name)
   }
 
   function setStatus(name: string, status: LoopRow['status']): void {
     loopsRepo.setStatus(projectId, name, status)
+    notifyLoopChange('status', name)
   }
 
   function registerLoopSession(sessionId: string, loopName: string): void {
     loopsRepo.setCurrentSessionId(projectId, loopName, sessionId)
+    notifyLoopChange('session', loopName)
   }
 
   function registerAuditSession(sessionId: string, loopName: string): void {
     loopsRepo.setAuditSessionId(projectId, loopName, sessionId)
+    notifyLoopChange('audit-session', loopName)
   }
 
   function unregisterAuditSession(_sessionId: string): void {
@@ -211,6 +228,7 @@ export function createLoopService(
 
   function setAuditSessionId(name: string, sessionId: string | null): void {
     loopsRepo.setAuditSessionId(projectId, name, sessionId)
+    notifyLoopChange('audit-session', name)
   }
 
   function buildContinuationPrompt(state: LoopState, auditFindings?: string): string {
@@ -340,6 +358,7 @@ export function createLoopService(
         reason: 'shutdown',
         completedAt: now,
       })
+      notifyLoopChange('terminate', state.loopName)
     }
     logger.log(`Loop: terminated ${String(active.length)} active loop(s)`)
   }
@@ -353,6 +372,7 @@ export function createLoopService(
         reason: 'shutdown',
         completedAt: now,
       })
+      notifyLoopChange('reconcile', state.loopName)
       logger.log(`Reconciled stale active loop: ${state.loopName} (was at iteration ${String(state.iteration)})`)
     }
     return active.length
@@ -376,51 +396,65 @@ export function createLoopService(
   }
 
   function incrementError(name: string): number {
-    return loopsRepo.incrementError(projectId, name)
+    const result = loopsRepo.incrementError(projectId, name)
+    notifyLoopChange('error', name)
+    return result
   }
 
   function resetError(name: string): void {
     loopsRepo.resetError(projectId, name)
+    notifyLoopChange('error', name)
   }
 
   function incrementAudit(name: string): number {
-    return loopsRepo.incrementAudit(projectId, name)
+    const result = loopsRepo.incrementAudit(projectId, name)
+    notifyLoopChange('audit-result', name)
+    return result
   }
 
   function setPhase(name: string, phase: 'coding' | 'auditing'): void {
     loopsRepo.updatePhase(projectId, name, phase)
+    notifyLoopChange('phase', name)
   }
 
   function setPhaseAndResetError(name: string, phase: 'coding' | 'auditing'): void {
     loopsRepo.setPhaseAndResetError(projectId, name, phase)
+    notifyLoopChange('phase', name)
   }
 
   function setModelFailed(name: string, failed: boolean): void {
     loopsRepo.setModelFailed(projectId, name, failed)
+    notifyLoopChange('model-failed', name)
   }
 
   function setLastAuditResult(name: string, text: string | null): void {
     loopsRepo.setLastAuditResult(projectId, name, text)
+    notifyLoopChange('audit-result', name)
   }
 
   function applyRotation(name: string, opts: { sessionId: string; iteration: number; phase?: 'coding' | 'auditing'; auditCount?: number; lastAuditResult?: string | null; resetError?: boolean }): void {
     loopsRepo.applyRotation(projectId, name, opts)
+    notifyLoopChange('rotate', name)
   }
 
   function terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void {
     loopsRepo.terminate(projectId, name, opts)
+    notifyLoopChange('terminate', name)
   }
 
   function setSandboxContainer(name: string, containerName: string | null): void {
     loopsRepo.setSandboxContainer(projectId, name, containerName)
+    notifyLoopChange('sandbox', name)
   }
 
   function clearWorkspaceId(name: string): void {
     loopsRepo.clearWorkspaceId(projectId, name)
+    notifyLoopChange('workspace', name)
   }
 
   function setWorkspaceId(name: string, workspaceId: string): void {
     loopsRepo.setWorkspaceId(projectId, name, workspaceId)
+    notifyLoopChange('workspace', name)
   }
 
   return {

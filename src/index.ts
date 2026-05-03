@@ -23,6 +23,8 @@ import { getProjectRegistry } from './api/project-registry'
 import type { ProjectRegistry } from './api/project-registry'
 import { createPlanCaptureEventHook } from './hooks/plan-capture'
 import { createBusRpcEventHook } from './api/bus-rpc'
+import { encodeEvent } from './api/bus-protocol'
+import type { LoopChangeNotifier } from './services/loop'
 
 export async function cleanupSandboxOrphansAcrossRegistry(
   registry: ProjectRegistry,
@@ -221,7 +223,24 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
 
-    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, config.loop)
+    const notifyLoopChange: LoopChangeNotifier = (reason, loopName) => {
+      v2.tui.publish({
+        directory,
+        body: {
+          type: 'tui.command.execute',
+          properties: {
+            command: encodeEvent({
+              name: 'loops.changed',
+              projectId,
+              directory,
+              payload: { reason, loopName },
+            }),
+          },
+        },
+      }).catch((err) => logger.error('[forge] loops.changed publish failed', err))
+    }
+
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, config.loop, notifyLoopChange)
 
     const activeSandboxLoops = loopService.listActive().filter(s => s.sandbox && s.loopName)
 

@@ -9,7 +9,7 @@ import { loadPluginConfig } from './setup'
 import { fetchSessionStats, type SessionStats } from './utils/session-stats'
 import { slugify } from './utils/logger'
 import { extractPlanTitle } from './utils/plan-execution'
-import { shouldPollSidebar, type LoopInfo } from './utils/tui-refresh-helpers'
+import type { LoopInfo } from './utils/tui-refresh-helpers'
 import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
 import { createExecutionContextCache } from './utils/tui-execution-context-cache'
 import type { PluginConfig } from './types'
@@ -85,7 +85,7 @@ function PlanViewerDialog(props: {
   pluginConfig: PluginConfig
   planContent: string
   sessionId: string
-  onRefresh: () => void | Promise<void>
+  onRefresh?: () => void | Promise<void>
   startInExecuteMode?: boolean
   initialExecutionModel?: string
   initialAuditorModel?: string
@@ -495,9 +495,9 @@ function Sidebar(props: {
     * This is the single source of truth for sidebar state updates.
     *
     * Triggers:
-    * - session.status events
-    * - Loop/plan mutation actions (save, delete, execute, cancel, restart)
-    * - Periodic polling for active worktree loops (5s interval)
+    * - Initial mount
+    * - props.sessionId change (session navigation)
+    * - forge.evt:loops.changed bus events (loop mutations)
     * - Manual onRefresh callbacks from dialogs
     */
   const redirectedSessions = new Set<string>()
@@ -548,56 +548,20 @@ function Sidebar(props: {
     }
   }
 
-  // Event subscriptions - wrapped to handle reactivity properly
-  // eslint-disable-next-line solid/reactivity
-  const unsubStatus = props.api.event.on('session.status', async () => {
-    await refreshSidebarData()
-  })
-  // session.deleted fires when terminateLoop cleans up a completed worktree loop's session,
-  // session.updated fires on status transitions. Both should refresh the sidebar immediately
-  // so completed loops don't keep their stale sessionId/workspaceId in the list.
-  // eslint-disable-next-line solid/reactivity
-  const unsubDeleted = props.api.event.on('session.deleted', async () => {
-    await refreshSidebarData()
-  })
-  // eslint-disable-next-line solid/reactivity
-  const unsubUpdated = props.api.event.on('session.updated', async () => {
-    await refreshSidebarData()
-  })
-
-  let pollTimer: ReturnType<typeof setInterval> | null = null
-
-  function startPolling() {
-    if (pollTimer) return
-    pollTimer = setInterval(() => {
-      void refreshSidebarData()
-    }, 5000)
-  }
-
-  function stopPolling() {
-    if (pollTimer) {
-      clearInterval(pollTimer)
-      pollTimer = null
-    }
-  }
-
+  // Initial mount refresh - also re-runs when sessionId changes (navigation)
   createEffect(() => {
+    void props.sessionId  // track navigation
     void refreshSidebarData()
   })
 
-  createEffect(() => {
-    if (shouldPollSidebar(loops())) {
-      startPolling()
-    } else {
-      stopPolling()
-    }
+  // Subscribe to loops.changed events from the bus
+  // eslint-disable-next-line solid/reactivity
+  const unsubLoops = props.client.events.onLoopsChanged(() => {
+    void refreshSidebarData()
   })
 
   onCleanup(() => {
-    unsubStatus()
-    unsubDeleted()
-    unsubUpdated()
-    stopPolling()
+    unsubLoops()
   })
 
   const hasContent = createMemo(() => {
@@ -859,10 +823,6 @@ const tui: TuiPlugin = async (api) => {
 
     const sessionID = (route as { params: { sessionID: string } }).params.sessionID
 
-    const refreshSidebar = () => {
-      // Trigger sidebar refresh via session status event
-    }
-
     return [{
       title: 'Forge: View plan',
       value: 'forge.plan.view',
@@ -888,7 +848,7 @@ const tui: TuiPlugin = async (api) => {
             pluginConfig={pluginConfig}
             planContent={freshPlan}
             sessionId={sessionID}
-            onRefresh={refreshSidebar}
+            // onRefresh omitted - sidebar refreshes via loops.changed events
           />
         ))
       },
@@ -917,7 +877,7 @@ const tui: TuiPlugin = async (api) => {
             pluginConfig={pluginConfig}
             planContent={freshPlan}
             sessionId={sessionID}
-            onRefresh={refreshSidebar}
+            // onRefresh omitted - sidebar refreshes via loops.changed events
             startInExecuteMode={true}
           />
         ))

@@ -30,6 +30,13 @@ export class ForgeRpcError extends Error {
   }
 }
 
+export type ForgeBusEvent = {
+  name: string                  // e.g. 'loops.changed'
+  projectId?: string
+  directory?: string
+  payload?: unknown
+}
+
 function encode(payload: unknown): string {
   return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')
 }
@@ -111,5 +118,37 @@ export function decodeReply(command: string): ForgeRpcReply | null {
     return { rid, status, data: payload.data ?? null }
   } else {
     return { rid, status, code: payload.code ?? 'unknown', message: payload.message ?? 'unknown error' }
+  }
+}
+
+export function encodeEvent(evt: ForgeBusEvent): string {
+  const { name, projectId, directory, payload } = evt
+  const data = { projectId, directory, payload }
+  return `forge.evt:${name}:${encode(data)}`
+}
+
+export function decodeEvent(command: string): ForgeBusEvent | null {
+  if (!command.startsWith('forge.evt:')) {
+    return null
+  }
+
+  const parts = command.split(':')
+  if (parts.length < 3) {
+    return null
+  }
+
+  const name = parts[1]
+  const b64 = parts.slice(2).join(':')
+
+  const payload = decode<{ projectId?: string; directory?: string; payload?: unknown }>(b64)
+  if (!payload) {
+    return null
+  }
+
+  return {
+    name,
+    projectId: payload.projectId,
+    directory: payload.directory,
+    payload: payload.payload,
   }
 }
