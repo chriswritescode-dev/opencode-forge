@@ -149,3 +149,35 @@ test('bindSessionToWorkspace: logs SDK error before throwing', async () => {
   expect(capturedArgs[0]).toContain('bindSessionToWorkspace: sessionRestore failed for workspace=ws-123 session=session-456')
   expect(capturedArgs[1]).toEqual({ name: 'NotFound', data: { message: 'workspace not found' } })
 })
+
+test('workspace persists across phase transitions', async () => {
+  const mockCreate = () => Promise.resolve({ data: { id: 'ws-persistent' } })
+  const mockClient = {
+    experimental: {
+      workspace: {
+        create: mockCreate,
+      },
+    },
+  } as unknown as OpencodeClient
+
+  const logger = {
+    log: () => {},
+    error: () => {},
+  }
+
+  const result1 = await createLoopWorkspace(mockClient, {
+    loopName: 'test-loop-persist',
+    directory: '/test/dir',
+    branch: null,
+  }, logger)
+
+  expect(result1.workspaceId).toBe('ws-persistent')
+
+  const result2 = await createLoopWorkspace(mockClient, {
+    loopName: 'test-loop-persist',
+    directory: '/test/dir',
+    branch: null,
+  }, logger)
+
+  expect(result2.workspaceId).toBe('ws-persistent')
+})

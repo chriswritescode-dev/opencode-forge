@@ -14,7 +14,6 @@ function createMockRepos() {
     delete: () => {},
     setStatus: () => {},
     setCurrentSessionId: () => {},
-    setAuditSessionId: () => {},
     getBySessionId: () => null,
     findPartial: () => ({ match: null, candidates: [] }),
     listByStatus: () => [],
@@ -23,6 +22,7 @@ function createMockRepos() {
     setModelFailed: () => {},
     setLastAuditResult: () => {},
     applyRotation: () => {},
+    replaceSession: () => {},
     terminate: () => {},
     setSandboxContainer: () => {},
     clearWorkspaceId: () => {},
@@ -154,58 +154,6 @@ describe('LoopChangeNotifier', () => {
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('session')
-      expect(notifyCalls[0].loopName).toBe('test-loop')
-    })
-  })
-
-  describe('registerAuditSession', () => {
-    it('should be called with audit-session reason when registerAuditSession is called', () => {
-      const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
-      const notifyCalls: Array<{ reason: string; loopName: string }> = []
-      const notify: LoopChangeNotifier = (reason, loopName) => {
-        notifyCalls.push({ reason, loopName })
-      }
-
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
-
-      loopService.registerAuditSession('s2', 'test-loop')
-
-      expect(notifyCalls.length).toBe(1)
-      expect(notifyCalls[0].reason).toBe('audit-session')
-      expect(notifyCalls[0].loopName).toBe('test-loop')
-    })
-  })
-
-  describe('setAuditSessionId', () => {
-    it('should be called with audit-session reason when setAuditSessionId is called', () => {
-      const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
-      const notifyCalls: Array<{ reason: string; loopName: string }> = []
-      const notify: LoopChangeNotifier = (reason, loopName) => {
-        notifyCalls.push({ reason, loopName })
-      }
-
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
-
-      loopService.setAuditSessionId('test-loop', 's3')
-
-      expect(notifyCalls.length).toBe(1)
-      expect(notifyCalls[0].reason).toBe('audit-session')
       expect(notifyCalls[0].loopName).toBe('test-loop')
     })
   })
@@ -418,6 +366,32 @@ describe('LoopChangeNotifier', () => {
     })
   })
 
+  describe('replaceSession', () => {
+    it('should be called with rotate reason when replaceSession is called', () => {
+      const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
+      const notifyCalls: Array<{ reason: string; loopName: string }> = []
+      const notify: LoopChangeNotifier = (reason, loopName) => {
+        notifyCalls.push({ reason, loopName })
+      }
+
+      const loopService = createLoopService(
+        mockLoopsRepo,
+        mockPlansRepo,
+        mockReviewFindingsRepo,
+        'test-project',
+        mockLogger,
+        undefined,
+        notify
+      )
+
+      loopService.replaceSession('test-loop', { newSessionId: 's5', phase: 'auditing' })
+
+      expect(notifyCalls.length).toBe(1)
+      expect(notifyCalls[0].reason).toBe('rotate')
+      expect(notifyCalls[0].loopName).toBe('test-loop')
+    })
+  })
+
   describe('terminate', () => {
     it('should be called with terminate reason when terminate is called', () => {
       const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
@@ -531,7 +505,6 @@ describe('LoopChangeNotifier', () => {
         loopName: 'loop-1',
         status: 'running' as const,
         currentSessionId: 's1',
-        auditSessionId: null,
         worktree: false,
         worktreeDir: '/test',
         worktreeBranch: null,
@@ -594,7 +567,6 @@ describe('LoopChangeNotifier', () => {
         loopName: 'stale-loop',
         status: 'running' as const,
         currentSessionId: 's1',
-        auditSessionId: null,
         worktree: false,
         worktreeDir: '/test',
         worktreeBranch: null,

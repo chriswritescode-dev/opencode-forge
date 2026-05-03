@@ -26,7 +26,7 @@ function listLoopsFromDb(
   
   const placeholders = statuses.map(() => '?').join(',')
   const baseQuery = `
-    SELECT project_id, loop_name, status, current_session_id, audit_session_id, worktree, worktree_dir,
+    SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir,
            worktree_branch, project_dir, max_iterations, iteration, audit_count,
            error_count, phase, execution_model, auditor_model,
            model_failed, sandbox, sandbox_container, started_at, completed_at,
@@ -77,7 +77,6 @@ interface LoopRowRaw {
   loop_name: string
   status: string
   current_session_id: string
-  audit_session_id: string | null
   worktree: number
   worktree_dir: string
   worktree_branch: string | null
@@ -106,7 +105,6 @@ function mapRow(row: LoopRowRaw): LoopRow {
     loopName: row.loop_name,
     status: row.status as LoopRow['status'],
     currentSessionId: row.current_session_id,
-    auditSessionId: row.audit_session_id ?? null,
     worktree: row.worktree === 1,
     worktreeDir: row.worktree_dir,
     worktreeBranch: row.worktree_branch,

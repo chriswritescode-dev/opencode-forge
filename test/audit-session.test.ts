@@ -37,7 +37,6 @@ describe('createAuditSession', () => {
     })
 
     expect(result).not.toBeNull()
-    expect(result!.auditSessionId).toBe('sess_mock_123')
     expect(mockV2.session.create).toHaveBeenCalled()
     const callArgs = (mockV2.session.create as any).mock.calls[0][0]
     expect(callArgs.permission).toEqual(buildAuditSessionPermissionRuleset({ isSandbox: true }))

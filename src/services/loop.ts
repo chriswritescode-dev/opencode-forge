@@ -7,7 +7,7 @@ import type { ReviewFindingsRepo, ReviewFindingRow } from '../storage/repos/revi
 export type LoopChangeReason =
   | 'insert' | 'delete' | 'terminate'
   | 'rotate' | 'phase' | 'iteration'
-  | 'status' | 'session' | 'audit-session'
+  | 'status' | 'session'
   | 'sandbox' | 'workspace' | 'audit-result'
   | 'model-failed' | 'error' | 'reconcile'
 
@@ -24,7 +24,6 @@ const RECENT_MESSAGES_COUNT = 5
 export interface LoopState {
   active: boolean
   sessionId: string
-  auditSessionId?: string
   loopName: string
   worktreeDir: string
   projectDir?: string
@@ -56,10 +55,7 @@ export interface LoopService {
   setState(name: string, state: LoopState): void
   deleteState(name: string): void
   registerLoopSession(sessionId: string, loopName: string): void
-  registerAuditSession(sessionId: string, loopName: string): void
-  unregisterAuditSession(sessionId: string): void
   resolveLoopName(sessionId: string): string | null
-  unregisterLoopSession(sessionId: string): void
   buildContinuationPrompt(state: LoopState, auditFindings?: string): string
   buildAuditPrompt(state: LoopState): string
   listActive(): LoopState[]
@@ -83,16 +79,15 @@ export interface LoopService {
   setStatus(name: string, status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'): void
   clearWorkspaceId(name: string): void
   setWorkspaceId(name: string, workspaceId: string): void
-  setAuditSessionId(name: string, sessionId: string | null): void
   applyRotation(name: string, opts: { sessionId: string; iteration: number; phase?: 'coding' | 'auditing'; auditCount?: number; lastAuditResult?: string | null; resetError?: boolean }): void
   terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
+  replaceSession(name: string, opts: { newSessionId: string; phase: 'coding' | 'auditing'; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void
 }
 
 export function rowToLoopState(row: LoopRow, large: LoopLargeFields | null): LoopState {
   return {
     active: row.status === 'running',
     sessionId: row.currentSessionId,
-    auditSessionId: row.auditSessionId ?? undefined,
     loopName: row.loopName,
     worktreeDir: row.worktreeDir,
     projectDir: row.projectDir,
@@ -136,7 +131,6 @@ export function createLoopService(
       loopName: state.loopName,
       status: state.active ? 'running' : 'completed',
       currentSessionId: state.sessionId,
-      auditSessionId: state.auditSessionId ?? null,
       worktree: state.worktree ?? false,
       worktreeDir: state.worktreeDir,
       worktreeBranch: state.worktreeBranch ?? null,
@@ -208,27 +202,20 @@ export function createLoopService(
     notifyLoopChange('session', loopName)
   }
 
-  function registerAuditSession(sessionId: string, loopName: string): void {
-    loopsRepo.setAuditSessionId(projectId, loopName, sessionId)
-    notifyLoopChange('audit-session', loopName)
-  }
-
-  function unregisterAuditSession(_sessionId: string): void {
-    // No-op: audit sessions are ephemeral and deleted after use
-  }
-
   function resolveLoopName(sessionId: string): string | null {
     return loopsRepo.getBySessionId(projectId, sessionId)?.loopName ?? null
   }
 
-  function unregisterLoopSession(_sessionId: string): void {
-    // No-op: the only caller is rotateSession, which immediately calls registerLoopSession
-    // The old session has no row pointing to it — nothing to unregister
-  }
-
-  function setAuditSessionId(name: string, sessionId: string | null): void {
-    loopsRepo.setAuditSessionId(projectId, name, sessionId)
-    notifyLoopChange('audit-session', name)
+  function replaceSession(name: string, opts: { newSessionId: string; phase: 'coding' | 'auditing'; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void {
+    loopsRepo.replaceSession(projectId, name, {
+      sessionId: opts.newSessionId,
+      phase: opts.phase,
+      iteration: opts.iteration,
+      resetError: opts.resetError,
+      auditCount: opts.auditCount,
+      lastAuditResult: opts.lastAuditResult,
+    })
+    notifyLoopChange('rotate', name)
   }
 
   function buildContinuationPrompt(state: LoopState, auditFindings?: string): string {
@@ -463,11 +450,7 @@ export function createLoopService(
     setState,
     deleteState,
     registerLoopSession,
-    registerAuditSession,
-    unregisterAuditSession,
-    setAuditSessionId,
     resolveLoopName,
-    unregisterLoopSession,
     setStatus,
     buildContinuationPrompt,
     buildAuditPrompt,
@@ -493,6 +476,7 @@ export function createLoopService(
     terminate,
     clearWorkspaceId,
     setWorkspaceId,
+    replaceSession,
   }
 }
 

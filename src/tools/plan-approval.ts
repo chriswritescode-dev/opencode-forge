@@ -99,8 +99,8 @@ const processedApprovalCalls = new WeakMap<ToolContext, Set<string>>()
 export { LOOP_BLOCKED_TOOLS }
 export { extractPlanTitle }
 
-function isActiveLoopToolSession(state: { active?: boolean; sessionId?: string; auditSessionId?: string }, sessionID: string): boolean {
-  return state.active === true && (state.sessionId === sessionID || state.auditSessionId === sessionID)
+function isActiveLoopToolSession(state: { active?: boolean; sessionId?: string }, sessionID: string): boolean {
+  return state.active === true && state.sessionId === sessionID
 }
 
 function claimApprovalCall(ctx: ToolContext, input: { sessionID: string; callID: string }, label: string): boolean {

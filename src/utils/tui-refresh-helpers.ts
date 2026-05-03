@@ -16,7 +16,6 @@ export type LoopInfo = {
   iteration: number
   maxIterations: number
   sessionId: string
-  auditSessionId?: string
   active: boolean
   startedAt?: string
   completedAt?: string
@@ -54,7 +53,7 @@ export function readLoopStates(projectId: string, dbPathOverride?: string): Loop
   try {
     db = new Database(dbPath, { readonly: true })
     const stmt = db.prepare(`
-      SELECT project_id, loop_name, status, current_session_id, audit_session_id, worktree, worktree_dir,
+      SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir,
              worktree_branch, project_dir, max_iterations, iteration, audit_count,
              error_count, phase, execution_model, auditor_model,
              model_failed, sandbox, sandbox_container, started_at, completed_at,
@@ -68,7 +67,6 @@ export function readLoopStates(projectId: string, dbPathOverride?: string): Loop
       loop_name: string
       status: string
       current_session_id: string
-      audit_session_id: string | null
       worktree: number
       worktree_dir: string
       worktree_branch: string | null
@@ -99,7 +97,6 @@ export function readLoopStates(projectId: string, dbPathOverride?: string): Loop
         iteration: row.iteration,
         maxIterations: row.max_iterations,
         sessionId: row.current_session_id,
-        auditSessionId: row.audit_session_id ?? undefined,
         active: row.status === 'running',
         startedAt: new Date(row.started_at).toISOString(),
         completedAt: row.completed_at ? new Date(row.completed_at).toISOString() : undefined,
@@ -139,40 +136,39 @@ export function readLoopByName(projectId: string, loopName: string, dbPathOverri
   try {
     db = new Database(dbPath, { readonly: true })
     const row = db.prepare(`
-      SELECT project_id, loop_name, status, current_session_id, audit_session_id, worktree, worktree_dir,
-             worktree_branch, project_dir, max_iterations, iteration, audit_count,
-             error_count, phase, execution_model, auditor_model,
-             model_failed, sandbox, sandbox_container, started_at, completed_at,
-             termination_reason, completion_summary, workspace_id, host_session_id
-      FROM loops
-      WHERE project_id = ? AND loop_name = ?
-    `).get(projectId, loopName) as {
-      project_id: string
-      loop_name: string
-      status: string
-      current_session_id: string
-      audit_session_id: string | null
-      worktree: number
-      worktree_dir: string
-      worktree_branch: string | null
-      project_dir: string
-      max_iterations: number
-      iteration: number
-      audit_count: number
-      error_count: number
-      phase: string
-      execution_model: string | null
-      auditor_model: string | null
-      model_failed: number
-      sandbox: number
-      sandbox_container: string | null
-      started_at: number
-      completed_at: number | null
-      termination_reason: string | null
-      completion_summary: string | null
-      workspace_id: string | null
-      host_session_id: string | null
-    } | null
+      SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir,
+              worktree_branch, project_dir, max_iterations, iteration, audit_count,
+              error_count, phase, execution_model, auditor_model,
+              model_failed, sandbox, sandbox_container, started_at, completed_at,
+              termination_reason, completion_summary, workspace_id, host_session_id
+       FROM loops
+       WHERE project_id = ? AND loop_name = ?
+     `).get(projectId, loopName) as {
+       project_id: string
+       loop_name: string
+       status: string
+       current_session_id: string
+       worktree: number
+       worktree_dir: string
+       worktree_branch: string | null
+       project_dir: string
+       max_iterations: number
+       iteration: number
+       audit_count: number
+       error_count: number
+       phase: string
+       execution_model: string | null
+       auditor_model: string | null
+       model_failed: number
+       sandbox: number
+       sandbox_container: string | null
+       started_at: number
+       completed_at: number | null
+       termination_reason: string | null
+       completion_summary: string | null
+       workspace_id: string | null
+       host_session_id: string | null
+     } | null
     
     if (!row) return null
     
@@ -182,7 +178,6 @@ export function readLoopByName(projectId: string, loopName: string, dbPathOverri
       iteration: row.iteration,
       maxIterations: row.max_iterations,
       sessionId: row.current_session_id,
-      auditSessionId: row.audit_session_id ?? undefined,
       active: row.status === 'running',
       startedAt: new Date(row.started_at).toISOString(),
       completedAt: row.completed_at ? new Date(row.completed_at).toISOString() : undefined,

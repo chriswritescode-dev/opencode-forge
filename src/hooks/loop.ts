@@ -220,9 +220,7 @@ export function createLoopEventHandler(
           return
         }
 
-        const sessionId = state.phase === 'auditing'
-          ? state.auditSessionId ?? state.sessionId
-          : state.sessionId
+        const sessionId = state.sessionId
         let statusCheckFailed = false
         try {
           const statusResult = await v2Client.session.status({ directory: state.worktreeDir })
@@ -259,13 +257,7 @@ export function createLoopEventHandler(
 
           try {
             if (freshState.phase === 'auditing') {
-              if (!freshState.auditSessionId) {
-                logger.error(`Loop watchdog: phase=auditing but no auditSessionId for ${loopName}, resetting to coding`)
-                loopService.setPhaseAndResetError(loopName, 'coding')
-                await handleCodingPhase(loopName, { ...freshState, phase: 'coding' })
-              } else {
-                await handleAuditingPhase(loopName, freshState)
-              }
+              await handleAuditingPhase(loopName, freshState)
             } else {
               await handleCodingPhase(loopName, freshState)
             }
@@ -296,16 +288,6 @@ export function createLoopEventHandler(
     const projectDir = state.projectDir ?? state.worktreeDir
     stopWatchdog(loopName)
 
-    if (state.auditSessionId) {
-      try {
-        await v2Client.session.delete({ sessionID: state.auditSessionId, directory: projectDir })
-        logger.log(`Loop: deleted audit session ${state.auditSessionId} during termination`)
-      } catch (err) {
-        logger.error(`Loop: failed to delete audit session ${state.auditSessionId} during termination`, err)
-      }
-      loopService.unregisterAuditSession(state.auditSessionId)
-    }
-
     const retryTimeout = retryTimeouts.get(loopName)
     if (retryTimeout) {
       clearTimeout(retryTimeout)
@@ -318,8 +300,6 @@ export function createLoopEventHandler(
       idleRetryTimeouts.delete(loopName)
     }
     idleRetryAttempts.delete(loopName)
-
-    loopService.unregisterLoopSession(sessionId)
 
     const now = Date.now()
     const statusMap = (r: string): 'completed' | 'cancelled' | 'errored' | 'stalled' => {
@@ -540,7 +520,8 @@ export function createLoopEventHandler(
   async function recoverFromMissingWorkspace(
     loopName: string,
     state: LoopState,
-    auditSessionId: string,
+    sessionId: string,
+    contextLabel: string,
     bindError?: unknown,
   ): Promise<{ workspaceId?: string; recovered: boolean }> {
     if (!state.workspaceId) {
@@ -552,7 +533,7 @@ export function createLoopEventHandler(
       return { recovered: false }
     }
 
-    detachFromWorkspace(loopName, state, 'during audit bind')
+    detachFromWorkspace(loopName, state, contextLabel)
 
     const createLoopWorkspaceMod = await import('../workspace/forge-worktree')
     const newWorkspace = await createLoopWorkspaceMod.createLoopWorkspace(
@@ -571,7 +552,7 @@ export function createLoopEventHandler(
     }
 
     try {
-      await bindSessionToWorkspace(v2Client, newWorkspace.workspaceId, auditSessionId, logger)
+      await bindSessionToWorkspace(v2Client, newWorkspace.workspaceId, sessionId, logger)
       loopService.setWorkspaceId(loopName, newWorkspace.workspaceId)
       state.workspaceId = newWorkspace.workspaceId
       logger.log(`Loop: re-provisioned workspace ${newWorkspace.workspaceId} for ${loopName} after stale id`)
@@ -621,7 +602,6 @@ export function createLoopEventHandler(
       retryTimeouts.delete(loopName)
     }
 
-    loopService.unregisterLoopSession(oldSessionId)
     loopService.registerLoopSession(newSessionId, loopName)
 
     stopWatchdog(loopName)
@@ -728,13 +708,13 @@ export function createLoopEventHandler(
       logger.error(`Loop: session rotation failed, continuing with existing session`, err)
     }
 
-    loopService.applyRotation(loopName, {
-      sessionId: activeSessionId,
+    loopService.replaceSession(loopName, {
+      newSessionId: activeSessionId,
+      phase: stateUpdates.phase ?? 'coding',
       iteration: stateUpdates.iteration ?? currentState.iteration,
-      phase: stateUpdates.phase,
-      auditCount: stateUpdates.auditCount,
-      lastAuditResult: stateUpdates.lastAuditResult,
       resetError: !assistantErrorDetected && currentState.errorCount > 0,
+      auditCount: stateUpdates.auditCount,
+      lastAuditResult: stateUpdates.lastAuditResult ?? null,
     })
 
     const nextIteration = stateUpdates.iteration ?? currentState.iteration
@@ -882,12 +862,22 @@ export function createLoopEventHandler(
 
     currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'coding')
 
-    loopService.setPhaseAndResetError(loopName, 'auditing')
-    logger.log(`Loop iteration ${currentState.iteration ?? 0} complete, running auditor for session ${currentState.sessionId}`)
-
     const currentConfig = getConfig()
     const auditorModel = resolveLoopAuditorModel(currentConfig, loopService, loopName, logger)
+    const auditPrompt = loopService.buildAuditPrompt(currentState)
 
+    // Delete the code session BEFORE creating audit session
+    const codeSessionId = currentState.sessionId
+    try {
+      await v2Client.session.delete({
+        sessionID: codeSessionId,
+        directory: currentState.worktreeDir,
+      })
+    } catch (err) {
+      logger.error(`Loop: failed to delete code session ${codeSessionId} before audit`, err)
+    }
+
+    // Create new audit session in the SAME workspace
     const created = await createAuditSessionWithFallback({
       loopName,
       iteration: currentState.iteration ?? 0,
@@ -895,7 +885,7 @@ export function createLoopEventHandler(
       workspaceId: currentState.workspaceId,
       isSandbox: currentState.sandbox ?? false,
       auditorModel,
-      prompt: loopService.buildAuditPrompt(currentState),
+      prompt: auditPrompt,
     })
 
     if (!created) {
@@ -908,16 +898,20 @@ export function createLoopEventHandler(
       return
     }
 
-    loopService.setAuditSessionId(loopName, created.auditSessionId)
-    loopService.registerAuditSession(created.auditSessionId, loopName)
-
+    // Workspace recovery if bind failed (symmetric path)
     if (created.bindFailed && currentState.workspaceId) {
-      const recovered = await recoverFromMissingWorkspace(loopName, currentState, created.auditSessionId, created.bindError)
+      const recovered = await recoverFromMissingWorkspace(loopName, currentState, created.auditSessionId, 'during audit bind', created.bindError)
       currentState = loopService.getActiveState(loopName) ?? currentState
       if (!recovered.recovered) {
         logger.log(`Loop: workspace re-provision failed for ${loopName}, continuing without workspace backing`)
       }
     }
+
+    // ATOMIC transition: phase=auditing AND current_session_id=auditSessionId in one write
+    loopService.replaceSession(loopName, {
+      newSessionId: created.auditSessionId,
+      phase: 'auditing',
+    })
 
     const sendAuditWithModel = async () => {
       const freshState = loopService.getActiveState(loopName)
@@ -957,7 +951,7 @@ export function createLoopEventHandler(
 
     if (promptResult.error) {
       if (isWorkspaceNotFoundError(promptResult.error) && currentState.workspaceId) {
-        const recovered = await recoverFromMissingWorkspace(loopName, currentState, created.auditSessionId)
+        const recovered = await recoverFromMissingWorkspace(loopName, currentState, created.auditSessionId, 'during audit prompt recovery')
         currentState = loopService.getActiveState(loopName) ?? currentState
         if (recovered.recovered || !currentState.workspaceId) {
           const retryResult = await sendAuditWithoutModel()
@@ -1003,27 +997,19 @@ export function createLoopEventHandler(
       return
     }
 
-    if (!currentState.auditSessionId) {
-      logger.error(`Loop: loop ${loopName} in auditing phase but no auditSessionId, rolling back to coding`)
-      loopService.setPhaseAndResetError(loopName, 'coding')
-      return
-    }
-
-    const auditSessionIdForCleanup = currentState.auditSessionId
+    const auditSessionId = currentState.sessionId
     const cleanupAuditSession = async () => {
-      await deleteAuditSession(v2Client, auditSessionIdForCleanup, currentState!.worktreeDir, logger)
-      loopService.unregisterAuditSession(auditSessionIdForCleanup)
-      loopService.setAuditSessionId(loopName, null)
-      currentState = { ...currentState!, auditSessionId: undefined }
+      await deleteAuditSession(v2Client, auditSessionId, currentState!.worktreeDir, logger)
     }
 
-    const { text: auditText, error: assistantError, lastMessageRole } = await getLastAssistantInfo(auditSessionIdForCleanup, currentState.worktreeDir)
+    const { text: auditText, error: assistantError, lastMessageRole } = await getLastAssistantInfo(auditSessionId, currentState.worktreeDir)
 
     if (lastMessageRole !== 'assistant') {
       const attempts = idleRetryAttempts.get(loopName) ?? 0
       if (attempts >= MAX_IDLE_RETRIES) {
-        logger.error(`Loop: auditing phase retry exhausted for ${loopName} (last message: ${lastMessageRole})`)
+        logger.error(`Loop: auditing phase retry exhausted for ${loopName} (last message: ${lastMessageRole}), terminating`)
         idleRetryAttempts.delete(loopName)
+        await terminateLoop(loopName, currentState, 'audit_retry_exhausted')
         return
       }
       logger.log(`Loop: auditing idle without assistant message (last=${lastMessageRole}), retrying in ${IDLE_RETRY_DELAY_MS}ms (attempt ${attempts + 1}/${MAX_IDLE_RETRIES})`)
@@ -1149,13 +1135,12 @@ export function createLoopEventHandler(
         await withStateLock(loopName, async () => {
           const state = loopService.getActiveState(loopName)
           if (!state?.active) return
-          const isCoding = state.sessionId === eventSessionId
-          const isAudit  = state.auditSessionId === eventSessionId
-          if (!isCoding && !isAudit) {
-            logger.log(`Loop: ignoring stale aborted event for session ${eventSessionId} (current coding=${state.sessionId} audit=${state.auditSessionId ?? 'none'})`)
+          const isCurrentSession = state.sessionId === eventSessionId
+          if (!isCurrentSession) {
+            logger.log(`Loop: ignoring stale aborted event for session ${eventSessionId} (current=${state.sessionId})`)
             return
           }
-          if (isAudit) {
+          if (state.phase === 'auditing') {
             const { lastMessageRole } = await getLastAssistantInfo(eventSessionId, state.worktreeDir)
             if (lastMessageRole === 'assistant') {
               logger.log(`Loop: audit session ${eventSessionId} aborted after assistant response, processing audit result`)
@@ -1164,8 +1149,6 @@ export function createLoopEventHandler(
             }
             logger.log(`Loop: audit session ${eventSessionId} aborted, cleaning up and rolling back to coding`)
             await deleteAuditSession(v2Client, eventSessionId, state.worktreeDir, logger)
-            loopService.unregisterAuditSession(eventSessionId)
-            loopService.setAuditSessionId(loopName, null)
             loopService.setPhaseAndResetError(loopName, 'coding')
             return
           }
@@ -1180,18 +1163,15 @@ export function createLoopEventHandler(
       await withStateLock(loopName, async () => {
         const state = loopService.getActiveState(loopName)
         if (!state?.active) return
-        const isCoding = state.sessionId === eventSessionId
-        const isAudit  = state.auditSessionId === eventSessionId
-        if (!isCoding && !isAudit) {
-          logger.log(`Loop: ignoring stale error event for session ${eventSessionId} (current coding=${state.sessionId} audit=${state.auditSessionId ?? 'none'})`)
+        const isCurrentSession = state.sessionId === eventSessionId
+        if (!isCurrentSession) {
+          logger.log(`Loop: ignoring stale error event for session ${eventSessionId} (current=${state.sessionId})`)
           return
         }
-        if (isAudit) {
+        if (state.phase === 'auditing') {
           const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
           logger.error(`Loop: audit session error for ${eventSessionId}: ${errorMessage}, cleaning up and rolling back to coding`)
           await deleteAuditSession(v2Client, eventSessionId, state.worktreeDir, logger)
-          loopService.unregisterAuditSession(eventSessionId)
-          loopService.setAuditSessionId(loopName, null)
           loopService.setPhaseAndResetError(loopName, 'coding')
           return
         }
@@ -1227,18 +1207,9 @@ export function createLoopEventHandler(
       const state = loopService.getActiveState(loopName)
       if (!state || !state.active) return
 
-      const isCoding = state.sessionId === sessionId
-      const isAudit  = state.auditSessionId === sessionId
-      if (!isCoding && !isAudit) {
-        logger.log(`Loop: ignoring stale idle event for session ${sessionId} (current coding=${state.sessionId} audit=${state.auditSessionId ?? 'none'})`)
-        return
-      }
-      if (state.phase === 'auditing' && !isAudit) {
-        logger.log(`Loop: idle event from coding session while in auditing phase, ignoring`)
-        return
-      }
-      if (state.phase === 'coding' && !isCoding) {
-        logger.log(`Loop: idle event from audit session while in coding phase, ignoring`)
+      const isCurrentSession = state.sessionId === sessionId
+      if (!isCurrentSession) {
+        logger.log(`Loop: ignoring stale idle event for session ${sessionId} (current=${state.sessionId})`)
         return
       }
 

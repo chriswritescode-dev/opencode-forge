@@ -22,8 +22,7 @@ function createTestDB() {
       loop_name            TEXT NOT NULL,
       status               TEXT NOT NULL,
       current_session_id   TEXT NOT NULL,
-      audit_session_id     TEXT,
-      worktree             INTEGER NOT NULL,
+            worktree             INTEGER NOT NULL,
       worktree_dir         TEXT NOT NULL,
       worktree_branch      TEXT,
       project_dir          TEXT NOT NULL,
@@ -290,21 +289,17 @@ describe('in-place loop iteration', () => {
       // Fire idle for L1 (coding session)
       await fireIdleEvent('L1')
 
-      // Expect: phase should be 'auditing' and audit_session_id should be set
+      // Expect: phase should be 'auditing' and phase should be auditing
       let state = loopService.getActiveState(loopName)
       expect(state?.phase).toBe('auditing')
-      expect(state?.auditSessionId).toBeDefined()
-      expect(state?.auditSessionId).not.toBeNull()
-      expect(state?.auditSessionId).not.toBe(state?.sessionId)
-      const auditSessionId1 = state!.auditSessionId!
+      const auditSessionId1 = state!.sessionId
 
       // Fire idle for audit session A1
       await fireIdleEvent(auditSessionId1)
 
-      // Expect: phase back to 'coding', audit_session_id cleared, current_session_id rotated, audit_count === 1
+      // Expect: phase back to 'coding', phase changed to coding, current_session_id rotated, audit_count === 1
       state = loopService.getActiveState(loopName)
       expect(state?.phase).toBe('coding')
-      expect(state?.auditSessionId).toBeUndefined()
       expect(state?.sessionId).not.toBe('L1')
       expect(state?.auditCount).toBe(1)
       const codingSessionId2 = state!.sessionId
@@ -325,8 +320,7 @@ describe('in-place loop iteration', () => {
       // Expect: phase back to 'auditing', new audit session A2
       state = loopService.getActiveState(loopName)
       expect(state?.phase).toBe('auditing')
-      expect(state?.auditSessionId).toBeDefined()
-      const auditSessionId2 = state!.auditSessionId!
+      const auditSessionId2 = state!.sessionId
 
       // Fire idle for audit session A2
       await fireIdleEvent(auditSessionId2)
@@ -334,7 +328,6 @@ describe('in-place loop iteration', () => {
       // Expect: phase back to 'coding', rotated to L3, audit_count 2, loop still active
       state = loopService.getActiveState(loopName)
       expect(state?.phase).toBe('coding')
-      expect(state?.auditSessionId).toBeUndefined()
       expect(state?.sessionId).not.toBe(codingSessionId2)
       expect(state?.auditCount).toBe(2)
       const codingSessionId3 = state!.sessionId
@@ -351,7 +344,7 @@ describe('in-place loop iteration', () => {
       // Expect: phase should be 'auditing'
       state = loopService.getActiveState(loopName)
       expect(state?.phase).toBe('auditing')
-      const auditSessionId3 = state!.auditSessionId!
+      const auditSessionId3 = state!.sessionId
 
       // Fire idle for audit session A3
       await fireIdleEvent(auditSessionId3)
@@ -413,17 +406,15 @@ describe('in-place loop iteration', () => {
 
       let state = loopService.getActiveState(loopName)
       expect(state?.phase).toBe('auditing')
-      const auditSessionId = state!.auditSessionId!
-      expect(auditSessionId).toBeDefined()
+      const auditSessionId = state!.sessionId
       const initialAuditCount = state!.auditCount ?? 0
 
       // Fire stray idle for OLD coding session L1
       await fireIdleEvent('L1')
 
-      // Expect: state unchanged - still auditing, same audit_session_id
+      // Expect: state unchanged - still auditing
       state = loopService.getActiveState(loopName)
       expect(state?.phase).toBe('auditing')
-      expect(state?.auditSessionId).toBe(auditSessionId)
       expect(state?.auditCount).toBe(initialAuditCount)
     })
   })
@@ -473,17 +464,15 @@ describe('in-place loop iteration', () => {
 
       let state = loopService.getActiveState(loopName)
       expect(state?.phase).toBe('auditing')
-      const auditSessionId = state!.auditSessionId!
-      expect(auditSessionId).toBeDefined()
+      const auditSessionId = state!.sessionId
       const initialAuditCount = state!.auditCount ?? 0
 
       // Fire idle for arbitrary unknown session id
       await fireIdleEvent('unknown-session-xyz')
 
-      // Expect: state unchanged - still auditing, same audit_session_id, audit_count unchanged
+      // Expect: state unchanged - still auditing, audit_count unchanged
       state = loopService.getActiveState(loopName)
       expect(state?.phase).toBe('auditing')
-      expect(state?.auditSessionId).toBe(auditSessionId)
       expect(state?.auditCount).toBe(initialAuditCount)
     })
   })

@@ -1349,7 +1349,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         if (latestState?.active) {
           try { await deps.v2.session.abort({ sessionID: latestState.sessionId }) } catch {}
           deps.loopHandler!.clearLoopTimers(stoppedState.loopName)
-          deps.loopService!.unregisterLoopSession(latestState.sessionId)
           // Sync stoppedState with latest persisted values
           Object.assign(stoppedState, {
             sessionId: latestState.sessionId,
@@ -1369,16 +1368,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       }
 
       const previousSessionId = stoppedState.sessionId
-
-      if (stoppedState.auditSessionId) {
-        try {
-          await deps.v2.session.delete({ sessionID: stoppedState.auditSessionId, directory: stoppedState.worktreeDir })
-          deps.logger.log(`Loop restart: deleted stale audit session ${stoppedState.auditSessionId}`)
-        } catch (err) {
-          deps.logger.error(`Loop restart: failed to delete stale audit session ${stoppedState.auditSessionId}`, err)
-        }
-        deps.loopService!.setAuditSessionId(stoppedState.loopName, null)
-      }
 
       const createResult = await createLoopSessionWithWorkspace({
         v2: deps.v2,
@@ -1541,12 +1530,11 @@ import { join } from 'path'
 function rowToLoopState(
   row: import('../storage/repos/loops-repo').LoopRow,
   large: import('../storage/repos/loops-repo').LoopLargeFields | null,
-  _deps: ForgeExecutionServiceDeps,
+  _deps: unknown,
 ): import('../services/loop').LoopState {
   return {
     active: row.status === 'running',
     sessionId: row.currentSessionId,
-    auditSessionId: row.auditSessionId ?? undefined,
     loopName: row.loopName,
     worktreeDir: row.worktreeDir,
     projectDir: row.projectDir,

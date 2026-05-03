@@ -166,5 +166,14 @@ export const migrations: Migration[] = [
       db.run(loadSql('117_branch_scope_review_findings.sql'))
     },
   },
+  {
+    id: '118',
+    description: 'Drop audit_session_id column from loops table (single-session loop model)',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      if (!cols.some((c) => c.name === 'audit_session_id')) return
+      db.run(loadSql('118_drop_audit_session_id_from_loops.sql'))
+    },
+  },
 
 ]

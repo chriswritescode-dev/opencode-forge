@@ -79,7 +79,6 @@ describe('LoopsRepo', () => {
     loopName: 'test-loop',
     status: 'running',
     currentSessionId: 'session-1',
-    auditSessionId: null,
     worktree: false,
     worktreeDir: '/tmp/test',
     worktreeBranch: null,
@@ -403,111 +402,61 @@ describe('LoopsRepo', () => {
     })
   })
 
-  describe('setAuditSessionId', () => {
-    test('should persist and is readable via get()', () => {
+  describe('replaceSession', () => {
+    test('should atomically update current_session_id, phase, and iteration', () => {
       const row: LoopRow = {
         ...testRow,
-        loopName: 'loop-with-audit',
-        currentSessionId: 'session-code',
-        auditSessionId: null,
+        loopName: 'loop-replace-test',
+        currentSessionId: 'L1',
+        phase: 'coding',
+        iteration: 1,
+        errorCount: 3,
+        modelFailed: true,
       }
       
       repo.insert(row, testLarge)
       
-      repo.setAuditSessionId(row.projectId, row.loopName, 'sess_audit_123')
+      repo.replaceSession(row.projectId, row.loopName, {
+        sessionId: 'L2',
+        phase: 'auditing',
+        iteration: 2,
+        resetError: true,
+      })
       
       const retrieved = repo.get(row.projectId, row.loopName)
-      expect(retrieved!.auditSessionId).toBe('sess_audit_123')
-    })
-
-    test('setAuditSessionId(null) clears the column', () => {
-      const row: LoopRow = {
-        ...testRow,
-        loopName: 'loop-clear-audit',
-        currentSessionId: 'session-code',
-        auditSessionId: 'sess_audit_old',
-      }
-      
-      repo.insert(row, testLarge)
-      
-      repo.setAuditSessionId(row.projectId, row.loopName, null)
-      
-      const retrieved = repo.get(row.projectId, row.loopName)
-      expect(retrieved!.auditSessionId).toBeNull()
-    })
-
-    test('getBySessionId returns the row when queried by audit_session_id', () => {
-      const auditSessionId = 'sess_audit_lookup_test'
-      const row: LoopRow = {
-        ...testRow,
-        loopName: 'loop-lookup-test',
-        currentSessionId: 'session-code-lookup',
-        auditSessionId: auditSessionId,
-      }
-      
-      repo.insert(row, testLarge)
-      
-      const retrieved = repo.getBySessionId(row.projectId, auditSessionId)
-      expect(retrieved).toBeTruthy()
-      expect(retrieved!.loopName).toBe('loop-lookup-test')
-      expect(retrieved!.auditSessionId).toBe(auditSessionId)
+      expect(retrieved!.currentSessionId).toBe('L2')
+      expect(retrieved!.phase).toBe('auditing')
+      expect(retrieved!.iteration).toBe(2)
+      expect(retrieved!.errorCount).toBe(0)
+      expect(retrieved!.modelFailed).toBe(false)
     })
   })
 
   describe('applyRotation', () => {
-    test('should clear audit_session_id when transitioning to coding', () => {
+    test('should update current_session_id, iteration, phase, and auditCount', () => {
       const row: LoopRow = {
         ...testRow,
         loopName: 'loop-rotation-test',
         currentSessionId: 'L1',
-        auditSessionId: 'A1',
+        phase: 'coding',
+        iteration: 1,
+        auditCount: 0,
+      }
+      
+      repo.insert(row, testLarge)
+      
+      repo.applyRotation(row.projectId, row.loopName, {
+        sessionId: 'L2',
+        iteration: 2,
         phase: 'auditing',
-        iteration: 1,
-        auditCount: 0,
-      }
-      
-      repo.insert(row, testLarge)
-      
-      repo.applyRotation(row.projectId, row.loopName, {
-        sessionId: 'L2',
-        iteration: 2,
-        phase: 'coding',
         auditCount: 1,
       })
       
       const retrieved = repo.get(row.projectId, row.loopName)
       expect(retrieved!.currentSessionId).toBe('L2')
       expect(retrieved!.iteration).toBe(2)
-      expect(retrieved!.phase).toBe('coding')
+      expect(retrieved!.phase).toBe('auditing')
       expect(retrieved!.auditCount).toBe(1)
-      expect(retrieved!.auditSessionId).toBeNull()
-    })
-
-    test('should not clear audit_session_id when phase is undefined', () => {
-      const row: LoopRow = {
-        ...testRow,
-        loopName: 'loop-rotation-preserve',
-        currentSessionId: 'L1',
-        auditSessionId: 'A1',
-        phase: 'coding',
-        iteration: 1,
-        auditCount: 0,
-      }
-      
-      repo.insert(row, testLarge)
-      
-      repo.applyRotation(row.projectId, row.loopName, {
-        sessionId: 'L2',
-        iteration: 2,
-        phase: undefined,
-        auditCount: 1,
-      })
-      
-      const retrieved = repo.get(row.projectId, row.loopName)
-      expect(retrieved!.currentSessionId).toBe('L2')
-      expect(retrieved!.iteration).toBe(2)
-      expect(retrieved!.auditCount).toBe(1)
-      expect(retrieved!.auditSessionId).toBe('A1')
     })
   })
 })

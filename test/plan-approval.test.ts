@@ -53,8 +53,7 @@ function createTestDb(): Database {
       completion_summary   TEXT,
       workspace_id         TEXT,
       host_session_id      TEXT,
-      audit_session_id     TEXT,
-      session_directory    TEXT,
+            session_directory    TEXT,
       PRIMARY KEY (project_id, loop_name)
     )
   `)
@@ -977,10 +976,9 @@ describe('Plan Approval Tool Interception', () => {
 describe('Tool blocking hook', () => {
   const sessionID = 'outside-session'
   const loopSessionID = 'loop-session'
-  const auditSessionID = 'audit-session'
-  const loopName = 'active-loop'
+    const loopName = 'active-loop'
 
-  function createContextForLoopState(state: { active: boolean; sessionId: string; auditSessionId?: string } | null): ToolContext {
+  function createContextForLoopState(state: { active: boolean; sessionId: string;  } | null): ToolContext {
     return {
       loopService: {
         resolveLoopName: () => state ? loopName : null,
@@ -994,7 +992,8 @@ describe('Tool blocking hook', () => {
     const hook = createToolExecuteBeforeHook(createContextForLoopState({
       active: true,
       sessionId: loopSessionID,
-      auditSessionId: auditSessionID,
+      phase: 'auditing',
+
     }))!
 
     await expect(hook({ tool: 'question', sessionID, callID: 'call-1' }, { args: {} })).resolves.toBeUndefined()
@@ -1004,7 +1003,8 @@ describe('Tool blocking hook', () => {
     const hook = createToolExecuteBeforeHook(createContextForLoopState({
       active: true,
       sessionId: loopSessionID,
-      auditSessionId: auditSessionID,
+      phase: 'auditing',
+
     }))!
 
     await expect(hook({ tool: 'question', sessionID: loopSessionID, callID: 'call-1' }, { args: {} })).rejects.toThrow('question tool is not available')
@@ -1014,17 +1014,19 @@ describe('Tool blocking hook', () => {
     const hook = createToolExecuteBeforeHook(createContextForLoopState({
       active: true,
       sessionId: loopSessionID,
-      auditSessionId: auditSessionID,
+      phase: 'auditing',
+
     }))!
 
-    await expect(hook({ tool: 'question', sessionID: auditSessionID, callID: 'call-1' }, { args: {} })).rejects.toThrow('question tool is not available')
+    await expect(hook({ tool: 'question', sessionID: loopSessionID, callID: 'call-1' }, { args: {} })).rejects.toThrow('question tool is not available')
   })
 
   test('does not rewrite after-hook output when resolved loop belongs to another session', async () => {
     const hook = createToolExecuteAfterHook(createContextForLoopState({
       active: true,
       sessionId: loopSessionID,
-      auditSessionId: auditSessionID,
+      phase: 'auditing',
+
     }))!
     const output = { title: '', output: 'original output', metadata: {} }
 
@@ -2021,19 +2023,16 @@ describe('plan execute API loop dispatch', () => {
     })
 
     const row = db.prepare(
-      'SELECT phase, audit_session_id, current_session_id, worktree FROM loops WHERE project_id = ? AND loop_name = ?',
+      'SELECT phase, current_session_id, worktree FROM loops WHERE project_id = ? AND loop_name = ?',
     ).get('api-project', res.loopName) as {
       phase: string
-      audit_session_id: string | null
       current_session_id: string
       worktree: number
     }
 
     expect(row.worktree).toBe(0)
-    expect(row.current_session_id).toBe(res.sessionId)
     expect(row.phase).toBe('auditing')
-    expect(row.audit_session_id).toBeDefined()
-    expect(row.audit_session_id).not.toBeNull()
+    expect(row.current_session_id).not.toBe(res.sessionId)
   })
 
   test('loop mode is disabled when config.loop.enabled is false', async () => {
