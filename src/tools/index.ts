@@ -3,14 +3,14 @@ import { createReviewTools } from './review'
 import { createPlanTools } from './plan-kv'
 import { createPlanExecuteTools } from './plan-execute'
 import { createLoopTools } from './loop'
-import { createFallowTools } from './fallow'
+import { createAstGrepTools } from './ast-grep'
 import type { ToolContext } from './types'
 
 export { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from './plan-approval'
 export type { ToolContext } from './types'
 
 /**
- * Creates all plugin tools by combining review, plan, plan-execute, and loop tools.
+ * Creates all plugin tools by combining review, plan, plan-execute, loop, and ast-grep tools.
  *
  * @param ctx - Tool context with access to plugin services.
  * @returns Record of tool name to tool implementation.
@@ -21,6 +21,6 @@ export function createTools(ctx: ToolContext): Record<string, ReturnType<typeof 
     ...createPlanTools(ctx),
     ...createPlanExecuteTools(ctx),
     ...createLoopTools(ctx),
-    ...createFallowTools(ctx),
+    ...createAstGrepTools(ctx),
   }
 }

@@ -59,12 +59,12 @@ export interface SandboxConfig {
 }
 
 /**
- * Configuration for fallow native tools (powered by @fallow-cli/fallow-node).
+ * Configuration for ast-grep native tools (powered by @ast-grep/napi).
  */
-export interface FallowConfig {
-  /** Enable fallow-* plugin tools. Defaults to true. */
+export interface AstGrepConfig {
+  /** Enable ast-grep plugin tools. Defaults to true. */
   enabled?: boolean
-  /** Subset of fallow-* tool names to expose. Defaults to all six. */
+  /** Subset of ast-grep tool names to expose. Defaults to all tools. */
   allowedTools?: string[]
 }
 
@@ -145,6 +145,6 @@ export interface PluginConfig {
   agents?: Record<string, AgentOverrideConfig>
   /** Sandbox execution configuration. */
   sandbox?: SandboxConfig
-  /** Fallow native tool configuration. */
-  fallow?: FallowConfig
+  /** ast-grep native tool configuration. */
+  astGrep?: AstGrepConfig
 }

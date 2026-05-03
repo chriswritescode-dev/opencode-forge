@@ -4,7 +4,7 @@ import { agents } from '../src/agents'
 
 describe('createConfigHandler', () => {
   describe('built-in explore agent enhancement', () => {
-    test('explore enhancement contains fallow discovery rule and no graph-tool names', async () => {
+    test('explore enhancement contains ast-grep discovery rule and no graph-tool names', async () => {
       const configHandler = createConfigHandler(agents)
       const config: Record<string, unknown> = {}
 
@@ -15,7 +15,7 @@ describe('createConfigHandler', () => {
 
       expect(explore).toBeDefined()
       const prompt = explore.prompt as string
-      expect(prompt).toContain('fallow')
+      expect(prompt).toContain('ast-grep')
       expect(prompt).not.toContain('graph-query')
       expect(prompt).not.toContain('graph-symbols')
       expect(prompt).not.toContain('graph-analyze')
@@ -55,7 +55,7 @@ describe('createConfigHandler', () => {
       
       const prompt = explore.prompt as string
       expect(prompt).toContain('Custom explore prompt prefix')
-      expect(prompt).toContain('fallow')
+      expect(prompt).toContain('ast-grep')
     })
 
     test('explore prompt includes fallback guidance for Glob/Grep', async () => {
@@ -68,8 +68,8 @@ describe('createConfigHandler', () => {
       const explore = exploreConfig?.explore as Record<string, unknown>
       
       const prompt = explore.prompt as string
-      // FALLOW_RULES mentions using fallow-dead-code with files: [...] for targeted file inspection
-      expect(prompt).toMatch(/fallow-dead-code.*files|Use Read or Grep/i)
+      // AST_GREP_RULES mentions using ast-grep-search with paths for targeted file inspection
+      expect(prompt).toMatch(/ast-grep-search.*paths|Use Read or Grep/i)
     })
 
     test('explore prompt includes Read as direct inspection step', async () => {
@@ -82,7 +82,7 @@ describe('createConfigHandler', () => {
       const explore = exploreConfig?.explore as Record<string, unknown>
       
       const prompt = explore.prompt as string
-      // FALLOW_RULES mentions "Use Read or Grep on that path to drill in"
+      // AST_GREP_RULES mentions "Use Read or Grep on that path to drill in"
       expect(prompt).toMatch(/Use Read or Grep/i)
     })
   })
@@ -106,7 +106,7 @@ describe('createConfigHandler', () => {
       const explore = exploreConfig?.explore as Record<string, unknown>
       
       expect(explore.prompt).toContain('Original explore prompt')
-      expect(explore.prompt).toContain('fallow')
+      expect(explore.prompt).toContain('ast-grep')
       expect(explore.temperature).toBe(0.5)
     })
 

@@ -79,34 +79,34 @@ describe('loadPluginConfig', () => {
     expect(config.sandbox?.image).toBe('custom-image:latest')
   })
 
-  test('preserves user-provided fallow config', () => {
+  test('preserves user-provided astGrep config', () => {
     const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
     mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
     const userConfig = {
-      fallow: {
+      astGrep: {
         enabled: false,
-        allowedTools: ['fallow-dead-code'],
+        allowedTools: ['ast-grep-search'],
       },
     }
     writeFileSync(configPath, JSON.stringify(userConfig))
     const config = loadPluginConfig()
-    expect(config.fallow?.enabled).toBe(false)
-    expect(config.fallow?.allowedTools).toEqual(['fallow-dead-code'])
+    expect(config.astGrep?.enabled).toBe(false)
+    expect(config.astGrep?.allowedTools).toEqual(['ast-grep-search'])
   })
 
-  test('preserves fallow enabled true round-trip', () => {
+  test('preserves astGrep enabled true round-trip', () => {
     const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
     mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
     const userConfig = {
-      fallow: {
+      astGrep: {
         enabled: true,
-        allowedTools: ['fallow-dead-code', 'fallow-health'],
+        allowedTools: ['ast-grep-search', 'ast-grep-inspect'],
       },
     }
     writeFileSync(configPath, JSON.stringify(userConfig))
     const config = loadPluginConfig()
-    expect(config.fallow?.enabled).toBe(true)
-    expect(config.fallow?.allowedTools).toEqual(['fallow-dead-code', 'fallow-health'])
+    expect(config.astGrep?.enabled).toBe(true)
+    expect(config.astGrep?.allowedTools).toEqual(['ast-grep-search', 'ast-grep-inspect'])
   })
 })
 

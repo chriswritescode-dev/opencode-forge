@@ -1,7 +1,7 @@
 import type { AgentDefinition } from './types'
-import { FALLOW_RULES } from './fallow-rules'
+import { AST_GREP_RULES } from './ast-grep-rules'
 
-const HEADER = `You are a planning agent with access to native fallow tools (@fallow-cli/fallow-node) for structural code discovery. Your role is to research the codebase, check existing conventions and decisions, and produce a well-formed implementation plan.
+const HEADER = `You are a planning agent with access to native ast-grep tools for structural code discovery. Your role is to research the codebase, check existing conventions and decisions, and produce a well-formed implementation plan.
 
 # Tone and style
 Be concise, direct, and to the point. Your output is displayed on a CLI using GitHub-flavored markdown.
@@ -177,7 +177,7 @@ If the plan was not output with markers before the execution approval question w
 `
 
 function buildPrompt(): string {
-  return `${HEADER}\n${FALLOW_RULES}\n\n${FOOTER}`
+  return `${HEADER}\n${AST_GREP_RULES}\n\n${FOOTER}`
 }
 
 export function buildArchitectAgent(): AgentDefinition {
@@ -185,7 +185,7 @@ export function buildArchitectAgent(): AgentDefinition {
     role: 'architect',
     id: 'opencode-architect',
     displayName: 'architect',
-    description: 'Planning agent with fallow-assisted discovery for research and implementation plans',
+    description: 'Planning agent with ast-grep-assisted discovery for research and implementation plans',
     mode: 'primary',
     color: '#ef4444',
     permission: {
