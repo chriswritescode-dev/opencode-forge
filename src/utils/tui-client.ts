@@ -147,17 +147,19 @@ export async function connectForgeProject(
     }
 
     // Check for early event first (loop.started)
-    const evt = decodeEvent(command)
-    if (evt) {
-      const pendingRpc = pending.get(evt.rid)
-      if (pendingRpc && evt.name === 'loop.started') {
-        tuiDebug(`event matched rid=${evt.rid} name=${evt.name}`)
+    const earlyEvent = decodeEvent(command)
+    if (earlyEvent) {
+      const pendingRpc = 'rid' in earlyEvent ? pending.get(earlyEvent.rid) : undefined
+      if ('rid' in earlyEvent && pendingRpc && earlyEvent.name === 'loop.started') {
+        tuiDebug(`event matched rid=${earlyEvent.rid} name=${earlyEvent.name}`)
         clearTimeout(pendingRpc.timer)
-        pending.delete(evt.rid)
-        pendingRpc.resolve(evt.data)
+        pending.delete(earlyEvent.rid)
+        pendingRpc.resolve(earlyEvent.data)
         return
       }
-      return
+      if ('rid' in earlyEvent) {
+        return
+      }
     }
 
     const reply = decodeReply(command)
@@ -185,7 +187,7 @@ export async function connectForgeProject(
 
     // Not a reply - check if it's an event
     const evt = decodeEvent(command)
-    if (!evt) {
+    if (!evt || 'rid' in evt) {
       return
     }
 

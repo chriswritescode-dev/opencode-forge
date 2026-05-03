@@ -94,7 +94,7 @@ export function createBusRpcEventHook(deps: BusRpcDeps) {
         body: {
           type: 'tui.command.execute',
           properties: {
-            command: encodeEvent({ name, directory, payload: { rid, data } }),
+            command: encodeEvent({ rid, name, data }),
           },
         },
       }).then(() => {

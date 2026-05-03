@@ -43,6 +43,8 @@ export type ForgeBusEvent = {
   payload?: unknown
 }
 
+export type ForgeEvent = ForgeRpcEvent | ForgeBusEvent
+
 function encode(payload: unknown): string {
   return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')
 }
@@ -127,13 +129,17 @@ export function decodeReply(command: string): ForgeRpcReply | null {
   }
 }
 
-export function encodeEvent(evt: ForgeBusEvent): string {
+export function encodeEvent(evt: ForgeEvent): string {
+  if ('rid' in evt) {
+    const { rid, name, data } = evt
+    return `forge.evt:${name}:${rid}:${encode({ data })}`
+  }
+
   const { name, projectId, directory, payload } = evt
-  const data = { projectId, directory, payload }
-  return `forge.evt:${name}:${encode(data)}`
+  return `forge.evt:${name}:${encode({ projectId, directory, payload })}`
 }
 
-export function decodeEvent(command: string): ForgeBusEvent | null {
+export function decodeEvent(command: string): ForgeEvent | null {
   if (!command.startsWith('forge.evt:')) {
     return null
   }
@@ -144,6 +150,19 @@ export function decodeEvent(command: string): ForgeBusEvent | null {
   }
 
   const name = parts[1]
+
+  if (parts.length >= 4) {
+    const rid = parts[2]
+    const b64 = parts.slice(3).join(':')
+
+    const payload = decode<{ data?: unknown }>(b64)
+    if (!payload) {
+      return null
+    }
+
+    return { rid, name, data: payload.data ?? null }
+  }
+
   const b64 = parts.slice(2).join(':')
 
   const payload = decode<{ projectId?: string; directory?: string; payload?: unknown }>(b64)
