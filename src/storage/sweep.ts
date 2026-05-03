@@ -35,11 +35,12 @@ export function sweepExpiredLoops(db: Database, ttlMs: number): number {
       AND completed_at < ?
   `)
 
-  const run = db.transaction((cutoffMs: number) => {
-    deletePlans.run(cutoffMs)
-    const loopsResult = deleteLoops.run(cutoffMs)
+  const run = db.transaction((cutoffMs: unknown) => {
+    const cutoff = Number(cutoffMs)
+    deletePlans.run(cutoff)
+    const loopsResult = deleteLoops.run(cutoff) as unknown as { changes: number }
     return Number(loopsResult.changes)
-  })
+  }) as (cutoffMs: number) => number
 
   return run(cutoff)
 }

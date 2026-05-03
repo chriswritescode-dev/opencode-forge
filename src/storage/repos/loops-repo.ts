@@ -334,7 +334,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
         row.completionSummary,
         row.workspaceId,
         row.hostSessionId
-      )
+      ) as unknown as { changes: number }
       if (result.changes === 0) {
         // Conflict - row already exists
         return false
@@ -443,7 +443,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     },
 
     updatePrompt(projectId: string, loopName: string, prompt: string): boolean {
-      const result = updatePromptStmt.run(prompt, projectId, loopName)
+      const result = updatePromptStmt.run(prompt, projectId, loopName) as unknown as { changes: number }
       return result.changes > 0
     },
 

@@ -88,7 +88,7 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
       row.description,
       toScenario(row.scenario),
       Date.now()
-    )
+    ) as unknown as { changes: number }
     if (result.changes > 0) {
       return { ok: true }
     }
@@ -167,10 +167,10 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
 
   function deleteFinding(projectId: string, file: string, line: number, branch?: string | null): boolean {
     if (branch !== undefined) {
-      const result = stmtDeleteWithBranch.run(projectId, branchToDb(branch), file, line)
+      const result = stmtDeleteWithBranch.run(projectId, branchToDb(branch), file, line) as unknown as { changes: number }
       return result.changes > 0
     }
-    const result = stmtDelete.run(projectId, file, line)
+    const result = stmtDelete.run(projectId, file, line) as unknown as { changes: number }
     return result.changes > 0
   }
 
