@@ -1404,6 +1404,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     }
 
     const restartSandbox = isSandboxEnabled(deps.config, deps.sandboxManager)
+    deps.logger.log(
+      `handleRestartLoop: [perm-diag] worktree=${String(stoppedState.worktree)} sandbox=${String(restartSandbox)}`
+    )
     const permissionRuleset = buildLoopPermissionRuleset({ isWorktree: !!stoppedState.worktree, isSandbox: restartSandbox })
     const previousTermination = stoppedState.terminationReason
     const previousState = { ...stoppedState }

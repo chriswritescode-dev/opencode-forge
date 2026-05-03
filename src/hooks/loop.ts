@@ -521,6 +521,10 @@ export function createLoopEventHandler(
     const oldSessionId = state.sessionId
     const sessionDir = state.worktreeDir
 
+    logger.log(
+      `Loop: [perm-diag] rotate loop=${loopName} state.worktree=${String(state.worktree)} state.sandbox=${String(state.sandbox)}`
+    )
+
     const permissionRuleset = buildLoopPermissionRuleset({
       isWorktree: !!state.worktree,
       isSandbox: !!state.sandbox,

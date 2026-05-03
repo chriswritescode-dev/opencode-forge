@@ -109,6 +109,10 @@ export async function run(argv: RestartArgs): Promise<void> {
       }
     }
 
+    console.log(
+      `[perm-diag] cli restart loop=${state.loopName} worktree=${String(state.worktree)} sandbox=${String(state.sandbox)}`
+    )
+
     const permissionRuleset = buildLoopPermissionRuleset({
       isWorktree: !!state.worktree,
       isSandbox: !!state.sandbox,

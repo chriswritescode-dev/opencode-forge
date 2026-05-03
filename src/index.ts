@@ -426,7 +426,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       getSessionDirectory: sessionDirectoryLookup,
       logger,
     })
-    const permissionAskHandler = createPermissionAskHandler({ resolver: sessionLoopResolver, logger })
+    const permissionAskHandler = createPermissionAskHandler({ resolver: sessionLoopResolver, logger, v2 })
 
     // Resolves sandbox context for a session by following parent hops until an
     // active sandbox loop is found. Returns null if no sandbox is active for
