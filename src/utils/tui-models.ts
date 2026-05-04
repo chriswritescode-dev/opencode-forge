@@ -55,6 +55,25 @@ export interface ModelSortOptions {
   configuredProviderIds?: string[]
 }
 
+export type LoopInfo = {
+  name: string
+  phase: string
+  iteration: number
+  maxIterations: number
+  sessionId: string
+  active: boolean
+  startedAt?: string
+  completedAt?: string
+  terminationReason?: string
+  worktreeBranch?: string
+  worktree?: boolean
+  worktreeDir?: string
+  executionModel?: string
+  auditorModel?: string
+  workspaceId?: string
+  hostSessionId?: string
+}
+
 /**
  * Converts a ModelKey to its full name representation.
  */

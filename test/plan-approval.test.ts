@@ -19,7 +19,7 @@ import { handleExecutePlan } from '../src/api/handlers/plan-execute'
 import { openForgeDatabase, resolveDataDir } from '../src/storage/database'
 import { createLoopEventHandler } from '../src/hooks/loop'
 import type { Logger } from '../src/types'
-import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from '../src/tools/plan-approval'
+import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from '../src/hooks/plan-approval'
 import type { ToolContext } from '../src/tools/types'
 import type { PluginConfig } from '../src/types'
 

@@ -1,4 +1,4 @@
-import type { ToolContext } from './types'
+import type { ToolContext } from '../tools/types'
 import type { Hooks } from '@opencode-ai/plugin'
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
 import { extractPlanTitle, extractLoopNames, PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'

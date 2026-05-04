@@ -1,5 +1,5 @@
 import type { ExecutionPreferences } from './tui-execution-preferences'
-import type { LoopInfo } from './tui-refresh-helpers'
+import type { LoopInfo } from './tui-models'
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 import { appendFileSync, mkdirSync } from 'fs'
 import { dirname } from 'path'

@@ -3,7 +3,7 @@ import { ForgeRpcError } from '../bus-protocol'
 import { LoopStartBody, LoopRestartBody } from '../schemas'
 import { buildStartLoopCommand } from '../../services/execution'
 import { buildService } from './_shared'
-import type { LoopInfo } from '../../utils/tui-refresh-helpers'
+import type { LoopInfo } from '../../utils/tui-models'
 import type { LoopRow } from '../../storage/repos/loops-repo'
 
 function loopRowToLoopInfo(row: LoopRow): LoopInfo & { loopName: string; status: string } {

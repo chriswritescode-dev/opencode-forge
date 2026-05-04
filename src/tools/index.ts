@@ -6,7 +6,6 @@ import { createLoopTools } from './loop'
 import { createAstGrepTools } from './ast-grep'
 import type { ToolContext } from './types'
 
-export { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from './plan-approval'
 export type { ToolContext } from './types'
 
 /**

@@ -1,6 +1,5 @@
-import { toContainerPath, rewriteOutput } from '../sandbox/path'
-import type { DockerService } from '../sandbox/docker'
-import type { SandboxContext } from '../sandbox/context'
+import { toContainerPath, rewriteOutput } from './path'
+import type { DockerService } from './docker'
 
 interface SandboxExecutionDeps {
   docker: DockerService
@@ -111,6 +110,3 @@ export async function executeSandboxGrep(
     return `Grep failed: ${message}`
   }
 }
-
-// Re-export for backwards compatibility (used by hooks)
-export type { SandboxContext }
