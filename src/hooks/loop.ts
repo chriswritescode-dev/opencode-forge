@@ -22,6 +22,7 @@ export interface LoopEventHandler {
   startWatchdog(loopName: string): void
   getStallInfo(loopName: string): { consecutiveStalls: number; lastActivityTime: number } | null
   cancelBySessionId(sessionId: string): Promise<boolean>
+  terminateLoopByName(loopName: string, reason: string): Promise<boolean>
   runExclusive<T>(loopName: string, fn: () => Promise<T>): Promise<T>
   clearLoopTimers(loopName: string): void
 }
@@ -138,7 +139,7 @@ export function createLoopEventHandler(
     return nextPromise
   }
 
-  async function commitAndCleanupWorktree(state: LoopState): Promise<{ committed: boolean; cleaned: boolean }> {
+  async function commitAndCleanupWorktree(state: LoopState, reason: string, opts: { cleanup: boolean }): Promise<{ committed: boolean; cleaned: boolean }> {
     if (!state.worktree) {
       logger.log(`Loop: in-place mode, skipping commit and cleanup`)
       return { committed: false, cleaned: false }
@@ -146,6 +147,13 @@ export function createLoopEventHandler(
 
     let committed = false
     let cleaned = false
+
+    const reasonLabel =
+      reason === 'completed' ? 'completed'
+      : reason === 'cancelled' ? 'cancelled'
+      : reason === 'stall_timeout' ? 'stalled'
+      : reason.startsWith('error') ? 'errored'
+      : reason
 
     try {
       const addResult = spawnSync('git', ['add', '-A'], { cwd: state.worktreeDir, encoding: 'utf-8' })
@@ -160,7 +168,7 @@ export function createLoopEventHandler(
       const status = statusResult.stdout.trim()
 
       if (status) {
-        const message = `loop: ${state.loopName} completed after ${state.iteration} iterations`
+        const message = `loop: ${state.loopName} ${reasonLabel} after ${state.iteration} iteration${state.iteration === 1 ? '' : 's'}`
         const commitResult = spawnSync('git', ['commit', '-m', message], { cwd: state.worktreeDir, encoding: 'utf-8' })
         if (commitResult.status !== 0) {
           throw new Error(commitResult.stderr || 'git commit failed')
@@ -174,7 +182,7 @@ export function createLoopEventHandler(
       logger.error(`Loop: failed to commit changes in worktree ${state.worktreeDir}`, err)
     }
 
-    if (state.worktreeDir && state.worktreeBranch) {
+    if (opts.cleanup && state.worktreeDir && state.worktreeBranch) {
       const result = await cleanupLoopWorktree({
         worktreeDir: state.worktreeDir,
         logPrefix: 'Loop',
@@ -184,6 +192,22 @@ export function createLoopEventHandler(
     }
 
     return { committed, cleaned }
+  }
+
+  async function getStatusWithRetry(directory: string, attempts = 3, backoffMs = 250): Promise<{ data: Record<string, { type: string }>; ok: boolean; error?: unknown }> {
+    let lastErr: unknown = null
+    for (let i = 0; i < attempts; i++) {
+      try {
+        const r = await v2Client.session.status({ directory })
+        return { data: (r.data ?? {}) as Record<string, { type: string }>, ok: true }
+      } catch (err) {
+        lastErr = err
+        if (i < attempts - 1) {
+          await new Promise((r) => setTimeout(r, backoffMs * (i + 1)))
+        }
+      }
+    }
+    return { data: {}, ok: false, error: lastErr }
   }
 
   function stopWatchdog(loopName: string): void {
@@ -221,22 +245,21 @@ export function createLoopEventHandler(
         }
 
         const sessionId = state.sessionId
-        let statusCheckFailed = false
-        try {
-          const statusResult = await v2Client.session.status({ directory: state.worktreeDir })
-          const statuses = (statusResult.data ?? {}) as Record<string, { type: string }>
+        const statusResult = await getStatusWithRetry(state.worktreeDir)
+        if (!statusResult.ok) {
+          logger.error(`Loop watchdog: failed to check session status after retries, skipping tick`, statusResult.error)
+          lastActivityTime.set(loopName, Date.now())
+          return
+        }
 
-          const status = statuses[sessionId]?.type
-          const hasActiveWork = status === 'busy' || status === 'retry'
+        const statuses = statusResult.data as Record<string, { type: string }>
+        const status = statuses[sessionId]?.type
+        const hasActiveWork = status === 'busy' || status === 'retry'
 
-          if (hasActiveWork) {
-            lastActivityTime.set(loopName, Date.now())
-            logger.log(`Loop watchdog: loop ${loopName} has active ${state.phase} work (${status}), resetting timer`)
-            return
-          }
-        } catch (err) {
-          logger.error(`Loop watchdog: failed to check session status, treating as stall`, err)
-          statusCheckFailed = true
+        if (hasActiveWork) {
+          lastActivityTime.set(loopName, Date.now())
+          logger.log(`Loop watchdog: loop ${loopName} has active ${state.phase} work (${status}), resetting timer`)
+          return
         }
 
         const stallCount = (consecutiveStalls.get(loopName) ?? 0) + 1
@@ -249,7 +272,7 @@ export function createLoopEventHandler(
           return
         }
 
-        logger.log(`Loop watchdog: stall #${stallCount}/${MAX_CONSECUTIVE_STALLS} for ${loopName} (phase=${state.phase}, elapsed=${elapsed}ms, statusCheckFailed=${statusCheckFailed}), re-triggering`)
+        logger.log(`Loop watchdog: stall #${stallCount}/${MAX_CONSECUTIVE_STALLS} for ${loopName} (phase=${state.phase}, elapsed=${elapsed}ms), re-triggering`)
 
         await withStateLock(loopName, async () => {
           const freshState = loopService.getActiveState(loopName)
@@ -386,18 +409,25 @@ export function createLoopEventHandler(
       })
     }
 
-    if (reason === 'completed' || reason === 'cancelled') {
-      await commitAndCleanupWorktree(state)
-      if (state.worktree) {
-        try {
-          await v2Client.session.delete({
-            sessionID: sessionId,
-            directory: state.projectDir ?? state.worktreeDir,
-          })
-          logger.log(`Loop: deleted loop session ${sessionId} for ${state.loopName}`)
-        } catch (err) {
-          logger.error(`Loop: failed to delete loop session ${sessionId}`, err)
-        }
+    const shouldCommit = state.worktree && (
+      reason === 'completed' ||
+      reason === 'cancelled' ||
+      reason === 'stall_timeout' ||
+      reason.startsWith('error')
+    )
+    const shouldCleanup = reason === 'completed' || reason === 'cancelled'
+    if (shouldCommit) {
+      await commitAndCleanupWorktree(state, reason, { cleanup: shouldCleanup })
+    }
+    if (shouldCleanup && state.worktree) {
+      try {
+        await v2Client.session.delete({
+          sessionID: sessionId,
+          directory: state.projectDir ?? state.worktreeDir,
+        })
+        logger.log(`Loop: deleted loop session ${sessionId} for ${state.loopName}`)
+      } catch (err) {
+        logger.error(`Loop: failed to delete loop session ${sessionId}`, err)
       }
     }
 
@@ -795,6 +825,54 @@ export function createLoopEventHandler(
     consecutiveStalls.set(loopName, 0)
   }
 
+  async function rotateToCodingAfterAuditFailure(loopName: string, state: LoopState, reason: string): Promise<void> {
+    await deleteAuditSession(v2Client, state.sessionId, state.worktreeDir, logger)
+    const newSessionId = await rotateSession(loopName, state)
+    loopService.replaceSession(loopName, {
+      newSessionId,
+      phase: 'coding',
+      resetError: false,
+    })
+    loopService.setLastAuditResult(loopName, state.lastAuditResult ?? '')
+    const isModelError = /provider|auth|model|api\s*error/i.test(reason)
+    if (isModelError) {
+      loopService.setModelFailed(loopName, true)
+    }
+    const continuationPrompt = loopService.buildContinuationPrompt(
+      { ...state, iteration: state.iteration ?? 0 },
+      `\n[Auditor session failed: ${reason}. Continuing without new findings.]`,
+    )
+    const sendWithModel = async () => {
+      const freshState = loopService.getActiveState(loopName)
+      if (!freshState?.active) throw new Error('loop_cancelled')
+      const loopModel = resolveLoopModel(getConfig(), loopService, loopName)
+      return v2Client.session.promptAsync({
+        sessionID: newSessionId,
+        directory: freshState.worktreeDir,
+        ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
+        agent: 'code',
+        parts: [{ type: 'text' as const, text: continuationPrompt }],
+        model: loopModel,
+      })
+    }
+    const sendWithoutModel = async () => {
+      const freshState = loopService.getActiveState(loopName)
+      if (!freshState?.active) throw new Error('loop_cancelled')
+      return v2Client.session.promptAsync({
+        sessionID: newSessionId,
+        directory: freshState.worktreeDir,
+        ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
+        agent: 'code',
+        parts: [{ type: 'text' as const, text: continuationPrompt }],
+      })
+    }
+    const loopModel = resolveLoopModel(getConfig(), loopService, loopName)
+    const { result } = await retryWithModelFallback(sendWithModel, sendWithoutModel, loopModel, logger)
+    if (result.error) {
+      logger.error(`rotateToCodingAfterAuditFailure: failed to send continuation prompt`, result.error)
+    }
+  }
+
   async function handleCodingPhase(loopName: string, _state: LoopState): Promise<void> {
     let currentState = loopService.getActiveState(loopName)
     if (!currentState?.active) {
@@ -865,20 +943,32 @@ export function createLoopEventHandler(
     const currentConfig = getConfig()
     const auditorModel = resolveLoopAuditorModel(currentConfig, loopService, loopName, logger)
     const auditPrompt = loopService.buildAuditPrompt(currentState)
-
-    // Delete the code session BEFORE creating audit session
     const codeSessionId = currentState.sessionId
-    try {
-      await v2Client.session.delete({
-        sessionID: codeSessionId,
-        directory: currentState.worktreeDir,
-      })
-    } catch (err) {
-      logger.error(`Loop: failed to delete code session ${codeSessionId} before audit`, err)
+
+    // Create audit session with retry
+    async function createAuditWithRetry(input: {
+      loopName: string
+      iteration: number
+      worktreeDir: string
+      workspaceId?: string
+      isSandbox: boolean
+      auditorModel?: { providerID: string; modelID: string }
+      prompt: string
+    }, attempts = MAX_RETRIES): Promise<{ auditSessionId: string; bindFailed: boolean; bindError?: unknown } | null> {
+      for (let i = 0; i < attempts; i++) {
+        const created = await createAuditSessionWithFallback(input)
+        if (created) return created
+        loopService.incrementError(loopName)
+        const state = loopService.getActiveState(loopName)
+        if (!state?.active) return null
+        if ((state.errorCount ?? 0) >= MAX_RETRIES) return null
+        await new Promise((r) => setTimeout(r, 500 * (i + 1)))
+      }
+      return null
     }
 
-    // Create new audit session in the SAME workspace
-    const created = await createAuditSessionWithFallback({
+    // Create new audit session in the SAME workspace (with retry)
+    const created = await createAuditWithRetry({
       loopName,
       iteration: currentState.iteration ?? 0,
       worktreeDir: currentState.worktreeDir,
@@ -889,13 +979,57 @@ export function createLoopEventHandler(
     })
 
     if (!created) {
-      await handlePromptError(
-        loopName,
-        { ...currentState, phase: 'coding' },
-        'failed to create audit session',
-        new Error('audit session creation returned null'),
-      )
-      return
+      // Audit creation failed after retries - rotate to fresh code session instead of erroring
+      logger.error(`Loop: audit session creation failed after ${MAX_RETRIES} attempts for ${loopName}, rotating to fresh code session`)
+      try {
+        const rotatedSessionId = await rotateSession(loopName, currentState)
+        loopService.replaceSession(loopName, {
+          newSessionId: rotatedSessionId,
+          phase: 'coding',
+          resetError: false,
+        })
+        const continuationPrompt = loopService.buildContinuationPrompt(
+          { ...currentState, iteration: currentState.iteration ?? 0 },
+          'Audit could not be started after retries — continue iterating, the auditor will be reattempted next round.',
+        )
+        const sendWithModel = async () => {
+          const freshState = loopService.getActiveState(loopName)
+          if (!freshState?.active) throw new Error('loop_cancelled')
+          return v2Client.session.promptAsync({
+            sessionID: rotatedSessionId,
+            directory: freshState.worktreeDir,
+            ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
+            agent: 'code',
+            parts: [{ type: 'text' as const, text: continuationPrompt }],
+            model: resolveLoopModel(currentConfig, loopService, loopName),
+          })
+        }
+        const sendWithoutModel = async () => {
+          const freshState = loopService.getActiveState(loopName)
+          if (!freshState?.active) throw new Error('loop_cancelled')
+          return v2Client.session.promptAsync({
+            sessionID: rotatedSessionId,
+            directory: freshState.worktreeDir,
+            ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
+            agent: 'code',
+            parts: [{ type: 'text' as const, text: continuationPrompt }],
+          })
+        }
+        const { result: promptResult } = await retryWithModelFallback(
+          sendWithModel,
+          sendWithoutModel,
+          resolveLoopModel(currentConfig, loopService, loopName),
+          logger,
+        )
+        if (promptResult.error) {
+          logger.error(`Loop: failed to send continuation prompt after audit creation failure`, promptResult.error)
+        }
+        return
+      } catch (err) {
+        logger.error(`Loop: failed to rotate after audit creation failure`, err)
+        await handlePromptError(loopName, currentState, 'failed to rotate after audit creation failure', err)
+        return
+      }
     }
 
     // Workspace recovery if bind failed (symmetric path)
@@ -911,6 +1045,11 @@ export function createLoopEventHandler(
     loopService.replaceSession(loopName, {
       newSessionId: created.auditSessionId,
       phase: 'auditing',
+    })
+
+    // Delete the code session AFTER audit session creation succeeds (best-effort)
+    v2Client.session.delete({ sessionID: codeSessionId, directory: currentState.worktreeDir }).catch((err) => {
+      logger.error(`Loop: failed to delete code session ${codeSessionId} after audit creation`, err)
     })
 
     const sendAuditWithModel = async () => {
@@ -1064,7 +1203,7 @@ export function createLoopEventHandler(
 
       const continuationPrompt = loopService.buildContinuationPrompt(
         { ...currentState, iteration: nextIteration },
-        auditText ?? undefined,
+        auditText || undefined,
       )
 
       await rotateAndSendContinuation(
@@ -1073,7 +1212,7 @@ export function createLoopEventHandler(
         {
           iteration: nextIteration,
           phase: 'coding',
-          lastAuditResult: auditText ?? undefined,
+          lastAuditResult: auditText || undefined,
           auditCount: newAuditCount,
         },
         continuationPrompt,
@@ -1085,7 +1224,7 @@ export function createLoopEventHandler(
       const nextIteration = (currentState.iteration ?? 0) + 1
       const continuationPrompt = loopService.buildContinuationPrompt(
         { ...currentState, iteration: nextIteration },
-        auditText ?? undefined,
+        auditText || undefined,
       )
       await rotateAndSendContinuation(
         loopName,
@@ -1093,7 +1232,7 @@ export function createLoopEventHandler(
         {
           iteration: nextIteration,
           phase: 'coding',
-          lastAuditResult: auditText ?? undefined,
+          lastAuditResult: auditText || undefined,
           auditCount: currentState.auditCount ?? 0,
         },
         continuationPrompt,
@@ -1148,8 +1287,7 @@ export function createLoopEventHandler(
               return
             }
             logger.log(`Loop: audit session ${eventSessionId} aborted, cleaning up and rolling back to coding`)
-            await deleteAuditSession(v2Client, eventSessionId, state.worktreeDir, logger)
-            loopService.setPhaseAndResetError(loopName, 'coding')
+            await rotateToCodingAfterAuditFailure(loopName, state, 'aborted')
             return
           }
           logger.log(`Loop: session ${eventSessionId} aborted, terminating loop`)
@@ -1171,8 +1309,7 @@ export function createLoopEventHandler(
         if (state.phase === 'auditing') {
           const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
           logger.error(`Loop: audit session error for ${eventSessionId}: ${errorMessage}, cleaning up and rolling back to coding`)
-          await deleteAuditSession(v2Client, eventSessionId, state.worktreeDir, logger)
-          loopService.setPhaseAndResetError(loopName, 'coding')
+          await rotateToCodingAfterAuditFailure(loopName, state, errorMessage)
           return
         }
         const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
@@ -1262,6 +1399,13 @@ export function createLoopEventHandler(
     return true
   }
 
+  async function terminateLoopByName(loopName: string, reason: string): Promise<boolean> {
+    const state = loopService.getActiveState(loopName)
+    if (!state?.active) return false
+    await terminateLoop(loopName, state, reason)
+    return true
+  }
+
   function clearLoopTimers(loopName: string): void {
     const retryTimeout = retryTimeouts.get(loopName)
     if (retryTimeout) {
@@ -1288,6 +1432,7 @@ export function createLoopEventHandler(
     startWatchdog,
     getStallInfo,
     cancelBySessionId,
+    terminateLoopByName,
     runExclusive,
     clearLoopTimers,
   }

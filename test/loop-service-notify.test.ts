@@ -21,7 +21,6 @@ function createMockRepos() {
     setPhaseAndResetError: () => {},
     setModelFailed: () => {},
     setLastAuditResult: () => {},
-    applyRotation: () => {},
     replaceSession: () => {},
     terminate: () => {},
     setSandboxContainer: () => {},
@@ -29,7 +28,6 @@ function createMockRepos() {
     setWorkspaceId: () => {},
     incrementError: () => 0,
     resetError: () => {},
-    incrementAudit: () => 0,
   } as unknown as LoopsRepo
 
   const mockPlansRepo = {} as PlansRepo
@@ -210,32 +208,6 @@ describe('LoopChangeNotifier', () => {
     })
   })
 
-  describe('incrementAudit', () => {
-    it('should be called with audit-result reason when incrementAudit is called', () => {
-      const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
-      const notifyCalls: Array<{ reason: string; loopName: string }> = []
-      const notify: LoopChangeNotifier = (reason, loopName) => {
-        notifyCalls.push({ reason, loopName })
-      }
-
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
-
-      loopService.incrementAudit('test-loop')
-
-      expect(notifyCalls.length).toBe(1)
-      expect(notifyCalls[0].reason).toBe('audit-result')
-      expect(notifyCalls[0].loopName).toBe('test-loop')
-    })
-  })
-
   describe('setPhase', () => {
     it('should be called with phase reason when setPhase is called', () => {
       const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
@@ -340,31 +312,7 @@ describe('LoopChangeNotifier', () => {
     })
   })
 
-  describe('applyRotation', () => {
-    it('should be called with rotate reason when applyRotation is called', () => {
-      const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
-      const notifyCalls: Array<{ reason: string; loopName: string }> = []
-      const notify: LoopChangeNotifier = (reason, loopName) => {
-        notifyCalls.push({ reason, loopName })
-      }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
-
-      loopService.applyRotation('test-loop', { sessionId: 's4', iteration: 2 })
-
-      expect(notifyCalls.length).toBe(1)
-      expect(notifyCalls[0].reason).toBe('rotate')
-      expect(notifyCalls[0].loopName).toBe('test-loop')
-    })
-  })
 
   describe('replaceSession', () => {
     it('should be called with rotate reason when replaceSession is called', () => {

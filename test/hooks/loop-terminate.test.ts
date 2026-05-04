@@ -1,8 +1,9 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import { spawnSync } from 'child_process'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
@@ -124,7 +125,7 @@ describe('Loop Terminate Handler', () => {
     db.run(`
       CREATE TABLE plans (
         project_id   TEXT NOT NULL,
-      branch       TEXT NOT NULL DEFAULT '',
+        branch       TEXT NOT NULL DEFAULT '',
         loop_name    TEXT,
         session_id   TEXT,
         content      TEXT NOT NULL,
@@ -329,6 +330,131 @@ describe('Loop Terminate Handler', () => {
       expect(after!.hostSessionId).toBe(hostSessionId)
       expect(after!.active).toBe(false)
       expect(after!.terminationReason).toBe('cancelled')
+    })
+  })
+
+  describe('B5/B7 commit message and errored/stalled commit', () => {
+    test('cancelled loop commits with message containing cancelled, not completed', async () => {
+      const worktreeDir = mkdtempSync(join(tmpdir(), 'b5-commit-'))
+      // Initialize git repo and make a commit to enable git operations
+      spawnSync('git', ['init'], { cwd: worktreeDir })
+      spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: worktreeDir })
+      spawnSync('git', ['config', 'user.name', 'Test'], { cwd: worktreeDir })
+      // Create a file to have uncommitted changes
+      spawnSync('touch', [join(worktreeDir, 'test.txt')], {})
+
+      const state = makeState({ iteration: 2, worktree: true, worktreeDir })
+      loopService.setState(state.loopName, state)
+
+      const clientState: MockClientState = { deleteCalls: [], publishCalls: [], deleteThrows: false }
+      const v2Client = createMockV2Client(clientState)
+      const { logger } = createCapturingLogger()
+
+      const handler = createLoopEventHandler(
+        loopService,
+        { client: {} as any },
+        v2Client,
+        logger,
+        () => mockConfig,
+        undefined,
+        projectId,
+        tempDir,
+      )
+
+      await handler.cancelBySessionId(state.sessionId)
+
+      const after = loopService.getAnyState(state.loopName)
+      expect(after!.active).toBe(false)
+      expect(after!.terminationReason).toBe('cancelled')
+      // Verify the commit message in git log
+      const logResult = spawnSync('git', ['log', '-1', '--format=%s'], { cwd: worktreeDir, encoding: 'utf-8' })
+      const commitMessage = logResult.stdout.trim()
+      expect(commitMessage).toContain('cancelled')
+      expect(commitMessage).not.toContain('completed')
+
+      rmSync(worktreeDir, { recursive: true, force: true })
+    })
+
+    test('stall_timeout loop commits but does NOT cleanup worktree', async () => {
+      const worktreeDir = mkdtempSync(join(tmpdir(), 'b7-stalled-'))
+      spawnSync('git', ['init'], { cwd: worktreeDir })
+      spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: worktreeDir })
+      spawnSync('git', ['config', 'user.name', 'Test'], { cwd: worktreeDir })
+      spawnSync('touch', [join(worktreeDir, 'test.txt')], {})
+
+      const state = makeState({ iteration: 2, worktree: true, worktreeDir })
+      loopService.setState(state.loopName, state)
+
+      const clientState: MockClientState = { deleteCalls: [], publishCalls: [], deleteThrows: false }
+      const v2Client = createMockV2Client(clientState)
+      const { logger } = createCapturingLogger()
+
+      const handler = createLoopEventHandler(
+        loopService,
+        { client: {} as any },
+        v2Client,
+        logger,
+        () => mockConfig,
+        undefined,
+        projectId,
+        tempDir,
+      )
+
+      await handler.terminateLoopByName(state.loopName, 'stall_timeout')
+
+      const after = loopService.getAnyState(state.loopName)
+      expect(after!.active).toBe(false)
+      expect(after!.terminationReason).toBe('stall_timeout')
+      // Verify commit message
+      const logResult = spawnSync('git', ['log', '-1', '--format=%s'], { cwd: worktreeDir, encoding: 'utf-8' })
+      const commitMessage = logResult.stdout.trim()
+      expect(commitMessage).toContain('stalled')
+      expect(commitMessage).not.toContain('completed')
+      // Verify worktree was NOT cleaned up (directory still exists)
+      expect(() => spawnSync('git', ['status'], { cwd: worktreeDir })).not.toThrow()
+
+      rmSync(worktreeDir, { recursive: true, force: true })
+    })
+
+    test('error_max_retries loop commits but does NOT cleanup worktree', async () => {
+      const worktreeDir = mkdtempSync(join(tmpdir(), 'b7-errored-'))
+      spawnSync('git', ['init'], { cwd: worktreeDir })
+      spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: worktreeDir })
+      spawnSync('git', ['config', 'user.name', 'Test'], { cwd: worktreeDir })
+      spawnSync('touch', [join(worktreeDir, 'test.txt')], {})
+
+      const state = makeState({ iteration: 2, worktree: true, worktreeDir })
+      loopService.setState(state.loopName, state)
+
+      const clientState: MockClientState = { deleteCalls: [], publishCalls: [], deleteThrows: false }
+      const v2Client = createMockV2Client(clientState)
+      const { logger } = createCapturingLogger()
+
+      const handler = createLoopEventHandler(
+        loopService,
+        { client: {} as any },
+        v2Client,
+        logger,
+        () => mockConfig,
+        undefined,
+        projectId,
+        tempDir,
+      )
+
+      await handler.terminateLoopByName(state.loopName, 'error_max_retries: test error')
+
+      const after = loopService.getAnyState(state.loopName)
+      expect(after!.active).toBe(false)
+      expect(after!.terminationReason).toContain('error_max_retries')
+      // Verify commit message
+      const logResult = spawnSync('git', ['log', '-1', '--format=%s'], { cwd: worktreeDir, encoding: 'utf-8' })
+      const commitMessage = logResult.stdout.trim()
+      expect(commitMessage).toContain('errored')
+      expect(commitMessage).not.toContain('completed')
+      // Verify worktree was NOT cleaned up
+      expect(() => spawnSync('git', ['status'], { cwd: worktreeDir })).not.toThrow()
+
+      rmSync(worktreeDir, { recursive: true, force: true })
     })
   })
 })

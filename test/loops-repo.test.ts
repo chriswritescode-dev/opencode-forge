@@ -212,19 +212,6 @@ describe('LoopsRepo', () => {
       expect(final!.errorCount).toBe(10)
     })
 
-    test('incrementAudit should atomically increment audit count', () => {
-      repo.insert(testRow, testLarge)
-      
-      const result1 = repo.incrementAudit(testRow.projectId, testRow.loopName)
-      expect(result1).toBe(1)
-      
-      const result2 = repo.incrementAudit(testRow.projectId, testRow.loopName)
-      expect(result2).toBe(2)
-      
-      const final = repo.get(testRow.projectId, testRow.loopName)
-      expect(final!.auditCount).toBe(2)
-    })
-
     test('resetError should reset error count and model_failed', () => {
       const errorRow: LoopRow = { ...testRow, errorCount: 5, modelFailed: true }
       repo.insert(errorRow, testLarge)
@@ -384,21 +371,12 @@ describe('LoopsRepo', () => {
         currentSessionId: 'session-no-host',
         hostSessionId: null,
       }
-      
+
       repo.insert(rowWithoutHost, testLarge)
-      
+
       const retrieved = repo.get(rowWithoutHost.projectId, rowWithoutHost.loopName)
       expect(retrieved).toBeTruthy()
       expect(retrieved!.hostSessionId).toBeNull()
-    })
-
-    test('setHostSessionId should update the column', () => {
-      repo.insert(testRow, testLarge)
-      
-      repo.setHostSessionId(testRow.projectId, testRow.loopName, 'new-host-session')
-      
-      const retrieved = repo.get(testRow.projectId, testRow.loopName)
-      expect(retrieved!.hostSessionId).toBe('new-host-session')
     })
   })
 
@@ -429,34 +407,6 @@ describe('LoopsRepo', () => {
       expect(retrieved!.iteration).toBe(2)
       expect(retrieved!.errorCount).toBe(0)
       expect(retrieved!.modelFailed).toBe(false)
-    })
-  })
-
-  describe('applyRotation', () => {
-    test('should update current_session_id, iteration, phase, and auditCount', () => {
-      const row: LoopRow = {
-        ...testRow,
-        loopName: 'loop-rotation-test',
-        currentSessionId: 'L1',
-        phase: 'coding',
-        iteration: 1,
-        auditCount: 0,
-      }
-      
-      repo.insert(row, testLarge)
-      
-      repo.applyRotation(row.projectId, row.loopName, {
-        sessionId: 'L2',
-        iteration: 2,
-        phase: 'auditing',
-        auditCount: 1,
-      })
-      
-      const retrieved = repo.get(row.projectId, row.loopName)
-      expect(retrieved!.currentSessionId).toBe('L2')
-      expect(retrieved!.iteration).toBe(2)
-      expect(retrieved!.phase).toBe('auditing')
-      expect(retrieved!.auditCount).toBe(1)
     })
   })
 })

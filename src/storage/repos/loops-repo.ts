@@ -44,14 +44,12 @@ export interface LoopsRepo {
   updateIteration(projectId: string, loopName: string, iteration: number): void
   incrementError(projectId: string, loopName: string): number
   resetError(projectId: string, loopName: string): void
-  incrementAudit(projectId: string, loopName: string): number
-  setAuditCount(projectId: string, loopName: string, count: number): void
   setCurrentSessionId(projectId: string, loopName: string, sessionId: string): void
   setWorkspaceId(projectId: string, loopName: string, workspaceId: string): void
-  setHostSessionId(projectId: string, loopName: string, hostSessionId: string): void
   clearWorkspaceId(projectId: string, loopName: string): void
   setModelFailed(projectId: string, loopName: string, failed: boolean): void
-  setLastAuditResult(projectId: string, loopName: string, text: string | null): void
+  setLastAuditResult(projectId: string, loopName: string, text: string): void
+  clearLastAuditResult(projectId: string, loopName: string): void
   setSandboxContainer(projectId: string, loopName: string, containerName: string | null): void
   setPhaseAndResetError(projectId: string, loopName: string, phase: 'coding' | 'auditing'): void
   setStatus(projectId: string, loopName: string, status: LoopRow['status']): void
@@ -60,11 +58,6 @@ export interface LoopsRepo {
     projectId: string,
     loopName: string,
     opts: { sessionId: string; phase: 'coding' | 'auditing'; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }
-  ): void
-  applyRotation(
-    projectId: string,
-    loopName: string,
-    opts: { sessionId: string; iteration: number; phase?: 'coding' | 'auditing'; auditCount?: number; lastAuditResult?: string | null; resetError?: boolean }
   ): void
   terminate(
     projectId: string,
@@ -210,17 +203,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     WHERE project_id = ? AND loop_name = ?
   `)
 
-  const incrementAuditStmt = db.prepare(`
-    UPDATE loops SET audit_count = audit_count + 1
-    WHERE project_id = ? AND loop_name = ?
-    RETURNING audit_count
-  `)
-
-  const setAuditCountStmt = db.prepare(`
-    UPDATE loops SET audit_count = ?
-    WHERE project_id = ? AND loop_name = ?
-  `)
-
   const setCurrentSessionIdStmt = db.prepare(`
     UPDATE loops SET current_session_id = ?
     WHERE project_id = ? AND loop_name = ?
@@ -230,11 +212,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
 
   const setWorkspaceIdStmt = db.prepare(`
     UPDATE loops SET workspace_id = ?
-    WHERE project_id = ? AND loop_name = ?
-  `)
-
-  const setHostSessionIdStmt = db.prepare(`
-    UPDATE loops SET host_session_id = ?
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -250,6 +227,11 @@ export function createLoopsRepo(db: Database): LoopsRepo {
 
   const setLastAuditResultStmt = db.prepare(`
     UPDATE loop_large_fields SET last_audit_result = ?
+    WHERE project_id = ? AND loop_name = ?
+  `)
+
+  const clearLastAuditResultStmt = db.prepare(`
+    UPDATE loop_large_fields SET last_audit_result = NULL
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -279,15 +261,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       current_session_id = ?,
       phase = ?,
       iteration = COALESCE(?, iteration),
-      audit_count = COALESCE(?, audit_count)
-    WHERE project_id = ? AND loop_name = ?
-  `)
-
-  const applyRotationStmt = db.prepare(`
-    UPDATE loops SET
-      current_session_id = ?,
-      iteration = ?,
-      phase = ?,
       audit_count = COALESCE(?, audit_count)
     WHERE project_id = ? AND loop_name = ?
   `)
@@ -395,25 +368,12 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       resetErrorStmt.run(projectId, loopName)
     },
 
-    incrementAudit(projectId: string, loopName: string): number {
-      const result = incrementAuditStmt.get(projectId, loopName) as { audit_count: number } | null
-      return result?.audit_count ?? 0
-    },
-
-    setAuditCount(projectId: string, loopName: string, count: number): void {
-      setAuditCountStmt.run(count, projectId, loopName)
-    },
-
     setCurrentSessionId(projectId: string, loopName: string, sessionId: string): void {
       setCurrentSessionIdStmt.run(sessionId, projectId, loopName)
     },
 
     setWorkspaceId(projectId: string, loopName: string, workspaceId: string): void {
       setWorkspaceIdStmt.run(workspaceId, projectId, loopName)
-    },
-
-    setHostSessionId(projectId: string, loopName: string, hostSessionId: string): void {
-      setHostSessionIdStmt.run(hostSessionId, projectId, loopName)
     },
 
     clearWorkspaceId(projectId: string, loopName: string): void {
@@ -424,8 +384,13 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       setModelFailedStmt.run(failed ? 1 : 0, projectId, loopName)
     },
 
-    setLastAuditResult(projectId: string, loopName: string, text: string | null): void {
+    setLastAuditResult(projectId: string, loopName: string, text: string): void {
+      if (text === '') return
       setLastAuditResultStmt.run(text, projectId, loopName)
+    },
+
+    clearLastAuditResult(projectId: string, loopName: string): void {
+      clearLastAuditResultStmt.run(projectId, loopName)
     },
 
     setSandboxContainer(projectId: string, loopName: string, containerName: string | null): void {
@@ -450,8 +415,8 @@ export function createLoopsRepo(db: Database): LoopsRepo {
           projectId,
           loopName
         )
-        if (opts.lastAuditResult !== undefined) {
-          setLastAuditResultStmt.run(opts.lastAuditResult ?? null, projectId, loopName)
+        if (opts.lastAuditResult !== undefined && opts.lastAuditResult !== null && opts.lastAuditResult !== '') {
+          setLastAuditResultStmt.run(opts.lastAuditResult, projectId, loopName)
         }
         if (opts.resetError) {
           resetErrorStmt.run(projectId, loopName)
@@ -467,30 +432,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     updatePrompt(projectId: string, loopName: string, prompt: string): boolean {
       const result = updatePromptStmt.run(prompt, projectId, loopName) as unknown as { changes: number }
       return result.changes > 0
-    },
-
-    applyRotation(
-      projectId: string,
-      loopName: string,
-      opts: { sessionId: string; iteration: number; phase?: 'coding' | 'auditing'; auditCount?: number; lastAuditResult?: string | null; resetError?: boolean }
-    ): void {
-      const runTxn = db.transaction(() => {
-        applyRotationStmt.run(
-          opts.sessionId,
-          opts.iteration,
-          opts.phase ?? null,
-          opts.auditCount ?? null,
-          projectId,
-          loopName
-        )
-        if (opts.lastAuditResult !== undefined) {
-          setLastAuditResultStmt.run(opts.lastAuditResult ?? null, projectId, loopName)
-        }
-        if (opts.resetError) {
-          resetErrorStmt.run(projectId, loopName)
-        }
-      })
-      runTxn()
     },
 
     terminate(

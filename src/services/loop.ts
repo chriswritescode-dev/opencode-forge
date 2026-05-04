@@ -70,16 +70,15 @@ export interface LoopService {
   getPlanText(loopName: string, sessionId: string): string | null
   incrementError(name: string): number
   resetError(name: string): void
-  incrementAudit(name: string): number
   setPhase(name: string, phase: 'coding' | 'auditing'): void
   setPhaseAndResetError(name: string, phase: 'coding' | 'auditing'): void
   setModelFailed(name: string, failed: boolean): void
-  setLastAuditResult(name: string, text: string | null): void
+  setLastAuditResult(name: string, text: string): void
+  clearLastAuditResult(name: string): void
   setSandboxContainer(name: string, containerName: string | null): void
   setStatus(name: string, status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'): void
   clearWorkspaceId(name: string): void
   setWorkspaceId(name: string, workspaceId: string): void
-  applyRotation(name: string, opts: { sessionId: string; iteration: number; phase?: 'coding' | 'auditing'; auditCount?: number; lastAuditResult?: string | null; resetError?: boolean }): void
   terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
   replaceSession(name: string, opts: { newSessionId: string; phase: 'coding' | 'auditing'; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void
 }
@@ -393,12 +392,6 @@ export function createLoopService(
     notifyLoopChange('error', name)
   }
 
-  function incrementAudit(name: string): number {
-    const result = loopsRepo.incrementAudit(projectId, name)
-    notifyLoopChange('audit-result', name)
-    return result
-  }
-
   function setPhase(name: string, phase: 'coding' | 'auditing'): void {
     loopsRepo.updatePhase(projectId, name, phase)
     notifyLoopChange('phase', name)
@@ -414,14 +407,15 @@ export function createLoopService(
     notifyLoopChange('model-failed', name)
   }
 
-  function setLastAuditResult(name: string, text: string | null): void {
+  function setLastAuditResult(name: string, text: string): void {
+    if (text === '') return
     loopsRepo.setLastAuditResult(projectId, name, text)
     notifyLoopChange('audit-result', name)
   }
 
-  function applyRotation(name: string, opts: { sessionId: string; iteration: number; phase?: 'coding' | 'auditing'; auditCount?: number; lastAuditResult?: string | null; resetError?: boolean }): void {
-    loopsRepo.applyRotation(projectId, name, opts)
-    notifyLoopChange('rotate', name)
+  function clearLastAuditResult(name: string): void {
+    loopsRepo.clearLastAuditResult(projectId, name)
+    notifyLoopChange('audit-result', name)
   }
 
   function terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void {
@@ -466,13 +460,12 @@ export function createLoopService(
     getPlanText,
     incrementError,
     resetError,
-    incrementAudit,
     setPhase,
     setPhaseAndResetError,
     setModelFailed,
     setLastAuditResult,
+    clearLastAuditResult,
     setSandboxContainer,
-    applyRotation,
     terminate,
     clearWorkspaceId,
     setWorkspaceId,
