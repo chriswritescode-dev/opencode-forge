@@ -132,12 +132,28 @@ export async function connectForgeProject(
   directory?: string,
 ): Promise<ForgeProjectClient | null> {
   const pending = new Map<string, PendingRpc>()
+  const earlyLoopStartedRids = new Map<string, number>()
   tuiDebug(`connect start directory=${directory ?? 'none'}`)
 
   const eventHandlers = new Map<string, Set<(payload: unknown) => void>>()
 
+  function emitLocalEvent(name: string, payload: unknown): void {
+    tuiDebug(`emitLocalEvent name=${name} handlers=${eventHandlers.get(name)?.size ?? 0}`)
+    const handlers = eventHandlers.get(name)
+    if (!handlers) return
+
+    for (const handler of handlers) {
+      try {
+        handler(payload)
+      } catch (err) {
+        tuiDebug(`event handler error for ${name}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+  }
+
   // Hoist projectId to avoid TDZ - events can arrive before discovery completes
   let projectId: string | null = null
+  let serverDirectory: string | null = null
 
   api.event.on('tui.command.execute', (event) => {
     const command = event.properties?.command as string | undefined
@@ -154,7 +170,20 @@ export async function connectForgeProject(
         tuiDebug(`event matched rid=${earlyEvent.rid} name=${earlyEvent.name}`)
         clearTimeout(pendingRpc.timer)
         pending.delete(earlyEvent.rid)
+        // Prune old entries before adding new one
+        const now = Date.now()
+        for (const [k, ts] of earlyLoopStartedRids) {
+          if (now - ts > 5 * 60_000) earlyLoopStartedRids.delete(k)
+        }
+        earlyLoopStartedRids.set(earlyEvent.rid, now)
         pendingRpc.resolve(earlyEvent.data)
+        const earlyData = earlyEvent.data
+        emitLocalEvent('loops.changed', {
+          reason: 'started',
+          loopName: typeof earlyData === 'object' && earlyData !== null
+            ? String((earlyData as { loopName?: unknown }).loopName ?? '')
+            : '',
+        })
         return
       }
       if ('rid' in earlyEvent) {
@@ -191,27 +220,21 @@ export async function connectForgeProject(
       return
     }
 
-    // Filter by projectId if client has one
-    if (projectId && evt.projectId && evt.projectId !== projectId) {
+    // Filter by projectId or directory - accept if either matches or if event has no scoping info
+    const eventProjectId = evt.projectId
+    const eventDirectory = evt.directory
+    const matchesProject = !!projectId && !!eventProjectId && eventProjectId === projectId
+    const matchesDirectory = !!directory && !!eventDirectory && eventDirectory === directory
+    const matchesServerDir = !!serverDirectory && !!eventDirectory && eventDirectory === serverDirectory
+    const noScopingInfo = !eventProjectId && !eventDirectory
+    if (!(matchesProject || matchesDirectory || matchesServerDir || noScopingInfo)) {
+      tuiDebug(`event dropped name=${evt.name} reason=scope evt.projectId=${eventProjectId ?? ''} evt.directory=${eventDirectory ?? ''} my.projectId=${projectId ?? ''} my.directory=${directory ?? ''}`)
       return
     }
 
-    // Filter by directory if projectId is not set
-    if (!projectId && evt.directory && evt.directory !== directory) {
-      return
-    }
-
+    tuiDebug(`event accepted name=${evt.name} rid=${'rid' in evt ? evt.rid : 'none'}`)
     // Dispatch to handlers for this event name
-    const handlers = eventHandlers.get(evt.name)
-    if (handlers) {
-      for (const handler of handlers) {
-        try {
-          handler(evt.payload ?? {})
-        } catch (err) {
-          tuiDebug(`event handler error for ${evt.name}: ${err instanceof Error ? err.message : String(err)}`)
-        }
-      }
-    }
+    emitLocalEvent(evt.name, evt.payload ?? {})
   })
 
   async function discoverProjectIdByDirectory(): Promise<string | null> {
@@ -278,6 +301,7 @@ export async function connectForgeProject(
       return null
     }
 
+    serverDirectory = directory ?? null
     return projectId
   }
 
@@ -286,8 +310,10 @@ export async function connectForgeProject(
     params: Record<string, string>,
     body?: unknown,
     timeoutMs = RPC_TIMEOUT_MS,
+    onRid?: (rid: string) => void,
   ): Promise<T> {
     const rid = newRid()
+    onRid?.(rid)
 
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -323,6 +349,8 @@ export async function connectForgeProject(
   projectId = await discoverProjectIdByDirectory()
   if (!projectId) {
     tuiDebug(`discovery failed; continuing with cwd routing directory=${directory ?? 'none'}`)
+  } else {
+    tuiDebug(`discovery success projectId=${projectId} serverDirectory=${serverDirectory ?? 'none'}`)
   }
 
   const plan: ForgeProjectClient['plan'] = {
@@ -423,6 +451,7 @@ export async function connectForgeProject(
 
       if (req.mode === 'loop' || req.mode === 'loop-worktree') {
         let result: { sessionId?: string; loopName?: string; worktreeDir?: string; workspaceId?: string } | null
+        let requestRid = ''
         try {
           result = await rpc(
             'plan.execute',
@@ -436,6 +465,7 @@ export async function connectForgeProject(
               targetSessionId: req.targetSessionId,
             },
             60_000, // longer timeout for loop start (worktree + sandbox)
+            (rid) => { requestRid = rid },
           )
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
@@ -444,6 +474,15 @@ export async function connectForgeProject(
           return null
         }
         if (projectId) writeExecutionPreferences(projectId, prefs)
+        if (requestRid) {
+          const hadEarlyLoopStart = earlyLoopStartedRids.has(requestRid)
+          earlyLoopStartedRids.delete(requestRid)
+          if (!hadEarlyLoopStart && result?.loopName) {
+            emitLocalEvent('loops.changed', { reason: 'started', loopName: result.loopName })
+          }
+        } else if (result?.loopName) {
+          emitLocalEvent('loops.changed', { reason: 'started', loopName: result.loopName })
+        }
         return {
           sessionId: result?.sessionId,
           loopName: result?.loopName,

@@ -88,6 +88,10 @@ export interface TuiConfig {
   showLoops?: boolean
   /** Show version information. */
   showVersion?: boolean
+  /** Auto-save captured plans to disk under <dataDir>/plans/<projectId>/. Default false. */
+  autoSavePlans?: boolean
+  /** TTL in ms for archived plans before pruning. 0 disables pruning. Default: 604800000 (7 days). */
+  planArchiveTtlMs?: number
   /** Keyboard shortcut overrides for Forge commands. */
   keybinds?: {
     /** View plan dialog. Default: Meta+Shift+P */

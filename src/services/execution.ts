@@ -770,11 +770,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     if (!planResult.ok) return { ok: false, error: planResult.error }
     
     const planText = planResult.planText
-    const title = command.title ?? extractPlanTitle(planText)
-    const sessionTitle = formatLoopSessionTitle(title)
     
-    // Extract loop names
+    // Extract loop names first so the session title can prefer the explicit Loop Name
     const { displayName, executionName } = extractLoopNames(planText)
+    const title = command.title ?? displayName
+    const sessionTitle = formatLoopSessionTitle(title)
     
     // Generate unique loop name
     let uniqueLoopName: string

@@ -75,10 +75,10 @@ describe('Agent definitions', () => {
       expect(auditorLoopAgent.systemPrompt).toContain('primary agent')
     })
 
-    test('auditor-loop prompt requires parallel subtasks after finding checks', () => {
+    test('auditor-loop prompt encourages short-lived subtasks after finding checks', () => {
       const prompt = auditorLoopAgent.systemPrompt
       expect(prompt).toContain('review-finding flow has completed')
-      expect(prompt).toContain('launch at least two Task subtasks in parallel')
+      expect(prompt).toContain('short-lived Task subtasks')
       expect(prompt).toContain('Keep the existing review-finding order unchanged')
     })
   })

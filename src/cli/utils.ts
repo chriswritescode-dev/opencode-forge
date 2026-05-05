@@ -138,6 +138,24 @@ export function createOpencodeClientFromServer(serverUrl: string, directory: str
 }
 
 /**
+ * Attempts to create a v2 client for CLI commands by reading the server URL
+ * from environment or using a default. Returns null if the server is unreachable.
+ */
+export async function getCliV2Client(directory: string): Promise<OpencodeClient | null> {
+  const serverUrl = process.env['OPENCODE_SERVER_URL'] || 'http://localhost:8373'
+  try {
+    // First verify the server is reachable with a simple health check
+    const response = await fetch(`${serverUrl}/health`, { method: 'GET' })
+    if (!response.ok) {
+      return null
+    }
+    return createClientFromServer({ serverUrl, directory })
+  } catch {
+    return null
+  }
+}
+
+/**
  * Resolves a partial loop name against a list of loops. On ambiguity or no
  * match, prints a message to stderr listing all available loops and exits
  * with code 1.

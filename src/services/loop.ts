@@ -3,6 +3,7 @@ import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import type { LoopsRepo, LoopRow, LoopLargeFields } from '../storage/repos/loops-repo'
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo, ReviewFindingRow } from '../storage/repos/review-findings-repo'
+import { teardownWorktreeArtifacts } from '../utils/worktree-cleanup'
 
 export type LoopChangeReason =
   | 'insert' | 'delete' | 'terminate'
@@ -62,7 +63,7 @@ export interface LoopService {
   listRecent(): LoopState[]
   findMatchByName(name: string): { match: LoopState | null; candidates: LoopState[] }
   getStallTimeoutMs(): number
-  terminateAll(): void
+  terminateAll(): Promise<void>
   reconcileStale(opts?: { isSandboxLive?: (loopName: string) => Promise<boolean> }): Promise<{ cancelled: number; preserved: string[] }>
   hasOutstandingFindings(branch?: string, severity?: 'bug' | 'warning'): boolean
   getOutstandingFindings(branch?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[]
@@ -121,6 +122,7 @@ export function createLoopService(
   logger: Logger,
   loopConfig?: LoopConfig,
   notify?: LoopChangeNotifier,
+  v2Client?: OpencodeClient,
 ): LoopService {
   const notifyLoopChange: LoopChangeNotifier = notify ?? (() => {})
 
@@ -230,7 +232,7 @@ export function createLoopService(
       systemLine += ` | No max iterations set - loop runs until auditor all-clear or cancelled`
     }
 
-    let prompt = `[${systemLine}]\n\n${state.prompt ?? ''}`
+    let prompt = `[${systemLine}]`
 
     if (auditFindings) {
       prompt += `\n\n---\nThe code auditor reviewed your changes. You MUST address all bugs and convention violations below — do not dismiss findings as unrelated to the task. Fix them directly without creating a plan or asking for approval.\n\n${auditFindings}`
@@ -339,10 +341,32 @@ export function createLoopService(
     return loopConfig?.stallTimeoutMs ?? STALL_TIMEOUT_MS
   }
 
-  function terminateAll(): void {
+  async function terminateAll(): Promise<void> {
     const active = listActive()
     const now = Date.now()
     for (const state of active) {
+      if (state.worktree && v2Client) {
+        try {
+          await teardownWorktreeArtifacts({
+            v2: v2Client,
+            loopName: state.loopName,
+            sessionId: state.sessionId,
+            workspaceId: state.workspaceId,
+            worktreeDir: state.worktreeDir,
+            worktree: true,
+            doCommit: true,
+            doRemoveWorktree: true,
+            reasonLabel: 'shutdown',
+            worktreeBranch: state.worktreeBranch,
+            iteration: state.iteration,
+            logPrefix: 'Loop',
+            logger,
+          })
+          logger.log(`Loop: teardown for ${state.loopName} sessionDeleted=true workspaceDeleted=true worktreeRemoved=true`)
+        } catch (err) {
+          logger.error(`Loop: teardown failed for ${state.loopName}`, err)
+        }
+      }
       loopsRepo.terminate(projectId, state.loopName, {
         status: 'cancelled',
         reason: 'shutdown',
@@ -362,6 +386,28 @@ export function createLoopService(
     // Back-compatible path: no opts means cancel everything (old behavior)
     if (!opts?.isSandboxLive) {
       for (const state of active) {
+        if (state.worktree && v2Client) {
+          try {
+            await teardownWorktreeArtifacts({
+              v2: v2Client,
+              loopName: state.loopName,
+              sessionId: state.sessionId,
+              workspaceId: state.workspaceId,
+              worktreeDir: state.worktreeDir,
+              worktree: true,
+              doCommit: true,
+              doRemoveWorktree: true,
+              reasonLabel: 'shutdown',
+              worktreeBranch: state.worktreeBranch,
+              iteration: state.iteration,
+              logPrefix: 'Loop',
+              logger,
+            })
+            logger.log(`Loop: teardown for ${state.loopName} sessionDeleted=true workspaceDeleted=true worktreeRemoved=true`)
+          } catch (err) {
+            logger.error(`Loop: teardown failed for ${state.loopName}`, err)
+          }
+        }
         loopsRepo.terminate(projectId, state.loopName, {
           status: 'cancelled',
           reason: 'shutdown',
@@ -391,6 +437,28 @@ export function createLoopService(
         continue
       }
 
+      if (state.worktree && v2Client) {
+        try {
+          await teardownWorktreeArtifacts({
+            v2: v2Client,
+            loopName: state.loopName,
+            sessionId: state.sessionId,
+            workspaceId: state.workspaceId,
+            worktreeDir: state.worktreeDir,
+            worktree: true,
+            doCommit: true,
+            doRemoveWorktree: true,
+            reasonLabel: 'shutdown',
+            worktreeBranch: state.worktreeBranch,
+            iteration: state.iteration,
+            logPrefix: 'Loop',
+            logger,
+          })
+          logger.log(`Loop: teardown for ${state.loopName} sessionDeleted=true workspaceDeleted=true worktreeRemoved=true`)
+        } catch (err) {
+          logger.error(`Loop: teardown failed for ${state.loopName}`, err)
+        }
+      }
       loopsRepo.terminate(projectId, state.loopName, {
         status: 'cancelled',
         reason: 'shutdown',
@@ -548,6 +616,84 @@ export interface LoopSessionOutput {
   totalCost: number
   totalTokens: { input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number }
   fileChanges: { additions: number; deletions: number; files: number } | null
+}
+
+export async function sweepOrphanWorkspaces(opts: {
+  v2Client: OpencodeClient
+  loopsRepo: LoopsRepo
+  projectId: string
+  logger: Logger
+}): Promise<{ removed: number; errors: string[] }> {
+  const { v2Client, loopsRepo, projectId, logger } = opts
+  const result = { removed: 0, errors: [] as string[] }
+
+  const workspaceApi = v2Client.experimental?.workspace
+  if (!workspaceApi?.list) {
+    logger.log('Sweep: experimental.workspace.list not available, skipping orphan sweep')
+    return result
+  }
+
+  try {
+    const listResult = await workspaceApi.list()
+    const workspaces = (listResult.data ?? []) as Array<{
+      id: string
+      type?: string
+      directory?: string
+      extra?: unknown
+    }>
+
+    const forgeWorktreeWorkspaces = workspaces.filter((w) => w.type === 'forge-worktree')
+    if (forgeWorktreeWorkspaces.length === 0) {
+      return result
+    }
+
+    const activeRows = loopsRepo.listByStatus(projectId, ['running'])
+    const activeWorkspaceIds = new Set(activeRows.map((r) => r.workspaceId).filter((id): id is string => id !== null))
+
+    for (const workspace of forgeWorktreeWorkspaces) {
+      if (activeWorkspaceIds.has(workspace.id)) {
+        continue
+      }
+
+      logger.log(`Sweep: found orphan workspace ${workspace.id} (type=forge-worktree)`)
+
+      const sessionApi = v2Client.experimental?.session
+      if (sessionApi?.list) {
+        try {
+          const sessionResult = await sessionApi.list({ workspace: workspace.id })
+          const sessions = (sessionResult.data ?? []) as Array<{ id: string }>
+          for (const session of sessions) {
+            try {
+              await v2Client.session.delete({ sessionID: session.id, directory: workspace.directory ?? projectId })
+              logger.log(`Sweep: deleted orphan session ${session.id} in workspace ${workspace.id}`)
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err)
+              result.errors.push(`Failed to delete session ${session.id}: ${msg}`)
+              logger.error(`Sweep: failed to delete session ${session.id}`, err)
+            }
+          }
+        } catch (err) {
+          logger.error(`Sweep: failed to list sessions in workspace ${workspace.id}`, err)
+        }
+      }
+
+      try {
+        await workspaceApi.remove({ id: workspace.id })
+        result.removed++
+        logger.log(`Sweep: removed orphan workspace ${workspace.id}`)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        result.errors.push(`Failed to remove workspace ${workspace.id}: ${msg}`)
+        logger.error(`Sweep: failed to remove workspace ${workspace.id}`, err)
+      }
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    result.errors.push(`Orphan sweep failed: ${msg}`)
+    logger.error('Sweep: orphan sweep failed', err)
+  }
+
+  return result
 }
 
 export async function fetchSessionOutput(

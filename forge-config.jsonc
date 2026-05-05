@@ -52,7 +52,11 @@
   "tui": {
     "sidebar": true,
     "showLoops": true,
-    "showVersion": true
+    "showVersion": true,
+    // Auto-save captured plans to <dataDir>/plans/<projectId>/. Toggleable from sidebar.
+    "autoSavePlans": false,
+    // TTL in ms for archived plans before pruning. 0 disables pruning. Default: 604800000 (7 days)
+    "planArchiveTtlMs": 604800000
   },
 
   // TTL in ms for completed/cancelled loops before cleanup. Default: 604800000 (7 days)

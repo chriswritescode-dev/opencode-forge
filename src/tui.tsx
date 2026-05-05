@@ -5,10 +5,10 @@ import { SyntaxStyle, type TextareaRenderable } from '@opentui/core'
 import { writeFileSync } from 'fs'
 import { join } from 'path'
 import { VERSION } from './version'
-import { loadPluginConfig } from './setup'
+import { loadPluginConfig, setTuiAutoSavePlans } from './setup'
 import { fetchSessionStats, type SessionStats } from './utils/session-stats'
 import { slugify } from './utils/logger'
-import { extractPlanTitle } from './utils/plan-execution'
+import { extractLoopName } from './utils/plan-execution'
 import type { LoopInfo } from './utils/tui-models'
 import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
 import { createExecutionContextCache } from './utils/tui-execution-context-cache'
@@ -16,6 +16,7 @@ import type { PluginConfig } from './types'
 import { ExecutePlanPanel } from './tui/execute-plan-panel'
 import { formatDuration, formatTokens, truncate, truncateMiddle } from './utils/format'
 import { connectForgeProject, type ForgeProjectClient } from './utils/tui-client'
+import { savePlanToArchive, listArchivedPlans, readArchivedPlan, resolvePlanArchiveDir, hashPlanContent, DEFAULT_PLAN_ARCHIVE_TTL_MS, type ArchivedPlan } from './utils/plan-archive'
 
 type TuiKeybinds = {
   viewPlan: string
@@ -116,10 +117,10 @@ function PlanViewerDialog(props: {
 
   const handleExport = () => {
     const planText = content()
-    const title = extractPlanTitle(planText)
-    const slugifiedTitle = slugify(title)
+    const name = extractLoopName(planText)
+    const slugifiedName = slugify(name)
     const directory = props.api.state.path.directory
-    const filename = `${slugifiedTitle}.md`
+    const filename = `${slugifiedName}.md`
     const filepath = join(directory, filename)
 
     try {
@@ -454,6 +455,55 @@ function LoopDetailsDialog(props: { api: TuiPluginApi; client: ForgeProjectClien
   )
 }
 
+function LoadPlanDialog(props: {
+  api: TuiPluginApi
+  client: ForgeProjectClient
+  cache: () => ExecutionContextCache | null
+  pluginConfig: PluginConfig
+  sessionId?: string
+  onRefresh?: () => void | Promise<void>
+  plans: ArchivedPlan[]
+}) {
+  return (
+    <props.api.ui.DialogSelect
+      title="Load plan"
+      options={props.plans.map(p => ({
+        title: p.title,
+        value: p.filepath,
+        description: new Date(p.modifiedAt).toLocaleString(),
+      }))}
+      onSelect={(opt) => {
+        const filepath = opt.value as string
+        let content: string
+        try {
+          content = readArchivedPlan(filepath)
+        } catch (err) {
+          props.api.ui.toast({
+            message: `Failed to read plan: ${(err as Error).message}`,
+            variant: 'error',
+            duration: 4000,
+          })
+          props.api.ui.dialog.clear()
+          return
+        }
+        props.api.ui.dialog.setSize('xlarge')
+        props.api.ui.dialog.replace(() => (
+          <PlanViewerDialog
+            api={props.api}
+            client={props.client}
+            cache={props.cache()}
+            pluginConfig={props.pluginConfig}
+            planContent={content}
+            sessionId={props.sessionId ?? ''}
+            startInExecuteMode={true}
+            onRefresh={props.onRefresh}
+          />
+        ))
+      }}
+    />
+  )
+}
+
 function Sidebar(props: {
   api: TuiPluginApi
   client: ForgeProjectClient
@@ -465,7 +515,12 @@ function Sidebar(props: {
   const [open, setOpen] = createSignal(true)
   const [loops, setLoops] = createSignal<LoopInfo[]>([])
   const [hasPlan, setHasPlan] = createSignal(false)
+  const [planContent, setPlanContent] = createSignal<string | null>(null)
+  // eslint-disable-next-line solid/reactivity
+  const [autoSavePlans, setAutoSavePlans] = createSignal(props.pluginConfig.tui?.autoSavePlans ?? false)
+  let loopRefreshTimer: ReturnType<typeof setInterval> | undefined
   const theme = () => props.api.theme.current
+  const archivedHashes = new Map<string, string>()
 
   const title = createMemo(() => {
     return props.opts.showVersion ? `Forge v${VERSION}` : 'Forge'
@@ -517,10 +572,11 @@ function Sidebar(props: {
     })
     setLoops(visible)
     
-    // Refresh plan presence for current session
+    // Refresh plan presence and content for current session
     if (props.sessionId) {
       const plan = await props.client.plan.read(props.sessionId)
       setHasPlan(plan !== null)
+      setPlanContent(plan)
     }
     
     // Auto-redirect if the currently-viewed session belongs to a loop that just completed
@@ -548,10 +604,55 @@ function Sidebar(props: {
     }
   }
 
+  // Per-session auto-save effect: fires when plan content changes
+  createEffect(() => {
+    const sid = props.sessionId
+    const content = planContent()
+    if (!sid || !content || !autoSavePlans() || !props.client.projectId) return
+    const hash = hashPlanContent(content)
+    if (archivedHashes.get(sid) === hash) return
+    archivedHashes.set(sid, hash)
+    // run fs write off the reactive tracker
+    // eslint-disable-next-line solid/reactivity
+    queueMicrotask(() => {
+      try {
+        const ttlMs = props.pluginConfig.tui?.planArchiveTtlMs ?? DEFAULT_PLAN_ARCHIVE_TTL_MS
+        const { deduped } = savePlanToArchive(props.client.projectId, content, new Date(), ttlMs)
+        if (!deduped) {
+          props.api.ui.toast({ message: `Plan archived`, variant: 'success', duration: 3000 })
+        }
+      } catch (err) {
+        archivedHashes.delete(sid)  // allow retry next time content changes
+        props.api.ui.toast({ message: `Plan auto-save failed: ${(err as Error).message}`, variant: 'error', duration: 4000 })
+      }
+    })
+  })
+
   // Initial mount refresh - also re-runs when sessionId changes (navigation)
   createEffect(() => {
     void props.sessionId  // track navigation
     void refreshSidebarData()
+  })
+
+  function startLoopRefreshPolling() {
+    if (loopRefreshTimer) return
+    loopRefreshTimer = setInterval(() => {
+      void refreshSidebarData()
+    }, 15000)
+  }
+
+  function stopLoopRefreshPolling() {
+    if (!loopRefreshTimer) return
+    clearInterval(loopRefreshTimer)
+    loopRefreshTimer = undefined
+  }
+
+  createEffect(() => {
+    if (loops().some(l => l.active)) {
+      startLoopRefreshPolling()
+    } else {
+      stopLoopRefreshPolling()
+    }
   })
 
   // Subscribe to loops.changed events from the bus
@@ -562,6 +663,7 @@ function Sidebar(props: {
 
   onCleanup(() => {
     unsubLoops()
+    stopLoopRefreshPolling()
   })
 
   const hasContent = createMemo(() => {
@@ -595,6 +697,65 @@ function Sidebar(props: {
           </Show>
         </box>
         <Show when={open()}>
+          <box
+            flexDirection="row"
+            gap={1}
+            onMouseUp={() => {
+              const next = !autoSavePlans()
+              setAutoSavePlans(next)
+              try {
+                setTuiAutoSavePlans(next)
+                props.api.ui.toast({
+                  message: `Auto-save plans: ${next ? 'on' : 'off'}`,
+                  variant: 'success',
+                  duration: 2000,
+                })
+                if (next) void refreshSidebarData()
+              } catch (err) {
+                setAutoSavePlans(!next)
+                props.api.ui.toast({
+                  message: `Failed to persist toggle: ${(err as Error).message}`,
+                  variant: 'error',
+                  duration: 4000,
+                })
+              }
+            }}
+          >
+            <text flexShrink={0} fg={autoSavePlans() ? theme().success : theme().textMuted}>
+              {autoSavePlans() ? '☑' : '☐'}
+            </text>
+            <text fg={theme().text}>Auto-save plans</text>
+          </box>
+          <box
+            flexDirection="row"
+            gap={1}
+            onMouseUp={() => {
+              const plans = listArchivedPlans(props.client.projectId)
+              if (plans.length === 0) {
+                props.api.ui.toast({
+                  message: `No archived plans in ${resolvePlanArchiveDir(props.client.projectId)}`,
+                  variant: 'info',
+                  duration: 4000,
+                })
+                return
+              }
+              props.api.ui.dialog.setSize('large')
+              props.api.ui.dialog.replace(() => (
+                <LoadPlanDialog
+                  api={props.api}
+                  client={props.client}
+                  cache={props.cache}
+                  pluginConfig={props.pluginConfig}
+                  sessionId={props.sessionId}
+                  onRefresh={refreshSidebarData}
+                  plans={plans}
+                />
+              ))
+            }}
+          >
+            <text flexShrink={0} fg={theme().info}>📂</text>
+            <text fg={theme().text}>Load plan</text>
+          </box>
           <Show when={hasPlan()}>
             <box
               flexDirection="row"
@@ -775,8 +936,7 @@ const tui: TuiPlugin = async (api) => {
           if (!currentClient) return
 
           const currentStates = await currentClient.loops.list()
-          const worktreeLoops = currentStates.filter(l => l.worktree)
-          const loopOptions = worktreeLoops.map(l => {
+          const loopOptions = currentStates.map(l => {
             const status = l.active
               ? l.phase
               : l.terminationReason?.replace(/_/g, ' ') ?? 'ended'
@@ -787,6 +947,11 @@ const tui: TuiPlugin = async (api) => {
               description: status,
             }
           })
+
+          if (loopOptions.length === 0) {
+            api.ui.toast({ message: 'No loops found', variant: 'info', duration: 3000 })
+            return
+          }
 
           const showLoopList = () => {
             api.ui.dialog.setSize("large")

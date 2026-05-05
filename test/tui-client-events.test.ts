@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'bun:test'
-import { encodeEvent, encodeReply } from '../src/api/bus-protocol'
+import { decodeRequest, encodeEvent, encodeReply } from '../src/api/bus-protocol'
 import { connectForgeProject } from '../src/utils/tui-client'
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 
@@ -7,10 +7,12 @@ describe('ForgeProjectClient events', () => {
   let mockApi: Partial<TuiPluginApi>
   let eventCallbacks: Array<(event: { properties?: { command?: string } }) => void>
   let capturedEvents: Array<{ properties?: { command?: string } }>
+  let publishedEvents: Array<{ directory?: string; body: { type: string; properties: { command: string } } }>
 
   beforeEach(() => {
     eventCallbacks = []
     capturedEvents = []
+    publishedEvents = []
 
     mockApi = {
       event: {
@@ -20,8 +22,8 @@ describe('ForgeProjectClient events', () => {
       } as TuiPluginApi['event'],
       client: {
         tui: {
-          publish: async (_event: { directory?: string; body: { type: string; properties: { command: string } } }) => {
-            // No-op for these tests
+          publish: async (event: { directory?: string; body: { type: string; properties: { command: string } } }) => {
+            publishedEvents.push(event)
           },
         },
       } as unknown as TuiPluginApi['client'],
@@ -51,6 +53,32 @@ describe('ForgeProjectClient events', () => {
   }
 
   describe('onLoopsChanged', () => {
+    async function connectAndDiscover(projectId: string, directory: string) {
+      const clientPromise = connectForgeProject(mockApi as TuiPluginApi, directory)
+
+      while (publishedEvents.length === 0) {
+        await new Promise(resolve => setTimeout(resolve, 10))
+      }
+
+      const decoded = decodeRequest(publishedEvents[publishedEvents.length - 1].body.properties.command)
+      if (decoded?.verb === 'projects.list') {
+        eventCallbacks[0]({
+          properties: {
+            command: encodeReply({
+              rid: decoded.rid,
+              status: 'ok',
+              data: { projects: [{ id: projectId, directory }] },
+            }),
+          },
+        })
+      }
+
+      const client = await clientPromise
+      expect(client).not.toBeNull()
+      expect(client?.projectId).toBe(projectId)
+      return client!
+    }
+
     it('should call handler when matching projectId event is published', async () => {
       const projectId = 'test-project-123'
       const directory = '/test/dir'
@@ -128,6 +156,24 @@ describe('ForgeProjectClient events', () => {
       expect(calls.length).toBe(0)
     })
 
+    it('should call handler when projectId matches even if directory differs', async () => {
+      const client = await connectAndDiscover('test-project-123', '/test/dir')
+
+      const { handler, calls } = createHandler()
+      client.events.onLoopsChanged(handler)
+
+      const encoded = encodeEvent({
+        name: 'loops.changed',
+        projectId: 'test-project-123',
+        directory: '/different/dir',
+        payload: { reason: 'started', loopName: 'test-loop' },
+      })
+
+      eventCallbacks[0]({ properties: { command: encoded } })
+
+      expect(calls).toEqual([{ reason: 'started', loopName: 'test-loop' }])
+    })
+
     it('should filter events by directory when projectId is not set', async () => {
       const directory = '/test/dir'
       const client = await connectForgeProject(mockApi as TuiPluginApi, directory)
@@ -170,6 +216,29 @@ describe('ForgeProjectClient events', () => {
         name: 'loops.changed',
         directory: '/different/dir',
         payload: { reason: 'insert', loopName: 'test-loop' },
+      })
+
+      if (eventCallbacks.length > 0) {
+        eventCallbacks[0]({ properties: { command: encoded } })
+      }
+
+      expect(calls.length).toBe(0)
+    })
+
+    it('should ignore non-matching directory when projectId discovery fails', async () => {
+      const directory = '/test/dir'
+      const client = await connectForgeProject(mockApi as TuiPluginApi, directory)
+      expect(client).not.toBeNull()
+
+      const { handler, calls } = createHandler()
+      client!.events.onLoopsChanged(handler)
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 50))
+
+      const encoded = encodeEvent({
+        name: 'loops.changed',
+        directory: '/different/dir',
+        payload: { reason: 'started', loopName: 'test-loop' },
       })
 
       if (eventCallbacks.length > 0) {

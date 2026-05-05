@@ -287,24 +287,22 @@ describe('boot sandbox preserve integration', () => {
     expect(mockSandboxManager.start).not.toHaveBeenCalled()
   })
 
-  it('should cancel loop and restore container for preserved loop (negative case)', async () => {
-    // This test verifies the Phase 4 "negative case": when isLiveByName returns false
-    // for one loop (alpha), it gets cancelled. But reconcileSandboxes still processes
-    // other active loops (beta) and restores their containers.
+  it('should cancel stale loop and restore preserved loop (negative case)', async () => {
+    // This test verifies the Phase 4 "negative case" with two loops:
+    // - alpha: isLiveByName=false (stale, should be cancelled)
+    // - beta: isLiveByName=true (preserved, should be restored)
     const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
 
-    // Two loops: alpha (container not live) and beta (container live)
-    const alphaRow = createSandboxLoopRow({ loopName: 'alpha', sandboxContainer: 'oc-forge-sandbox-alpha' })
-    const betaRow = createSandboxLoopRow({ loopName: 'beta', sandboxContainer: 'oc-forge-sandbox-beta' })
+    const alphaRow = createSandboxLoopRow({ loopName: 'alpha', sandboxContainer: 'oc-forge-sandbox-alpha', worktreeDir: '/tmp/wt-alpha' })
+    const betaRow = createSandboxLoopRow({ loopName: 'beta', sandboxContainer: 'oc-forge-sandbox-beta', worktreeDir: '/tmp/wt-beta' })
 
-    // listByStatus should return only running loops (alpha is cancelled after reconcileStale)
+    // listByStatus tracks current status of both rows
     mockLoopsRepo.listByStatus = mock((projectId: string, statuses: string[]) => {
       if (statuses.includes('running')) {
-        return alphaRow.status === 'running' && betaRow.status === 'running'
-          ? [alphaRow, betaRow]
-          : betaRow.status === 'running'
-            ? [betaRow]
-            : []
+        const result: LoopRow[] = []
+        if (alphaRow.status === 'running') result.push(alphaRow)
+        if (betaRow.status === 'running') result.push(betaRow)
+        return result
       }
       return []
     })
@@ -319,6 +317,10 @@ describe('boot sandbox preserve integration', () => {
         alphaRow.status = opts.status ?? 'cancelled'
         alphaRow.terminationReason = opts.reason ?? null
         alphaRow.completedAt = opts.completedAt ?? null
+      } else if (loopName === 'beta') {
+        betaRow.status = opts.status ?? 'cancelled'
+        betaRow.terminationReason = opts.reason ?? null
+        betaRow.completedAt = opts.completedAt ?? null
       }
     })
 
@@ -332,7 +334,7 @@ describe('boot sandbox preserve integration', () => {
       undefined
     )
 
-    // isLiveByName returns false for alpha (not live), true for beta (live)
+    // isLiveByName: alpha=false (stale), beta=true (preserved)
     const mockSandboxManager = {
       isLiveByName: mock(async (name: string) => name === 'beta'),
       cleanupOrphans: mock(async () => 0),
@@ -345,7 +347,7 @@ describe('boot sandbox preserve integration', () => {
       docker: {} as any,
     } as unknown as SandboxManager
 
-    // Step 1: reconcileStale - alpha is cancelled, beta is preserved
+    // Step 1: reconcileStale - alpha cancelled, beta preserved
     const reconcileResult = await loopService.reconcileStale({
       isSandboxLive: (name) => mockSandboxManager.isLiveByName(name),
     })
@@ -357,7 +359,7 @@ describe('boot sandbox preserve integration', () => {
     expect(alphaRow.status).toBe('cancelled')
     expect(betaRow.status).toBe('running')
 
-    // Step 2: cleanupSandboxOrphans - preserve set includes only beta (alpha is cancelled)
+    // Step 2: cleanupSandboxOrphans - preserve set contains only beta
     const preserveLoops = loopService.listActive()
       .filter((state) => state.sandbox && state.loopName)
       .map((state) => state.loopName!)
@@ -365,7 +367,7 @@ describe('boot sandbox preserve integration', () => {
 
     expect(mockSandboxManager.cleanupOrphans).toHaveBeenCalledWith(['beta'])
 
-    // Step 3: reconcileSandboxes - beta is processed (alpha is cancelled, not processed)
+    // Step 3: reconcileSandboxes - only beta is processed (alpha is cancelled)
     const reconcileDeps: ReconcileSandboxesDeps = {
       sandboxManager: mockSandboxManager,
       loopService,
@@ -374,9 +376,9 @@ describe('boot sandbox preserve integration', () => {
 
     await reconcileSandboxes(reconcileDeps)
 
-    // restore should be called for beta (preserved loop with container in Docker)
-    expect(mockSandboxManager.restore).toHaveBeenCalledWith('beta', '/tmp/wt', expect.any(String))
-    // restore should NOT be called for alpha (cancelled)
+    // restore should be called for beta only
+    expect(mockSandboxManager.restore).toHaveBeenCalledWith('beta', '/tmp/wt-beta', expect.any(String))
+    expect(mockSandboxManager.restore).not.toHaveBeenCalledWith('alpha', expect.any(String), expect.any(String))
     // start should NOT be called (restore handles it)
     expect(mockSandboxManager.start).not.toHaveBeenCalled()
   })

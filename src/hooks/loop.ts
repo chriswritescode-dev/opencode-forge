@@ -5,12 +5,11 @@ import { MAX_RETRIES, MAX_CONSECUTIVE_STALLS } from '../services/loop'
 import type { Logger, PluginConfig } from '../types'
 import { retryWithModelFallback } from '../utils/model-fallback'
 import { resolveLoopModel, resolveLoopAuditorModel } from '../utils/loop-helpers'
-import { spawnSync } from 'child_process'
 import type { createSandboxManager } from '../sandbox/manager'
 import { buildWorktreeCompletionPayload, writeWorktreeCompletionLog } from '../services/worktree-log'
 import { buildLoopPermissionRuleset } from '../constants/loop'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
-import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
+import { teardownWorktreeArtifacts } from '../utils/worktree-cleanup'
 import { createAuditSession, promptAuditSession, deleteAuditSession } from '../utils/audit-session'
 import { formatAuditSessionTitle, formatLoopSessionTitle } from '../utils/session-titles'
 import { bindSessionToWorkspace } from '../workspace/forge-worktree'
@@ -139,60 +138,7 @@ export function createLoopEventHandler(
     return nextPromise
   }
 
-  async function commitAndCleanupWorktree(state: LoopState, reason: string, opts: { cleanup: boolean }): Promise<{ committed: boolean; cleaned: boolean }> {
-    if (!state.worktree) {
-      logger.log(`Loop: in-place mode, skipping commit and cleanup`)
-      return { committed: false, cleaned: false }
-    }
 
-    let committed = false
-    let cleaned = false
-
-    const reasonLabel =
-      reason === 'completed' ? 'completed'
-      : reason === 'cancelled' ? 'cancelled'
-      : reason === 'stall_timeout' ? 'stalled'
-      : reason.startsWith('error') ? 'errored'
-      : reason
-
-    try {
-      const addResult = spawnSync('git', ['add', '-A'], { cwd: state.worktreeDir, encoding: 'utf-8' })
-      if (addResult.status !== 0) {
-        throw new Error(addResult.stderr || 'git add failed')
-      }
-
-      const statusResult = spawnSync('git', ['status', '--porcelain'], { cwd: state.worktreeDir, encoding: 'utf-8' })
-      if (statusResult.status !== 0) {
-        throw new Error(statusResult.stderr || 'git status failed')
-      }
-      const status = statusResult.stdout.trim()
-
-      if (status) {
-        const message = `loop: ${state.loopName} ${reasonLabel} after ${state.iteration} iteration${state.iteration === 1 ? '' : 's'}`
-        const commitResult = spawnSync('git', ['commit', '-m', message], { cwd: state.worktreeDir, encoding: 'utf-8' })
-        if (commitResult.status !== 0) {
-          throw new Error(commitResult.stderr || 'git commit failed')
-        }
-        committed = true
-        logger.log(`Loop: committed changes on branch ${state.worktreeBranch}`)
-      } else {
-        logger.log(`Loop: no uncommitted changes to commit on branch ${state.worktreeBranch}`)
-      }
-    } catch (err) {
-      logger.error(`Loop: failed to commit changes in worktree ${state.worktreeDir}`, err)
-    }
-
-    if (opts.cleanup && state.worktreeDir && state.worktreeBranch) {
-      const result = await cleanupLoopWorktree({
-        worktreeDir: state.worktreeDir,
-        logPrefix: 'Loop',
-        logger,
-      })
-      cleaned = result.removed
-    }
-
-    return { committed, cleaned }
-  }
 
   async function getStatusWithRetry(directory: string, attempts = 3, backoffMs = 250): Promise<{ data: Record<string, { type: string }>; ok: boolean; error?: unknown }> {
     let lastErr: unknown = null
@@ -409,26 +355,35 @@ export function createLoopEventHandler(
       })
     }
 
-    const shouldCommit = state.worktree && (
-      reason === 'completed' ||
-      reason === 'cancelled' ||
-      reason === 'stall_timeout' ||
-      reason.startsWith('error')
-    )
-    const shouldCleanup = reason === 'completed' || reason === 'cancelled'
-    if (shouldCommit) {
-      await commitAndCleanupWorktree(state, reason, { cleanup: shouldCleanup })
-    }
-    if (shouldCleanup && state.worktree) {
-      try {
-        await v2Client.session.delete({
-          sessionID: sessionId,
-          directory: state.projectDir ?? state.worktreeDir,
-        })
-        logger.log(`Loop: deleted loop session ${sessionId} for ${state.loopName}`)
-      } catch (err) {
-        logger.error(`Loop: failed to delete loop session ${sessionId}`, err)
-      }
+    if (state.worktree) {
+      const reasonLabel =
+        reason === 'completed' ? 'completed'
+        : reason === 'cancelled' ? 'cancelled'
+        : reason === 'stall_timeout' ? 'stalled'
+        : reason.startsWith('error') ? 'errored'
+        : reason
+
+      const doCommit = reason !== 'missing_worktree_dir'
+      const doRemoveWorktree = reason !== 'missing_worktree_dir'
+
+      const teardown = await teardownWorktreeArtifacts({
+        v2: v2Client,
+        loopName: state.loopName,
+        sessionId,
+        workspaceId: state.workspaceId,
+        worktreeDir: state.worktreeDir,
+        projectDir: state.projectDir,
+        worktree: true,
+        doCommit,
+        doRemoveWorktree,
+        reasonLabel,
+        worktreeBranch: state.worktreeBranch,
+        iteration: state.iteration,
+        logPrefix: 'Loop',
+        logger,
+      })
+
+      logger.log(`Loop: teardown for ${state.loopName} sessionDeleted=${teardown.sessionDeleted} workspaceDeleted=${teardown.workspaceDeleted} worktreeRemoved=${teardown.worktreeRemoved}`)
     }
 
     if (state.sandbox && state.sandboxContainer && sandboxManager) {
@@ -1365,8 +1320,8 @@ export function createLoopEventHandler(
     })
   }
 
-  function terminateAll(): void {
-    loopService.terminateAll()
+  async function terminateAll(): Promise<void> {
+    await loopService.terminateAll()
   }
 
   function clearAllRetryTimeouts(): void {

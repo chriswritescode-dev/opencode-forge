@@ -1,12 +1,13 @@
+import { spawnSync } from 'child_process'
 import {
   openDatabase,
   confirm,
   resolveLoopByNameOrExit,
   printBlock,
+  getCliV2Client,
 } from '../utils'
-import { existsSync } from 'fs'
 import { createLoopsRepo } from '../../storage/repos/loops-repo'
-import { cleanupLoopWorktree } from '../../utils/worktree-cleanup'
+import { teardownWorktreeArtifacts, cleanupLoopWorktree } from '../../utils/worktree-cleanup'
 import { listLoopStatesFromDb } from '../../storage/cli-helpers'
 
 interface CancelArgs {
@@ -59,6 +60,8 @@ export async function run(argv: CancelArgs): Promise<void> {
     console.log(`  Phase:     ${state.phase}`)
     if (argv.cleanup) {
       console.log(`  Worktree:  ${state.worktreeDir} (will be removed)`)
+    } else if (state.worktree && state.worktreeDir) {
+      console.log(`  Worktree:  ${state.worktreeDir} (will be preserved, use --cleanup to remove)`)
     }
     console.log('')
 
@@ -78,23 +81,82 @@ export async function run(argv: CancelArgs): Promise<void> {
 
     console.log(`Cancelled loop: ${state.loopName}`)
 
-    if (argv.cleanup && state.worktreeDir && state.worktree) {
-      if (existsSync(state.worktreeDir)) {
-        const result = await cleanupLoopWorktree({
+    if (state.worktree && state.worktreeDir) {
+      const v2 = await getCliV2Client(state.worktreeDir)
+      if (!v2) {
+        console.log('')
+        console.log('Warning: Could not connect to OpenCode server. Skipping session/workspace cleanup.')
+        if (argv.cleanup) {
+          console.log('Removing worktree directory as requested...')
+          // Only do git commit and worktree removal when server is unreachable
+          if (state.worktreeDir) {
+            try {
+              // Commit changes first
+              const addResult = spawnSync('git', ['add', '-A'], { cwd: state.worktreeDir, encoding: 'utf-8' })
+              if (addResult.status === 0) {
+                const statusResult = spawnSync('git', ['status', '--porcelain'], { cwd: state.worktreeDir, encoding: 'utf-8' })
+                if (statusResult.status === 0) {
+                  const status = statusResult.stdout.trim()
+                  if (status) {
+                    const message = `loop: ${state.loopName} cancelled after ${state.iteration} iteration${state.iteration === 1 ? '' : 's'}`
+                    const commitResult = spawnSync('git', ['commit', '-m', message], { cwd: state.worktreeDir, encoding: 'utf-8' })
+                    if (commitResult.status === 0) {
+                      console.log(`  Changes committed: true`)
+                    }
+                  }
+                }
+              }
+            } catch (err) {
+              console.log(`  Note: Could not commit changes: ${err instanceof Error ? err.message : String(err)}`)
+            }
+            // Remove worktree
+            const cleanupResult = await cleanupLoopWorktree({
+              worktreeDir: state.worktreeDir,
+              logPrefix: 'oc-forge loop cancel',
+              logger: console,
+            })
+            console.log(`  Worktree removed: ${cleanupResult.removed}`)
+            if (cleanupResult.error) {
+              console.log(`  Error: ${cleanupResult.error}`)
+            }
+          }
+        } else {
+          console.log('The worktree will be preserved. Use --cleanup to remove it.')
+        }
+        console.log('')
+      } else {
+        const teardown = await teardownWorktreeArtifacts({
+          v2,
+          loopName: state.loopName,
+          sessionId: state.sessionId,
+          workspaceId: state.workspaceId,
           worktreeDir: state.worktreeDir,
+          projectDir: state.projectDir,
+          worktree: true,
+          doCommit: true,
+          doRemoveWorktree: argv.cleanup ?? false,
+          reasonLabel: 'cancelled',
+          worktreeBranch: state.worktreeBranch,
+          iteration: state.iteration,
           logPrefix: 'oc-forge loop cancel',
           logger: console,
         })
-        if (result.removed) {
-          console.log(`Removed worktree: ${state.worktreeDir}`)
-        } else {
-          console.error(`Failed to remove worktree: ${state.worktreeDir}`)
-          console.error('You may need to remove it manually.')
+        console.log(`  Session deleted: ${teardown.sessionDeleted}`)
+        console.log(`  Workspace deleted: ${teardown.workspaceDeleted}`)
+        console.log(`  Worktree removed: ${teardown.worktreeRemoved}`)
+        if (teardown.committed) {
+          console.log(`  Changes committed: true`)
         }
+        if (teardown.errors.length > 0) {
+          console.log(`  Errors: ${teardown.errors.join(', ')}`)
+        }
+        console.log('')
       }
+    } else if (argv.cleanup && state.worktreeDir && !state.worktree) {
+      console.log('')
+      console.log('Note: --cleanup specified but loop is not a worktree loop.')
+      console.log('')
     }
-
-    console.log('')
   } finally {
     db.close()
   }

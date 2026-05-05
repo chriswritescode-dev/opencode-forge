@@ -4,7 +4,7 @@ import { buildAgents } from './agents'
 import { createConfigHandler } from './config'
 import { createSessionHooks, createLoopEventHandler } from './hooks'
 import { initializeDatabase, resolveDataDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo } from './storage'
-import { createLoopService } from './services/loop'
+import { createLoopService, sweepOrphanWorkspaces } from './services/loop'
 import { loadPluginConfig } from './setup'
 import { resolveLogPath } from './storage'
 import { createLogger } from './utils/logger'
@@ -245,7 +245,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         .catch((err) => logger.error('[forge] loops.changed publish failed', err))
     }
 
-    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, config.loop, notifyLoopChange)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, config.loop, notifyLoopChange, v2)
 
     let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
     if (config.sandbox?.mode === 'docker') {
@@ -270,6 +270,19 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     }
     if (reconcileResult.preserved.length > 0) {
       logger.log(`Preserved ${reconcileResult.preserved.length} active sandbox loop(s) across restart: ${reconcileResult.preserved.join(', ')}`)
+    }
+
+    const sweepResult = await sweepOrphanWorkspaces({
+      v2Client: v2,
+      loopsRepo,
+      projectId,
+      logger,
+    })
+    if (sweepResult.removed > 0) {
+      logger.log(`Sweep: removed ${sweepResult.removed} orphan workspace(s)`)
+    }
+    if (sweepResult.errors.length > 0) {
+      logger.error(`Sweep: encountered ${sweepResult.errors.length} error(s): ${sweepResult.errors.join(', ')}`)
     }
 
     // Sandbox reconciliation interval handle

@@ -272,5 +272,28 @@ describe('LoopService', () => {
       expect(prompt).toContain('Outstanding Review Findings')
       expect(prompt).toContain('test.ts:1')
     })
+
+    test('does not echo the original plan/prompt back into continuation', () => {
+      const state = {
+        active: true,
+        sessionId: 'test-session',
+        loopName: 'test-loop',
+        worktreeDir: '/tmp/test',
+        worktreeBranch: 'no-findings-branch',
+        iteration: 2,
+        maxIterations: 10,
+        startedAt: new Date().toISOString(),
+        prompt: 'ORIGINAL_PLAN_BODY_SHOULD_NOT_APPEAR',
+        phase: 'coding' as const,
+        errorCount: 0,
+        auditCount: 1,
+      }
+
+      const prompt = loopService.buildContinuationPrompt(state as any, 'audit findings text')
+
+      expect(prompt).not.toContain('ORIGINAL_PLAN_BODY_SHOULD_NOT_APPEAR')
+      expect(prompt).toContain('audit findings text')
+      expect(prompt).toContain('Loop iteration 2')
+    })
   })
 })

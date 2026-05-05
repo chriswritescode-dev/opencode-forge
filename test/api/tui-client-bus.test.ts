@@ -563,6 +563,11 @@ describe('tui-client bus-RPC integration', () => {
       expect(client).not.toBeNull()
       expect(client?.projectId).toBe('proj1')
 
+      const loopChanges: Array<{ reason: string; loopName: string }> = []
+      client!.events.onLoopsChanged((payload) => {
+        loopChanges.push(payload)
+      })
+
       // Now test plan.execute with loop-worktree mode
       const eventData = {
         sessionId: 'session-event-first',
@@ -610,6 +615,7 @@ describe('tui-client bus-RPC integration', () => {
       expect(result?.sessionId).toBe(eventData.sessionId)
       expect(result?.loopName).toBe(eventData.loopName)
       expect(result?.worktreeDir).toBe(eventData.worktreeDir)
+      expect(loopChanges).toEqual([{ reason: 'started', loopName: 'test-loop-event' }])
     })
 
     it('reply-fallback: server only sends reply (no event), TUI resolves with reply payload', async () => {
@@ -643,6 +649,11 @@ describe('tui-client bus-RPC integration', () => {
 
       const client = await clientPromise
       expect(client).not.toBeNull()
+
+      const loopChanges: Array<{ reason: string; loopName: string }> = []
+      client!.events.onLoopsChanged((payload) => {
+        loopChanges.push(payload)
+      })
 
       // Now test plan.execute - only reply, no event
       const replyData = {
@@ -689,6 +700,7 @@ describe('tui-client bus-RPC integration', () => {
       expect(result).toBeTruthy()
       expect(result?.sessionId).toBe(replyData.sessionId)
       expect(result?.loopName).toBe(replyData.loopName)
+      expect(loopChanges).toEqual([{ reason: 'started', loopName: 'test-loop-reply' }])
     })
 
     it('timeout: returns null after 60s and the catch block logs structured diagnostic', async () => {
