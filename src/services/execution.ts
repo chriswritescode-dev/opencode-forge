@@ -861,6 +861,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         if (workspace) {
           deps.logger.log(`handleStartLoop: workspace ${workspace.workspaceId} created for ${uniqueLoopName}`)
           workspaceId = workspace.workspaceId
+          createdWorkspaceId = workspace.workspaceId
         }
         
         // Build permissions
@@ -891,10 +892,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         
         sessionId = createResult.sessionId
         createdSessionId = sessionId
-        createdWorkspaceId = createResult.boundWorkspaceId
         
         if (createResult.bindFailed) {
-          deps.logger.log('handleStartLoop: continuing without workspace backing')
+          deps.logger.log(`handleStartLoop: workspace ${workspaceId} created but initial bind failed; will retry on next session`)
         }
         
         // Start sandbox if enabled

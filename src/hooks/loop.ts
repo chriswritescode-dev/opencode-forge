@@ -548,6 +548,41 @@ export function createLoopEventHandler(
     }
   }
 
+  async function ensureWorkspaceForLoop(
+    loopName: string,
+    state: LoopState,
+    contextLabel: string,
+  ): Promise<{ workspaceId?: string }> {
+    if (state.workspaceId) {
+      return { workspaceId: state.workspaceId }
+    }
+
+    if (!state.worktree) {
+      return {}
+    }
+
+    const createLoopWorkspaceMod = await import('../workspace/forge-worktree')
+    const workspace = await createLoopWorkspaceMod.createLoopWorkspace(
+      v2Client,
+      {
+        loopName,
+        directory: state.worktreeDir,
+        branch: state.worktreeBranch ?? null,
+      },
+      logger,
+    )
+
+    if (!workspace) {
+      logger.log(`Loop: workspace creation failed for ${loopName} (${contextLabel}), continuing without workspace backing`)
+      return {}
+    }
+
+    loopService.setWorkspaceId(loopName, workspace.workspaceId)
+    state.workspaceId = workspace.workspaceId
+    logger.log(`Loop: provisioned workspace ${workspace.workspaceId} for ${loopName} (${contextLabel})`)
+    return { workspaceId: workspace.workspaceId }
+  }
+
   async function rotateSession(loopName: string, state: LoopState): Promise<string> {
     const oldSessionId = state.sessionId
     const sessionDir = state.worktreeDir
@@ -561,12 +596,14 @@ export function createLoopEventHandler(
       isSandbox: !!state.sandbox,
     })
 
+    const ensured = await ensureWorkspaceForLoop(loopName, state, 'during session rotation')
+
     const createResult = await createLoopSessionWithWorkspace({
       v2: v2Client,
       title: formatLoopSessionTitle(state.loopName),
       directory: sessionDir,
       permission: permissionRuleset,
-      workspaceId: state.workspaceId,
+      workspaceId: ensured.workspaceId ?? state.workspaceId,
       logPrefix: 'Loop',
       logger,
     })
@@ -929,11 +966,12 @@ export function createLoopEventHandler(
     }
 
     // Create new audit session in the SAME workspace (with retry)
+    const ensured = await ensureWorkspaceForLoop(loopName, currentState, 'before audit creation')
     const created = await createAuditWithRetry({
       loopName,
       iteration: currentState.iteration ?? 0,
       worktreeDir: currentState.worktreeDir,
-      workspaceId: currentState.workspaceId,
+      workspaceId: ensured.workspaceId ?? currentState.workspaceId,
       isSandbox: currentState.sandbox ?? false,
       auditorModel,
       prompt: auditPrompt,
