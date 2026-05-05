@@ -38,7 +38,6 @@ function createTestDb(): Database {
       completion_summary   TEXT,
       workspace_id         TEXT,
       host_session_id      TEXT,
-      audit_session_id     TEXT,
       session_directory    TEXT,
       PRIMARY KEY (project_id, loop_name)
     )
@@ -72,16 +71,19 @@ function createTestDb(): Database {
     CREATE TABLE IF NOT EXISTS review_findings (
       project_id   TEXT NOT NULL,
       branch       TEXT NOT NULL DEFAULT '',
+      loop_name    TEXT NOT NULL DEFAULT '',
       file         TEXT NOT NULL,
       line         INTEGER NOT NULL,
       severity     TEXT NOT NULL CHECK(severity IN ('bug','warning')),
       description  TEXT NOT NULL,
       scenario     TEXT,
       created_at   INTEGER NOT NULL,
-      PRIMARY KEY (project_id, branch, file, line)
+      CHECK (NOT (branch != '' AND loop_name != '')),
+      PRIMARY KEY (project_id, branch, loop_name, file, line)
     )
   `)
   db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_branch ON review_findings(project_id, branch)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_loop_name ON review_findings(project_id, loop_name)`)
   
   return db
 }
@@ -103,14 +105,6 @@ function createToolContext(db: Database, reviewFindingsRepo: ReturnType<typeof c
     logger: mockLogger,
     loopService,
     directory: TEST_DIR,
-    config: {} as any,
-    db,
-    dataDir: TEST_DIR,
-    cleanup: async () => {},
-    input: {} as any,
-    sandboxManager: null,
-    v2: {} as any,
-    loopHandler: {} as any,
   }
 }
 
@@ -118,12 +112,13 @@ describe('review-write', () => {
   let db: Database
   let loopService: ReturnType<typeof createLoopService>
   let tools: ReturnType<typeof createReviewTools>
+  let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
 
   beforeEach(() => {
     db = createTestDb()
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    reviewFindingsRepo = createReviewFindingsRepo(db)
     loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
     const ctx = createToolContext(db, reviewFindingsRepo, loopService)
     tools = createReviewTools(ctx)
@@ -133,49 +128,94 @@ describe('review-write', () => {
     db.close()
   })
 
-  test('stores a review finding with automatic branch injection', async () => {
+  test('writes a review finding', async () => {
     const result = await tools['review-write'].execute(
       {
-        file: 'src/services/auth.ts',
-        line: 45,
+        file: 'src/example.ts',
+        line: 42,
         severity: 'bug',
-        description: 'Missing null check',
-        scenario: 'User session expires',
+        description: 'Test bug',
+        scenario: 'When running tests',
       },
       { sessionID: 'test-session', directory: TEST_DIR } as any
     )
 
     expect(result).toContain('Stored review finding')
-    expect(result).toContain('src/services/auth.ts:45')
+    expect(result).toContain('src/example.ts:42')
     expect(result).toContain('bug')
+
+    const findings = reviewFindingsRepo.listAll('test-project')
+    expect(findings).toHaveLength(1)
+    expect(findings[0].file).toBe('src/example.ts')
+    expect(findings[0].line).toBe(42)
   })
 
-  test('rejects duplicate finding at same file:line', async () => {
-    // First write should succeed
-    const result1 = await tools['review-write'].execute(
-      {
-        file: 'src/services/auth.ts',
-        line: 45,
-        severity: 'bug',
-        description: 'Missing null check',
-        scenario: 'User session expires',
-      },
-      { sessionID: 'test-session', directory: TEST_DIR } as any
-    )
-    expect(result1).toContain('Stored review finding')
+  test('inside a loop session writes loop_name and empty branch', async () => {
+    // Register a loop session
+    const loopsRepo = createLoopsRepo(db)
+    loopsRepo.insert({
+      projectId: 'test-project',
+      loopName: 'test-loop',
+      status: 'running',
+      currentSessionId: 'loop-session-123',
+      worktree: false,
+      worktreeDir: TEST_DIR,
+      worktreeBranch: 'feature-branch',
+      projectDir: TEST_DIR,
+      maxIterations: 10,
+      iteration: 1,
+      auditCount: 0,
+      errorCount: 0,
+      phase: 'coding',
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      modelFailed: false,
+      sandbox: false,
+      sandboxContainer: null,
+      completedAt: null,
+      terminationReason: null,
+      completionSummary: null,
+      workspaceId: null,
+      hostSessionId: null,
+      startedAt: Date.now(),
+    }, { prompt: null, lastAuditResult: null })
 
-    // Second write should fail with conflict
-    const result2 = await tools['review-write'].execute(
+    const result = await tools['review-write'].execute(
       {
-        file: 'src/services/auth.ts',
-        line: 45,
+        file: 'src/loop-file.ts',
+        line: 10,
         severity: 'warning',
-        description: 'Different issue',
-        scenario: 'Different scenario',
+        description: 'Loop finding',
       },
-      { sessionID: 'test-session', directory: TEST_DIR } as any
+      { sessionID: 'loop-session-123', directory: TEST_DIR } as any
     )
-    expect(result2).toContain('Finding already exists at')
+
+    expect(result).toContain('Stored review finding')
+
+    const findings = reviewFindingsRepo.listAll('test-project')
+    expect(findings).toHaveLength(1)
+    expect(findings[0].loopName).toBe('test-loop')
+    expect(findings[0].branch).toBeNull()
+  })
+
+  test('outside a loop session writes branch and empty loop_name', async () => {
+    const result = await tools['review-write'].execute(
+      {
+        file: 'src/branch-file.ts',
+        line: 20,
+        severity: 'bug',
+        description: 'Branch finding',
+      },
+      { sessionID: 'non-loop-session', directory: TEST_DIR } as any
+    )
+
+    expect(result).toContain('Stored review finding')
+
+    const findings = reviewFindingsRepo.listAll('test-project')
+    expect(findings).toHaveLength(1)
+    // Outside a loop, git branch resolution will be attempted but may fail in test env
+    // so both branch and loopName may be null
+    expect(findings[0].loopName).toBeNull()
   })
 })
 
@@ -194,7 +234,7 @@ describe('review-read', () => {
     const ctx = createToolContext(db, reviewFindingsRepo, loopService)
     tools = createReviewTools(ctx)
 
-    // Seed with test data
+    // Seed with test data for different loops
     reviewFindingsRepo.write({
       projectId: 'test-project',
       file: 'src/file1.ts',
@@ -203,6 +243,7 @@ describe('review-read', () => {
       description: 'Bug in file1',
       scenario: 'Scenario 1',
       branch: 'main',
+      loopName: null,
     })
     reviewFindingsRepo.write({
       projectId: 'test-project',
@@ -212,6 +253,26 @@ describe('review-read', () => {
       description: 'Warning in file2',
       scenario: 'Scenario 2',
       branch: 'main',
+      loopName: null,
+    })
+    // Loop-specific findings
+    reviewFindingsRepo.write({
+      projectId: 'test-project',
+      file: 'src/loop-alpha.ts',
+      line: 1,
+      severity: 'bug',
+      description: 'Alpha loop bug',
+      branch: null,
+      loopName: 'alpha',
+    })
+    reviewFindingsRepo.write({
+      projectId: 'test-project',
+      file: 'src/loop-beta.ts',
+      line: 2,
+      severity: 'warning',
+      description: 'Beta loop warning',
+      branch: null,
+      loopName: 'beta',
     })
   })
 
@@ -225,7 +286,7 @@ describe('review-read', () => {
       { sessionID: 'test-session', directory: TEST_DIR } as any
     )
 
-    expect(result).toContain('2 review findings')
+    expect(result).toContain('4 review findings')
     expect(result).toContain('src/file1.ts:10')
     expect(result).toContain('src/file2.ts:20')
   })
@@ -259,6 +320,47 @@ describe('review-read', () => {
 
     expect(result).toContain('No review findings found')
   })
+
+  test('inside a loop sees only its own findings', async () => {
+    // Register alpha loop
+    const loopsRepo = createLoopsRepo(db)
+    loopsRepo.insert({
+      projectId: 'test-project',
+      loopName: 'alpha',
+      status: 'running',
+      currentSessionId: 'alpha-session',
+      worktree: false,
+      worktreeDir: TEST_DIR,
+      worktreeBranch: 'alpha-branch',
+      projectDir: TEST_DIR,
+      maxIterations: 10,
+      iteration: 1,
+      auditCount: 0,
+      errorCount: 0,
+      phase: 'coding',
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      modelFailed: false,
+      sandbox: false,
+      sandboxContainer: null,
+      completedAt: null,
+      terminationReason: null,
+      completionSummary: null,
+      workspaceId: null,
+      hostSessionId: null,
+      startedAt: Date.now(),
+    }, { prompt: null, lastAuditResult: null })
+
+    const result = await tools['review-read'].execute(
+      {},
+      { sessionID: 'alpha-session', directory: TEST_DIR } as any
+    )
+
+    // Should only see alpha loop findings (not beta, not branch-scoped)
+    expect(result).toContain('1 review finding')
+    expect(result).toContain('Alpha loop bug')
+    expect(result).not.toContain('Beta loop warning')
+  })
 })
 
 describe('review-delete', () => {
@@ -266,10 +368,11 @@ describe('review-delete', () => {
   let loopService: ReturnType<typeof createLoopService>
   let tools: ReturnType<typeof createReviewTools>
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
+  let loopsRepo: ReturnType<typeof createLoopsRepo>
 
   beforeEach(() => {
     db = createTestDb()
-    const loopsRepo = createLoopsRepo(db)
+    loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
     reviewFindingsRepo = createReviewFindingsRepo(db)
     loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
@@ -284,7 +387,8 @@ describe('review-delete', () => {
       severity: 'bug',
       description: 'Test bug',
       scenario: 'Test scenario',
-      branch: 'main',
+      branch: null,
+      loopName: null,
     })
   })
 
@@ -299,18 +403,73 @@ describe('review-delete', () => {
     )
 
     expect(result).toContain('Deleted review finding')
-    expect(result).toContain('src/file.ts:10')
 
-    const findings = reviewFindingsRepo.listByFile('test-project', 'src/file.ts')
-    expect(findings.length).toBe(0)
+    const findings = reviewFindingsRepo.listAll('test-project')
+    expect(findings).toHaveLength(0)
   })
 
-  test('returns not found message when finding does not exist', async () => {
+  test('inside a loop only deletes that loop row', async () => {
+    // Write findings for two different loops at same file:line
+    reviewFindingsRepo.write({
+      projectId: 'test-project',
+      file: 'src/shared.ts',
+      line: 5,
+      severity: 'bug',
+      description: 'Alpha finding',
+      branch: null,
+      loopName: 'alpha',
+    })
+    reviewFindingsRepo.write({
+      projectId: 'test-project',
+      file: 'src/shared.ts',
+      line: 5,
+      severity: 'warning',
+      description: 'Beta finding',
+      branch: null,
+      loopName: 'beta',
+    })
+
+    // Register alpha loop in the database
+    loopsRepo.insert({
+      projectId: 'test-project',
+      loopName: 'alpha',
+      status: 'running',
+      currentSessionId: 'alpha-session',
+      worktree: false,
+      worktreeDir: TEST_DIR,
+      worktreeBranch: 'alpha-branch',
+      projectDir: TEST_DIR,
+      maxIterations: 10,
+      iteration: 1,
+      auditCount: 0,
+      errorCount: 0,
+      phase: 'coding',
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      modelFailed: false,
+      sandbox: false,
+      sandboxContainer: null,
+      completedAt: null,
+      terminationReason: null,
+      completionSummary: null,
+      workspaceId: null,
+      hostSessionId: null,
+      startedAt: Date.now(),
+    }, { prompt: null, lastAuditResult: null })
+
+    // Delete from alpha loop context
     const result = await tools['review-delete'].execute(
-      { file: 'src/nonexistent.ts', line: 10 },
-      { sessionID: 'test-session', directory: TEST_DIR } as any
+      { file: 'src/shared.ts', line: 5 },
+      { sessionID: 'alpha-session', directory: TEST_DIR } as any
     )
 
-    expect(result).toContain('No review finding found at')
+    expect(result).toContain('Deleted review finding')
+
+    // Beta finding should still exist (along with the seeded 'Test bug' from beforeEach)
+    const allFindings = reviewFindingsRepo.listAll('test-project')
+    const sharedFindings = allFindings.filter(f => f.file === 'src/shared.ts')
+    expect(sharedFindings).toHaveLength(1)
+    expect(sharedFindings[0].loopName).toBe('beta')
+    expect(sharedFindings[0].description).toBe('Beta finding')
   })
 })

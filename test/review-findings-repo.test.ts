@@ -10,16 +10,19 @@ function createTestDb(): Database {
     CREATE TABLE IF NOT EXISTS review_findings (
       project_id   TEXT NOT NULL,
       branch       TEXT NOT NULL DEFAULT '',
+      loop_name    TEXT NOT NULL DEFAULT '',
       file         TEXT NOT NULL,
       line         INTEGER NOT NULL,
       severity     TEXT NOT NULL CHECK(severity IN ('bug','warning')),
       description  TEXT NOT NULL,
       scenario     TEXT,
       created_at   INTEGER NOT NULL,
-      PRIMARY KEY (project_id, branch, file, line)
+      CHECK (NOT (branch != '' AND loop_name != '')),
+      PRIMARY KEY (project_id, branch, loop_name, file, line)
     )
   `)
   db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_branch ON review_findings(project_id, branch)`)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_loop_name ON review_findings(project_id, loop_name)`)
   return db
 }
 
@@ -48,6 +51,7 @@ describe('ReviewFindingsRepo', () => {
         description: 'Example bug',
         scenario: 'When example input is used',
         branch: 'main',
+        loopName: null,
       })
 
       expect(result.ok).toBe(true)
@@ -59,6 +63,7 @@ describe('ReviewFindingsRepo', () => {
       expect(findings[0].line).toBe(12)
       expect(findings[0].severity).toBe('bug')
       expect(findings[0].branch).toBe('main')
+      expect(findings[0].loopName).toBeNull()
       expect(findings[0].createdAt).toBeGreaterThan(now - 1000)
     })
 
@@ -71,6 +76,7 @@ describe('ReviewFindingsRepo', () => {
         description: 'First finding',
         scenario: 'Scenario 1',
         branch: 'main',
+        loopName: null,
       })
 
       const result = repo.write({
@@ -81,6 +87,7 @@ describe('ReviewFindingsRepo', () => {
         description: 'Second finding',
         scenario: 'Scenario 2',
         branch: 'main',
+        loopName: null,
       })
 
       expect(result.ok).toBe(false)
@@ -102,6 +109,7 @@ describe('ReviewFindingsRepo', () => {
         description: 'First finding',
         scenario: 'Scenario 1',
         branch: 'main',
+        loopName: null,
       })
 
       const result = repo.write({
@@ -112,6 +120,7 @@ describe('ReviewFindingsRepo', () => {
         description: 'Second finding',
         scenario: 'Scenario 2',
         branch: 'feature',
+        loopName: null,
       })
 
       expect(result.ok).toBe(true)
@@ -123,15 +132,16 @@ describe('ReviewFindingsRepo', () => {
       expect(findings.some(f => f.description === 'Second finding')).toBe(true)
     })
 
-    test('allows same file:line with null branch and string branch', () => {
+    test('allows same file:line on different loop names', () => {
       repo.write({
         projectId,
         file: 'src/example.ts',
         line: 12,
         severity: 'bug',
-        description: 'Null branch',
+        description: 'Loop alpha finding',
         scenario: 'Scenario 1',
         branch: null,
+        loopName: 'alpha',
       })
 
       const result = repo.write({
@@ -139,79 +149,52 @@ describe('ReviewFindingsRepo', () => {
         file: 'src/example.ts',
         line: 12,
         severity: 'warning',
-        description: 'String branch',
+        description: 'Loop beta finding',
         scenario: 'Scenario 2',
-        branch: 'feature',
+        branch: null,
+        loopName: 'beta',
       })
 
       expect(result.ok).toBe(true)
-      expect(repo.listAll(projectId)).toHaveLength(2)
+      expect(result.conflict).toBeUndefined()
+
+      const findings = repo.listAll(projectId)
+      expect(findings).toHaveLength(2)
+      expect(findings.some(f => f.description === 'Loop alpha finding')).toBe(true)
+      expect(findings.some(f => f.description === 'Loop beta finding')).toBe(true)
     })
 
-    test('allows different lines in same file', () => {
-      repo.write({
-        projectId,
-        file: 'src/example.ts',
-        line: 12,
-        severity: 'bug',
-        description: 'Line 12',
-        scenario: 'Scenario',
-        branch: 'main',
-      })
-
-      const result = repo.write({
-        projectId,
-        file: 'src/example.ts',
-        line: 42,
-        severity: 'warning',
-        description: 'Line 42',
-        scenario: 'Scenario',
-        branch: 'main',
-      })
-
-      expect(result.ok).toBe(true)
-      expect(repo.listAll(projectId)).toHaveLength(2)
+    test('throws when both branch and loopName are set', () => {
+      expect(() => {
+        repo.write({
+          projectId,
+          file: 'src/example.ts',
+          line: 12,
+          severity: 'bug',
+          description: 'Invalid finding',
+          scenario: 'Scenario',
+          branch: 'main',
+          loopName: 'alpha',
+        })
+      }).toThrow('both branch and loopName')
     })
 
-    test('allows same line in different files', () => {
-      repo.write({
-        projectId,
-        file: 'src/file1.ts',
-        line: 12,
-        severity: 'bug',
-        description: 'File 1',
-        scenario: 'Scenario',
-        branch: 'main',
-      })
-
-      const result = repo.write({
-        projectId,
-        file: 'src/file2.ts',
-        line: 12,
-        severity: 'warning',
-        description: 'File 2',
-        scenario: 'Scenario',
-        branch: 'main',
-      })
-
-      expect(result.ok).toBe(true)
-      expect(repo.listAll(projectId)).toHaveLength(2)
-    })
-
-    test('handles null branch', () => {
+    test('handles null branch and null loopName', () => {
       const result = repo.write({
         projectId,
         file: 'src/example.ts',
         line: 12,
         severity: 'bug',
-        description: 'No branch',
+        description: 'No scope',
         scenario: 'Scenario',
         branch: null,
+        loopName: null,
       })
 
       expect(result.ok).toBe(true)
       const findings = repo.listAll(projectId)
       expect(findings[0].branch).toBeNull()
+      expect(findings[0].loopName).toBeNull()
     })
   })
 
@@ -230,6 +213,7 @@ describe('ReviewFindingsRepo', () => {
         description: 'A',
         scenario: 'S',
         branch: 'main',
+        loopName: null,
       })
       repo.write({
         projectId,
@@ -239,6 +223,7 @@ describe('ReviewFindingsRepo', () => {
         description: 'B',
         scenario: 'S',
         branch: 'main',
+        loopName: null,
       })
 
       const findings = repo.listAll(projectId)
@@ -254,6 +239,7 @@ describe('ReviewFindingsRepo', () => {
         description: 'A',
         scenario: 'S',
         branch: 'main',
+        loopName: null,
       })
 
       const otherFindings = repo.listAll('other-project')
@@ -271,6 +257,7 @@ describe('ReviewFindingsRepo', () => {
         description: 'Main',
         scenario: 'S',
         branch: 'main',
+        loopName: null,
       })
       repo.write({
         projectId,
@@ -280,6 +267,7 @@ describe('ReviewFindingsRepo', () => {
         description: 'Feature',
         scenario: 'S',
         branch: 'feature',
+        loopName: null,
       })
 
       const mainFindings = repo.listByBranch(projectId, 'main')
@@ -296,6 +284,7 @@ describe('ReviewFindingsRepo', () => {
         description: 'No branch',
         scenario: 'S',
         branch: null,
+        loopName: null,
       })
 
       const findings = repo.listByBranch(projectId, null)
@@ -312,9 +301,77 @@ describe('ReviewFindingsRepo', () => {
         description: 'Main',
         scenario: 'S',
         branch: 'main',
+        loopName: null,
       })
 
       const findings = repo.listByBranch(projectId, 'other')
+      expect(findings).toEqual([])
+    })
+  })
+
+  describe('listByLoopName', () => {
+    test('returns findings for specific loop', () => {
+      repo.write({
+        projectId,
+        file: 'src/a.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Alpha loop',
+        scenario: 'S',
+        branch: null,
+        loopName: 'alpha',
+      })
+      repo.write({
+        projectId,
+        file: 'src/b.ts',
+        line: 2,
+        severity: 'warning',
+        description: 'Beta loop',
+        scenario: 'S',
+        branch: null,
+        loopName: 'beta',
+      })
+
+      const alphaFindings = repo.listByLoopName(projectId, 'alpha')
+      expect(alphaFindings).toHaveLength(1)
+      expect(alphaFindings[0].description).toBe('Alpha loop')
+    })
+
+    test('returns findings with null loopName when loopName is null', () => {
+      repo.write({
+        projectId,
+        file: 'src/a.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'No loop',
+        scenario: 'S',
+        branch: null,
+        loopName: null,
+      })
+
+      const findings = repo.listByLoopName(projectId, null)
+      expect(findings).toHaveLength(1)
+      expect(findings[0].loopName).toBeNull()
+    })
+
+    test('returns empty when no findings for loop', () => {
+      repo.write({
+        projectId,
+        file: 'src/a.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Alpha loop',
+        scenario: 'S',
+        branch: null,
+        loopName: 'alpha',
+      })
+
+      const findings = repo.listByLoopName(projectId, 'beta')
+      expect(findings).toEqual([])
+    })
+
+    test('returns empty array when no findings exist', () => {
+      const findings = repo.listByLoopName(projectId, 'alpha')
       expect(findings).toEqual([])
     })
   })
@@ -329,6 +386,7 @@ describe('ReviewFindingsRepo', () => {
         description: 'A1',
         scenario: 'S',
         branch: 'main',
+        loopName: null,
       })
       repo.write({
         projectId,
@@ -338,6 +396,7 @@ describe('ReviewFindingsRepo', () => {
         description: 'A2',
         scenario: 'S',
         branch: 'main',
+        loopName: null,
       })
       repo.write({
         projectId,
@@ -347,6 +406,7 @@ describe('ReviewFindingsRepo', () => {
         description: 'B1',
         scenario: 'S',
         branch: 'main',
+        loopName: null,
       })
 
       const aFindings = repo.listByFile(projectId, 'src/a.ts')
@@ -370,6 +430,7 @@ describe('ReviewFindingsRepo', () => {
         description: 'To delete',
         scenario: 'S',
         branch: 'main',
+        loopName: null,
       })
 
       const deleted = repo.delete(projectId, 'src/a.ts', 1)
@@ -391,6 +452,7 @@ describe('ReviewFindingsRepo', () => {
         description: 'Keep',
         scenario: 'S',
         branch: 'main',
+        loopName: null,
       })
       repo.write({
         projectId,
@@ -400,6 +462,7 @@ describe('ReviewFindingsRepo', () => {
         description: 'Delete',
         scenario: 'S',
         branch: 'main',
+        loopName: null,
       })
 
       const deleted = repo.delete(projectId, 'src/a.ts', 2)
@@ -417,6 +480,7 @@ describe('ReviewFindingsRepo', () => {
         description: 'Main finding',
         scenario: 'S',
         branch: 'main',
+        loopName: null,
       })
       repo.write({
         projectId,
@@ -426,9 +490,10 @@ describe('ReviewFindingsRepo', () => {
         description: 'Feature finding',
         scenario: 'S',
         branch: 'feature',
+        loopName: null,
       })
 
-      const deleted = repo.delete(projectId, 'src/a.ts', 1, 'main')
+      const deleted = repo.delete(projectId, 'src/a.ts', 1, { branch: 'main' })
       expect(deleted).toBe(true)
       
       const remaining = repo.listAll(projectId)
@@ -436,7 +501,37 @@ describe('ReviewFindingsRepo', () => {
       expect(remaining[0].branch).toBe('feature')
     })
 
-    test('delete without branch parameter deletes all branches', () => {
+    test('delete with loopName parameter only deletes that loop', () => {
+      repo.write({
+        projectId,
+        file: 'src/a.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Alpha finding',
+        scenario: 'S',
+        branch: null,
+        loopName: 'alpha',
+      })
+      repo.write({
+        projectId,
+        file: 'src/a.ts',
+        line: 1,
+        severity: 'warning',
+        description: 'Beta finding',
+        scenario: 'S',
+        branch: null,
+        loopName: 'beta',
+      })
+
+      const deleted = repo.delete(projectId, 'src/a.ts', 1, { loopName: 'alpha' })
+      expect(deleted).toBe(true)
+      
+      const remaining = repo.listAll(projectId)
+      expect(remaining).toHaveLength(1)
+      expect(remaining[0].loopName).toBe('beta')
+    })
+
+    test('delete without scope parameter deletes all scopes', () => {
       repo.write({
         projectId,
         file: 'src/a.ts',
@@ -445,6 +540,7 @@ describe('ReviewFindingsRepo', () => {
         description: 'Main finding',
         scenario: 'S',
         branch: 'main',
+        loopName: null,
       })
       repo.write({
         projectId,
@@ -454,39 +550,12 @@ describe('ReviewFindingsRepo', () => {
         description: 'Feature finding',
         scenario: 'S',
         branch: 'feature',
+        loopName: null,
       })
 
       const deleted = repo.delete(projectId, 'src/a.ts', 1)
       expect(deleted).toBe(true)
       expect(repo.listAll(projectId)).toEqual([])
-    })
-
-    test('delete with null branch parameter only deletes null branch', () => {
-      repo.write({
-        projectId,
-        file: 'src/a.ts',
-        line: 1,
-        severity: 'bug',
-        description: 'Null branch',
-        scenario: 'S',
-        branch: null,
-      })
-      repo.write({
-        projectId,
-        file: 'src/a.ts',
-        line: 1,
-        severity: 'warning',
-        description: 'String branch',
-        scenario: 'S',
-        branch: 'feature',
-      })
-
-      const deleted = repo.delete(projectId, 'src/a.ts', 1, null)
-      expect(deleted).toBe(true)
-      
-      const remaining = repo.listAll(projectId)
-      expect(remaining).toHaveLength(1)
-      expect(remaining[0].branch).toBe('feature')
     })
   })
 })

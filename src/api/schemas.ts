@@ -64,6 +64,7 @@ export const FindingWriteBody: Schema<{
   description: string
   scenario?: string
   branch?: string | null
+  loopName?: string | null
 }> = z.object({
   file: z.string(),
   line: z.number(),
@@ -71,6 +72,7 @@ export const FindingWriteBody: Schema<{
   description: z.string(),
   scenario: z.string().optional(),
   branch: z.string().nullable().optional(),
+  loopName: z.string().nullable().optional(),
 })
 
 export const LoopRestartBody: Schema<{ force?: boolean }> = z.object({
