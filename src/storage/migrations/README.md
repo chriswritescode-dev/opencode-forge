@@ -24,6 +24,8 @@ This directory contains SQL migrations for the Forge storage schema.
 - `103_create_review_findings.sql`: Write-once review findings with branch field
 - `105_create_tui_preferences.sql`: TUI preferences table for recent models and execution preferences
 - `106_drop_project_kv.sql`: Drops legacy `project_kv` table
+- `117_branch_scope_review_findings.sql`: Add branch to primary key for branch-scoped findings
+- `119_loop_scope_review_findings.sql`: Replace branch-scope with loop-scope for review findings
 
 ## Breaking Changes
 

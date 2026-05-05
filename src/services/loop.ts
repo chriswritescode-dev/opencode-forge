@@ -65,8 +65,8 @@ export interface LoopService {
   getStallTimeoutMs(): number
   terminateAll(): Promise<void>
   reconcileStale(opts?: { isSandboxLive?: (loopName: string) => Promise<boolean> }): Promise<{ cancelled: number; preserved: string[] }>
-  hasOutstandingFindings(branch?: string, severity?: 'bug' | 'warning'): boolean
-  getOutstandingFindings(branch?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[]
+  hasOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): boolean
+  getOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[]
   generateUniqueLoopName(baseName: string): string
   getPlanText(loopName: string, sessionId: string): string | null
   incrementError(name: string): number
@@ -238,7 +238,7 @@ export function createLoopService(
       prompt += `\n\n---\nThe code auditor reviewed your changes. You MUST address all bugs and convention violations below — do not dismiss findings as unrelated to the task. Fix them directly without creating a plan or asking for approval.\n\n${auditFindings}`
     }
 
-    const outstandingFindings = getOutstandingFindings(state.worktreeBranch)
+    const outstandingFindings = getOutstandingFindings(state.loopName)
     if (outstandingFindings.length > 0) {
       const findingKeys = outstandingFindings.map((f) => `- \`${f.file}:${f.line}\``).join('\n')
       prompt += `\n\n---\n⚠️ Outstanding Review Findings (${String(outstandingFindings.length)})\n\nThese review findings are blocking loop completion. Fix these issues so they pass the next audit review.\n\n${findingKeys}`
@@ -259,8 +259,8 @@ export function createLoopService(
     return plansRepo.getForLoopOrSession(projectId, loopName, sessionId)?.content ?? null
   }
 
-  function formatReviewFindings(branch?: string): string {
-    const findings = getOutstandingFindings(branch)
+  function formatReviewFindings(loopName?: string): string {
+    const findings = getOutstandingFindings(loopName)
     if (findings.length === 0) {
       return 'No existing review findings.'
     }
@@ -278,7 +278,7 @@ export function createLoopService(
   function buildAuditPrompt(state: LoopState): string {
     const branchInfo = state.worktreeBranch ? ` (branch: ${state.worktreeBranch})` : ''
     const planText = getPlanTextForState(state) ?? 'Plan not found in plan store.'
-    const reviewFindings = formatReviewFindings(state.worktreeBranch)
+    const reviewFindings = formatReviewFindings(state.loopName)
 
     return [
       `Post-iteration ${String(state.iteration)} code review${branchInfo}.`,
@@ -472,13 +472,13 @@ export function createLoopService(
     return { cancelled, preserved }
   }
 
-  function getOutstandingFindings(branch?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[] {
-    const rows = branch ? reviewFindingsRepo.listByBranch(projectId, branch) : reviewFindingsRepo.listAll(projectId)
+  function getOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[] {
+    const rows = loopName ? reviewFindingsRepo.listByLoopName(projectId, loopName) : reviewFindingsRepo.listAll(projectId)
     return severity ? rows.filter((r) => r.severity === severity) : rows
   }
 
-  function hasOutstandingFindings(branch?: string, severity?: 'bug' | 'warning'): boolean {
-    return getOutstandingFindings(branch, severity).length > 0
+  function hasOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): boolean {
+    return getOutstandingFindings(loopName, severity).length > 0
   }
 
   function generateUniqueLoopName(baseName: string): string {

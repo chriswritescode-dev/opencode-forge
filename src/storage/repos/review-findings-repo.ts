@@ -8,6 +8,7 @@ export interface ReviewFindingRow {
   description: string
   scenario: string | null
   branch: string | null
+  loopName: string | null
   createdAt: number
 }
 
@@ -16,12 +17,15 @@ export interface WriteFindingResult {
   conflict?: boolean
 }
 
+type DeleteScope = { branch?: string | null } | { loopName: string | null }
+
 export interface ReviewFindingsRepo {
   write(row: Omit<ReviewFindingRow, 'createdAt' | 'scenario'> & { scenario?: string | null }): WriteFindingResult
   listAll(projectId: string): ReviewFindingRow[]
   listByBranch(projectId: string, branch: string | null): ReviewFindingRow[]
+  listByLoopName(projectId: string, loopName: string | null): ReviewFindingRow[]
   listByFile(projectId: string, file: string): ReviewFindingRow[]
-  delete(projectId: string, file: string, line: number, branch?: string | null): boolean
+  delete(projectId: string, file: string, line: number, scope?: DeleteScope): boolean
 }
 
 export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
@@ -33,10 +37,18 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
     return branch === '' ? null : branch
   }
 
+  function loopToDb(loopName: string | null | undefined): string {
+    return loopName ?? ''
+  }
+
+  function loopFromDb(loopName: string): string | null {
+    return loopName === '' ? null : loopName
+  }
+
   const stmtWrite = db.prepare(`
-    INSERT INTO review_findings (project_id, branch, file, line, severity, description, scenario, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT (project_id, branch, file, line) DO NOTHING
+    INSERT INTO review_findings (project_id, branch, loop_name, file, line, severity, description, scenario, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (project_id, branch, loop_name, file, line) DO NOTHING
     RETURNING 1
   `)
 
@@ -48,21 +60,28 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
   }
 
   const stmtListAll = db.prepare(`
-    SELECT project_id, file, line, severity, description, scenario, branch, created_at
+    SELECT project_id, file, line, severity, description, scenario, branch, loop_name, created_at
     FROM review_findings
     WHERE project_id = ?
     ORDER BY file, line
   `)
 
   const stmtListByBranch = db.prepare(`
-    SELECT project_id, file, line, severity, description, scenario, branch, created_at
+    SELECT project_id, file, line, severity, description, scenario, branch, loop_name, created_at
     FROM review_findings
-    WHERE project_id = ? AND branch = ?
+    WHERE project_id = ? AND branch = ? AND loop_name = ''
+    ORDER BY file, line
+  `)
+
+  const stmtListByLoopName = db.prepare(`
+    SELECT project_id, file, line, severity, description, scenario, branch, loop_name, created_at
+    FROM review_findings
+    WHERE project_id = ? AND loop_name = ? AND branch = ''
     ORDER BY file, line
   `)
 
   const stmtListByFile = db.prepare(`
-    SELECT project_id, file, line, severity, description, scenario, branch, created_at
+    SELECT project_id, file, line, severity, description, scenario, branch, loop_name, created_at
     FROM review_findings
     WHERE project_id = ? AND file = ?
     ORDER BY line
@@ -75,13 +94,23 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
 
   const stmtDeleteWithBranch = db.prepare(`
     DELETE FROM review_findings
-    WHERE project_id = ? AND branch = ? AND file = ? AND line = ?
+    WHERE project_id = ? AND branch = ? AND loop_name = '' AND file = ? AND line = ?
+  `)
+
+  const stmtDeleteWithLoopName = db.prepare(`
+    DELETE FROM review_findings
+    WHERE project_id = ? AND loop_name = ? AND branch = '' AND file = ? AND line = ?
   `)
 
   function write(row: Omit<ReviewFindingRow, 'createdAt' | 'scenario'> & { scenario?: string | null }): WriteFindingResult {
+    // Enforce mutually exclusive branch/loopName
+    if (row.branch != null && row.branch !== '' && row.loopName != null && row.loopName !== '') {
+      throw new Error('Cannot write finding with both branch and loopName set')
+    }
     const result = stmtWrite.run(
       row.projectId,
       branchToDb(row.branch),
+      loopToDb(row.loopName),
       row.file,
       row.line,
       row.severity,
@@ -104,6 +133,7 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
       description: string
       scenario: string | null
       branch: string
+      loop_name: string
       created_at: number
     }>
     return rows.map(row => ({
@@ -114,6 +144,7 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
       description: row.description,
       scenario: row.scenario,
       branch: branchFromDb(row.branch),
+      loopName: loopFromDb(row.loop_name),
       createdAt: row.created_at,
     }))
   }
@@ -128,6 +159,7 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
       description: string
       scenario: string | null
       branch: string
+      loop_name: string
       created_at: number
     }>
     return rows.map(row => ({
@@ -138,6 +170,33 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
       description: row.description,
       scenario: row.scenario,
       branch: branchFromDb(row.branch),
+      loopName: loopFromDb(row.loop_name),
+      createdAt: row.created_at,
+    }))
+  }
+
+  function listByLoopName(projectId: string, loopName: string | null): ReviewFindingRow[] {
+    const dbLoopName = loopToDb(loopName)
+    const rows = stmtListByLoopName.all(projectId, dbLoopName) as Array<{
+      project_id: string
+      file: string
+      line: number
+      severity: 'bug' | 'warning'
+      description: string
+      scenario: string | null
+      branch: string
+      loop_name: string
+      created_at: number
+    }>
+    return rows.map(row => ({
+      projectId: row.project_id,
+      file: row.file,
+      line: row.line,
+      severity: row.severity,
+      description: row.description,
+      scenario: row.scenario,
+      branch: branchFromDb(row.branch),
+      loopName: loopFromDb(row.loop_name),
       createdAt: row.created_at,
     }))
   }
@@ -151,6 +210,7 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
       description: string
       scenario: string | null
       branch: string
+      loop_name: string
       created_at: number
     }>
     return rows.map(row => ({
@@ -161,13 +221,18 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
       description: row.description,
       scenario: row.scenario,
       branch: branchFromDb(row.branch),
+      loopName: loopFromDb(row.loop_name),
       createdAt: row.created_at,
     }))
   }
 
-  function deleteFinding(projectId: string, file: string, line: number, branch?: string | null): boolean {
-    if (branch !== undefined) {
-      const result = stmtDeleteWithBranch.run(projectId, branchToDb(branch), file, line) as unknown as { changes: number }
+  function deleteFinding(projectId: string, file: string, line: number, scope?: DeleteScope): boolean {
+    if (scope && 'branch' in scope) {
+      const result = stmtDeleteWithBranch.run(projectId, branchToDb(scope.branch), file, line) as unknown as { changes: number }
+      return result.changes > 0
+    }
+    if (scope && 'loopName' in scope) {
+      const result = stmtDeleteWithLoopName.run(projectId, loopToDb(scope.loopName), file, line) as unknown as { changes: number }
       return result.changes > 0
     }
     const result = stmtDelete.run(projectId, file, line) as unknown as { changes: number }
@@ -178,6 +243,7 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
     write,
     listAll,
     listByBranch,
+    listByLoopName,
     listByFile,
     delete: deleteFinding,
   }

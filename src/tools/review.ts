@@ -1,22 +1,17 @@
 import { tool } from '@opencode-ai/plugin'
 import type { ToolContext } from './types'
-import { injectBranchField } from '../utils/git-branch'
+import { injectScopeField } from '../utils/git-branch'
 
 const z = tool.schema
 
-function resolveLoopBranchForToolContext(
+function resolveLoopNameForToolContext(
   loopService: ToolContext['loopService'],
-  toolCtx?: { sessionID?: string; directory?: string; worktree?: string },
+  toolCtx?: { sessionID?: string },
 ): string | null | undefined {
   if (!toolCtx?.sessionID) {
     return undefined
   }
-  const loopName = loopService.resolveLoopName(toolCtx.sessionID)
-  if (!loopName) {
-    return undefined
-  }
-  const state = loopService.getActiveState(loopName)
-  return state?.worktreeBranch ?? null
+  return loopService.resolveLoopName(toolCtx.sessionID) ?? undefined
 }
 
 export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
@@ -24,7 +19,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
 
   return {
     'review-write': tool({
-      description: 'Store a code review finding with file location, severity, and description. Automatically injects branch field.',
+      description: 'Store a code review finding with file location, severity, and description. Automatically injects scope field (loopName or branch).',
       args: {
         file: z.string().describe('The file path where the finding is located'),
         line: z.number().describe('The line number of the finding'),
@@ -42,10 +37,11 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
           description: args.description,
           scenario: args.scenario ?? null,
           branch: null as string | null,
+          loopName: null as string | null,
         }
 
         const executionDirectory = toolCtx?.directory ?? toolCtx?.worktree ?? ctx.directory
-        injectBranchField(row, executionDirectory, loopService, toolCtx?.sessionID)
+        injectScopeField(row, executionDirectory, loopService, toolCtx?.sessionID)
 
         const result = reviewFindingsRepo.write(row)
         if (!result.ok && result.conflict) {
@@ -65,10 +61,10 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         pattern: z.string().optional().describe('Regex pattern to search across findings'),
       },
       execute: async (args, toolCtx) => {
-        // If invoked from a loop session, scope to that branch
-        const loopBranch = resolveLoopBranchForToolContext(loopService, toolCtx)
-        let findings = loopBranch !== undefined
-          ? reviewFindingsRepo.listByBranch(projectId, loopBranch)
+        // If invoked from a loop session, scope to that loop
+        const loopName = resolveLoopNameForToolContext(loopService, toolCtx)
+        let findings = loopName !== undefined
+          ? reviewFindingsRepo.listByLoopName(projectId, loopName)
           : reviewFindingsRepo.listAll(projectId)
 
         if (args.file) {
@@ -98,7 +94,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         }
 
         const formatted = findings.map((f) => {
-          return `- **${f.file}:${f.line}**\n  - Severity: ${f.severity}\n  - File: ${f.file}:${f.line}\n  - Description: ${f.description}\n  - Scenario: ${f.scenario || 'N/A'}\n  - Branch: ${f.branch || 'N/A'}`
+          return `- **${f.file}:${f.line}**\n  - Severity: ${f.severity}\n  - File: ${f.file}:${f.line}\n  - Description: ${f.description}\n  - Scenario: ${f.scenario || 'N/A'}\n  - Branch: ${f.branch ?? 'N/A'}\n  - Loop: ${f.loopName ?? 'N/A'}`
         })
 
         logger.log(`review-read: found ${findings.length} findings`)
@@ -113,10 +109,10 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         line: z.number().describe('The line number of the finding to delete'),
       },
       execute: async (args, toolCtx) => {
-        // If invoked from a loop session, scope to that branch
-        const loopBranch = resolveLoopBranchForToolContext(loopService, toolCtx)
-        const deleted = loopBranch !== undefined
-          ? reviewFindingsRepo.delete(projectId, args.file, args.line, loopBranch)
+        // If invoked from a loop session, scope to that loop
+        const loopName = resolveLoopNameForToolContext(loopService, toolCtx)
+        const deleted = loopName !== undefined
+          ? reviewFindingsRepo.delete(projectId, args.file, args.line, { loopName })
           : reviewFindingsRepo.delete(projectId, args.file, args.line)
         if (!deleted) {
           return `No review finding found at ${args.file}:${args.line}`

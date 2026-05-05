@@ -175,5 +175,14 @@ export const migrations: Migration[] = [
       db.run(loadSql('118_drop_audit_session_id_from_loops.sql'))
     },
   },
+  {
+    id: '119',
+    description: 'Add loop_name scope to review_findings; drop legacy branch-only rows',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(review_findings)').all() as Array<{ name: string }>
+      if (cols.some((c) => c.name === 'loop_name')) return
+      db.run(loadSql('119_loop_scope_review_findings.sql'))
+    },
+  },
 
 ]

@@ -646,14 +646,20 @@ export function createLoopEventHandler(
     loopName: string,
     currentState: LoopState,
   ): Promise<boolean> {
-    logger.debug(`Loop: checking audit clear loop=${loopName} auditCount=${currentState.auditCount ?? 0} branch=${currentState.worktreeBranch ?? '(none)'}`)
+    logger.debug(`Loop: checking audit clear loop=${loopName} auditCount=${currentState.auditCount ?? 0} loopName=${currentState.loopName ?? '(none)'}`)
     if ((currentState.auditCount ?? 0) < 1) {
       logger.debug(`Loop: audit clear gate blocked by auditCount<1`)
       return false
     }
-    const findings = loopService.getOutstandingFindings(currentState.worktreeBranch)
+    const findings = loopService.getOutstandingFindings(currentState.loopName)
     if (findings.length > 0) {
       logger.log(`Loop: audit complete but ${findings.length} review finding(s) remain, continuing`)
+      return false
+    }
+    // Hard gate: refuse completion if any bug-severity findings remain
+    const bugFindings = loopService.getOutstandingFindings(currentState.loopName, 'bug')
+    if (bugFindings.length > 0) {
+      logger.log(`Loop: refused completion — ${bugFindings.length} bug finding(s) still open`)
       return false
     }
     logger.log(`Loop: audit all-clear, terminating loop=${loopName} iteration=${currentState.iteration} audits=${currentState.auditCount ?? 0}`)

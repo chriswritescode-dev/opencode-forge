@@ -10,11 +10,15 @@ export async function handleListFindings(
   const { projectId } = params
   const queryParams = body as Record<string, string> | undefined
   const branch = queryParams?.branch
+  const loopName = queryParams?.loopName
   const file = queryParams?.file
 
   let findings
-  if (branch) {
-    findings = deps.ctx.reviewFindingsRepo.listByBranch(projectId, branch)
+  if (loopName !== undefined) {
+    // loopName takes priority
+    findings = deps.ctx.reviewFindingsRepo.listByLoopName(projectId, loopName === '' ? null : loopName)
+  } else if (branch !== undefined) {
+    findings = deps.ctx.reviewFindingsRepo.listByBranch(projectId, branch === '' ? null : branch)
   } else if (file) {
     findings = deps.ctx.reviewFindingsRepo.listByFile(projectId, file)
   } else {
@@ -32,6 +36,11 @@ export async function handleWriteFinding(
   const { projectId } = params
   const parsed = FindingWriteBody.parse(body)
 
+  // Reject if both branch and loopName are non-null
+  if (parsed.branch != null && parsed.branch !== '' && parsed.loopName != null && parsed.loopName !== '') {
+    throw new ForgeRpcError('invalid_argument', 'Cannot write finding with both branch and loopName set')
+  }
+
   const result = deps.ctx.reviewFindingsRepo.write({
     projectId,
     file: parsed.file,
@@ -40,6 +49,7 @@ export async function handleWriteFinding(
     description: parsed.description,
     scenario: parsed.scenario ?? null,
     branch: parsed.branch ?? null,
+    loopName: parsed.loopName ?? null,
   })
 
   if (!result.ok) {
@@ -61,6 +71,8 @@ export async function handleDeleteFinding(
   const queryParams = body as Record<string, string> | undefined
   const file = queryParams?.file
   const lineParam = queryParams?.line
+  const branch = queryParams?.branch
+  const loopName = queryParams?.loopName
 
   if (!file || !lineParam) {
     throw new ForgeRpcError('not_found', 'file and line query params required')
@@ -71,7 +83,14 @@ export async function handleDeleteFinding(
     throw new ForgeRpcError('not_found', 'invalid line number')
   }
 
-  const deleted = deps.ctx.reviewFindingsRepo.delete(projectId, file, line)
+  let deleted: boolean
+  if (loopName !== undefined) {
+    deleted = deps.ctx.reviewFindingsRepo.delete(projectId, file, line, { loopName: loopName === '' ? null : loopName })
+  } else if (branch !== undefined) {
+    deleted = deps.ctx.reviewFindingsRepo.delete(projectId, file, line, { branch: branch === '' ? null : branch })
+  } else {
+    deleted = deps.ctx.reviewFindingsRepo.delete(projectId, file, line)
+  }
 
   if (!deleted) {
     throw new ForgeRpcError('not_found', 'finding not found')

@@ -1,0 +1,22 @@
+-- Migration 119: Replace branch-scope with loop-scope for review_findings.
+-- Drops all existing findings (per design decision: ephemeral, fresh slate).
+DROP TABLE IF EXISTS review_findings;
+
+CREATE TABLE review_findings (
+  project_id   TEXT NOT NULL,
+  branch       TEXT NOT NULL DEFAULT '',   -- '' when scope is loop or none
+  loop_name    TEXT NOT NULL DEFAULT '',   -- '' when scope is branch or none
+  file         TEXT NOT NULL,
+  line         INTEGER NOT NULL,
+  severity     TEXT NOT NULL CHECK(severity IN ('bug','warning')),
+  description  TEXT NOT NULL,
+  scenario     TEXT,
+  created_at   INTEGER NOT NULL,
+  -- Exactly one of (branch, loop_name) is non-empty for in-loop or branch findings.
+  -- Both empty is allowed for findings written outside any branch/loop context.
+  CHECK (NOT (branch != '' AND loop_name != '')),
+  PRIMARY KEY (project_id, branch, loop_name, file, line)
+);
+
+CREATE INDEX idx_review_findings_branch    ON review_findings(project_id, branch);
+CREATE INDEX idx_review_findings_loop_name ON review_findings(project_id, loop_name);
