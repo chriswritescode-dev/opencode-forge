@@ -10,7 +10,7 @@ import { buildWorktreeCompletionPayload, writeWorktreeCompletionLog } from '../s
 import { buildLoopPermissionRuleset } from '../constants/loop'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
 import { teardownWorktreeArtifacts } from '../utils/worktree-cleanup'
-import { createAuditSession, promptAuditSession, deleteAuditSession } from '../utils/audit-session'
+import { createAuditSession, promptAuditSession } from '../utils/audit-session'
 import { formatAuditSessionTitle, formatLoopSessionTitle } from '../utils/session-titles'
 import { bindSessionToWorkspace } from '../workspace/forge-worktree'
 
@@ -583,6 +583,11 @@ export function createLoopEventHandler(
     return { workspaceId: workspace.workspaceId }
   }
 
+  /**
+   * Rotates to a new session in the same workspace. Creates and binds the new session FIRST,
+   * then fire-and-forget deletes the old session. This ordering ensures the workspace always
+   * has at least one bound session, preventing the host from pruning it from non-focused TUIs.
+   */
   async function rotateSession(loopName: string, state: LoopState): Promise<string> {
     const oldSessionId = state.sessionId
     const sessionDir = state.worktreeDir
@@ -824,8 +829,13 @@ export function createLoopEventHandler(
   }
 
   async function rotateToCodingAfterAuditFailure(loopName: string, state: LoopState, reason: string): Promise<void> {
-    await deleteAuditSession(v2Client, state.sessionId, state.worktreeDir, logger)
+    // Rotate FIRST so the new code session is created and bound to the workspace
+    // before the audit session is deleted. This keeps the workspace continuously
+    // populated and prevents the host from pruning it from non-focused TUIs.
     const newSessionId = await rotateSession(loopName, state)
+    // rotateSession already fire-and-forgets the deletion of state.sessionId
+    // (which is the audit session here) at loop.ts:632, so an explicit
+    // deleteAuditSession call is redundant.
     loopService.replaceSession(loopName, {
       newSessionId,
       phase: 'coding',
@@ -1136,9 +1146,6 @@ export function createLoopEventHandler(
     }
 
     const auditSessionId = currentState.sessionId
-    const cleanupAuditSession = async () => {
-      await deleteAuditSession(v2Client, auditSessionId, currentState!.worktreeDir, logger)
-    }
 
     const { text: auditText, error: assistantError, lastMessageRole } = await getLastAssistantInfo(auditSessionId, currentState.worktreeDir)
 
@@ -1174,7 +1181,7 @@ export function createLoopEventHandler(
 
     const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantError, 'auditing')
     if (!errorResult) {
-      await cleanupAuditSession()
+      // Loop already terminated; teardown handles audit session abort/cleanup.
       return
     }
     const assistantErrorDetected = errorResult.assistantErrorDetected
@@ -1182,8 +1189,10 @@ export function createLoopEventHandler(
 
     currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'auditing')
 
-    // Delete audit session and unregister it
-    await cleanupAuditSession()
+    // NOTE: do NOT delete the audit session here. rotateSession (called via
+    // rotateAndSendContinuation below) will create+bind the new code session
+    // FIRST, then fire-and-forget delete the old (audit) session — keeping the
+    // workspace continuously populated and preventing the host from pruning it.
 
     // Only increment audit count and check termination if the audit was successful (no error)
     if (!assistantErrorDetected) {
