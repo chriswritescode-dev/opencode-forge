@@ -20,6 +20,7 @@ export interface SandboxManager {
   getActive(worktreeName: string): ActiveSandbox | null
   isActive(worktreeName: string): boolean
   isLive(worktreeName: string): Promise<boolean>
+  isLiveByName(worktreeName: string): Promise<boolean>
   cleanupOrphans(preserveWorktrees?: string[]): Promise<number>
   restore(worktreeName: string, projectDir: string, startedAt: string): Promise<void>
 }
@@ -150,6 +151,11 @@ export function createSandboxManager(
     return true
   }
 
+  async function isLiveByName(worktreeName: string): Promise<boolean> {
+    const containerName = docker.containerName(worktreeName)
+    return docker.isRunning(containerName)
+  }
+
   async function cleanupOrphans(preserveWorktrees?: string[]): Promise<number> {
     const containers = await docker.listContainersByPrefix('oc-forge-sandbox-')
     let removed = 0
@@ -204,6 +210,7 @@ export function createSandboxManager(
     getActive,
     isActive,
     isLive,
+    isLiveByName,
     cleanupOrphans,
     restore,
   }

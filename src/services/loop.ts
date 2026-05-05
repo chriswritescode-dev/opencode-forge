@@ -11,7 +11,7 @@ export type LoopChangeReason =
   | 'sandbox' | 'workspace' | 'audit-result'
   | 'model-failed' | 'error' | 'reconcile'
 
-export type LoopChangeNotifier = (reason: LoopChangeReason, loopName: string) => void
+export type LoopChangeNotifier = (reason: LoopChangeReason, loopName: string, hint?: { projectDir?: string; worktreeDir?: string }) => void
 
 export const MAX_RETRIES = 3
 const STALL_TIMEOUT_MS = 60_000
@@ -63,7 +63,7 @@ export interface LoopService {
   findMatchByName(name: string): { match: LoopState | null; candidates: LoopState[] }
   getStallTimeoutMs(): number
   terminateAll(): void
-  reconcileStale(): number
+  reconcileStale(opts?: { isSandboxLive?: (loopName: string) => Promise<boolean> }): Promise<{ cancelled: number; preserved: string[] }>
   hasOutstandingFindings(branch?: string, severity?: 'bug' | 'warning'): boolean
   getOutstandingFindings(branch?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[]
   generateUniqueLoopName(baseName: string): string
@@ -183,22 +183,25 @@ export function createLoopService(
     if (!ok) {
       throw new Error(`setState: loop "${name}" already exists`)
     }
-    notifyLoopChange('insert', name)
+    notifyLoopChange('insert', name, { projectDir: state.projectDir, worktreeDir: state.worktreeDir })
   }
 
   function deleteState(name: string): void {
+    const state = getAnyState(name)
     loopsRepo.delete(projectId, name)
-    notifyLoopChange('delete', name)
+    notifyLoopChange('delete', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
   function setStatus(name: string, status: LoopRow['status']): void {
+    const state = getAnyState(name)
     loopsRepo.setStatus(projectId, name, status)
-    notifyLoopChange('status', name)
+    notifyLoopChange('status', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
   function registerLoopSession(sessionId: string, loopName: string): void {
+    const state = getAnyState(loopName)
     loopsRepo.setCurrentSessionId(projectId, loopName, sessionId)
-    notifyLoopChange('session', loopName)
+    notifyLoopChange('session', loopName, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
   function resolveLoopName(sessionId: string): string | null {
@@ -206,6 +209,7 @@ export function createLoopService(
   }
 
   function replaceSession(name: string, opts: { newSessionId: string; phase: 'coding' | 'auditing'; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void {
+    const state = getAnyState(name)
     loopsRepo.replaceSession(projectId, name, {
       sessionId: opts.newSessionId,
       phase: opts.phase,
@@ -214,7 +218,7 @@ export function createLoopService(
       auditCount: opts.auditCount,
       lastAuditResult: opts.lastAuditResult,
     })
-    notifyLoopChange('rotate', name)
+    notifyLoopChange('rotate', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
   function buildContinuationPrompt(state: LoopState, auditFindings?: string): string {
@@ -344,24 +348,60 @@ export function createLoopService(
         reason: 'shutdown',
         completedAt: now,
       })
-      notifyLoopChange('terminate', state.loopName)
+      notifyLoopChange('terminate', state.loopName, { projectDir: state.projectDir, worktreeDir: state.worktreeDir })
     }
     logger.log(`Loop: terminated ${String(active.length)} active loop(s)`)
   }
 
-  function reconcileStale(): number {
+  async function reconcileStale(opts?: { isSandboxLive?: (loopName: string) => Promise<boolean> }): Promise<{ cancelled: number; preserved: string[] }> {
     const active = listActive()
     const now = Date.now()
+    const preserved: string[] = []
+    let cancelled = 0
+
+    // Back-compatible path: no opts means cancel everything (old behavior)
+    if (!opts?.isSandboxLive) {
+      for (const state of active) {
+        loopsRepo.terminate(projectId, state.loopName, {
+          status: 'cancelled',
+          reason: 'shutdown',
+          completedAt: now,
+        })
+        notifyLoopChange('reconcile', state.loopName, { projectDir: state.projectDir, worktreeDir: state.worktreeDir })
+        logger.log(`Reconciled stale active loop: ${state.loopName} (was at iteration ${String(state.iteration)})`)
+      }
+      return { cancelled: active.length, preserved: [] }
+    }
+
+    // Selective path: preserve loops with live sandbox containers
     for (const state of active) {
+      const eligibleForPreserve =
+        !!state.sandbox &&
+        !!state.worktree &&
+        !!state.worktreeDir &&
+        !!state.sandboxContainer &&
+        !!state.loopName
+
+      const live = eligibleForPreserve ? await opts.isSandboxLive(state.loopName) : false
+
+      if (live) {
+        preserved.push(state.loopName)
+        logger.log(`Loop: preserved active sandbox loop across plugin restart: ${state.loopName} (iteration ${String(state.iteration)})`)
+        // No status change, no notify — the row stays running.
+        continue
+      }
+
       loopsRepo.terminate(projectId, state.loopName, {
         status: 'cancelled',
         reason: 'shutdown',
         completedAt: now,
       })
-      notifyLoopChange('reconcile', state.loopName)
+      notifyLoopChange('reconcile', state.loopName, { projectDir: state.projectDir, worktreeDir: state.worktreeDir })
       logger.log(`Reconciled stale active loop: ${state.loopName} (was at iteration ${String(state.iteration)})`)
+      cancelled++
     }
-    return active.length
+
+    return { cancelled, preserved }
   }
 
   function getOutstandingFindings(branch?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[] {
@@ -382,60 +422,71 @@ export function createLoopService(
   }
 
   function incrementError(name: string): number {
+    const state = getAnyState(name)
     const result = loopsRepo.incrementError(projectId, name)
-    notifyLoopChange('error', name)
+    notifyLoopChange('error', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
     return result
   }
 
   function resetError(name: string): void {
+    const state = getAnyState(name)
     loopsRepo.resetError(projectId, name)
-    notifyLoopChange('error', name)
+    notifyLoopChange('error', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
   function setPhase(name: string, phase: 'coding' | 'auditing'): void {
+    const state = getAnyState(name)
     loopsRepo.updatePhase(projectId, name, phase)
-    notifyLoopChange('phase', name)
+    notifyLoopChange('phase', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
   function setPhaseAndResetError(name: string, phase: 'coding' | 'auditing'): void {
+    const state = getAnyState(name)
     loopsRepo.setPhaseAndResetError(projectId, name, phase)
-    notifyLoopChange('phase', name)
+    notifyLoopChange('phase', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
   function setModelFailed(name: string, failed: boolean): void {
+    const state = getAnyState(name)
     loopsRepo.setModelFailed(projectId, name, failed)
-    notifyLoopChange('model-failed', name)
+    notifyLoopChange('model-failed', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
   function setLastAuditResult(name: string, text: string): void {
     if (text === '') return
+    const state = getAnyState(name)
     loopsRepo.setLastAuditResult(projectId, name, text)
-    notifyLoopChange('audit-result', name)
+    notifyLoopChange('audit-result', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
   function clearLastAuditResult(name: string): void {
+    const state = getAnyState(name)
     loopsRepo.clearLastAuditResult(projectId, name)
-    notifyLoopChange('audit-result', name)
+    notifyLoopChange('audit-result', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
   function terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void {
+    const state = getAnyState(name)
     loopsRepo.terminate(projectId, name, opts)
-    notifyLoopChange('terminate', name)
+    notifyLoopChange('terminate', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
   function setSandboxContainer(name: string, containerName: string | null): void {
+    const state = getAnyState(name)
     loopsRepo.setSandboxContainer(projectId, name, containerName)
-    notifyLoopChange('sandbox', name)
+    notifyLoopChange('sandbox', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
   function clearWorkspaceId(name: string): void {
+    const state = getAnyState(name)
     loopsRepo.clearWorkspaceId(projectId, name)
-    notifyLoopChange('workspace', name)
+    notifyLoopChange('workspace', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
   function setWorkspaceId(name: string, workspaceId: string): void {
+    const state = getAnyState(name)
     loopsRepo.setWorkspaceId(projectId, name, workspaceId)
-    notifyLoopChange('workspace', name)
+    notifyLoopChange('workspace', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
   return {

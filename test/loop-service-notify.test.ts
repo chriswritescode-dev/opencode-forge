@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test'
+import { describe, it, expect, mock } from 'bun:test'
 import { createLoopService, type LoopChangeNotifier } from '../src/services/loop'
 import type { LoopsRepo } from '../src/storage/repos/loops-repo'
 import type { PlansRepo } from '../src/storage/repos/plans-repo'
@@ -56,7 +56,7 @@ describe('LoopChangeNotifier', () => {
     it('should be called with insert reason when setState is called', () => {
       const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
-      const notify: LoopChangeNotifier = (reason, loopName) => {
+      const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
         notifyCalls.push({ reason, loopName })
       }
 
@@ -82,7 +82,7 @@ describe('LoopChangeNotifier', () => {
     it('should be called with delete reason when deleteState is called', () => {
       const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
-      const notify: LoopChangeNotifier = (reason, loopName) => {
+      const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
         notifyCalls.push({ reason, loopName })
       }
 
@@ -108,7 +108,7 @@ describe('LoopChangeNotifier', () => {
     it('should be called with status reason when setStatus is called', () => {
       const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
-      const notify: LoopChangeNotifier = (reason, loopName) => {
+      const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
         notifyCalls.push({ reason, loopName })
       }
 
@@ -134,7 +134,7 @@ describe('LoopChangeNotifier', () => {
     it('should be called with session reason when registerLoopSession is called', () => {
       const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
-      const notify: LoopChangeNotifier = (reason, loopName) => {
+      const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
         notifyCalls.push({ reason, loopName })
       }
 
@@ -160,7 +160,7 @@ describe('LoopChangeNotifier', () => {
     it('should be called with error reason when incrementError is called', () => {
       const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
-      const notify: LoopChangeNotifier = (reason, loopName) => {
+      const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
         notifyCalls.push({ reason, loopName })
       }
 
@@ -186,7 +186,7 @@ describe('LoopChangeNotifier', () => {
     it('should be called with error reason when resetError is called', () => {
       const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
-      const notify: LoopChangeNotifier = (reason, loopName) => {
+      const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
         notifyCalls.push({ reason, loopName })
       }
 
@@ -212,7 +212,7 @@ describe('LoopChangeNotifier', () => {
     it('should be called with phase reason when setPhase is called', () => {
       const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
-      const notify: LoopChangeNotifier = (reason, loopName) => {
+      const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
         notifyCalls.push({ reason, loopName })
       }
 
@@ -238,7 +238,7 @@ describe('LoopChangeNotifier', () => {
     it('should be called with phase reason when setPhaseAndResetError is called', () => {
       const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
-      const notify: LoopChangeNotifier = (reason, loopName) => {
+      const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
         notifyCalls.push({ reason, loopName })
       }
 
@@ -264,7 +264,7 @@ describe('LoopChangeNotifier', () => {
     it('should be called with model-failed reason when setModelFailed is called', () => {
       const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
-      const notify: LoopChangeNotifier = (reason, loopName) => {
+      const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
         notifyCalls.push({ reason, loopName })
       }
 
@@ -290,7 +290,7 @@ describe('LoopChangeNotifier', () => {
     it('should be called with audit-result reason when setLastAuditResult is called', () => {
       const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
-      const notify: LoopChangeNotifier = (reason, loopName) => {
+      const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
         notifyCalls.push({ reason, loopName })
       }
 
@@ -318,7 +318,7 @@ describe('LoopChangeNotifier', () => {
     it('should be called with rotate reason when replaceSession is called', () => {
       const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
-      const notify: LoopChangeNotifier = (reason, loopName) => {
+      const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
         notifyCalls.push({ reason, loopName })
       }
 
@@ -344,7 +344,7 @@ describe('LoopChangeNotifier', () => {
     it('should be called with terminate reason when terminate is called', () => {
       const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
-      const notify: LoopChangeNotifier = (reason, loopName) => {
+      const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
         notifyCalls.push({ reason, loopName })
       }
 
@@ -370,7 +370,7 @@ describe('LoopChangeNotifier', () => {
     it('should be called with sandbox reason when setSandboxContainer is called', () => {
       const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
-      const notify: LoopChangeNotifier = (reason, loopName) => {
+      const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
         notifyCalls.push({ reason, loopName })
       }
 
@@ -396,7 +396,7 @@ describe('LoopChangeNotifier', () => {
     it('should be called with workspace reason when clearWorkspaceId is called', () => {
       const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
-      const notify: LoopChangeNotifier = (reason, loopName) => {
+      const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
         notifyCalls.push({ reason, loopName })
       }
 
@@ -422,7 +422,7 @@ describe('LoopChangeNotifier', () => {
     it('should be called with workspace reason when setWorkspaceId is called', () => {
       const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
-      const notify: LoopChangeNotifier = (reason, loopName) => {
+      const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
         notifyCalls.push({ reason, loopName })
       }
 
@@ -482,7 +482,7 @@ describe('LoopChangeNotifier', () => {
       mockLoopsRepo.getLarge = () => ({ prompt: 'test prompt', lastAuditResult: null })
 
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
-      const notify: LoopChangeNotifier = (reason, loopName) => {
+      const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
         notifyCalls.push({ reason, loopName })
       }
 
@@ -507,7 +507,7 @@ describe('LoopChangeNotifier', () => {
   })
 
   describe('reconcileStale', () => {
-    it('should be called with reconcile reason for each loop when reconcileStale is called', () => {
+    it('should cancel all loops when called without opts (back-compatible)', async () => {
       const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
 
       const now = Date.now()
@@ -544,7 +544,7 @@ describe('LoopChangeNotifier', () => {
       mockLoopsRepo.getLarge = () => ({ prompt: 'test prompt', lastAuditResult: null })
 
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
-      const notify: LoopChangeNotifier = (reason, loopName) => {
+      const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
         notifyCalls.push({ reason, loopName })
       }
 
@@ -558,11 +558,253 @@ describe('LoopChangeNotifier', () => {
         notify
       )
 
-      loopService.reconcileStale()
+      const result = await loopService.reconcileStale()
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('reconcile')
       expect(notifyCalls[0].loopName).toBe('stale-loop')
+      expect(result.cancelled).toBe(1)
+      expect(result.preserved).toEqual([])
+    })
+
+    it('should preserve loop when isSandboxLive returns true', async () => {
+      const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
+
+      const now = Date.now()
+      const sandboxRow = {
+        loopName: 'live-sandbox-loop',
+        status: 'running' as const,
+        currentSessionId: 's1',
+        worktree: true,
+        worktreeDir: '/test/wt',
+        worktreeBranch: null,
+        projectDir: '/test',
+        maxIterations: 5,
+        iteration: 1,
+        auditCount: 0,
+        errorCount: 0,
+        phase: 'coding' as const,
+        executionModel: null,
+        auditorModel: null,
+        modelFailed: false,
+        sandbox: true,
+        sandboxContainer: 'oc-forge-sandbox-live-sandbox-loop',
+        startedAt: now,
+        completedAt: null,
+        terminationReason: null,
+        completionSummary: null,
+        workspaceId: null,
+        hostSessionId: null,
+        loopId: 1,
+        projectId: 'test-project',
+      }
+
+      mockLoopsRepo.listByStatus = () => [sandboxRow]
+      mockLoopsRepo.getLarge = () => ({ prompt: 'test prompt', lastAuditResult: null })
+
+      const notifyCalls: Array<{ reason: string; loopName: string }> = []
+      const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
+        notifyCalls.push({ reason, loopName })
+      }
+
+      const loopService = createLoopService(
+        mockLoopsRepo,
+        mockPlansRepo,
+        mockReviewFindingsRepo,
+        'test-project',
+        mockLogger,
+        undefined,
+        notify
+      )
+
+      const isSandboxLive = mock(async (name: string) => name === 'live-sandbox-loop')
+      const result = await loopService.reconcileStale({ isSandboxLive })
+
+      expect(notifyCalls.length).toBe(0)
+      expect(result.cancelled).toBe(0)
+      expect(result.preserved).toEqual(['live-sandbox-loop'])
+    })
+
+    it('should cancel loop when isSandboxLive returns false', async () => {
+      const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
+
+      const now = Date.now()
+      const sandboxRow = {
+        loopName: 'dead-sandbox-loop',
+        status: 'running' as const,
+        currentSessionId: 's1',
+        worktree: true,
+        worktreeDir: '/test/wt',
+        worktreeBranch: null,
+        projectDir: '/test',
+        maxIterations: 5,
+        iteration: 1,
+        auditCount: 0,
+        errorCount: 0,
+        phase: 'coding' as const,
+        executionModel: null,
+        auditorModel: null,
+        modelFailed: false,
+        sandbox: true,
+        sandboxContainer: 'oc-forge-sandbox-dead-sandbox-loop',
+        startedAt: now,
+        completedAt: null,
+        terminationReason: null,
+        completionSummary: null,
+        workspaceId: null,
+        hostSessionId: null,
+        loopId: 1,
+        projectId: 'test-project',
+      }
+
+      mockLoopsRepo.listByStatus = () => [sandboxRow]
+      mockLoopsRepo.getLarge = () => ({ prompt: 'test prompt', lastAuditResult: null })
+
+      const notifyCalls: Array<{ reason: string; loopName: string }> = []
+      const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
+        notifyCalls.push({ reason, loopName })
+      }
+
+      const loopService = createLoopService(
+        mockLoopsRepo,
+        mockPlansRepo,
+        mockReviewFindingsRepo,
+        'test-project',
+        mockLogger,
+        undefined,
+        notify
+      )
+
+      const isSandboxLive = mock(async () => false)
+      const result = await loopService.reconcileStale({ isSandboxLive })
+
+      expect(notifyCalls.length).toBe(1)
+      expect(notifyCalls[0].reason).toBe('reconcile')
+      expect(notifyCalls[0].loopName).toBe('dead-sandbox-loop')
+      expect(result.cancelled).toBe(1)
+      expect(result.preserved).toEqual([])
+    })
+
+    it('should cancel loop when sandbox=false (isSandboxLive not called)', async () => {
+      const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
+
+      const now = Date.now()
+      const nonSandboxRow = {
+        loopName: 'non-sandbox-loop',
+        status: 'running' as const,
+        currentSessionId: 's1',
+        worktree: true,
+        worktreeDir: '/test/wt',
+        worktreeBranch: null,
+        projectDir: '/test',
+        maxIterations: 5,
+        iteration: 1,
+        auditCount: 0,
+        errorCount: 0,
+        phase: 'coding' as const,
+        executionModel: null,
+        auditorModel: null,
+        modelFailed: false,
+        sandbox: false,
+        sandboxContainer: null,
+        startedAt: now,
+        completedAt: null,
+        terminationReason: null,
+        completionSummary: null,
+        workspaceId: null,
+        hostSessionId: null,
+        loopId: 1,
+        projectId: 'test-project',
+      }
+
+      mockLoopsRepo.listByStatus = () => [nonSandboxRow]
+      mockLoopsRepo.getLarge = () => ({ prompt: 'test prompt', lastAuditResult: null })
+
+      const notifyCalls: Array<{ reason: string; loopName: string }> = []
+      const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
+        notifyCalls.push({ reason, loopName })
+      }
+
+      const loopService = createLoopService(
+        mockLoopsRepo,
+        mockPlansRepo,
+        mockReviewFindingsRepo,
+        'test-project',
+        mockLogger,
+        undefined,
+        notify
+      )
+
+      const isSandboxLive = mock(async () => true)
+      const result = await loopService.reconcileStale({ isSandboxLive })
+
+      expect(isSandboxLive).not.toHaveBeenCalled()
+      expect(notifyCalls.length).toBe(1)
+      expect(notifyCalls[0].reason).toBe('reconcile')
+      expect(notifyCalls[0].loopName).toBe('non-sandbox-loop')
+      expect(result.cancelled).toBe(1)
+      expect(result.preserved).toEqual([])
+    })
+
+    it('should cancel loop when sandboxContainer=null (isSandboxLive not called)', async () => {
+      const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
+
+      const now = Date.now()
+      const noContainerRow = {
+        loopName: 'no-container-loop',
+        status: 'running' as const,
+        currentSessionId: 's1',
+        worktree: true,
+        worktreeDir: '/test/wt',
+        worktreeBranch: null,
+        projectDir: '/test',
+        maxIterations: 5,
+        iteration: 1,
+        auditCount: 0,
+        errorCount: 0,
+        phase: 'coding' as const,
+        executionModel: null,
+        auditorModel: null,
+        modelFailed: false,
+        sandbox: true,
+        sandboxContainer: null,
+        startedAt: now,
+        completedAt: null,
+        terminationReason: null,
+        completionSummary: null,
+        workspaceId: null,
+        hostSessionId: null,
+        loopId: 1,
+        projectId: 'test-project',
+      }
+
+      mockLoopsRepo.listByStatus = () => [noContainerRow]
+      mockLoopsRepo.getLarge = () => ({ prompt: 'test prompt', lastAuditResult: null })
+
+      const notifyCalls: Array<{ reason: string; loopName: string }> = []
+      const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
+        notifyCalls.push({ reason, loopName })
+      }
+
+      const loopService = createLoopService(
+        mockLoopsRepo,
+        mockPlansRepo,
+        mockReviewFindingsRepo,
+        'test-project',
+        mockLogger,
+        undefined,
+        notify
+      )
+
+      const isSandboxLive = mock(async () => true)
+      const result = await loopService.reconcileStale({ isSandboxLive })
+
+      expect(isSandboxLive).not.toHaveBeenCalled()
+      expect(notifyCalls.length).toBe(1)
+      expect(notifyCalls[0].reason).toBe('reconcile')
+      expect(notifyCalls[0].loopName).toBe('no-container-loop')
+      expect(result.cancelled).toBe(1)
+      expect(result.preserved).toEqual([])
     })
   })
 

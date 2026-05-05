@@ -224,31 +224,28 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
 
-    const notifyLoopChange: LoopChangeNotifier = (reason, loopName) => {
+    const notifyLoopChange: LoopChangeNotifier = (reason, loopName, hint) => {
+      const chosen = hint?.projectDir ?? hint?.worktreeDir ?? directory
+      logger.debug(`[notifyLoopChange] reason=${reason} loop=${loopName} dir=${chosen} projectId=${projectId}`)
       v2.tui.publish({
-        directory,
+        directory: chosen,
         body: {
           type: 'tui.command.execute',
           properties: {
             command: encodeEvent({
               name: 'loops.changed',
               projectId,
-              directory,
+              directory: chosen,
               payload: { reason, loopName },
             }),
           },
         },
-      }).catch((err) => logger.error('[forge] loops.changed publish failed', err))
+      })
+        .then(() => logger.debug('[notifyLoopChange] published'))
+        .catch((err) => logger.error('[forge] loops.changed publish failed', err))
     }
 
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, config.loop, notifyLoopChange)
-
-    const activeSandboxLoops = loopService.listActive().filter(s => s.sandbox && s.loopName)
-
-    const reconciledCount = loopService.reconcileStale()
-    if (reconciledCount > 0) {
-      logger.log(`Reconciled ${reconciledCount} stale loop(s) from previous session`)
-    }
 
     let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
     if (config.sandbox?.mode === 'docker') {
@@ -261,6 +258,18 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       } catch (err) {
         logger.error('Failed to initialize Docker sandbox manager', err)
       }
+    }
+
+    const reconcileResult = await loopService.reconcileStale(
+      sandboxManager
+        ? { isSandboxLive: (name) => sandboxManager!.isLiveByName(name) }
+        : undefined
+    )
+    if (reconcileResult.cancelled > 0) {
+      logger.log(`Reconciled ${reconcileResult.cancelled} stale loop(s) from previous session`)
+    }
+    if (reconcileResult.preserved.length > 0) {
+      logger.log(`Preserved ${reconcileResult.preserved.length} active sandbox loop(s) across restart: ${reconcileResult.preserved.join(', ')}`)
     }
 
     // Sandbox reconciliation interval handle
@@ -339,16 +348,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 
     if (sandboxManager) {
       await cleanupSandboxOrphansAcrossRegistry(registry, sandboxManager)
-
-      for (const loop of activeSandboxLoops) {
-        try {
-          await sandboxManager.restore(loop.loopName!, loop.worktreeDir, loop.startedAt)
-          loopService.setStatus(loop.loopName!, 'running')
-          logger.log(`Restored sandbox and reactivated loop for ${loop.loopName}`)
-        } catch (err) {
-          logger.error(`Failed to restore sandbox for ${loop.loopName}`, err)
-        }
-      }
 
       const reconcileDeps = { sandboxManager, loopService, logger }
       await reconcileSandboxes(reconcileDeps)
