@@ -157,7 +157,7 @@ Use \`review-write\` with these arguments:
 - \`scenario\`: The specific conditions under which this issue manifests
 - \`status\`: "open" (default) or other status
 
-The tool automatically injects the branch field and stores the finding with the current date.
+The tool automatically injects loop scope when running in a loop and stores the finding with the current date.
 
 ## Deleting Resolved Findings
 

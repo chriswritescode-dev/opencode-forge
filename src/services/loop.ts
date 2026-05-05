@@ -18,6 +18,11 @@ export const MAX_RETRIES = 3
 const STALL_TIMEOUT_MS = 60_000
 export const MAX_CONSECUTIVE_STALLS = 5
 const RECENT_MESSAGES_COUNT = 5
+const orphanSweepWorkspaceIds = new Set<string>()
+
+function isNotFoundError(err: unknown): boolean {
+  return err instanceof Error && (err.name === 'NotFoundError' || err.message.includes('NotFoundError'))
+}
 
 /**
  * Represents the runtime state of an autonomous loop.
@@ -654,37 +659,56 @@ export async function sweepOrphanWorkspaces(opts: {
       if (activeWorkspaceIds.has(workspace.id)) {
         continue
       }
-
-      logger.log(`Sweep: found orphan workspace ${workspace.id} (type=forge-worktree)`)
-
-      const sessionApi = v2Client.experimental?.session
-      if (sessionApi?.list) {
-        try {
-          const sessionResult = await sessionApi.list({ workspace: workspace.id })
-          const sessions = (sessionResult.data ?? []) as Array<{ id: string }>
-          for (const session of sessions) {
-            try {
-              await v2Client.session.delete({ sessionID: session.id, directory: workspace.directory ?? projectId })
-              logger.log(`Sweep: deleted orphan session ${session.id} in workspace ${workspace.id}`)
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err)
-              result.errors.push(`Failed to delete session ${session.id}: ${msg}`)
-              logger.error(`Sweep: failed to delete session ${session.id}`, err)
-            }
-          }
-        } catch (err) {
-          logger.error(`Sweep: failed to list sessions in workspace ${workspace.id}`, err)
-        }
+      if (orphanSweepWorkspaceIds.has(workspace.id)) {
+        logger.debug(`Sweep: workspace ${workspace.id} already being swept, skipping`)
+        continue
       }
 
+      orphanSweepWorkspaceIds.add(workspace.id)
+      logger.log(`Sweep: found orphan workspace ${workspace.id} (type=forge-worktree)`)
+
       try {
-        await workspaceApi.remove({ id: workspace.id })
-        result.removed++
-        logger.log(`Sweep: removed orphan workspace ${workspace.id}`)
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        result.errors.push(`Failed to remove workspace ${workspace.id}: ${msg}`)
-        logger.error(`Sweep: failed to remove workspace ${workspace.id}`, err)
+        const sessionApi = v2Client.experimental?.session
+        if (sessionApi?.list) {
+          try {
+            const sessionResult = await sessionApi.list({ workspace: workspace.id })
+            const sessions = (sessionResult.data ?? []) as Array<{ id: string }>
+            for (const session of sessions) {
+              try {
+                await v2Client.session.delete({ sessionID: session.id, directory: workspace.directory ?? projectId })
+                logger.log(`Sweep: deleted orphan session ${session.id} in workspace ${workspace.id}`)
+              } catch (err) {
+                if (isNotFoundError(err)) {
+                  logger.debug(`Sweep: orphan session ${session.id} already deleted`)
+                  continue
+                }
+
+                const msg = err instanceof Error ? err.message : String(err)
+                result.errors.push(`Failed to delete session ${session.id}: ${msg}`)
+                logger.error(`Sweep: failed to delete session ${session.id}`, err)
+              }
+            }
+          } catch (err) {
+            logger.error(`Sweep: failed to list sessions in workspace ${workspace.id}`, err)
+          }
+        }
+
+        try {
+          await workspaceApi.remove({ id: workspace.id })
+          result.removed++
+          logger.log(`Sweep: removed orphan workspace ${workspace.id}`)
+        } catch (err) {
+          if (isNotFoundError(err)) {
+            logger.debug(`Sweep: orphan workspace ${workspace.id} already removed`)
+            continue
+          }
+
+          const msg = err instanceof Error ? err.message : String(err)
+          result.errors.push(`Failed to remove workspace ${workspace.id}: ${msg}`)
+          logger.error(`Sweep: failed to remove workspace ${workspace.id}`, err)
+        }
+      } finally {
+        orphanSweepWorkspaceIds.delete(workspace.id)
       }
     }
   } catch (err) {

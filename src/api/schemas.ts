@@ -63,7 +63,6 @@ export const FindingWriteBody: Schema<{
   severity: 'bug' | 'warning'
   description: string
   scenario?: string
-  branch?: string | null
   loopName?: string | null
 }> = z.object({
   file: z.string(),
@@ -71,7 +70,6 @@ export const FindingWriteBody: Schema<{
   severity: z.enum(['bug', 'warning']),
   description: z.string(),
   scenario: z.string().optional(),
-  branch: z.string().nullable().optional(),
   loopName: z.string().nullable().optional(),
 })
 

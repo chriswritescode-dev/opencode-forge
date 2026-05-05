@@ -1,5 +1,3 @@
--- Migration 119: Replace branch-scope with loop-scope for review_findings.
--- Drops all existing findings (per design decision: ephemeral, fresh slate).
 DROP TABLE IF EXISTS review_findings;
 
 CREATE TABLE review_findings (

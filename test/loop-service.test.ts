@@ -73,7 +73,6 @@ describe('LoopService', () => {
     db.run(`
       CREATE TABLE plans (
         project_id   TEXT NOT NULL,
-      branch       TEXT NOT NULL DEFAULT '',
         loop_name    TEXT,
         session_id   TEXT,
         content      TEXT NOT NULL,
@@ -88,14 +87,14 @@ describe('LoopService', () => {
     db.run(`
       CREATE TABLE review_findings (
         project_id TEXT NOT NULL,
+        loop_name TEXT NOT NULL DEFAULT '',
         file TEXT NOT NULL,
         line INTEGER NOT NULL,
         severity TEXT NOT NULL,
         description TEXT NOT NULL,
         scenario TEXT,
-        branch TEXT,
         created_at INTEGER NOT NULL,
-        PRIMARY KEY (project_id, branch, file, line)
+        PRIMARY KEY (project_id, loop_name, file, line)
       )
     `)
 
@@ -125,7 +124,7 @@ describe('LoopService', () => {
         severity: 'warning',
         description: 'Test warning',
         scenario: 'test',
-        branch: 'b1',
+        loopName: 'b1',
       })
 
       expect(loopService.hasOutstandingFindings('b1')).toBe(true)
@@ -140,7 +139,7 @@ describe('LoopService', () => {
         severity: 'warning',
         description: 'Test warning',
         scenario: 'test',
-        branch: 'b1',
+        loopName: 'b1',
       })
 
       expect(loopService.hasOutstandingFindings('b1', 'bug')).toBe(false)
@@ -156,7 +155,7 @@ describe('LoopService', () => {
         severity: 'bug',
         description: 'Test bug',
         scenario: 'test',
-        branch: 'b2',
+        loopName: 'b2',
       })
       reviewFindingsRepo.write({
         projectId,
@@ -165,7 +164,7 @@ describe('LoopService', () => {
         severity: 'warning',
         description: 'Test warning',
         scenario: 'test',
-        branch: 'b2',
+        loopName: 'b2',
       })
 
       expect(loopService.hasOutstandingFindings('b2', 'bug')).toBe(true)
@@ -185,7 +184,7 @@ describe('LoopService', () => {
         severity: 'bug',
         description: 'Test bug',
         scenario: 'test',
-        branch: 'b2',
+        loopName: 'b2',
       })
       reviewFindingsRepo.write({
         projectId,
@@ -194,7 +193,7 @@ describe('LoopService', () => {
         severity: 'warning',
         description: 'Test warning',
         scenario: 'test',
-        branch: 'b2',
+        loopName: 'b2',
       })
 
       const allFindings = loopService.getOutstandingFindings('b2')
@@ -248,7 +247,7 @@ describe('LoopService', () => {
         severity: 'bug',
         description: 'Test bug',
         scenario: 'test',
-        branch: 'test-branch',
+        loopName: 'test-loop',
       })
 
       const state = {

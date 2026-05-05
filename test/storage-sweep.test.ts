@@ -92,8 +92,8 @@ test('sweepExpiredLoops leaves review_findings untouched', () => {
   const eightDaysAgo = now - (8 * 24 * 60 * 60 * 1000)
 
   db.run(`
-    INSERT INTO review_findings (project_id, file, line, severity, description, scenario, branch, created_at)
-    VALUES ('proj1', '/test.ts', 10, 'bug', 'test bug', 'test scenario', 'main', ?)
+    INSERT INTO review_findings (project_id, loop_name, file, line, severity, description, scenario, created_at)
+    VALUES ('proj1', 'loop-a', '/test.ts', 10, 'bug', 'test bug', 'test scenario', ?)
   `, [eightDaysAgo])
 
   const ttlMs = 7 * 24 * 60 * 60 * 1000

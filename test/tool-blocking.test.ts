@@ -68,14 +68,14 @@ function createTestDb(): Database {
   db.run(`
     CREATE TABLE IF NOT EXISTS review_findings (
       project_id TEXT NOT NULL,
+        loop_name TEXT NOT NULL DEFAULT '',
       file TEXT NOT NULL,
       line INTEGER NOT NULL,
       severity TEXT NOT NULL CHECK(severity IN ('bug','warning')),
       description TEXT NOT NULL,
       scenario TEXT,
-      branch TEXT,
       created_at INTEGER NOT NULL,
-      PRIMARY KEY (project_id, branch, file, line)
+      PRIMARY KEY (project_id, loop_name, file, line)
     )
   `)
   return db

@@ -9,16 +9,12 @@ export async function handleListFindings(
 ): Promise<unknown> {
   const { projectId } = params
   const queryParams = body as Record<string, string> | undefined
-  const branch = queryParams?.branch
   const loopName = queryParams?.loopName
   const file = queryParams?.file
 
   let findings
   if (loopName !== undefined) {
-    // loopName takes priority
     findings = deps.ctx.reviewFindingsRepo.listByLoopName(projectId, loopName === '' ? null : loopName)
-  } else if (branch !== undefined) {
-    findings = deps.ctx.reviewFindingsRepo.listByBranch(projectId, branch === '' ? null : branch)
   } else if (file) {
     findings = deps.ctx.reviewFindingsRepo.listByFile(projectId, file)
   } else {
@@ -36,11 +32,6 @@ export async function handleWriteFinding(
   const { projectId } = params
   const parsed = FindingWriteBody.parse(body)
 
-  // Reject if both branch and loopName are non-null
-  if (parsed.branch != null && parsed.branch !== '' && parsed.loopName != null && parsed.loopName !== '') {
-    throw new ForgeRpcError('invalid_argument', 'Cannot write finding with both branch and loopName set')
-  }
-
   const result = deps.ctx.reviewFindingsRepo.write({
     projectId,
     file: parsed.file,
@@ -48,7 +39,6 @@ export async function handleWriteFinding(
     severity: parsed.severity,
     description: parsed.description,
     scenario: parsed.scenario ?? null,
-    branch: parsed.branch ?? null,
     loopName: parsed.loopName ?? null,
   })
 
@@ -71,7 +61,6 @@ export async function handleDeleteFinding(
   const queryParams = body as Record<string, string> | undefined
   const file = queryParams?.file
   const lineParam = queryParams?.line
-  const branch = queryParams?.branch
   const loopName = queryParams?.loopName
 
   if (!file || !lineParam) {
@@ -86,8 +75,6 @@ export async function handleDeleteFinding(
   let deleted: boolean
   if (loopName !== undefined) {
     deleted = deps.ctx.reviewFindingsRepo.delete(projectId, file, line, { loopName: loopName === '' ? null : loopName })
-  } else if (branch !== undefined) {
-    deleted = deps.ctx.reviewFindingsRepo.delete(projectId, file, line, { branch: branch === '' ? null : branch })
   } else {
     deleted = deps.ctx.reviewFindingsRepo.delete(projectId, file, line)
   }

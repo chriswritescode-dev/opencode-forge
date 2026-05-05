@@ -178,14 +178,14 @@ describe('loop-hooks integration', () => {
     db.run(`
       CREATE TABLE review_findings (
         project_id TEXT NOT NULL,
-        branch TEXT NOT NULL DEFAULT '',
+        loop_name TEXT NOT NULL DEFAULT '',
         file TEXT NOT NULL,
         line INTEGER NOT NULL,
         severity TEXT NOT NULL,
         description TEXT NOT NULL,
         scenario TEXT,
         created_at INTEGER NOT NULL,
-        PRIMARY KEY (project_id, branch, file, line)
+        PRIMARY KEY (project_id, loop_name, file, line)
       )
     `)
     
@@ -532,7 +532,7 @@ describe('loop-hooks integration', () => {
         severity: 'warning',
         description: 'Test review finding',
         scenario: 'Test scenario',
-        branch: worktreeBranch,
+        loopName,
       })
       
       const idleEvent = {
@@ -638,7 +638,7 @@ describe('loop-hooks integration', () => {
         severity: 'bug',
         description: 'Test bug finding',
         scenario: 'Test scenario',
-        branch: null,
+        loopName,
       })
 
       await handler.onEvent({
@@ -1254,7 +1254,7 @@ describe('loop-hooks integration', () => {
         severity: 'bug',
         description: 'Test bug finding',
         scenario: 'Test scenario',
-        branch: worktreeBranch,
+        loopName,
       })
       
       // Verify the state was inserted with workspaceId
@@ -1373,7 +1373,7 @@ describe('loop-hooks integration', () => {
         severity: 'bug',
         description: 'Test bug finding',
         scenario: 'Test scenario',
-        branch: worktreeBranch,
+        loopName,
       })
 
       const idleEvent = {
@@ -1556,7 +1556,7 @@ describe('loop-hooks integration', () => {
         severity: 'bug',
         description: 'Outstanding bug finding',
         scenario: 'Test scenario',
-        branch: worktreeBranch,
+        loopName,
       })
       
       const idleEvent = {
@@ -2177,9 +2177,9 @@ describe('loop-hooks integration', () => {
 
       // Add a review finding so checkAuditClearAndTerminate doesn't terminate
       db.run(`
-        INSERT INTO review_findings (project_id, branch, file, line, severity, description, created_at)
-        VALUES (?, 'b4-branch', 'test.ts', 1, 'bug', 'test finding', ?)
-      `, testProjectId, now)
+        INSERT INTO review_findings (project_id, loop_name, file, line, severity, description, created_at)
+        VALUES (?, ?, 'test.ts', 1, 'bug', 'test finding', ?)
+      `, testProjectId, loopName, now)
 
       await handler.onEvent({
         event: {

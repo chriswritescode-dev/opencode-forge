@@ -61,7 +61,7 @@ function createTestDB() {
     CREATE TABLE review_findings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       project_id TEXT NOT NULL,
-      branch TEXT NOT NULL,
+      loop_name TEXT NOT NULL DEFAULT '',
       file TEXT NOT NULL,
       line INTEGER NOT NULL,
       severity TEXT NOT NULL,
@@ -69,7 +69,7 @@ function createTestDB() {
       scenario TEXT,
       created_at INTEGER NOT NULL,
       resolved_at INTEGER,
-      UNIQUE(project_id, branch, file, line)
+      UNIQUE(project_id, loop_name, file, line)
     )
   `)
 
@@ -253,7 +253,7 @@ describe('in-place loop iteration', () => {
       // Insert initial finding so loop doesn't terminate immediately
       reviewFindingsRepo.write({
         projectId: testProjectId,
-        branch: 'main',
+        loopName,
         file: 'test.ts',
         line: 1,
         severity: 'bug',
@@ -307,7 +307,7 @@ describe('in-place loop iteration', () => {
       // Insert another finding so next audit doesn't clear
       reviewFindingsRepo.write({
         projectId: testProjectId,
-        branch: 'main',
+        loopName,
         file: 'test2.ts',
         line: 2,
         severity: 'warning',
@@ -333,9 +333,9 @@ describe('in-place loop iteration', () => {
       const codingSessionId3 = state!.sessionId
 
       // Delete all findings
-      const findings = loopService.getOutstandingFindings('main')
+      const findings = loopService.getOutstandingFindings(loopName)
       findings.forEach((f) => {
-        reviewFindingsRepo.delete(testProjectId, f.file, f.line, f.branch ?? undefined)
+        reviewFindingsRepo.delete(testProjectId, f.file, f.line, { loopName })
       })
 
       // Fire idle for L3 (coding session)
@@ -368,7 +368,7 @@ describe('in-place loop iteration', () => {
       // Insert a finding so loop doesn't terminate
       reviewFindingsRepo.write({
         projectId: testProjectId,
-        branch: 'main',
+        loopName,
         file: 'test.ts',
         line: 1,
         severity: 'bug',
@@ -426,7 +426,7 @@ describe('in-place loop iteration', () => {
       // Insert a finding so loop doesn't terminate
       reviewFindingsRepo.write({
         projectId: testProjectId,
-        branch: 'main',
+        loopName,
         file: 'test.ts',
         line: 1,
         severity: 'bug',

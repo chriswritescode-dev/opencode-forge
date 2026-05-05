@@ -107,14 +107,14 @@ test('review findings scenario is made nullable when legacy migration id was alr
     );
     CREATE TABLE review_findings (
       project_id   TEXT NOT NULL,
-      branch       TEXT NOT NULL DEFAULT '',
+      loop_name    TEXT NOT NULL DEFAULT '',
       file         TEXT NOT NULL,
       line         INTEGER NOT NULL,
       severity     TEXT NOT NULL CHECK(severity IN ('bug','warning')),
       description  TEXT NOT NULL,
       scenario     TEXT NOT NULL,
       created_at   INTEGER NOT NULL,
-      PRIMARY KEY (project_id, branch, file, line)
+      PRIMARY KEY (project_id, loop_name, file, line)
     );
     INSERT INTO migrations (id, description, applied_at) VALUES
       ('103', 'Create review_findings table for write-once review findings', 1),
@@ -128,6 +128,52 @@ test('review findings scenario is made nullable when legacy migration id was alr
   }) as { notnull: number } | undefined
 
   expect(scenario?.notnull).toBe(0)
+
+  migrated.close()
+})
+
+test('review findings branch scope is dropped when migration 119 was already recorded', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  db.run(`
+    CREATE TABLE migrations (
+      id TEXT PRIMARY KEY,
+      description TEXT NOT NULL,
+      applied_at INTEGER NOT NULL
+    );
+    CREATE TABLE review_findings (
+      project_id   TEXT NOT NULL,
+      branch       TEXT NOT NULL DEFAULT '',
+      loop_name    TEXT NOT NULL DEFAULT '',
+      file         TEXT NOT NULL,
+      line         INTEGER NOT NULL,
+      severity     TEXT NOT NULL CHECK(severity IN ('bug','warning')),
+      description  TEXT NOT NULL,
+      scenario     TEXT,
+      created_at   INTEGER NOT NULL,
+      CHECK (NOT (branch != '' AND loop_name != '')),
+      PRIMARY KEY (project_id, branch, loop_name, file, line)
+    );
+    INSERT INTO migrations (id, description, applied_at) VALUES
+      ('103', 'Create review_findings table for write-once review findings', 1),
+      ('111', 'Make scenario column nullable in review_findings table', 1),
+      ('117', 'Add branch to primary key for review_findings table (branch-scoped findings)', 1),
+      ('114', 'Ensure scenario column is nullable in review_findings table', 1),
+      ('115', 'Create api_registry table for HTTP control plane (historical - dropped in 116)', 1),
+      ('116', 'Drop api_registry table (bus-RPC migration - HTTP control plane removed)', 1),
+      ('118', 'Drop audit_session_id column from loops table (single-session loop model)', 1),
+      ('119', 'Add loop_name scope to review_findings; drop legacy branch-only rows', 1);
+  `)
+  db.close()
+
+  const migrated = openForgeDatabase(dbPath)
+  const cols = migrated.prepare('PRAGMA table_info(review_findings)').all() as Array<{ name: string; pk: number }>
+
+  expect(cols.some((col) => col.name === 'branch')).toBe(false)
+  expect(cols.find((col) => col.name === 'project_id')?.pk).toBe(1)
+  expect(cols.find((col) => col.name === 'loop_name')?.pk).toBe(2)
+  expect(cols.find((col) => col.name === 'file')?.pk).toBe(3)
+  expect(cols.find((col) => col.name === 'line')?.pk).toBe(4)
 
   migrated.close()
 })

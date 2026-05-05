@@ -180,8 +180,24 @@ export const migrations: Migration[] = [
     description: 'Add loop_name scope to review_findings; drop legacy branch-only rows',
     apply: (db: Database) => {
       const cols = db.prepare('PRAGMA table_info(review_findings)').all() as Array<{ name: string }>
-      if (cols.some((c) => c.name === 'loop_name')) return
+      if (cols.some((c) => c.name === 'loop_name') && !cols.some((c) => c.name === 'branch')) return
       db.run(loadSql('119_loop_scope_review_findings.sql'))
+    },
+  },
+  {
+    id: '120',
+    description: 'Drop branch scope from review_findings table',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(review_findings)').all() as Array<{ name: string }>
+      const pkInfo = db.prepare('PRAGMA table_info(review_findings)').all() as Array<{ name: string; pk: number }>
+      const hasBranch = cols.some((c) => c.name === 'branch')
+      const hasLoopOnlyPk =
+        pkInfo.find((c) => c.name === 'project_id')?.pk === 1 &&
+        pkInfo.find((c) => c.name === 'loop_name')?.pk === 2 &&
+        pkInfo.find((c) => c.name === 'file')?.pk === 3 &&
+        pkInfo.find((c) => c.name === 'line')?.pk === 4
+      if (!hasBranch && hasLoopOnlyPk) return
+      db.run(loadSql('120_loop_only_review_findings.sql'))
     },
   },
 

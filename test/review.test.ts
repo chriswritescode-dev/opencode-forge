@@ -70,7 +70,6 @@ function createTestDb(): Database {
   db.run(`
     CREATE TABLE IF NOT EXISTS review_findings (
       project_id   TEXT NOT NULL,
-      branch       TEXT NOT NULL DEFAULT '',
       loop_name    TEXT NOT NULL DEFAULT '',
       file         TEXT NOT NULL,
       line         INTEGER NOT NULL,
@@ -78,11 +77,9 @@ function createTestDb(): Database {
       description  TEXT NOT NULL,
       scenario     TEXT,
       created_at   INTEGER NOT NULL,
-      CHECK (NOT (branch != '' AND loop_name != '')),
-      PRIMARY KEY (project_id, branch, loop_name, file, line)
+      PRIMARY KEY (project_id, loop_name, file, line)
     )
   `)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_branch ON review_findings(project_id, branch)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_loop_name ON review_findings(project_id, loop_name)`)
   
   return db
@@ -195,10 +192,9 @@ describe('review-write', () => {
     const findings = reviewFindingsRepo.listAll('test-project')
     expect(findings).toHaveLength(1)
     expect(findings[0].loopName).toBe('test-loop')
-    expect(findings[0].branch).toBeNull()
   })
 
-  test('outside a loop session writes branch and empty loop_name', async () => {
+  test('outside a loop session writes empty loop_name', async () => {
     const result = await tools['review-write'].execute(
       {
         file: 'src/branch-file.ts',
@@ -213,8 +209,6 @@ describe('review-write', () => {
 
     const findings = reviewFindingsRepo.listAll('test-project')
     expect(findings).toHaveLength(1)
-    // Outside a loop, git branch resolution will be attempted but may fail in test env
-    // so both branch and loopName may be null
     expect(findings[0].loopName).toBeNull()
   })
 })
@@ -242,7 +236,6 @@ describe('review-read', () => {
       severity: 'bug',
       description: 'Bug in file1',
       scenario: 'Scenario 1',
-      branch: 'main',
       loopName: null,
     })
     reviewFindingsRepo.write({
@@ -252,7 +245,6 @@ describe('review-read', () => {
       severity: 'warning',
       description: 'Warning in file2',
       scenario: 'Scenario 2',
-      branch: 'main',
       loopName: null,
     })
     // Loop-specific findings
@@ -262,7 +254,6 @@ describe('review-read', () => {
       line: 1,
       severity: 'bug',
       description: 'Alpha loop bug',
-      branch: null,
       loopName: 'alpha',
     })
     reviewFindingsRepo.write({
@@ -271,7 +262,6 @@ describe('review-read', () => {
       line: 2,
       severity: 'warning',
       description: 'Beta loop warning',
-      branch: null,
       loopName: 'beta',
     })
   })
@@ -387,7 +377,6 @@ describe('review-delete', () => {
       severity: 'bug',
       description: 'Test bug',
       scenario: 'Test scenario',
-      branch: null,
       loopName: null,
     })
   })
@@ -416,7 +405,6 @@ describe('review-delete', () => {
       line: 5,
       severity: 'bug',
       description: 'Alpha finding',
-      branch: null,
       loopName: 'alpha',
     })
     reviewFindingsRepo.write({
@@ -425,7 +413,6 @@ describe('review-delete', () => {
       line: 5,
       severity: 'warning',
       description: 'Beta finding',
-      branch: null,
       loopName: 'beta',
     })
 

@@ -19,7 +19,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
 
   return {
     'review-write': tool({
-      description: 'Store a code review finding with file location, severity, and description. Automatically injects scope field (loopName or branch).',
+      description: 'Store a code review finding with file location, severity, and description. Automatically injects loopName when running in a loop.',
       args: {
         file: z.string().describe('The file path where the finding is located'),
         line: z.number().describe('The line number of the finding'),
@@ -36,7 +36,6 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
           severity: args.severity,
           description: args.description,
           scenario: args.scenario ?? null,
-          branch: null as string | null,
           loopName: null as string | null,
         }
 
@@ -94,7 +93,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         }
 
         const formatted = findings.map((f) => {
-          return `- **${f.file}:${f.line}**\n  - Severity: ${f.severity}\n  - File: ${f.file}:${f.line}\n  - Description: ${f.description}\n  - Scenario: ${f.scenario || 'N/A'}\n  - Branch: ${f.branch ?? 'N/A'}\n  - Loop: ${f.loopName ?? 'N/A'}`
+          return `- **${f.file}:${f.line}**\n  - Severity: ${f.severity}\n  - File: ${f.file}:${f.line}\n  - Description: ${f.description}\n  - Scenario: ${f.scenario || 'N/A'}\n  - Loop: ${f.loopName ?? 'N/A'}`
         })
 
         logger.log(`review-read: found ${findings.length} findings`)

@@ -134,6 +134,84 @@ describe('sweepOrphanWorkspaces', () => {
     expect(mockV2.experimental!.workspace.remove).toHaveBeenCalled()
   })
 
+  it('skips duplicate concurrent sweeps for the same workspace', async () => {
+    const orphanWorkspaceId = 'orphan-ws-2'
+    const orphanSessionId = 'orphan-session-1'
+    let resolveSessionListStarted: () => void = () => {}
+    const sessionListStarted = new Promise<void>((resolve) => {
+      resolveSessionListStarted = resolve
+    })
+
+    mockV2.experimental!.workspace.list = vi.fn().mockResolvedValue({
+      data: [
+        { id: orphanWorkspaceId, type: 'forge-worktree', directory: '/tmp/orphan' },
+      ],
+    })
+
+    mockLoopsRepo.listByStatus = vi.fn().mockReturnValue([])
+
+    mockV2.experimental!.session!.list = vi.fn(async () => {
+      resolveSessionListStarted()
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      return { data: [{ id: orphanSessionId }] }
+    }) as any
+
+    const firstSweep = sweepOrphanWorkspaces({
+      v2Client: mockV2,
+      loopsRepo: mockLoopsRepo,
+      projectId: 'project-123',
+      logger: mockLogger,
+    })
+    await sessionListStarted
+
+    const secondResult = await sweepOrphanWorkspaces({
+      v2Client: mockV2,
+      loopsRepo: mockLoopsRepo,
+      projectId: 'project-123',
+      logger: mockLogger,
+    })
+    const firstResult = await firstSweep
+
+    expect(firstResult.removed).toBe(1)
+    expect(secondResult.removed).toBe(0)
+    expect(secondResult.errors).toEqual([])
+    expect(mockV2.experimental!.session!.list).toHaveBeenCalledTimes(1)
+    expect(mockV2.session.delete).toHaveBeenCalledTimes(1)
+    expect(mockV2.experimental!.workspace.remove).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores not found errors from already-deleted sessions', async () => {
+    const orphanWorkspaceId = 'orphan-ws-2'
+    const orphanSessionId = 'orphan-session-1'
+    const notFoundError = new Error('NotFoundError')
+    notFoundError.name = 'NotFoundError'
+
+    mockV2.experimental!.workspace.list = vi.fn().mockResolvedValue({
+      data: [
+        { id: orphanWorkspaceId, type: 'forge-worktree', directory: '/tmp/orphan' },
+      ],
+    })
+
+    mockLoopsRepo.listByStatus = vi.fn().mockReturnValue([])
+
+    mockV2.experimental!.session!.list = vi.fn().mockResolvedValue({
+      data: [{ id: orphanSessionId }],
+    })
+    mockV2.session.delete = vi.fn().mockRejectedValue(notFoundError)
+
+    const result = await sweepOrphanWorkspaces({
+      v2Client: mockV2,
+      loopsRepo: mockLoopsRepo,
+      projectId: 'project-123',
+      logger: mockLogger,
+    })
+
+    expect(result.removed).toBe(1)
+    expect(result.errors).toEqual([])
+    expect(mockLogger.error).not.toHaveBeenCalledWith(expect.stringContaining('failed to delete session'), notFoundError)
+    expect(mockV2.experimental!.workspace.remove).toHaveBeenCalledWith({ id: orphanWorkspaceId })
+  })
+
   it('skips workspaces that are in active set', async () => {
     const activeWorkspaceId = 'active-ws-1'
 

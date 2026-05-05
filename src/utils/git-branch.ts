@@ -3,7 +3,6 @@ import { execSync } from 'child_process'
 
 export type FindingScope =
   | { kind: 'loop'; loopName: string }
-  | { kind: 'branch'; branch: string }
   | { kind: 'none' }
 
 /**
@@ -11,10 +10,9 @@ export type FindingScope =
  * Resolution order:
  * 1. If sessionId is provided, resolve loop name from loop service
  * 2. Match active loop by worktreeDir or projectDir
- * 3. Fall back to git branch
- * 4. Return none if no scope found
+ * 3. Return none if no loop scope found
  * 
- * @param directory - The directory to check for git branch
+ * @param directory - The directory to match against active loops
  * @param loopService - The loop service for checking active loops
  * @param sessionId - Optional session ID to resolve loop state directly
  * @returns The resolved finding scope
@@ -39,24 +37,15 @@ export function resolveFindingScope(
     return { kind: 'loop', loopName: loop.loopName }
   }
   
-  // Priority 3: Fall back to git branch
-  const branch = resolveCurrentGitBranch(directory)
-  if (branch) {
-    return { kind: 'branch', branch }
-  }
-  
-  // Priority 4: No scope found
+  // Priority 3: No scope found
   return { kind: 'none' }
 }
 
 /**
- * Injects the appropriate scope field (loopName or branch) into a JSON object for review findings.
+ * Injects the loopName scope field into a JSON object for review findings.
  * Resolution order:
  * 1. If sessionId is provided, use the loop state for that session
  * 2. Match active loop by worktreeDir or projectDir
- * 3. Fall back to git command
- * 
- * Only ONE of loopName or branch will be set - never both.
  * 
  * @param value - The object to inject the scope field into
  * @param directory - The directory to check for git branch
@@ -76,27 +65,9 @@ export function injectScopeField(
   
   if (scope.kind === 'loop') {
     record.loopName = scope.loopName
-    record.branch = null
-  } else if (scope.kind === 'branch') {
-    record.branch = scope.branch
-    record.loopName = null
   } else {
-    // kind === 'none' - set both to null
-    record.branch = null
     record.loopName = null
   }
-}
-
-/**
- * @deprecated Use injectScopeField instead. This alias is provided for backward compatibility.
- */
-export function injectBranchField(
-  value: unknown,
-  directory: string,
-  loopService: LoopService,
-  sessionId?: string,
-): void {
-  return injectScopeField(value, directory, loopService, sessionId)
 }
 
 export function resolveCurrentGitBranch(directory: string): string | undefined {

@@ -70,14 +70,14 @@ function createTestDb(): { db: Database; path: string } {
   db.run(`
     CREATE TABLE IF NOT EXISTS review_findings (
       project_id TEXT NOT NULL,
+        loop_name TEXT NOT NULL DEFAULT '',
       file TEXT NOT NULL,
       line INTEGER NOT NULL,
       severity TEXT NOT NULL,
       description TEXT NOT NULL,
       scenario TEXT,
-      branch TEXT,
       created_at INTEGER NOT NULL,
-      PRIMARY KEY (project_id, branch, file, line)
+      PRIMARY KEY (project_id, loop_name, file, line)
     )
   `)
   db.run(`CREATE INDEX IF NOT EXISTS idx_loops_status ON loops(project_id, status)`)

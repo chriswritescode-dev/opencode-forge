@@ -68,7 +68,6 @@ function createTestDb(): Database {
   db.run(`
     CREATE TABLE IF NOT EXISTS review_findings (
       project_id   TEXT NOT NULL,
-      branch       TEXT NOT NULL DEFAULT '',
       loop_name    TEXT NOT NULL DEFAULT '',
       file         TEXT NOT NULL,
       line         INTEGER NOT NULL,
@@ -76,11 +75,9 @@ function createTestDb(): Database {
       description  TEXT NOT NULL,
       scenario     TEXT,
       created_at   INTEGER NOT NULL,
-      CHECK (NOT (branch != '' AND loop_name != '')),
-      PRIMARY KEY (project_id, branch, loop_name, file, line)
+      PRIMARY KEY (project_id, loop_name, file, line)
     )
   `)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_branch ON review_findings(project_id, branch)`)
   db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_loop_name ON review_findings(project_id, loop_name)`)
   
   return db
@@ -118,7 +115,6 @@ describe('Loop findings gate', () => {
       line: 1,
       severity: 'bug',
       description: 'Alpha loop bug',
-      branch: null,
       loopName: 'alpha',
     })
 
@@ -136,7 +132,6 @@ describe('Loop findings gate', () => {
       line: 1,
       severity: 'bug',
       description: 'Alpha loop bug',
-      branch: null,
       loopName: 'alpha',
     })
     reviewFindingsRepo.write({
@@ -145,7 +140,6 @@ describe('Loop findings gate', () => {
       line: 2,
       severity: 'warning',
       description: 'Beta loop warning',
-      branch: null,
       loopName: 'beta',
     })
 
@@ -171,7 +165,6 @@ describe('Loop findings gate', () => {
       line: 10,
       severity: 'bug',
       description: 'Test bug',
-      branch: null,
       loopName: 'test-loop',
     })
 
@@ -186,7 +179,6 @@ describe('Loop findings gate', () => {
       line: 10,
       severity: 'warning',
       description: 'Test warning',
-      branch: null,
       loopName: 'test-loop',
     })
 

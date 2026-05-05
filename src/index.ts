@@ -4,7 +4,7 @@ import { buildAgents } from './agents'
 import { createConfigHandler } from './config'
 import { createSessionHooks, createLoopEventHandler } from './hooks'
 import { initializeDatabase, resolveDataDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo } from './storage'
-import { createLoopService, sweepOrphanWorkspaces } from './services/loop'
+import { createLoopService } from './services/loop'
 import { loadPluginConfig } from './setup'
 import { resolveLogPath } from './storage'
 import { createLogger } from './utils/logger'
@@ -26,6 +26,8 @@ import { createPlanCaptureEventHook } from './hooks/plan-capture'
 import { createBusRpcEventHook } from './api/bus-rpc'
 import { encodeEvent } from './api/bus-protocol'
 import type { LoopChangeNotifier } from './services/loop'
+
+const registeredWorkspaceApis = new WeakSet<object>()
 
 export async function cleanupSandboxOrphansAcrossRegistry(
   registry: ProjectRegistry,
@@ -215,6 +217,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     })
     logger.log(`Initializing plugin for directory: ${directory}, projectId: ${projectId}`)
     logger.log(`v2 client fetch: ${legacyFetch ? 'in-process' : 'globalThis'}; auth: ${legacyAuthHeader ? 'inherited' : 'none'}`)
+    registerForgeWorktreeAdaptor(input, logger)
 
     const dataDir = config.dataDir || resolveDataDir()
     
@@ -270,19 +273,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     }
     if (reconcileResult.preserved.length > 0) {
       logger.log(`Preserved ${reconcileResult.preserved.length} active sandbox loop(s) across restart: ${reconcileResult.preserved.join(', ')}`)
-    }
-
-    const sweepResult = await sweepOrphanWorkspaces({
-      v2Client: v2,
-      loopsRepo,
-      projectId,
-      logger,
-    })
-    if (sweepResult.removed > 0) {
-      logger.log(`Sweep: removed ${sweepResult.removed} orphan workspace(s)`)
-    }
-    if (sweepResult.errors.length > 0) {
-      logger.error(`Sweep: encountered ${sweepResult.errors.length} error(s): ${sweepResult.errors.join(', ')}`)
     }
 
     // Sandbox reconciliation interval handle
@@ -493,25 +483,47 @@ use the \`question\` tool to request execution approval with: "New session", "Ex
   }
 }
 
-const plugin: Plugin = async (input: PluginInput): Promise<Hooks> => {
-  const config = loadPluginConfig()
-  const factory = createForgePlugin(config)
-  const hooks = await factory(input)
-
-  // Register the forge worktree workspace adaptor so worktree-backed loops can be
-  // switched to directly from the TUI as workspaces.
-  // Guarded in case the host runtime is older than the type declarations.
+function registerForgeWorktreeAdaptor(input: PluginInput, logger?: Pick<ReturnType<typeof createLogger>, 'log' | 'error'>): void {
   const workspaceApi = (input as PluginInput & {
     experimental_workspace?: PluginInput['experimental_workspace']
   }).experimental_workspace
-  if (workspaceApi) {
-    try {
-      workspaceApi.register(FORGE_WORKTREE_WORKSPACE_TYPE, createForgeWorktreeAdaptor())
-    } catch {
-      // Workspace adaptor registration is optional — silently ignore failures
-      // (e.g., duplicate registration, unsupported runtime, older opencode version)
-    }
+
+  if (!workspaceApi) {
+    logger?.log('Workspace adaptor registration skipped: experimental_workspace API not available')
+    return
   }
+
+  if (registeredWorkspaceApis.has(workspaceApi)) {
+    logger?.log(`Workspace adaptor already registered: ${FORGE_WORKTREE_WORKSPACE_TYPE}`)
+    return
+  }
+
+  try {
+    workspaceApi.register(FORGE_WORKTREE_WORKSPACE_TYPE, createForgeWorktreeAdaptor())
+    registeredWorkspaceApis.add(workspaceApi)
+    logger?.log(`Workspace adaptor registered: ${FORGE_WORKTREE_WORKSPACE_TYPE}`)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    if (/already|duplicate/i.test(message)) {
+      registeredWorkspaceApis.add(workspaceApi)
+      logger?.log(`Workspace adaptor already registered: ${FORGE_WORKTREE_WORKSPACE_TYPE}`)
+      return
+    }
+    logger?.error(`Workspace adaptor registration failed: ${FORGE_WORKTREE_WORKSPACE_TYPE}: ${message}`, err)
+  }
+}
+
+const plugin: Plugin = async (input: PluginInput): Promise<Hooks> => {
+  const config = loadPluginConfig()
+  const bootstrapLogger = createLogger({
+    enabled: config.logging?.enabled ?? false,
+    file: config.logging?.file ?? resolveLogPath(),
+    debug: config.logging?.debug ?? false,
+  })
+  registerForgeWorktreeAdaptor(input, bootstrapLogger)
+
+  const factory = createForgePlugin(config)
+  const hooks = await factory(input)
 
   return hooks
 }
