@@ -228,24 +228,30 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const reviewFindingsRepo = createReviewFindingsRepo(db)
 
     const notifyLoopChange: LoopChangeNotifier = (reason, loopName, hint) => {
-      const chosen = hint?.projectDir ?? hint?.worktreeDir ?? directory
-      logger.debug(`[notifyLoopChange] reason=${reason} loop=${loopName} dir=${chosen} projectId=${projectId}`)
-      v2.tui.publish({
-        directory: chosen,
-        body: {
-          type: 'tui.command.execute',
-          properties: {
-            command: encodeEvent({
-              name: 'loops.changed',
-              projectId,
-              directory: chosen,
-              payload: { reason, loopName },
-            }),
+      const targetDirectories = Array.from(new Set([
+        hint?.projectDir,
+        hint?.worktreeDir,
+        directory,
+      ].filter((dir): dir is string => !!dir)))
+      logger.debug(`[notifyLoopChange] reason=${reason} loop=${loopName} dirs=${targetDirectories.join(',')} projectId=${projectId}`)
+      for (const targetDir of targetDirectories) {
+        v2.tui.publish({
+          directory: targetDir,
+          body: {
+            type: 'tui.command.execute',
+            properties: {
+              command: encodeEvent({
+                name: 'loops.changed',
+                projectId,
+                directory: targetDir,
+                payload: { reason, loopName },
+              }),
+            },
           },
-        },
-      })
-        .then(() => logger.debug('[notifyLoopChange] published'))
-        .catch((err) => logger.error('[forge] loops.changed publish failed', err))
+        })
+          .then(() => logger.debug(`[notifyLoopChange] published to ${targetDir}`))
+          .catch((err) => logger.error(`[forge] loops.changed publish failed for ${targetDir}`, err))
+      }
     }
 
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, config.loop, notifyLoopChange, v2)

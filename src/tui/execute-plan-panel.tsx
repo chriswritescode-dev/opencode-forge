@@ -199,7 +199,11 @@ export function ExecutePlanPanel(props: {
     await props.onExecuted?.()
     if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop-worktree' || apiMode === 'loop')) {
       try {
-        await props.api.client.tui.selectSession({ sessionID: result.sessionId })
+        await props.api.client.tui.selectSession(
+          result.workspaceId
+            ? { sessionID: result.sessionId, workspace: result.workspaceId }
+            : { sessionID: result.sessionId }
+        )
       } catch {
         try { props.api.route.navigate('session', { sessionID: result.sessionId }) } catch {}
       }

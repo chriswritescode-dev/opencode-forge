@@ -134,9 +134,11 @@ export function createBusRpcEventHook(deps: BusRpcDeps) {
     const requestDirectory = explicitDirectory || instanceDirectory
     logger.debug(`[bus-rpc] request ${verb} rid=${rid} directory=${requestDirectory} projectId=${req.projectId ?? 'none'}`)
 
+    const requestedProjectCtx = req.projectId ? registry.get(req.projectId) : null
+
     let targetCtx = explicitDirectory ? registry.findByDirectory(requestDirectory) : null
     if (req.projectId) {
-      targetCtx = targetCtx ?? registry.get(req.projectId)
+      targetCtx = targetCtx ?? requestedProjectCtx
       if (!targetCtx && !explicitDirectory) {
         return
       }
@@ -147,7 +149,6 @@ export function createBusRpcEventHook(deps: BusRpcDeps) {
       ?? null
     
     if (!targetCtx) {
-      // No matching project found - this should not happen as instanceDirectory should always have a context
       logger.error(`[bus-rpc] no ToolContext found for instance directory: ${instanceDirectory}`)
       return
     }
@@ -167,7 +168,7 @@ export function createBusRpcEventHook(deps: BusRpcDeps) {
       return
     }
 
-    const effectiveProjectId = req.projectId || targetCtx.projectId
+    const effectiveProjectId = targetCtx.projectId
     const effectiveCtx = verb !== 'projects.list' && requestDirectory && requestDirectory !== targetCtx.directory
       ? { ...targetCtx, projectId: effectiveProjectId, directory: requestDirectory }
       : targetCtx

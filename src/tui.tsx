@@ -439,7 +439,7 @@ function LoopDetailsDialog(props: { api: TuiPluginApi; client: ForgeProjectClien
         </Show>
         <Show when={currentLoop().sessionId && currentLoop().workspaceId}>
           <text fg={theme().success} onMouseUp={() => {
-            props.api.route.navigate('session', { sessionID: currentLoop().sessionId })
+            void selectTuiSession(props.api, currentLoop().sessionId, currentLoop().workspaceId)
           }}>Open session</text>
         </Show>
         <Show when={currentLoop().active}>
@@ -805,7 +805,7 @@ function Sidebar(props: {
                         <LoopDetailsDialog api={props.api} client={props.client} loop={loop} onRefresh={refreshSidebarData} />
                       ))
                     } else if (loop.worktree && loop.workspaceId && loop.sessionId) {
-                      props.api.route.navigate('session', { sessionID: loop.sessionId })
+                      void selectTuiSession(props.api, loop.sessionId, loop.workspaceId)
                     } else if (loop.worktree) {
                       props.api.ui.dialog.setSize("medium")
                       props.api.ui.dialog.replace(() => (
@@ -827,6 +827,18 @@ function Sidebar(props: {
       </box>
     </Show>
   )
+}
+
+async function selectTuiSession(api: TuiPluginApi, sessionId: string, workspaceId?: string): Promise<void> {
+  try {
+    await api.client.tui.selectSession(
+      workspaceId
+        ? { sessionID: sessionId, workspace: workspaceId }
+        : { sessionID: sessionId }
+    )
+  } catch {
+    try { api.route.navigate('session', { sessionID: sessionId }) } catch {}
+  }
 }
 
 const id = 'oc-forge'
