@@ -756,36 +756,7 @@ function Sidebar(props: {
             <text flexShrink={0} fg={theme().info}>📂</text>
             <text fg={theme().text}>Load plan</text>
           </box>
-          <Show when={hasPlan()}>
-            <box
-              flexDirection="row"
-              gap={1}
-              onMouseUp={async () => {
-                if (!props.sessionId) return
-                const plan = await props.client.plan.read(props.sessionId)
-                if (!plan) {
-                  props.api.ui.toast({ message: 'Plan not found', variant: 'info', duration: 3000 })
-                  return
-                }
-                const refreshSidebar = refreshSidebarData
-                props.api.ui.dialog.setSize("xlarge")
-                props.api.ui.dialog.replace(() => (
-                  <PlanViewerDialog
-                    api={props.api}
-                    client={props.client}
-                    cache={props.cache()}
-                    pluginConfig={props.pluginConfig}
-                    planContent={plan}
-                    sessionId={props.sessionId!}
-                    onRefresh={refreshSidebar}
-                  />
-                ))
-              }}
-            >
-              <text flexShrink={0} fg={theme().info}>📋</text>
-              <text fg={theme().text}>Plan</text>
-            </box>
-          </Show>
+
           <Show when={props.opts.showLoops && loops().length > 0}>
             <For each={loops()}>
               {(loop) => (
