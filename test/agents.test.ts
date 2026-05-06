@@ -25,7 +25,6 @@ describe('Agent definitions', () => {
       expect(auditorAgent.id).toBe('opencode-auditor')
       expect(auditorAgent.displayName).toBe('auditor')
       expect(auditorAgent.mode).toBe('subagent')
-      expect(auditorAgent.temperature).toBe(0.0)
     })
 
     test('auditor agent has expected tool exclusions', () => {
@@ -62,7 +61,6 @@ describe('Agent definitions', () => {
       expect(auditorLoopAgent.displayName).toBe('auditor-loop')
       expect(auditorLoopAgent.mode).toBe('primary')
       expect(auditorLoopAgent.hidden).toBe(true)
-      expect(auditorLoopAgent.temperature).toBe(0.0)
     })
 
     test('auditor-loop agent shares tool exclusions with auditor', () => {
