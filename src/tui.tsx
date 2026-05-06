@@ -578,7 +578,10 @@ function Sidebar(props: {
       setHasPlan(plan !== null)
       setPlanContent(plan)
     }
-    
+
+    // Refresh workspace list so newly created workspaces appear in session list
+    props.client.workspaces.list().catch(() => {})
+
     // Auto-redirect if the currently-viewed session belongs to a loop that just completed
     if (props.sessionId && !redirectedSessions.has(props.sessionId)) {
       const ended = states.find(l =>

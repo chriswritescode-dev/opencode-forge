@@ -197,6 +197,8 @@ export function ExecutePlanPanel(props: {
 
     props.api.ui.toast({ message: result.loopName ? `Loop started: ${result.loopName}` : 'Plan execution started', variant: 'success', duration: 3000 })
     await props.onExecuted?.()
+    // Refresh workspace list so the new workspace appears in session list
+    props.client.workspaces.list().catch(() => {})
     if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop-worktree' || apiMode === 'loop')) {
       try {
         await props.api.client.tui.selectSession(

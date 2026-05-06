@@ -78,6 +78,11 @@ export interface ForgeProjectClient {
     onLoopsChanged(handler: (payload: { reason: string; loopName: string }) => void): () => void
   }
 
+  workspaces: {
+    list(): Promise<Array<{ id: string; name: string; type: string; branch?: string; directory?: string }>>
+    status(): Promise<Record<string, string>>
+  }
+
   /** Single round-trip pair: read preferences and list models. */
   loadExecutionContext(): Promise<ExecutionContext>
 }
@@ -579,11 +584,32 @@ export async function connectForgeProject(
     },
   }
 
+  const workspaces: ForgeProjectClient['workspaces'] = {
+    async list() {
+      try {
+        const data = await api.client.experimental.workspace.list()
+        return (data.data ?? []) as Array<{ id: string; name: string; type: string; branch?: string; directory?: string }>
+      } catch {
+        return []
+      }
+    },
+    async status() {
+      try {
+        const data = await api.client.experimental.workspace.status()
+        const entries = (data.data ?? []) as Array<{ workspaceID: string; status: string }>
+        return Object.fromEntries(entries.map((s) => [s.workspaceID, s.status]))
+      } catch {
+        return {}
+      }
+    },
+  }
+
   return {
     projectId: projectId ?? '',
     plan,
     loops,
     events,
+    workspaces,
     async loadExecutionContext() {
       const [prefsResult, modelsResult] = await Promise.all([
         Promise.resolve(projectId ? readExecutionPreferences(projectId) : null),

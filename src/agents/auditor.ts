@@ -194,7 +194,6 @@ export function buildAuditorAgent(): AgentDefinition {
     displayName: 'auditor',
     description: 'Code auditor with ast-grep-assisted analysis for convention-aware reviews',
     mode: 'subagent',
-    temperature: 0.0,
     tools: {
       exclude: AUDITOR_TOOL_EXCLUDES,
     },
@@ -210,7 +209,6 @@ export function buildAuditorLoopAgent(): AgentDefinition {
     description: 'Auditor variant used as the primary agent in loop audit sessions',
     mode: 'primary',
     hidden: true,
-    temperature: 0.0,
     tools: {
       exclude: AUDITOR_TOOL_EXCLUDES,
     },
