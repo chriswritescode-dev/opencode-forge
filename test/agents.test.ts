@@ -81,25 +81,7 @@ describe('Agent definitions', () => {
     })
   })
 
-  describe('ast-grep policy in system prompts', () => {
-    test('architect prompt contains ast-grep CLI guidance', () => {
-      expect(architectAgent.systemPrompt).toContain('ast-grep')
-      expect(architectAgent.systemPrompt).toContain('ast-grep-search')
-      expect(architectAgent.systemPrompt).toContain('@ast-grep/cli')
-    })
-
-    test('code prompt contains ast-grep CLI guidance', () => {
-      expect(codeAgent.systemPrompt).toContain('ast-grep')
-      expect(codeAgent.systemPrompt).toContain('ast-grep-search')
-      expect(codeAgent.systemPrompt).toContain('ast-grep-scan')
-    })
-
-    test('auditor prompt contains ast-grep CLI guidance', () => {
-      expect(auditorAgent.systemPrompt).toContain('ast-grep')
-      expect(auditorAgent.systemPrompt).toContain('ast-grep-search')
-      expect(auditorAgent.systemPrompt).toContain('ast-grep-scan')
-    })
-
+  describe('agent prompt hygiene', () => {
     test('prompts do not contain legacy graph tool names', () => {
       expect(architectAgent.systemPrompt).not.toContain('graph-query')
       expect(architectAgent.systemPrompt).not.toContain('graph-symbols')

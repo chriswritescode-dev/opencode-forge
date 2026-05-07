@@ -15,7 +15,7 @@ import { createExecutionContextCache } from './utils/tui-execution-context-cache
 import type { PluginConfig } from './types'
 import { ExecutePlanPanel } from './tui/execute-plan-panel'
 import { formatDuration, formatTokens, truncate, truncateMiddle } from './utils/format'
-import { connectForgeProject, type ForgeProjectClient } from './utils/tui-client'
+import { connectForgeProject, selectTuiSession, type ForgeProjectClient } from './utils/tui-client'
 import { savePlanToArchive, listArchivedPlans, readArchivedPlan, resolvePlanArchiveDir, hashPlanContent, DEFAULT_PLAN_ARCHIVE_TTL_MS, type ArchivedPlan } from './utils/plan-archive'
 
 type TuiKeybinds = {
@@ -801,18 +801,6 @@ function Sidebar(props: {
       </box>
     </Show>
   )
-}
-
-async function selectTuiSession(api: TuiPluginApi, sessionId: string, workspaceId?: string): Promise<void> {
-  try {
-    await api.client.tui.selectSession(
-      workspaceId
-        ? { sessionID: sessionId, workspace: workspaceId }
-        : { sessionID: sessionId }
-    )
-  } catch {
-    try { api.route.navigate('session', { sessionID: sessionId }) } catch {}
-  }
 }
 
 const id = 'oc-forge'

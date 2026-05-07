@@ -28,7 +28,7 @@ interface MockV2Client {
   }
   experimental?: {
     workspace?: {
-      sessionRestore?: (opts: { id: string; sessionID: string }) => Promise<{ data?: unknown; error?: unknown }>
+      warp?: (opts: { id: string; sessionID: string }) => Promise<{ data?: unknown; error?: unknown }>
       create?: (opts: { type: string; branch: string | null; extra: unknown }) => Promise<{ data?: { id: string }; error?: unknown }>
     }
   }
@@ -216,7 +216,7 @@ describe('workspace recovery', () => {
     it('happy path: audit session bind fails and recovery succeeds with new workspace id', async () => {
       const workspaceId = 'test-workspace-recover-123'
       const newWorkspaceId = 'test-workspace-recovered-456'
-      let sessionRestoreCallCount = 0
+      let warpCallCount = 0
       let createCalled = false
       const toastCalls: Array<{ variant?: string; message?: string }> = []
 
@@ -241,11 +241,11 @@ describe('workspace recovery', () => {
         },
         experimental: {
           workspace: {
-            sessionRestore: async (opts) => {
-              sessionRestoreCallCount++
+            warp: async (opts) => {
+              warpCallCount++
               // First call (during audit session creation) should throw to trigger bindFailed
               // Second call (during recovery) should succeed
-              if (sessionRestoreCallCount === 1) {
+              if (warpCallCount === 1) {
                 throw new Error('Workspace not found: wrk_test')
               }
               return { data: {}, error: null }
@@ -343,7 +343,7 @@ describe('workspace recovery', () => {
         },
         experimental: {
           workspace: {
-            sessionRestore: async () => {
+            warp: async () => {
               throw new Error('Workspace not found: wrk_test')
             },
             create: async () => null,
@@ -436,7 +436,7 @@ describe('workspace recovery', () => {
         },
         experimental: {
           workspace: {
-            sessionRestore: async () => {
+            warp: async () => {
               throw new Error('bind failed')
             },
             create: async () => ({ data: { id: newWorkspaceId }, error: undefined }),
@@ -511,7 +511,7 @@ describe('workspace recovery', () => {
       const workspaceId = 'test-workspace-e2e'
       const newWorkspaceId = 'test-workspace-e2e-recovered'
       let promptCalls = 0
-      let sessionRestoreCallCount = 0
+      let warpCallCount = 0
       const toastCalls: Array<{ variant?: string; message?: string }> = []
 
       const v2Client = {
@@ -540,11 +540,11 @@ describe('workspace recovery', () => {
         },
         experimental: {
           workspace: {
-            sessionRestore: async (opts) => {
-              sessionRestoreCallCount++
+            warp: async (opts) => {
+              warpCallCount++
               // First call (during audit session creation) should throw to trigger bindFailed
               // Second call (during recovery re-bind) should succeed
-              if (sessionRestoreCallCount === 1) {
+              if (warpCallCount === 1) {
                 throw new Error('Workspace not found: wrk_test')
               }
               return { data: {}, error: null }

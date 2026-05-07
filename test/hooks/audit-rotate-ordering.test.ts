@@ -285,7 +285,7 @@ interface MockV2Client {
   experimental: {
     workspace: {
       create: ReturnType<typeof vi.fn<(params: any) => Promise<{ data?: { id: string }; error?: unknown }>>>
-      sessionRestore: ReturnType<typeof vi.fn<(params: any) => Promise<{ data?: unknown; error?: unknown }>>>
+      warp: ReturnType<typeof vi.fn<(params: any) => Promise<{ data?: unknown; error?: unknown }>>>
     }
   }
   tui: {
@@ -332,7 +332,7 @@ function createMockV2Client(callTracker?: CallRecord[], messagesRole?: 'assistan
           tracker.push({ kind: 'workspace-create', args: params })
           return { data: { id: 'ws-1' } }
         }),
-        sessionRestore: vi.fn(async (params: any) => {
+        warp: vi.fn(async (params: any) => {
           tracker.push({ kind: 'restore', args: params })
           return { data: {} }
         }),

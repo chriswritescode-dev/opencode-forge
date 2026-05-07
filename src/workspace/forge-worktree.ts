@@ -6,9 +6,9 @@
  */
 
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
-import type { WorkspaceInfo, WorkspaceAdaptor, WorkspaceTarget } from '@opencode-ai/plugin'
+import type { WorkspaceInfo, WorkspaceAdapter, WorkspaceTarget } from '@opencode-ai/plugin'
 
-export type { WorkspaceInfo, WorkspaceAdaptor }
+export type { WorkspaceInfo, WorkspaceAdapter }
 
 /**
  * Workspace type constant for forge worktree workspaces.
@@ -46,9 +46,9 @@ function readForgeWorktreeExtra(extra: unknown): Partial<ForgeWorktreeExtra> {
  * - remove(): No-op to prevent implicit deletion during view/switch
  * - target(): Returns local directory target
  * 
- * @returns WorkspaceAdaptor compatible with experimental_workspace.register
+ * @returns WorkspaceAdapter compatible with experimental_workspace.register
  */
-export function createForgeWorktreeAdaptor(): WorkspaceAdaptor {
+export function createForgeWorktreeAdaptor(): WorkspaceAdapter {
   return {
     name: 'Forge Worktree',
     description: 'Workspace adaptor for forge worktree loops',
@@ -158,10 +158,10 @@ export async function createLoopWorkspace(
 }
 
 /**
- * Binds a session to a workspace by calling the session restore API.
+ * Binds a session to a workspace by calling the warp API.
  * 
- * This calls the upstream experimental.workspace.sessionRestore endpoint to
- * replay the session's sync events into the target workspace, making the
+ * This calls the upstream experimental.workspace.warp endpoint to
+ * move a session's sync history into the target workspace, making the
  * session workspace-scoped.
  * 
  * @param client - OpenCode v2 client
@@ -176,17 +176,17 @@ export async function bindSessionToWorkspace(
   logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void }
 ): Promise<void> {
   const workspaceApi = client.experimental?.workspace
-  if (!workspaceApi || typeof workspaceApi.sessionRestore !== 'function') {
-    (logger ?? console).log?.('bindSessionToWorkspace: experimental.workspace.sessionRestore not available')
-    throw new Error('experimental.workspace.sessionRestore not available on this host')
+  if (!workspaceApi || typeof workspaceApi.warp !== 'function') {
+    (logger ?? console).log?.('bindSessionToWorkspace: experimental.workspace.warp not available')
+    throw new Error('experimental.workspace.warp not available on this host')
   }
-  const result = await workspaceApi.sessionRestore({
+  const result = await workspaceApi.warp({
     id: workspaceId,
     sessionID: sessionId,
   })
 
   if ('error' in result && result.error) {
-    (logger ?? console).error(`bindSessionToWorkspace: sessionRestore failed for workspace=${workspaceId} session=${sessionId}`, result.error)
-    throw new Error(`Session restore failed: ${JSON.stringify(result.error)}`)
+    (logger ?? console).error(`bindSessionToWorkspace: warp failed for workspace=${workspaceId} session=${sessionId}`, result.error)
+    throw new Error(`Session warp failed: ${JSON.stringify(result.error)}`)
   }
 }

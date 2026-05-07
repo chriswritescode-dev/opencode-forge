@@ -1,6 +1,6 @@
 {
   "name": "opencode-forge",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "type": "module",
   "oc-plugin": [
     "server",
@@ -27,8 +27,7 @@
     "forge-config.jsonc",
     "scripts",
     "README.md",
-    "src/command/template",
-    "skills"
+    "src/command/template"
   ],
   "bin": {
     "oc-forge": "./dist/cli/index.js"
@@ -50,9 +49,8 @@
   "license": "MIT",
   "homepage": "https://github.com/chriswritescode-dev/opencode-forge",
   "dependencies": {
-    "@ast-grep/cli": "^0.42.1",
-    "@opencode-ai/plugin": "^1.14.30",
-    "@opencode-ai/sdk": "^1.14.30",
+    "@opencode-ai/plugin": "1.14.39",
+    "@opencode-ai/sdk": "1.14.39",
     "jsonc-parser": "^3.3.1",
     "zod": "^3.25.76"
   },

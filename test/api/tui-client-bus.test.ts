@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'bun:test'
 import { encodeRequest, decodeReply, newRid, decodeRequest, encodeReply, encodeEvent, decodeEvent } from '../../src/api/bus-protocol'
-import { connectForgeProject } from '../../src/utils/tui-client'
+import { connectForgeProject, selectTuiSession } from '../../src/utils/tui-client'
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 
 async function waitForPublishs(mock: { getPublishCount: () => number }, count: number): Promise<void> {
@@ -63,6 +63,30 @@ describe('tui-client bus-RPC integration', () => {
 
     it('returns null for malformed base64', () => {
       expect(decodeRequest('forge.req:plan.read:abc123:!!!invalid!!!')).toBeNull()
+    })
+  })
+
+  describe('selectTuiSession', () => {
+    it('sets the current workspace before selecting a workspace session', async () => {
+      const workspaceSet = vi.fn()
+      const selectSession = vi.fn().mockResolvedValue({ data: {} })
+      const mockApi = {
+        workspace: {
+          current: () => undefined,
+          set: workspaceSet,
+        },
+        client: {
+          tui: { selectSession },
+        },
+        route: {
+          navigate: vi.fn(),
+        },
+      } as unknown as TuiPluginApi
+
+      await selectTuiSession(mockApi, 'session-1', 'workspace-1')
+
+      expect(workspaceSet).toHaveBeenCalledWith('workspace-1')
+      expect(selectSession).toHaveBeenCalledWith({ sessionID: 'session-1', workspace: 'workspace-1' })
     })
   })
 

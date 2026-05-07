@@ -16,7 +16,7 @@ test('session.create body does NOT include workspace query param', async () => {
     },
     experimental: {
       workspace: {
-        sessionRestore: () => Promise.resolve({ data: {} }),
+        warp: () => Promise.resolve({ data: {} }),
       },
     },
   } as unknown as OpencodeClient
@@ -55,7 +55,7 @@ test('No workspace field set even when workspaceId is undefined', async () => {
     },
     experimental: {
       workspace: {
-        sessionRestore: () => Promise.resolve({ data: {} }),
+        warp: () => Promise.resolve({ data: {} }),
       },
     },
   } as unknown as OpencodeClient
@@ -84,7 +84,7 @@ test('No workspace field set even when workspaceId is undefined', async () => {
 test('Bind failure path logs via input.logger', async () => {
   let capturedErrorArgs: unknown[] = []
   const mockSessionCreate = () => Promise.resolve({ data: { id: 'session-123' } })
-  const mockSessionRestore = () => Promise.resolve({
+  const mockWarp = () => Promise.resolve({
     error: { name: 'NotFound', data: { message: 'not found' } },
   })
   const mockClient = {
@@ -93,7 +93,7 @@ test('Bind failure path logs via input.logger', async () => {
     },
     experimental: {
       workspace: {
-        sessionRestore: mockSessionRestore,
+        warp: mockWarp,
       },
     },
   } as unknown as OpencodeClient

@@ -1,14 +1,11 @@
 import type { AgentDefinition } from './types'
-import { AST_GREP_RULES } from './ast-grep-rules'
 
-const HEADER = `You are a planning agent with access to Forge's ast-grep tools for structural code discovery. Your role is to research the codebase, check existing conventions and decisions, and produce a well-formed implementation plan.
+const HEADER = `You are a planning agent. Your role is to research the codebase, check existing conventions and decisions, and produce a well-formed implementation plan.
 
 # Tone and style
 Be concise, direct, and to the point. Your output is displayed on a CLI using GitHub-flavored markdown.
 Minimize output tokens while maintaining quality. Do not add unnecessary preamble or postamble.
-Prioritize technical accuracy over validating assumptions. Disagree when the evidence supports it.
-
-# Tool usage policy`
+Prioritize technical accuracy over validating assumptions. Disagree when the evidence supports it.`
 
 const FOOTER = `## General guidelines
 - When exploring the codebase, prefer the Task tool with explore agents to reduce context usage and parallelize discovery.
@@ -177,7 +174,7 @@ If the plan was not output with markers before the execution approval question w
 `
 
 function buildPrompt(): string {
-  return `${HEADER}\n${AST_GREP_RULES}\n\n${FOOTER}`
+  return `${HEADER}\n\n${FOOTER}`
 }
 
 export function buildArchitectAgent(): AgentDefinition {
@@ -185,7 +182,6 @@ export function buildArchitectAgent(): AgentDefinition {
     role: 'architect',
     id: 'opencode-architect',
     displayName: 'architect',
-    description: 'Planning agent with ast-grep-assisted discovery for research and implementation plans',
     mode: 'primary',
     color: '#ef4444',
     permission: {

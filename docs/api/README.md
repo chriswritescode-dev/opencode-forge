@@ -9,7 +9,7 @@
 <h1 align="center">OpenCode Forge</h1>
 
 <p align="center">
-  <strong>Loops, plans, sandboxing, and code intelligence for <a href="https://opencode.ai">OpenCode</a> AI agents</strong>
+  <strong>Loops, plans, sandboxing, and code review for <a href="https://opencode.ai">OpenCode</a> AI agents</strong>
 </p>
 
 <p align="center">
@@ -102,13 +102,13 @@ Loop search dialog:
 
 ## Agents
 
-The plugin bundles three agents that integrate with ast-grep for code intelligence:
+The plugin bundles three agents:
 
 | Agent | Mode | Description |
 |-------|------|-------------|
-| **code** | primary | Primary coding agent with ast-grep CLI-assisted discovery. Uses ast-grep CLI for structural code intelligence before diving into unfamiliar code. |
-| **architect** | primary | Read-only planning agent with ast-grep CLI-assisted discovery. Researches the codebase, designs implementation plans, and caches them for user approval before execution. |
-| **auditor** | subagent | Read-only code auditor with ast-grep CLI-assisted analysis for convention-aware reviews. Invoked via Task tool to review diffs, commits, branches, or PRs against stored conventions and decisions. |
+| **code** | primary | Primary coding agent. |
+| **architect** | primary | Read-only planning agent. Researches the codebase, designs implementation plans, and caches them for user approval before execution. |
+| **auditor** | subagent | Read-only code auditor for convention-aware reviews. Invoked via Task tool to review diffs, commits, branches, or PRs against stored conventions and decisions. |
 
 The auditor agent is a read-only subagent (`temperature: 0.0`) that cannot write, edit, or delete entries or execute plans. It is invoked by other agents via the Task tool to review code changes against stored project conventions and decisions.
 
@@ -557,7 +557,6 @@ Model selection follows this priority order:
 ### Troubleshooting
 
 - **No plan found** — Ensure the architect output included the forge plan markers, or open the Plan Viewer for the current session.
-- **Code intelligence skill unavailable** — Check that `@ast-grep/cli` is installed and `pnpm exec ast-grep --version` succeeds. Ensure the `ast-grep` skill is bundled in `skills/ast-grep`.
 - **TUI shows no plan** — The plan is session-scoped; use `Forge: View plan` in the session where the architect produced it.
 - **Need logs** — Set `logging.enabled` to `true`, and optionally `logging.debug` for verbose output.
 
@@ -645,7 +644,7 @@ When a worktree loop starts on a supported host, forge:
 1. Creates the git worktree (as usual)
 2. Creates a new Code session pointed at the worktree directory
 3. Calls `experimental.workspace.create` with `type: "forge-worktree"` and the loop metadata (`loopName`, `directory`, `branch`) in the `extra` payload
-4. Calls `experimental.workspace.sessionRestore` to bind the session to that workspace
+4. Calls `experimental.workspace.warp` to bind the session to that workspace
 5. Persists the workspace ID on the loop record (`loops.workspace_id`) so the TUI can route clicks on a loop into the correct workspace
 
 The adaptor's `create` and `remove` hooks are intentional no-ops — forge's loop system owns worktree lifecycle, not the workspace system. The adaptor only surfaces existing worktrees to the workspace UI.

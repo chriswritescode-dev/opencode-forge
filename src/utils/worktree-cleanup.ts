@@ -82,6 +82,8 @@ export async function teardownWorktreeArtifacts(input: TeardownInput): Promise<T
       result.errors.push(err.message)
     } else if (typeof err === 'string') {
       result.errors.push(err)
+    } else if (err && typeof err === 'object' && 'message' in err) {
+      result.errors.push(String((err as { message: unknown }).message))
     }
   }
 
@@ -115,18 +117,34 @@ export async function teardownWorktreeArtifacts(input: TeardownInput): Promise<T
     }
   }
 
-  // Step 2: Delete session (use projectDir for worktree loops, otherwise worktreeDir)
-  try {
-    const sessionDir = input.projectDir || input.worktreeDir
-    const deleteResult = await input.v2.session.delete({ sessionID: input.sessionId, directory: sessionDir })
-    if (!deleteResult.error) {
-      result.sessionDeleted = true
-      log(`${input.logPrefix}: deleted session ${input.sessionId} for ${input.loopName}`)
-    } else {
-      logError(`${input.logPrefix}: failed to delete loop session ${input.sessionId}`, deleteResult.error)
+  // Step 2: Delete session. Loop sessions are created against worktreeDir
+  // (see hooks/loop.ts rotateSession + executePromptOnce), so delete must
+  // target worktreeDir first. projectDir is the host project root and would
+  // silently 404 the delete, leaving a ghost in the session list.
+  const candidates: string[] = []
+  candidates.push(input.worktreeDir)
+  if (input.projectDir && input.projectDir !== input.worktreeDir) {
+    candidates.push(input.projectDir)
+  }
+
+  for (const sessionDir of candidates) {
+    try {
+      const deleteResult = await input.v2.session.delete({
+        sessionID: input.sessionId,
+        directory: sessionDir,
+      })
+      if (!deleteResult.error) {
+        result.sessionDeleted = true
+        log(`${input.logPrefix}: deleted session ${input.sessionId} for ${input.loopName} (directory=${sessionDir})`)
+        break
+      }
+      logError(`${input.logPrefix}: session.delete ${input.sessionId} returned error in ${sessionDir}, trying fallback`, deleteResult.error)
+    } catch (err) {
+      logError(`${input.logPrefix}: session.delete threw for ${input.sessionId} in ${sessionDir}`, err)
     }
-  } catch (err) {
-    logError(`${input.logPrefix}: failed to delete loop session ${input.sessionId}`, err)
+  }
+  if (!result.sessionDeleted) {
+    logError(`${input.logPrefix}: failed to delete loop session ${input.sessionId} across ${candidates.join(', ')}`)
   }
 
   // Step 3: Delete workspace (if applicable)

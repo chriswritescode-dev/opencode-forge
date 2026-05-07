@@ -1,5 +1,4 @@
 import type { AgentDefinition } from './types'
-import { AST_GREP_RULES } from './ast-grep-rules'
 
 const AUDITOR_TOOL_EXCLUDES = [
   'apply_patch',
@@ -12,7 +11,7 @@ const AUDITOR_TOOL_EXCLUDES = [
   'loop-status',
 ]
 
-const HEADER = `You are a code auditor with access to Forge's ast-grep tools for structural analysis. You operate in an isolated audit session that cannot modify source files (edit/write/multiedit/apply_patch are denied). You can read code, use ast-grep tools for structural analysis, and manage review findings via review-write / review-delete. You are invoked by other agents to review code changes and return actionable findings.`
+const HEADER = `You are a code auditor. You operate in an isolated audit session that cannot modify source files (edit/write/multiedit/apply_patch are denied). You can read code, use search tools for structural analysis, and manage review findings via review-write / review-delete. You are invoked by other agents to review code changes and return actionable findings.`
 
 const SHARED_INTRO = `## Your Role
 
@@ -40,17 +39,6 @@ This is the mandatory first step of every review. **Before analyzing the diff, u
 4. Only after processing all existing findings should you proceed to diff analysis and codebase investigation
 
 When reporting, include any still-open previous findings under a "### Previously Identified Issues" heading before presenting new findings.`
-
-const CONTEXT = `## Gathering Context
-
-Diffs alone are not enough. After getting the diff:
-- **Ast-grep analysis is mandatory when structural search is relevant**: use \`ast-grep-search\` or \`ast-grep-scan\` for AST-aware search.
-  - Use \`ast-grep-search\` with \`pattern\`, \`language\`, and focused \`paths\` for simple pattern searches.
-  - Use \`ast-grep-scan\` with inline YAML rules for relational/composite rules.
-- When reviewing a plan loop iteration, run the relevant ast-grep tools to scope analysis to the changed surface.
-- Read the full file(s) being modified only after ast-grep narrows the relevant scope, so you understand patterns, control flow, and error handling.
-- Use \`git status --short\` to identify untracked files, then read their full contents.
-- Use the Task tool with explore agents for broader exploration after ast-grep narrowing, or when the question is not well-scoped.`
 
 const SHARED_BODY = `## What to Look For
 
@@ -184,7 +172,7 @@ Because this loop audit is not itself running as a subagent, use short-lived Tas
 `
 
 function buildBasePrompt(): string {
-  return `${HEADER}\n\n${SHARED_INTRO}\n\n${CONTEXT}\n\n${SHARED_BODY}\n\n${AST_GREP_RULES}\n\n${SHARED_FOOTER}`
+  return `${HEADER}\n\n${SHARED_INTRO}\n\n${SHARED_BODY}\n\n${SHARED_FOOTER}`
 }
 
 export function buildAuditorAgent(): AgentDefinition {
@@ -192,7 +180,6 @@ export function buildAuditorAgent(): AgentDefinition {
     role: 'auditor',
     id: 'opencode-auditor',
     displayName: 'auditor',
-    description: 'Code auditor with ast-grep-assisted analysis for convention-aware reviews',
     mode: 'subagent',
     tools: {
       exclude: AUDITOR_TOOL_EXCLUDES,
@@ -206,7 +193,6 @@ export function buildAuditorLoopAgent(): AgentDefinition {
     role: 'auditor-loop',
     id: 'opencode-auditor-loop',
     displayName: 'auditor-loop',
-    description: 'Auditor variant used as the primary agent in loop audit sessions',
     mode: 'primary',
     hidden: true,
     tools: {

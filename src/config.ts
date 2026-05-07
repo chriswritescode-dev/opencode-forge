@@ -1,5 +1,4 @@
 import type { AgentRole, AgentDefinition, AgentConfig } from './agents'
-import { AST_GREP_RULES } from './agents/ast-grep-rules'
 import { readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
@@ -9,13 +8,6 @@ const PROMPT_REVIEW = readFileSync(join(__dirname, 'command/template/review.txt'
 
 
 const REPLACED_BUILTIN_AGENTS = ['build', 'plan']
-
-const ENHANCED_BUILTIN_AGENTS: Record<string, { permission: Record<string, string>; prompt?: string }> = {
-  explore: {
-    permission: {},
-    prompt: AST_GREP_RULES,
-  },
-}
 
 const PLUGIN_COMMANDS: Record<string, { template: string; description: string; agent: string; subtask: boolean }> = {
   review: {
@@ -151,22 +143,6 @@ export function createConfigHandler(
 
     for (const name of REPLACED_BUILTIN_AGENTS) {
       mergedAgents[name] = { ...mergedAgents[name], hidden: true }
-    }
-
-    for (const [name, enhancement] of Object.entries(ENHANCED_BUILTIN_AGENTS)) {
-      const existing = mergedAgents[name] as AgentConfig | undefined
-      const existingPermission = (existing?.permission ?? {}) as Record<string, unknown>
-      const existingPrompt = existing?.prompt ?? ''
-      const newPrompt = enhancement.prompt
-        ? existingPrompt
-          ? `${existingPrompt}\n\n${enhancement.prompt}`
-          : enhancement.prompt
-        : existingPrompt
-      mergedAgents[name] = {
-        ...existing,
-        permission: { ...existingPermission, ...enhancement.permission },
-        prompt: newPrompt,
-      } as AgentConfig
     }
 
     config.agent = mergedAgents

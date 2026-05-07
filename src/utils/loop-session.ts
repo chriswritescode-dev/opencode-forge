@@ -73,7 +73,7 @@ export async function createLoopSessionWithWorkspace(
         )
         if (JSON.stringify(persisted) !== JSON.stringify(input.permission)) {
           input.logger.error(
-            `${input.logPrefix}: [perm-diag] DRIFT after sessionRestore — persisted ruleset does not match requested`
+            `${input.logPrefix}: [perm-diag] DRIFT after workspace warp — persisted ruleset does not match requested`
           )
         }
       } catch (err) {

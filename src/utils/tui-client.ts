@@ -1,6 +1,6 @@
 import type { ExecutionPreferences } from './tui-execution-preferences'
 import type { LoopInfo } from './tui-models'
-import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
+import type { TuiPluginApi, TuiWorkspace } from '@opencode-ai/plugin/tui'
 import { appendFileSync, mkdirSync } from 'fs'
 import { dirname } from 'path'
 import { resolveLogPath } from '../storage'
@@ -103,6 +103,26 @@ function tuiDebug(message: string): void {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+type WorkspaceAwareTuiApi = TuiPluginApi & { workspace?: TuiWorkspace }
+
+export async function selectTuiSession(api: TuiPluginApi, sessionId: string, workspaceId?: string): Promise<void> {
+  const workspaceApi = (api as WorkspaceAwareTuiApi).workspace
+  if (workspaceId && workspaceApi?.set) {
+    const current = workspaceApi.current?.()
+    if (current !== workspaceId) workspaceApi.set(workspaceId)
+  }
+
+  try {
+    await api.client.tui.selectSession(
+      workspaceId
+        ? { sessionID: sessionId, workspace: workspaceId }
+        : { sessionID: sessionId }
+    )
+  } catch {
+    try { api.route.navigate('session', { sessionID: sessionId }) } catch {}
+  }
 }
 
 function mapRemoteLoop(input: Record<string, unknown>): LoopInfo {

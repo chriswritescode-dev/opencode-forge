@@ -40,12 +40,6 @@ The TUI plugin provides a sidebar widget that displays:
 
 The TUI plugin reads loop state from the KV store and renders it reactively.
 
-## Code Intelligence (ast-grep)
-
-Forge bundles the upstream ast-grep agent skill and provides `@ast-grep/cli`. Agents use the CLI via Bash for common AST-aware search and inspection, and can load the `ast-grep` skill when deeper rule-writing guidance or troubleshooting help is needed.
-
-The bundled skill documentation lives in `skills/ast-grep/SKILL.md` with `references/rule_reference.md` for detailed rule syntax.
-
 ## Loop System
 
 The loop system provides autonomous iterative development with automatic auditing.

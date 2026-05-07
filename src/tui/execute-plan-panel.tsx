@@ -5,7 +5,7 @@ import { PLAN_EXECUTION_LABELS, matchExecutionLabel, type PlanExecutionLabel } f
 import { extractPlanTitle } from '../utils/plan-execution'
 import { buildDialogSelectOptions, flattenProviders, getModelDisplayLabel, sortModelsByPriority, type ModelInfo } from '../utils/tui-models'
 import { resolveExecutionDialogDefaults } from '../utils/tui-execution-preferences'
-import type { ForgeProjectClient } from '../utils/tui-client'
+import { selectTuiSession, type ForgeProjectClient } from '../utils/tui-client'
 import type { ExecutionContextCache, ExecutionContextSnapshot } from '../utils/tui-execution-context-cache'
 import type { PluginConfig } from '../types'
 
@@ -200,15 +200,7 @@ export function ExecutePlanPanel(props: {
     // Refresh workspace list so the new workspace appears in session list
     props.client.workspaces.list().catch(() => {})
     if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop-worktree' || apiMode === 'loop')) {
-      try {
-        await props.api.client.tui.selectSession(
-          result.workspaceId
-            ? { sessionID: result.sessionId, workspace: result.workspaceId }
-            : { sessionID: result.sessionId }
-        )
-      } catch {
-        try { props.api.route.navigate('session', { sessionID: result.sessionId }) } catch {}
-      }
+      await selectTuiSession(props.api, result.sessionId, result.workspaceId)
     }
   }
 

@@ -108,7 +108,7 @@ function createMockV2Client(overrides?: Partial<OpencodeClient>): OpencodeClient
     experimental: {
       workspace: {
         create: mock(async () => ({ data: { id: 'mock-workspace-' + Date.now() }, error: null })),
-        sessionRestore: mock(async () => ({ data: {}, error: null })),
+        warp: mock(async () => ({ data: {}, error: null })),
       },
     },
     tui: {
@@ -251,7 +251,7 @@ describe('loop-status tool restart path', () => {
     expect(lastCreateCall).not.toHaveProperty('parentID')
     
     // Verify workspace binding was called
-    expect(v2Client.experimental?.workspace?.sessionRestore).toHaveBeenCalledWith({
+    expect(v2Client.experimental?.workspace?.warp).toHaveBeenCalledWith({
       id: workspaceId,
       sessionID: expect.any(String),
     })
@@ -372,8 +372,8 @@ describe('loop-status tool restart path', () => {
       hostSessionId,
     })
 
-    // Override sessionRestore to throw
-    ;(v2Client.experimental!.workspace!.sessionRestore as ReturnType<typeof mock>) = mock(async () => {
+    // Override warp to throw
+    ;(v2Client.experimental!.workspace!.warp as ReturnType<typeof mock>) = mock(async () => {
       throw new Error('workspace gone')
     })
 

@@ -1840,7 +1840,7 @@ describe('plan execute API loop dispatch', () => {
     ;(ctx.v2 as any).experimental = {
       workspace: {
         create: mock(async (params: { id?: string }) => ({ data: { id: 'server-generated-ws-id' }, error: undefined })),
-        sessionRestore: mock(async () => ({ data: { total: 0 }, error: undefined })),
+        warp: mock(async () => ({ data: { total: 0 }, error: undefined })),
       },
     }
 

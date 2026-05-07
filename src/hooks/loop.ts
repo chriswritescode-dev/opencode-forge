@@ -51,6 +51,7 @@ export function createLoopEventHandler(
   const consecutiveStalls = new Map<string, number>()
   const watchdogRunning = new Map<string, boolean>()
   const stateLocks = new Map<string, Promise<unknown>>()
+  const lastStatusFingerprints = new Map<string, string>()
 
   const IDLE_RETRY_DELAY_MS = 1500
   const MAX_IDLE_RETRIES = 1
@@ -140,6 +141,30 @@ export function createLoopEventHandler(
 
 
 
+  type SessionStatusSnapshot = {
+    type?: string
+    attempt?: number
+    message?: string
+    next?: number
+    [key: string]: unknown
+  }
+
+  function buildStatusFingerprint(status: SessionStatusSnapshot | undefined): string {
+    if (!status) return 'missing'
+    const stableEntries = Object.entries(status)
+      .filter(([key]) => key !== 'next')
+      .sort(([a], [b]) => a.localeCompare(b))
+    return JSON.stringify(stableEntries)
+  }
+
+  function isActiveSessionStatus(statusType: string | undefined): boolean {
+    return statusType === 'busy' || statusType === 'retry'
+  }
+
+  function isIdleOrMissingSessionStatus(statusType: string | undefined): boolean {
+    return statusType === 'idle' || statusType === undefined
+  }
+
   async function getStatusWithRetry(directory: string, attempts = 3, backoffMs = 250): Promise<{ data: Record<string, { type: string }>; ok: boolean; error?: unknown }> {
     let lastErr: unknown = null
     for (let i = 0; i < attempts; i++) {
@@ -165,6 +190,7 @@ export function createLoopEventHandler(
     lastActivityTime.delete(loopName)
     consecutiveStalls.delete(loopName)
     watchdogRunning.delete(loopName)
+    lastStatusFingerprints.delete(loopName)
   }
 
   function startWatchdog(loopName: string): void {
@@ -198,13 +224,73 @@ export function createLoopEventHandler(
           return
         }
 
-        const statuses = statusResult.data as Record<string, { type: string }>
-        const status = statuses[sessionId]?.type
-        const hasActiveWork = status === 'busy' || status === 'retry'
+        const statuses = statusResult.data as Record<string, SessionStatusSnapshot>
+        const statusSnapshot = statuses[sessionId] as SessionStatusSnapshot | undefined
+        const status = statusSnapshot?.type
+        const fingerprint = buildStatusFingerprint(statusSnapshot)
+        const previousFingerprint = lastStatusFingerprints.get(loopName)
 
-        if (hasActiveWork) {
+        if (fingerprint !== previousFingerprint) {
+          lastStatusFingerprints.set(loopName, fingerprint)
           lastActivityTime.set(loopName, Date.now())
-          logger.log(`Loop watchdog: loop ${loopName} has active ${state.phase} work (${status}), resetting timer`)
+          consecutiveStalls.set(loopName, 0)
+          logger.log(`Loop watchdog: loop ${loopName} observed ${state.phase} status change (${status ?? 'missing'}), resetting timer`)
+
+          if (isActiveSessionStatus(status)) {
+            return
+          }
+
+          if (isIdleOrMissingSessionStatus(status)) {
+            if (state.phase === 'auditing') {
+              return
+            }
+
+            const stallCount = (consecutiveStalls.get(loopName) ?? 0) + 1
+            consecutiveStalls.set(loopName, stallCount)
+            lastActivityTime.set(loopName, Date.now())
+
+            if (stallCount >= MAX_CONSECUTIVE_STALLS) {
+              logger.error(`Loop watchdog: loop ${loopName} exceeded max consecutive stalls (${MAX_CONSECUTIVE_STALLS}), terminating`)
+              await terminateLoop(loopName, state, 'stall_timeout')
+              return
+            }
+
+            logger.log(`Loop watchdog: stall #${stallCount}/${MAX_CONSECUTIVE_STALLS} for ${loopName} (phase=${state.phase}, elapsed=${elapsed}ms), re-triggering`)
+
+            await withStateLock(loopName, async () => {
+              const freshState = loopService.getActiveState(loopName)
+              if (!freshState?.active) return
+
+              try {
+                if (freshState.phase === 'auditing') {
+                  await handleAuditingPhase(loopName, freshState)
+                } else {
+                  await handleCodingPhase(loopName, freshState)
+                }
+              } catch (err) {
+                await handlePromptError(loopName, freshState, `watchdog recovery in ${freshState.phase} phase`, err)
+              }
+            })
+            return
+          }
+
+          if (state.phase === 'auditing' && Object.values(statuses).some(s => s.type === 'busy' && s !== statusSnapshot)) {
+            return
+          }
+        }
+
+        if (isActiveSessionStatus(status) || !isIdleOrMissingSessionStatus(status)) {
+          const stallCount = (consecutiveStalls.get(loopName) ?? 0) + 1
+          consecutiveStalls.set(loopName, stallCount)
+          lastActivityTime.set(loopName, Date.now())
+
+          if (stallCount >= MAX_CONSECUTIVE_STALLS) {
+            logger.error(`Loop watchdog: loop ${loopName} exceeded max consecutive stalls (${MAX_CONSECUTIVE_STALLS}), terminating`)
+            await terminateLoop(loopName, state, 'stall_timeout')
+            return
+          }
+
+          logger.log(`Loop watchdog: active status unchanged stall #${stallCount}/${MAX_CONSECUTIVE_STALLS} for ${loopName} (phase=${state.phase}, status=${status}, elapsed=${elapsed}ms)`)
           return
         }
 
@@ -1394,6 +1480,7 @@ export function createLoopEventHandler(
     lastActivityTime.clear()
     consecutiveStalls.clear()
     watchdogRunning.clear()
+    lastStatusFingerprints.clear()
     stateLocks.clear()
     logger.log('Loop: cleared all retry timeouts')
   }
@@ -1427,6 +1514,7 @@ export function createLoopEventHandler(
       idleRetryTimeouts.delete(loopName)
     }
     idleRetryAttempts.delete(loopName)
+    lastStatusFingerprints.delete(loopName)
   }
 
   function runExclusive<T>(loopName: string, fn: () => Promise<T>): Promise<T> {

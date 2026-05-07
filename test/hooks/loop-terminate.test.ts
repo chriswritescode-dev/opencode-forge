@@ -31,6 +31,7 @@ function createMockV2Client(state: MockClientState): OpencodeClient {
       delete: async (params: DeleteCall) => {
         state.deleteCalls.push(params)
         if (state.deleteThrows) throw new Error('delete failed')
+        return { error: undefined }
       },
       messages: async () => ({ error: null, data: [] }),
       get: async () => ({ error: null, data: {} }),
@@ -192,7 +193,7 @@ describe('Loop Terminate Handler', () => {
   }
 
   describe('session.delete on cancelled termination (worktree loop)', () => {
-    test('calls session.delete with loop sessionID and host projectDir', async () => {
+    test('calls session.delete with loop sessionID and worktreeDir first', async () => {
       const state = makeState()
       loopService.setState(state.loopName, state)
 
@@ -217,7 +218,7 @@ describe('Loop Terminate Handler', () => {
       expect(clientState.deleteCalls).toHaveLength(1)
       expect(clientState.deleteCalls[0]).toEqual({
         sessionID: state.sessionId,
-        directory: state.projectDir!,
+        directory: state.worktreeDir,
       })
     })
 
@@ -268,7 +269,9 @@ describe('Loop Terminate Handler', () => {
 
       await expect(handler.cancelBySessionId(state.sessionId)).resolves.toBe(true)
 
-      expect(clientState.deleteCalls).toHaveLength(1)
+      expect(clientState.deleteCalls).toHaveLength(2)
+      expect(clientState.deleteCalls[0].directory).toBe(state.worktreeDir)
+      expect(clientState.deleteCalls[1].directory).toBe(state.projectDir)
       const deleteFailureLog = errors.find(e => e.msg.includes('failed to delete loop session'))
       expect(deleteFailureLog).toBeTruthy()
     })

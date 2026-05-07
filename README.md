@@ -5,7 +5,7 @@
 <h1 align="center">OpenCode Forge</h1>
 
 <p align="center">
-  <strong>Loops, plans, sandboxing, and ast-grep code intelligence for <a href="https://opencode.ai">OpenCode</a> AI agents</strong>
+  <strong>Loops, plans, sandboxing, and code review for <a href="https://opencode.ai">OpenCode</a> AI agents</strong>
 </p>
 
 <p align="center">
@@ -71,7 +71,6 @@ Loop search dialog:
 - **Plans** — architect produces marked plans that are auto-captured to SQL storage
 - **Execution** — `New session`, `Execute here`, `Loop`, and `Loop (worktree)` launch paths for approved plans
 - **Loops** — iterative coding/auditing with optional worktree isolation and sandbox support
-- **Code Intelligence (ast-grep)** — agents use the bundled ast-grep skill and `@ast-grep/cli` for AST-aware structural search and rule-guided code discovery
 - **Review Findings** — persistent, branch-aware review findings across loop sessions
 - **TUI** — sidebar, plan viewer/editor, execution dialog, and loop details
 - **CLI** — loop management through `oc-forge`
@@ -79,13 +78,13 @@ Loop search dialog:
 
 ## Agents
 
-The plugin bundles three agents that use ast-grep for structural code intelligence:
+The plugin bundles three agents:
 
 | Agent | Mode | Description |
 |-------|------|-------------|
-| **code** | primary | Primary coding agent with ast-grep CLI-assisted discovery. Uses ast-grep CLI for structural code intelligence before diving into unfamiliar code. |
-| **architect** | primary | Read-only planning agent with ast-grep CLI-assisted discovery. Researches the codebase, designs implementation plans, and caches them for user approval before execution. |
-| **auditor** | subagent | Read-only code auditor with ast-grep CLI-assisted analysis for convention-aware reviews. Invoked via Task tool to review diffs, commits, branches, or PRs against stored conventions and decisions. |
+| **code** | primary | Primary coding agent. |
+| **architect** | primary | Read-only planning agent. Researches the codebase, designs implementation plans, and caches them for user approval before execution. |
+| **auditor** | subagent | Read-only code auditor for convention-aware reviews. Invoked via Task tool to review diffs, commits, branches, or PRs against stored conventions and decisions. |
 
 The auditor agent is a read-only subagent (`temperature: 0.0`) that cannot edit files or execute plans. It is invoked by other agents via the Task tool to review code changes against stored project conventions and decisions.
 
@@ -124,23 +123,6 @@ Iterative development loops with automatic auditing. Defaults to current directo
 | `loop` | Execute a plan using an iterative development loop. Default runs in current directory. Set `worktree` to true for isolated git worktree. |
 | `loop-cancel` | Cancel an active loop by worktree name |
 | `loop-status` | List all active loops or get detailed status by worktree name. Supports `restart` to resume inactive loops. |
-
-### Code Intelligence
-
-Forge bundles the upstream `ast-grep` agent skill and depends on `@ast-grep/cli`.
-
-Agents should run CLI commands directly for common structural searches:
-
-```bash
-ast-grep run --pattern 'console.log($ARG)' --lang javascript .
-ast-grep scan --inline-rules 'id: find-await
-language: javascript
-rule:
-  pattern: await $EXPR' .
-```
-
-The bundled skill is available in `skills/ast-grep` and includes `references/rule_reference.md`.
-Load it when deeper rule-writing guidance, relational/composite rule syntax, or troubleshooting help is needed.
 
 ## Slash Commands
 
@@ -639,7 +621,7 @@ When a worktree loop starts on a supported host, forge:
 1. Creates the git worktree (as usual)
 2. Creates a new Code session pointed at the worktree directory
 3. Calls `experimental.workspace.create` with `type: "forge-worktree"` and the loop metadata (`loopName`, `directory`, `branch`) in the `extra` payload
-4. Calls `experimental.workspace.sessionRestore` to bind the session to that workspace
+4. Calls `experimental.workspace.warp` to bind the session to that workspace
 5. Persists the workspace ID on the loop record (`loops.workspace_id`) so the TUI can route clicks on a loop into the correct workspace
 
 The adaptor's `create` and `remove` hooks are intentional no-ops — forge's loop system owns worktree lifecycle, not the workspace system. The adaptor only surfaces existing worktrees to the workspace UI.

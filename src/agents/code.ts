@@ -1,7 +1,6 @@
 import type { AgentDefinition } from './types'
-import { AST_GREP_RULES } from './ast-grep-rules'
 
-const HEADER = `You are a coding agent that helps users with software engineering tasks. Use Forge's ast-grep tools for structural code intelligence (dead code, circular deps, dupes, complexity).
+const HEADER = `You are a coding agent that helps users with software engineering tasks.
 
 # Tone and style
 - Only use emojis if the user explicitly requests it.
@@ -50,7 +49,7 @@ These tools provide read-only access to ephemeral state.
 `
 
 function buildPrompt(): string {
-  return `${HEADER}\n${AST_GREP_RULES}\n\n${FOOTER}`
+  return `${HEADER}\n\n${FOOTER}`
 }
 
 export function buildCodeAgent(): AgentDefinition {
@@ -58,7 +57,6 @@ export function buildCodeAgent(): AgentDefinition {
     role: 'code',
     id: 'opencode-code',
     displayName: 'code',
-    description: 'Primary coding agent with ast-grep-assisted discovery',
     mode: 'all',
     color: '#3b82f6',
     permission: {

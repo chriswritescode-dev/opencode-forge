@@ -15,7 +15,7 @@ export interface AgentDefinition {
   /** Display name shown in UI. */
   displayName: string
   /** Human-readable description of the agent. */
-  description: string
+  description?: string
   /** Default model to use if not overridden. */
   defaultModel?: string
   /** System prompt that defines agent behavior. */
@@ -48,7 +48,7 @@ export interface AgentDefinition {
  */
 export interface AgentConfig {
   /** Description of this agent configuration. */
-  description: string
+  description?: string
   /** Model identifier to use. */
   model: string
   /** Prompt override for this instance. */

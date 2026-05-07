@@ -54,6 +54,26 @@ describe('Plan Execution Utilities', () => {
       const plan = '#   Title with spaces   \n\nContent'
       expect(extractPlanTitle(plan)).toBe('Title with spaces')
     })
+
+    test('Prioritizes loop name from heading-style field', () => {
+      const plan = '# Plan\n\n## Loop Name\n\nworkspace-sync-fix\n\n## Phases\n\nContent'
+      expect(extractPlanTitle(plan)).toBe('workspace-sync-fix')
+    })
+
+    test('Prioritizes loop name from inline heading field', () => {
+      const plan = '# Plan\n\n## Loop Name: workspace-sync-fix\n\n## Phases\n\nContent'
+      expect(extractPlanTitle(plan)).toBe('workspace-sync-fix')
+    })
+
+    test('Skips structural heading prefixes like Phase and Plan', () => {
+      const plan = '# Plan\n\n## Phase 1: Extract feature\n\n## Plan: Fix bug\n\n## Actual Title\n\nContent'
+      expect(extractPlanTitle(plan)).toBe('Actual Title')
+    })
+
+    test('Skips Loop Name heading with inline value', () => {
+      const plan = '# Plan\n\n## Loop Name: auth-refactor\n\n## Phase 1: Setup\n\nContent'
+      expect(extractPlanTitle(plan)).toBe('auth-refactor')
+    })
   })
 
   describe('matchExecutionLabel', () => {

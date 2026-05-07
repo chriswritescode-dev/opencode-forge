@@ -66,7 +66,7 @@ describe('teardownWorktreeArtifacts', () => {
     })
   })
 
-  it('uses projectDir for session.delete when provided (host directory for worktree loops)', async () => {
+  it('uses worktreeDir for session.delete first, not projectDir', async () => {
     const input: TeardownInput = {
       v2: mockV2 as any,
       loopName: 'test-loop',
@@ -86,10 +86,10 @@ describe('teardownWorktreeArtifacts', () => {
 
     expect(mockV2.session.delete).toHaveBeenCalledWith({
       sessionID: 'session-123',
-      directory: '/path/to/host',
+      directory: '/path/to/worktree',
     })
     const callArg = (mockV2.session.delete as any).mock.calls[0][0]
-    expect(callArg.directory).toBe('/path/to/host')
+    expect(callArg.directory).toBe('/path/to/worktree')
   })
 
   it('continues when session.delete fails', async () => {
@@ -226,5 +226,119 @@ describe('teardownWorktreeArtifacts', () => {
 
     expect(result.workspaceDeleted).toBe(false)
     expect(result.worktreeRemoved).toBe(false)
+  })
+
+  it('deletes session against worktreeDir, not projectDir', async () => {
+    const input: TeardownInput = {
+      v2: mockV2 as any,
+      loopName: 'test-loop',
+      sessionId: 'session-123',
+      workspaceId: undefined,
+      worktreeDir: '/tmp/wt',
+      projectDir: '/host/proj',
+      worktree: true,
+      doCommit: false,
+      doRemoveWorktree: false,
+      reasonLabel: 'completed',
+      logPrefix: 'Test',
+      logger: mockLogger,
+    }
+
+    const result = await teardownWorktreeArtifacts(input)
+
+    expect(mockV2.session.delete).toHaveBeenCalledTimes(1)
+    expect(mockV2.session.delete).toHaveBeenCalledWith({
+      sessionID: 'session-123',
+      directory: '/tmp/wt',
+    })
+    expect(result.sessionDeleted).toBe(true)
+  })
+
+  it('falls back to projectDir on first-attempt error', async () => {
+    mockV2.session.delete = vi.fn()
+      .mockResolvedValueOnce({ error: { message: 'not found' } })
+      .mockResolvedValueOnce({ error: undefined })
+
+    const input: TeardownInput = {
+      v2: mockV2 as any,
+      loopName: 'test-loop',
+      sessionId: 'session-123',
+      workspaceId: undefined,
+      worktreeDir: '/tmp/wt',
+      projectDir: '/host/proj',
+      worktree: true,
+      doCommit: false,
+      doRemoveWorktree: false,
+      reasonLabel: 'completed',
+      logPrefix: 'Test',
+      logger: mockLogger,
+    }
+
+    const result = await teardownWorktreeArtifacts(input)
+
+    expect(mockV2.session.delete).toHaveBeenCalledTimes(2)
+    expect(mockV2.session.delete).toHaveBeenNthCalledWith(1, {
+      sessionID: 'session-123',
+      directory: '/tmp/wt',
+    })
+    expect(mockV2.session.delete).toHaveBeenNthCalledWith(2, {
+      sessionID: 'session-123',
+      directory: '/host/proj',
+    })
+    expect(result.sessionDeleted).toBe(true)
+  })
+
+  it('records error when both attempts fail', async () => {
+    mockV2.session.delete = vi.fn()
+      .mockResolvedValue({ error: { message: 'not found' } })
+
+    const input: TeardownInput = {
+      v2: mockV2 as any,
+      loopName: 'test-loop',
+      sessionId: 'session-123',
+      workspaceId: undefined,
+      worktreeDir: '/tmp/wt',
+      projectDir: '/host/proj',
+      worktree: true,
+      doCommit: false,
+      doRemoveWorktree: false,
+      reasonLabel: 'completed',
+      logPrefix: 'Test',
+      logger: mockLogger,
+    }
+
+    const result = await teardownWorktreeArtifacts(input)
+
+    expect(result.sessionDeleted).toBe(false)
+    expect(result.errors.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('does not retry projectDir when it equals worktreeDir', async () => {
+    mockV2.session.delete = vi.fn()
+      .mockResolvedValue({ error: { message: 'not found' } })
+
+    const input: TeardownInput = {
+      v2: mockV2 as any,
+      loopName: 'test-loop',
+      sessionId: 'session-123',
+      workspaceId: undefined,
+      worktreeDir: '/tmp/wt',
+      projectDir: '/tmp/wt',
+      worktree: true,
+      doCommit: false,
+      doRemoveWorktree: false,
+      reasonLabel: 'completed',
+      logPrefix: 'Test',
+      logger: mockLogger,
+    }
+
+    const result = await teardownWorktreeArtifacts(input)
+
+    expect(mockV2.session.delete).toHaveBeenCalledTimes(1)
+    expect(mockV2.session.delete).toHaveBeenCalledWith({
+      sessionID: 'session-123',
+      directory: '/tmp/wt',
+    })
+    expect(result.sessionDeleted).toBe(false)
   })
 })

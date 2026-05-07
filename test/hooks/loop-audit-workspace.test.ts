@@ -21,7 +21,7 @@ interface MockV2Client {
   experimental: {
     workspace: {
       create: ReturnType<typeof mock<(params: any) => Promise<{ data?: { id: string }; error?: unknown }>>>
-      sessionRestore: ReturnType<typeof mock<(params: any) => Promise<{ data?: unknown; error?: unknown }>>>
+      warp: ReturnType<typeof mock<(params: any) => Promise<{ data?: unknown; error?: unknown }>>>
     }
   }
   tui?: {
@@ -51,7 +51,7 @@ function createMockV2Client(): MockV2Client {
     experimental: {
       workspace: {
         create: mock(() => Promise.resolve({ data: { id: 'ws_test_123' } })),
-        sessionRestore: mock(() => Promise.resolve({ data: {} })),
+        warp: mock(() => Promise.resolve({ data: {} })),
       },
     },
     tui: {

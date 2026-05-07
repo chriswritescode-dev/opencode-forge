@@ -3,7 +3,6 @@ import { createReviewTools } from './review'
 import { createPlanTools } from './plan-kv'
 import { createPlanExecuteTools } from './plan-execute'
 import { createLoopTools } from './loop'
-import { createAstGrepTools } from './ast-grep'
 import type { ToolContext } from './types'
 
 export type { ToolContext } from './types'
@@ -20,6 +19,5 @@ export function createTools(ctx: ToolContext): Record<string, ReturnType<typeof 
     ...createPlanTools(ctx),
     ...createPlanExecuteTools(ctx),
     ...createLoopTools(ctx),
-    ...createAstGrepTools(ctx),
   }
 }

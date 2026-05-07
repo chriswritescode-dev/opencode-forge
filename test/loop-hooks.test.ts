@@ -228,7 +228,7 @@ describe('loop-hooks integration', () => {
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     
-    const service = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, testProjectId, logger, testConfig as any)
+    const service = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, testProjectId, logger, testConfig.loop as any)
     
     const getConfig = () => testConfig as PluginConfig
     
@@ -325,6 +325,260 @@ describe('loop-hooks integration', () => {
       expect(messageReads).toBe(0)
       expect(sessionDeletes).toBe(0)
 
+      rmSync(worktreeDir, { recursive: true, force: true })
+    })
+
+    it('terminates when active busy status remains unchanged across watchdog windows', async () => {
+      testConfig.loop = {
+        ...testConfig.loop,
+        stallTimeoutMs: 20,
+      }
+
+      let abortCalls = 0
+      const v2Client = {
+        session: {
+          messages: async () => ({
+            data: [{ info: { role: 'assistant' }, parts: [{ type: 'text', text: 'Work in progress' }] }],
+          }),
+          promptAsync: async () => ({ data: {}, error: null }),
+          abort: async () => { abortCalls++ },
+          status: async () => ({
+            data: {
+              'coding-session': { type: 'busy', message: 'preparing to write' },
+            },
+          }),
+          create: async () => ({ data: { id: 'new-session' }, error: undefined }),
+          delete: async () => {},
+        },
+        tui: {
+          publish: async () => {},
+          selectSession: async () => {},
+        },
+        worktree: {
+          create: async () => ({ data: { directory: '/mock/worktree', branch: 'mock-branch' }, error: undefined }),
+          remove: async () => {},
+        },
+      } as MockV2Client
+
+      const { handler, service } = createTestHandler(v2Client as any)
+      const loopName = 'test-loop-stuck-busy-watchdog'
+      const loopsRepo = createLoopsRepo(db)
+      const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
+      const now = Date.now()
+
+      loopsRepo.insert({
+        projectId: testProjectId,
+        loopName,
+        status: 'running',
+        currentSessionId: 'coding-session',
+        worktree: false,
+        worktreeDir,
+        worktreeBranch: null,
+        projectDir: worktreeDir,
+        maxIterations: 0,
+        iteration: 1,
+        auditCount: 0,
+        errorCount: 0,
+        phase: 'coding',
+        executionModel: null,
+        auditorModel: null,
+        modelFailed: false,
+        sandbox: false,
+        sandboxContainer: null,
+        startedAt: now,
+        completedAt: null,
+        terminationReason: null,
+        completionSummary: null,
+        workspaceId: null,
+        hostSessionId: null,
+      }, {
+        prompt: 'Test prompt',
+        lastAuditResult: null,
+      })
+
+      handler.startWatchdog(loopName)
+      await new Promise(resolve => setTimeout(resolve, 140))
+      handler.clearLoopTimers(loopName)
+
+      const state = service.getAnyState(loopName)
+      expect(state?.active).toBe(false)
+      expect(state?.terminationReason).toBe('stall_timeout')
+      expect(abortCalls).toBe(1)
+      rmSync(worktreeDir, { recursive: true, force: true })
+    })
+
+    it('terminates unknown non-idle preparing status without re-triggering phase handlers', async () => {
+      testConfig.loop = {
+        ...testConfig.loop,
+        stallTimeoutMs: 20,
+      }
+
+      let abortCalls = 0
+      let messageCalls = 0
+      let promptAsyncCalls = 0
+      const v2Client = {
+        session: {
+          messages: async () => {
+            messageCalls++
+            return {
+              data: [{ info: { role: 'assistant' }, parts: [{ type: 'text', text: 'Work in progress' }] }],
+            }
+          },
+          promptAsync: async () => {
+            promptAsyncCalls++
+            return { data: {}, error: null }
+          },
+          abort: async () => { abortCalls++ },
+          status: async () => ({
+            data: {
+              'coding-session': { type: 'preparing', message: 'preparing to write' },
+            },
+          }),
+          create: async () => ({ data: { id: 'new-session' }, error: undefined }),
+          delete: async () => {},
+        },
+        tui: {
+          publish: async () => {},
+          selectSession: async () => {},
+        },
+        worktree: {
+          create: async () => ({ data: { directory: '/mock/worktree', branch: 'mock-branch' }, error: undefined }),
+          remove: async () => {},
+        },
+      } as MockV2Client
+
+      const { handler, service } = createTestHandler(v2Client as any)
+      const loopName = 'test-loop-stuck-preparing-watchdog'
+      const loopsRepo = createLoopsRepo(db)
+      const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
+      const now = Date.now()
+
+      loopsRepo.insert({
+        projectId: testProjectId,
+        loopName,
+        status: 'running',
+        currentSessionId: 'coding-session',
+        worktree: false,
+        worktreeDir,
+        worktreeBranch: null,
+        projectDir: worktreeDir,
+        maxIterations: 0,
+        iteration: 1,
+        auditCount: 0,
+        errorCount: 0,
+        phase: 'coding',
+        executionModel: null,
+        auditorModel: null,
+        modelFailed: false,
+        sandbox: false,
+        sandboxContainer: null,
+        startedAt: now,
+        completedAt: null,
+        terminationReason: null,
+        completionSummary: null,
+        workspaceId: null,
+        hostSessionId: null,
+      }, {
+        prompt: 'Test prompt',
+        lastAuditResult: null,
+      })
+
+      handler.startWatchdog(loopName)
+      await new Promise(resolve => setTimeout(resolve, 140))
+      handler.clearLoopTimers(loopName)
+
+      const state = service.getAnyState(loopName)
+      expect(state?.active).toBe(false)
+      expect(state?.terminationReason).toBe('stall_timeout')
+      expect(abortCalls).toBe(1)
+      expect(messageCalls).toBe(0)
+      expect(promptAsyncCalls).toBe(0)
+      rmSync(worktreeDir, { recursive: true, force: true })
+    })
+
+    it('resets watchdog stall count when session status payload changes', async () => {
+      testConfig.loop = {
+        ...testConfig.loop,
+        stallTimeoutMs: 20,
+      }
+
+      const statusSequence = [
+        { data: { 'coding-session': { type: 'busy', message: 'preparing to write' } } },
+        { data: { 'coding-session': { type: 'busy', message: 'writing file src/a.ts' } } },
+        { data: { 'coding-session': { type: 'busy', message: 'writing file src/a.ts' } } },
+      ]
+      let statusCallIndex = 0
+
+      const v2Client = {
+        session: {
+          messages: async () => ({
+            data: [{ info: { role: 'assistant' }, parts: [{ type: 'text', text: 'Work in progress' }] }],
+          }),
+          promptAsync: async () => ({ data: {}, error: null }),
+          abort: async () => {},
+          status: async () => {
+            const idx = Math.min(statusCallIndex, statusSequence.length - 1)
+            statusCallIndex++
+            return statusSequence[idx]
+          },
+          create: async () => ({ data: { id: 'new-session' }, error: undefined }),
+          delete: async () => {},
+        },
+        tui: {
+          publish: async () => {},
+          selectSession: async () => {},
+        },
+        worktree: {
+          create: async () => ({ data: { directory: '/mock/worktree', branch: 'mock-branch' }, error: undefined }),
+          remove: async () => {},
+        },
+      } as MockV2Client
+
+      const { handler, service } = createTestHandler(v2Client as any)
+      const loopName = 'test-loop-status-change-reset'
+      const loopsRepo = createLoopsRepo(db)
+      const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
+      const now = Date.now()
+
+      loopsRepo.insert({
+        projectId: testProjectId,
+        loopName,
+        status: 'running',
+        currentSessionId: 'coding-session',
+        worktree: false,
+        worktreeDir,
+        worktreeBranch: null,
+        projectDir: worktreeDir,
+        maxIterations: 0,
+        iteration: 1,
+        auditCount: 0,
+        errorCount: 0,
+        phase: 'coding',
+        executionModel: null,
+        auditorModel: null,
+        modelFailed: false,
+        sandbox: false,
+        sandboxContainer: null,
+        startedAt: now,
+        completedAt: null,
+        terminationReason: null,
+        completionSummary: null,
+        workspaceId: null,
+        hostSessionId: null,
+      }, {
+        prompt: 'Test prompt',
+        lastAuditResult: null,
+      })
+
+      handler.startWatchdog(loopName)
+      await new Promise(resolve => setTimeout(resolve, 70))
+      handler.clearLoopTimers(loopName)
+
+      const stallInfo = handler.getStallInfo(loopName)
+      expect(stallInfo?.consecutiveStalls).toBeLessThan(2)
+      const state = service.getAnyState(loopName)
+      expect(state?.active).toBe(true)
+      expect(state?.terminationReason).toBeUndefined()
       rmSync(worktreeDir, { recursive: true, force: true })
     })
   })
@@ -1195,7 +1449,7 @@ describe('loop-hooks integration', () => {
         },
         experimental: {
           workspace: {
-            sessionRestore: async (opts: any) => {
+            warp: async (opts: any) => {
               bindCalled = true
               boundSessionId = opts.sessionID
               return { data: {}, error: null }
@@ -1317,7 +1571,7 @@ describe('loop-hooks integration', () => {
         },
         experimental: {
           workspace: {
-            sessionRestore: async () => {
+            warp: async () => {
               throw new Error('workspace gone')
             },
           },

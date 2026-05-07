@@ -125,13 +125,13 @@ test('createLoopWorkspace: logger receives API unavailable log when client lacks
 
 test('bindSessionToWorkspace: logs SDK error before throwing', async () => {
   let capturedArgs: unknown[] = []
-  const mockSessionRestore = () => Promise.resolve({
+  const mockWarp = () => Promise.resolve({
     error: { name: 'NotFound', data: { message: 'workspace not found' } },
   })
   const mockClient = {
     experimental: {
       workspace: {
-        sessionRestore: mockSessionRestore,
+        warp: mockWarp,
       },
     },
   } as unknown as OpencodeClient
@@ -143,10 +143,10 @@ test('bindSessionToWorkspace: logs SDK error before throwing', async () => {
 
   await expect(
     bindSessionToWorkspace(mockClient, 'ws-123', 'session-456', logger)
-  ).rejects.toThrow('Session restore failed')
+  ).rejects.toThrow('warp failed')
 
   expect(capturedArgs.length).toBeGreaterThan(0)
-  expect(capturedArgs[0]).toContain('bindSessionToWorkspace: sessionRestore failed for workspace=ws-123 session=session-456')
+  expect(capturedArgs[0]).toContain('bindSessionToWorkspace: warp failed for workspace=ws-123 session=session-456')
   expect(capturedArgs[1]).toEqual({ name: 'NotFound', data: { message: 'workspace not found' } })
 })
 

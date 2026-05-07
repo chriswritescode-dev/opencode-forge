@@ -3,112 +3,7 @@ import { createConfigHandler } from '../src/config'
 import { agents } from '../src/agents'
 
 describe('createConfigHandler', () => {
-  describe('built-in explore agent enhancement', () => {
-    test('explore enhancement contains ast-grep discovery rule and no graph-tool names', async () => {
-      const configHandler = createConfigHandler(agents)
-      const config: Record<string, unknown> = {}
-
-      await configHandler(config)
-
-      const exploreConfig = config.agent as Record<string, unknown>
-      const explore = exploreConfig?.explore as Record<string, unknown>
-
-      expect(explore).toBeDefined()
-      const prompt = explore.prompt as string
-      expect(prompt).toContain('ast-grep')
-      expect(prompt).not.toContain('graph-query')
-      expect(prompt).not.toContain('graph-symbols')
-      expect(prompt).not.toContain('graph-analyze')
-    })
-
-    test('explore prompt does not include architect-specific plan workflow text', async () => {
-      const configHandler = createConfigHandler(agents)
-      const config: Record<string, unknown> = {}
-      
-      await configHandler(config)
-      
-      const exploreConfig = config.agent as Record<string, unknown>
-      const explore = exploreConfig?.explore as Record<string, unknown>
-      
-      const prompt = explore.prompt as string
-      expect(prompt).not.toContain('plan-write')
-      expect(prompt).not.toContain('plan-edit')
-      expect(prompt).not.toContain('plan-read')
-      expect(prompt).not.toContain('READ-ONLY mode')
-    })
-
-    test('explore prompt augmentation is appended not replaced', async () => {
-      const configHandler = createConfigHandler(agents)
-      
-      const config: Record<string, unknown> = {
-        agent: {
-          explore: {
-            prompt: 'Custom explore prompt prefix',
-          },
-        },
-      }
-      
-      await configHandler(config)
-      
-      const exploreConfig = config.agent as Record<string, unknown>
-      const explore = exploreConfig?.explore as Record<string, unknown>
-      
-      const prompt = explore.prompt as string
-      expect(prompt).toContain('Custom explore prompt prefix')
-      expect(prompt).toContain('ast-grep')
-    })
-
-    test('explore prompt includes fallback guidance for Glob/Grep', async () => {
-      const configHandler = createConfigHandler(agents)
-      const config: Record<string, unknown> = {}
-      
-      await configHandler(config)
-      
-      const exploreConfig = config.agent as Record<string, unknown>
-      const explore = exploreConfig?.explore as Record<string, unknown>
-      
-      const prompt = explore.prompt as string
-      expect(prompt).toMatch(/ast-grep-search|ast-grep-scan|Use Read or Grep/i)
-    })
-
-    test('explore prompt includes Read as direct inspection step', async () => {
-      const configHandler = createConfigHandler(agents)
-      const config: Record<string, unknown> = {}
-      
-      await configHandler(config)
-      
-      const exploreConfig = config.agent as Record<string, unknown>
-      const explore = exploreConfig?.explore as Record<string, unknown>
-      
-      const prompt = explore.prompt as string
-      // AST_GREP_RULES mentions "Read/Grep/Glob"
-      expect(prompt).toMatch(/Read.*Grep.*Glob/i)
-    })
-  })
-
   describe('config merge behavior', () => {
-    test('existing built-in agent prompts are preserved and augmented', async () => {
-      const configHandler = createConfigHandler(agents)
-      
-      const config: Record<string, unknown> = {
-        agent: {
-          explore: {
-            prompt: 'Original explore prompt',
-            temperature: 0.5,
-          },
-        },
-      }
-      
-      await configHandler(config)
-      
-      const exploreConfig = config.agent as Record<string, unknown>
-      const explore = exploreConfig?.explore as Record<string, unknown>
-      
-      expect(explore.prompt).toContain('Original explore prompt')
-      expect(explore.prompt).toContain('ast-grep')
-      expect(explore.temperature).toBe(0.5)
-    })
-
     test('permission enablement is additive to existing permission config', async () => {
       const configHandler = createConfigHandler(agents)
 
@@ -126,8 +21,9 @@ describe('createConfigHandler', () => {
 
       const exploreConfig = config.agent as Record<string, unknown>
       const explore = exploreConfig?.explore as Record<string, unknown>
-      const permission = explore.permission as Record<string, string>
 
+      expect(explore).toBeDefined()
+      const permission = explore.permission as Record<string, string>
       expect(permission['existing-tool']).toBe('allow')
       expect(permission['graph-query']).toBeUndefined()
       expect(permission['graph-symbols']).toBeUndefined()
@@ -137,12 +33,11 @@ describe('createConfigHandler', () => {
     test('built-in agents without enhancement are hidden if in REPLACED_BUILTIN_AGENTS', async () => {
       const configHandler = createConfigHandler(agents)
       const config: Record<string, unknown> = {}
-      
+
       await configHandler(config)
-      
+
       const agentConfigs = config.agent as Record<string, unknown>
-      
-      expect(agentConfigs.explore).toBeDefined()
+
       expect(agentConfigs.build).toBeDefined()
       expect((agentConfigs.build as Record<string, unknown>).hidden).toBe(true)
       expect(agentConfigs.plan).toBeDefined()
@@ -152,13 +47,13 @@ describe('createConfigHandler', () => {
     test('code agent tools include review-delete: false by default', async () => {
       const configHandler = createConfigHandler(agents)
       const config: Record<string, unknown> = {}
-      
+
       await configHandler(config)
-      
+
       const agentConfigs = config.agent as Record<string, unknown>
       const code = agentConfigs.code as Record<string, unknown>
       const tools = code.tools as Record<string, boolean>
-      
+
       expect(tools).toBeDefined()
       expect(tools['review-delete']).toBe(false)
     })
@@ -210,7 +105,6 @@ describe('createConfigHandler', () => {
       const permission = code.permission as Record<string, string>
 
       expect(permission['review-delete']).toBe('deny')
-      // Other excludes should still be denied.
       expect(permission['plan-execute']).toBe('deny')
     })
 
@@ -225,13 +119,13 @@ describe('createConfigHandler', () => {
           },
         },
       }
-      
+
       await configHandler(config)
-      
+
       const agentConfigs = config.agent as Record<string, unknown>
       const code = agentConfigs.code as Record<string, unknown>
       const tools = code.tools as Record<string, boolean>
-      
+
       expect(tools['review-delete']).toBe(false)
       expect(tools.bash).toBe(true)
     })
@@ -247,25 +141,25 @@ describe('createConfigHandler', () => {
           },
         },
       }
-      
+
       await configHandler(config)
-      
+
       const agentConfigs = config.agent as Record<string, unknown>
       const code = agentConfigs.code as Record<string, unknown>
       const tools = code.tools as Record<string, boolean>
-      
+
       expect(tools['review-delete']).toBe(false)
     })
 
     test('auditor agent retains review-delete access', async () => {
       const configHandler = createConfigHandler(agents)
       const config: Record<string, unknown> = {}
-      
+
       await configHandler(config)
-      
+
       const agentConfigs = config.agent as Record<string, unknown>
       const auditor = agentConfigs.auditor as Record<string, unknown>
-      
+
       expect(auditor).toBeDefined()
       const tools = auditor.tools as Record<string, boolean> | undefined
       if (tools) {
