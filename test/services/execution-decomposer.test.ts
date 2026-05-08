@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { decomposerAgent } from '../../src/agents/decomposer'
 import { resolveDecomposerModel } from '../../src/utils/model-fallback'
 import Database from 'better-sqlite3'
@@ -956,6 +956,212 @@ describe('Execution decomposer integration', () => {
 
     test('decomposer system prompt requires section-specific verification', () => {
       expect(decomposerAgent.systemPrompt).toContain('specific to that section')
+    })
+  })
+
+  describe('Worktree decomposer warp behavior', () => {
+    test('worktree+agent start warps the decomposer session', async () => {
+      const { createForgeExecutionService } = await import('../../src/services/execution')
+
+      const sessionCreateCalls: Array<Record<string, unknown>> = []
+      const warpCalls: Array<Record<string, unknown>> = []
+      const promptAsyncCalls: Array<Record<string, unknown>> = []
+
+      const mockV2Client = {
+        session: {
+          create: async (params: Record<string, unknown>) => {
+            sessionCreateCalls.push(params)
+            return { data: { id: 'ses_decomposer_1' } }
+          },
+          promptAsync: async (args: Record<string, unknown>) => {
+            promptAsyncCalls.push(args)
+            return {}
+          },
+          abort: async () => ({}),
+          delete: async () => ({}),
+          get: async () => ({ data: {} }),
+          messages: async () => ({ data: [] }),
+          status: async () => ({ data: {} }),
+        },
+        experimental: {
+          workspace: {
+            list: async () => ({ data: [] }),
+            remove: async () => ({}),
+            create: async () => ({ data: { id: 'wrk_1' } }),
+            warp: async (args: Record<string, unknown>) => {
+              warpCalls.push(args)
+              return { data: {} }
+            },
+          },
+          session: { list: async () => ({ data: [] }) },
+        },
+        tui: { publish: async () => ({}) },
+        worktree: { create: async () => ({ data: { directory: '/wt/x', branch: 'forge/x' } }) },
+      }
+
+      const noopFn = () => {}
+      const mockLoopsRepo = new Proxy({}, { get: () => noopFn }) as any
+      mockLoopsRepo.listByStatus = () => []
+      mockLoopsRepo.get = () => null
+
+      const mockPlansRepo = new Proxy({}, { get: () => noopFn }) as any
+      mockPlansRepo.getForSession = () => null
+
+      const mockLoopService = {
+        generateUniqueLoopName: () => 'test-wt-loop',
+        setState: noopFn,
+        registerLoopSession: noopFn,
+        setPhase: noopFn,
+        buildDecomposerInitialPrompt: () => 'Decompose this plan',
+        deleteState: noopFn,
+        getActiveState: () => null,
+        getAnyState: () => null,
+      }
+
+      const service = createForgeExecutionService({
+        projectId: 'test-project',
+        directory: '/tmp/test',
+        config: {
+          executionModel: 'prov/exec',
+          auditorModel: 'prov/aud',
+          decomposer: { enabled: true, mode: 'agent' },
+          loop: { enabled: true },
+        },
+        logger: mockLogger,
+        dataDir: '/tmp',
+        v2: mockV2Client as any,
+        plansRepo: mockPlansRepo,
+        loopsRepo: mockLoopsRepo,
+        loopService: mockLoopService as any,
+        sectionPlansRepo: {
+          bulkInsert: noopFn,
+          count: () => 0,
+          list: () => [],
+          setStatus: noopFn,
+          setStartedAt: noopFn,
+        } as any,
+      })
+
+      await service.dispatch(
+        { surface: 'api', projectId: 'test-project', directory: '/tmp/test' },
+        {
+          type: 'loop.start',
+          source: { kind: 'inline', planText: '## Phase 1: Setup\nDo something' },
+          mode: 'worktree',
+          maxIterations: 3,
+        },
+      )
+
+      expect(sessionCreateCalls.length).toBeGreaterThan(0)
+      expect(sessionCreateCalls[0]).toHaveProperty('workspaceID', 'wrk_1')
+
+      expect(warpCalls.length).toBe(1)
+      expect(warpCalls[0]).toEqual({ id: 'wrk_1', sessionID: 'ses_decomposer_1' })
+
+      expect(promptAsyncCalls.length).toBeGreaterThan(0)
+      expect(promptAsyncCalls[0].agent).toBe('decomposer')
+      expect(promptAsyncCalls[0].sessionID).toBe('ses_decomposer_1')
+    })
+
+    test('in-place agent decomposer does not warp', async () => {
+      const { createForgeExecutionService } = await import('../../src/services/execution')
+
+      const sessionCreateCalls: Array<Record<string, unknown>> = []
+      const warpCalls: Array<Record<string, unknown>> = []
+      const promptAsyncCalls: Array<Record<string, unknown>> = []
+
+      const mockV2Client = {
+        session: {
+          create: async (params: Record<string, unknown>) => {
+            sessionCreateCalls.push(params)
+            return { data: { id: 'ses_decomposer_ip' } }
+          },
+          promptAsync: async (args: Record<string, unknown>) => {
+            promptAsyncCalls.push(args)
+            return {}
+          },
+          abort: async () => ({}),
+          delete: async () => ({}),
+          get: async () => ({ data: {} }),
+          messages: async () => ({ data: [] }),
+          status: async () => ({ data: {} }),
+        },
+        experimental: {
+          workspace: {
+            list: async () => ({ data: [] }),
+            remove: async () => ({}),
+            create: async () => ({ data: { id: 'wrk_1' } }),
+            warp: async (args: Record<string, unknown>) => {
+              warpCalls.push(args)
+              return { data: {} }
+            },
+          },
+          session: { list: async () => ({ data: [] }) },
+        },
+        tui: { publish: async () => ({}) },
+        worktree: { create: async () => ({ data: { directory: '/tmp/wt', branch: 'main' } }) },
+      }
+
+      const noopFn = () => {}
+      const mockLoopsRepo = new Proxy({}, { get: () => noopFn }) as any
+      mockLoopsRepo.listByStatus = () => []
+      mockLoopsRepo.get = () => null
+
+      const mockPlansRepo = new Proxy({}, { get: () => noopFn }) as any
+      mockPlansRepo.getForSession = () => null
+
+      const mockLoopService = {
+        generateUniqueLoopName: () => 'test-ip-loop',
+        setState: noopFn,
+        registerLoopSession: noopFn,
+        setPhase: noopFn,
+        buildDecomposerInitialPrompt: () => 'Decompose this plan',
+        deleteState: noopFn,
+        getActiveState: () => null,
+        getAnyState: () => null,
+      }
+
+      const service = createForgeExecutionService({
+        projectId: 'test-project',
+        directory: '/tmp/test',
+        config: {
+          executionModel: 'prov/exec',
+          auditorModel: 'prov/aud',
+          decomposer: { enabled: true, mode: 'agent' },
+          loop: { enabled: true },
+        },
+        logger: mockLogger,
+        dataDir: '/tmp',
+        v2: mockV2Client as any,
+        plansRepo: mockPlansRepo,
+        loopsRepo: mockLoopsRepo,
+        loopService: mockLoopService as any,
+        sectionPlansRepo: {
+          bulkInsert: noopFn,
+          count: () => 0,
+          list: () => [],
+          setStatus: noopFn,
+          setStartedAt: noopFn,
+        } as any,
+      })
+
+      await service.dispatch(
+        { surface: 'api', projectId: 'test-project', directory: '/tmp/test' },
+        {
+          type: 'loop.start',
+          source: { kind: 'inline', planText: '## Phase 1: Setup\nDo something' },
+          mode: 'in-place',
+          maxIterations: 3,
+        },
+      )
+
+      expect(sessionCreateCalls.length).toBeGreaterThan(0)
+      expect(sessionCreateCalls[0]).not.toHaveProperty('workspaceID')
+
+      expect(warpCalls.length).toBe(0)
+
+      expect(promptAsyncCalls.length).toBeGreaterThan(0)
+      expect(promptAsyncCalls[0].agent).toBe('decomposer')
     })
   })
 })

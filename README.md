@@ -40,13 +40,12 @@ Add to your `opencode.json` to enable Forge’s server-side hooks, tools, and ag
 
 ## What Forge Adds
 
-Forge ships three user-facing surfaces:
+Forge ships two user-facing surfaces:
 
 - **Server plugin** — enabled through OpenCode plugin config in `opencode.json`. The package declares the `server` oc-plugin surface and exports `./server` for the server entrypoint.
 - **TUI plugin** — enabled separately in `tui.json`. The package declares the `tui` oc-plugin surface and exports `./tui` for the terminal UI entrypoint.
-- **CLI** — the `oc-forge` binary manages loops from the terminal.
 
-The server plugin provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, and sandbox support. The TUI plugin layers on sidebar, plan, execution, and loop dialogs. The CLI is source-backed by the package binary and the CLI entrypoint and exposes `upgrade` and `loop` subcommands.
+The server plugin provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, and sandbox support. The TUI plugin layers on sidebar, plan, execution, and loop dialogs.
 
 ## Screenshots
 
@@ -73,7 +72,6 @@ Loop search dialog:
 - **Loops** — iterative coding/auditing with optional worktree isolation and sandbox support
 - **Review Findings** — persistent, branch-aware review findings across loop sessions
 - **TUI** — sidebar, plan viewer/editor, execution dialog, and loop details
-- **CLI** — loop management through `oc-forge`
 - **Sandbox** — Docker worktree loop isolation with bind-mounted project files
 
 ## Agents
@@ -132,74 +130,6 @@ Iterative development loops with automatic auditing. Defaults to current directo
 | `/loop` | Start an iterative development loop in a worktree | code |
 | `/loop-status` | Check status of all active loops | code |
 | `/loop-cancel` | Cancel the active loop | code |
-
-## CLI
-
-Manage loops using the `oc-forge` CLI. The CLI auto-detects the project ID from git.
-
-```bash
-oc-forge <command> [options]
-```
-
-**Global options** (apply to all commands):
-
-| Flag | Description |
-|------|-------------|
-| `--project, -p <name>` | Project name or SHA (auto-detected from git) |
-| `--dir, -d <path>` | Git repo path for project detection |
-| `--db-path <path>` | Path to forge database |
-| `--help, -h` | Show help |
-
-### Commands
-
-#### upgrade
-
-Check for plugin updates and install the latest version.
-
-```bash
-oc-forge upgrade
-```
-
-#### status
-
-Show loop status for the current project.
-
-```bash
-oc-forge loop status
-oc-forge loop status --project my-project
-```
-
-| Flag | Description |
-|------|-------------|
-| `--project, -p <name>` | Project name or SHA (auto-detected from git) |
-
-#### cancel
-
-Cancel a loop by worktree name.
-
-```bash
-oc-forge loop cancel my-worktree-name
-oc-forge loop cancel --project my-project my-worktree-name
-```
-
-| Flag | Description |
-|------|-------------|
-| `--project, -p <name>` | Project name or SHA (auto-detected from git) |
-
-#### restart
-
-Restart a loop by worktree name.
-
-```bash
-oc-forge loop restart my-worktree-name
-oc-forge loop restart --project my-project my-worktree-name
-```
-
-| Flag | Description |
-|------|-------------|
-| `--project, -p <name>` | Project name or SHA (auto-detected from git) |
-| `--force` | Force restart an active loop without confirmation |
-| `--server <url>` | OpenCode server URL (default: http://localhost:5551) |
 
 ## Configuration
 
@@ -597,7 +527,6 @@ On model errors during execution, automatic fallback to the default model kicks 
 
 - **Slash commands**: `/loop` to start, `/loop-cancel` to cancel
 - **Tools**: `loop` to start with parameters, `loop-status` for checking progress (with restart capability), `loop-cancel` to cancel
-- **CLI**: `oc-forge loop status` and `oc-forge loop cancel` for loop management
 
 ### Loop termination
 

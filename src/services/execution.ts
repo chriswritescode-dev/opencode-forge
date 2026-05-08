@@ -2,13 +2,12 @@
  * Forge Execution Service - Command Bus Interface
  * 
  * Shared execution service for plan execution and loop lifecycle.
- * Provides a unified interface for internal tools, API/TUI, and CLI.
+ * Provides a unified interface for internal tools, API, and TUI surfaces.
  */
 
 import type { PluginConfig, Logger } from '../types'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import type { PlansRepo } from '../storage/repos/plans-repo'
-import type { ToolContext } from '../tools/types'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { LoopService } from '../services/loop'
 import type { createLoopEventHandler } from '../hooks'
@@ -29,7 +28,7 @@ import { decomposeDeterministically } from './deterministic-decomposer'
 // Surface Types - Identifies the caller boundary
 // ============================================================================
 
-export type ForgeExecutionSurface = 'tool' | 'approval-hook' | 'api' | 'tui' | 'cli'
+export type ForgeExecutionSurface = 'tool' | 'approval-hook' | 'api' | 'tui'
 
 // ============================================================================
 // Request Context
@@ -318,7 +317,7 @@ export interface ForgeExecutionServiceDeps {
   logger: Logger | Console
   dataDir: string
   v2: OpencodeClient
-  legacyClient?: ToolContext['input']['client']
+  legacyClient?: import('@opencode-ai/sdk').OpencodeClient
   plansRepo: PlansRepo
   loopsRepo: LoopsRepo
   loopService?: LoopService
@@ -405,7 +404,7 @@ async function resolvePlanSource(
 }
 
 // ============================================================================
-// Fallback Helpers for Legacy Plugin Client
+// Fallback Helpers for Legacy Plugin SDK
 // ============================================================================
 
 interface SessionCreateInput {
@@ -437,7 +436,7 @@ async function createSessionWithFallback(
   deps: ForgeExecutionServiceDeps,
   input: SessionCreateInput,
 ): Promise<SessionCreateResult> {
-  // Try v2 client first
+  // Try v2 SDK first
   try {
     const result = await deps.v2.session.create({
       title: input.title,
@@ -452,24 +451,24 @@ async function createSessionWithFallback(
     if (result.error) {
       const errorMsg = result.error instanceof Error ? result.error.message : String(result.error)
       if (errorMsg.includes('Unable to connect')) {
-        deps.logger.log('createSessionWithFallback: v2 client unavailable, falling back to legacy client')
+        deps.logger.log('createSessionWithFallback: v2 SDK unavailable, falling back to legacy SDK')
       } else {
-        deps.logger.error('createSessionWithFallback: v2 client error', result.error)
+        deps.logger.error('createSessionWithFallback: v2 SDK error', result.error)
       }
     }
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err)
     if (errorMsg.includes('Unable to connect')) {
-      deps.logger.log('createSessionWithFallback: v2 client threw connection error, falling back to legacy client')
+      deps.logger.log('createSessionWithFallback: v2 SDK threw connection error, falling back to legacy SDK')
     } else {
-      deps.logger.error('createSessionWithFallback: v2 client threw error', err)
+      deps.logger.error('createSessionWithFallback: v2 SDK threw error', err)
     }
   }
   
-  // Fallback to legacy client
+  // Fallback to legacy SDK
   if (!deps.legacyClient) {
-    deps.logger.error('createSessionWithFallback: no legacy client available')
-    return { error: new Error('No legacy client available') }
+    deps.logger.error('createSessionWithFallback: no legacy SDK available')
+    return { error: new Error('No legacy SDK available') }
   }
   
   try {
@@ -488,9 +487,9 @@ async function createSessionWithFallback(
       return { data: { id: session.id } }
     }
     
-    return { error: new Error('Legacy client returned no session ID') }
+    return { error: new Error('Legacy SDK returned no session ID') }
   } catch (err) {
-    deps.logger.error('createSessionWithFallback: legacy client failed', err)
+    deps.logger.error('createSessionWithFallback: legacy SDK failed', err)
     return { error: err }
   }
 }
@@ -500,7 +499,7 @@ async function promptSessionWithFallback(
   input: SessionPromptInput,
   model?: { providerID: string; modelID: string },
 ): Promise<{ result: SessionPromptResult; usedModel?: typeof model }> {
-  // Try v2 client first
+  // Try v2 SDK first
   try {
     const result = await deps.v2.session.promptAsync({
       sessionID: input.sessionID,
@@ -517,23 +516,23 @@ async function promptSessionWithFallback(
     
     const errorMsg = result.error instanceof Error ? result.error.message : String(result.error)
     if (errorMsg.includes('Unable to connect')) {
-      deps.logger.log('promptSessionWithFallback: v2 client unavailable, falling back to legacy client')
+      deps.logger.log('promptSessionWithFallback: v2 SDK unavailable, falling back to legacy SDK')
     } else {
-      deps.logger.error('promptSessionWithFallback: v2 client error', result.error)
+      deps.logger.error('promptSessionWithFallback: v2 SDK error', result.error)
     }
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err)
     if (errorMsg.includes('Unable to connect')) {
-      deps.logger.log('promptSessionWithFallback: v2 client threw connection error, falling back to legacy client')
+      deps.logger.log('promptSessionWithFallback: v2 SDK threw connection error, falling back to legacy SDK')
     } else {
-      deps.logger.error('promptSessionWithFallback: v2 client threw error', err)
+      deps.logger.error('promptSessionWithFallback: v2 SDK threw error', err)
     }
   }
   
-  // Fallback to legacy client
+  // Fallback to legacy SDK
   if (!deps.legacyClient) {
-    deps.logger.error('promptSessionWithFallback: no legacy client available')
-    return { result: { error: new Error('No legacy client available') }, usedModel: model }
+    deps.logger.error('promptSessionWithFallback: no legacy SDK available')
+    return { result: { error: new Error('No legacy SDK available') }, usedModel: model }
   }
   
   try {
@@ -550,15 +549,15 @@ async function promptSessionWithFallback(
       },
     } as Parameters<typeof deps.legacyClient.session.promptAsync>[0])
     
-    // Legacy client returns { data, request, response }
+    // Legacy SDK returns { data, request, response }
     const legacyData = legacyResult as { data?: unknown }
     if (!legacyData.data) {
-      return { result: { error: new Error('Legacy client returned no data') }, usedModel: model }
+      return { result: { error: new Error('Legacy SDK returned no data') }, usedModel: model }
     }
     
     return { result: { data: legacyData.data }, usedModel: model }
   } catch (err) {
-    deps.logger.error('promptSessionWithFallback: legacy client failed', err)
+    deps.logger.error('promptSessionWithFallback: legacy SDK failed', err)
     return { result: { error: err }, usedModel: model }
   }
 }
@@ -600,13 +599,13 @@ async function selectSessionWithFallback(
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err)
     if (errorMsg.includes('Unable to connect')) {
-      deps.logger.log('selectSessionWithFallback: v2 TUI publish unavailable, falling back to legacy client')
+      deps.logger.log('selectSessionWithFallback: v2 TUI publish unavailable, falling back to legacy SDK')
     } else {
       deps.logger.error('selectSessionWithFallback: v2 TUI publish error', err)
     }
   }
   
-  // Fallback to legacy client TUI
+  // Fallback to legacy SDK TUI
   if (!deps.legacyClient?.tui) {
     deps.logger.error('selectSessionWithFallback: no legacy TUI available')
     return
@@ -901,17 +900,28 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         
         // Create session (code session or decomposer session based on decomposer mode)
         if (isAgentDecomposer) {
-          const decomposerSessionResult = await createSessionWithFallback(deps, {
+          const createResult = await createLoopSessionWithWorkspace({
+            v2: deps.v2,
             title: `decomposer-${uniqueLoopName}`,
             directory: hostWorktreeDir!,
+            permission: permissionRuleset,
+            workspaceId,
+            logPrefix: 'handleStartLoop:decomposer',
+            logger: deps.logger,
+            legacyClient: deps.legacyClient,
           })
-          if (!decomposerSessionResult.data) {
+          if (!createResult) {
             deps.logger.error('handleStartLoop: failed to create decomposer session')
             await rollbackLoopStart()
             return fail('internal_error', 500, 'Failed to create decomposer session')
           }
-          sessionId = decomposerSessionResult.data.id
+          sessionId = createResult.sessionId
           createdSessionId = sessionId
+          if (createResult.bindFailed) {
+            deps.logger.log(
+              `handleStartLoop: workspace ${workspaceId} created but initial decomposer bind failed; will retry on next session`,
+            )
+          }
         } else {
           const createResult = await createLoopSessionWithWorkspace({
             v2: deps.v2,
@@ -1253,18 +1263,45 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             }
             deps.loopsRepo.setDecompositionStatus(ctx.projectId, uniqueLoopName, 'running')
             
-            const decomposerSessionResult = await createSessionWithFallback(deps, {
-              title: `decomposer-${uniqueLoopName}`,
-              directory: state.worktreeDir,
-            })
-            
-            if (!decomposerSessionResult.data) {
-              deps.logger.error('handleStartLoop: failed to create decomposer session for fallback')
-              await rollbackLoopStart()
-              return fail('internal_error', 500, 'Failed to create decomposer session')
+            let decomposerSessionId: string
+            if (command.mode === 'worktree' && createdWorkspaceId) {
+              const fallbackPermission = buildLoopPermissionRuleset({
+                isWorktree: true,
+                isSandbox: sandboxEnabledForLoop,
+              })
+              const createResult = await createLoopSessionWithWorkspace({
+                v2: deps.v2,
+                title: `decomposer-${uniqueLoopName}`,
+                directory: state.worktreeDir,
+                permission: fallbackPermission,
+                workspaceId: createdWorkspaceId,
+                logPrefix: 'handleStartLoop:decomposer-fallback',
+                logger: deps.logger,
+                legacyClient: deps.legacyClient,
+              })
+              if (!createResult) {
+                deps.logger.error('handleStartLoop: failed to create decomposer session for fallback')
+                await rollbackLoopStart()
+                return fail('internal_error', 500, 'Failed to create decomposer session')
+              }
+              decomposerSessionId = createResult.sessionId
+              if (createResult.bindFailed) {
+                deps.logger.log(
+                  `handleStartLoop: workspace ${createdWorkspaceId} created but salvage decomposer bind failed`,
+                )
+              }
+            } else {
+              const decomposerSessionResult = await createSessionWithFallback(deps, {
+                title: `decomposer-${uniqueLoopName}`,
+                directory: state.worktreeDir,
+              })
+              if (!decomposerSessionResult.data) {
+                deps.logger.error('handleStartLoop: failed to create decomposer session for fallback')
+                await rollbackLoopStart()
+                return fail('internal_error', 500, 'Failed to create decomposer session')
+              }
+              decomposerSessionId = decomposerSessionResult.data.id
             }
-            
-            const decomposerSessionId = decomposerSessionResult.data.id
             createdSessionId = decomposerSessionId
             
             deps.loopsRepo.setDecompositionSessionId(ctx.projectId, uniqueLoopName, decomposerSessionId)
@@ -1554,7 +1591,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         states = [...active, ...recent]
       }
     } else {
-      // CLI adapter: read from DB
+      // Repository fallback: read persisted loop states from DB
       const rows = deps.loopsRepo.listByStatus(ctx.projectId, ['running', 'completed', 'cancelled', 'errored', 'stalled'])
       states = rows.map(row => {
         const large = deps.loopsRepo.getLarge(ctx.projectId, row.loopName)
@@ -1875,20 +1912,42 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           } else {
             // No sections: fallback per onParseFailure
             if (decomposerConfig.onParseFailure === 'agent') {
-              const decomposerResult = await createSessionWithFallback(deps, {
-                title: `decomposer-${stoppedState.loopName}`,
-                directory: stoppedState.worktreeDir,
-              })
-              
-              if (!decomposerResult.data) {
-                return { ok: false, error: 'Failed to create decomposer session for fallback.' }
+              let didBindFail = false
+              if (stoppedState.worktree && stoppedState.workspaceId) {
+                const restartPermission = buildLoopPermissionRuleset({
+                  isWorktree: true,
+                  isSandbox: restartSandbox,
+                })
+                const createResult = await createLoopSessionWithWorkspace({
+                  v2: deps.v2,
+                  title: `decomposer-${stoppedState.loopName}`,
+                  directory: stoppedState.worktreeDir,
+                  permission: restartPermission,
+                  workspaceId: stoppedState.workspaceId,
+                  logPrefix: 'loop-restart:decomposer-fallback',
+                  logger: deps.logger,
+                })
+                if (!createResult) return { ok: false, error: 'Failed to create decomposer session for fallback.' }
+                decomposerSessionId = createResult.sessionId
+                if (createResult.bindFailed) {
+                  stoppedState.workspaceId = undefined
+                  didBindFail = true
+                }
+              } else {
+                const decomposerResult = await createSessionWithFallback(deps, {
+                  title: `decomposer-${stoppedState.loopName}`,
+                  directory: stoppedState.worktreeDir,
+                })
+                if (!decomposerResult.data) {
+                  return { ok: false, error: 'Failed to create decomposer session for fallback.' }
+                }
+                decomposerSessionId = decomposerResult.data.id
               }
-              
-              decomposerSessionId = decomposerResult.data.id
               deps.loopService!.registerLoopSession(decomposerSessionId, stoppedState.loopName)
               deps.loopsRepo.setDecompositionStatus(ctx.projectId, stoppedState.loopName, 'running')
               deps.loopsRepo.setDecompositionSessionId(ctx.projectId, stoppedState.loopName, decomposerSessionId)
               deps.loopsRepo.setCurrentSessionId(ctx.projectId, stoppedState.loopName, decomposerSessionId)
+              if (didBindFail) bindFailed = true
             } else {
               deps.loopsRepo.setDecompositionStatus(ctx.projectId, stoppedState.loopName, 'skipped')
               deps.loopsRepo.setTotalSections(ctx.projectId, stoppedState.loopName, 0)
@@ -1902,17 +1961,40 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           // Agent mode: re-create decomposer session
           deps.logger.log(`loop-restart: re-entering decomposition (status=${stoppedState.decompositionStatus})`)
           
-          const decomposerResult = await createSessionWithFallback(deps, {
-            title: `decomposer-${stoppedState.loopName}`,
-            directory: stoppedState.worktreeDir,
-          })
-          
-          if (!decomposerResult.data) {
-            deps.logger.error('loop-restart: failed to create decomposer session')
-            return { ok: false, error: 'Failed to create decomposer session for restart.' }
+          if (stoppedState.worktree && stoppedState.workspaceId) {
+            const restartPermission = buildLoopPermissionRuleset({
+              isWorktree: true,
+              isSandbox: restartSandbox,
+            })
+            const createResult = await createLoopSessionWithWorkspace({
+              v2: deps.v2,
+              title: `decomposer-${stoppedState.loopName}`,
+              directory: stoppedState.worktreeDir,
+              permission: restartPermission,
+              workspaceId: stoppedState.workspaceId,
+              logPrefix: 'loop-restart:decomposer',
+              logger: deps.logger,
+            })
+            if (!createResult) {
+              deps.logger.error('loop-restart: failed to create decomposer session')
+              return { ok: false, error: 'Failed to create decomposer session for restart.' }
+            }
+            decomposerSessionId = createResult.sessionId
+            if (createResult.bindFailed) {
+              stoppedState.workspaceId = undefined
+              bindFailed = true
+            }
+          } else {
+            const decomposerResult = await createSessionWithFallback(deps, {
+              title: `decomposer-${stoppedState.loopName}`,
+              directory: stoppedState.worktreeDir,
+            })
+            if (!decomposerResult.data) {
+              deps.logger.error('loop-restart: failed to create decomposer session')
+              return { ok: false, error: 'Failed to create decomposer session for restart.' }
+            }
+            decomposerSessionId = decomposerResult.data.id
           }
-          
-          decomposerSessionId = decomposerResult.data.id
           deps.loopService!.registerLoopSession(decomposerSessionId, stoppedState.loopName)
           deps.loopsRepo.setDecompositionStatus(ctx.projectId, stoppedState.loopName, 'running')
           deps.loopsRepo.setDecompositionSessionId(ctx.projectId, stoppedState.loopName, decomposerSessionId)

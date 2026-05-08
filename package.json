@@ -29,9 +29,6 @@
     "README.md",
     "src/command/template"
   ],
-  "bin": {
-    "oc-forge": "./dist/cli/index.js"
-  },
   "repository": {
     "type": "git",
     "url": "https://github.com/chriswritescode-dev/opencode-forge.git"
@@ -95,7 +92,6 @@
     "test": "vitest run",
     "test:bun": "bun test --max-concurrency=1",
     "typecheck": "tsc --noEmit",
-    "cli": "bun src/cli/index.ts",
     "docs:api": "typedoc",
     "docs": "pnpm docs:api"
   },

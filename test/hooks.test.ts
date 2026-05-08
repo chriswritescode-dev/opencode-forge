@@ -6,7 +6,7 @@ import { Database } from 'bun:sqlite'
 import type { Logger } from '../src/types'
 import type { PluginInput } from '@opencode-ai/plugin'
 
-const TEST_PROJECT_ID = 'test-project-id'
+const TEST_PROJECT_ID = 'test-proj-id'
 
 const mockLogger: Logger = {
   log: () => {},

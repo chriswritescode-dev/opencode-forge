@@ -165,6 +165,8 @@ describe('handleLoopRestart from stall_timeout', () => {
     status: string
     terminationReason: string | null
     active: boolean
+    worktree: boolean
+    workspaceId: string | null
   }> = {}) {
     const defaults = {
       loopName: 'test-loop',
@@ -177,6 +179,8 @@ describe('handleLoopRestart from stall_timeout', () => {
       status: 'stalled',
       terminationReason: 'stall_timeout',
       active: false,
+      worktree: false,
+      workspaceId: null as string | null,
     }
     const opts = { ...defaults, ...overrides }
     loopsRepo.insert({
@@ -184,7 +188,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       loopName: opts.loopName,
       status: opts.status as any,
       currentSessionId: 'session-old',
-      worktree: false,
+      worktree: opts.worktree,
       worktreeDir: '/tmp',
       worktreeBranch: null,
       projectDir: '/tmp',
@@ -202,7 +206,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       completedAt: null,
       terminationReason: opts.terminationReason,
       completionSummary: null,
-      workspaceId: null,
+      workspaceId: opts.workspaceId,
       hostSessionId: null,
       decompositionStatus: opts.decompositionStatus as any,
       decompositionMode: opts.decompositionMode as any,
@@ -541,5 +545,108 @@ describe('handleLoopRestart from stall_timeout', () => {
 
     expect(buildFinalAuditPromptSpy).toHaveBeenCalledTimes(1)
     expect(buildSectionInitialPromptSpy).not.toHaveBeenCalled()
+  })
+
+  test('restart worktree agent decomposer warps new session to workspace', async () => {
+    insertLoop({
+      loopName: 'wt-agent-loop',
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      decompositionStatus: 'running',
+      decompositionMode: 'agent',
+      worktree: true,
+      workspaceId: 'wrk_1',
+    })
+
+    const noopFn = () => {}
+
+    const warpCalls: Array<Record<string, unknown>> = []
+    const promptAsyncCalls: Array<Record<string, unknown>> = []
+
+    const mockV2Client = {
+      session: {
+        create: async () => ({ data: { id: 'new-sess-wt' } }),
+        get: async () => ({ data: {} }),
+        promptAsync: async (args: Record<string, unknown>) => {
+          promptAsyncCalls.push(args)
+          return {}
+        },
+        abort: async () => ({}),
+        delete: async () => ({}),
+        messages: async () => ({ data: [] }),
+        status: async () => ({ data: {} }),
+      },
+      experimental: {
+        workspace: {
+          list: async () => ({ data: [] }),
+          remove: async () => ({}),
+          warp: async (args: Record<string, unknown>) => {
+            warpCalls.push(args)
+            return { data: {} }
+          },
+        },
+        session: { list: async () => ({ data: [] }) },
+      },
+      tui: { publish: async () => ({}), selectSession: async () => ({}) },
+      worktree: { create: async () => ({ data: { directory: '/tmp/wt', branch: 'main' } }) },
+    }
+
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: noopFn,
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: noopFn,
+      buildDecomposerInitialPrompt: () => 'decompose prompt',
+      buildSectionInitialPrompt: () => 'section prompt',
+      buildFinalAuditPrompt: () => 'audit prompt',
+      generateUniqueLoopName: () => 'wt-agent-loop',
+    }
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+        decomposer: { enabled: true, mode: 'agent' },
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+      v2: mockV2Client as any,
+      plansRepo,
+      loopsRepo,
+      loopService: mockLoopService as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'wt-agent-loop' },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+
+    expect(warpCalls.length).toBe(1)
+    expect(warpCalls[0]).toEqual({ id: 'wrk_1', sessionID: 'new-sess-wt' })
+
+    expect(promptAsyncCalls.length).toBeGreaterThan(0)
+    expect(promptAsyncCalls[0].agent).toBe('decomposer')
   })
 })

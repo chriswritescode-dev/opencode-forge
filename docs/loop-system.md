@@ -164,7 +164,6 @@ A loop completes when ALL of these are true:
 Loops can be cancelled via:
 - `loop-cancel` tool
 - `/loop-cancel` slash command
-- CLI: `oc-forge loop cancel <name>`
 
 Cancellation:
 1. Marks loop as inactive

@@ -7,7 +7,7 @@ import type { PluginInput } from '@opencode-ai/plugin'
 
 const TEST_DIR = '/tmp/opencode-manager-memory-test-' + Date.now()
 
-const TEST_PROJECT_ID = 'test-project-id-' + Date.now()
+const TEST_PROJECT_ID = 'test-proj-id-' + Date.now()
 
 describe('createForgePlugin', () => {
   let testDir: string
