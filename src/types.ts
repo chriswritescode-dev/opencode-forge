@@ -46,6 +46,10 @@ export interface LoopConfig {
   stallTimeoutMs?: number
   /** Worktree loop completion logging configuration. */
   worktreeLogging?: WorktreeLoggingConfig
+  /** Maximum consecutive stalls before loop is terminated. 0 = disabled (default: 5). */
+  maxConsecutiveStalls?: number
+  /** Maximum attempts per section before section-level termination fires. 0 = unlimited (default), capped by maxIterations. */
+  sectionMaxAttempts?: number
 }
 
 /**

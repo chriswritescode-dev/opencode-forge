@@ -208,7 +208,7 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
 
     restoreAll(rows: SectionPlanRow[]): void {
       const stmtRestore = db.prepare(`
-        INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts,
+        INSERT OR REPLACE INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts,
           summary_done, summary_deviations, summary_follow_ups, started_at, completed_at, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)

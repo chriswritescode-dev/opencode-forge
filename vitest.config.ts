@@ -13,6 +13,7 @@ export default defineConfig({
       'test/section-capture.test.ts',
       'test/services/execution-decomposer.test.ts',
       'test/services/orphan-sweep.test.ts',
+      'test/services/execution-restart.test.ts',
       'test/services/parse-section-summary.test.ts',
       'test/utils/worktree-cleanup.test.ts',
     ],

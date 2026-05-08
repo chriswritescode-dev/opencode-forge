@@ -1,7 +1,7 @@
 import type { PluginInput } from '@opencode-ai/plugin'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import type { LoopService, LoopState } from '../services/loop'
-import { MAX_RETRIES, MAX_CONSECUTIVE_STALLS } from '../services/loop'
+import { MAX_RETRIES } from '../services/loop'
 import type { Logger, PluginConfig } from '../types'
 import { retryWithModelFallback, resolveDecomposerModel } from '../utils/model-fallback'
 import { resolveLoopModel, resolveLoopAuditorModel } from '../utils/loop-helpers'
@@ -55,8 +55,18 @@ export function createLoopEventHandler(
   const stateLocks = new Map<string, Promise<unknown>>()
   const lastStatusFingerprints = new Map<string, string>()
 
+  const maxStalls = loopService.getMaxConsecutiveStalls()
+
   const IDLE_RETRY_DELAY_MS = 1500
   const MAX_IDLE_RETRIES = 1
+
+  function maybeSelectTuiSession(state: LoopState, sessionId: string): void {
+    if (state.worktree) return
+    if (!v2Client.tui) return
+    v2Client.tui.selectSession({ sessionID: sessionId }).catch((err) => {
+      logger.error(`Loop: failed to navigate TUI to session ${sessionId}`, err)
+    })
+  }
 
   async function createAuditSessionWithFallback(input: {
     loopName: string
@@ -251,13 +261,15 @@ export function createLoopEventHandler(
             consecutiveStalls.set(loopName, stallCount)
             lastActivityTime.set(loopName, Date.now())
 
-            if (stallCount >= MAX_CONSECUTIVE_STALLS) {
-              logger.error(`Loop watchdog: loop ${loopName} exceeded max consecutive stalls (${MAX_CONSECUTIVE_STALLS}), terminating`)
+            if (maxStalls > 0 && stallCount >= maxStalls) {
+              logger.error(`Loop watchdog: loop ${loopName} exceeded max consecutive stalls (${maxStalls}), terminating`)
               await terminateLoop(loopName, state, 'stall_timeout')
               return
             }
 
-            logger.log(`Loop watchdog: stall #${stallCount}/${MAX_CONSECUTIVE_STALLS} for ${loopName} (phase=${state.phase}, elapsed=${elapsed}ms), re-triggering`)
+            if (maxStalls <= 0) return
+
+            logger.log(`Loop watchdog: stall #${stallCount}/${maxStalls} for ${loopName} (phase=${state.phase}, elapsed=${elapsed}ms), re-triggering`)
 
             await withStateLock(loopName, async () => {
               const freshState = loopService.getActiveState(loopName)
@@ -286,13 +298,15 @@ export function createLoopEventHandler(
           consecutiveStalls.set(loopName, stallCount)
           lastActivityTime.set(loopName, Date.now())
 
-          if (stallCount >= MAX_CONSECUTIVE_STALLS) {
-            logger.error(`Loop watchdog: loop ${loopName} exceeded max consecutive stalls (${MAX_CONSECUTIVE_STALLS}), terminating`)
+          if (maxStalls > 0 && stallCount >= maxStalls) {
+            logger.error(`Loop watchdog: loop ${loopName} exceeded max consecutive stalls (${maxStalls}), terminating`)
             await terminateLoop(loopName, state, 'stall_timeout')
             return
           }
 
-          logger.log(`Loop watchdog: active status unchanged stall #${stallCount}/${MAX_CONSECUTIVE_STALLS} for ${loopName} (phase=${state.phase}, status=${status}, elapsed=${elapsed}ms)`)
+          if (maxStalls <= 0) return
+
+          logger.log(`Loop watchdog: active status unchanged stall #${stallCount}/${maxStalls} for ${loopName} (phase=${state.phase}, status=${status}, elapsed=${elapsed}ms)`)
           return
         }
 
@@ -300,13 +314,15 @@ export function createLoopEventHandler(
         consecutiveStalls.set(loopName, stallCount)
         lastActivityTime.set(loopName, Date.now())
 
-        if (stallCount >= MAX_CONSECUTIVE_STALLS) {
-          logger.error(`Loop watchdog: loop ${loopName} exceeded max consecutive stalls (${MAX_CONSECUTIVE_STALLS}), terminating`)
+        if (maxStalls > 0 && stallCount >= maxStalls) {
+          logger.error(`Loop watchdog: loop ${loopName} exceeded max consecutive stalls (${maxStalls}), terminating`)
           await terminateLoop(loopName, state, 'stall_timeout')
           return
         }
 
-        logger.log(`Loop watchdog: stall #${stallCount}/${MAX_CONSECUTIVE_STALLS} for ${loopName} (phase=${state.phase}, elapsed=${elapsed}ms), re-triggering`)
+        if (maxStalls <= 0) return
+
+        logger.log(`Loop watchdog: stall #${stallCount}/${maxStalls} for ${loopName} (phase=${state.phase}, elapsed=${elapsed}ms), re-triggering`)
 
         await withStateLock(loopName, async () => {
           const freshState = loopService.getActiveState(loopName)
@@ -1324,21 +1340,14 @@ export function createLoopEventHandler(
       // Increment final audit attempts
       const newAttempts = loopService.incrementFinalAuditAttempts(loopName)
 
-      // Check for clear marker
-      const hasClearMarker = auditText && loopService.parseFinalAuditClear(auditText)
-
       // Outstanding-finding gate: block termination if there are outstanding bug findings
-      const hasOutstandingFindings = loopService.hasOutstandingFindings(loopName, 'bug')
+      const hasOutstandingBugs = loopService.hasOutstandingFindings(loopName, 'bug')
 
-      if (hasClearMarker && !hasOutstandingFindings) {
-        logger.log(`Loop: final audit clear detected for ${loopName} with no outstanding findings, completing`)
+      if (!hasOutstandingBugs) {
+        logger.log(`Loop: final audit clean for ${loopName} (no outstanding bug findings), completing`)
         loopService.setFinalAuditDone(loopName, true)
         await terminateLoop(loopName, currentState, 'completed')
         return
-      }
-
-      if (hasClearMarker && hasOutstandingFindings) {
-        logger.log(`Loop: final audit clear detected but outstanding findings remain for ${loopName}, rewinding`)
       }
 
       if (newAttempts > MAX_RETRIES) {
@@ -1359,6 +1368,13 @@ export function createLoopEventHandler(
         : currentState.currentSectionIndex
 
       logger.log(`Loop: final audit dirty, rewinding to section ${offendingIdx} for ${loopName}`)
+
+      const nextIter = (currentState.iteration ?? 0) + 1
+      if ((currentState.maxIterations ?? 0) > 0 && nextIter > currentState.maxIterations) {
+        logger.log(`Loop: max iterations reached (${nextIter}/${currentState.maxIterations}), terminating`)
+        await terminateLoop(loopName, currentState, 'max_iterations')
+        return
+      }
 
       // Reset offending section before building continuation prompt so stale summaries are excluded
       loopService.resetSectionForRewind(loopName, offendingIdx)
@@ -1383,7 +1399,7 @@ export function createLoopEventHandler(
       loopService.replaceSession(loopName, {
         newSessionId: newCodeSessionId,
         phase: 'coding',
-        iteration: currentState.iteration,
+        iteration: nextIter,
         resetError: currentState.errorCount > 0,
       })
 
@@ -1597,6 +1613,8 @@ export function createLoopEventHandler(
       phase: 'auditing',
     })
 
+    maybeSelectTuiSession(currentState, created.auditSessionId)
+
     // Delete the code session AFTER audit session creation succeeds (best-effort)
     v2Client.session.delete({ sessionID: codeSessionId, directory: currentState.worktreeDir }).catch((err) => {
       logger.error(`Loop: failed to delete code session ${codeSessionId} after audit creation`, err)
@@ -1786,6 +1804,8 @@ export function createLoopEventHandler(
                 phase: 'final_auditing',
               })
 
+              maybeSelectTuiSession(currentState, created.auditSessionId)
+
               v2Client.session.delete({ sessionID: currentState.sessionId, directory: currentState.worktreeDir }).catch((err) => {
                 logger.error(`Loop: failed to delete old code session ${currentState.sessionId} after final audit creation`, err)
               })
@@ -1836,6 +1856,12 @@ export function createLoopEventHandler(
           const nextIdx = idx + 1
           if (nextIdx < currentState.totalSections) {
             // Advance to next section
+            const nextIter = (currentState.iteration ?? 0) + 1
+            if ((currentState.maxIterations ?? 0) > 0 && nextIter > currentState.maxIterations) {
+              logger.log(`Loop: max iterations reached (${nextIter}/${currentState.maxIterations}), terminating`)
+              await terminateLoop(loopName, currentState, 'max_iterations')
+              return
+            }
             logger.log(`Loop: advancing from section ${idx} to section ${nextIdx}`)
             loopService.setCurrentSectionIndex(loopName, nextIdx)
             loopService.startSection(loopName, nextIdx)
@@ -1843,7 +1869,7 @@ export function createLoopEventHandler(
             loopService.replaceSession(loopName, {
               newSessionId: currentState.sessionId,
               phase: 'coding',
-              iteration: currentState.iteration,
+              iteration: nextIter,
             })
 
             const updatedState = loopService.getActiveState(loopName) ?? { ...currentState, currentSectionIndex: nextIdx }
@@ -1852,7 +1878,7 @@ export function createLoopEventHandler(
               loopName,
               currentState,
               {
-                iteration: currentState.iteration,
+                iteration: nextIter,
                 phase: 'coding',
                 lastAuditResult: auditText || undefined,
                 auditCount: newAuditCount,
@@ -1892,6 +1918,8 @@ export function createLoopEventHandler(
               newSessionId: created.auditSessionId,
               phase: 'final_auditing',
             })
+
+            maybeSelectTuiSession(currentState, created.auditSessionId)
 
             v2Client.session.delete({ sessionID: currentState.sessionId, directory: currentState.worktreeDir }).catch((err) => {
               logger.error(`Loop: failed to delete old code session ${currentState.sessionId} after final audit creation`, err)
@@ -1943,10 +1971,18 @@ export function createLoopEventHandler(
         // Dirty section audit: retry same section (no mid-loop rewind)
         logger.log(`Loop: section ${idx} audit dirty, retrying same section`)
 
+        const nextIter = (currentState.iteration ?? 0) + 1
+        if ((currentState.maxIterations ?? 0) > 0 && nextIter > currentState.maxIterations) {
+          logger.log(`Loop: max iterations reached (${nextIter}/${currentState.maxIterations}), terminating`)
+          await terminateLoop(loopName, currentState, 'max_iterations')
+          return
+        }
+
         loopService.incrementSectionAttempts(loopName, idx)
         const sectionPlan = loopService.getSectionPlan(currentState, idx)
-        if (sectionPlan && sectionPlan.attempts >= MAX_RETRIES) {
-          logger.log(`Loop: section ${idx} exceeded max retries (${sectionPlan.attempts}/${MAX_RETRIES}), terminating`)
+        const sectionCap = loopService.getSectionMaxAttempts()
+        if (sectionCap > 0 && sectionPlan && sectionPlan.attempts >= sectionCap) {
+          logger.log(`Loop: section ${idx} exceeded section cap (${sectionPlan.attempts}/${sectionCap}), terminating`)
           await terminateLoop(loopName, currentState, `section_failed: ${idx}`)
           return
         }
@@ -1955,7 +1991,7 @@ export function createLoopEventHandler(
         loopService.replaceSession(loopName, {
           newSessionId: currentState.sessionId,
           phase: 'coding',
-          iteration: currentState.iteration,
+          iteration: nextIter,
         })
 
         const continuationPrompt = loopService.buildSectionContinuationPrompt(currentState, auditText || '')
@@ -1963,7 +1999,7 @@ export function createLoopEventHandler(
           loopName,
           currentState,
           {
-            iteration: currentState.iteration,
+            iteration: nextIter,
             phase: 'coding',
             lastAuditResult: auditText || undefined,
             auditCount: newAuditCount,

@@ -194,12 +194,7 @@ ${SECTION_SUMMARY_END_MARKER}
 
 Do NOT include a section summary if the section still has blocking bugs.
 
-## Final Audit Marker
-
-When the final audit is complete and the implementation is acceptable, end your response with:
-\`<!-- final-audit:clear -->\`
-
-This marker signals that all sections have been verified and the loop can terminate.
+The loop terminates automatically when no bug-severity findings remain.
 
 ## Deviation Acceptance
 
@@ -219,12 +214,7 @@ You are performing the final integration audit of a sectioned loop. All sections
 
 Accept deviations from the plan IF they are documented in the section summaries' Deviations fields. Only flag deviations as bugs if they materially break the master plan's top-level verification criteria.
 
-### Final Audit Clear Marker
-
-When the implementation is acceptable, end your response with:
-\`<!-- final-audit:clear -->\`
-
-This marker signals that all sections have been verified and the loop can terminate.
+The loop terminates automatically when no bug-severity findings remain.
 
 ### Section Attribution
 

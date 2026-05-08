@@ -21,6 +21,9 @@ importers:
         specifier: ^3.25.76
         version: 3.25.76
     devDependencies:
+      '@esbuild/linux-arm64':
+        specifier: ^0.21.5
+        version: 0.21.5
       '@eslint/js':
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.2.0)
@@ -30,6 +33,9 @@ importers:
       '@opentui/solid':
         specifier: 0.1.105
         version: 0.1.105(solid-js@1.9.12)(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10)
+      '@rollup/rollup-linux-arm64-gnu':
+        specifier: ^4.60.3
+        version: 4.60.3
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0
@@ -665,6 +671,11 @@ packages:
 
   '@rollup/rollup-linux-arm64-gnu@4.60.2':
     resolution: {integrity: sha512-bO/rVDiDUuM2YfuCUwZ1t1cP+/yqjqz+Xf2VtkdppefuOFS2OSeAfgafaHNkFn0t02hEyXngZkxtGqXcXwO8Rg==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@rollup/rollup-linux-arm64-gnu@4.60.3':
+    resolution: {integrity: sha512-Whjj2qoiJ6+OOJMGptTYazaJvjOJm+iKHpXQM1P3LzGjt7Ff++Tp7nH4N8J/BUA7R9IHfDyx4DJIflifwnbmIA==}
     cpu: [arm64]
     os: [linux]
 
@@ -2183,8 +2194,7 @@ snapshots:
   '@esbuild/freebsd-x64@0.21.5':
     optional: true
 
-  '@esbuild/linux-arm64@0.21.5':
-    optional: true
+  '@esbuild/linux-arm64@0.21.5': {}
 
   '@esbuild/linux-arm@0.21.5':
     optional: true
@@ -2598,6 +2608,8 @@ snapshots:
 
   '@rollup/rollup-linux-arm64-gnu@4.60.2':
     optional: true
+
+  '@rollup/rollup-linux-arm64-gnu@4.60.3': {}
 
   '@rollup/rollup-linux-arm64-musl@4.60.2':
     optional: true

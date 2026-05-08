@@ -77,6 +77,8 @@ export interface LoopService {
   listRecent(): LoopState[]
   findMatchByName(name: string): { match: LoopState | null; candidates: LoopState[] }
   getStallTimeoutMs(): number
+  getMaxConsecutiveStalls(): number
+  getSectionMaxAttempts(): number
   terminateAll(): Promise<void>
   reconcileStale(opts?: { isSandboxLive?: (loopName: string) => Promise<boolean> }): Promise<{ cancelled: number; preserved: string[] }>
   hasOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): boolean
@@ -100,7 +102,7 @@ export interface LoopService {
   getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null
   getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[]
   parseSectionSummary(text: string): { done: string | null; deviations: string | null; followUps: string | null } | null
-  parseFinalAuditClear(text: string): boolean
+
   buildDecomposerInitialPrompt(state: LoopState): string
   buildSectionInitialPrompt(state: LoopState): string
   buildSectionAuditPrompt(state: LoopState): string
@@ -404,6 +406,14 @@ export function createLoopService(
     return loopConfig?.stallTimeoutMs ?? STALL_TIMEOUT_MS
   }
 
+  function getMaxConsecutiveStalls(): number {
+    return loopConfig?.maxConsecutiveStalls ?? MAX_CONSECUTIVE_STALLS
+  }
+
+  function getSectionMaxAttempts(): number {
+    return loopConfig?.sectionMaxAttempts ?? 0
+  }
+
   async function terminateAll(): Promise<void> {
     const active = listActive()
     const now = Date.now()
@@ -691,9 +701,6 @@ export function createLoopService(
     return { done, deviations, followUps }
   }
 
-  function parseFinalAuditClear(text: string): boolean {
-    return /<!--\s*final-audit:clear\s*-->/.test(text)
-  }
 
   function buildDecomposerInitialPrompt(state: LoopState): string {
     const planText = getPlanTextForState(state) ?? 'Plan not found in plan store.'
@@ -808,7 +815,7 @@ export function createLoopService(
       header += `\n\n### Completed Sections' Summaries\n${sectionsSummary}`
     }
 
-    header += `\n\n---\nFinal audit instructions:\n- Verify the master plan's top-level Verification commands and acceptance criteria.\n- Use the per-section ### Deviations entries to interpret discrepancies. If a discrepancy is explained by a deviation, accept it unless it materially breaks the master plan's top-level Verification.\n- Write findings with sectionIndex pointing to the section you believe contains the bug. Use crossSection: true only when the bug spans multiple sections.\n- When the implementation is acceptable, end your response with:\n<!-- final-audit:clear -->`
+    header += `\n\n---\nFinal audit instructions:\n- Verify the master plan's top-level Verification commands and acceptance criteria.\n- Use the per-section ### Deviations entries to interpret discrepancies. If a discrepancy is explained by a deviation, accept it unless it materially breaks the master plan's top-level Verification.\n- Write findings with sectionIndex pointing to the section you believe contains the bug. Use crossSection: true only when the bug spans multiple sections.\n- The loop terminates automatically when there are no outstanding bug-severity findings. Do not write findings unless they describe real, blocking issues.`
 
     return header
   }
@@ -883,6 +890,8 @@ export function createLoopService(
     listRecent,
     findMatchByName,
     getStallTimeoutMs,
+    getMaxConsecutiveStalls,
+    getSectionMaxAttempts,
     terminateAll,
     reconcileStale,
     hasOutstandingFindings,
@@ -905,7 +914,7 @@ export function createLoopService(
     getNextIncompleteSectionPlan,
     getCompletedSectionDigest,
     parseSectionSummary,
-    parseFinalAuditClear,
+
     buildDecomposerInitialPrompt,
     buildSectionInitialPrompt,
     buildSectionAuditPrompt,
