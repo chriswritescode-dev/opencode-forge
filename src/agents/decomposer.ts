@@ -34,7 +34,7 @@ ${SECTION_START_MARKER}
 ## Acceptance Criteria
 - concrete bullets
 ## Verification
-- commands or file assertions the auditor will run for THIS section
+- REQUIRED: commands or file assertions the auditor will run for THIS section
 ${SECTION_END_MARKER}
 
 Rules:
@@ -42,6 +42,8 @@ Rules:
 - title <= 60 chars, plain ASCII, no quotes inside the title.
 - Do NOT include shared "Decisions" / "Conventions" / "Key Context"
   blocks inside section bodies — those stay on the master plan.
+- Every section/part MUST include a non-empty ## Verification block
+  with commands or file assertions specific to that section.
 - If the master plan has explicit ## Phase N: headings, prefer them as
   section boundaries.
 - Aim for 1-7 sections; never emit zero. Hard cap from

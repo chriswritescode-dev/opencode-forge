@@ -949,5 +949,13 @@ describe('Execution decomposer integration', () => {
     test('decomposer system prompt does not contain old index= attribute at all', () => {
       expect(decomposerAgent.systemPrompt).not.toContain('index=')
     })
+
+    test('decomposer system prompt requires verification for every section part', () => {
+      expect(decomposerAgent.systemPrompt).toContain('Every section/part MUST include a non-empty ## Verification block')
+    })
+
+    test('decomposer system prompt requires section-specific verification', () => {
+      expect(decomposerAgent.systemPrompt).toContain('specific to that section')
+    })
   })
 })
