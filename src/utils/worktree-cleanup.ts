@@ -1,5 +1,6 @@
 import { execSync, spawnSync } from 'child_process'
 import { resolve } from 'path'
+import { existsSync } from 'fs'
 import type { Logger } from '../types'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 
@@ -22,16 +23,37 @@ export async function cleanupLoopWorktree(
   }
 
   try {
+    if (!existsSync(input.worktreeDir)) {
+      result.removed = true
+      input.logger.log(`${input.logPrefix}: worktree directory already removed ${input.worktreeDir}`)
+      try {
+        const gitCommonDir = execSync('git rev-parse --git-common-dir', { cwd: input.worktreeDir, encoding: 'utf-8' }).trim()
+        const gitRoot = resolve(input.worktreeDir, gitCommonDir, '..')
+        spawnSync('git', ['worktree', 'prune'], { cwd: gitRoot, encoding: 'utf-8' })
+      } catch {
+        // best-effort prune from parent dir if possible
+      }
+      return result
+    }
+
     const gitCommonDir = execSync('git rev-parse --git-common-dir', { cwd: input.worktreeDir, encoding: 'utf-8' }).trim()
     const gitRoot = resolve(input.worktreeDir, gitCommonDir, '..')
     const removeResult = spawnSync('git', ['worktree', 'remove', '-f', input.worktreeDir], { cwd: gitRoot, encoding: 'utf-8' })
     if (removeResult.status !== 0) {
+      const stderr = removeResult.stderr || ''
+      if (/Permission denied/.test(stderr) && !existsSync(input.worktreeDir)) {
+        result.removed = true
+        input.logger.log(`${input.logPrefix}: worktree directory already removed (permission denied during remove)`)
+        spawnSync('git', ['worktree', 'prune'], { cwd: gitRoot, encoding: 'utf-8' })
+        return result
+      }
       throw new Error(removeResult.stderr || 'git worktree remove failed')
     }
 
     result.removed = true
     input.logger.log(`${input.logPrefix}: removed worktree ${input.worktreeDir}`)
 
+    spawnSync('git', ['worktree', 'prune'], { cwd: gitRoot, encoding: 'utf-8' })
 
   } catch (err) {
     result.error = err instanceof Error ? err.message : String(err)

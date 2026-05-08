@@ -10,6 +10,10 @@ import type { WorkspaceInfo, WorkspaceAdapter, WorkspaceTarget } from '@opencode
 
 export type { WorkspaceInfo, WorkspaceAdapter }
 
+export interface ForgeWorktreeAdapter extends WorkspaceAdapter {
+  list?: (opts?: { projectID?: string }) => Promise<WorkspaceInfo[]>
+}
+
 /**
  * Workspace type constant for forge worktree workspaces.
  */
@@ -37,6 +41,16 @@ function readForgeWorktreeExtra(extra: unknown): Partial<ForgeWorktreeExtra> {
   return typeof extra === 'object' ? extra as Partial<ForgeWorktreeExtra> : {}
 }
 
+export interface ForgeWorktreeListEntry {
+  id: string
+  name: string
+  branch: string | null
+  directory: string
+  extra: { loopName: string; directory: string; branch: string | null }
+}
+
+export type ForgeWorktreeListResolver = (projectID: string) => ForgeWorktreeListEntry[] | Promise<ForgeWorktreeListEntry[]>
+
 /**
  * Creates a forge worktree workspace adaptor.
  * 
@@ -45,10 +59,12 @@ function readForgeWorktreeExtra(extra: unknown): Partial<ForgeWorktreeExtra> {
  * - create(): No-op for already-created forge worktrees
  * - remove(): No-op to prevent implicit deletion during view/switch
  * - target(): Returns local directory target
+ * - list(): Returns workspace entries from the loops repo (if resolver provided)
  * 
  * @returns WorkspaceAdapter compatible with experimental_workspace.register
  */
-export function createForgeWorktreeAdaptor(): WorkspaceAdapter {
+export function createForgeWorktreeAdaptor(opts?: { listResolver?: ForgeWorktreeListResolver }): ForgeWorktreeAdapter {
+  const listResolver = opts?.listResolver
   return {
     name: 'Forge Worktree',
     description: 'Workspace adaptor for forge worktree loops',
@@ -84,6 +100,20 @@ export function createForgeWorktreeAdaptor(): WorkspaceAdapter {
         directory: info.directory!,
       }
     },
+
+    list: listResolver ? (opts?: { projectID?: string }) =>
+      Promise.resolve(listResolver(opts?.projectID ?? '')).then((entries) =>
+        entries.map((e) => ({
+          id: e.id,
+          type: FORGE_WORKTREE_WORKSPACE_TYPE,
+          name: e.name,
+          branch: e.branch,
+          directory: e.directory,
+          extra: e.extra,
+          projectID: opts?.projectID ?? '',
+        }))
+      )
+    : undefined,
   }
 }
 

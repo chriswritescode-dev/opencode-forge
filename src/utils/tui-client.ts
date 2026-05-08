@@ -79,7 +79,7 @@ export interface ForgeProjectClient {
   }
 
   workspaces: {
-    list(): Promise<Array<{ id: string; name: string; type: string; branch?: string; directory?: string }>>
+    list(): Promise<Array<{ id: string; name: string; type: string; branch?: string; directory?: string; timeUsed?: number }>>
     status(): Promise<Record<string, string>>
   }
 
@@ -614,8 +614,46 @@ export async function connectForgeProject(
   const workspaces: ForgeProjectClient['workspaces'] = {
     async list() {
       try {
-        const data = await api.client.experimental.workspace.list()
-        return (data.data ?? []) as Array<{ id: string; name: string; type: string; branch?: string; directory?: string }>
+        const workspaceApi = api.client.experimental?.workspace
+        if (!workspaceApi) return []
+
+        let rawEntries: Array<{ id: string; name: string; type: string; branch?: string; directory?: string; timeUsed?: number }> = []
+
+        const wsApi = workspaceApi as typeof workspaceApi & { syncList?: () => Promise<{ data?: unknown[] }> }
+        if (typeof wsApi.syncList === 'function') {
+          try {
+            const syncResult = await wsApi.syncList()
+            rawEntries = (syncResult.data ?? []) as typeof rawEntries
+          } catch {
+            const data = await workspaceApi.list()
+            rawEntries = (data.data ?? []) as typeof rawEntries
+          }
+        } else {
+          const data = await workspaceApi.list()
+          rawEntries = (data.data ?? []) as typeof rawEntries
+        }
+
+        let statusMap: Record<string, string> = {}
+        try {
+          const statusResult = await workspaceApi.status()
+          const entries = (statusResult.data ?? []) as Array<{ workspaceID: string; status: string }>
+          statusMap = Object.fromEntries(entries.map((s) => [s.workspaceID, s.status]))
+        } catch {
+          // ignore status errors
+        }
+
+        const filtered = rawEntries.filter((w) => {
+          const status = statusMap[w.id]
+          return !status || status === 'connected'
+        })
+
+        filtered.sort((a, b) => {
+          const ta = a.timeUsed ?? 0
+          const tb = b.timeUsed ?? 0
+          return tb - ta
+        })
+
+        return filtered
       } catch {
         return []
       }

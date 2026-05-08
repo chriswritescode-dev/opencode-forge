@@ -5,7 +5,7 @@ export interface SessionLoopResolverDeps {
   loopService: {
     resolveLoopName(sessionId: string): string | null
     getActiveState(name: string): { loopName: string; active: boolean; sandbox?: boolean; worktree?: boolean; worktreeDir?: string } | null
-    listActive?(): Array<{ loopName: string; worktreeDir: string; sandbox?: boolean; worktree?: boolean; active: boolean }>
+    listActive?(): Array<{ loopName: string; worktreeDir: string; sandbox?: boolean; worktree?: boolean; active: boolean; workspaceId?: string }>
   }
   getParentSessionId(sessionId: string): Promise<string | null>
   getSessionDirectory?(sessionId: string): Promise<string | null>

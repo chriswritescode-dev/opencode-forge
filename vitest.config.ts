@@ -16,6 +16,9 @@ export default defineConfig({
       'test/services/execution-restart.test.ts',
       'test/services/parse-section-summary.test.ts',
       'test/utils/worktree-cleanup.test.ts',
+      'test/workspace/forge-worktree-list.test.ts',
+      'test/utils/tui-client-workspaces.test.ts',
+      'test/index/session-lookup.test.ts',
     ],
   },
 })

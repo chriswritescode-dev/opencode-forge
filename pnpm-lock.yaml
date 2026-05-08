@@ -9,11 +9,11 @@ importers:
   .:
     dependencies:
       '@opencode-ai/plugin':
-        specifier: 1.14.39
-        version: 1.14.39(@opentui/core@0.1.105(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10))(@opentui/solid@0.1.105(solid-js@1.9.12)(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10))
+        specifier: ^1.14.41
+        version: 1.14.41(@opentui/core@0.1.105(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10))(@opentui/solid@0.1.105(solid-js@1.9.12)(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10))
       '@opencode-ai/sdk':
-        specifier: 1.14.39
-        version: 1.14.39
+        specifier: ^1.14.41
+        version: 1.14.41
       jsonc-parser:
         specifier: ^3.3.1
         version: 3.3.1
@@ -575,8 +575,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@opencode-ai/plugin@1.14.39':
-    resolution: {integrity: sha512-h3p3qCZLjodiKquCI9/YSDxgUoHTQ0/AK7t71tLWkUpEUicPZWsixdn3lk53/uLU+Wh+qp5FV+GTZWAXkKmAkw==}
+  '@opencode-ai/plugin@1.14.41':
+    resolution: {integrity: sha512-Q/QdDKSfHyYX+Xqd79o4XgyZKqF8h5qgqgfmOQbKVLhbduc9zMYdpV2yvWT6gaJPrpOftpka/kpr56PCqzetYQ==}
     peerDependencies:
       '@opentui/core': '>=0.2.2'
       '@opentui/solid': '>=0.2.2'
@@ -586,8 +586,8 @@ packages:
       '@opentui/solid':
         optional: true
 
-  '@opencode-ai/sdk@1.14.39':
-    resolution: {integrity: sha512-hguOA5huhys7zwCR3ESbSHyQNuJBNtfrxUxYZF/s/6trRW+imqGmDtC/RsOSNuk7GE06ZnvOTwb4T2WhXYIBxw==}
+  '@opencode-ai/sdk@1.14.41':
+    resolution: {integrity: sha512-RYb2dCUv0TWIvBNnnO6ANbAPYri6rKuWizSoVFw/Pw+SCDj9ASHM5gAZ+jkskp8gYMfLLHe/Fpkun/9mr8m0IQ==}
 
   '@opentui/core-darwin-arm64@0.1.105':
     resolution: {integrity: sha512-1pIL7aer9amwj8EpYoMNtvavKetIe+nX8uBRmYsMQb+KvJoUAZUqENfRW+qHE5WrsOyxx8/QoyXTHw15GG5iLQ==}
@@ -2512,16 +2512,16 @@ snapshots:
   '@msgpackr-extract/msgpackr-extract-win32-x64@3.0.3':
     optional: true
 
-  '@opencode-ai/plugin@1.14.39(@opentui/core@0.1.105(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10))(@opentui/solid@0.1.105(solid-js@1.9.12)(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10))':
+  '@opencode-ai/plugin@1.14.41(@opentui/core@0.1.105(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10))(@opentui/solid@0.1.105(solid-js@1.9.12)(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10))':
     dependencies:
-      '@opencode-ai/sdk': 1.14.39
+      '@opencode-ai/sdk': 1.14.41
       effect: 4.0.0-beta.59
       zod: 4.1.8
     optionalDependencies:
       '@opentui/core': 0.1.105(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10)
       '@opentui/solid': 0.1.105(solid-js@1.9.12)(stage-js@1.0.1)(typescript@5.9.3)(web-tree-sitter@0.25.10)
 
-  '@opencode-ai/sdk@1.14.39':
+  '@opencode-ai/sdk@1.14.41':
     dependencies:
       cross-spawn: 7.0.6
 

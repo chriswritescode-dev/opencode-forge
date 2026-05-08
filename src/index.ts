@@ -16,7 +16,7 @@ import { createTools } from './tools'
 import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from './hooks'
 import { createSandboxToolBeforeHook, createSandboxToolAfterHook } from './hooks/sandbox-tools'
 import type { ToolContext } from './tools'
-import { FORGE_WORKTREE_WORKSPACE_TYPE, createForgeWorktreeAdaptor } from './workspace/forge-worktree'
+import { FORGE_WORKTREE_WORKSPACE_TYPE, createForgeWorktreeAdaptor, type ForgeWorktreeListEntry } from './workspace/forge-worktree'
 import { LRUCache } from './utils/lru-cache'
 import { createSessionLoopResolver } from './services/session-loop-resolver'
 import { createPermissionAskHandler } from './hooks/permission-ask'
@@ -52,7 +52,7 @@ export interface CreateParentSessionLookupOptions {
   negativeTtlMs?: number
 }
 
-const PARENT_LOOKUP_NEGATIVE_TTL_MS = 2000
+const PARENT_LOOKUP_NEGATIVE_TTL_MS = 15000
 
 export function createParentSessionLookup({
   v2,
@@ -64,7 +64,7 @@ export function createParentSessionLookup({
   const cache = new LRUCache<string | null>(500)
   const negativeCache = new Map<string, number>()
 
-  return async (sessionId: string): Promise<string | null> => {
+    return async (sessionId: string): Promise<string | null> => {
     if (cache.has(sessionId)) {
       return cache.get(sessionId) ?? null
     }
@@ -77,22 +77,29 @@ export function createParentSessionLookup({
 
     type SessionGetInput = Parameters<typeof v2.session.get>[0]
 
-    const attempts: Array<{ label: string; directory?: string; input: SessionGetInput }> = [
-      { label: 'no-dir', input: { sessionID: sessionId } as SessionGetInput },
-    ]
+    const attempts: Array<{ label: string; directory?: string; input: SessionGetInput }> = []
 
     const seenDirectories = new Set<string>()
-    for (const state of loopService.listActive()) {
+    const activeLoops = loopService.listActive()
+
+    for (const state of activeLoops) {
       if (!state.worktreeDir || seenDirectories.has(state.worktreeDir)) continue
       seenDirectories.add(state.worktreeDir)
+      const workspaceParam = state.workspaceId ? { workspace: state.workspaceId } : {}
       attempts.push({
         label: `loop:${state.loopName}`,
         directory: state.worktreeDir,
-        input: { sessionID: sessionId, directory: state.worktreeDir } as SessionGetInput,
+        input: { sessionID: sessionId, directory: state.worktreeDir, ...workspaceParam } as SessionGetInput,
       })
+      if (state.workspaceId) {
+        attempts.push({
+          label: `loop-ws:${state.loopName}`,
+          input: { sessionID: sessionId, workspace: state.workspaceId } as SessionGetInput,
+        })
+      }
     }
 
-    if (!seenDirectories.has(directory)) {
+    if (!seenDirectories.has(directory) && activeLoops.length === 0) {
       attempts.push({
         label: 'host',
         directory,
@@ -117,7 +124,9 @@ export function createParentSessionLookup({
     }
 
     negativeCache.set(sessionId, Date.now() + negativeTtlMs)
-    logger.log(`[session-resolver] session.get failed for ${sessionId} across ${attempts.length} attempts: ${failures.join('; ')}`)
+    if (failures.length > 0) {
+      logger.log(`[session-resolver] session.get failed for ${sessionId} across ${attempts.length} attempts: ${failures.join('; ')}`)
+    }
     return null
   }
 }
@@ -142,22 +151,29 @@ export function createSessionDirectoryLookup({
 
     type SessionGetInput = Parameters<typeof v2.session.get>[0]
 
-    const attempts: Array<{ label: string; directory?: string; input: SessionGetInput }> = [
-      { label: 'no-dir', input: { sessionID: sessionId } as SessionGetInput },
-    ]
+    const attempts: Array<{ label: string; directory?: string; input: SessionGetInput }> = []
 
     const seenDirectories = new Set<string>()
-    for (const state of loopService.listActive()) {
+    const activeLoops = loopService.listActive()
+
+    for (const state of activeLoops) {
       if (!state.worktreeDir || seenDirectories.has(state.worktreeDir)) continue
       seenDirectories.add(state.worktreeDir)
+      const workspaceParam = state.workspaceId ? { workspace: state.workspaceId } : {}
       attempts.push({
         label: `loop:${state.loopName}`,
         directory: state.worktreeDir,
-        input: { sessionID: sessionId, directory: state.worktreeDir } as SessionGetInput,
+        input: { sessionID: sessionId, directory: state.worktreeDir, ...workspaceParam } as SessionGetInput,
       })
+      if (state.workspaceId) {
+        attempts.push({
+          label: `loop-ws:${state.loopName}`,
+          input: { sessionID: sessionId, workspace: state.workspaceId } as SessionGetInput,
+        })
+      }
     }
 
-    if (!seenDirectories.has(directory)) {
+    if (!seenDirectories.has(directory) && activeLoops.length === 0) {
       attempts.push({
         label: 'host',
         directory,
@@ -218,7 +234,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     })
     logger.log(`Initializing plugin for directory: ${directory}, projectId: ${projectId}`)
     logger.log(`v2 client fetch: ${legacyFetch ? 'in-process' : 'globalThis'}; auth: ${legacyAuthHeader ? 'inherited' : 'none'}`)
-    registerForgeWorktreeAdaptor(input, logger)
 
     const dataDir = config.dataDir || resolveDataDir()
     
@@ -228,6 +243,21 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     const sectionPlansRepo = createSectionPlansRepo(db)
+
+    registerForgeWorktreeAdaptor(input, logger, {
+      listResolver: (projectID: string) => {
+        const rows = loopsRepo.listAll(projectID)
+        return rows
+          .filter((r) => r.workspaceId && r.worktreeDir)
+          .map((r) => ({
+            id: r.workspaceId!,
+            name: r.loopName,
+            branch: r.worktreeBranch,
+            directory: r.worktreeDir,
+            extra: { loopName: r.loopName, directory: r.worktreeDir, branch: r.worktreeBranch },
+          }))
+      },
+    })
 
     const notifyLoopChange: LoopChangeNotifier = (reason, loopName, hint) => {
       const targetDirectories = Array.from(new Set([
@@ -501,7 +531,7 @@ use the \`question\` tool to request execution approval with: "New session", "Ex
   }
 }
 
-function registerForgeWorktreeAdaptor(input: PluginInput, logger?: Pick<ReturnType<typeof createLogger>, 'log' | 'error'>): void {
+function registerForgeWorktreeAdaptor(input: PluginInput, logger?: Pick<ReturnType<typeof createLogger>, 'log' | 'error'>, opts?: { listResolver?: (projectID: string) => ForgeWorktreeListEntry[] | Promise<ForgeWorktreeListEntry[]> }): void {
   const workspaceApi = (input as PluginInput & {
     experimental_workspace?: PluginInput['experimental_workspace']
   }).experimental_workspace
@@ -517,7 +547,7 @@ function registerForgeWorktreeAdaptor(input: PluginInput, logger?: Pick<ReturnTy
   }
 
   try {
-    workspaceApi.register(FORGE_WORKTREE_WORKSPACE_TYPE, createForgeWorktreeAdaptor())
+    workspaceApi.register(FORGE_WORKTREE_WORKSPACE_TYPE, createForgeWorktreeAdaptor({ listResolver: opts?.listResolver }))
     registeredWorkspaceApis.add(workspaceApi)
     logger?.log(`Workspace adaptor registered: ${FORGE_WORKTREE_WORKSPACE_TYPE}`)
   } catch (err) {
