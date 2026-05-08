@@ -8,6 +8,7 @@ import type { createSandboxManager } from '../sandbox/manager'
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../storage/repos/review-findings-repo'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
+import type { SectionPlansRepo } from '../storage/repos/section-plans-repo'
 
 /**
  * Context passed to all tool implementations providing access to plugin services.
@@ -43,5 +44,7 @@ export interface ToolContext {
   reviewFindingsRepo: ReviewFindingsRepo
   /** Loops repo for loop storage. */
   loopsRepo: LoopsRepo
+  /** Section plans repo for decomposition storage. */
+  sectionPlansRepo: SectionPlansRepo
 }
 

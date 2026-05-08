@@ -3,7 +3,7 @@ import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import type { LoopService, LoopState } from '../services/loop'
 import { MAX_RETRIES, MAX_CONSECUTIVE_STALLS } from '../services/loop'
 import type { Logger, PluginConfig } from '../types'
-import { retryWithModelFallback } from '../utils/model-fallback'
+import { retryWithModelFallback, parseModelString } from '../utils/model-fallback'
 import { resolveLoopModel, resolveLoopAuditorModel } from '../utils/loop-helpers'
 import type { createSandboxManager } from '../sandbox/manager'
 import { buildWorktreeCompletionPayload, writeWorktreeCompletionLog } from '../services/worktree-log'
@@ -313,6 +313,10 @@ export function createLoopEventHandler(
           try {
             if (freshState.phase === 'auditing') {
               await handleAuditingPhase(loopName, freshState)
+            } else if (freshState.phase === 'decomposing') {
+              await handleDecomposingPhase(loopName, freshState)
+            } else if (freshState.phase === 'final_auditing') {
+              await handleFinalAuditPhase(loopName, freshState)
             } else {
               await handleCodingPhase(loopName, freshState)
             }
@@ -779,6 +783,11 @@ export function createLoopEventHandler(
       logger.debug(`Loop: audit clear gate blocked by auditCount<1`)
       return false
     }
+    // For sectioned loops, require finalAuditDone === true before terminating
+    if (currentState.totalSections > 0 && !currentState.finalAuditDone) {
+      logger.debug(`Loop: audit clear gate blocked for sectioned loop — finalAuditDone=false`)
+      return false
+    }
     const findings = loopService.getOutstandingFindings(currentState.loopName)
     if (findings.length > 0) {
       logger.log(`Loop: audit complete but ${findings.length} review finding(s) remain, continuing`)
@@ -964,6 +973,386 @@ export function createLoopEventHandler(
     const { result } = await retryWithModelFallback(sendWithModel, sendWithoutModel, loopModel, logger)
     if (result.error) {
       logger.error(`rotateToCodingAfterAuditFailure: failed to send continuation prompt`, result.error)
+    }
+  }
+
+  async function handleDecomposingPhase(loopName: string, _state: LoopState): Promise<void> {
+    const currentState = loopService.getActiveState(loopName)
+    if (!currentState?.active) {
+      logger.log(`Loop: loop ${loopName} no longer active, skipping decomposing phase`)
+      return
+    }
+
+    if (currentState.phase !== 'decomposing') {
+      logger.log(`Loop: handleDecomposingPhase invoked while phase=${currentState.phase} for ${loopName}, ignoring`)
+      return
+    }
+
+    if (!currentState.worktreeDir) {
+      logger.error(`Loop: loop ${loopName} missing worktreeDir in decomposing phase, terminating`)
+      await terminateLoop(loopName, currentState, 'missing_worktree_dir')
+      return
+    }
+
+    const decompStatus = currentState.decompositionStatus
+    const totalSections = currentState.totalSections
+
+    if (decompStatus === 'running' || decompStatus === 'pending') {
+      logger.log(`Loop: decomposing phase still running/pending for ${loopName}, waiting`)
+      return
+    }
+
+    if (decompStatus === 'completed' && totalSections > 0) {
+      logger.log(`Loop: decomposing phase completed with ${totalSections} sections for ${loopName}, transitioning to coding`)
+
+      loopService.startSection(loopName, 0)
+      loopService.setCurrentSectionIndex(loopName, 0)
+
+      const updatedState = loopService.getActiveState(loopName) ?? currentState
+      loopService.setPhase(loopName, 'coding')
+
+      const codeSessionResult = await createLoopSessionWithWorkspace({
+        v2: v2Client,
+        title: formatLoopSessionTitle(loopName),
+        directory: updatedState.worktreeDir,
+        permission: buildLoopPermissionRuleset({ isWorktree: !!updatedState.worktree, isSandbox: !!updatedState.sandbox }),
+        workspaceId: updatedState.workspaceId,
+        logPrefix: 'Loop',
+        logger,
+      })
+
+      if (!codeSessionResult) {
+        logger.error(`Loop: failed to create code session after decomposition for ${loopName}`)
+        await terminateLoop(loopName, updatedState, 'session_creation_failed')
+        return
+      }
+
+      const codeSessionId = codeSessionResult.sessionId
+      loopService.replaceSession(loopName, {
+        newSessionId: codeSessionId,
+        phase: 'coding',
+        resetError: false,
+      })
+
+      const codeState = loopService.getActiveState(loopName) ?? updatedState
+      const sectionPrompt = loopService.buildSectionInitialPrompt(codeState)
+
+      const loopModel = resolveLoopModel(getConfig(), loopService, loopName)
+      const sendWithModel = async () => {
+        const fresh = loopService.getActiveState(loopName)
+        if (!fresh?.active) throw new Error('loop_cancelled')
+        return v2Client.session.promptAsync({
+          sessionID: codeSessionId,
+          directory: fresh.worktreeDir,
+          ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
+          agent: 'code',
+          parts: [{ type: 'text' as const, text: sectionPrompt }],
+          model: loopModel,
+        })
+      }
+      const sendWithoutModel = async () => {
+        const fresh = loopService.getActiveState(loopName)
+        if (!fresh?.active) throw new Error('loop_cancelled')
+        return v2Client.session.promptAsync({
+          sessionID: codeSessionId,
+          directory: fresh.worktreeDir,
+          ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
+          agent: 'code',
+          parts: [{ type: 'text' as const, text: sectionPrompt }],
+        })
+      }
+      const { result: promptResult } = await retryWithModelFallback(sendWithModel, sendWithoutModel, loopModel, logger)
+      if (promptResult.error) {
+        logger.error(`Loop: failed to send initial section prompt for ${loopName}`, promptResult.error)
+        await handlePromptError(loopName, codeState, 'failed to send initial section prompt', promptResult.error)
+        return
+      }
+
+      consecutiveStalls.set(loopName, 0)
+      return
+    }
+
+    if (decompStatus === 'completed' && totalSections === 0) {
+      logger.log(`Loop: decomposition completed but produced 0 sections, falling back to legacy for ${loopName}`)
+      loopService.setDecompositionStatus(loopName, 'skipped')
+      loopService.setPhase(loopName, 'coding')
+
+      const fallbackState = loopService.getActiveState(loopName) ?? currentState
+      const codeSessionResult = await createLoopSessionWithWorkspace({
+        v2: v2Client,
+        title: formatLoopSessionTitle(loopName),
+        directory: fallbackState.worktreeDir,
+        permission: buildLoopPermissionRuleset({ isWorktree: !!fallbackState.worktree, isSandbox: !!fallbackState.sandbox }),
+        workspaceId: fallbackState.workspaceId,
+        logPrefix: 'Loop',
+        logger,
+      })
+
+      if (!codeSessionResult) {
+        logger.error(`Loop: failed to create code session for legacy fallback for ${loopName}`)
+        await terminateLoop(loopName, fallbackState, 'session_creation_failed')
+        return
+      }
+
+      loopService.replaceSession(loopName, {
+        newSessionId: codeSessionResult.sessionId,
+        phase: 'coding',
+        resetError: false,
+      })
+
+      const continuationPrompt = loopService.buildContinuationPrompt(
+        { ...fallbackState, iteration: fallbackState.iteration ?? 0 },
+        undefined,
+      )
+      const loopModel = resolveLoopModel(getConfig(), loopService, loopName)
+      const sendWithModel = async () => {
+        const fresh = loopService.getActiveState(loopName)
+        if (!fresh?.active) throw new Error('loop_cancelled')
+        return v2Client.session.promptAsync({
+          sessionID: codeSessionResult.sessionId,
+          directory: fresh.worktreeDir,
+          ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
+          agent: 'code',
+          parts: [{ type: 'text' as const, text: continuationPrompt }],
+          model: loopModel,
+        })
+      }
+      const sendWithoutModel = async () => {
+        const fresh = loopService.getActiveState(loopName)
+        if (!fresh?.active) throw new Error('loop_cancelled')
+        return v2Client.session.promptAsync({
+          sessionID: codeSessionResult.sessionId,
+          directory: fresh.worktreeDir,
+          ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
+          agent: 'code',
+          parts: [{ type: 'text' as const, text: continuationPrompt }],
+        })
+      }
+      const { result: promptResult } = await retryWithModelFallback(sendWithModel, sendWithoutModel, loopModel, logger)
+      if (promptResult.error) {
+        logger.error(`Loop: failed to send legacy fallback prompt for ${loopName}`, promptResult.error)
+        await handlePromptError(loopName, fallbackState, 'failed to send legacy fallback prompt', promptResult.error)
+        return
+      }
+
+      consecutiveStalls.set(loopName, 0)
+      return
+    }
+
+    if (decompStatus === 'failed') {
+      const errorCount = currentState.errorCount ?? 0
+      if (errorCount >= MAX_RETRIES) {
+        logger.error(`Loop: decomposition failed after ${MAX_RETRIES} retries for ${loopName}`)
+        await terminateLoop(loopName, currentState, 'decomposition_failed')
+        return
+      }
+      loopService.incrementError(loopName)
+      logger.log(`Loop: decomposition failed, retrying (attempt ${errorCount + 1}/${MAX_RETRIES}) for ${loopName}`)
+
+      const freshState = loopService.getActiveState(loopName) ?? currentState
+      loopService.setDecompositionStatus(loopName, 'running')
+
+      const decomposerSessionResult = await createLoopSessionWithWorkspace({
+        v2: v2Client,
+        title: `decomposer-${loopName}`,
+        directory: freshState.worktreeDir,
+        permission: buildLoopPermissionRuleset({ isWorktree: !!freshState.worktree, isSandbox: !!freshState.sandbox }),
+        workspaceId: freshState.workspaceId,
+        logPrefix: 'Loop',
+        logger,
+      })
+
+      if (!decomposerSessionResult) {
+        logger.error(`Loop: failed to re-create decomposer session for ${loopName}`)
+        await terminateLoop(loopName, freshState, 'session_creation_failed')
+        return
+      }
+
+      const decomposerSessionId = decomposerSessionResult.sessionId
+      loopService.setDecompositionSessionId(loopName, decomposerSessionId)
+      loopService.registerLoopSession(decomposerSessionId, loopName)
+      loopService.setPhase(loopName, 'decomposing')
+
+      const decomposerPrompt = loopService.buildDecomposerInitialPrompt(freshState)
+      try {
+        await v2Client.session.promptAsync({
+          sessionID: decomposerSessionId,
+          directory: freshState.worktreeDir,
+          ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
+          agent: 'decomposer',
+          parts: [{ type: 'text' as const, text: decomposerPrompt }],
+          ...(getConfig().decomposer?.model ? { model: parseModelString(getConfig().decomposer!.model) } : {}),
+        })
+      } catch (err) {
+        logger.error(`Loop: failed to re-prompt decomposer for ${loopName}`, err)
+        await terminateLoop(loopName, freshState, 'decomposer_prompt_failed')
+        return
+      }
+
+      return
+    }
+
+    logger.debug(`Loop: decomposing phase unknown state for ${loopName}: status=${decompStatus} totalSections=${totalSections}, waiting`)
+  }
+
+  async function handleFinalAuditPhase(loopName: string, _state: LoopState): Promise<void> {
+    let currentState = loopService.getActiveState(loopName)
+    if (!currentState?.active) {
+      logger.log(`Loop: loop ${loopName} no longer active, skipping final audit phase`)
+      return
+    }
+
+    if (currentState.phase !== 'final_auditing') {
+      logger.log(`Loop: handleFinalAuditPhase invoked while phase=${currentState.phase} for ${loopName}, ignoring`)
+      return
+    }
+
+    if (!currentState.worktreeDir) {
+      logger.error(`Loop: loop ${loopName} missing worktreeDir in final audit phase, terminating`)
+      await terminateLoop(loopName, currentState, 'missing_worktree_dir')
+      return
+    }
+
+    const auditSessionId = currentState.sessionId
+
+    const { text: auditText, error: assistantError, lastMessageRole } = await getLastAssistantInfo(auditSessionId, currentState.worktreeDir)
+
+    if (lastMessageRole !== 'assistant') {
+      const attempts = idleRetryAttempts.get(loopName) ?? 0
+      if (attempts >= MAX_IDLE_RETRIES) {
+        logger.error(`Loop: final audit phase retry exhausted for ${loopName} (last message: ${lastMessageRole}), terminating`)
+        idleRetryAttempts.delete(loopName)
+        await terminateLoop(loopName, currentState, 'final_audit_retry_exhausted')
+        return
+      }
+      logger.log(`Loop: final audit idle without assistant message (last=${lastMessageRole}), retrying in ${IDLE_RETRY_DELAY_MS}ms (attempt ${attempts + 1}/${MAX_IDLE_RETRIES})`)
+      idleRetryAttempts.set(loopName, attempts + 1)
+      const t = setTimeout(() => {
+        void withStateLock(loopName, async () => {
+          const fresh = loopService.getActiveState(loopName)
+          if (!fresh?.active || fresh.phase !== 'final_auditing') return
+          await handleFinalAuditPhase(loopName, fresh)
+        })
+      }, IDLE_RETRY_DELAY_MS)
+      idleRetryTimeouts.set(loopName, t)
+      return
+    }
+
+    const pending = idleRetryTimeouts.get(loopName)
+    if (pending) {
+      clearTimeout(pending)
+      idleRetryTimeouts.delete(loopName)
+    }
+    if (idleRetryAttempts.has(loopName)) {
+      idleRetryAttempts.delete(loopName)
+    }
+
+    const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantError, 'final_auditing')
+    if (!errorResult) return
+    const assistantErrorDetected = errorResult.assistantErrorDetected
+    currentState = errorResult.currentState
+
+    currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'final_auditing')
+
+    if (!assistantErrorDetected) {
+      // Increment final audit attempts
+      const newAttempts = loopService.incrementFinalAuditAttempts(loopName)
+
+      // Check for clear marker
+      const hasClearMarker = auditText && loopService.parseFinalAuditClear(auditText)
+
+      // Outstanding-finding gate: block termination if there are outstanding bug findings
+      const hasOutstandingFindings = loopService.hasOutstandingFindings(loopName, 'bug')
+
+      if (hasClearMarker && !hasOutstandingFindings) {
+        logger.log(`Loop: final audit clear detected for ${loopName} with no outstanding findings, completing`)
+        loopService.setFinalAuditDone(loopName, true)
+        await terminateLoop(loopName, currentState, 'completed')
+        return
+      }
+
+      if (hasClearMarker && hasOutstandingFindings) {
+        logger.log(`Loop: final audit clear detected but outstanding findings remain for ${loopName}, rewinding`)
+      }
+
+      if (newAttempts > MAX_RETRIES) {
+        logger.log(`Loop: final audit attempts exhausted for ${loopName} (${newAttempts}/${MAX_RETRIES})`)
+        await terminateLoop(loopName, currentState, 'final_audit_failed')
+        return
+      }
+
+      // Dirty audit: rewind to the offending section
+      const allFindings = loopService.getOutstandingFindings(loopName, 'bug')
+      const rawOffendingIdx = allFindings.length > 0
+        ? (allFindings[0].sectionIndex ?? currentState.currentSectionIndex)
+        : currentState.currentSectionIndex
+
+      // Clamp to valid section range
+      const offendingIdx = (rawOffendingIdx >= 0 && rawOffendingIdx < currentState.totalSections)
+        ? rawOffendingIdx
+        : currentState.currentSectionIndex
+
+      logger.log(`Loop: final audit dirty, rewinding to section ${offendingIdx} for ${loopName}`)
+
+      // Reset offending section before building continuation prompt so stale summaries are excluded
+      loopService.resetSectionForRewind(loopName, offendingIdx)
+
+      // Build continuation prompt from a synthetic state to avoid mutating persisted state before rotation
+      const synthState = { ...currentState, phase: 'coding' as const, currentSectionIndex: offendingIdx }
+      const continuationPrompt = loopService.buildSectionContinuationPrompt(synthState, auditText || '')
+
+      // Rotate to a new code session before mutating persisted state
+      let newCodeSessionId: string
+      try {
+        newCodeSessionId = await rotateSession(loopName, currentState)
+      } catch (err) {
+        logger.error(`Loop: session rotation failed during final audit rewind, aborting rewind`, err)
+        return
+      }
+
+      // Mutate remaining persisted state after successful session rotation
+      loopService.setCurrentSectionIndex(loopName, offendingIdx)
+      loopService.setPhase(loopName, 'coding')
+
+      loopService.replaceSession(loopName, {
+        newSessionId: newCodeSessionId,
+        phase: 'coding',
+        iteration: currentState.iteration,
+        resetError: currentState.errorCount > 0,
+      })
+
+      const loopModel = resolveLoopModel(getConfig(), loopService, loopName)
+      const sendWithModel = async () => {
+        const fresh = loopService.getActiveState(loopName)
+        if (!fresh?.active) throw new Error('loop_cancelled')
+        return v2Client.session.promptAsync({
+          sessionID: newCodeSessionId,
+          directory: fresh.worktreeDir,
+          ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
+          agent: 'code',
+          parts: [{ type: 'text' as const, text: continuationPrompt }],
+          model: loopModel,
+        })
+      }
+      const sendWithoutModel = async () => {
+        const fresh = loopService.getActiveState(loopName)
+        if (!fresh?.active) throw new Error('loop_cancelled')
+        return v2Client.session.promptAsync({
+          sessionID: newCodeSessionId,
+          directory: fresh.worktreeDir,
+          ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
+          agent: 'code',
+          parts: [{ type: 'text' as const, text: continuationPrompt }],
+        })
+      }
+      const { result: promptResult } = await retryWithModelFallback(sendWithModel, sendWithoutModel, loopModel, logger)
+      if (promptResult.error) {
+        logger.error(`Loop: failed to send rewind continuation prompt for ${loopName}`, promptResult.error)
+        await handlePromptError(loopName, currentState, 'failed to send rewind continuation', promptResult.error)
+        return
+      }
+
+      consecutiveStalls.set(loopName, 0)
     }
   }
 
@@ -1285,6 +1674,241 @@ export function createLoopEventHandler(
       const newAuditCount = (currentState.auditCount ?? 0) + 1
       logger.log(`Loop audit ${newAuditCount} at iteration ${currentState.iteration ?? 0}`)
 
+      // For sectioned loops: advance sections and handle final-audit routing
+      if (currentState.totalSections > 0) {
+        const idx = currentState.currentSectionIndex
+        const sectionSummary = loopService.parseSectionSummary(auditText || '')
+        const sectionBugFindings = loopService.getOutstandingFindings(loopName, 'bug')
+          .filter(f => f.sectionIndex === idx)
+
+        if (sectionSummary && sectionBugFindings.length === 0) {
+          logger.log(`Loop: section ${idx} audit clean, marking completed`)
+
+          loopService.setLastAuditResult(loopName, auditText || '')
+          loopService.completeSection(loopName, idx, sectionSummary)
+
+          // Rewind-completion shortcut: if all sections now completed, jump to final audit
+          if (currentState.finalAuditAttempts > 0 && idx < currentState.totalSections - 1) {
+            const allCompleted = loopService.getCompletedSectionDigest(currentState).length === currentState.totalSections
+            if (allCompleted) {
+              logger.log(`Loop: all ${currentState.totalSections} sections completed after rewind, jumping straight to final audit`)
+
+              const finalAuditState = loopService.getActiveState(loopName) ?? { ...currentState, phase: 'final_auditing' }
+              const finalAuditPrompt = loopService.buildFinalAuditPrompt(finalAuditState)
+              const auditorModel = resolveLoopAuditorModel(getConfig(), loopService, loopName, logger)
+
+              const ensured = await ensureWorkspaceForLoop(loopName, currentState, 'before final audit creation')
+              const created = await createAuditSessionWithFallback({
+                loopName,
+                iteration: currentState.iteration ?? 0,
+                worktreeDir: currentState.worktreeDir,
+                workspaceId: ensured.workspaceId ?? currentState.workspaceId,
+                isSandbox: currentState.sandbox ?? false,
+                auditorModel,
+                prompt: finalAuditPrompt,
+              })
+              if (!created) {
+                logger.error(`Loop: final audit session creation failed for ${loopName}`)
+                await handlePromptError(loopName, finalAuditState, 'failed to create final audit session', new Error('audit session creation failed'))
+                return
+              }
+
+              loopService.setPhaseAndResetError(loopName, 'final_auditing')
+
+              loopService.replaceSession(loopName, {
+                newSessionId: created.auditSessionId,
+                phase: 'final_auditing',
+              })
+
+              v2Client.session.delete({ sessionID: currentState.sessionId, directory: currentState.worktreeDir }).catch((err) => {
+                logger.error(`Loop: failed to delete old code session ${currentState.sessionId} after final audit creation`, err)
+              })
+
+              const sendFinalAuditWithModel = async () => {
+                const freshState = loopService.getActiveState(loopName)
+                if (!freshState?.active) throw new Error('loop_cancelled')
+                const result = await promptAuditSessionWithFallback({
+                  sessionId: created.auditSessionId,
+                  worktreeDir: freshState.worktreeDir,
+                  workspaceId: freshState.workspaceId,
+                  prompt: loopService.buildFinalAuditPrompt(freshState),
+                  auditorModel,
+                })
+                return result.ok ? { data: true } : { error: result.error }
+              }
+
+              const sendFinalAuditWithoutModel = async () => {
+                const freshState = loopService.getActiveState(loopName)
+                if (!freshState?.active) throw new Error('loop_cancelled')
+                const result = await promptAuditSessionWithFallback({
+                  sessionId: created.auditSessionId,
+                  worktreeDir: freshState.worktreeDir,
+                  workspaceId: freshState.workspaceId,
+                  prompt: loopService.buildFinalAuditPrompt(freshState),
+                })
+                return result.ok ? { data: true } : { error: result.error }
+              }
+
+              const { result: finalAuditPromptResult } = await retryWithModelFallback(
+                sendFinalAuditWithModel,
+                sendFinalAuditWithoutModel,
+                auditorModel,
+                logger,
+              )
+
+              if (finalAuditPromptResult.error) {
+                logger.error(`Loop: failed to send final audit prompt for ${loopName}`, finalAuditPromptResult.error)
+                await handlePromptError(loopName, finalAuditState, 'failed to send final audit prompt', finalAuditPromptResult.error)
+                return
+              }
+
+              consecutiveStalls.set(loopName, 0)
+              return
+            }
+          }
+
+          const nextIdx = idx + 1
+          if (nextIdx < currentState.totalSections) {
+            // Advance to next section
+            logger.log(`Loop: advancing from section ${idx} to section ${nextIdx}`)
+            loopService.setCurrentSectionIndex(loopName, nextIdx)
+            loopService.startSection(loopName, nextIdx)
+
+            loopService.replaceSession(loopName, {
+              newSessionId: currentState.sessionId,
+              phase: 'coding',
+              iteration: currentState.iteration,
+            })
+
+            const updatedState = loopService.getActiveState(loopName) ?? { ...currentState, currentSectionIndex: nextIdx }
+            const continuationPrompt = loopService.buildSectionInitialPrompt(updatedState)
+            await rotateAndSendContinuation(
+              loopName,
+              currentState,
+              {
+                iteration: currentState.iteration,
+                phase: 'coding',
+                lastAuditResult: auditText || undefined,
+                auditCount: newAuditCount,
+              },
+              continuationPrompt,
+              assistantErrorDetected,
+              'section coding continuation',
+            )
+            return
+          } else {
+            // Last section cleared, transition to final-audit
+            logger.log(`Loop: all ${currentState.totalSections} sections completed, transitioning to final-audit`)
+
+            const finalAuditState = loopService.getActiveState(loopName) ?? { ...currentState, phase: 'final_auditing' }
+            const finalAuditPrompt = loopService.buildFinalAuditPrompt(finalAuditState)
+            const auditorModel = resolveLoopAuditorModel(getConfig(), loopService, loopName, logger)
+
+            const ensured = await ensureWorkspaceForLoop(loopName, currentState, 'before final audit creation')
+            const created = await createAuditSessionWithFallback({
+              loopName,
+              iteration: currentState.iteration ?? 0,
+              worktreeDir: currentState.worktreeDir,
+              workspaceId: ensured.workspaceId ?? currentState.workspaceId,
+              isSandbox: currentState.sandbox ?? false,
+              auditorModel,
+              prompt: finalAuditPrompt,
+            })
+            if (!created) {
+              logger.error(`Loop: final audit session creation failed for ${loopName}`)
+              await handlePromptError(loopName, finalAuditState, 'failed to create final audit session', new Error('audit session creation failed'))
+              return
+            }
+
+            loopService.setPhaseAndResetError(loopName, 'final_auditing')
+
+            loopService.replaceSession(loopName, {
+              newSessionId: created.auditSessionId,
+              phase: 'final_auditing',
+            })
+
+            v2Client.session.delete({ sessionID: currentState.sessionId, directory: currentState.worktreeDir }).catch((err) => {
+              logger.error(`Loop: failed to delete old code session ${currentState.sessionId} after final audit creation`, err)
+            })
+
+            const sendFinalAuditWithModel = async () => {
+              const freshState = loopService.getActiveState(loopName)
+              if (!freshState?.active) throw new Error('loop_cancelled')
+              const result = await promptAuditSessionWithFallback({
+                sessionId: created.auditSessionId,
+                worktreeDir: freshState.worktreeDir,
+                workspaceId: freshState.workspaceId,
+                prompt: loopService.buildFinalAuditPrompt(freshState),
+                auditorModel,
+              })
+              return result.ok ? { data: true } : { error: result.error }
+            }
+
+            const sendFinalAuditWithoutModel = async () => {
+              const freshState = loopService.getActiveState(loopName)
+              if (!freshState?.active) throw new Error('loop_cancelled')
+              const result = await promptAuditSessionWithFallback({
+                sessionId: created.auditSessionId,
+                worktreeDir: freshState.worktreeDir,
+                workspaceId: freshState.workspaceId,
+                prompt: loopService.buildFinalAuditPrompt(freshState),
+              })
+              return result.ok ? { data: true } : { error: result.error }
+            }
+
+            const { result: finalAuditPromptResult } = await retryWithModelFallback(
+              sendFinalAuditWithModel,
+              sendFinalAuditWithoutModel,
+              auditorModel,
+              logger,
+            )
+
+            if (finalAuditPromptResult.error) {
+              logger.error(`Loop: failed to send final audit prompt for ${loopName}`, finalAuditPromptResult.error)
+              await handlePromptError(loopName, finalAuditState, 'failed to send final audit prompt', finalAuditPromptResult.error)
+              return
+            }
+
+            consecutiveStalls.set(loopName, 0)
+            return
+          }
+        }
+
+        // Dirty section audit: retry same section (no mid-loop rewind)
+        logger.log(`Loop: section ${idx} audit dirty, retrying same section`)
+
+        loopService.incrementSectionAttempts(loopName, idx)
+        const sectionPlan = loopService.getSectionPlan(currentState, idx)
+        if (sectionPlan && sectionPlan.attempts >= MAX_RETRIES) {
+          logger.log(`Loop: section ${idx} exceeded max retries (${sectionPlan.attempts}/${MAX_RETRIES}), terminating`)
+          await terminateLoop(loopName, currentState, `section_failed: ${idx}`)
+          return
+        }
+
+        loopService.setLastAuditResult(loopName, auditText || '')
+        loopService.replaceSession(loopName, {
+          newSessionId: currentState.sessionId,
+          phase: 'coding',
+          iteration: currentState.iteration,
+        })
+
+        const continuationPrompt = loopService.buildSectionContinuationPrompt(currentState, auditText || '')
+        await rotateAndSendContinuation(
+          loopName,
+          currentState,
+          {
+            iteration: currentState.iteration,
+            phase: 'coding',
+            lastAuditResult: auditText || undefined,
+            auditCount: newAuditCount,
+          },
+          continuationPrompt,
+          assistantErrorDetected,
+          'section retry continuation',
+        )
+        return
+      }
+
       // Check clear first
       const candidateState = { ...currentState, auditCount: newAuditCount }
       if (await checkAuditClearAndTerminate(loopName, candidateState)) return
@@ -1384,6 +2008,22 @@ export function createLoopEventHandler(
             await rotateToCodingAfterAuditFailure(loopName, state, 'aborted')
             return
           }
+          if (state.phase === 'decomposing') {
+            logger.log(`Loop: decomposer session ${eventSessionId} aborted, terminating loop`)
+            await terminateLoop(loopName, state, 'user_aborted')
+            return
+          }
+          if (state.phase === 'final_auditing') {
+            const { lastMessageRole } = await getLastAssistantInfo(eventSessionId, state.worktreeDir)
+            if (lastMessageRole === 'assistant') {
+              logger.log(`Loop: final audit session ${eventSessionId} aborted after assistant response, processing audit result`)
+              await handleFinalAuditPhase(loopName, state)
+              return
+            }
+            logger.log(`Loop: final audit session ${eventSessionId} aborted, cleaning up and rolling back to coding`)
+            await rotateToCodingAfterAuditFailure(loopName, state, 'aborted')
+            return
+          }
           logger.log(`Loop: session ${eventSessionId} aborted, terminating loop`)
           await terminateLoop(loopName, state, 'user_aborted')
         })
@@ -1403,6 +2043,24 @@ export function createLoopEventHandler(
         if (state.phase === 'auditing') {
           const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
           logger.error(`Loop: audit session error for ${eventSessionId}: ${errorMessage}, cleaning up and rolling back to coding`)
+          await rotateToCodingAfterAuditFailure(loopName, state, errorMessage)
+          return
+        }
+        if (state.phase === 'decomposing') {
+          const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
+          logger.error(`Loop: decomposer session error for ${eventSessionId}: ${errorMessage}, terminating loop`)
+          await terminateLoop(loopName, state, `decomposer_error: ${errorMessage}`)
+          return
+        }
+        if (state.phase === 'final_auditing') {
+          const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
+          const { lastMessageRole } = await getLastAssistantInfo(eventSessionId, state.worktreeDir)
+          if (lastMessageRole === 'assistant') {
+            logger.log(`Loop: final audit session ${eventSessionId} error after assistant response, processing audit result`)
+            await handleFinalAuditPhase(loopName, state)
+            return
+          }
+          logger.error(`Loop: final audit session error for ${eventSessionId}: ${errorMessage}, cleaning up and rolling back to coding`)
           await rotateToCodingAfterAuditFailure(loopName, state, errorMessage)
           return
         }
@@ -1449,6 +2107,10 @@ export function createLoopEventHandler(
         
         if (state.phase === 'auditing') {
           await handleAuditingPhase(loopName, state)
+        } else if (state.phase === 'decomposing') {
+          await handleDecomposingPhase(loopName, state)
+        } else if (state.phase === 'final_auditing') {
+          await handleFinalAuditPhase(loopName, state)
         } else {
           await handleCodingPhase(loopName, state)
         }

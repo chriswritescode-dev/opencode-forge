@@ -97,6 +97,13 @@ interface LoopRowRaw {
   completion_summary: string | null
   workspace_id: string | null
   host_session_id: string | null
+  decomposition_status: string
+  decomposition_mode: string
+  decomposition_session_id: string | null
+  current_section_index: number
+  total_sections: number
+  final_audit_done: number
+  final_audit_attempts: number
 }
 
 function mapRow(row: LoopRowRaw): LoopRow {
@@ -125,5 +132,12 @@ function mapRow(row: LoopRowRaw): LoopRow {
     completionSummary: row.completion_summary,
     workspaceId: row.workspace_id,
     hostSessionId: row.host_session_id,
+    decompositionStatus: row.decomposition_status as LoopRow['decompositionStatus'],
+    decompositionMode: row.decomposition_mode as LoopRow['decompositionMode'],
+    decompositionSessionId: row.decomposition_session_id,
+    currentSectionIndex: row.current_section_index,
+    totalSections: row.total_sections,
+    finalAuditDone: row.final_audit_done,
+    finalAuditAttempts: row.final_audit_attempts,
   }
 }

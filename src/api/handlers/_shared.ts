@@ -17,6 +17,7 @@ export function buildService(deps: ApiDeps, projectId: string) {
     loopService: ctx.loopService,
     loopHandler: ctx.loopHandler,
     sandboxManager: ctx.sandboxManager,
+    sectionPlansRepo: ctx.sectionPlansRepo,
   })
   return { service, execCtx }
 }

@@ -113,7 +113,15 @@ export function loadPluginConfig(): PluginConfig {
 }
 
 function normalizeConfig(config: PluginConfig): PluginConfig {
-  return { ...config }
+  const result = { ...config }
+  if (!result.decomposer) {
+    result.decomposer = {}
+  }
+  if (result.decomposer.enabled === undefined) result.decomposer.enabled = true
+  if (result.decomposer.mode === undefined) result.decomposer.mode = 'agent'
+  if (result.decomposer.onParseFailure === undefined) result.decomposer.onParseFailure = 'legacy'
+  if (result.decomposer.maxSections === undefined) result.decomposer.maxSections = 12
+  return result
 }
 
 /**

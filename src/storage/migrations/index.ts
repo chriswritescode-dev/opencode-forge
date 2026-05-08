@@ -200,5 +200,51 @@ export const migrations: Migration[] = [
       db.run(loadSql('120_loop_only_review_findings.sql'))
     },
   },
+  {
+    id: '121',
+    description: 'Create section_plans table for decomposed section plans',
+    apply: (db: Database) => {
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='section_plans'").all()
+      if (tables.length > 0) return
+      db.run(loadSql('121_create_section_plans.sql'))
+    },
+  },
+  {
+    id: '122',
+    description: 'Add decomposition state columns to loops table',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      if (cols.some((c) => c.name === 'decomposition_status')) return
+      db.run(loadSql('122_add_decomposition_state_to_loops.sql'))
+    },
+  },
+  {
+    id: '123',
+    description: 'Add section_index column to review_findings table',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(review_findings)').all() as Array<{ name: string }>
+      if (cols.some((c) => c.name === 'section_index')) return
+      db.run(loadSql('123_add_section_index_to_review_findings.sql'))
+    },
+  },
+  {
+    id: '124',
+    description: 'Extend loops phase CHECK to include decomposing and final_auditing',
+    apply: (db: Database) => {
+      const phases = db.prepare("SELECT DISTINCT phase FROM loops").all() as Array<{ phase: string }>
+      const hasNewPhases = phases.some(p => p.phase === 'decomposing' || p.phase === 'final_auditing')
+      if (hasNewPhases) return
+      db.run(loadSql('124_extend_loops_phase_check.sql'))
+    },
+  },
+  {
+    id: '125',
+    description: 'Rebuild review_findings with section_index in primary key for section-scoped deduplication',
+    apply: (db: Database) => {
+      const pkInfo = db.prepare('PRAGMA table_info(review_findings)').all() as Array<{ name: string; pk: number }>
+      if (pkInfo.some(c => c.name === 'section_index' && c.pk > 0)) return
+      db.run(loadSql('125_add_section_index_to_review_findings_pk.sql'))
+    },
+  },
 
 ]

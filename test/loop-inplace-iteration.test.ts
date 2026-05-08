@@ -42,6 +42,13 @@ function createTestDB() {
       completion_summary   TEXT,
       workspace_id         TEXT,
       host_session_id      TEXT,
+      decomposition_status TEXT NOT NULL DEFAULT 'pending' CHECK (decomposition_status IN ('pending','running','completed','failed','skipped')),
+      decomposition_mode TEXT NOT NULL DEFAULT 'agent' CHECK (decomposition_mode IN ('agent','deterministic')),
+      decomposition_session_id TEXT,
+      current_section_index INTEGER NOT NULL DEFAULT 0,
+      total_sections INTEGER NOT NULL DEFAULT 0,
+      final_audit_done INTEGER NOT NULL DEFAULT 0,
+      final_audit_attempts INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (project_id, loop_name)
     )
   `)
@@ -59,17 +66,16 @@ function createTestDB() {
 
   db.run(`
     CREATE TABLE review_findings (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
       project_id TEXT NOT NULL,
       loop_name TEXT NOT NULL DEFAULT '',
       file TEXT NOT NULL,
       line INTEGER NOT NULL,
-      severity TEXT NOT NULL,
+      severity TEXT NOT NULL CHECK(severity IN ('bug','warning')),
       description TEXT NOT NULL,
       scenario TEXT,
+      section_index INTEGER,
       created_at INTEGER NOT NULL,
-      resolved_at INTEGER,
-      UNIQUE(project_id, loop_name, file, line)
+      PRIMARY KEY (project_id, loop_name, file, line, section_index)
     )
   `)
 

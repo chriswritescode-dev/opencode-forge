@@ -169,6 +169,65 @@ Because this loop audit is not itself running as a subagent, use short-lived Tas
 - Keep the existing review-finding order unchanged: read active findings, check changed-file findings against the diff, delete resolved findings, then continue investigation.
 - Prefer focused explore subtasks for codebase pattern checks, dependency/caller inspection, related test discovery, or verification of separate changed areas.
 - Give each subtask a narrow prompt and ask it to return only findings, evidence, and file references; synthesize the results yourself before writing review findings.
+
+## Section Scoping
+
+When auditing in a sectioned loop, you are auditing one section at a time. The loop runner splits the master plan into sections using \`<!-- forge-section:start --> ... <!-- forge-section:end -->\` markers. Each section has its own acceptance criteria and verification commands. You should focus your audit on the current section's content and acceptance criteria.
+
+When writing findings, always include the appropriate \`sectionIndex\` to attribute the finding to a specific section. Use \`crossSection: true\` only when the finding spans multiple sections.
+
+## Section Summaries
+
+When auditing in a sectioned loop, you MUST include a \`<!-- section-summary:start -->\` block at the end of your response if the section is clear of blocking bugs:
+
+\`\`\`
+<!-- section-summary:start -->
+### Done
+- bullets describing what was implemented
+### Deviations
+- bullets describing places implementation differs from this section plan, with reasons (or "none")
+### Follow-ups
+- bullets noting items deferred to later sections (or "none")
+<!-- section-summary:end -->
+\`\`\`
+
+Do NOT include a section summary if the section still has blocking bugs.
+
+## Final Audit Marker
+
+When the final audit is complete and the implementation is acceptable, end your response with:
+\`<!-- final-audit:clear -->\`
+
+This marker signals that all sections have been verified and the loop can terminate.
+
+## Deviation Acceptance
+
+When reviewing sections, accept deviations from the plan IF they are documented in the section summary's Deviations field. Only flag deviations as bugs if they materially break the master plan's top-level verification criteria. A deviation that makes the code simpler while meeting the same acceptance criteria should be accepted, not flagged as a bug.
+
+## Section Attribution
+
+When writing findings for a sectioned loop, always include the appropriate \`sectionIndex\` to attribute the finding to a specific section. Use \`crossSection: true\` only when the finding spans multiple sections.
+`
+
+const FINAL_AUDIT_ADDENDUM = `
+## Final Audit Rules
+
+You are performing the final integration audit of a sectioned loop. All sections have been audited individually and their summaries are provided.
+
+### Deviation Acceptance
+
+Accept deviations from the plan IF they are documented in the section summaries' Deviations fields. Only flag deviations as bugs if they materially break the master plan's top-level verification criteria.
+
+### Final Audit Clear Marker
+
+When the implementation is acceptable, end your response with:
+\`<!-- final-audit:clear -->\`
+
+This marker signals that all sections have been verified and the loop can terminate.
+
+### Section Attribution
+
+Write findings with \`sectionIndex\` pointing to the section you believe contains the bug. Use \`crossSection: true\` only when the bug spans multiple sections.
 `
 
 function buildBasePrompt(): string {
@@ -198,7 +257,7 @@ export function buildAuditorLoopAgent(): AgentDefinition {
     tools: {
       exclude: AUDITOR_TOOL_EXCLUDES,
     },
-    systemPrompt: `${buildBasePrompt()}${LOOP_ADDENDUM}`,
+    systemPrompt: `${buildBasePrompt()}${LOOP_ADDENDUM}${FINAL_AUDIT_ADDENDUM}`,
   }
 }
 

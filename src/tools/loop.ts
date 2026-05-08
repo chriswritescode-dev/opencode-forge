@@ -34,6 +34,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
       loopService: ctx.loopService,
       loopHandler: ctx.loopHandler,
       sandboxManager: ctx.sandboxManager,
+      sectionPlansRepo: ctx.sectionPlansRepo,
     })
     return { service, execCtx }
   }
@@ -400,5 +401,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         return statusLines.join('\n')
       },
     }),
+
   }
 }

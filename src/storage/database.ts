@@ -36,6 +36,7 @@ function runMigrations(db: Database): void {
     const existing = db.prepare('SELECT id FROM migrations WHERE id = ?').get(migration.id)
     if (!existing) {
       try {
+        db.run('PRAGMA foreign_keys=OFF')
         db.run('BEGIN')
         migration.apply(db)
         db.prepare('INSERT INTO migrations (id, description, applied_at) VALUES (?, ?, ?)').run(
@@ -44,8 +45,10 @@ function runMigrations(db: Database): void {
           Date.now()
         )
         db.run('COMMIT')
+        db.run('PRAGMA foreign_keys=ON')
       } catch (err) {
         db.run('ROLLBACK')
+        db.run('PRAGMA foreign_keys=ON')
         throw err
       }
     }

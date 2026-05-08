@@ -72,6 +72,23 @@ export type LoopInfo = {
   auditorModel?: string
   workspaceId?: string
   hostSessionId?: string
+  currentSectionIndex?: number
+  totalSections?: number
+  sections?: Array<{
+    index: number
+    title: string
+    status: string
+    attempts: number
+    startedAt?: number | null
+    completedAt?: number | null
+    summaryDone: string | null
+    summaryDeviations: string | null
+    summaryFollowUps: string | null
+  }>
+  decompositionStatus?: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+  decompositionMode?: 'agent' | 'deterministic'
+  finalAuditDone?: boolean
+  finalAuditAttempts?: number
 }
 
 /**

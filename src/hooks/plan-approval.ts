@@ -228,6 +228,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
             loopService: ctx.loopService,
             loopHandler: ctx.loopHandler,
             sandboxManager: ctx.sandboxManager,
+            sectionPlansRepo: ctx.sectionPlansRepo,
           })
           
           if (matchedLabel === 'New session') {

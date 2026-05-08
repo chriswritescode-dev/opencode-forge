@@ -2,6 +2,7 @@ import { describe, test, expect } from 'bun:test'
 import { architectAgent, buildArchitectAgent } from '../src/agents/architect'
 import { codeAgent, buildCodeAgent } from '../src/agents/code'
 import { auditorAgent, auditorLoopAgent, buildAuditorAgent, buildAuditorLoopAgent } from '../src/agents/auditor'
+import { decomposerAgent, buildDecomposerAgent } from '../src/agents/decomposer'
 import { buildAgents } from '../src/agents'
 
 describe('Agent definitions', () => {
@@ -78,6 +79,49 @@ describe('Agent definitions', () => {
       expect(prompt).toContain('review-finding flow has completed')
       expect(prompt).toContain('short-lived Task subtasks')
       expect(prompt).toContain('Keep the existing review-finding order unchanged')
+    })
+
+    test('auditor-loop prompt includes LOOP_ADDENDUM and FINAL_AUDIT_ADDENDUM content', () => {
+      const prompt = auditorLoopAgent.systemPrompt
+      expect(prompt).toContain('forge-section')
+      expect(prompt).toContain('section-summary:start')
+      expect(prompt).toContain('### Done')
+      expect(prompt).toContain('### Deviations')
+      expect(prompt).toContain('### Follow-ups')
+      expect(prompt).toContain('final-audit:clear')
+      expect(prompt.toLowerCase()).toContain('deviation acceptance')
+    })
+  })
+
+  describe('decomposer agent', () => {
+    test('decomposer agent has stable metadata and primary mode', () => {
+      expect(decomposerAgent.role).toBe('decomposer')
+      expect(decomposerAgent.id).toBe('opencode-decomposer')
+      expect(decomposerAgent.displayName).toBe('decomposer')
+      expect(decomposerAgent.mode).toBe('primary')
+      expect(decomposerAgent.hidden).toBe(true)
+    })
+
+    test('decomposer agent has expected tool exclusions', () => {
+      expect(decomposerAgent.tools?.exclude).toBeDefined()
+      expect(decomposerAgent.tools?.exclude).toContain('apply_patch')
+      expect(decomposerAgent.tools?.exclude).toContain('edit')
+      expect(decomposerAgent.tools?.exclude).toContain('write')
+      expect(decomposerAgent.tools?.exclude).toContain('multiedit')
+      expect(decomposerAgent.tools?.exclude).toContain('plan-execute')
+      expect(decomposerAgent.tools?.exclude).toContain('loop')
+      expect(decomposerAgent.tools?.exclude).toContain('loop-cancel')
+      expect(decomposerAgent.tools?.exclude).toContain('loop-status')
+      expect(decomposerAgent.tools?.exclude).toContain('review-write')
+      expect(decomposerAgent.tools?.exclude).toContain('review-delete')
+    })
+
+    test('decomposer agent prompt contains section marker instructions', () => {
+      const prompt = decomposerAgent.systemPrompt
+      expect(prompt).toContain('forge-section:start')
+      expect(prompt).toContain('forge-section:end')
+      expect(prompt).toContain('Section Plan')
+      expect(prompt).toContain('Acceptance Criteria')
     })
   })
 

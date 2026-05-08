@@ -85,6 +85,13 @@ describe('workspace recovery', () => {
         workspace_id   TEXT,
         host_session_id   TEXT,
         audit_session_id  TEXT,
+        decomposition_status TEXT NOT NULL DEFAULT 'pending' CHECK (decomposition_status IN ('pending','running','completed','failed','skipped')),
+        decomposition_mode TEXT NOT NULL DEFAULT 'agent' CHECK (decomposition_mode IN ('agent','deterministic')),
+        decomposition_session_id TEXT,
+        current_section_index INTEGER NOT NULL DEFAULT 0,
+        total_sections INTEGER NOT NULL DEFAULT 0,
+        final_audit_done INTEGER NOT NULL DEFAULT 0,
+        final_audit_attempts INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (project_id, loop_name)
       )
     `)
@@ -124,7 +131,8 @@ describe('workspace recovery', () => {
         description TEXT NOT NULL,
         scenario TEXT,
         created_at INTEGER NOT NULL,
-        PRIMARY KEY (project_id, loop_name, file, line)
+        section_index INTEGER,
+        PRIMARY KEY (project_id, loop_name, file, line, section_index)
       )
     `)
     

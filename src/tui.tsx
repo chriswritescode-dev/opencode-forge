@@ -433,6 +433,50 @@ function LoopDetailsDialog(props: { api: TuiPluginApi; client: ForgeProjectClien
         </box>
       </Show>
 
+      <Show when={currentLoop().sections && currentLoop().sections!.length > 0}>
+        <box flexDirection="column" paddingTop={1} flexShrink={0}>
+          <box flexShrink={0}>
+            <text fg={theme().text}><b>Sections</b></text>
+          </box>
+          <box flexDirection="column" gap={0}>
+            <For each={currentLoop().sections!}>
+              {(section) => {
+                const isCurrent = () => currentLoop().active && currentLoop().currentSectionIndex === section.index
+                const statusIcon = () => {
+                  if (section.status === 'completed') return { icon: '\u2713', color: theme().success }
+                  if (section.status === 'in_progress') return { icon: '\u25CB', color: theme().warning }
+                  return { icon: '\u25CB', color: theme().textMuted }
+                }
+                const icon = statusIcon()
+                return (
+                  <box flexDirection="column">
+                    <box flexDirection="row" gap={1}>
+                      <text fg={isCurrent() ? theme().warning : icon.color}>({icon.icon})</text>
+                      <text fg={isCurrent() ? theme().text : theme().textMuted} wrapMode="word">
+                        {truncate(section.title, 40)}
+                      </text>
+                      <text fg={theme().textMuted}>[{section.status}]</text>
+                      {section.attempts > 0 && <text fg={theme().textMuted}>({section.attempts} attempts)</text>}
+                    </box>
+                    {section.status === 'completed' && section.summaryDone && (
+                      <box flexDirection="column" paddingLeft={2}>
+                        <text fg={theme().success} wrapMode="word">{truncate(section.summaryDone, 120)}</text>
+                        {section.summaryDeviations && (
+                          <text fg={theme().warning} wrapMode="word">Dev: {truncate(section.summaryDeviations, 100)}</text>
+                        )}
+                        {section.summaryFollowUps && (
+                          <text fg={theme().textMuted} wrapMode="word">Next: {truncate(section.summaryFollowUps, 100)}</text>
+                        )}
+                      </box>
+                    )}
+                  </box>
+                )
+              }}
+            </For>
+          </box>
+        </box>
+      </Show>
+
       <box paddingTop={1} flexShrink={0} flexDirection="row" gap={2} paddingY={2}>
         <Show when={props.onBack}>
           <text fg={theme().textMuted} onMouseUp={() => props.onBack!()}>Back</text>

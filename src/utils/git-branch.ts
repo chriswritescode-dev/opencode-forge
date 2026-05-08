@@ -65,8 +65,13 @@ export function injectScopeField(
   
   if (scope.kind === 'loop') {
     record.loopName = scope.loopName
+    const loopState = loopService.getActiveState(scope.loopName)
+    if (loopState && loopState.totalSections > 0) {
+      record.sectionIndex = loopState.currentSectionIndex
+    }
   } else {
     record.loopName = null
+    record.sectionIndex = null
   }
 }
 

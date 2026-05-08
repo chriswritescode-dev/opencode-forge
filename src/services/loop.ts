@@ -3,6 +3,7 @@ import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import type { LoopsRepo, LoopRow, LoopLargeFields } from '../storage/repos/loops-repo'
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo, ReviewFindingRow } from '../storage/repos/review-findings-repo'
+import type { SectionPlansRepo, SectionPlanRow } from '../storage/repos/section-plans-repo'
 import { teardownWorktreeArtifacts } from '../utils/worktree-cleanup'
 
 export type LoopChangeReason =
@@ -38,7 +39,7 @@ export interface LoopState {
   maxIterations: number
   startedAt: string
   prompt?: string
-  phase: 'coding' | 'auditing'
+  phase: 'coding' | 'auditing' | 'decomposing' | 'final_auditing'
   lastAuditResult?: string
   errorCount: number
   auditCount: number
@@ -53,6 +54,13 @@ export interface LoopState {
   auditorModel?: string
   workspaceId?: string
   hostSessionId?: string
+  decompositionStatus: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+  decompositionMode: 'agent' | 'deterministic'
+  decompositionSessionId: string | null
+  currentSectionIndex: number
+  totalSections: number
+  finalAuditDone: boolean
+  finalAuditAttempts: number
 }
 
 export interface LoopService {
@@ -76,8 +84,8 @@ export interface LoopService {
   getPlanText(loopName: string, sessionId: string): string | null
   incrementError(name: string): number
   resetError(name: string): void
-  setPhase(name: string, phase: 'coding' | 'auditing'): void
-  setPhaseAndResetError(name: string, phase: 'coding' | 'auditing'): void
+  setPhase(name: string, phase: LoopState['phase']): void
+  setPhaseAndResetError(name: string, phase: LoopState['phase']): void
   setModelFailed(name: string, failed: boolean): void
   setLastAuditResult(name: string, text: string): void
   clearLastAuditResult(name: string): void
@@ -86,7 +94,25 @@ export interface LoopService {
   clearWorkspaceId(name: string): void
   setWorkspaceId(name: string, workspaceId: string): void
   terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
-  replaceSession(name: string, opts: { newSessionId: string; phase: 'coding' | 'auditing'; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void
+  replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void
+  getSectionPlan(state: LoopState, index: number): SectionPlanRow | null
+  getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[]
+  parseSectionSummary(text: string): { done: string | null; deviations: string | null; followUps: string | null } | null
+  parseFinalAuditClear(text: string): boolean
+  buildDecomposerInitialPrompt(state: LoopState): string
+  buildSectionInitialPrompt(state: LoopState): string
+  buildSectionAuditPrompt(state: LoopState): string
+  buildSectionContinuationPrompt(state: LoopState, auditText: string): string
+  buildFinalAuditPrompt(state: LoopState): string
+  completeSection(loopName: string, index: number, summary: { done: string | null; deviations: string | null; followUps: string | null }): void
+  incrementSectionAttempts(loopName: string, index: number): void
+  resetSectionForRewind(loopName: string, index: number): void
+  setCurrentSectionIndex(loopName: string, index: number): void
+  setFinalAuditDone(loopName: string, done: boolean): void
+  incrementFinalAuditAttempts(loopName: string): number
+  startSection(loopName: string, index: number): void
+  setDecompositionStatus(loopName: string, status: LoopState['decompositionStatus']): void
+  setDecompositionSessionId(loopName: string, sessionId: string | null): void
 }
 
 export function rowToLoopState(row: LoopRow, large: LoopLargeFields | null): LoopState {
@@ -116,6 +142,13 @@ export function rowToLoopState(row: LoopRow, large: LoopLargeFields | null): Loo
     auditorModel: row.auditorModel ?? undefined,
     workspaceId: row.workspaceId ?? undefined,
     hostSessionId: row.hostSessionId ?? undefined,
+    decompositionStatus: row.decompositionStatus,
+    decompositionMode: row.decompositionMode,
+    decompositionSessionId: row.decompositionSessionId,
+    currentSectionIndex: row.currentSectionIndex,
+    totalSections: row.totalSections,
+    finalAuditDone: row.finalAuditDone === 1,
+    finalAuditAttempts: row.finalAuditAttempts,
   }
 }
 
@@ -128,6 +161,7 @@ export function createLoopService(
   loopConfig?: LoopConfig,
   notify?: LoopChangeNotifier,
   v2Client?: OpencodeClient,
+  sectionPlansRepo?: SectionPlansRepo,
 ): LoopService {
   const notifyLoopChange: LoopChangeNotifier = notify ?? (() => {})
 
@@ -157,6 +191,13 @@ export function createLoopService(
       completionSummary: state.completionSummary ?? null,
       workspaceId: state.workspaceId ?? null,
       hostSessionId: state.hostSessionId ?? null,
+      decompositionStatus: state.decompositionStatus,
+      decompositionMode: state.decompositionMode,
+      decompositionSessionId: state.decompositionSessionId,
+      currentSectionIndex: state.currentSectionIndex,
+      totalSections: state.totalSections,
+      finalAuditDone: state.finalAuditDone ? 1 : 0,
+      finalAuditAttempts: state.finalAuditAttempts,
     }
   }
 
@@ -215,7 +256,7 @@ export function createLoopService(
     return loopsRepo.getBySessionId(projectId, sessionId)?.loopName ?? null
   }
 
-  function replaceSession(name: string, opts: { newSessionId: string; phase: 'coding' | 'auditing'; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void {
+  function replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void {
     const state = getAnyState(name)
     loopsRepo.replaceSession(projectId, name, {
       sessionId: opts.newSessionId,
@@ -229,6 +270,10 @@ export function createLoopService(
   }
 
   function buildContinuationPrompt(state: LoopState, auditFindings?: string): string {
+    if (state.totalSections > 0) {
+      return buildSectionContinuationPrompt(state, auditFindings || '')
+    }
+
     let systemLine = `Loop iteration ${String(state.iteration)}`
 
     if (state.maxIterations > 0) {
@@ -281,6 +326,15 @@ export function createLoopService(
   }
 
   function buildAuditPrompt(state: LoopState): string {
+    if (state.totalSections > 0) {
+      // Final-audit window: use the final-audit prompt for sectioned loops
+      if (state.phase === 'final_auditing') {
+        return buildFinalAuditPrompt(state)
+      }
+      // Otherwise, use section-specific audit prompt
+      return buildSectionAuditPrompt(state)
+    }
+
     const branchInfo = state.worktreeBranch ? ` (branch: ${state.worktreeBranch})` : ''
     const planText = getPlanTextForState(state) ?? 'Plan not found in plan store.'
     const reviewFindings = formatReviewFindings(state.loopName)
@@ -507,13 +561,13 @@ export function createLoopService(
     notifyLoopChange('error', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
-  function setPhase(name: string, phase: 'coding' | 'auditing'): void {
+  function setPhase(name: string, phase: LoopState['phase']): void {
     const state = getAnyState(name)
     loopsRepo.updatePhase(projectId, name, phase)
     notifyLoopChange('phase', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
-  function setPhaseAndResetError(name: string, phase: 'coding' | 'auditing'): void {
+  function setPhaseAndResetError(name: string, phase: LoopState['phase']): void {
     const state = getAnyState(name)
     loopsRepo.setPhaseAndResetError(projectId, name, phase)
     notifyLoopChange('phase', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
@@ -562,6 +616,209 @@ export function createLoopService(
     notifyLoopChange('workspace', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
+  function getSectionPlan(state: LoopState, index: number): SectionPlanRow | null {
+    if (!sectionPlansRepo) return null
+    return sectionPlansRepo.get(projectId, state.loopName, index)
+  }
+
+  function getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[] {
+    if (!sectionPlansRepo) return []
+    const completed = sectionPlansRepo.listCompleted(projectId, state.loopName)
+    return completed.map(s => ({
+      index: s.sectionIndex,
+      title: s.title,
+      summaryDone: s.summaryDone,
+      summaryDeviations: s.summaryDeviations,
+      summaryFollowUps: s.summaryFollowUps,
+    }))
+  }
+
+  function parseSectionSummary(text: string): { done: string | null; deviations: string | null; followUps: string | null } | null {
+    const markerRegex = /<!--\s*section-summary:start\s*-->\n([\s\S]*?)\n<!--\s*section-summary:end\s*-->/g
+    const match = markerRegex.exec(text)
+    if (!match) return null
+
+    const body = match[1]
+    const doneMatch = body.match(/### Done\s*\n([\s\S]*?)(?=### |$)/)
+    const devMatch = body.match(/### Deviations\s*\n([\s\S]*?)(?=### |$)/)
+    const followMatch = body.match(/### Follow-ups\s*\n([\s\S]*?)(?=### |$)/)
+
+    return {
+      done: doneMatch?.[1]?.trim() || null,
+      deviations: devMatch?.[1]?.trim() || null,
+      followUps: followMatch?.[1]?.trim() || null,
+    }
+  }
+
+  function parseFinalAuditClear(text: string): boolean {
+    return /<!--\s*final-audit:clear\s*-->/.test(text)
+  }
+
+  function buildDecomposerInitialPrompt(state: LoopState): string {
+    const planText = getPlanTextForState(state) ?? 'Plan not found in plan store.'
+    return `[Decomposing master plan into section plans]\n\n${planText}`
+  }
+
+  function buildSectionInitialPrompt(state: LoopState): string {
+    const idx = state.currentSectionIndex
+    const total = state.totalSections
+    const iter = state.iteration
+    const maxIter = state.maxIterations
+    const section = getSectionPlan(state, idx)
+    if (!section) return ''
+
+    const digest = getCompletedSectionDigest(state)
+    let header = `[Loop section ${idx + 1}/${total} -- iteration ${iter}/${maxIter}]`
+
+    if (digest.length > 0) {
+      const sectionsSummary = digest.map(s => {
+        let parts = `## Section ${s.index + 1}: ${s.title}`
+        if (s.summaryDone) parts += `\n### Done\n${s.summaryDone}`
+        if (s.summaryDeviations) parts += `\n### Deviations\n${s.summaryDeviations}`
+        if (s.summaryFollowUps) parts += `\n### Follow-ups\n${s.summaryFollowUps}`
+        return parts
+      }).join('\n\n')
+      header += `\n\n### Prior Sections' Summaries\n${sectionsSummary}`
+    }
+
+    header += `\n\n## Section plan\n${section.content}`
+
+    return header
+  }
+
+  function buildSectionAuditPrompt(state: LoopState): string {
+    const idx = state.currentSectionIndex
+    const total = state.totalSections
+    const section = getSectionPlan(state, idx)
+    if (!section) return ''
+
+    const digest = getCompletedSectionDigest(state)
+    let header = `[Loop section audit ${idx + 1}/${total}]`
+
+    if (digest.length > 0) {
+      const sectionsSummary = digest.map(s => {
+        let parts = `## Section ${s.index + 1}: ${s.title}`
+        if (s.summaryDone) parts += `\n### Done\n${s.summaryDone}`
+        if (s.summaryDeviations) parts += `\n### Deviations\n${s.summaryDeviations}`
+        if (s.summaryFollowUps) parts += `\n### Follow-ups\n${s.summaryFollowUps}`
+        return parts
+      }).join('\n\n')
+      header += `\n\n### Prior Sections' Summaries\n${sectionsSummary}`
+    }
+
+    header += `\n\n## Section under audit\n${section.content}`
+
+    header += `\n\n---\nAudit instructions:\n- Use review-read to see findings for this section.\n- Delete resolved findings.\n- Write severity: bug findings for unmet acceptance criteria or failed verification (defaults to current section_index).\n- When the section is clear, end your response with:\n<!-- section-summary:start -->\n### Done\n- bullets describing what was implemented\n### Deviations\n- bullets describing places implementation differs from this section plan, with reasons (or "none")\n### Follow-ups\n- bullets noting items deferred to later sections (or "none")\n<!-- section-summary:end -->`
+
+    return header
+  }
+
+  function buildSectionContinuationPrompt(state: LoopState, auditText: string): string {
+    const idx = state.currentSectionIndex
+    const total = state.totalSections
+    const iter = state.iteration
+    const maxIter = state.maxIterations
+    const section = getSectionPlan(state, idx)
+    if (!section) return ''
+
+    const digest = getCompletedSectionDigest(state)
+    let header = `[Loop section ${idx + 1}/${total} -- iteration ${iter}/${maxIter} (continuation)]`
+
+    if (digest.length > 0) {
+      const sectionsSummary = digest.map(s => {
+        let parts = `## Section ${s.index + 1}: ${s.title}`
+        if (s.summaryDone) parts += `\n### Done\n${s.summaryDone}`
+        if (s.summaryDeviations) parts += `\n### Deviations\n${s.summaryDeviations}`
+        if (s.summaryFollowUps) parts += `\n### Follow-ups\n${s.summaryFollowUps}`
+        return parts
+      }).join('\n\n')
+      header += `\n\n### Prior Sections' Summaries\n${sectionsSummary}`
+    }
+
+    header += `\n\n## Section plan\n${section.content}`
+    header += `\n\n---\n## Auditor feedback from previous attempt\n${auditText}`
+
+    const outstandingFindings = getOutstandingFindings(state.loopName, 'bug')
+      .filter(f => f.sectionIndex === idx)
+    if (outstandingFindings.length > 0) {
+      const findingKeys = outstandingFindings.map(f => `- \`${f.file}:${f.line}\``).join('\n')
+      header += `\n\n---\n## Outstanding findings\n${findingKeys}`
+    }
+
+    return header
+  }
+
+  function buildFinalAuditPrompt(state: LoopState): string {
+    const attempts = state.finalAuditAttempts + 1
+    const planText = getPlanTextForState(state) ?? 'Plan not found in plan store.'
+    const digest = getCompletedSectionDigest(state)
+
+    let header = `[Final integration audit -- pass ${attempts}/${MAX_RETRIES + 1}]`
+    header += `\n\n## Master Plan\n${planText}`
+
+    if (digest.length > 0) {
+      const sectionsSummary = digest.map(s => {
+        let parts = `## Section ${s.index + 1}: ${s.title}`
+        if (s.summaryDone) parts += `\n### Done\n${s.summaryDone}`
+        if (s.summaryDeviations) parts += `\n### Deviations\n${s.summaryDeviations}`
+        if (s.summaryFollowUps) parts += `\n### Follow-ups\n${s.summaryFollowUps}`
+        return parts
+      }).join('\n\n')
+      header += `\n\n### Completed Sections' Summaries\n${sectionsSummary}`
+    }
+
+    header += `\n\n---\nFinal audit instructions:\n- Verify the master plan's top-level Verification commands and acceptance criteria.\n- Use the per-section ### Deviations entries to interpret discrepancies. If a discrepancy is explained by a deviation, accept it unless it materially breaks the master plan's top-level Verification.\n- Write findings with sectionIndex pointing to the section you believe contains the bug. Use crossSection: true only when the bug spans multiple sections.\n- When the implementation is acceptable, end your response with:\n<!-- final-audit:clear -->`
+
+    return header
+  }
+
+  function completeSection(loopName: string, index: number, summary: { done: string | null; deviations: string | null; followUps: string | null }): void {
+    if (!sectionPlansRepo) return
+    sectionPlansRepo.setStatus(projectId, loopName, index, 'completed')
+    sectionPlansRepo.setSummary(projectId, loopName, index, {
+      done: summary.done ?? undefined,
+      deviations: summary.deviations ?? undefined,
+      followUps: summary.followUps ?? undefined,
+    })
+    sectionPlansRepo.setCompletedAt(projectId, loopName, index, Date.now())
+  }
+
+  function incrementSectionAttempts(loopName: string, index: number): void {
+    if (!sectionPlansRepo) return
+    sectionPlansRepo.incrementAttempts(projectId, loopName, index)
+  }
+
+  function resetSectionForRewind(loopName: string, index: number): void {
+    if (!sectionPlansRepo) return
+    sectionPlansRepo.resetForRewind(projectId, loopName, index)
+  }
+
+  function setCurrentSectionIndex(loopName: string, index: number): void {
+    loopsRepo.setCurrentSectionIndex(projectId, loopName, index)
+  }
+
+  function setFinalAuditDone(loopName: string, done: boolean): void {
+    loopsRepo.setFinalAuditDone(projectId, loopName, done)
+  }
+
+  function incrementFinalAuditAttempts(loopName: string): number {
+    return loopsRepo.incrementFinalAuditAttempts(projectId, loopName)
+  }
+
+  function startSection(loopName: string, index: number): void {
+    if (!sectionPlansRepo) return
+    sectionPlansRepo.setStatus(projectId, loopName, index, 'in_progress')
+    sectionPlansRepo.setStartedAt(projectId, loopName, index, Date.now())
+  }
+
+  function setDecompositionStatus(loopName: string, status: LoopState['decompositionStatus']): void {
+    loopsRepo.setDecompositionStatus(projectId, loopName, status)
+  }
+
+  function setDecompositionSessionId(loopName: string, sessionId: string | null): void {
+    loopsRepo.setDecompositionSessionId(projectId, loopName, sessionId)
+  }
+
   return {
     getActiveState,
     getAnyState,
@@ -594,6 +851,24 @@ export function createLoopService(
     clearWorkspaceId,
     setWorkspaceId,
     replaceSession,
+    getSectionPlan,
+    getCompletedSectionDigest,
+    parseSectionSummary,
+    parseFinalAuditClear,
+    buildDecomposerInitialPrompt,
+    buildSectionInitialPrompt,
+    buildSectionAuditPrompt,
+    buildSectionContinuationPrompt,
+    buildFinalAuditPrompt,
+    completeSection,
+    incrementSectionAttempts,
+    resetSectionForRewind,
+    setCurrentSectionIndex,
+    setFinalAuditDone,
+    incrementFinalAuditAttempts,
+    startSection,
+    setDecompositionStatus,
+    setDecompositionSessionId,
   }
 }
 

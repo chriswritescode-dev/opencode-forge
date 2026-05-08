@@ -15,8 +15,9 @@ function createTestDb(): Database {
       severity     TEXT NOT NULL CHECK(severity IN ('bug','warning')),
       description  TEXT NOT NULL,
       scenario     TEXT,
+      section_index INTEGER,
       created_at   INTEGER NOT NULL,
-      PRIMARY KEY (project_id, loop_name, file, line)
+      PRIMARY KEY (project_id, loop_name, file, line, section_index)
     )
   `)
   db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_loop_name ON review_findings(project_id, loop_name)`)
@@ -66,7 +67,7 @@ describe('ReviewFindingsRepo', () => {
     expect(findings[0].createdAt).toBeGreaterThan(now - 1000)
   })
 
-  test('returns conflict on duplicate file:line in same loop', () => {
+  test('returns conflict on duplicate file:line in same loop and same section', () => {
     repo.write({
       projectId,
       file: 'src/example.ts',
@@ -75,6 +76,7 @@ describe('ReviewFindingsRepo', () => {
       description: 'First finding',
       scenario: 'Scenario 1',
       loopName: 'alpha',
+      sectionIndex: 0,
     })
 
     const result = repo.write({
@@ -85,12 +87,41 @@ describe('ReviewFindingsRepo', () => {
       description: 'Second finding',
       scenario: 'Scenario 2',
       loopName: 'alpha',
+      sectionIndex: 0,
     })
 
     expect(result.ok).toBe(false)
     expect(result.conflict).toBe(true)
     expect(repo.listAll(projectId)).toHaveLength(1)
     expect(repo.listAll(projectId)[0].description).toBe('First finding')
+  })
+
+  test('allows same file:line in different sections', () => {
+    repo.write({
+      projectId,
+      file: 'src/example.ts',
+      line: 12,
+      severity: 'bug',
+      description: 'Section 0 finding',
+      scenario: 'Scenario 1',
+      loopName: 'alpha',
+      sectionIndex: 0,
+    })
+
+    const result = repo.write({
+      projectId,
+      file: 'src/example.ts',
+      line: 12,
+      severity: 'warning',
+      description: 'Section 1 finding',
+      scenario: 'Scenario 2',
+      loopName: 'alpha',
+      sectionIndex: 1,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.conflict).toBeUndefined()
+    expect(repo.listAll(projectId)).toHaveLength(2)
   })
 
   test('allows same file:line on different loop names', () => {
@@ -198,5 +229,92 @@ describe('ReviewFindingsRepo', () => {
     const remaining = repo.listAll(projectId)
     expect(remaining).toHaveLength(1)
     expect(remaining[0].loopName).toBe('beta')
+  })
+
+  test('duplicate NULL section_index on same file:line produces conflict', () => {
+    repo.write({
+      projectId,
+      file: 'src/a.ts',
+      line: 10,
+      severity: 'bug',
+      description: 'First cross-section finding',
+      scenario: null,
+      loopName: 'alpha',
+      sectionIndex: null,
+    })
+
+    const result = repo.write({
+      projectId,
+      file: 'src/a.ts',
+      line: 10,
+      severity: 'warning',
+      description: 'Second cross-section finding',
+      scenario: null,
+      loopName: 'alpha',
+      sectionIndex: null,
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.conflict).toBe(true)
+    expect(repo.listAll(projectId)).toHaveLength(1)
+    expect(repo.listAll(projectId)[0].description).toBe('First cross-section finding')
+  })
+
+  test('NULL section_index deduplication works after COALESCE fix', () => {
+    const r1 = repo.write({
+      projectId,
+      file: 'src/a.ts',
+      line: 10,
+      severity: 'bug',
+      description: 'Cross-section 1',
+      scenario: null,
+      loopName: 'alpha',
+      sectionIndex: null,
+    })
+    expect(r1.ok).toBe(true)
+
+    const r2 = repo.write({
+      projectId,
+      file: 'src/a.ts',
+      line: 10,
+      severity: 'bug',
+      description: 'Cross-section 2',
+      scenario: null,
+      loopName: 'alpha',
+      sectionIndex: null,
+    })
+    expect(r2.ok).toBe(false)
+    expect(r2.conflict).toBe(true)
+
+    const r3 = repo.write({
+      projectId,
+      file: 'src/a.ts',
+      line: 10,
+      severity: 'warning',
+      description: 'Section 0 finding',
+      scenario: null,
+      loopName: 'alpha',
+      sectionIndex: 0,
+    })
+    expect(r3.ok).toBe(true)
+    expect(repo.listAll(projectId)).toHaveLength(2)
+  })
+
+  test('delete with null sectionIndex removes sentinel rows', () => {
+    repo.write({
+      projectId,
+      file: 'src/a.ts',
+      line: 10,
+      severity: 'bug',
+      description: 'To delete',
+      scenario: null,
+      loopName: 'alpha',
+      sectionIndex: null,
+    })
+    expect(repo.listAll(projectId)).toHaveLength(1)
+
+    const deleted = repo.delete(projectId, 'src/a.ts', 10, { loopName: 'alpha', sectionIndex: null })
+    expect(deleted).toBe(true)
+    expect(repo.listAll(projectId)).toHaveLength(0)
   })
 })

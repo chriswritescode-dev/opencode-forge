@@ -112,6 +112,22 @@ export interface AgentOverrideConfig {
 }
 
 /**
+ * Configuration for plan decomposition into sections.
+ */
+export interface DecomposerConfig {
+  /** Enable decomposition. Defaults to true. */
+  enabled?: boolean
+  /** Decomposition mode: 'agent' (LLM) or 'deterministic' (parser). Defaults to 'agent'. */
+  mode?: 'agent' | 'deterministic'
+  /** Model override for the decomposer agent. Ignored in deterministic mode. */
+  model?: string
+  /** Fallback when deterministic parse fails: 'legacy' (skip decomposition) or 'agent' (try agent mode). Defaults to 'legacy'. */
+  onParseFailure?: 'legacy' | 'agent'
+  /** Maximum number of sections. Defaults to 12. */
+  maxSections?: number
+}
+
+/**
  * Complete plugin configuration for opencode-forge.
  */
 export interface PluginConfig {
@@ -139,4 +155,6 @@ export interface PluginConfig {
   agents?: Record<string, AgentOverrideConfig>
   /** Sandbox execution configuration. */
   sandbox?: SandboxConfig
+  /** Decomposer configuration for plan section decomposition. */
+  decomposer?: DecomposerConfig
 }

@@ -40,6 +40,7 @@ export async function handleWriteFinding(
     description: parsed.description,
     scenario: parsed.scenario ?? null,
     loopName: parsed.loopName ?? null,
+    sectionIndex: null,
   })
 
   if (!result.ok) {

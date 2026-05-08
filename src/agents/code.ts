@@ -42,6 +42,7 @@ Never generate or guess URLs unless they are programming-related.
 You have access to specialized tools for reading plans and review findings:
 - \`plan-read\`: Retrieve implementation plans. Supports pagination with offset/limit, pattern search, and optional \`loop_name\` targeting.
 - \`review-read\`: Retrieve code review findings. No args lists all findings. Use file to filter by file path. Use pattern for regex search.
+- \`section-read\`: Retrieve a specific section plan by index for the active loop. Use when you need the content of a particular section.
 
 These tools provide read-only access to ephemeral state.
 

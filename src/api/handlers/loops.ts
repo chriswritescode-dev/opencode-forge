@@ -5,9 +5,30 @@ import { buildStartLoopCommand } from '../../services/execution'
 import { buildService } from './_shared'
 import type { LoopInfo } from '../../utils/tui-models'
 import type { LoopRow } from '../../storage/repos/loops-repo'
+import type { SectionPlanRow } from '../../storage/repos/section-plans-repo'
 
-function loopRowToLoopInfo(row: LoopRow): LoopInfo & { loopName: string; status: string } {
-  return {
+const cap200 = (s: string | null | undefined): string | null =>
+  s ? (s.length > 200 ? s.slice(0, 200) : s) : null
+
+function buildSectionViews(sectionPlans: SectionPlanRow[]): LoopInfo['sections'] {
+  return sectionPlans.map((sp) => ({
+    index: sp.sectionIndex,
+    title: sp.title,
+    status: sp.status,
+    attempts: sp.attempts,
+    startedAt: sp.startedAt,
+    completedAt: sp.completedAt,
+    summaryDone: cap200(sp.summaryDone),
+    summaryDeviations: cap200(sp.summaryDeviations),
+    summaryFollowUps: cap200(sp.summaryFollowUps),
+  }))
+}
+
+function loopRowToLoopInfo(
+  row: LoopRow,
+  sectionPlans?: SectionPlanRow[]
+): LoopInfo & { loopName: string; status: string } {
+  const base = {
     loopName: row.loopName,
     name: row.loopName,
     status: row.status === 'running' ? 'running' : (row.terminationReason ?? 'unknown'),
@@ -26,7 +47,16 @@ function loopRowToLoopInfo(row: LoopRow): LoopInfo & { loopName: string; status:
     auditorModel: row.auditorModel ?? undefined,
     workspaceId: row.workspaceId ?? undefined,
     hostSessionId: row.hostSessionId ?? undefined,
+    decompositionStatus: row.decompositionStatus,
+    decompositionMode: row.decompositionMode,
+    currentSectionIndex: row.currentSectionIndex,
+    totalSections: row.totalSections,
+    finalAuditAttempts: row.finalAuditAttempts,
   }
+  if (sectionPlans && sectionPlans.length > 0) {
+    return { ...base, sections: buildSectionViews(sectionPlans) }
+  }
+  return base
 }
 
 export async function handleListLoops(
@@ -36,8 +66,11 @@ export async function handleListLoops(
 ): Promise<unknown> {
   const { projectId } = params
   const rows = deps.ctx.loopsRepo.listAll(projectId)
-  
-  const loops = rows.map(loopRowToLoopInfo)
+
+  const loops = rows.map((row) => {
+    const plans = deps.ctx.sectionPlansRepo.list(projectId, row.loopName)
+    return loopRowToLoopInfo(row, plans.length > 0 ? plans : undefined)
+  })
   const active = loops.filter((entry) => entry.active)
   const recent = loops.filter((entry) => !entry.active)
 
@@ -56,7 +89,8 @@ export async function handleGetLoop(
     throw new ForgeRpcError('not_found', 'loop not found')
   }
 
-  return loopRowToLoopInfo(row)
+  const plans = deps.ctx.sectionPlansRepo.list(projectId, loopName)
+  return loopRowToLoopInfo(row, plans.length > 0 ? plans : undefined)
 }
 
 export async function handleStartLoop(

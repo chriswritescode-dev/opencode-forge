@@ -177,3 +177,40 @@ test('review findings branch scope is dropped when migration 119 was already rec
 
   migrated.close()
 })
+
+test('review findings section_index is in primary key after migration 125', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const cols = db.prepare('PRAGMA table_info(review_findings)').all() as Array<{ name: string; pk: number }>
+  expect(cols.find((col) => col.name === 'section_index')?.pk).toBe(5)
+  expect(cols.find((col) => col.name === 'project_id')?.pk).toBe(1)
+  expect(cols.find((col) => col.name === 'loop_name')?.pk).toBe(2)
+  expect(cols.find((col) => col.name === 'file')?.pk).toBe(3)
+  expect(cols.find((col) => col.name === 'line')?.pk).toBe(4)
+
+  db.close()
+})
+
+test('migration 125 normalizes NULL section_index to -1 sentinel', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  // The review_findings table after migration 125 uses COALESCE(?, -1) to normalize NULL to -1.
+  // Simulate cross-section writes via COALESCE (as the write function does).
+  db.prepare(`
+    INSERT INTO review_findings (project_id, loop_name, file, line, severity, description, scenario, section_index, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, -1), ?)
+  `).run('proj', 'loop1', 'src/a.ts', 10, 'bug', 'desc', 'sc', null, Date.now())
+  db.prepare(`
+    INSERT INTO review_findings (project_id, loop_name, file, line, severity, description, scenario, section_index, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, -1), ?)
+  `).run('proj', 'loop1', 'src/b.ts', 20, 'warning', 'desc2', 'sc2', null, Date.now())
+
+  const rows = db.prepare('SELECT section_index FROM review_findings WHERE project_id = ? AND loop_name = ?').all('proj', 'loop1') as Array<{ section_index: number | null }>
+  for (const row of rows) {
+    expect(row.section_index).toBe(-1)
+  }
+
+  db.close()
+})

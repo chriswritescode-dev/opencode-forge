@@ -72,6 +72,7 @@ export function createPlanExecuteTools(ctx: ToolContext): Record<string, ReturnT
           loopService: ctx.loopService,
           loopHandler: ctx.loopHandler,
           sandboxManager: ctx.sandboxManager,
+          sectionPlansRepo: ctx.sectionPlansRepo,
         })
 
         if (args.inPlace) {

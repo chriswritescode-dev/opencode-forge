@@ -143,6 +143,13 @@ function mapRemoteLoop(input: Record<string, unknown>): LoopInfo {
     auditorModel: input.auditorModel as string | undefined,
     workspaceId: input.workspaceId as string | undefined,
     hostSessionId: input.hostSessionId as string | undefined,
+    currentSectionIndex: input.currentSectionIndex as number | undefined,
+    totalSections: input.totalSections as number | undefined,
+    sections: Array.isArray(input.sections) ? input.sections as LoopInfo['sections'] : undefined,
+    decompositionStatus: input.decompositionStatus as LoopInfo['decompositionStatus'],
+    decompositionMode: input.decompositionMode as LoopInfo['decompositionMode'],
+    finalAuditDone: input.finalAuditDone as boolean | undefined,
+    finalAuditAttempts: input.finalAuditAttempts as number | undefined,
   }
 }
 

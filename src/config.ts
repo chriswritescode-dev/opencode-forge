@@ -103,6 +103,16 @@ export function createConfigHandler(
         }
       }
     }
+
+    // Honor decomposer.model config when registering the decomposer agent
+    const decomposerConfig = config.decomposer as Record<string, unknown> | undefined
+    if (decomposerConfig?.model && effectiveAgents['decomposer' as AgentRole]) {
+      effectiveAgents['decomposer' as AgentRole] = {
+        ...effectiveAgents['decomposer' as AgentRole],
+        defaultModel: decomposerConfig.model as string,
+      }
+    }
+
     const agentConfigs = createAgentConfigs(effectiveAgents)
 
     const userAgentConfigs = config.agent as Record<string, AgentConfig> | undefined

@@ -3,7 +3,7 @@ import { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2'
 import { buildAgents } from './agents'
 import { createConfigHandler } from './config'
 import { createSessionHooks, createLoopEventHandler } from './hooks'
-import { initializeDatabase, resolveDataDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo } from './storage'
+import { initializeDatabase, resolveDataDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo } from './storage'
 import { createLoopService } from './services/loop'
 import { loadPluginConfig } from './setup'
 import { resolveLogPath } from './storage'
@@ -23,6 +23,7 @@ import { createPermissionAskHandler } from './hooks/permission-ask'
 import { getProjectRegistry } from './api/project-registry'
 import type { ProjectRegistry } from './api/project-registry'
 import { createPlanCaptureEventHook } from './hooks/plan-capture'
+import { createSectionCaptureHook } from './hooks/section-capture'
 import { createBusRpcEventHook } from './api/bus-rpc'
 import { encodeEvent } from './api/bus-protocol'
 import type { LoopChangeNotifier } from './services/loop'
@@ -226,6 +227,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const sectionPlansRepo = createSectionPlansRepo(db)
 
     const notifyLoopChange: LoopChangeNotifier = (reason, loopName, hint) => {
       const targetDirectories = Array.from(new Set([
@@ -254,7 +256,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       }
     }
 
-    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, config.loop, notifyLoopChange, v2)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, config.loop, notifyLoopChange, v2, sectionPlansRepo)
 
     let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
     if (config.sandbox?.mode === 'docker') {
@@ -351,6 +353,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       plansRepo,
       reviewFindingsRepo,
       loopsRepo,
+      sectionPlansRepo,
     }
 
     registry.register(ctx)
@@ -376,6 +379,14 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const toolExecuteAfterHook = createToolExecuteAfterHook(ctx)
     const planApprovalEventHook = createPlanApprovalEventHook(ctx)
     const planCaptureEventHook = createPlanCaptureEventHook(ctx)
+    const sectionCaptureEventHook = createSectionCaptureHook({
+      loopsRepo,
+      sectionPlansRepo,
+      logger,
+      config: () => config.decomposer ?? { enabled: true, mode: 'agent', onParseFailure: 'legacy', maxSections: 12 },
+      projectId,
+      v2Client: v2,
+    })
     const sandboxBeforeHook = createSandboxToolBeforeHook({
       resolveSandboxForSession,
       logger,
@@ -420,9 +431,10 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           await cleanup()
           return
         }
+        await sectionCaptureEventHook(eventInput)
+        await planCaptureEventHook(eventInput)
         await loopHandler.onEvent(eventInput)
         await sessionHooks.onEvent(eventInput)
-        await planCaptureEventHook(eventInput)
         await planApprovalEventHook(eventInput)
         await busRpcHook(eventInput)
       },

@@ -75,7 +75,8 @@ function createTestDb(): Database {
       description  TEXT NOT NULL,
       scenario     TEXT,
       created_at   INTEGER NOT NULL,
-      PRIMARY KEY (project_id, loop_name, file, line)
+      section_index INTEGER,
+      PRIMARY KEY (project_id, loop_name, file, line, section_index)
     )
   `)
   db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_loop_name ON review_findings(project_id, loop_name)`)
