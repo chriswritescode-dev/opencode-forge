@@ -118,10 +118,16 @@ describe('Agent definitions', () => {
 
     test('decomposer agent prompt contains section marker instructions', () => {
       const prompt = decomposerAgent.systemPrompt
-      expect(prompt).toContain('forge-section:start')
-      expect(prompt).toContain('forge-section:end')
+      expect(prompt).toContain('<!-- forge-section:start -->')
+      expect(prompt).toContain('<!-- forge-section:end -->')
       expect(prompt).toContain('Section Plan')
       expect(prompt).toContain('Acceptance Criteria')
+    })
+
+    test('decomposer agent prompt does not contain old attribute marker format', () => {
+      const prompt = decomposerAgent.systemPrompt
+      expect(prompt).not.toMatch(/index=\d+\s+title="/)
+      expect(prompt).not.toContain('index=')
     })
   })
 

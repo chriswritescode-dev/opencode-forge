@@ -5,6 +5,7 @@ import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo, ReviewFindingRow } from '../storage/repos/review-findings-repo'
 import type { SectionPlansRepo, SectionPlanRow } from '../storage/repos/section-plans-repo'
 import { teardownWorktreeArtifacts } from '../utils/worktree-cleanup'
+import { SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../utils/section-summary'
 
 export type LoopChangeReason =
   | 'insert' | 'delete' | 'terminate'
@@ -96,6 +97,7 @@ export interface LoopService {
   terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
   replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void
   getSectionPlan(state: LoopState, index: number): SectionPlanRow | null
+  getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null
   getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[]
   parseSectionSummary(text: string): { done: string | null; deviations: string | null; followUps: string | null } | null
   parseFinalAuditClear(text: string): boolean
@@ -113,6 +115,8 @@ export interface LoopService {
   startSection(loopName: string, index: number): void
   setDecompositionStatus(loopName: string, status: LoopState['decompositionStatus']): void
   setDecompositionSessionId(loopName: string, sessionId: string | null): void
+  bulkInsertSections(loopName: string, sections: { index: number; title: string; content: string }[]): void
+  setTotalSections(loopName: string, total: number): void
 }
 
 export function rowToLoopState(row: LoopRow, large: LoopLargeFields | null): LoopState {
@@ -621,6 +625,11 @@ export function createLoopService(
     return sectionPlansRepo.get(projectId, state.loopName, index)
   }
 
+  function getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null {
+    if (!sectionPlansRepo) return null
+    return sectionPlansRepo.getNextIncomplete(projectId, state.loopName)
+  }
+
   function getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[] {
     if (!sectionPlansRepo) return []
     const completed = sectionPlansRepo.listCompleted(projectId, state.loopName)
@@ -634,20 +643,52 @@ export function createLoopService(
   }
 
   function parseSectionSummary(text: string): { done: string | null; deviations: string | null; followUps: string | null } | null {
-    const markerRegex = /<!--\s*section-summary:start\s*-->\n([\s\S]*?)\n<!--\s*section-summary:end\s*-->/g
-    const match = markerRegex.exec(text)
-    if (!match) return null
+    const lines = text.split('\n').map(l => l.replace(/\r$/, ''))
+    let startLine = -1
+    let endLine = -1
 
-    const body = match[1]
-    const doneMatch = body.match(/### Done\s*\n([\s\S]*?)(?=### |$)/)
-    const devMatch = body.match(/### Deviations\s*\n([\s\S]*?)(?=### |$)/)
-    const followMatch = body.match(/### Follow-ups\s*\n([\s\S]*?)(?=### |$)/)
-
-    return {
-      done: doneMatch?.[1]?.trim() || null,
-      deviations: devMatch?.[1]?.trim() || null,
-      followUps: followMatch?.[1]?.trim() || null,
+    for (let i = 0; i < lines.length; i++) {
+      const trimmed = lines[i].trim()
+      if (trimmed === SECTION_SUMMARY_START_MARKER) {
+        startLine = i
+        break
+      }
     }
+
+    if (startLine !== -1) {
+      for (let i = startLine + 1; i < lines.length; i++) {
+        const trimmed = lines[i].trim()
+        if (trimmed === SECTION_SUMMARY_END_MARKER) {
+          endLine = i
+          break
+        }
+      }
+    }
+
+    if (startLine === -1 || endLine === -1 || endLine <= startLine) return null
+
+    const innerLines = lines.slice(startLine + 1, endLine)
+    const sections: Record<string, string[]> = {}
+    let currentSection: string | null = null
+
+    for (const line of innerLines) {
+      const trimmed = line.trim()
+      const knownHeadingMatch = trimmed.match(/^###\s+(Done|Deviations|Follow-ups)\s*$/)
+      if (knownHeadingMatch) {
+        currentSection = knownHeadingMatch[1]
+        sections[currentSection] = []
+      } else if (/^###\s+/.test(trimmed)) {
+        currentSection = null
+      } else if (currentSection && trimmed.length > 0) {
+        sections[currentSection].push(trimmed)
+      }
+    }
+
+    const done = sections['Done']?.join('\n').trim() || null
+    const deviations = sections['Deviations']?.join('\n').trim() || null
+    const followUps = sections['Follow-ups']?.join('\n').trim() || null
+
+    return { done, deviations, followUps }
   }
 
   function parseFinalAuditClear(text: string): boolean {
@@ -708,7 +749,7 @@ export function createLoopService(
 
     header += `\n\n## Section under audit\n${section.content}`
 
-    header += `\n\n---\nAudit instructions:\n- Use review-read to see findings for this section.\n- Delete resolved findings.\n- Write severity: bug findings for unmet acceptance criteria or failed verification (defaults to current section_index).\n- When the section is clear, end your response with:\n<!-- section-summary:start -->\n### Done\n- bullets describing what was implemented\n### Deviations\n- bullets describing places implementation differs from this section plan, with reasons (or "none")\n### Follow-ups\n- bullets noting items deferred to later sections (or "none")\n<!-- section-summary:end -->`
+    header += `\n\n---\nAudit instructions:\n- Use review-read to see findings for this section.\n- Delete resolved findings.\n- Write severity: bug findings for unmet acceptance criteria or failed verification (defaults to current section_index).\n- When the section is clear, end your response with:\n${SECTION_SUMMARY_START_MARKER}\n### Done\n- bullets describing what was implemented\n### Deviations\n- bullets describing places implementation differs from this section plan, with reasons (or "none")\n### Follow-ups\n- bullets noting items deferred to later sections (or "none")\n${SECTION_SUMMARY_END_MARKER}`
 
     return header
   }
@@ -819,6 +860,15 @@ export function createLoopService(
     loopsRepo.setDecompositionSessionId(projectId, loopName, sessionId)
   }
 
+  function bulkInsertSections(loopName: string, sections: { index: number; title: string; content: string }[]): void {
+    if (!sectionPlansRepo) return
+    sectionPlansRepo.bulkInsert({ projectId, loopName, sections })
+  }
+
+  function setTotalSections(loopName: string, total: number): void {
+    loopsRepo.setTotalSections(projectId, loopName, total)
+  }
+
   return {
     getActiveState,
     getAnyState,
@@ -852,6 +902,7 @@ export function createLoopService(
     setWorkspaceId,
     replaceSession,
     getSectionPlan,
+    getNextIncompleteSectionPlan,
     getCompletedSectionDigest,
     parseSectionSummary,
     parseFinalAuditClear,
@@ -869,6 +920,8 @@ export function createLoopService(
     startSection,
     setDecompositionStatus,
     setDecompositionSessionId,
+    bulkInsertSections,
+    setTotalSections,
   }
 }
 

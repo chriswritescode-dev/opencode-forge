@@ -24,7 +24,8 @@ export function createSectionCaptureHook(deps: {
 
       const loop = deps.loopsRepo.getBySessionId(deps.projectId, sessionID)
       if (!loop) return
-      if (loop.decompositionSessionId !== sessionID || loop.decompositionStatus !== 'running') return
+      if (loop.decompositionSessionId !== sessionID) return
+      if (loop.decompositionStatus === 'failed') return
 
       textBuffers.set(sessionID, part.text)
 
@@ -43,6 +44,9 @@ export function createSectionCaptureHook(deps: {
         })
         persistedCounts.set(sessionID, sections.length)
         deps.logger.log(`section-capture: captured ${sections.length} stable sections for session ${sessionID}`)
+        deps.loopsRepo.setDecompositionStatus(deps.projectId, loop.loopName, 'completed')
+        deps.loopsRepo.setTotalSections(deps.projectId, loop.loopName, sections.length)
+        deps.logger.log(`section-capture: streaming completion with ${sections.length} sections for loop ${loop.loopName}`)
       }
     }
 
@@ -55,7 +59,10 @@ export function createSectionCaptureHook(deps: {
 
       const loop = deps.loopsRepo.getBySessionId(deps.projectId, sessionID)
       if (!loop) return
-      if (loop.decompositionSessionId !== sessionID || loop.decompositionStatus !== 'running') return
+      if (loop.decompositionSessionId !== sessionID) return
+
+      const alreadyCompleted = loop.decompositionStatus === 'completed'
+      if (!alreadyCompleted && loop.decompositionStatus !== 'running') return
 
       let text = textBuffers.get(sessionID) ?? ''
 
@@ -107,10 +114,12 @@ export function createSectionCaptureHook(deps: {
       const count = Math.max(persistedCounts.get(sessionID) ?? 0, finalSections.length)
 
       if (count > 0) {
-        deps.loopsRepo.setDecompositionStatus(deps.projectId, loop.loopName, 'completed')
+        if (!alreadyCompleted) {
+          deps.loopsRepo.setDecompositionStatus(deps.projectId, loop.loopName, 'completed')
+        }
         deps.loopsRepo.setTotalSections(deps.projectId, loop.loopName, count)
         deps.logger.log(`section-capture: decomposition completed with ${count} sections for loop ${loop.loopName}`)
-      } else {
+      } else if ((persistedCounts.get(sessionID) ?? 0) === 0 && finalSections.length === 0 && !alreadyCompleted) {
         deps.loopsRepo.setDecompositionStatus(deps.projectId, loop.loopName, 'failed')
         deps.logger.log(`section-capture: no sections found for loop ${loop.loopName}, marking failed`)
       }

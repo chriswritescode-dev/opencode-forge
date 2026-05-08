@@ -7,9 +7,9 @@ export function createSectionReadTool(ctx: ToolContext): ReturnType<typeof tool>
   const { loopService } = ctx
 
   return tool({
-    description: 'Read the current section plan and its status for the active loop session. Returns structured section object.',
+    description: 'Read a section plan and its status for the active loop session. If section_index is omitted, returns the lowest-index incomplete section.',
     args: {
-      section_index: z.number().optional().describe('Section index to read (0-based). If omitted, reads the current section.'),
+      section_index: z.number().optional().describe('Section index to read (0-based). If omitted, reads the lowest-index incomplete section.'),
     },
     execute: async (args, toolCtx) => {
       const sessionId = toolCtx?.sessionID ?? ''
@@ -26,12 +26,19 @@ export function createSectionReadTool(ctx: ToolContext): ReturnType<typeof tool>
         return JSON.stringify({ error: 'No sections available. This loop does not use section-based decomposition.' })
       }
 
-      const idx = args.section_index ?? state.currentSectionIndex
+      const explicitIndex = args.section_index
+      const selectedSection = explicitIndex === undefined
+        ? loopService.getNextIncompleteSectionPlan(state)
+        : null
+
+      const idx = explicitIndex ?? selectedSection?.sectionIndex ?? state.currentSectionIndex
       if (idx < 0 || idx >= state.totalSections) {
         return JSON.stringify({ error: `Invalid section index ${idx}. Valid range: 0-${state.totalSections - 1}` })
       }
 
-      const section = loopService.getSectionPlan(state, idx)
+      const section = explicitIndex === undefined && selectedSection?.sectionIndex === idx
+        ? selectedSection
+        : loopService.getSectionPlan(state, idx)
       if (!section) return JSON.stringify({ error: `Section ${idx} not found in loop "${loopName}".` })
 
       const digest = loopService.getCompletedSectionDigest(state)

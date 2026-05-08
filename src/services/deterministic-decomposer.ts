@@ -6,7 +6,7 @@ export function decomposeDeterministically(planText: string, opts?: { maxSection
   const lines = text.split('\n')
 
   const sections: ParsedSection[] = []
-  const phaseRegex = /^##\s+Phase\s+(\d+):\s*(.+)$/
+  const phaseRegex = /^##\s+(?:Phase|Section)\s+(\d+):\s*(.+)$/
   const phaseIndices: { lineIdx: number; phaseNum: number; title: string }[] = []
 
   for (let i = 0; i < lines.length; i++) {

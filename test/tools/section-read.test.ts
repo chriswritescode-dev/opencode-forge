@@ -257,16 +257,53 @@ describe('section-read tool', () => {
       expect(result.summary_follow_ups).toBeNull()
     })
 
-    test('uses current section index by default when section_index not specified', async () => {
-      insertLoop('test-loop', { totalSections: 3, currentSectionIndex: 1 })
+    test('returns lowest-index pending when currentSectionIndex points later', async () => {
+      insertLoop('test-loop', { totalSections: 3, currentSectionIndex: 2 })
       insertSections('test-loop', 3)
+      const result = parseJson(await executeSectionRead({}, 'test-loop-session'))
+      expect(result.index).toBe(0)
+      expect(result.title).toBe('Section 1')
+      expect(result.content).toBe('Content for section 1')
+    })
+
+    test('returns lowest-index failed before later pending', async () => {
+      insertLoop('test-loop', { totalSections: 2, currentSectionIndex: 1 })
+      insertSections('test-loop', 2)
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'failed')
+      const result = parseJson(await executeSectionRead({}, 'test-loop-session'))
+      expect(result.index).toBe(0)
+      expect(result.status).toBe('failed')
+    })
+
+    test('skips completed sections', async () => {
+      insertLoop('test-loop', { totalSections: 3, currentSectionIndex: 2 })
+      insertSections('test-loop', 3)
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'completed')
       const result = parseJson(await executeSectionRead({}, 'test-loop-session'))
       expect(result.index).toBe(1)
       expect(result.title).toBe('Section 2')
-      expect(result.content).toBe('Content for section 2')
     })
 
-    test('includes summary fields when section has been completed', async () => {
+    test('falls back to state.currentSectionIndex when all sections are completed', async () => {
+      insertLoop('test-loop', { totalSections: 2, currentSectionIndex: 1 })
+      insertSections('test-loop', 2)
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'completed')
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 1, 'completed')
+      const result = parseJson(await executeSectionRead({}, 'test-loop-session'))
+      expect(result.index).toBe(1)
+      expect(result.title).toBe('Section 2')
+    })
+
+    test('explicit section_index still returns the requested section even if another incomplete section exists', async () => {
+      insertLoop('test-loop', { totalSections: 3, currentSectionIndex: 2 })
+      insertSections('test-loop', 3)
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'completed')
+      const result = parseJson(await executeSectionRead({ section_index: 1 }, 'test-loop-session'))
+      expect(result.index).toBe(1)
+      expect(result.title).toBe('Section 2')
+    })
+
+    test('summary fields still populate when explicitly reading a completed section', async () => {
       insertLoop('test-loop', { totalSections: 2 })
       insertSections('test-loop', 2)
       sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'completed')
@@ -281,38 +318,19 @@ describe('section-read tool', () => {
       expect(result.summary_follow_ups).toBe('Handled in section 2')
     })
 
-    test('returns null summary fields when section is not completed', async () => {
+    test('no section statuses are changed by calling section-read()', async () => {
       insertLoop('test-loop', { totalSections: 2 })
       insertSections('test-loop', 2)
-      const result = parseJson(await executeSectionRead({ section_index: 0 }, 'test-loop-session'))
-      expect(result.summary_done).toBeNull()
-      expect(result.summary_deviations).toBeNull()
-      expect(result.summary_follow_ups).toBeNull()
-    })
 
-    test('returns valid data for last section index', async () => {
-      insertLoop('test-loop', { totalSections: 3 })
-      insertSections('test-loop', 3)
-      const result = parseJson(await executeSectionRead({ section_index: 2 }, 'test-loop-session'))
-      expect(result.index).toBe(2)
-      expect(result.title).toBe('Section 3')
-      expect(result.content).toBe('Content for section 3')
-      expect(result.status).toBe('pending')
-    })
+      const beforeStatuses = [
+        sectionPlansRepo.get(projectId, 'test-loop', 0)?.status,
+        sectionPlansRepo.get(projectId, 'test-loop', 1)?.status,
+      ]
 
-    test('returns null summary fields for incomplete section even if other sections are completed', async () => {
-      insertLoop('test-loop', { totalSections: 2 })
-      insertSections('test-loop', 2)
-      sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'completed')
-      sectionPlansRepo.setSummary(projectId, 'test-loop', 0, {
-        done: 'Done with section 0',
-        deviations: 'Some deviation',
-      })
-      const result = parseJson(await executeSectionRead({ section_index: 1 }, 'test-loop-session'))
-      expect(result.index).toBe(1)
-      expect(result.summary_done).toBeNull()
-      expect(result.summary_deviations).toBeNull()
-      expect(result.summary_follow_ups).toBeNull()
+      await executeSectionRead({}, 'test-loop-session')
+
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 0)?.status).toBe(beforeStatuses[0])
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 1)?.status).toBe(beforeStatuses[1])
     })
 
     test('handles empty session ID gracefully', async () => {
@@ -324,12 +342,12 @@ describe('section-read tool', () => {
   })
 
   describe('state-driven behavior', () => {
-    test('uses state.currentSectionIndex for default section', async () => {
+    test('returns lowest-index incomplete section instead of currentSectionIndex', async () => {
       insertLoop('test-loop', { currentSectionIndex: 2, totalSections: 5 })
       insertSections('test-loop', 5)
       const result = parseJson(await executeSectionRead({}, 'test-loop-session'))
-      expect(result.index).toBe(2)
-      expect(result.title).toBe('Section 3')
+      expect(result.index).toBe(0)
+      expect(result.title).toBe('Section 1')
     })
 
     test('allows reading sections beyond current index', async () => {

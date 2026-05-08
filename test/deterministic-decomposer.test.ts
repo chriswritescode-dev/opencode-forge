@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test'
+import { describe, test, expect } from 'vitest'
 import { decomposeDeterministically } from '../src/services/deterministic-decomposer'
 
 describe('decomposeDeterministically', () => {
@@ -310,5 +310,33 @@ describe('decomposeDeterministically', () => {
     expect(result).toHaveLength(1)
     expect(result[0].title).toBe('Only')
     expect(result[0].content).toBe('## Phase 1: Only')
+  })
+
+  test('extracts sections from ## Section N: headings', () => {
+    const plan = [
+      '## Section 0: Foo',
+      'body foo',
+      '## Section 1: Bar',
+      'body bar',
+    ].join('\n')
+    const result = decomposeDeterministically(plan)
+    expect(result).toHaveLength(2)
+    expect(result[0].title).toBe('Foo')
+    expect(result[1].title).toBe('Bar')
+    expect(result[0].index).toBe(0)
+    expect(result[1].index).toBe(1)
+  })
+
+  test('handles mixed Phase and Section headings', () => {
+    const plan = [
+      '## Phase 1: Setup',
+      'phase content',
+      '## Section 2: Build',
+      'section content',
+    ].join('\n')
+    const result = decomposeDeterministically(plan)
+    expect(result).toHaveLength(2)
+    expect(result[0].title).toBe('Setup')
+    expect(result[1].title).toBe('Build')
   })
 })

@@ -315,6 +315,78 @@ describe('SectionPlansRepo', () => {
     })
   })
 
+  describe('getNextIncomplete', () => {
+    test('returns null when no sections exist', () => {
+      expect(repo.getNextIncomplete(projectId, loopName)).toBeNull()
+    })
+
+    test('returns section 0 when all sections are initially pending', () => {
+      const sections: ParsedSection[] = [
+        { index: 0, title: 'A', content: 'A content' },
+        { index: 1, title: 'B', content: 'B content' },
+      ]
+      repo.bulkInsert({ projectId, loopName, sections })
+
+      const result = repo.getNextIncomplete(projectId, loopName)
+      expect(result).not.toBeNull()
+      expect(result!.sectionIndex).toBe(0)
+    })
+
+    test('skips completed sections and returns the lowest-index pending', () => {
+      const sections: ParsedSection[] = [
+        { index: 0, title: 'A', content: 'A content' },
+        { index: 1, title: 'B', content: 'B content' },
+        { index: 2, title: 'C', content: 'C content' },
+      ]
+      repo.bulkInsert({ projectId, loopName, sections })
+      repo.setStatus(projectId, loopName, 0, 'completed')
+
+      const result = repo.getNextIncomplete(projectId, loopName)
+      expect(result).not.toBeNull()
+      expect(result!.sectionIndex).toBe(1)
+    })
+
+    test('treats failed as incomplete and returns a lower-index failed before a later pending', () => {
+      const sections: ParsedSection[] = [
+        { index: 0, title: 'A', content: 'A content' },
+        { index: 1, title: 'B', content: 'B content' },
+      ]
+      repo.bulkInsert({ projectId, loopName, sections })
+      repo.setStatus(projectId, loopName, 0, 'failed')
+      repo.setStatus(projectId, loopName, 1, 'pending')
+
+      const result = repo.getNextIncomplete(projectId, loopName)
+      expect(result).not.toBeNull()
+      expect(result!.sectionIndex).toBe(0)
+      expect(result!.status).toBe('failed')
+    })
+
+    test('returns null when all sections are completed', () => {
+      const sections: ParsedSection[] = [
+        { index: 0, title: 'A', content: 'A content' },
+        { index: 1, title: 'B', content: 'B content' },
+      ]
+      repo.bulkInsert({ projectId, loopName, sections })
+      repo.setStatus(projectId, loopName, 0, 'completed')
+      repo.setStatus(projectId, loopName, 1, 'completed')
+
+      expect(repo.getNextIncomplete(projectId, loopName)).toBeNull()
+    })
+
+    test('scopes by projectId and loopName', () => {
+      const otherProject = 'other-project'
+      db.run(`INSERT INTO loops (project_id, loop_name) VALUES (?, ?)`, [otherProject, loopName])
+
+      const sections: ParsedSection[] = [{ index: 0, title: 'A', content: 'A content' }]
+      repo.bulkInsert({ projectId, loopName, sections })
+      repo.bulkInsert({ projectId: otherProject, loopName, sections })
+      repo.setStatus(projectId, loopName, 0, 'completed')
+
+      expect(repo.getNextIncomplete(projectId, loopName)).toBeNull()
+      expect(repo.getNextIncomplete(otherProject, loopName)!.sectionIndex).toBe(0)
+    })
+  })
+
   describe('count', () => {
     test('returns correct count', () => {
       expect(repo.count(projectId, loopName)).toBe(0)

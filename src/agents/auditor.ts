@@ -1,4 +1,5 @@
 import type { AgentDefinition } from './types'
+import { SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../utils/section-summary'
 
 const AUDITOR_TOOL_EXCLUDES = [
   'apply_patch',
@@ -178,17 +179,17 @@ When writing findings, always include the appropriate \`sectionIndex\` to attrib
 
 ## Section Summaries
 
-When auditing in a sectioned loop, you MUST include a \`<!-- section-summary:start -->\` block at the end of your response if the section is clear of blocking bugs:
+When auditing in a sectioned loop, you MUST include a \`${SECTION_SUMMARY_START_MARKER}\` block at the end of your response if the section is clear of blocking bugs:
 
 \`\`\`
-<!-- section-summary:start -->
+${SECTION_SUMMARY_START_MARKER}
 ### Done
 - bullets describing what was implemented
 ### Deviations
 - bullets describing places implementation differs from this section plan, with reasons (or "none")
 ### Follow-ups
 - bullets noting items deferred to later sections (or "none")
-<!-- section-summary:end -->
+${SECTION_SUMMARY_END_MARKER}
 \`\`\`
 
 Do NOT include a section summary if the section still has blocking bugs.

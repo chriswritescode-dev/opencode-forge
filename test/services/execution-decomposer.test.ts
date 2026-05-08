@@ -1,5 +1,7 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { Database } from 'bun:sqlite'
+import { describe, test, expect, beforeEach, afterEach } from 'vitest'
+import { decomposerAgent } from '../../src/agents/decomposer'
+import { resolveDecomposerModel } from '../../src/utils/model-fallback'
+import Database from 'better-sqlite3'
 import { mkdtempSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -37,7 +39,7 @@ describe('Execution decomposer integration', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'exec-decomp-test-'))
     db = new Database(join(tempDir, 'test.db'))
 
-    db.run(`
+    db.exec(`
       CREATE TABLE loops (
         project_id           TEXT NOT NULL,
         loop_name            TEXT NOT NULL,
@@ -76,7 +78,7 @@ describe('Execution decomposer integration', () => {
       )
     `)
 
-    db.run(`
+    db.exec(`
       CREATE TABLE loop_large_fields (
         project_id          TEXT NOT NULL,
         loop_name           TEXT NOT NULL,
@@ -87,7 +89,7 @@ describe('Execution decomposer integration', () => {
       )
     `)
 
-    db.run(`
+    db.exec(`
       CREATE TABLE plans (
         project_id   TEXT NOT NULL,
         loop_name    TEXT,
@@ -101,7 +103,7 @@ describe('Execution decomposer integration', () => {
       )
     `)
 
-    db.run(`
+    db.exec(`
       CREATE TABLE review_findings (
         project_id TEXT NOT NULL,
         loop_name TEXT NOT NULL DEFAULT '',
@@ -116,7 +118,7 @@ describe('Execution decomposer integration', () => {
       )
     `)
 
-    db.run(`
+    db.exec(`
       CREATE TABLE section_plans (
         project_id TEXT NOT NULL,
         loop_name TEXT NOT NULL,
@@ -675,6 +677,277 @@ describe('Execution decomposer integration', () => {
       const sections = decomposeDeterministically(planText, { maxSections: 1 })
       expect(sections).toHaveLength(1)
       expect(sections[0].index).toBe(0)
+    })
+  })
+
+  describe('Integration smoke: decomposer model wired through promptAsync', () => {
+    test('initial launch passes auditor model to promptAsync when only auditor and execution are configured', async () => {
+      const { createForgeExecutionService } = await import('../../src/services/execution')
+
+      const promptAsyncCalls: Array<Record<string, unknown>> = []
+
+      const mockV2Client = {
+        session: {
+          create: async () => ({ data: { id: 'session-1' } }),
+          promptAsync: async (args: Record<string, unknown>) => {
+            promptAsyncCalls.push(args)
+            return {}
+          },
+          abort: async () => ({}),
+          delete: async () => ({}),
+          get: async () => ({ data: {} }),
+          messages: async () => ({ data: [] }),
+          status: async () => ({ data: {} }),
+        },
+        experimental: {
+          workspace: { list: async () => ({ data: [] }), remove: async () => ({}) },
+          session: { list: async () => ({ data: [] }) },
+        },
+        tui: { publish: async () => ({}) },
+        worktree: { create: async () => ({ data: { directory: '/tmp/wt', branch: 'main' } }) },
+      }
+
+      const noopFn = () => {}
+      const mockLoopsRepo = new Proxy({}, { get: () => noopFn }) as any
+      mockLoopsRepo.listByStatus = () => []
+      mockLoopsRepo.get = () => null
+
+      const mockPlansRepo = new Proxy({}, { get: () => noopFn }) as any
+      mockPlansRepo.getForSession = () => null
+
+      const mockLoopService = {
+        generateUniqueLoopName: () => 'test-loop',
+        setState: noopFn,
+        registerLoopSession: noopFn,
+        setPhase: noopFn,
+        buildDecomposerInitialPrompt: () => 'Decompose this plan',
+        deleteState: noopFn,
+        getActiveState: () => null,
+        getAnyState: () => null,
+      }
+
+      const service = createForgeExecutionService({
+        projectId: 'test-project',
+        directory: '/tmp/test',
+        config: {
+          executionModel: 'prov/exec',
+          auditorModel: 'prov/aud',
+          decomposer: { enabled: true, mode: 'agent' },
+          loop: { enabled: true },
+        },
+        logger: mockLogger,
+        dataDir: '/tmp',
+        v2: mockV2Client as any,
+        plansRepo: mockPlansRepo,
+        loopsRepo: mockLoopsRepo,
+        loopService: mockLoopService as any,
+        sectionPlansRepo: {
+          bulkInsert: noopFn,
+          count: () => 0,
+          list: () => [],
+          setStatus: noopFn,
+          setStartedAt: noopFn,
+        } as any,
+      })
+
+      await service.dispatch(
+        { surface: 'api', projectId: 'test-project', directory: '/tmp/test' },
+        {
+          type: 'loop.start',
+          source: { kind: 'inline', planText: '## Phase 1: Setup\nDo something' },
+          mode: 'in-place',
+          maxIterations: 3,
+        },
+      )
+
+      expect(promptAsyncCalls.length).toBeGreaterThan(0)
+
+      const firstCall = promptAsyncCalls[0]
+      expect(firstCall.model).toEqual({ providerID: 'prov', modelID: 'aud' })
+      expect(firstCall.agent).toBe('decomposer')
+    })
+
+    test('initial launch passes decomposer model when decomposer.model is explicitly set', async () => {
+      const { createForgeExecutionService } = await import('../../src/services/execution')
+
+      const promptAsyncCalls: Array<Record<string, unknown>> = []
+
+      const mockV2Client = {
+        session: {
+          create: async () => ({ data: { id: 'session-2' } }),
+          promptAsync: async (args: Record<string, unknown>) => {
+            promptAsyncCalls.push(args)
+            return {}
+          },
+          abort: async () => ({}),
+          delete: async () => ({}),
+          get: async () => ({ data: {} }),
+          messages: async () => ({ data: [] }),
+          status: async () => ({ data: {} }),
+        },
+        experimental: {
+          workspace: { list: async () => ({ data: [] }), remove: async () => ({}) },
+          session: { list: async () => ({ data: [] }) },
+        },
+        tui: { publish: async () => ({}) },
+        worktree: { create: async () => ({ data: { directory: '/tmp/wt', branch: 'main' } }) },
+      }
+
+      const noopFn = () => {}
+      const mockLoopsRepo = new Proxy({}, { get: () => noopFn }) as any
+      mockLoopsRepo.listByStatus = () => []
+      mockLoopsRepo.get = () => null
+
+      const mockPlansRepo = new Proxy({}, { get: () => noopFn }) as any
+      mockPlansRepo.getForSession = () => null
+
+      const mockLoopService = {
+        generateUniqueLoopName: () => 'test-loop-2',
+        setState: noopFn,
+        registerLoopSession: noopFn,
+        setPhase: noopFn,
+        buildDecomposerInitialPrompt: () => 'Decompose this plan',
+        deleteState: noopFn,
+        getActiveState: () => null,
+        getAnyState: () => null,
+      }
+
+      const service = createForgeExecutionService({
+        projectId: 'test-project',
+        directory: '/tmp/test',
+        config: {
+          executionModel: 'prov/exec',
+          auditorModel: 'prov/aud',
+          decomposer: { enabled: true, mode: 'agent', model: 'prov/decomp' },
+          loop: { enabled: true },
+        },
+        logger: mockLogger,
+        dataDir: '/tmp',
+        v2: mockV2Client as any,
+        plansRepo: mockPlansRepo,
+        loopsRepo: mockLoopsRepo,
+        loopService: mockLoopService as any,
+        sectionPlansRepo: {
+          bulkInsert: noopFn,
+          count: () => 0,
+          list: () => [],
+          setStatus: noopFn,
+          setStartedAt: noopFn,
+        } as any,
+      })
+
+      await service.dispatch(
+        { surface: 'api', projectId: 'test-project', directory: '/tmp/test' },
+        {
+          type: 'loop.start',
+          source: { kind: 'inline', planText: '## Phase 1: Setup\nDo something' },
+          mode: 'in-place',
+          maxIterations: 3,
+        },
+      )
+
+      expect(promptAsyncCalls.length).toBeGreaterThan(0)
+      const firstCall = promptAsyncCalls[0]
+      expect(firstCall.model).toEqual({ providerID: 'prov', modelID: 'decomp' })
+    })
+
+    test('no model arg passed to promptAsync when no model source is configured', async () => {
+      const { createForgeExecutionService } = await import('../../src/services/execution')
+
+      const promptAsyncCalls: Array<Record<string, unknown>> = []
+
+      const mockV2Client = {
+        session: {
+          create: async () => ({ data: { id: 'session-3' } }),
+          promptAsync: async (args: Record<string, unknown>) => {
+            promptAsyncCalls.push(args)
+            return {}
+          },
+          abort: async () => ({}),
+          delete: async () => ({}),
+          get: async () => ({ data: {} }),
+          messages: async () => ({ data: [] }),
+          status: async () => ({ data: {} }),
+        },
+        experimental: {
+          workspace: { list: async () => ({ data: [] }), remove: async () => ({}) },
+          session: { list: async () => ({ data: [] }) },
+        },
+        tui: { publish: async () => ({}) },
+        worktree: { create: async () => ({ data: { directory: '/tmp/wt', branch: 'main' } }) },
+      }
+
+      const noopFn = () => {}
+      const mockLoopsRepo = new Proxy({}, { get: () => noopFn }) as any
+      mockLoopsRepo.listByStatus = () => []
+      mockLoopsRepo.get = () => null
+
+      const mockPlansRepo = new Proxy({}, { get: () => noopFn }) as any
+      mockPlansRepo.getForSession = () => null
+
+      const mockLoopService = {
+        generateUniqueLoopName: () => 'test-loop-3',
+        setState: noopFn,
+        registerLoopSession: noopFn,
+        setPhase: noopFn,
+        buildDecomposerInitialPrompt: () => 'Decompose this plan',
+        deleteState: noopFn,
+        getActiveState: () => null,
+        getAnyState: () => null,
+      }
+
+      const service = createForgeExecutionService({
+        projectId: 'test-project',
+        directory: '/tmp/test',
+        config: {
+          loop: { enabled: true },
+        },
+        logger: mockLogger,
+        dataDir: '/tmp',
+        v2: mockV2Client as any,
+        plansRepo: mockPlansRepo,
+        loopsRepo: mockLoopsRepo,
+        loopService: mockLoopService as any,
+        sectionPlansRepo: {
+          bulkInsert: noopFn,
+          count: () => 0,
+          list: () => [],
+          setStatus: noopFn,
+          setStartedAt: noopFn,
+        } as any,
+      })
+
+      await service.dispatch(
+        { surface: 'api', projectId: 'test-project', directory: '/tmp/test' },
+        {
+          type: 'loop.start',
+          source: { kind: 'inline', planText: '## Phase 1: Setup\nDo something' },
+          mode: 'in-place',
+          maxIterations: 3,
+        },
+      )
+
+      expect(promptAsyncCalls.length).toBeGreaterThan(0)
+      const firstCall = promptAsyncCalls[0]
+      expect(firstCall).not.toHaveProperty('model')
+    })
+  })
+
+  describe('Decomposer system prompt markers', () => {
+    test('decomposer system prompt contains attribute-free section start marker', () => {
+      expect(decomposerAgent.systemPrompt).toContain('<!-- forge-section:start -->')
+    })
+
+    test('decomposer system prompt contains attribute-free section end marker', () => {
+      expect(decomposerAgent.systemPrompt).toContain('<!-- forge-section:end -->')
+    })
+
+    test('decomposer system prompt does not contain old index attribute format', () => {
+      expect(decomposerAgent.systemPrompt).not.toMatch(/index=\d+\s+title="/)
+    })
+
+    test('decomposer system prompt does not contain old index= attribute at all', () => {
+      expect(decomposerAgent.systemPrompt).not.toContain('index=')
     })
   })
 })

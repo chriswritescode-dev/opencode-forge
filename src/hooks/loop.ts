@@ -3,7 +3,7 @@ import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import type { LoopService, LoopState } from '../services/loop'
 import { MAX_RETRIES, MAX_CONSECUTIVE_STALLS } from '../services/loop'
 import type { Logger, PluginConfig } from '../types'
-import { retryWithModelFallback, parseModelString } from '../utils/model-fallback'
+import { retryWithModelFallback, resolveDecomposerModel } from '../utils/model-fallback'
 import { resolveLoopModel, resolveLoopAuditorModel } from '../utils/loop-helpers'
 import type { createSandboxManager } from '../sandbox/manager'
 import { buildWorktreeCompletionPayload, writeWorktreeCompletionLog } from '../services/worktree-log'
@@ -13,6 +13,8 @@ import { teardownWorktreeArtifacts } from '../utils/worktree-cleanup'
 import { createAuditSession, promptAuditSession } from '../utils/audit-session'
 import { formatAuditSessionTitle, formatLoopSessionTitle } from '../utils/session-titles'
 import { bindSessionToWorkspace } from '../workspace/forge-worktree'
+import { extractSections } from '../utils/section-capture'
+import { decomposeDeterministically } from '../services/deterministic-decomposer'
 
 export interface LoopEventHandler {
   onEvent(input: { event: { type: string; properties?: Record<string, unknown> } }): Promise<void>
@@ -976,6 +978,111 @@ export function createLoopEventHandler(
     }
   }
 
+  async function transitionToCoding(loopName: string, state: LoopState): Promise<void> {
+    loopService.startSection(loopName, 0)
+    loopService.setCurrentSectionIndex(loopName, 0)
+
+    const updatedState = loopService.getActiveState(loopName) ?? state
+    loopService.setPhase(loopName, 'coding')
+
+    const codeSessionResult = await createLoopSessionWithWorkspace({
+      v2: v2Client,
+      title: formatLoopSessionTitle(loopName),
+      directory: updatedState.worktreeDir,
+      permission: buildLoopPermissionRuleset({ isWorktree: !!updatedState.worktree, isSandbox: !!updatedState.sandbox }),
+      workspaceId: updatedState.workspaceId,
+      logPrefix: 'Loop',
+      logger,
+    })
+
+    if (!codeSessionResult) {
+      logger.error(`Loop: failed to create code session after decomposition for ${loopName}`)
+      await terminateLoop(loopName, updatedState, 'session_creation_failed')
+      return
+    }
+
+    const codeSessionId = codeSessionResult.sessionId
+    loopService.replaceSession(loopName, {
+      newSessionId: codeSessionId,
+      phase: 'coding',
+      resetError: false,
+    })
+
+    const codeState = loopService.getActiveState(loopName) ?? updatedState
+    const sectionPrompt = loopService.buildSectionInitialPrompt(codeState)
+
+    const loopModel = resolveLoopModel(getConfig(), loopService, loopName)
+    const sendWithModel = async () => {
+      const fresh = loopService.getActiveState(loopName)
+      if (!fresh?.active) throw new Error('loop_cancelled')
+      return v2Client.session.promptAsync({
+        sessionID: codeSessionId,
+        directory: fresh.worktreeDir,
+        ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
+        agent: 'code',
+        parts: [{ type: 'text' as const, text: sectionPrompt }],
+        model: loopModel,
+      })
+    }
+    const sendWithoutModel = async () => {
+      const fresh = loopService.getActiveState(loopName)
+      if (!fresh?.active) throw new Error('loop_cancelled')
+      return v2Client.session.promptAsync({
+        sessionID: codeSessionId,
+        directory: fresh.worktreeDir,
+        ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
+        agent: 'code',
+        parts: [{ type: 'text' as const, text: sectionPrompt }],
+      })
+    }
+    const { result: promptResult } = await retryWithModelFallback(sendWithModel, sendWithoutModel, loopModel, logger)
+    if (promptResult.error) {
+      logger.error(`Loop: failed to send initial section prompt for ${loopName}`, promptResult.error)
+      await handlePromptError(loopName, codeState, 'failed to send initial section prompt', promptResult.error)
+      return
+    }
+
+    consecutiveStalls.set(loopName, 0)
+  }
+
+  async function trySalvageDecomposerTranscript(loopName: string, state: LoopState): Promise<import('../utils/section-capture').ParsedSection[] | null> {
+    try {
+      if (!state.decompositionSessionId) return null
+
+      const messagesResult = await v2Client.session.messages({
+        sessionID: state.decompositionSessionId,
+        directory: state.worktreeDir || '',
+        limit: 4,
+      })
+      const messages = (messagesResult.data ?? []) as Array<{
+        info: { role: string }
+        parts: Array<{ type: string; text?: string }>
+      }>
+      const lastAssistant = [...messages].reverse().find(m => m.info.role === 'assistant')
+      if (!lastAssistant) return null
+
+      const transcript = lastAssistant.parts
+        .filter(p => p.type === 'text' && typeof p.text === 'string')
+        .map(p => p.text as string)
+        .join('\n')
+
+      if (transcript.length === 0) return null
+
+      const maxSections = getConfig().decomposer?.maxSections ?? 12
+
+      const markerSections = extractSections(transcript, { maxSections })
+      if (markerSections.length > 0) return markerSections
+
+      const deterministicSections = decomposeDeterministically(transcript, { maxSections })
+      if (deterministicSections.length > 0) return deterministicSections
+
+      return null
+    } catch (err) {
+      logger.error(`Loop: trySalvageDecomposerTranscript failed for ${loopName}`, err)
+      return null
+    }
+  }
+
   async function handleDecomposingPhase(loopName: string, _state: LoopState): Promise<void> {
     const currentState = loopService.getActiveState(loopName)
     if (!currentState?.active) {
@@ -1004,71 +1111,7 @@ export function createLoopEventHandler(
 
     if (decompStatus === 'completed' && totalSections > 0) {
       logger.log(`Loop: decomposing phase completed with ${totalSections} sections for ${loopName}, transitioning to coding`)
-
-      loopService.startSection(loopName, 0)
-      loopService.setCurrentSectionIndex(loopName, 0)
-
-      const updatedState = loopService.getActiveState(loopName) ?? currentState
-      loopService.setPhase(loopName, 'coding')
-
-      const codeSessionResult = await createLoopSessionWithWorkspace({
-        v2: v2Client,
-        title: formatLoopSessionTitle(loopName),
-        directory: updatedState.worktreeDir,
-        permission: buildLoopPermissionRuleset({ isWorktree: !!updatedState.worktree, isSandbox: !!updatedState.sandbox }),
-        workspaceId: updatedState.workspaceId,
-        logPrefix: 'Loop',
-        logger,
-      })
-
-      if (!codeSessionResult) {
-        logger.error(`Loop: failed to create code session after decomposition for ${loopName}`)
-        await terminateLoop(loopName, updatedState, 'session_creation_failed')
-        return
-      }
-
-      const codeSessionId = codeSessionResult.sessionId
-      loopService.replaceSession(loopName, {
-        newSessionId: codeSessionId,
-        phase: 'coding',
-        resetError: false,
-      })
-
-      const codeState = loopService.getActiveState(loopName) ?? updatedState
-      const sectionPrompt = loopService.buildSectionInitialPrompt(codeState)
-
-      const loopModel = resolveLoopModel(getConfig(), loopService, loopName)
-      const sendWithModel = async () => {
-        const fresh = loopService.getActiveState(loopName)
-        if (!fresh?.active) throw new Error('loop_cancelled')
-        return v2Client.session.promptAsync({
-          sessionID: codeSessionId,
-          directory: fresh.worktreeDir,
-          ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
-          agent: 'code',
-          parts: [{ type: 'text' as const, text: sectionPrompt }],
-          model: loopModel,
-        })
-      }
-      const sendWithoutModel = async () => {
-        const fresh = loopService.getActiveState(loopName)
-        if (!fresh?.active) throw new Error('loop_cancelled')
-        return v2Client.session.promptAsync({
-          sessionID: codeSessionId,
-          directory: fresh.worktreeDir,
-          ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
-          agent: 'code',
-          parts: [{ type: 'text' as const, text: sectionPrompt }],
-        })
-      }
-      const { result: promptResult } = await retryWithModelFallback(sendWithModel, sendWithoutModel, loopModel, logger)
-      if (promptResult.error) {
-        logger.error(`Loop: failed to send initial section prompt for ${loopName}`, promptResult.error)
-        await handlePromptError(loopName, codeState, 'failed to send initial section prompt', promptResult.error)
-        return
-      }
-
-      consecutiveStalls.set(loopName, 0)
+      await transitionToCoding(loopName, currentState)
       return
     }
 
@@ -1141,6 +1184,21 @@ export function createLoopEventHandler(
 
     if (decompStatus === 'failed') {
       const errorCount = currentState.errorCount ?? 0
+
+      // Attempt transcript salvage on first failure before re-prompting
+      if (errorCount === 0 && currentState.totalSections === 0) {
+        const salvaged = await trySalvageDecomposerTranscript(loopName, currentState)
+        if (salvaged && salvaged.length > 0) {
+          loopService.bulkInsertSections(loopName, salvaged)
+          loopService.setDecompositionStatus(loopName, 'completed')
+          loopService.setTotalSections(loopName, salvaged.length)
+          logger.log(`Loop: salvaged ${salvaged.length} sections from decomposer transcript for ${loopName}`)
+          const refreshed = loopService.getActiveState(loopName)
+          if (refreshed) await transitionToCoding(loopName, refreshed)
+          return
+        }
+      }
+
       if (errorCount >= MAX_RETRIES) {
         logger.error(`Loop: decomposition failed after ${MAX_RETRIES} retries for ${loopName}`)
         await terminateLoop(loopName, currentState, 'decomposition_failed')
@@ -1181,7 +1239,15 @@ export function createLoopEventHandler(
           ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
           agent: 'decomposer',
           parts: [{ type: 'text' as const, text: decomposerPrompt }],
-          ...(getConfig().decomposer?.model ? { model: parseModelString(getConfig().decomposer!.model) } : {}),
+          ...(() => {
+            const cfg = getConfig()
+            const m = resolveDecomposerModel({
+              decomposerModel: cfg.decomposer?.model,
+              auditorModel: freshState.auditorModel ?? cfg.auditorModel,
+              executionModel: freshState.executionModel ?? cfg.executionModel,
+            })
+            return m ? { model: m } : {}
+          })(),
         })
       } catch (err) {
         logger.error(`Loop: failed to re-prompt decomposer for ${loopName}`, err)

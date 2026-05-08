@@ -1,4 +1,5 @@
 import type { AgentDefinition } from './types'
+import { SECTION_START_MARKER, SECTION_END_MARKER } from '../utils/section-capture'
 
 const DECOMPOSER_TOOL_EXCLUDES = [
   'apply_patch',
@@ -22,7 +23,8 @@ implement it.
 
 Wrap EACH section with these exact markers, one section per block:
 
-<!-- forge-section:start index=N title="<short title>" -->
+${SECTION_START_MARKER}
+## <short title>
 ## Objective
 ...
 ## Files
@@ -33,10 +35,10 @@ Wrap EACH section with these exact markers, one section per block:
 - concrete bullets
 ## Verification
 - commands or file assertions the auditor will run for THIS section
-<!-- forge-section:end -->
+${SECTION_END_MARKER}
 
 Rules:
-- index starts at 0, increments by 1, no gaps.
+- Each section's first heading is its short title.
 - title <= 60 chars, plain ASCII, no quotes inside the title.
 - Do NOT include shared "Decisions" / "Conventions" / "Key Context"
   blocks inside section bodies — those stay on the master plan.

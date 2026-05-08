@@ -14,7 +14,7 @@ import type { LoopService } from '../services/loop'
 import type { createLoopEventHandler } from '../hooks'
 import type { SandboxManager } from '../sandbox/manager'
 import { extractPlanTitle, extractLoopNames } from '../utils/plan-execution'
-import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
+import { parseModelString, retryWithModelFallback, resolveDecomposerModel } from '../utils/model-fallback'
 import { generateUniqueName } from '../services/loop'
 import { resolveCurrentGitBranch } from '../utils/git-branch'
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
@@ -1091,7 +1091,14 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             ...(createdWorkspaceId ? { workspace: createdWorkspaceId } : {}),
             agent: 'decomposer',
             parts: [{ type: 'text' as const, text: decomposerPrompt }],
-            ...(decomposerConfig.model ? { model: parseModelString(decomposerConfig.model) } : {}),
+            ...(() => {
+              const m = resolveDecomposerModel({
+                decomposerModel: decomposerConfig.model,
+                auditorModel: resolvedAuditorModel,
+                executionModel: resolvedExecutionModel,
+              })
+              return m ? { model: m } : {}
+            })(),
           })
           if ((decomposerResult as { error?: unknown })?.error) {
             deps.logger.error('handleStartLoop: decomposer promptAsync returned error', (decomposerResult as { error?: unknown }).error)
@@ -1284,7 +1291,14 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
                 ...(createdWorkspaceId ? { workspace: createdWorkspaceId } : {}),
                 agent: 'decomposer',
                 parts: [{ type: 'text' as const, text: decomposerPrompt }],
-                ...(decomposerConfig.model ? { model: parseModelString(decomposerConfig.model) } : {}),
+                ...(() => {
+                  const m = resolveDecomposerModel({
+                    decomposerModel: decomposerConfig.model,
+                    auditorModel: resolvedAuditorModel,
+                    executionModel: resolvedExecutionModel,
+                  })
+                  return m ? { model: m } : {}
+                })(),
               })
               if ((decomposerFallbackResult as { error?: unknown })?.error) {
                 deps.logger.error('handleStartLoop: decomposer promptAsync returned error', (decomposerFallbackResult as { error?: unknown }).error)
@@ -1997,7 +2011,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     }
 
     const loopModel = needsDecomposerRestart
-      ? (deps.config.decomposer?.model ? parseModelString(deps.config.decomposer.model) : undefined) ?? parseModelString(stoppedState.executionModel) ?? parseModelString(deps.config.executionModel)
+      ? resolveDecomposerModel({
+          decomposerModel: deps.config.decomposer?.model,
+          auditorModel: stoppedState.auditorModel ?? deps.config.auditorModel,
+          executionModel: stoppedState.executionModel ?? deps.config.executionModel,
+        })
       : parseModelString(stoppedState.executionModel) ?? parseModelString(deps.config.executionModel)
     const workspaceParam = stoppedState.workspaceId ? { workspace: stoppedState.workspaceId } : {}
 

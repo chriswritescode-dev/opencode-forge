@@ -376,6 +376,72 @@ describe('LoopService section management', () => {
     })
   })
 
+  describe('getNextIncompleteSectionPlan', () => {
+    test('returns lowest-index non-completed section', () => {
+      insertLoop('test-loop')
+      insertSections('test-loop', 3)
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'completed')
+
+      const state = loopService.getActiveState('test-loop')!
+      const result = loopService.getNextIncompleteSectionPlan(state)
+      expect(result).not.toBeNull()
+      expect(result!.sectionIndex).toBe(1)
+    })
+
+    test('returns failed before later pending', () => {
+      insertLoop('test-loop')
+      insertSections('test-loop', 2)
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'failed')
+
+      const state = loopService.getActiveState('test-loop')!
+      const result = loopService.getNextIncompleteSectionPlan(state)
+      expect(result).not.toBeNull()
+      expect(result!.sectionIndex).toBe(0)
+      expect(result!.status).toBe('failed')
+    })
+
+    test('returns null when all sections are completed', () => {
+      insertLoop('test-loop')
+      insertSections('test-loop', 2)
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'completed')
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 1, 'completed')
+
+      const state = loopService.getActiveState('test-loop')!
+      const result = loopService.getNextIncompleteSectionPlan(state)
+      expect(result).toBeNull()
+    })
+
+    test('does not update state.currentSectionIndex', () => {
+      insertLoop('test-loop')
+      insertSections('test-loop', 3)
+      sectionPlansRepo.setStatus(projectId, 'test-loop', 0, 'completed')
+
+      const stateBefore = loopService.getActiveState('test-loop')!
+      expect(stateBefore.currentSectionIndex).toBe(0)
+
+      loopService.getNextIncompleteSectionPlan(stateBefore)
+
+      const stateAfter = loopService.getActiveState('test-loop')!
+      expect(stateAfter.currentSectionIndex).toBe(0)
+    })
+
+    test('does not mutate section statuses or timestamps', () => {
+      insertLoop('test-loop')
+      insertSections('test-loop', 2)
+
+      const beforeStatuses = [
+        sectionPlansRepo.get(projectId, 'test-loop', 0)?.status,
+        sectionPlansRepo.get(projectId, 'test-loop', 1)?.status,
+      ]
+
+      const state = loopService.getActiveState('test-loop')!
+      loopService.getNextIncompleteSectionPlan(state)
+
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 0)?.status).toBe(beforeStatuses[0])
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 1)?.status).toBe(beforeStatuses[1])
+    })
+  })
+
   describe('parseFinalAuditClear', () => {
     test('detects final audit clear marker', () => {
       expect(loopService.parseFinalAuditClear('<!-- final-audit:clear -->')).toBe(true)

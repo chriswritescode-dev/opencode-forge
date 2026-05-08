@@ -1,5 +1,5 @@
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
-import { Database } from 'bun:sqlite'
+import { describe, test, expect, beforeEach, afterEach } from 'vitest'
+import Database from 'better-sqlite3'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -80,7 +80,7 @@ describe('Loop Decomposing Phase Handler', () => {
     const dbPath = join(tempDir, 'loop-decomposing-test.db')
     db = new Database(dbPath)
 
-    db.run(`
+    db.exec(`
       CREATE TABLE loops (
         project_id           TEXT NOT NULL,
         loop_name            TEXT NOT NULL,
@@ -119,7 +119,7 @@ describe('Loop Decomposing Phase Handler', () => {
       )
     `)
 
-    db.run(`
+    db.exec(`
       CREATE TABLE loop_large_fields (
         project_id          TEXT NOT NULL,
         loop_name           TEXT NOT NULL,
@@ -130,7 +130,7 @@ describe('Loop Decomposing Phase Handler', () => {
       )
     `)
 
-    db.run(`
+    db.exec(`
       CREATE TABLE plans (
         project_id   TEXT NOT NULL,
         loop_name    TEXT,
@@ -144,7 +144,7 @@ describe('Loop Decomposing Phase Handler', () => {
       )
     `)
 
-    db.run(`
+    db.exec(`
       CREATE TABLE review_findings (
         project_id TEXT NOT NULL,
         loop_name TEXT NOT NULL DEFAULT '',
@@ -159,7 +159,7 @@ describe('Loop Decomposing Phase Handler', () => {
       )
     `)
 
-    db.run(`
+    db.exec(`
       CREATE TABLE section_plans (
         project_id TEXT NOT NULL,
         loop_name TEXT NOT NULL,

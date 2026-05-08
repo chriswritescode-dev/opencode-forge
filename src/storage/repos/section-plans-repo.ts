@@ -23,6 +23,7 @@ export interface SectionPlansRepo {
   list(projectId: string, loopName: string): SectionPlanRow[]
   listCompleted(projectId: string, loopName: string): SectionPlanRow[]
   get(projectId: string, loopName: string, index: number): SectionPlanRow | null
+  getNextIncomplete(projectId: string, loopName: string): SectionPlanRow | null
   setStatus(projectId: string, loopName: string, index: number, status: SectionPlanRow['status']): void
   incrementAttempts(projectId: string, loopName: string, index: number): void
   setSummary(projectId: string, loopName: string, index: number, parts: { done?: string; deviations?: string; followUps?: string }): void
@@ -64,6 +65,16 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
            started_at, completed_at, created_at
     FROM section_plans
     WHERE project_id = ? AND loop_name = ? AND section_index = ?
+  `)
+
+  const stmtGetNextIncomplete = db.prepare(`
+    SELECT project_id, loop_name, section_index, title, content, status, attempts,
+           summary_done, summary_deviations, summary_follow_ups,
+           started_at, completed_at, created_at
+    FROM section_plans
+    WHERE project_id = ? AND loop_name = ? AND status != 'completed'
+    ORDER BY section_index ASC
+    LIMIT 1
   `)
 
   const stmtSetStatus = db.prepare(`
@@ -151,6 +162,11 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
 
     get(projectId, loopName, index) {
       const row = stmtGet.get(projectId, loopName, index) as Record<string, unknown> | null
+      return row ? mapRow(row) : null
+    },
+
+    getNextIncomplete(projectId, loopName) {
+      const row = stmtGetNextIncomplete.get(projectId, loopName) as Record<string, unknown> | null
       return row ? mapRow(row) : null
     },
 
