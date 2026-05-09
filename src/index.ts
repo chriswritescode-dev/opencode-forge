@@ -472,6 +472,9 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         const resolved = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
         if (resolved) {
           logger.log(`[tool-before] ${input.tool} callID=${input.callID} session=${input.sessionID} loop=${resolved.loopName} sandbox=${resolved.sandbox ? 'yes' : 'no'}`)
+          if (resolved.active) {
+            loopHandler.recordActivity(resolved.loopName, `tool-before:${input.tool}`)
+          }
         }
         await toolExecuteBeforeHook!(input, output)
         await sandboxBeforeHook!(input, output)
@@ -480,6 +483,9 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         const resolved = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
         if (resolved) {
           logger.log(`[tool-after] ${input.tool} callID=${input.callID} output=${output.output?.slice(0, 200)}`)
+          if (resolved.active) {
+            loopHandler.recordActivity(resolved.loopName, `tool-after:${input.tool}`)
+          }
         }
         await sandboxAfterHook!(input, output)
         await toolExecuteAfterHook!(input, output)

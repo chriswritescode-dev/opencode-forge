@@ -241,7 +241,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             const modeIndicator = !s.worktree ? ' (in-place)' : ''
             const stallInfo = loopHandler.getStallInfo(s.loopName!)
             const stallCount = stallInfo?.consecutiveStalls ?? 0
-            const stallSuffix = stallCount > 0 ? ` | Stalls: ${stallCount}` : ''
+            const stallReason = stallInfo?.lastReason ? ` (${stallInfo.lastReason})` : ''
+            const stallSuffix = stallCount > 0 ? ` | Stalls: ${stallCount}${stallReason}` : ''
             lines.push(`${i + 1}. ${s.loopName}${modeIndicator}`)
             lines.push(`   Phase: ${s.phase} | Iteration: ${iterInfo} | Duration: ${duration} | Status: ${sessionStatus}${stallSuffix}`)
             lines.push('')
@@ -345,6 +346,9 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           ? Math.round((Date.now() - stallInfo.lastActivityTime) / 1000)
           : null
         const stallCount = stallInfo?.consecutiveStalls ?? 0
+        const stallReason = stallInfo?.lastReason
+        const stallStatus = stallInfo?.lastStatus
+        const stallError = stallInfo?.lastError
 
         const statusLines: string[] = [
           'Loop Status',
@@ -393,6 +397,9 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           `Model: ${state.executionModel ?? config.executionModel ?? 'default'}`,
           `Auditor model: ${state.auditorModel ?? config.auditorModel ?? state.executionModel ?? config.executionModel ?? 'default'}`,
           ...(stallCount > 0 ? [`Stalls: ${stallCount}`] : []),
+          ...(stallReason ? [`Last stall reason: ${stallReason}`] : []),
+          ...(stallStatus ? [`Last stall status: ${stallStatus}`] : []),
+          ...(stallError ? [`Last stall error: ${stallError}`] : []),
           ...(secondsSinceActivity !== null ? [`Last activity: ${secondsSinceActivity}s ago`] : []),
           '',
           `Prompt: ${promptPreview}`,

@@ -208,7 +208,6 @@ describe('Execution decomposer integration', () => {
       currentSectionIndex: opts.currentSectionIndex,
       totalSections: opts.totalSections,
       finalAuditDone: 0,
-      finalAuditAttempts: 0,
     }, { prompt: 'plan text', lastAuditResult: null })
   }
 

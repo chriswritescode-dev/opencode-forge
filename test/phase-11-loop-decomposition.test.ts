@@ -149,7 +149,6 @@ describe('Phase 11: Loop decomposition and advancement', () => {
     currentSectionIndex: number
     totalSections: number
     finalAuditDone: number
-    finalAuditAttempts: number
     iteration: number
   }> = {}) {
     const defaults = {
@@ -160,7 +159,6 @@ describe('Phase 11: Loop decomposition and advancement', () => {
       currentSectionIndex: 0,
       totalSections: 2,
       finalAuditDone: 0,
-      finalAuditAttempts: 0,
       iteration: 1,
     }
     const opts = { ...defaults, ...overrides }
@@ -195,7 +193,6 @@ describe('Phase 11: Loop decomposition and advancement', () => {
       currentSectionIndex: opts.currentSectionIndex,
       totalSections: opts.totalSections,
       finalAuditDone: opts.finalAuditDone,
-      finalAuditAttempts: opts.finalAuditAttempts,
     }, { prompt: null, lastAuditResult: null })
   }
 
@@ -386,7 +383,7 @@ describe('Phase 11: Loop decomposition and advancement', () => {
     })
 
     test('final audit prompt includes section summaries', () => {
-      insertLoop({ totalSections: 2, finalAuditAttempts: 1 })
+      insertLoop({ totalSections: 2 })
       sectionPlansRepo.bulkInsert({
         projectId,
         loopName: 'test-loop',
@@ -661,7 +658,7 @@ describe('Phase 11: Loop decomposition and advancement', () => {
     })
 
     test('final audit rewind picks offending section from findings', () => {
-      insertLoop({ currentSectionIndex: 1, totalSections: 2, finalAuditAttempts: 1 })
+      insertLoop({ currentSectionIndex: 1, totalSections: 2 })
       sectionPlansRepo.bulkInsert({
         projectId,
         loopName: 'test-loop',

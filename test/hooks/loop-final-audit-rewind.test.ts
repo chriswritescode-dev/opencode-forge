@@ -248,7 +248,7 @@ describe('Loop final audit rewind behavior', () => {
 
       const prompt = loopService.buildFinalAuditPrompt(state!)
 
-      expect(prompt).toContain('[Final integration audit -- pass 1/')
+      expect(prompt).toContain('[Final integration audit]')
       expect(prompt).toContain('## Master Plan')
       expect(prompt).toContain("### Completed Sections' Summaries")
       expect(prompt).toContain('## Section 1: Auth Module')
@@ -268,7 +268,7 @@ describe('Loop final audit rewind behavior', () => {
 
       const prompt = loopService.buildFinalAuditPrompt(state!)
 
-      expect(prompt).toContain('[Final integration audit -- pass 1/')
+      expect(prompt).toContain('[Final integration audit]')
       expect(prompt).toContain('## Master Plan')
       expect(prompt).not.toContain("### Completed Sections' Summaries")
       expect(prompt).toContain('<!-- final-audit:clear -->')
@@ -281,7 +281,7 @@ describe('Loop final audit rewind behavior', () => {
       expect(state).not.toBeNull()
 
       const prompt = loopService.buildFinalAuditPrompt(state!)
-      expect(prompt).toContain('[Final integration audit -- pass 3/')
+      expect(prompt).toContain('[Final integration audit]')
     })
   })
 
@@ -311,48 +311,7 @@ describe('Loop final audit rewind behavior', () => {
     })
   })
 
-  describe('incrementFinalAuditAttempts', () => {
-    test('increments from zero to one', () => {
-      insertLoop({ loop_name: 'incr-loop', final_audit_attempts: 0 })
 
-      const result = loopService.incrementFinalAuditAttempts('incr-loop')
-      expect(result).toBe(1)
-
-      const state = loopService.getActiveState('incr-loop')
-      expect(state!.finalAuditAttempts).toBe(1)
-    })
-
-    test('increments from existing value', () => {
-      insertLoop({ loop_name: 'incr2-loop', final_audit_attempts: 3 })
-
-      const result = loopService.incrementFinalAuditAttempts('incr2-loop')
-      expect(result).toBe(4)
-
-      const state = loopService.getActiveState('incr2-loop')
-      expect(state!.finalAuditAttempts).toBe(4)
-    })
-  })
-
-  describe('final audit attempts check', () => {
-    test('MAX_RETRIES defines the maximum attempt threshold', () => {
-      expect(MAX_RETRIES).toBe(3)
-    })
-
-    test('finalAuditAttempts can reach MAX_RETRIES + 1', () => {
-      insertLoop({ loop_name: 'max-loop', final_audit_attempts: MAX_RETRIES })
-
-      const result = loopService.incrementFinalAuditAttempts('max-loop')
-      expect(result).toBe(MAX_RETRIES + 1)
-    })
-
-    test('buildFinalAuditPrompt uses MAX_RETRIES + 1 as denominator', () => {
-      insertLoop({ loop_name: 'denom-loop', final_audit_attempts: 0 })
-
-      const state = loopService.getActiveState('denom-loop')
-      const prompt = loopService.buildFinalAuditPrompt(state!)
-      expect(prompt).toContain(`[Final integration audit -- pass 1/${MAX_RETRIES + 1}]`)
-    })
-  })
 
   describe('getCompletedSectionDigest', () => {
     test('returns completed section summaries', () => {
@@ -473,7 +432,7 @@ describe('Loop final audit rewind behavior', () => {
       expect(prompt).toContain('Module A deviation')
       expect(prompt).toContain('Module B done')
       expect(prompt).toContain('Module B follow-up')
-      expect(prompt).toContain('[Final integration audit -- pass 1/')
+      expect(prompt).toContain('[Final integration audit]')
     })
 
     test('setPhaseAndResetError sets phase to final_auditing', () => {

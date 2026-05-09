@@ -252,15 +252,6 @@ describe('Loop Section Advancement', () => {
       expect(state.finalAuditDone).toBe(true)
     })
 
-    test('incrementFinalAuditAttempts returns new count', () => {
-      insertLoop()
-
-      const count1 = loopService.incrementFinalAuditAttempts('test-loop')
-      expect(count1).toBe(1)
-
-      const count2 = loopService.incrementFinalAuditAttempts('test-loop')
-      expect(count2).toBe(2)
-    })
   })
 
   describe('3. Section completion updates status', () => {
@@ -490,7 +481,7 @@ describe('Loop Section Advancement', () => {
     })
 
     test('can detect all completed after rewind scenario', () => {
-      insertLoop({ total_sections: 2, final_audit_attempts: 1 })
+      insertLoop({ total_sections: 2 })
       insertSectionPlan(0, 'Section 1', 'Content 1')
       insertSectionPlan(1, 'Section 2', 'Content 2')
 

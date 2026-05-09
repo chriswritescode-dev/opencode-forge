@@ -177,7 +177,6 @@ describe('Loop Section Audit Retry', () => {
       currentSectionIndex: 0,
       totalSections: 2,
       finalAuditDone: false,
-      finalAuditAttempts: 0,
       ...overrides,
     }
   }
@@ -450,8 +449,8 @@ describe('Loop Section Audit Retry', () => {
   })
 
   describe('exhausted retries', () => {
-    test('exhausted retries via idle event terminates with section_failed: 0', async () => {
-      const state = makeState({ currentSectionIndex: 0, totalSections: 2, phase: 'auditing' })
+    test('exhausted iterations via idle event terminates with max_iterations', async () => {
+      const state = makeState({ currentSectionIndex: 0, totalSections: 2, phase: 'auditing', maxIterations: 1 })
       loopService.setState(state.loopName, state)
 
       sectionPlansRepo.bulkInsert({
@@ -463,14 +462,6 @@ describe('Loop Section Audit Retry', () => {
         ],
       })
       loopService.startSection(state.loopName, 0)
-
-      // Pre-load MAX_RETRIES - 1 attempts so the next dirty audit reaches MAX_RETRIES
-      for (let i = 0; i < MAX_RETRIES - 1; i++) {
-        loopService.incrementSectionAttempts(state.loopName, 0)
-      }
-
-      const planBefore = loopService.getSectionPlan(state, 0)!
-      expect(planBefore.attempts).toBe(MAX_RETRIES - 1)
 
       const { logger } = createCapturingLogger()
 
@@ -515,7 +506,7 @@ describe('Loop Section Audit Retry', () => {
       const terminatedState = loopService.getAnyState(state.loopName)
       expect(terminatedState).not.toBeNull()
       expect(terminatedState!.active).toBe(false)
-      expect(terminatedState!.terminationReason).toBe('section_failed: 0')
+      expect(terminatedState!.terminationReason).toBe('max_iterations')
     })
   })
 

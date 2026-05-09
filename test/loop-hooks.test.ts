@@ -248,7 +248,7 @@ describe('loop-hooks integration', () => {
   }
 
   describe('stall watchdog', () => {
-    it('does not process auditing phase while the audit session is busy', async () => {
+    it('does not process auditing phase while the current audit session is busy', async () => {
       testConfig.loop = {
         ...testConfig.loop,
         stallTimeoutMs: 20,
@@ -297,7 +297,7 @@ describe('loop-hooks integration', () => {
         projectId: testProjectId,
         loopName,
         status: 'running',
-        currentSessionId: 'coding-session',
+        currentSessionId: 'audit-session',
         worktree: false,
         worktreeDir,
         worktreeBranch: null,
@@ -329,17 +329,18 @@ describe('loop-hooks integration', () => {
 
       const state = service.getAnyState(loopName)
       expect(state?.phase).toBe('auditing')
-      expect(state?.sessionId).toBe('coding-session')
+      expect(state?.sessionId).toBe('audit-session')
       expect(messageReads).toBe(0)
       expect(sessionDeletes).toBe(0)
 
       rmSync(worktreeDir, { recursive: true, force: true })
     })
 
-    it('terminates when active busy status remains unchanged across watchdog windows', async () => {
+    it('does not terminate when busy status remains unchanged across watchdog windows', async () => {
       testConfig.loop = {
         ...testConfig.loop,
         stallTimeoutMs: 20,
+        maxConsecutiveStalls: 3,
       }
 
       let abortCalls = 0
@@ -406,19 +407,24 @@ describe('loop-hooks integration', () => {
 
       handler.startWatchdog(loopName)
       await new Promise(resolve => setTimeout(resolve, 140))
+
+      const stallInfo = handler.getStallInfo(loopName)
+      expect(stallInfo?.consecutiveStalls).toBe(0)
+
       handler.clearLoopTimers(loopName)
 
       const state = service.getAnyState(loopName)
-      expect(state?.active).toBe(false)
-      expect(state?.terminationReason).toBe('stall_timeout')
-      expect(abortCalls).toBe(1)
+      expect(state?.active).toBe(true)
+      expect(state?.terminationReason).toBeUndefined()
+      expect(abortCalls).toBe(0)
       rmSync(worktreeDir, { recursive: true, force: true })
     })
 
-    it('terminates unknown non-idle preparing status without re-triggering phase handlers', async () => {
+    it('recovers unchanged preparing status through the generic watchdog path', async () => {
       testConfig.loop = {
         ...testConfig.loop,
-        stallTimeoutMs: 20,
+        stallTimeoutMs: 50,
+        maxConsecutiveStalls: 3,
       }
 
       let abortCalls = 0
@@ -429,7 +435,7 @@ describe('loop-hooks integration', () => {
           messages: async () => {
             messageCalls++
             return {
-              data: [{ info: { role: 'assistant' }, parts: [{ type: 'text', text: 'Work in progress' }] }],
+              data: [{ info: { role: 'user' }, parts: [{ type: 'text', text: '' }] }],
             }
           },
           promptAsync: async () => {
@@ -492,19 +498,119 @@ describe('loop-hooks integration', () => {
       })
 
       handler.startWatchdog(loopName)
-      await new Promise(resolve => setTimeout(resolve, 140))
-      handler.clearLoopTimers(loopName)
+      await new Promise(resolve => setTimeout(resolve, 70))
 
       const state = service.getAnyState(loopName)
-      expect(state?.active).toBe(false)
-      expect(state?.terminationReason).toBe('stall_timeout')
-      expect(abortCalls).toBe(1)
-      expect(messageCalls).toBe(0)
+      const stallInfo = handler.getStallInfo(loopName)
+      expect(messageCalls).toBeGreaterThan(0)
       expect(promptAsyncCalls).toBe(0)
+      expect(abortCalls).toBe(0)
+      expect(state?.active).toBe(true)
+      expect(stallInfo?.consecutiveStalls).toBeGreaterThan(0)
+      expect(stallInfo?.consecutiveStalls).toBeLessThan(3)
+      expect(stallInfo?.lastReason).toBe('non_busy_status')
+      expect(stallInfo?.lastStatus).toBe('preparing')
+
+      handler.clearLoopTimers(loopName)
       rmSync(worktreeDir, { recursive: true, force: true })
     })
 
-    it('resets watchdog stall count when session status payload changes', async () => {
+    it('recovers unchanged retry status through the generic watchdog path', async () => {
+      testConfig.loop = {
+        ...testConfig.loop,
+        stallTimeoutMs: 50,
+        maxConsecutiveStalls: 3,
+      }
+
+      let abortCalls = 0
+      let messageCalls = 0
+      let promptAsyncCalls = 0
+      const v2Client = {
+        session: {
+          messages: async () => {
+            messageCalls++
+            return {
+              data: [{ info: { role: 'user' }, parts: [{ type: 'text', text: '' }] }],
+            }
+          },
+          promptAsync: async () => {
+            promptAsyncCalls++
+            return { data: {}, error: null }
+          },
+          abort: async () => { abortCalls++ },
+          status: async () => ({
+            data: {
+              'coding-session': { type: 'retry', message: 'retrying request' },
+            },
+          }),
+          create: async () => ({ data: { id: 'new-session' }, error: undefined }),
+          delete: async () => {},
+        },
+        tui: {
+          publish: async () => {},
+          selectSession: async () => {},
+        },
+        worktree: {
+          create: async () => ({ data: { directory: '/mock/worktree', branch: 'mock-branch' }, error: undefined }),
+          remove: async () => {},
+        },
+      } as MockV2Client
+
+      const { handler, service } = createTestHandler(v2Client as any)
+      const loopName = 'test-loop-stuck-retry-watchdog'
+      const loopsRepo = createLoopsRepo(db)
+      const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
+      const now = Date.now()
+
+      loopsRepo.insert({
+        projectId: testProjectId,
+        loopName,
+        status: 'running',
+        currentSessionId: 'coding-session',
+        worktree: false,
+        worktreeDir,
+        worktreeBranch: null,
+        projectDir: worktreeDir,
+        maxIterations: 0,
+        iteration: 1,
+        auditCount: 0,
+        errorCount: 0,
+        phase: 'coding',
+        executionModel: null,
+        auditorModel: null,
+        modelFailed: false,
+        sandbox: false,
+        sandboxContainer: null,
+        startedAt: now,
+        completedAt: null,
+        terminationReason: null,
+        completionSummary: null,
+        workspaceId: null,
+        hostSessionId: null,
+      }, {
+        prompt: 'Test prompt',
+        lastAuditResult: null,
+      })
+
+      handler.startWatchdog(loopName)
+      await new Promise(resolve => setTimeout(resolve, 70))
+
+      const state = service.getAnyState(loopName)
+      const stallInfo = handler.getStallInfo(loopName)
+      expect(messageCalls).toBeGreaterThan(0)
+      expect(promptAsyncCalls).toBe(0)
+      expect(abortCalls).toBe(0)
+      expect(state?.active).toBe(true)
+      expect(stallInfo?.consecutiveStalls).toBeGreaterThan(0)
+      expect(stallInfo?.consecutiveStalls).toBeLessThan(3)
+      expect(stallInfo?.lastReason).toBe('non_busy_status')
+      expect(stallInfo?.lastStatus).toBe('retry')
+
+      handler.clearLoopTimers(loopName)
+      rmSync(worktreeDir, { recursive: true, force: true })
+    })
+
+    it('keeps resetting watchdog while status remains busy even when payload changes', async () => {
       testConfig.loop = {
         ...testConfig.loop,
         stallTimeoutMs: 20,
@@ -580,13 +686,103 @@ describe('loop-hooks integration', () => {
 
       handler.startWatchdog(loopName)
       await new Promise(resolve => setTimeout(resolve, 70))
-      handler.clearLoopTimers(loopName)
 
       const stallInfo = handler.getStallInfo(loopName)
       expect(stallInfo?.consecutiveStalls).toBeLessThan(2)
+
+      handler.clearLoopTimers(loopName)
       const state = service.getAnyState(loopName)
       expect(state?.active).toBe(true)
       expect(state?.terminationReason).toBeUndefined()
+      rmSync(worktreeDir, { recursive: true, force: true })
+    })
+
+    it('does not terminate a stuck parent session while resolved child tool activity is recorded', async () => {
+      testConfig.loop = {
+        ...testConfig.loop,
+        stallTimeoutMs: 20,
+        maxConsecutiveStalls: 3,
+      }
+
+      const v2Client = {
+        session: {
+          messages: async () => ({
+            data: [{ info: { role: 'assistant' }, parts: [{ type: 'text', text: 'Working' }] }],
+          }),
+          promptAsync: async () => ({ data: {}, error: null }),
+          abort: async () => {},
+          status: async () => ({
+            data: {
+              'coding-session': { type: 'busy', message: 'working' },
+            },
+          }),
+          create: async () => ({ data: { id: 'new-session' }, error: undefined }),
+          delete: async () => {},
+        },
+        tui: {
+          publish: async () => {},
+          selectSession: async () => {},
+        },
+        worktree: {
+          create: async () => ({ data: { directory: '/mock/worktree', branch: 'mock-branch' }, error: undefined }),
+          remove: async () => {},
+        },
+      } as MockV2Client
+
+      const { handler, service } = createTestHandler(v2Client as any)
+      const loopName = 'test-loop-child-activity-watchdog'
+      const loopsRepo = createLoopsRepo(db)
+      const worktreeDir = mkdtempSync(join(tmpdir(), 'worktree-'))
+      const now = Date.now()
+
+      loopsRepo.insert({
+        projectId: testProjectId,
+        loopName,
+        status: 'running',
+        currentSessionId: 'coding-session',
+        worktree: false,
+        worktreeDir,
+        worktreeBranch: null,
+        projectDir: worktreeDir,
+        maxIterations: 0,
+        iteration: 1,
+        auditCount: 0,
+        errorCount: 0,
+        phase: 'coding',
+        executionModel: null,
+        auditorModel: null,
+        modelFailed: false,
+        sandbox: false,
+        sandboxContainer: null,
+        startedAt: now,
+        completedAt: null,
+        terminationReason: null,
+        completionSummary: null,
+        workspaceId: null,
+        hostSessionId: null,
+      }, {
+        prompt: 'Test prompt',
+        lastAuditResult: null,
+      })
+
+      handler.startWatchdog(loopName)
+      await new Promise(resolve => setTimeout(resolve, 25))
+      handler.recordActivity(loopName, 'tool-before:edit')
+      await new Promise(resolve => setTimeout(resolve, 25))
+      handler.recordActivity(loopName, 'tool-after:edit')
+      await new Promise(resolve => setTimeout(resolve, 25))
+      handler.recordActivity(loopName, 'tool-before:read')
+      // Ensure activity flows during the final wait so watchdog stalls stay below maxConsecutiveStalls
+      await new Promise(resolve => setTimeout(resolve, 20))
+      handler.recordActivity(loopName, 'tool-after:read')
+      await new Promise(resolve => setTimeout(resolve, 30))
+
+      const state = service.getAnyState(loopName)
+      expect(state?.active).toBe(true)
+      expect(state?.terminationReason).toBeUndefined()
+      expect(handler.getStallInfo(loopName)?.consecutiveStalls).toBeLessThan(3)
+
+      handler.clearLoopTimers(loopName)
       rmSync(worktreeDir, { recursive: true, force: true })
     })
   })
@@ -2303,7 +2499,7 @@ describe('loop-hooks integration', () => {
     })
   })
 
-  describe('B3 watchdog status-check failure is not a stall', () => {
+  describe('B3 watchdog transient status-check failure is not a stall', () => {
     it('does not increment consecutiveStalls when session.status throws once', async () => {
       testConfig.loop = {
         ...testConfig.loop,
@@ -2376,10 +2572,11 @@ describe('loop-hooks integration', () => {
 
       handler.startWatchdog(loopName)
       await new Promise(resolve => setTimeout(resolve, 120))
-      handler.clearLoopTimers(loopName)
 
       const stallInfo = handler.getStallInfo(loopName)
       expect(stallInfo?.consecutiveStalls).toBe(0)
+
+      handler.clearLoopTimers(loopName)
       const state = service.getAnyState(loopName)
       expect(state?.active).toBe(true)
       expect(state?.terminationReason).toBeUndefined()

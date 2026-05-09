@@ -3,6 +3,7 @@ import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import type { LoopService, LoopState } from '../services/loop'
 import { MAX_RETRIES } from '../services/loop'
 import type { Logger, PluginConfig } from '../types'
+import { createLoopWatchdog, type LoopWatchdogStallInfo, type LoopWatchdogRecoveryContext } from './watchdog'
 import { retryWithModelFallback, resolveDecomposerModel } from '../utils/model-fallback'
 import { resolveLoopModel, resolveLoopAuditorModel } from '../utils/loop-helpers'
 import type { createSandboxManager } from '../sandbox/manager'
@@ -22,11 +23,12 @@ export interface LoopEventHandler {
   terminateAll(): void
   clearAllRetryTimeouts(): void
   startWatchdog(loopName: string): void
-  getStallInfo(loopName: string): { consecutiveStalls: number; lastActivityTime: number } | null
+  getStallInfo(loopName: string): LoopWatchdogStallInfo | null
   cancelBySessionId(sessionId: string): Promise<boolean>
   terminateLoopByName(loopName: string, reason: string): Promise<boolean>
   runExclusive<T>(loopName: string, fn: () => Promise<T>): Promise<T>
   clearLoopTimers(loopName: string): void
+  recordActivity(loopName: string, source?: string): void
 }
 
 
@@ -49,14 +51,7 @@ export function createLoopEventHandler(
   const retryTimeouts = new Map<string, NodeJS.Timeout>()
   const idleRetryTimeouts = new Map<string, NodeJS.Timeout>()
   const idleRetryAttempts = new Map<string, number>()
-  const lastActivityTime = new Map<string, number>()
-  const stallWatchdogs = new Map<string, NodeJS.Timeout>()
-  const consecutiveStalls = new Map<string, number>()
-  const watchdogRunning = new Map<string, boolean>()
   const stateLocks = new Map<string, Promise<unknown>>()
-  const lastStatusFingerprints = new Map<string, string>()
-
-  const maxStalls = loopService.getMaxConsecutiveStalls()
 
   const IDLE_RETRY_DELAY_MS = 1500
   const MAX_IDLE_RETRIES = 1
@@ -160,217 +155,43 @@ export function createLoopEventHandler(
 
 
 
-  type SessionStatusSnapshot = {
-    type?: string
-    attempt?: number
-    message?: string
-    next?: number
-    [key: string]: unknown
-  }
+  async function recoverWatchdogStall(
+    loopName: string,
+    _state: LoopState,
+    context: LoopWatchdogRecoveryContext,
+  ): Promise<void> {
+    await withStateLock(loopName, async () => {
+      const freshState = loopService.getActiveState(loopName)
+      if (!freshState?.active) return
 
-  function buildStatusFingerprint(status: SessionStatusSnapshot | undefined): string {
-    if (!status) return 'missing'
-    const stableEntries = Object.entries(status)
-      .filter(([key]) => key !== 'next')
-      .sort(([a], [b]) => a.localeCompare(b))
-    return JSON.stringify(stableEntries)
-  }
-
-  function isActiveSessionStatus(statusType: string | undefined): boolean {
-    return statusType === 'busy' || statusType === 'retry'
-  }
-
-  function isIdleOrMissingSessionStatus(statusType: string | undefined): boolean {
-    return statusType === 'idle' || statusType === undefined
-  }
-
-  async function getStatusWithRetry(directory: string, attempts = 3, backoffMs = 250): Promise<{ data: Record<string, { type: string }>; ok: boolean; error?: unknown }> {
-    let lastErr: unknown = null
-    for (let i = 0; i < attempts; i++) {
       try {
-        const r = await v2Client.session.status({ directory })
-        return { data: (r.data ?? {}) as Record<string, { type: string }>, ok: true }
+        if (freshState.phase === 'auditing') {
+          await handleAuditingPhase(loopName, freshState)
+        } else if (freshState.phase === 'decomposing') {
+          await handleDecomposingPhase(loopName, freshState)
+        } else if (freshState.phase === 'final_auditing') {
+          await handleFinalAuditPhase(loopName, freshState)
+        } else {
+          await handleCodingPhase(loopName, freshState)
+        }
       } catch (err) {
-        lastErr = err
-        if (i < attempts - 1) {
-          await new Promise((r) => setTimeout(r, backoffMs * (i + 1)))
-        }
+        await handlePromptError(loopName, freshState, `watchdog recovery in ${freshState.phase} phase (${context.reason})`, err)
       }
-    }
-    return { data: {}, ok: false, error: lastErr }
+    })
   }
 
-  function stopWatchdog(loopName: string): void {
-    const interval = stallWatchdogs.get(loopName)
-    if (interval) {
-      clearInterval(interval)
-      stallWatchdogs.delete(loopName)
-    }
-    lastActivityTime.delete(loopName)
-    consecutiveStalls.delete(loopName)
-    watchdogRunning.delete(loopName)
-    lastStatusFingerprints.delete(loopName)
-  }
-
-  function startWatchdog(loopName: string): void {
-    stopWatchdog(loopName)
-    lastActivityTime.set(loopName, Date.now())
-    consecutiveStalls.set(loopName, 0)
-
-    const stallTimeout = loopService.getStallTimeoutMs()
-
-    const interval = setInterval(async () => {
-      if (watchdogRunning.get(loopName)) return
-      watchdogRunning.set(loopName, true)
-      try {
-        const lastActivity = lastActivityTime.get(loopName)
-        if (!lastActivity) return
-
-        const elapsed = Date.now() - lastActivity
-        if (elapsed < stallTimeout) return
-
-        const state = loopService.getActiveState(loopName)
-        if (!state?.active) {
-          stopWatchdog(loopName)
-          return
-        }
-
-        const sessionId = state.sessionId
-        const statusResult = await getStatusWithRetry(state.worktreeDir)
-        if (!statusResult.ok) {
-          logger.error(`Loop watchdog: failed to check session status after retries, skipping tick`, statusResult.error)
-          lastActivityTime.set(loopName, Date.now())
-          return
-        }
-
-        const statuses = statusResult.data as Record<string, SessionStatusSnapshot>
-        const statusSnapshot = statuses[sessionId] as SessionStatusSnapshot | undefined
-        const status = statusSnapshot?.type
-        const fingerprint = buildStatusFingerprint(statusSnapshot)
-        const previousFingerprint = lastStatusFingerprints.get(loopName)
-
-        if (fingerprint !== previousFingerprint) {
-          lastStatusFingerprints.set(loopName, fingerprint)
-          lastActivityTime.set(loopName, Date.now())
-          consecutiveStalls.set(loopName, 0)
-          logger.log(`Loop watchdog: loop ${loopName} observed ${state.phase} status change (${status ?? 'missing'}), resetting timer`)
-
-          if (isActiveSessionStatus(status)) {
-            return
-          }
-
-          if (isIdleOrMissingSessionStatus(status)) {
-            if (state.phase === 'auditing') {
-              return
-            }
-
-            const stallCount = (consecutiveStalls.get(loopName) ?? 0) + 1
-            consecutiveStalls.set(loopName, stallCount)
-            lastActivityTime.set(loopName, Date.now())
-
-            if (maxStalls > 0 && stallCount >= maxStalls) {
-              logger.error(`Loop watchdog: loop ${loopName} exceeded max consecutive stalls (${maxStalls}), terminating`)
-              await terminateLoop(loopName, state, 'stall_timeout')
-              return
-            }
-
-            if (maxStalls <= 0) return
-
-            logger.log(`Loop watchdog: stall #${stallCount}/${maxStalls} for ${loopName} (phase=${state.phase}, elapsed=${elapsed}ms), re-triggering`)
-
-            await withStateLock(loopName, async () => {
-              const freshState = loopService.getActiveState(loopName)
-              if (!freshState?.active) return
-
-              try {
-                if (freshState.phase === 'auditing') {
-                  await handleAuditingPhase(loopName, freshState)
-                } else {
-                  await handleCodingPhase(loopName, freshState)
-                }
-              } catch (err) {
-                await handlePromptError(loopName, freshState, `watchdog recovery in ${freshState.phase} phase`, err)
-              }
-            })
-            return
-          }
-
-          if (state.phase === 'auditing' && Object.values(statuses).some(s => s.type === 'busy' && s !== statusSnapshot)) {
-            return
-          }
-        }
-
-        if (isActiveSessionStatus(status) || !isIdleOrMissingSessionStatus(status)) {
-          const stallCount = (consecutiveStalls.get(loopName) ?? 0) + 1
-          consecutiveStalls.set(loopName, stallCount)
-          lastActivityTime.set(loopName, Date.now())
-
-          if (maxStalls > 0 && stallCount >= maxStalls) {
-            logger.error(`Loop watchdog: loop ${loopName} exceeded max consecutive stalls (${maxStalls}), terminating`)
-            await terminateLoop(loopName, state, 'stall_timeout')
-            return
-          }
-
-          if (maxStalls <= 0) return
-
-          logger.log(`Loop watchdog: active status unchanged stall #${stallCount}/${maxStalls} for ${loopName} (phase=${state.phase}, status=${status}, elapsed=${elapsed}ms)`)
-          return
-        }
-
-        const stallCount = (consecutiveStalls.get(loopName) ?? 0) + 1
-        consecutiveStalls.set(loopName, stallCount)
-        lastActivityTime.set(loopName, Date.now())
-
-        if (maxStalls > 0 && stallCount >= maxStalls) {
-          logger.error(`Loop watchdog: loop ${loopName} exceeded max consecutive stalls (${maxStalls}), terminating`)
-          await terminateLoop(loopName, state, 'stall_timeout')
-          return
-        }
-
-        if (maxStalls <= 0) return
-
-        logger.log(`Loop watchdog: stall #${stallCount}/${maxStalls} for ${loopName} (phase=${state.phase}, elapsed=${elapsed}ms), re-triggering`)
-
-        await withStateLock(loopName, async () => {
-          const freshState = loopService.getActiveState(loopName)
-          if (!freshState?.active) return
-
-          try {
-            if (freshState.phase === 'auditing') {
-              await handleAuditingPhase(loopName, freshState)
-            } else if (freshState.phase === 'decomposing') {
-              await handleDecomposingPhase(loopName, freshState)
-            } else if (freshState.phase === 'final_auditing') {
-              await handleFinalAuditPhase(loopName, freshState)
-            } else {
-              await handleCodingPhase(loopName, freshState)
-            }
-          } catch (err) {
-            await handlePromptError(loopName, freshState, `watchdog recovery in ${freshState.phase} phase`, err)
-          }
-        })
-      } finally {
-        watchdogRunning.set(loopName, false)
-      }
-    }, stallTimeout)
-
-    stallWatchdogs.set(loopName, interval)
-    logger.log(`Loop watchdog: started for loop ${loopName} (timeout: ${stallTimeout}ms)`)
-  }
-
-  function getStallInfo(loopName: string): { consecutiveStalls: number; lastActivityTime: number } | null {
-    const lastActivity = lastActivityTime.get(loopName)
-    if (lastActivity === undefined) return null
-    return {
-      consecutiveStalls: consecutiveStalls.get(loopName) ?? 0,
-      lastActivityTime: lastActivity,
-    }
-  }
+  const watchdog = createLoopWatchdog({
+    loopService,
+    v2Client,
+    logger,
+    recover: recoverWatchdogStall,
+    terminate: terminateLoop,
+  })
 
   async function terminateLoop(loopName: string, state: LoopState, reason: string): Promise<void> {
     const sessionId = state.sessionId
     const projectDir = state.projectDir ?? state.worktreeDir
-    stopWatchdog(loopName)
+    watchdog.stop(loopName)
 
     const retryTimeout = retryTimeouts.get(loopName)
     if (retryTimeout) {
@@ -762,8 +583,8 @@ export function createLoopEventHandler(
 
     loopService.registerLoopSession(newSessionId, loopName)
 
-    stopWatchdog(loopName)
-    startWatchdog(loopName)
+    watchdog.stop(loopName)
+    watchdog.start(loopName)
 
     v2Client.session.delete({ sessionID: oldSessionId, directory: sessionDir }).catch((err) => {
       logger.error(`Loop: failed to delete old session ${oldSessionId}`, err)
@@ -963,7 +784,7 @@ export function createLoopEventHandler(
       logger.log(`${errorContext} using default model (fallback)`)
     }
 
-    consecutiveStalls.set(loopName, 0)
+    watchdog.recordActivity(loopName, 'phase-activity')
   }
 
   async function rotateToCodingAfterAuditFailure(loopName: string, state: LoopState, reason: string): Promise<void> {
@@ -1207,7 +1028,7 @@ export function createLoopEventHandler(
       await handlePromptError(loopName, codeState, 'failed to send initial section prompt', promptResult.error)
       return
     }
-    consecutiveStalls.set(loopName, 0)
+    watchdog.recordActivity(loopName, 'section-prompt-sent')
   }
 
   async function trySalvageDecomposerTranscript(loopName: string, state: LoopState): Promise<import('../utils/section-capture').ParsedSection[] | null> {
@@ -1345,7 +1166,7 @@ export function createLoopEventHandler(
         await handlePromptError(loopName, fallbackState, 'failed to send legacy fallback prompt', promptResult.error)
         return
       }
-      consecutiveStalls.set(loopName, 0)
+      watchdog.recordActivity(loopName, 'fallback-prompt-sent')
       return
     }
 
@@ -1489,9 +1310,6 @@ export function createLoopEventHandler(
     currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'final_auditing')
 
     if (!assistantErrorDetected) {
-      // Increment final audit attempts
-      const newAttempts = loopService.incrementFinalAuditAttempts(loopName)
-
       // Outstanding-finding gate: block termination if there are outstanding bug findings
       const hasOutstandingBugs = loopService.hasOutstandingFindings(loopName, 'bug')
 
@@ -1499,12 +1317,6 @@ export function createLoopEventHandler(
         logger.log(`Loop: final audit clean for ${loopName} (no outstanding bug findings), completing`)
         loopService.setFinalAuditDone(loopName, true)
         await terminateLoop(loopName, currentState, 'completed')
-        return
-      }
-
-      if (newAttempts > MAX_RETRIES) {
-        logger.log(`Loop: final audit attempts exhausted for ${loopName} (${newAttempts}/${MAX_RETRIES})`)
-        await terminateLoop(loopName, currentState, 'final_audit_failed')
         return
       }
 
@@ -1588,7 +1400,7 @@ export function createLoopEventHandler(
         await handlePromptError(loopName, currentState, 'failed to send rewind continuation', promptResult.error)
         return
       }
-      consecutiveStalls.set(loopName, 0)
+      watchdog.recordActivity(loopName, 'rewind-prompt-sent')
     }
   }
 
@@ -1816,7 +1628,7 @@ export function createLoopEventHandler(
           const retryResult = await sendAuditWithoutModel()
           if ('data' in retryResult && retryResult.data === true) {
             logger.log(`Loop: recovered audit prompt after workspace re-bind for ${loopName}`)
-            consecutiveStalls.set(loopName, 0)
+            watchdog.recordActivity(loopName, 'audit-recover')
             return
           }
         }
@@ -1834,7 +1646,7 @@ export function createLoopEventHandler(
       logger.log(`auditor using default model (fallback) (session ${created.auditSessionId})`)
     }
 
-    consecutiveStalls.set(loopName, 0)
+    watchdog.recordActivity(loopName, 'audit-created')
   }
 
   async function handleAuditingPhase(loopName: string, _state: LoopState): Promise<void> {
@@ -1923,7 +1735,7 @@ export function createLoopEventHandler(
           loopService.completeSection(loopName, idx, sectionSummary)
 
           // Rewind-completion shortcut: if all sections now completed, jump to final audit
-          if (currentState.finalAuditAttempts > 0 && idx < currentState.totalSections - 1) {
+          if (idx < currentState.totalSections - 1) {
             const allCompleted = loopService.getCompletedSectionDigest(currentState).length === currentState.totalSections
             if (allCompleted) {
               logger.log(`Loop: all ${currentState.totalSections} sections completed after rewind, jumping straight to final audit`)
@@ -1999,7 +1811,7 @@ export function createLoopEventHandler(
                 await handlePromptError(loopName, finalAuditState, 'failed to send final audit prompt', finalAuditPromptResult.error)
                 return
               }
-              consecutiveStalls.set(loopName, 0)
+              watchdog.recordActivity(loopName, 'final-audit-prompt-sent')
               return
             }
           }
@@ -2114,7 +1926,7 @@ export function createLoopEventHandler(
               await handlePromptError(loopName, finalAuditState, 'failed to send final audit prompt', finalAuditPromptResult.error)
               return
             }
-            consecutiveStalls.set(loopName, 0)
+            watchdog.recordActivity(loopName, 'final-audit-prompt-sent')
             return
           }
         }
@@ -2130,13 +1942,6 @@ export function createLoopEventHandler(
         }
 
         loopService.incrementSectionAttempts(loopName, idx)
-        const sectionPlan = loopService.getSectionPlan(currentState, idx)
-        const sectionCap = loopService.getSectionMaxAttempts()
-        if (sectionCap > 0 && sectionPlan && sectionPlan.attempts >= sectionCap) {
-          logger.log(`Loop: section ${idx} exceeded section cap (${sectionPlan.attempts}/${sectionCap}), terminating`)
-          await terminateLoop(loopName, currentState, `section_failed: ${idx}`)
-          return
-        }
 
         loopService.setLastAuditResult(loopName, auditText || '')
         loopService.replaceSession(loopName, {
@@ -2374,7 +2179,7 @@ export function createLoopEventHandler(
       }
 
       try {
-        startWatchdog(loopName)
+        watchdog.start(loopName)
         
         if (state.phase === 'auditing') {
           await handleAuditingPhase(loopName, state)
@@ -2412,14 +2217,7 @@ export function createLoopEventHandler(
     }
     delayedSessionDeleteTimeouts.clear()
     loopDelayedDeletes.clear()
-    for (const [worktreeName, interval] of stallWatchdogs.entries()) {
-      clearInterval(interval)
-      stallWatchdogs.delete(worktreeName)
-    }
-    lastActivityTime.clear()
-    consecutiveStalls.clear()
-    watchdogRunning.clear()
-    lastStatusFingerprints.clear()
+    watchdog.clearAll()
     stateLocks.clear()
     sessionsAwaitingBusy.clear()
     logger.log('Loop: cleared all retry timeouts')
@@ -2442,6 +2240,8 @@ export function createLoopEventHandler(
   }
 
   function clearLoopTimers(loopName: string): void {
+    watchdog.stop(loopName)
+
     const retryTimeout = retryTimeouts.get(loopName)
     if (retryTimeout) {
       clearTimeout(retryTimeout)
@@ -2467,8 +2267,6 @@ export function createLoopEventHandler(
       }
       loopDelayedDeletes.delete(loopName)
     }
-
-    lastStatusFingerprints.delete(loopName)
   }
 
   function runExclusive<T>(loopName: string, fn: () => Promise<T>): Promise<T> {
@@ -2479,11 +2277,12 @@ export function createLoopEventHandler(
     onEvent,
     terminateAll,
     clearAllRetryTimeouts,
-    startWatchdog,
-    getStallInfo,
+    startWatchdog: watchdog.start,
+    getStallInfo: watchdog.getStallInfo,
     cancelBySessionId,
     terminateLoopByName,
     runExclusive,
     clearLoopTimers,
+    recordActivity: watchdog.recordActivity,
   }
 }

@@ -188,7 +188,6 @@ describe('review section scoping', () => {
       currentSectionIndex: opts?.currentSectionIndex ?? 0,
       totalSections: opts?.totalSections ?? 0,
       finalAuditDone: 0,
-      finalAuditAttempts: 0,
     }, { prompt: 'test plan', lastAuditResult: null })
   }
 

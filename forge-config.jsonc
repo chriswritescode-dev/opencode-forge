@@ -36,7 +36,6 @@
     "model": "",
     "stallTimeoutMs": 60000,
     "maxConsecutiveStalls": 5,  // 0 = disabled; default 5
-    "sectionMaxAttempts": 0,  // 0 = unlimited; bounded by maxIterations
     // Worktree loop completion logging (off by default)
     "worktreeLogging": {
       "enabled": false,

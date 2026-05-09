@@ -214,7 +214,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       currentSectionIndex: opts.currentSectionIndex,
       totalSections: opts.totalSections,
       finalAuditDone: 0,
-      finalAuditAttempts: 0,
     }, { prompt: 'test plan text', lastAuditResult: null })
   }
 

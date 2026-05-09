@@ -265,7 +265,6 @@ export interface LoopStatusView {
   currentSectionIndex?: number
   totalSections?: number
   finalAuditDone?: boolean
-  finalAuditAttempts?: number
   sections?: Array<{
     index: number
     title: string
@@ -1026,7 +1025,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         currentSectionIndex: 0,
         totalSections: 0,
         finalAuditDone: false,
-        finalAuditAttempts: 0,
       }
       
       deps.loopService!.setState(uniqueLoopName, state)
@@ -1700,7 +1698,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         currentSectionIndex: state.currentSectionIndex,
         totalSections: state.totalSections,
         finalAuditDone: state.finalAuditDone,
-        finalAuditAttempts: state.finalAuditAttempts,
         sections: sectionViews,
       }
     })
@@ -2069,7 +2066,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         currentSectionIndex: stoppedState.currentSectionIndex,
         totalSections: stoppedState.totalSections,
         finalAuditDone: stoppedState.finalAuditDone,
-        finalAuditAttempts: stoppedState.finalAuditAttempts,
       }
       restartedState = newState
       return { ok: true, newSessionId: effectiveSessionId, previousSessionId, sandbox: restartSandbox, bindFailed, decomposerSessionId }
@@ -2266,6 +2262,5 @@ function rowToLoopState(
     currentSectionIndex: row.currentSectionIndex,
     totalSections: row.totalSections,
     finalAuditDone: row.finalAuditDone === 1,
-    finalAuditAttempts: row.finalAuditAttempts,
   }
 }

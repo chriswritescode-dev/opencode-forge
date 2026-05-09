@@ -173,7 +173,6 @@ describe('LoopService section management', () => {
       currentSectionIndex: 0,
       totalSections: 2,
       finalAuditDone: 0,
-      finalAuditAttempts: 0,
     }, { prompt: 'test plan', lastAuditResult: null })
   }
 
@@ -267,17 +266,7 @@ describe('LoopService section management', () => {
     })
   })
 
-  describe('incrementFinalAuditAttempts', () => {
-    test('increments and returns new count', () => {
-      insertLoop('test-loop')
 
-      const count1 = loopService.incrementFinalAuditAttempts('test-loop')
-      expect(count1).toBe(1)
-
-      const count2 = loopService.incrementFinalAuditAttempts('test-loop')
-      expect(count2).toBe(2)
-    })
-  })
 
   describe('buildAuditPrompt routing', () => {
     test('uses section audit prompt for sectioned loops', () => {
@@ -323,7 +312,6 @@ describe('LoopService section management', () => {
         currentSectionIndex: 0,
         totalSections: 0,
         finalAuditDone: 0,
-        finalAuditAttempts: 0,
       }, { prompt: 'test plan', lastAuditResult: null })
 
       const state = loopService.getActiveState('no-sections')!
@@ -630,7 +618,6 @@ describe('section-read tool contract', () => {
       currentSectionIndex: 0,
       totalSections: 2,
       finalAuditDone: 0,
-      finalAuditAttempts: 0,
     }, { prompt: null, lastAuditResult: null })
 
     sectionPlansRepo.bulkInsert({

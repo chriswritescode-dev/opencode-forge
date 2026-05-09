@@ -32,7 +32,6 @@ export interface LoopRow {
   currentSectionIndex: number
   totalSections: number
   finalAuditDone: number
-  finalAuditAttempts: number
 }
 
 export interface LoopLargeFields {
@@ -84,8 +83,6 @@ export interface LoopsRepo {
   setCurrentSectionIndex(projectId: string, loopName: string, index: number): void
   setTotalSections(projectId: string, loopName: string, total: number): void
   setFinalAuditDone(projectId: string, loopName: string, done: boolean): void
-  incrementFinalAuditAttempts(projectId: string, loopName: string): number
-  getFinalAuditAttempts(projectId: string, loopName: string): number
 }
 
 function mapRow(row: LoopRowRaw): LoopRow {
@@ -120,7 +117,6 @@ function mapRow(row: LoopRowRaw): LoopRow {
     currentSectionIndex: row.current_section_index,
     totalSections: row.total_sections,
     finalAuditDone: row.final_audit_done,
-    finalAuditAttempts: row.final_audit_attempts,
   }
 }
 
@@ -155,7 +151,6 @@ interface LoopRowRaw {
   current_section_index: number
   total_sections: number
   final_audit_done: number
-  final_audit_attempts: number
 }
 
 export function createLoopsRepo(db: Database): LoopsRepo {
@@ -167,8 +162,8 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       model_failed, sandbox, sandbox_container, started_at, completed_at,
       termination_reason, completion_summary, workspace_id, host_session_id,
       decomposition_status, decomposition_mode, decomposition_session_id,
-      current_section_index, total_sections, final_audit_done, final_audit_attempts
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      current_section_index, total_sections, final_audit_done
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   const upsertLargeStmt = db.prepare(`
@@ -186,7 +181,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
            model_failed, sandbox, sandbox_container, started_at, completed_at,
            termination_reason, completion_summary, workspace_id, host_session_id,
            decomposition_status, decomposition_mode, decomposition_session_id,
-           current_section_index, total_sections, final_audit_done, final_audit_attempts
+           current_section_index, total_sections, final_audit_done
     FROM loops
     WHERE project_id = ? AND loop_name = ?
   `)
@@ -204,7 +199,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
            model_failed, sandbox, sandbox_container, started_at, completed_at,
            termination_reason, completion_summary, workspace_id, host_session_id,
            decomposition_status, decomposition_mode, decomposition_session_id,
-           current_section_index, total_sections, final_audit_done, final_audit_attempts
+           current_section_index, total_sections, final_audit_done
     FROM loops
     WHERE project_id = ? AND current_session_id = ?
   `)
@@ -216,7 +211,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
            model_failed, sandbox, sandbox_container, started_at, completed_at,
            termination_reason, completion_summary, workspace_id, host_session_id,
            decomposition_status, decomposition_mode, decomposition_session_id,
-           current_section_index, total_sections, final_audit_done, final_audit_attempts
+           current_section_index, total_sections, final_audit_done
     FROM loops
     WHERE project_id = ? AND status IN
   `
@@ -352,7 +347,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
         row.currentSectionIndex ?? 0,
         row.totalSections ?? 0,
         row.finalAuditDone ?? 0,
-        row.finalAuditAttempts ?? 0
       ) as unknown as { changes: number }
       if (result.changes === 0) {
         return false
@@ -522,16 +516,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
 
     setFinalAuditDone(projectId, loopName, done) {
       db.prepare(`UPDATE loops SET final_audit_done = ? WHERE project_id = ? AND loop_name = ?`).run(done ? 1 : 0, projectId, loopName)
-    },
-
-    incrementFinalAuditAttempts(projectId, loopName) {
-      const result = db.prepare(`UPDATE loops SET final_audit_attempts = final_audit_attempts + 1 WHERE project_id = ? AND loop_name = ? RETURNING final_audit_attempts`).get(projectId, loopName) as { final_audit_attempts: number } | null
-      return result?.final_audit_attempts ?? 0
-    },
-
-    getFinalAuditAttempts(projectId, loopName) {
-      const result = db.prepare(`SELECT final_audit_attempts FROM loops WHERE project_id = ? AND loop_name = ?`).get(projectId, loopName) as { final_audit_attempts: number } | null
-      return result?.final_audit_attempts ?? 0
     },
   }
 }

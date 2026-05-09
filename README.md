@@ -191,7 +191,6 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
     "model": "",                   // Reserved; not actively read. Use executionModel instead.
     "stallTimeoutMs": 60000,       // Stall detection timeout (60s)
     "maxConsecutiveStalls": 5,     // Consecutive stalls before termination (0 = disabled)
-    "sectionMaxAttempts": 0,       // Max retries per section (0 = unlimited; bounded by maxIterations)
     "worktreeLogging": {           // Worktree loop completion logging
       "enabled": false,            // Enable completion logging
       "directory": ""              // Log directory (defaults to platform data dir)
@@ -260,7 +259,6 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 - `loop.model` — Reserved field in the type; not currently read by the loop system. Use `executionModel` for model overrides.
 - `loop.stallTimeoutMs` - Watchdog stall detection timeout in milliseconds (default: `60000`)
 - `loop.maxConsecutiveStalls` - Number of consecutive stalls before the loop terminates with reason `stall_timeout`. Set to `0` to disable stall-based termination (default: `5`).
-- `loop.sectionMaxAttempts` - Maximum retries per plan section before advancing or terminating. `0` means unlimited (bounded globally by `maxIterations`). (default: `0`)
 - `loop.worktreeLogging.enabled` - Enable worktree loop completion logging (default: `false`)
 - `loop.worktreeLogging.directory` - Directory for completion logs, defaults to platform data dir (default: `""`)
 
@@ -534,7 +532,6 @@ The loop terminates when any of these conditions is met:
 
 - **Max iterations** — The global `maxIterations` cap is exceeded (0 = unlimited).
 - **Stall timeout** — After `maxConsecutiveStalls` consecutive stalls (default: 5). Use `loop-status` with `restart` to resume from the persisted section and iteration.
-- **Section retries** — A plan section exceeds `sectionMaxAttempts` (0 = unlimited) AND is also bounded globally by `maxIterations`, which increments on every code rotation including section retries and final-audit rewinds.
 - **Final audit completion** — When no bug-severity review findings remain. The auditor no longer needs to emit a `<!-- final-audit:clear -->` marker; the loop completes automatically once all bugs are resolved.
 - **Consecutive errors** — 3 consecutive errors in either phase.
 

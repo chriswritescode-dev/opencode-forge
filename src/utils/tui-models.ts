@@ -88,7 +88,6 @@ export type LoopInfo = {
   decompositionStatus?: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
   decompositionMode?: 'agent' | 'deterministic'
   finalAuditDone?: boolean
-  finalAuditAttempts?: number
 }
 
 /**

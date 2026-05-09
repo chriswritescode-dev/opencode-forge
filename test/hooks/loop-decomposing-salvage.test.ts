@@ -321,7 +321,6 @@ describe('Transcript Salvage', () => {
         currentSectionIndex: opts.currentSectionIndex,
         totalSections: opts.totalSections,
         finalAuditDone: 0,
-        finalAuditAttempts: 0,
       }, { prompt: 'plan text', lastAuditResult: null })
     }
 
@@ -605,7 +604,6 @@ describe('Transcript Salvage', () => {
         currentSectionIndex: 0,
         totalSections: 0,
         finalAuditDone: 0,
-        finalAuditAttempts: 0,
       }, { prompt: 'plan text', lastAuditResult: null })
 
       const transcript = [
@@ -691,7 +689,6 @@ describe('Transcript Salvage', () => {
         currentSectionIndex: 0,
         totalSections: 0,
         finalAuditDone: 0,
-        finalAuditAttempts: 0,
       }, { prompt: 'plan text', lastAuditResult: null })
 
       const transcript = [
@@ -782,7 +779,6 @@ describe('Transcript Salvage', () => {
         currentSectionIndex: 0,
         totalSections: 0,
         finalAuditDone: 0,
-        finalAuditAttempts: 0,
       }, { prompt: 'plan text', lastAuditResult: null })
 
       const transcript = 'Just plain text, no sections or headings at all'
@@ -854,7 +850,6 @@ describe('Transcript Salvage', () => {
         currentSectionIndex: 0,
         totalSections: 2,
         finalAuditDone: 0,
-        finalAuditAttempts: 0,
       }, { prompt: 'plan text', lastAuditResult: null })
 
       loopService.bulkInsertSections('idempotent-loop', [

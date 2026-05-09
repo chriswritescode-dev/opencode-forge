@@ -221,7 +221,6 @@ describe('Loop Event Idle Gate', () => {
       currentSectionIndex: 0,
       totalSections: 2,
       finalAuditDone: false,
-      finalAuditAttempts: 0,
       ...overrides,
     }
   }

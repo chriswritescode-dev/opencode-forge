@@ -51,7 +51,6 @@ function loopRowToLoopInfo(
     decompositionMode: row.decompositionMode,
     currentSectionIndex: row.currentSectionIndex,
     totalSections: row.totalSections,
-    finalAuditAttempts: row.finalAuditAttempts,
   }
   if (sectionPlans && sectionPlans.length > 0) {
     return { ...base, sections: buildSectionViews(sectionPlans) }

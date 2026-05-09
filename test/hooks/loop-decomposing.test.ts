@@ -223,7 +223,6 @@ describe('Loop Decomposing Phase Handler', () => {
       currentSectionIndex: 0,
       totalSections: 0,
       finalAuditDone: false,
-      finalAuditAttempts: 0,
       ...overrides,
     }
   }

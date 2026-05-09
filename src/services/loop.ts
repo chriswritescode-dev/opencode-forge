@@ -61,7 +61,6 @@ export interface LoopState {
   currentSectionIndex: number
   totalSections: number
   finalAuditDone: boolean
-  finalAuditAttempts: number
 }
 
 export interface LoopService {
@@ -78,7 +77,6 @@ export interface LoopService {
   findMatchByName(name: string): { match: LoopState | null; candidates: LoopState[] }
   getStallTimeoutMs(): number
   getMaxConsecutiveStalls(): number
-  getSectionMaxAttempts(): number
   terminateAll(): Promise<void>
   reconcileStale(opts?: { isSandboxLive?: (loopName: string) => Promise<boolean> }): Promise<{ cancelled: number; preserved: string[] }>
   hasOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): boolean
@@ -113,7 +111,6 @@ export interface LoopService {
   resetSectionForRewind(loopName: string, index: number): void
   setCurrentSectionIndex(loopName: string, index: number): void
   setFinalAuditDone(loopName: string, done: boolean): void
-  incrementFinalAuditAttempts(loopName: string): number
   startSection(loopName: string, index: number): void
   setDecompositionStatus(loopName: string, status: LoopState['decompositionStatus']): void
   setDecompositionSessionId(loopName: string, sessionId: string | null): void
@@ -154,7 +151,6 @@ export function rowToLoopState(row: LoopRow, large: LoopLargeFields | null): Loo
     currentSectionIndex: row.currentSectionIndex,
     totalSections: row.totalSections,
     finalAuditDone: row.finalAuditDone === 1,
-    finalAuditAttempts: row.finalAuditAttempts,
   }
 }
 
@@ -203,7 +199,6 @@ export function createLoopService(
       currentSectionIndex: state.currentSectionIndex,
       totalSections: state.totalSections,
       finalAuditDone: state.finalAuditDone ? 1 : 0,
-      finalAuditAttempts: state.finalAuditAttempts,
     }
   }
 
@@ -408,10 +403,6 @@ export function createLoopService(
 
   function getMaxConsecutiveStalls(): number {
     return loopConfig?.maxConsecutiveStalls ?? MAX_CONSECUTIVE_STALLS
-  }
-
-  function getSectionMaxAttempts(): number {
-    return loopConfig?.sectionMaxAttempts ?? 0
   }
 
   async function terminateAll(): Promise<void> {
@@ -797,11 +788,10 @@ export function createLoopService(
   }
 
   function buildFinalAuditPrompt(state: LoopState): string {
-    const attempts = state.finalAuditAttempts + 1
     const planText = getPlanTextForState(state) ?? 'Plan not found in plan store.'
     const digest = getCompletedSectionDigest(state)
 
-    let header = `[Final integration audit -- pass ${attempts}/${MAX_RETRIES + 1}]`
+    let header = `[Final integration audit]`
     header += `\n\n## Master Plan\n${planText}`
 
     if (digest.length > 0) {
@@ -849,10 +839,6 @@ export function createLoopService(
     loopsRepo.setFinalAuditDone(projectId, loopName, done)
   }
 
-  function incrementFinalAuditAttempts(loopName: string): number {
-    return loopsRepo.incrementFinalAuditAttempts(projectId, loopName)
-  }
-
   function startSection(loopName: string, index: number): void {
     if (!sectionPlansRepo) return
     sectionPlansRepo.setStatus(projectId, loopName, index, 'in_progress')
@@ -891,7 +877,6 @@ export function createLoopService(
     findMatchByName,
     getStallTimeoutMs,
     getMaxConsecutiveStalls,
-    getSectionMaxAttempts,
     terminateAll,
     reconcileStale,
     hasOutstandingFindings,
@@ -925,7 +910,6 @@ export function createLoopService(
     resetSectionForRewind,
     setCurrentSectionIndex,
     setFinalAuditDone,
-    incrementFinalAuditAttempts,
     startSection,
     setDecompositionStatus,
     setDecompositionSessionId,

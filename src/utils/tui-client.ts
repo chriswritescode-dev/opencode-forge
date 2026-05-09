@@ -149,7 +149,6 @@ function mapRemoteLoop(input: Record<string, unknown>): LoopInfo {
     decompositionStatus: input.decompositionStatus as LoopInfo['decompositionStatus'],
     decompositionMode: input.decompositionMode as LoopInfo['decompositionMode'],
     finalAuditDone: input.finalAuditDone as boolean | undefined,
-    finalAuditAttempts: input.finalAuditAttempts as number | undefined,
   }
 }
 
