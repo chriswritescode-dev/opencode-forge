@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
@@ -9,6 +9,7 @@ import { createReviewFindingsRepo } from '../../src/storage/repos/review-finding
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopService, type LoopState, MAX_RETRIES } from '../../src/services/loop'
 import { createLoopEventHandler } from '../../src/hooks/loop'
+import { sessionsAwaitingBusy } from '../../src/hooks/loop-idle-gate'
 import type { Logger, PluginConfig } from '../../src/types'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 
@@ -695,6 +696,249 @@ describe('Loop Decomposing Phase Handler', () => {
 
       const after = loopService.getAnyState(state.loopName)!
       expect(after.decompositionStatus).toBe('skipped')
+    })
+  })
+
+  describe('decomposer → code no-assistant idle recovery', () => {
+    let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
+
+    beforeEach(() => {
+      sectionPlansRepo = createSectionPlansRepo(db)
+    })
+
+    interface EnhancedMockState {
+      createCalls: Array<{ title?: string; directory?: string }>
+      promptCalls: Array<{ sessionID?: string; agent?: string; text?: string }>
+      deleteCalls: Array<{ sessionID: string; directory: string }>
+      messagesBySession: Record<string, Array<{ role: string; text?: string }>>
+      createSessionIds: string[]
+    }
+
+    function createEnhancedMockV2Client(state: EnhancedMockState): OpencodeClient {
+      const createIndex = { value: 0 }
+      return {
+        session: {
+          create: async (params: any) => {
+            state.createCalls.push(params)
+            const sessionId = state.createSessionIds[createIndex.value] ?? `mock-sess-${createIndex.value}`
+            createIndex.value++
+            return { error: null, data: { id: sessionId } }
+          },
+          promptAsync: async (params: any) => {
+            state.promptCalls.push({
+              sessionID: params.sessionID,
+              agent: params.agent,
+              text: params.parts?.[0]?.text,
+            })
+            return { data: {}, error: null }
+          },
+          status: async () => ({ error: null, data: {} }),
+          abort: async () => {},
+          delete: async (params: DeleteCall) => {
+            state.deleteCalls.push(params)
+            return { error: undefined }
+          },
+          messages: async (params: any) => {
+            const sessionMsgs = state.messagesBySession[params.sessionID] ?? []
+            return {
+              error: null,
+              data: sessionMsgs.map(m => ({
+                info: { role: m.role },
+                parts: [{ type: 'text' as const, text: m.text ?? '' }],
+              })),
+            }
+          },
+          get: async () => ({ error: null, data: {} }),
+        },
+        tui: {
+          publish: async () => {},
+          selectSession: async () => {},
+        },
+        worktree: {
+          create: async () => ({ error: null, data: { directory: '/tmp/wt', branch: 'b' } }),
+          remove: async () => {},
+        },
+      } as unknown as OpencodeClient
+    }
+
+    test('keeps one worktree code session when first code idle has no assistant response', async () => {
+      vi.useFakeTimers()
+
+      const state = makeState({
+        phase: 'decomposing',
+        decompositionStatus: 'completed',
+        decompositionMode: 'agent',
+        decompositionSessionId: 'decomp-sess-id',
+        totalSections: 1,
+        currentSectionIndex: 0,
+        worktree: true,
+        workspaceId: 'wrk_1',
+        sandbox: true,
+        sessionId: 'decomp-sess-id',
+      })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession('decomp-sess-id', state.loopName)
+
+      sectionPlansRepo.bulkInsert({
+        projectId,
+        loopName: state.loopName,
+        sections: [
+          { index: 0, title: 'Section A', content: 'Content A' },
+        ],
+      })
+
+      const mockState: EnhancedMockState = {
+        createCalls: [],
+        promptCalls: [],
+        deleteCalls: [],
+        messagesBySession: {
+          'code-sess-1': [
+            { role: 'user', text: 'section prompt' },
+          ],
+        },
+        createSessionIds: ['code-sess-1', 'code-sess-2'],
+      }
+
+      const v2Client = createEnhancedMockV2Client(mockState)
+      const { logger } = createCapturingLogger()
+
+      const handler = createLoopEventHandler(
+        loopService,
+        { client: {} as any },
+        v2Client,
+        logger,
+        () => mockConfig,
+        undefined,
+        projectId,
+        tempDir,
+      )
+
+      await handler.onEvent({
+        event: {
+          type: 'session.status',
+          properties: {
+            status: { type: 'idle' },
+            sessionID: 'decomp-sess-id',
+          },
+        },
+      })
+
+      const afterDecomp = loopService.getAnyState(state.loopName)!
+      expect(afterDecomp.phase).toBe('coding')
+      expect(afterDecomp.sessionId).toBe('code-sess-1')
+      expect(mockState.createCalls).toHaveLength(1)
+
+      const codePrompt = mockState.promptCalls.find(p => p.agent === 'code')
+      expect(codePrompt).toBeDefined()
+
+      await handler.onEvent({
+        event: {
+          type: 'session.status',
+          properties: {
+            status: { type: 'idle' },
+            sessionID: 'code-sess-1',
+          },
+        },
+      })
+
+      await vi.advanceTimersByTimeAsync(1500)
+
+      const afterCoding = loopService.getAnyState(state.loopName)!
+
+      expect(afterCoding.phase).toBe('coding')
+      expect(afterCoding.sessionId).toBe('code-sess-1')
+      expect(mockState.createCalls).toHaveLength(1)
+      expect(mockState.promptCalls.filter(p => p.agent === 'auditor-loop')).toHaveLength(0)
+      expect(mockState.deleteCalls.find(d => d.sessionID === 'audit-sess')).toBeUndefined()
+
+      const codePrompts = mockState.promptCalls.filter(p => p.agent === 'code')
+      for (const cp of codePrompts) {
+        expect(cp.sessionID).toBe('code-sess-1')
+      }
+
+      vi.useRealTimers()
+    })
+
+    test('terminates with coding_no_assistant after repeated code launch recoveries', async () => {
+      vi.useFakeTimers()
+
+      const state = makeState({
+        phase: 'coding',
+        decompositionStatus: 'completed',
+        decompositionMode: 'agent',
+        decompositionSessionId: 'decomp-sess-id',
+        totalSections: 1,
+        currentSectionIndex: 0,
+        worktree: true,
+        workspaceId: 'wrk_1',
+        sandbox: true,
+        sessionId: 'code-sess-1',
+      })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession('code-sess-1', state.loopName)
+
+      sectionPlansRepo.bulkInsert({
+        projectId,
+        loopName: state.loopName,
+        sections: [
+          { index: 0, title: 'Section A', content: 'Content A' },
+        ],
+      })
+      loopService.startSection(state.loopName, 0)
+
+      const mockState: EnhancedMockState = {
+        createCalls: [],
+        promptCalls: [],
+        deleteCalls: [],
+        messagesBySession: {},
+        createSessionIds: [],
+      }
+
+      const v2Client = createEnhancedMockV2Client(mockState)
+      const { logger } = createCapturingLogger()
+
+      const handler = createLoopEventHandler(
+        loopService,
+        { client: {} as any },
+        v2Client,
+        logger,
+        () => mockConfig,
+        undefined,
+        projectId,
+        tempDir,
+      )
+
+      let currentSessionId = 'code-sess-1'
+      for (let i = 0; i <= MAX_RETRIES; i++) {
+        sessionsAwaitingBusy.clear()
+
+        await handler.onEvent({
+          event: {
+            type: 'session.status',
+            properties: {
+              status: { type: 'idle' },
+              sessionID: currentSessionId,
+            },
+          },
+        })
+
+        await vi.advanceTimersByTimeAsync(1500)
+
+        const afterState = loopService.getAnyState(state.loopName)
+        if (!afterState?.active) break
+        currentSessionId = afterState.sessionId
+      }
+
+      const afterRecovery = loopService.getAnyState(state.loopName)!
+      expect(afterRecovery.active).toBe(false)
+      expect(afterRecovery.terminationReason).toBe('coding_no_assistant')
+      expect(mockState.promptCalls.find(p => p.agent === 'auditor-loop')).toBeUndefined()
+      expect(mockState.createCalls).toHaveLength(0)
+
+      const codePrompts = mockState.promptCalls.filter(p => p.agent === 'code')
+      for (const cp of codePrompts) {
+        expect(cp.sessionID).toBe('code-sess-1')
+      }
     })
   })
 

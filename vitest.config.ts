@@ -9,6 +9,8 @@ export default defineConfig({
       'test/hooks/loop-decomposing-salvage.test.ts',
       'test/hooks/loop-decomposing.test.ts',
       'test/hooks/loop-section-audit-retry.test.ts',
+      'test/hooks/loop-idle-gate.test.ts',
+      'test/hooks/loop-event-gate.test.ts',
       'test/section-capture-streaming-completion.test.ts',
       'test/section-capture.test.ts',
       'test/services/execution-decomposer.test.ts',

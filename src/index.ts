@@ -99,7 +99,7 @@ export function createParentSessionLookup({
       }
     }
 
-    if (!seenDirectories.has(directory) && activeLoops.length === 0) {
+    if (!seenDirectories.has(directory)) {
       attempts.push({
         label: 'host',
         directory,
@@ -173,7 +173,7 @@ export function createSessionDirectoryLookup({
       }
     }
 
-    if (!seenDirectories.has(directory) && activeLoops.length === 0) {
+    if (!seenDirectories.has(directory)) {
       attempts.push({
         label: 'host',
         directory,

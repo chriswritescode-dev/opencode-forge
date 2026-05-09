@@ -23,6 +23,7 @@ import { isSandboxEnabled } from '../sandbox/context'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
 import { existsSync } from 'fs'
 import { decomposeDeterministically } from './deterministic-decomposer'
+import { markPromptSent, clearPromptPending } from '../hooks/loop-idle-gate'
 
 // ============================================================================
 // Surface Types - Identifies the caller boundary
@@ -1095,6 +1096,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         const decomposerPrompt = deps.loopService!.buildDecomposerInitialPrompt(state)
 
         try {
+          markPromptSent(uniqueLoopName, sessionId, deps.logger)
           const decomposerResult = await deps.v2.session.promptAsync({
             sessionID: sessionId,
             directory: state.worktreeDir,
@@ -1111,16 +1113,17 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             })(),
           })
           if ((decomposerResult as { error?: unknown })?.error) {
+            clearPromptPending(uniqueLoopName, deps.logger)
             deps.logger.error('handleStartLoop: decomposer promptAsync returned error', (decomposerResult as { error?: unknown }).error)
             await rollbackLoopStart()
             return fail('prompt_failed', 502, 'Failed to prompt decomposer')
           }
         } catch (err) {
+          clearPromptPending(uniqueLoopName, deps.logger)
           deps.logger.error('handleStartLoop: failed to prompt decomposer', err)
           await rollbackLoopStart()
           return fail('prompt_failed', 502, 'Failed to prompt decomposer')
         }
-
         // Start watchdog if requested
         if (command.lifecycle?.startWatchdog && deps.loopHandler) {
           deps.loopHandler.startWatchdog(uniqueLoopName)
@@ -1216,6 +1219,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           if (command.mode === 'worktree' && loopModel) {
             sectionPromptResult = await retryWithModelFallback(
               async () => {
+                markPromptSent(uniqueLoopName, sessionId, deps.logger)
                 const { result } = await promptSessionWithFallback(deps, {
                   sessionID: sessionId,
                   directory: state.worktreeDir,
@@ -1226,6 +1230,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
                 return result
               },
               async () => {
+                markPromptSent(uniqueLoopName, sessionId, deps.logger)
                 const { result } = await promptSessionWithFallback(deps, {
                   sessionID: sessionId,
                   directory: state.worktreeDir,
@@ -1239,6 +1244,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
               deps.logger,
             )
           } else {
+            markPromptSent(uniqueLoopName, sessionId, deps.logger)
             sectionPromptResult = await promptSessionWithFallback(deps, {
               sessionID: sessionId,
               directory: state.worktreeDir,
@@ -1249,6 +1255,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           }
 
           if (sectionPromptResult.result.error) {
+            clearPromptPending(uniqueLoopName, deps.logger)
             deps.logger.error('handleStartLoop: failed to send section prompt', sectionPromptResult.result.error)
             await rollbackLoopStart()
             return fail('prompt_failed', 502, 'Failed to send section prompt')
@@ -1322,6 +1329,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             const decomposerPrompt = deps.loopService!.buildDecomposerInitialPrompt(state)
             
             try {
+              markPromptSent(uniqueLoopName, decomposerSessionId, deps.logger)
               const decomposerFallbackResult = await deps.v2.session.promptAsync({
                 sessionID: decomposerSessionId,
                 directory: state.worktreeDir,
@@ -1338,11 +1346,13 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
                 })(),
               })
               if ((decomposerFallbackResult as { error?: unknown })?.error) {
+                clearPromptPending(uniqueLoopName, deps.logger)
                 deps.logger.error('handleStartLoop: decomposer promptAsync returned error', (decomposerFallbackResult as { error?: unknown }).error)
                 await rollbackLoopStart()
                 return fail('prompt_failed', 502, 'Failed to prompt decomposer')
               }
             } catch (err) {
+              clearPromptPending(uniqueLoopName, deps.logger)
               deps.logger.error('handleStartLoop: failed to prompt decomposer for fallback', err)
               await rollbackLoopStart()
               return fail('prompt_failed', 502, 'Failed to prompt decomposer')
@@ -1364,6 +1374,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             // Legacy fallback: prompt the code session with the plan text
             const legacyPrompt = planText ?? ''
             try {
+              markPromptSent(uniqueLoopName, sessionId, deps.logger)
               const legacyResult = await promptSessionWithFallback(deps, {
                 sessionID: sessionId,
                 directory: state.worktreeDir,
@@ -1372,11 +1383,13 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
                 ...(createdWorkspaceId ? { workspace: createdWorkspaceId } : {}),
               }, loopModel)
               if ((legacyResult.result as { error?: unknown })?.error) {
+                clearPromptPending(uniqueLoopName, deps.logger)
                 deps.logger.error('handleStartLoop: legacy fallback promptAsync returned error', (legacyResult.result as { error?: unknown }).error)
                 await rollbackLoopStart()
                 return fail('prompt_failed', 502, 'Failed to send legacy fallback prompt')
               }
             } catch (err) {
+              clearPromptPending(uniqueLoopName, deps.logger)
               deps.logger.error('handleStartLoop: failed to send legacy fallback prompt', err)
               await rollbackLoopStart()
               return fail('prompt_failed', 502, 'Failed to send legacy fallback prompt')
@@ -1472,6 +1485,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       if (command.mode === 'worktree' && loopModel) {
         const retryResult = await retryWithModelFallback(
           async () => {
+            markPromptSent(uniqueLoopName, sessionId, deps.logger)
             const { result } = await promptSessionWithFallback(
               deps,
               {
@@ -1486,6 +1500,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             return result
           },
           async () => {
+            markPromptSent(uniqueLoopName, sessionId, deps.logger)
             const { result } = await promptSessionWithFallback(
               deps,
               {
@@ -1505,6 +1520,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         promptResult = retryResult
         actualModel = retryResult.usedModel ?? null
       } else {
+        markPromptSent(uniqueLoopName, sessionId, deps.logger)
         promptResult = await promptSessionWithFallback(
           deps,
           {
@@ -1520,6 +1536,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       }
       
       if (promptResult.result.error) {
+        clearPromptPending(uniqueLoopName, deps.logger)
         deps.logger.error('handleStartLoop: failed to send prompt', promptResult.result.error)
         await rollbackLoopStart()
         
@@ -2104,26 +2121,33 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const promptAgent = needsDecomposerRestart ? 'decomposer' : stoppedState.phase === 'final_auditing' ? 'auditor-loop' : 'code'
 
     const { result: promptResult } = await retryWithModelFallback(
-      () => deps.v2.session.promptAsync({
-        sessionID: outcome.newSessionId,
-        directory: stoppedState.worktreeDir,
-        parts: [{ type: 'text' as const, text: promptText }],
-        agent: promptAgent,
-        model: loopModel!,
-        ...workspaceParam,
-      }),
-      () => deps.v2.session.promptAsync({
-        sessionID: outcome.newSessionId,
-        directory: stoppedState.worktreeDir,
-        parts: [{ type: 'text' as const, text: promptText }],
-        agent: promptAgent,
-        ...workspaceParam,
-      }),
+      () => {
+        markPromptSent(stoppedState.loopName, outcome.newSessionId, deps.logger)
+        return deps.v2.session.promptAsync({
+          sessionID: outcome.newSessionId,
+          directory: stoppedState.worktreeDir,
+          parts: [{ type: 'text' as const, text: promptText }],
+          agent: promptAgent,
+          model: loopModel!,
+          ...workspaceParam,
+        })
+      },
+      () => {
+        markPromptSent(stoppedState.loopName, outcome.newSessionId, deps.logger)
+        return deps.v2.session.promptAsync({
+          sessionID: outcome.newSessionId,
+          directory: stoppedState.worktreeDir,
+          parts: [{ type: 'text' as const, text: promptText }],
+          agent: promptAgent,
+          ...workspaceParam,
+        })
+      },
       loopModel,
       deps.logger,
     )
 
     if (promptResult.error) {
+      clearPromptPending(stoppedState.loopName, deps.logger)
       deps.logger.error('loop-restart: failed to send prompt', promptResult.error)
       // Save section plans before deleteState (which cascades to section_plans)
       const savedPlans = deps.sectionPlansRepo?.list(ctx.projectId, stoppedState.loopName) ?? []
@@ -2143,7 +2167,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       }
       return fail('internal_error', 500, 'Restart failed: could not send prompt to new session.')
     }
-
     // Save section plans before deleteState (which cascades to section_plans)
     const savedSectionPlans = deps.sectionPlansRepo?.list(ctx.projectId, stoppedState.loopName) ?? []
 

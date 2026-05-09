@@ -64,7 +64,7 @@ function createMockLoopService(activeLoops: Array<{ loopName: string; worktreeDi
 }
 
 describe('createParentSessionLookup', () => {
-  it('with one active loop having workspaceId, issues directory+workspace then workspace-only', async () => {
+  it('with one active loop having workspaceId, issues directory+workspace then workspace-only then host fallback', async () => {
     const sessionId = 'ses-1'
     const v2 = {
       session: {
@@ -87,7 +87,7 @@ describe('createParentSessionLookup', () => {
     await lookup(sessionId)
 
     const calls = v2.session.get.mock.calls.map((c: unknown[]) => c[0] as Record<string, unknown>)
-    expect(calls).toHaveLength(2)
+    expect(calls).toHaveLength(3)
     expect(calls[0]).toEqual({
       sessionID: sessionId,
       directory: '/wt',
@@ -97,9 +97,13 @@ describe('createParentSessionLookup', () => {
       sessionID: sessionId,
       workspace: 'wrk_x',
     })
+    expect(calls[2]).toEqual({
+      sessionID: sessionId,
+      directory: '/host',
+    })
   })
 
-  it('no-dir attempt is not issued when there are active loops with workspace', async () => {
+  it('host fallback is attempted after active loop attempts', async () => {
     const sessionId = 'ses-2'
     const v2 = {
       session: {
@@ -123,14 +127,12 @@ describe('createParentSessionLookup', () => {
     await lookup(sessionId)
 
     const calls = v2.session.get.mock.calls.map((c: unknown[]) => c[0] as Record<string, unknown>)
-    for (const call of calls) {
-      expect(call).toHaveProperty('sessionID')
-      expect(call.sessionID).toBe(sessionId)
-      // Should not have a no-dir attempt
-      if (call.directory) {
-        expect(call.directory).not.toBeUndefined()
-      }
-    }
+    expect(calls).toHaveLength(5)
+    expect(calls[0]).toEqual({ sessionID: sessionId, directory: '/wt-1', workspace: 'wrk_1' })
+    expect(calls[1]).toEqual({ sessionID: sessionId, workspace: 'wrk_1' })
+    expect(calls[2]).toEqual({ sessionID: sessionId, directory: '/wt-2', workspace: 'wrk_2' })
+    expect(calls[3]).toEqual({ sessionID: sessionId, workspace: 'wrk_2' })
+    expect(calls[4]).toEqual({ sessionID: sessionId, directory: '/host' })
   })
 
   it('failure is logged once per sessionId within negative-TTL window', async () => {
@@ -222,7 +224,7 @@ describe('createParentSessionLookup', () => {
     })
   })
 
-  it('active loop without workspaceId issues only directory attempt', async () => {
+  it('active loop without workspaceId issues directory attempt then host fallback', async () => {
     const sessionId = 'ses-nows'
     const v2 = {
       session: {
@@ -245,10 +247,14 @@ describe('createParentSessionLookup', () => {
     await lookup(sessionId)
 
     const calls = v2.session.get.mock.calls.map((c: unknown[]) => c[0] as Record<string, unknown>)
-    expect(calls).toHaveLength(1)
+    expect(calls).toHaveLength(2)
     expect(calls[0]).toEqual({
       sessionID: sessionId,
       directory: '/wt',
+    })
+    expect(calls[1]).toEqual({
+      sessionID: sessionId,
+      directory: '/host',
     })
   })
 
@@ -278,18 +284,18 @@ describe('createParentSessionLookup', () => {
       })
 
       // First call: sets negative cache entry at 1000 + 15000 = 16000
-      // 2 attempts: loop:/wt (workspace) and loop-ws:test-loop
+      // 3 attempts: loop:/wt (workspace), loop-ws:test-loop, host
       await lookup(sessionId)
-      expect(v2.session.get).toHaveBeenCalledTimes(2)
+      expect(v2.session.get).toHaveBeenCalledTimes(3)
 
       // Second call within TTL (now still 1000): returns null without re-attempting
       await lookup(sessionId)
-      expect(v2.session.get).toHaveBeenCalledTimes(2) // no additional calls
+      expect(v2.session.get).toHaveBeenCalledTimes(3) // no additional calls
 
       // Third call after TTL expires (now = 17000 > 16000): re-attempts
       now = 17000
       await lookup(sessionId)
-      expect(v2.session.get).toHaveBeenCalledTimes(4) // 2 more calls
+      expect(v2.session.get).toHaveBeenCalledTimes(6) // 3 more calls
     } finally {
       vi.restoreAllMocks()
     }
@@ -319,23 +325,24 @@ describe('createParentSessionLookup', () => {
 
     const result = await lookup(sessionId)
     expect(result).toBeNull()
-    // No attempts were made, so session.get should not be called
-    expect(v2.session.get).not.toHaveBeenCalled()
-    // Logger should NOT be called with failure message (failures.length === 0)
-    expect(logger.log).not.toHaveBeenCalledWith(
-      expect.stringContaining('[session-resolver] session.get failed'),
-    )
+    // Only host directory attempt is made because active loop worktreeDir is empty
+    expect(v2.session.get).toHaveBeenCalledTimes(1)
+    expect(v2.session.get).toHaveBeenCalledWith({
+      sessionID: sessionId,
+      directory: '/host',
+    })
   })
 })
 
 describe('createSessionDirectoryLookup', () => {
-  it('with workspaceId, includes workspace in attempts', async () => {
+  it('with workspaceId, includes workspace and host fallback in attempts', async () => {
     const sessionId = 'ses-5'
     const v2 = {
       session: {
         get: vi.fn()
           .mockResolvedValueOnce({ data: undefined })
-          .mockResolvedValueOnce({ data: { directory: '/wt' } }),
+          .mockResolvedValueOnce({ data: undefined })
+          .mockResolvedValueOnce({ data: { directory: '/host' } }),
       },
     }
 
@@ -352,7 +359,7 @@ describe('createSessionDirectoryLookup', () => {
     await lookup(sessionId)
 
     const calls = v2.session.get.mock.calls.map((c: unknown[]) => c[0] as Record<string, unknown>)
-    expect(calls).toHaveLength(2)
+    expect(calls).toHaveLength(3)
     expect(calls[0]).toEqual({
       sessionID: sessionId,
       directory: '/wt',
@@ -361,6 +368,10 @@ describe('createSessionDirectoryLookup', () => {
     expect(calls[1]).toEqual({
       sessionID: sessionId,
       workspace: 'wrk_x',
+    })
+    expect(calls[2]).toEqual({
+      sessionID: sessionId,
+      directory: '/host',
     })
   })
 

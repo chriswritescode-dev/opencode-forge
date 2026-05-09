@@ -15,6 +15,7 @@ import { formatAuditSessionTitle, formatLoopSessionTitle } from '../utils/sessio
 import { bindSessionToWorkspace } from '../workspace/forge-worktree'
 import { extractSections } from '../utils/section-capture'
 import { decomposeDeterministically } from '../services/deterministic-decomposer'
+import { markPromptSent, clearPromptPending, sessionsAwaitingBusy, isAwaitingBusy, isAwaitingBusyExpired } from './loop-idle-gate'
 
 export interface LoopEventHandler {
   onEvent(input: { event: { type: string; properties?: Record<string, unknown> } }): Promise<void>
@@ -59,6 +60,12 @@ export function createLoopEventHandler(
 
   const IDLE_RETRY_DELAY_MS = 1500
   const MAX_IDLE_RETRIES = 1
+  const MAX_CODE_LAUNCH_RECOVERIES = MAX_RETRIES
+  const DELAYED_SESSION_DELETE_MS = 15_000
+
+  const codingLaunchRecoveryAttempts = new Map<string, number>()
+  const delayedSessionDeleteTimeouts = new Map<string, NodeJS.Timeout>()
+  const loopDelayedDeletes = new Map<string, Set<string>>()
 
   function maybeSelectTuiSession(state: LoopState, sessionId: string): void {
     if (state.worktree) return
@@ -377,6 +384,20 @@ export function createLoopEventHandler(
       idleRetryTimeouts.delete(loopName)
     }
     idleRetryAttempts.delete(loopName)
+    codingLaunchRecoveryAttempts.delete(loopName)
+    clearPromptPending(loopName, logger)
+
+    const loopDeleteSet = loopDelayedDeletes.get(loopName)
+    if (loopDeleteSet) {
+      for (const sid of loopDeleteSet) {
+        const t = delayedSessionDeleteTimeouts.get(sid)
+        if (t) {
+          clearTimeout(t)
+          delayedSessionDeleteTimeouts.delete(sid)
+        }
+      }
+      loopDelayedDeletes.delete(loopName)
+    }
 
     const now = Date.now()
     const statusMap = (r: string): 'completed' | 'cancelled' | 'errored' | 'stalled' => {
@@ -700,6 +721,8 @@ export function createLoopEventHandler(
     const oldSessionId = state.sessionId
     const sessionDir = state.worktreeDir
 
+    clearPromptPending(loopName, logger)
+
     logger.log(
       `Loop: [perm-diag] rotate loop=${loopName} state.worktree=${String(state.worktree)} state.sandbox=${String(state.sandbox)}`
     )
@@ -880,6 +903,7 @@ export function createLoopEventHandler(
       const sessionDir = freshState.worktreeDir
       const workspaceParam = freshState.workspaceId ? { workspace: freshState.workspaceId } : {}
       logger.debug(`loop prompt: sessionID=${activeSessionId} dir=${sessionDir} agent=code model=${loopModel ? `${loopModel.providerID}/${loopModel.modelID}` : '(session default)'}`)
+      markPromptSent(loopName, activeSessionId, logger)
       const result = await v2Client.session.promptAsync({
         sessionID: activeSessionId,
         directory: sessionDir,
@@ -899,6 +923,7 @@ export function createLoopEventHandler(
       const sessionDir = freshState.worktreeDir
       const workspaceParam = freshState.workspaceId ? { workspace: freshState.workspaceId } : {}
       logger.debug(`loop prompt: sessionID=${activeSessionId} dir=${sessionDir} agent=code model=(default)`)
+      markPromptSent(loopName, activeSessionId, logger)
       const result = await v2Client.session.promptAsync({
         sessionID: activeSessionId,
         directory: sessionDir,
@@ -917,6 +942,7 @@ export function createLoopEventHandler(
     )
 
     if (promptResult.error) {
+      clearPromptPending(loopName, logger)
       const retryFn = async () => {
         const freshState = loopService.getActiveState(loopName)
         if (!freshState?.active) {
@@ -931,7 +957,6 @@ export function createLoopEventHandler(
       await handlePromptError(loopName, currentState, `failed to send continuation prompt ${errorContext}`, promptResult.error, retryFn)
       return
     }
-
     if (actualModel) {
       logger.log(`${errorContext} using model: ${actualModel.providerID}/${actualModel.modelID}`)
     } else {
@@ -967,6 +992,7 @@ export function createLoopEventHandler(
       const freshState = loopService.getActiveState(loopName)
       if (!freshState?.active) throw new Error('loop_cancelled')
       const loopModel = resolveLoopModel(getConfig(), loopService, loopName)
+      markPromptSent(loopName, newSessionId, logger)
       return v2Client.session.promptAsync({
         sessionID: newSessionId,
         directory: freshState.worktreeDir,
@@ -979,6 +1005,7 @@ export function createLoopEventHandler(
     const sendWithoutModel = async () => {
       const freshState = loopService.getActiveState(loopName)
       if (!freshState?.active) throw new Error('loop_cancelled')
+      markPromptSent(loopName, newSessionId, logger)
       return v2Client.session.promptAsync({
         sessionID: newSessionId,
         directory: freshState.worktreeDir,
@@ -990,8 +1017,128 @@ export function createLoopEventHandler(
     const loopModel = resolveLoopModel(getConfig(), loopService, loopName)
     const { result } = await retryWithModelFallback(sendWithModel, sendWithoutModel, loopModel, logger)
     if (result.error) {
+      clearPromptPending(loopName, logger)
       logger.error(`rotateToCodingAfterAuditFailure: failed to send continuation prompt`, result.error)
     }
+  }
+
+  function buildCodingPromptForCurrentState(state: LoopState): string {
+    if (state.totalSections > 0) {
+      if (state.lastAuditResult) {
+        return loopService.buildSectionContinuationPrompt(state, state.lastAuditResult)
+      }
+      return loopService.buildSectionInitialPrompt(state)
+    }
+    return loopService.buildContinuationPrompt(state, state.lastAuditResult || undefined)
+  }
+
+  async function recoverCodeLaunchWithoutAssistant(loopName: string, state: LoopState, lastMessageRole: string): Promise<void> {
+    const attempts = (codingLaunchRecoveryAttempts.get(loopName) ?? 0) + 1
+    codingLaunchRecoveryAttempts.set(loopName, attempts)
+
+    if (attempts > MAX_CODE_LAUNCH_RECOVERIES) {
+      logger.error(`Loop: coding launch failed after ${attempts} no-assistant idle events for ${loopName} (last=${lastMessageRole})`)
+      await terminateLoop(loopName, state, 'coding_no_assistant')
+      return
+    }
+
+    const recoveryPrompt = buildCodingPromptForCurrentState(state)
+    logger.log(`Loop: recovering code launch for ${loopName} (attempt ${attempts}/${MAX_CODE_LAUNCH_RECOVERIES}, last=${lastMessageRole})`)
+
+    const codeSessionId = state.sessionId
+
+    try {
+      const freshState = loopService.getActiveState(loopName)
+      if (!freshState?.active || freshState.phase !== 'coding' || freshState.sessionId !== codeSessionId) return
+
+      const currentConfig = getConfig()
+      const sendWithModel = async () => {
+        const fresh = loopService.getActiveState(loopName)
+        if (!fresh?.active || fresh.phase !== 'coding' || fresh.sessionId !== codeSessionId) throw new Error('loop_cancelled')
+        markPromptSent(loopName, codeSessionId, logger)
+        return v2Client.session.promptAsync({
+          sessionID: codeSessionId,
+          directory: fresh.worktreeDir,
+          ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
+          agent: 'code',
+          parts: [{ type: 'text' as const, text: recoveryPrompt }],
+          model: resolveLoopModel(currentConfig, loopService, loopName),
+        })
+      }
+      const sendWithoutModel = async () => {
+        const fresh = loopService.getActiveState(loopName)
+        if (!fresh?.active || fresh.phase !== 'coding' || fresh.sessionId !== codeSessionId) throw new Error('loop_cancelled')
+        markPromptSent(loopName, codeSessionId, logger)
+        return v2Client.session.promptAsync({
+          sessionID: codeSessionId,
+          directory: fresh.worktreeDir,
+          ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
+          agent: 'code',
+          parts: [{ type: 'text' as const, text: recoveryPrompt }],
+        })
+      }
+      const { result: promptResult } = await retryWithModelFallback(
+        sendWithModel,
+        sendWithoutModel,
+        resolveLoopModel(currentConfig, loopService, loopName),
+        logger,
+      )
+      if (promptResult.error) {
+        clearPromptPending(loopName, logger)
+        logger.error(`Loop: failed to send recovery prompt for ${loopName}`, promptResult.error)
+        const retryFn = async () => {
+          const retry = await sendWithoutModel()
+          if ('error' in retry && retry.error) throw retry.error
+        }
+        await handlePromptError(loopName, freshState ?? state, 'failed to recover code launch', promptResult.error, retryFn)
+      }
+    } catch (err) {
+      logger.error(`Loop: failed to recover code launch for ${loopName}`, err)
+      await handlePromptError(loopName, state, 'failed to recover code launch', err)
+    }
+  }
+
+  function scheduleSessionDelete(input: {
+    loopName: string
+    sessionId: string
+    directory: string
+    context: string
+  }): void {
+    const { loopName, sessionId, directory, context } = input
+
+    const existingTimeout = delayedSessionDeleteTimeouts.get(sessionId)
+    if (existingTimeout) {
+      clearTimeout(existingTimeout)
+      delayedSessionDeleteTimeouts.delete(sessionId)
+    }
+
+    const loopSet = loopDelayedDeletes.get(loopName)
+    if (!loopSet) {
+      loopDelayedDeletes.set(loopName, new Set())
+    }
+    loopDelayedDeletes.get(loopName)!.add(sessionId)
+
+    const timeout = setTimeout(async () => {
+      delayedSessionDeleteTimeouts.delete(sessionId)
+      const loopSetForCleanup = loopDelayedDeletes.get(loopName)
+      if (loopSetForCleanup) {
+        loopSetForCleanup.delete(sessionId)
+        if (loopSetForCleanup.size === 0) loopDelayedDeletes.delete(loopName)
+      }
+
+      try {
+        const activeState = loopService.getActiveState(loopName)
+        if (activeState?.active && activeState.sessionId === sessionId) {
+          logger.debug(`Loop: skipping delayed delete for active session ${sessionId} (${context})`)
+          return
+        }
+        await v2Client.session.delete({ sessionID: sessionId, directory })
+      } catch (err) {
+        logger.error(`Loop: delayed delete failed for ${sessionId} (${context})`, err)
+      }
+    }, DELAYED_SESSION_DELETE_MS)
+
+    delayedSessionDeleteTimeouts.set(sessionId, timeout)
   }
 
   async function transitionToCoding(loopName: string, state: LoopState): Promise<void> {
@@ -1031,6 +1178,7 @@ export function createLoopEventHandler(
     const sendWithModel = async () => {
       const fresh = loopService.getActiveState(loopName)
       if (!fresh?.active) throw new Error('loop_cancelled')
+      markPromptSent(loopName, codeSessionId, logger)
       return v2Client.session.promptAsync({
         sessionID: codeSessionId,
         directory: fresh.worktreeDir,
@@ -1043,6 +1191,7 @@ export function createLoopEventHandler(
     const sendWithoutModel = async () => {
       const fresh = loopService.getActiveState(loopName)
       if (!fresh?.active) throw new Error('loop_cancelled')
+      markPromptSent(loopName, codeSessionId, logger)
       return v2Client.session.promptAsync({
         sessionID: codeSessionId,
         directory: fresh.worktreeDir,
@@ -1053,11 +1202,11 @@ export function createLoopEventHandler(
     }
     const { result: promptResult } = await retryWithModelFallback(sendWithModel, sendWithoutModel, loopModel, logger)
     if (promptResult.error) {
+      clearPromptPending(loopName, logger)
       logger.error(`Loop: failed to send initial section prompt for ${loopName}`, promptResult.error)
       await handlePromptError(loopName, codeState, 'failed to send initial section prompt', promptResult.error)
       return
     }
-
     consecutiveStalls.set(loopName, 0)
   }
 
@@ -1167,6 +1316,7 @@ export function createLoopEventHandler(
       const sendWithModel = async () => {
         const fresh = loopService.getActiveState(loopName)
         if (!fresh?.active) throw new Error('loop_cancelled')
+        markPromptSent(loopName, codeSessionResult.sessionId, logger)
         return v2Client.session.promptAsync({
           sessionID: codeSessionResult.sessionId,
           directory: fresh.worktreeDir,
@@ -1179,6 +1329,7 @@ export function createLoopEventHandler(
       const sendWithoutModel = async () => {
         const fresh = loopService.getActiveState(loopName)
         if (!fresh?.active) throw new Error('loop_cancelled')
+        markPromptSent(loopName, codeSessionResult.sessionId, logger)
         return v2Client.session.promptAsync({
           sessionID: codeSessionResult.sessionId,
           directory: fresh.worktreeDir,
@@ -1189,11 +1340,11 @@ export function createLoopEventHandler(
       }
       const { result: promptResult } = await retryWithModelFallback(sendWithModel, sendWithoutModel, loopModel, logger)
       if (promptResult.error) {
+        clearPromptPending(loopName, logger)
         logger.error(`Loop: failed to send legacy fallback prompt for ${loopName}`, promptResult.error)
         await handlePromptError(loopName, fallbackState, 'failed to send legacy fallback prompt', promptResult.error)
         return
       }
-
       consecutiveStalls.set(loopName, 0)
       return
     }
@@ -1249,6 +1400,7 @@ export function createLoopEventHandler(
 
       const decomposerPrompt = loopService.buildDecomposerInitialPrompt(freshState)
       try {
+        markPromptSent(loopName, decomposerSessionId, logger)
         await v2Client.session.promptAsync({
           sessionID: decomposerSessionId,
           directory: freshState.worktreeDir,
@@ -1266,11 +1418,11 @@ export function createLoopEventHandler(
           })(),
         })
       } catch (err) {
+        clearPromptPending(loopName, logger)
         logger.error(`Loop: failed to re-prompt decomposer for ${loopName}`, err)
         await terminateLoop(loopName, freshState, 'decomposer_prompt_failed')
         return
       }
-
       return
     }
 
@@ -1407,6 +1559,7 @@ export function createLoopEventHandler(
       const sendWithModel = async () => {
         const fresh = loopService.getActiveState(loopName)
         if (!fresh?.active) throw new Error('loop_cancelled')
+        markPromptSent(loopName, newCodeSessionId, logger)
         return v2Client.session.promptAsync({
           sessionID: newCodeSessionId,
           directory: fresh.worktreeDir,
@@ -1419,6 +1572,7 @@ export function createLoopEventHandler(
       const sendWithoutModel = async () => {
         const fresh = loopService.getActiveState(loopName)
         if (!fresh?.active) throw new Error('loop_cancelled')
+        markPromptSent(loopName, newCodeSessionId, logger)
         return v2Client.session.promptAsync({
           sessionID: newCodeSessionId,
           directory: fresh.worktreeDir,
@@ -1429,11 +1583,11 @@ export function createLoopEventHandler(
       }
       const { result: promptResult } = await retryWithModelFallback(sendWithModel, sendWithoutModel, loopModel, logger)
       if (promptResult.error) {
+        clearPromptPending(loopName, logger)
         logger.error(`Loop: failed to send rewind continuation prompt for ${loopName}`, promptResult.error)
         await handlePromptError(loopName, currentState, 'failed to send rewind continuation', promptResult.error)
         return
       }
-
       consecutiveStalls.set(loopName, 0)
     }
   }
@@ -1457,7 +1611,7 @@ export function createLoopEventHandler(
     }
 
     const assistantInfo = await getLastAssistantInfo(currentState.sessionId, currentState.worktreeDir)
-    let assistantError = assistantInfo.error
+    const assistantError = assistantInfo.error
     const lastMessageRole = assistantInfo.lastMessageRole
     if (lastMessageRole !== 'assistant') {
       const attempts = idleRetryAttempts.get(loopName) ?? 0
@@ -1477,16 +1631,10 @@ export function createLoopEventHandler(
         return
       }
 
-      logger.log(`Loop: coding phase proceeding without assistant message for ${loopName} after retry (last message: ${lastMessageRole})`)
-      assistantError = null
-      const pending = idleRetryTimeouts.get(loopName)
-      if (pending) {
-        clearTimeout(pending)
-        idleRetryTimeouts.delete(loopName)
-      }
-      if (idleRetryAttempts.has(loopName)) {
-        idleRetryAttempts.delete(loopName)
-      }
+      logger.log(`Loop: coding phase has no assistant response for ${loopName} after retry (last message: ${lastMessageRole}); recovering code launch`)
+      idleRetryAttempts.delete(loopName)
+      await recoverCodeLaunchWithoutAssistant(loopName, currentState, lastMessageRole)
+      return
     }
 
     const pending = idleRetryTimeouts.get(loopName)
@@ -1497,6 +1645,7 @@ export function createLoopEventHandler(
     if (idleRetryAttempts.has(loopName)) {
       idleRetryAttempts.delete(loopName)
     }
+    codingLaunchRecoveryAttempts.delete(loopName)
 
     const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantError, 'coding')
     if (!errorResult) return
@@ -1561,6 +1710,7 @@ export function createLoopEventHandler(
         const sendWithModel = async () => {
           const freshState = loopService.getActiveState(loopName)
           if (!freshState?.active) throw new Error('loop_cancelled')
+          markPromptSent(loopName, rotatedSessionId, logger)
           return v2Client.session.promptAsync({
             sessionID: rotatedSessionId,
             directory: freshState.worktreeDir,
@@ -1573,6 +1723,7 @@ export function createLoopEventHandler(
         const sendWithoutModel = async () => {
           const freshState = loopService.getActiveState(loopName)
           if (!freshState?.active) throw new Error('loop_cancelled')
+          markPromptSent(loopName, rotatedSessionId, logger)
           return v2Client.session.promptAsync({
             sessionID: rotatedSessionId,
             directory: freshState.worktreeDir,
@@ -1588,6 +1739,7 @@ export function createLoopEventHandler(
           logger,
         )
         if (promptResult.error) {
+          clearPromptPending(loopName, logger)
           logger.error(`Loop: failed to send continuation prompt after audit creation failure`, promptResult.error)
         }
         return
@@ -1615,16 +1767,14 @@ export function createLoopEventHandler(
 
     maybeSelectTuiSession(currentState, created.auditSessionId)
 
-    // Delete the code session AFTER audit session creation succeeds (best-effort)
-    v2Client.session.delete({ sessionID: codeSessionId, directory: currentState.worktreeDir }).catch((err) => {
-      logger.error(`Loop: failed to delete code session ${codeSessionId} after audit creation`, err)
-    })
+    scheduleSessionDelete({ loopName, sessionId: codeSessionId, directory: currentState.worktreeDir, context: 'after audit creation' })
 
     const sendAuditWithModel = async () => {
       const freshState = loopService.getActiveState(loopName)
       if (!freshState?.active) {
         throw new Error('loop_cancelled')
       }
+      markPromptSent(loopName, created.auditSessionId, logger)
       const result = await promptAuditSessionWithFallback({
         sessionId: created.auditSessionId,
         worktreeDir: freshState.worktreeDir,
@@ -1640,6 +1790,7 @@ export function createLoopEventHandler(
       if (!freshState?.active) {
         throw new Error('loop_cancelled')
       }
+      markPromptSent(loopName, created.auditSessionId, logger)
       const result = await promptAuditSessionWithFallback({
         sessionId: created.auditSessionId,
         worktreeDir: freshState.worktreeDir,
@@ -1657,6 +1808,7 @@ export function createLoopEventHandler(
     )
 
     if (promptResult.error) {
+      clearPromptPending(loopName, logger)
       if (isWorkspaceNotFoundError(promptResult.error) && currentState.workspaceId) {
         const recovered = await recoverFromMissingWorkspace(loopName, currentState, created.auditSessionId, 'during audit prompt recovery')
         currentState = loopService.getActiveState(loopName) ?? currentState
@@ -1676,7 +1828,6 @@ export function createLoopEventHandler(
       await handlePromptError(loopName, { ...currentState, phase: 'auditing' }, 'failed to send audit prompt', promptResult.error, retryFn)
       return
     }
-
     if (actualAuditorModel) {
       logger.log(`auditor using model: ${actualAuditorModel.providerID}/${actualAuditorModel.modelID} (session ${created.auditSessionId})`)
     } else {
@@ -1806,13 +1957,12 @@ export function createLoopEventHandler(
 
               maybeSelectTuiSession(currentState, created.auditSessionId)
 
-              v2Client.session.delete({ sessionID: currentState.sessionId, directory: currentState.worktreeDir }).catch((err) => {
-                logger.error(`Loop: failed to delete old code session ${currentState.sessionId} after final audit creation`, err)
-              })
+              scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after final audit creation' })
 
               const sendFinalAuditWithModel = async () => {
                 const freshState = loopService.getActiveState(loopName)
                 if (!freshState?.active) throw new Error('loop_cancelled')
+                markPromptSent(loopName, created.auditSessionId, logger)
                 const result = await promptAuditSessionWithFallback({
                   sessionId: created.auditSessionId,
                   worktreeDir: freshState.worktreeDir,
@@ -1826,6 +1976,7 @@ export function createLoopEventHandler(
               const sendFinalAuditWithoutModel = async () => {
                 const freshState = loopService.getActiveState(loopName)
                 if (!freshState?.active) throw new Error('loop_cancelled')
+                markPromptSent(loopName, created.auditSessionId, logger)
                 const result = await promptAuditSessionWithFallback({
                   sessionId: created.auditSessionId,
                   worktreeDir: freshState.worktreeDir,
@@ -1843,11 +1994,11 @@ export function createLoopEventHandler(
               )
 
               if (finalAuditPromptResult.error) {
+                clearPromptPending(loopName, logger)
                 logger.error(`Loop: failed to send final audit prompt for ${loopName}`, finalAuditPromptResult.error)
                 await handlePromptError(loopName, finalAuditState, 'failed to send final audit prompt', finalAuditPromptResult.error)
                 return
               }
-
               consecutiveStalls.set(loopName, 0)
               return
             }
@@ -1921,13 +2072,12 @@ export function createLoopEventHandler(
 
             maybeSelectTuiSession(currentState, created.auditSessionId)
 
-            v2Client.session.delete({ sessionID: currentState.sessionId, directory: currentState.worktreeDir }).catch((err) => {
-              logger.error(`Loop: failed to delete old code session ${currentState.sessionId} after final audit creation`, err)
-            })
+            scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after final audit creation' })
 
             const sendFinalAuditWithModel = async () => {
               const freshState = loopService.getActiveState(loopName)
               if (!freshState?.active) throw new Error('loop_cancelled')
+              markPromptSent(loopName, created.auditSessionId, logger)
               const result = await promptAuditSessionWithFallback({
                 sessionId: created.auditSessionId,
                 worktreeDir: freshState.worktreeDir,
@@ -1941,6 +2091,7 @@ export function createLoopEventHandler(
             const sendFinalAuditWithoutModel = async () => {
               const freshState = loopService.getActiveState(loopName)
               if (!freshState?.active) throw new Error('loop_cancelled')
+              markPromptSent(loopName, created.auditSessionId, logger)
               const result = await promptAuditSessionWithFallback({
                 sessionId: created.auditSessionId,
                 worktreeDir: freshState.worktreeDir,
@@ -1958,11 +2109,11 @@ export function createLoopEventHandler(
             )
 
             if (finalAuditPromptResult.error) {
+              clearPromptPending(loopName, logger)
               logger.error(`Loop: failed to send final audit prompt for ${loopName}`, finalAuditPromptResult.error)
               await handlePromptError(loopName, finalAuditState, 'failed to send final audit prompt', finalAuditPromptResult.error)
               return
             }
-
             consecutiveStalls.set(loopName, 0)
             return
           }
@@ -2180,10 +2331,19 @@ export function createLoopEventHandler(
     if (event.type !== 'session.status') return
 
     const status = event.properties?.status as { type?: string } | undefined
-    if (status?.type !== 'idle') return
-
     const sessionId = event.properties?.sessionID as string
     if (!sessionId) return
+
+    if (status?.type === 'busy') {
+      const loopName = loopService.resolveLoopName(sessionId)
+      if (loopName && isAwaitingBusy(loopName, sessionId)) {
+        logger.debug(`[idle-gate] busy observed for ses=${sessionId} loop=${loopName}, clearing pending`)
+        clearPromptPending(loopName, logger)
+      }
+      return
+    }
+
+    if (status?.type !== 'idle') return
 
     logger.debug(`Loop: received idle event for session=${sessionId}`)
 
@@ -2193,6 +2353,15 @@ export function createLoopEventHandler(
       return
     }
     logger.debug(`Loop: idle event matched loop=${loopName}`)
+
+    if (isAwaitingBusy(loopName, sessionId)) {
+      if (!isAwaitingBusyExpired(loopName)) {
+        logger.debug(`[idle-gate] suppressing premature idle loop=${loopName} session=${sessionId} (no busy yet)`)
+        return
+      }
+      logger.log(`[idle-gate] awaiting-busy expired for loop=${loopName}, dispatching idle anyway`)
+      clearPromptPending(loopName, logger)
+    }
 
     await withStateLock(loopName, async () => {
       const state = loopService.getActiveState(loopName)
@@ -2237,6 +2406,12 @@ export function createLoopEventHandler(
       idleRetryTimeouts.delete(worktreeName)
     }
     idleRetryAttempts.clear()
+    codingLaunchRecoveryAttempts.clear()
+    for (const [, timeout] of delayedSessionDeleteTimeouts) {
+      clearTimeout(timeout)
+    }
+    delayedSessionDeleteTimeouts.clear()
+    loopDelayedDeletes.clear()
     for (const [worktreeName, interval] of stallWatchdogs.entries()) {
       clearInterval(interval)
       stallWatchdogs.delete(worktreeName)
@@ -2246,6 +2421,7 @@ export function createLoopEventHandler(
     watchdogRunning.clear()
     lastStatusFingerprints.clear()
     stateLocks.clear()
+    sessionsAwaitingBusy.clear()
     logger.log('Loop: cleared all retry timeouts')
   }
 
@@ -2278,6 +2454,20 @@ export function createLoopEventHandler(
       idleRetryTimeouts.delete(loopName)
     }
     idleRetryAttempts.delete(loopName)
+    codingLaunchRecoveryAttempts.delete(loopName)
+
+    const loopDeleteSet = loopDelayedDeletes.get(loopName)
+    if (loopDeleteSet) {
+      for (const sid of loopDeleteSet) {
+        const t = delayedSessionDeleteTimeouts.get(sid)
+        if (t) {
+          clearTimeout(t)
+          delayedSessionDeleteTimeouts.delete(sid)
+        }
+      }
+      loopDelayedDeletes.delete(loopName)
+    }
+
     lastStatusFingerprints.delete(loopName)
   }
 
