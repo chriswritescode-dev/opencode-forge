@@ -147,8 +147,6 @@ export interface PluginConfig {
   auditorModel?: string
   /** Loop behavior configuration. */
   loop?: LoopConfig
-  /** @deprecated Use `loop` instead */
-  ralph?: LoopConfig
   /** TTL for completed/cancelled/errored/stalled loops before sweep. Default 7 days. */
   completedLoopTtlMs?: number
   /** TUI display configuration. */

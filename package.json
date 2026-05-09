@@ -27,7 +27,8 @@
     "forge-config.jsonc",
     "scripts",
     "README.md",
-    "src/command/template"
+    "src/command/template",
+    "skills"
   ],
   "repository": {
     "type": "git",
@@ -75,9 +76,7 @@
     "better-sqlite3": "^12.9.0",
     "bun-types": "latest",
     "eslint": "^10.2.0",
-    "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-solid": "^0.14.5",
-    "prettier": "^3.8.1",
     "solid-js": "^1.9.12",
     "typedoc": "^0.28.19",
     "typedoc-plugin-markdown": "^4.11.0",

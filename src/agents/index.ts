@@ -1,16 +1,8 @@
 import type { AgentRole, AgentDefinition } from './types'
-import { codeAgent, buildCodeAgent } from './code'
-import { architectAgent, buildArchitectAgent } from './architect'
-import { auditorAgent, auditorLoopAgent, buildAuditorAgent, buildAuditorLoopAgent } from './auditor'
-import { decomposerAgent, buildDecomposerAgent } from './decomposer'
-
-export const agents: Record<AgentRole, AgentDefinition> = {
-  code: codeAgent,
-  architect: architectAgent,
-  auditor: auditorAgent,
-  'auditor-loop': auditorLoopAgent,
-  decomposer: decomposerAgent,
-}
+import { buildCodeAgent } from './code'
+import { buildArchitectAgent } from './architect'
+import { buildAuditorAgent, buildAuditorLoopAgent } from './auditor'
+import { buildDecomposerAgent } from './decomposer'
 
 export function buildAgents(): Record<AgentRole, AgentDefinition> {
   return {

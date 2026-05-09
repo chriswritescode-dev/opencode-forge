@@ -16,6 +16,4 @@ export type { SectionPlanRow, SectionPlansRepo } from './repos/section-plans-rep
 export { createTuiPrefsRepo } from './repos/tui-prefs-repo'
 export type { TuiPrefsRepo } from './repos/tui-prefs-repo'
 
-export type {
-  CompactionConfig,
-} from '../types'
+

@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite'
-import { existsSync, mkdirSync, unlinkSync } from 'fs'
+import { mkdirSync, unlinkSync } from 'fs'
 import { dirname } from 'path'
 
 interface SqliteOpenOptions {
@@ -142,14 +142,4 @@ export function openSqliteWithIntegrityGuard(
   return db
 }
 
-/** Best-effort removal of an orphaned SHM file when its WAL sibling is missing. */
-export function cleanupOrphanedShmFile(dbPath: string): void {
-  try {
-    const shmPath = dbPath + '-shm'
-    const walPath = dbPath + '-wal'
-    if (existsSync(shmPath) && !existsSync(walPath)) {
-      console.debug(`Removing orphaned SHM file for ${dbPath}`)
-      try { unlinkSync(shmPath) } catch {}
-    }
-  } catch {}
-}
+

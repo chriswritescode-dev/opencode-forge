@@ -794,7 +794,6 @@ export function createLoopEventHandler(
     const newSessionId = await rotateSession(loopName, state)
     // rotateSession already fire-and-forgets the deletion of state.sessionId
     // (which is the audit session here) at loop.ts:632, so an explicit
-    // deleteAuditSession call is redundant.
     loopService.replaceSession(loopName, {
       newSessionId,
       phase: 'coding',

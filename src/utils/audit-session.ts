@@ -4,7 +4,7 @@ import { createLoopSessionWithWorkspace } from './loop-session'
 import { buildAuditSessionPermissionRuleset } from '../constants/loop'
 import { formatAuditSessionTitle } from './session-titles'
 
-export interface RunAuditSessionInput {
+interface RunAuditSessionInput {
   v2: OpencodeClient
   loopName: string
   iteration: number
@@ -16,7 +16,7 @@ export interface RunAuditSessionInput {
   logger: Logger | Console
 }
 
-export interface RunAuditSessionResult {
+interface RunAuditSessionResult {
   auditSessionId: string
   boundWorkspaceId?: string
   bindFailed: boolean
@@ -68,15 +68,4 @@ export async function promptAuditSession(
   return { ok: true }
 }
 
-export async function deleteAuditSession(
-  v2: OpencodeClient,
-  sessionId: string,
-  worktreeDir: string,
-  logger: Logger | Console,
-): Promise<void> {
-  try {
-    await v2.session.delete({ sessionID: sessionId, directory: worktreeDir })
-  } catch (err) {
-    logger.error(`audit session delete failed for ${sessionId}`, err)
-  }
-}
+

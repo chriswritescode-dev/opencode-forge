@@ -50,10 +50,23 @@ describe('Agent definitions', () => {
 
     test('code agent prompt requires two-at-a-time code subagents for todo implementation', () => {
       const prompt = codeAgent.systemPrompt
-      expect(prompt).toContain('use the Task tool to run code subagents in fixed batches of two')
+      expect(prompt).toContain('use the Task tool to delegate focused implementation tasks to `code` subagents')
       expect(prompt).toContain('launch tasks 1 and 2 in parallel')
       expect(prompt).toContain('then launch tasks 3 and 4')
+      expect(prompt).toContain('Each `code` subagent must receive exactly one focused todo task')
+      expect(prompt).toContain('inspect and reconcile its changes before marking the todo complete')
+      expect(prompt).toContain('files changed, behavior implemented, validation run, results')
       expect(prompt).toContain('Do not launch more than two code subagents at the same time')
+    })
+
+    test('architect prompt requires TDD-aware behavior-first planning', () => {
+      const prompt = architectAgent.systemPrompt
+      expect(prompt).toContain('# TDD-aware planning')
+      expect(prompt).toContain('use the `tdd` skill before finalizing the plan')
+      expect(prompt).toContain('behavior-first verification through public interfaces')
+      expect(prompt).toContain('vertical tracer-bullet phases')
+      expect(prompt).toContain('Do not plan horizontal slices')
+      expect(prompt).toContain('name the exact test file')
     })
 
     test('auditor-loop agent has stable metadata and primary mode', () => {

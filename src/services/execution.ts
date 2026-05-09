@@ -14,13 +14,14 @@ import type { createLoopEventHandler } from '../hooks'
 import type { SandboxManager } from '../sandbox/manager'
 import { extractPlanTitle, extractLoopNames } from '../utils/plan-execution'
 import { parseModelString, retryWithModelFallback, resolveDecomposerModel } from '../utils/model-fallback'
-import { generateUniqueName } from '../services/loop'
+import { generateUniqueName, rowToLoopState } from '../services/loop'
 import { resolveCurrentGitBranch } from '../utils/git-branch'
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
 import { buildLoopPermissionRuleset } from '../constants/loop'
 import { findPartialMatch } from '../utils/partial-match'
 import { isSandboxEnabled } from '../sandbox/context'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
+import { join } from 'path'
 import { existsSync } from 'fs'
 import { decomposeDeterministically } from './deterministic-decomposer'
 import { markPromptSent, clearPromptPending } from '../hooks/loop-idle-gate'
@@ -1610,7 +1611,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       const rows = deps.loopsRepo.listByStatus(ctx.projectId, ['running', 'completed', 'cancelled', 'errored', 'stalled'])
       states = rows.map(row => {
         const large = deps.loopsRepo.getLarge(ctx.projectId, row.loopName)
-        return rowToLoopState(row, large, deps)
+        return rowToLoopState(row, large)
       })
     }
     
@@ -2223,44 +2224,4 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 // Internal Helpers
 // ============================================================================
 
-import { join } from 'path'
 
-function rowToLoopState(
-  row: import('../storage/repos/loops-repo').LoopRow,
-  large: import('../storage/repos/loops-repo').LoopLargeFields | null,
-  _deps: unknown,
-): import('../services/loop').LoopState {
-  return {
-    active: row.status === 'running',
-    sessionId: row.currentSessionId,
-    loopName: row.loopName,
-    worktreeDir: row.worktreeDir,
-    projectDir: row.projectDir,
-    worktreeBranch: row.worktreeBranch ?? undefined,
-    iteration: row.iteration,
-    maxIterations: row.maxIterations,
-    startedAt: new Date(row.startedAt).toISOString(),
-    prompt: large?.prompt ?? undefined,
-    phase: row.phase,
-    lastAuditResult: large?.lastAuditResult ?? undefined,
-    errorCount: row.errorCount,
-    auditCount: row.auditCount,
-    terminationReason: row.terminationReason ?? undefined,
-    completedAt: row.completedAt ? new Date(row.completedAt).toISOString() : undefined,
-    worktree: row.worktree,
-    modelFailed: row.modelFailed,
-    sandbox: row.sandbox,
-    sandboxContainer: row.sandboxContainer ?? undefined,
-    completionSummary: row.completionSummary ?? undefined,
-    executionModel: row.executionModel ?? undefined,
-    auditorModel: row.auditorModel ?? undefined,
-    workspaceId: row.workspaceId ?? undefined,
-    hostSessionId: row.hostSessionId ?? undefined,
-    decompositionStatus: row.decompositionStatus,
-    decompositionMode: row.decompositionMode,
-    decompositionSessionId: row.decompositionSessionId,
-    currentSectionIndex: row.currentSectionIndex,
-    totalSections: row.totalSections,
-    finalAuditDone: row.finalAuditDone === 1,
-  }
-}

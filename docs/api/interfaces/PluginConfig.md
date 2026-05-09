@@ -102,18 +102,6 @@ Message transformation for architect agent.
 
 ***
 
-### ~~ralph?~~
-
-> `optional` **ralph?**: `LoopConfig`
-
-Defined in: [types.ts:143](https://github.com/chriswritescode-dev/opencode-forge/blob/d13f4095482848cf49abc4527575a6abdb330424/src/types.ts#L143)
-
-#### Deprecated
-
-Use `loop` instead
-
-***
-
 ### sandbox?
 
 > `optional` **sandbox?**: `SandboxConfig`

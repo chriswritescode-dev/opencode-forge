@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, cpSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync, cpSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
 import solidPlugin from '@opentui/solid/bun-plugin'
@@ -57,6 +57,14 @@ cpSync(srcMigrationsDir, distMigrationsDir, {
   recursive: true,
   filter: (src) => !src.endsWith('.ts') && !src.endsWith('.md')
 })
+
+console.log('Copying bundled skills...')
+const srcSkillsDir = join(__dirname, '..', 'skills')
+const distSkillsDir = join(__dirname, '..', 'dist', 'skills')
+if (existsSync(srcSkillsDir)) {
+  mkdirSync(distSkillsDir, { recursive: true })
+  cpSync(srcSkillsDir, distSkillsDir, { recursive: true })
+}
 
 
 

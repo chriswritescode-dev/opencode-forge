@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
-import { PLAN_EXECUTION_LABELS, matchExecutionLabel, type PlanExecutionLabel } from '../utils/plan-execution'
+import { PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
 import { extractPlanTitle } from '../utils/plan-execution'
 import { buildDialogSelectOptions, flattenProviders, getModelDisplayLabel, sortModelsByPriority, type ModelInfo } from '../utils/tui-models'
 import { resolveExecutionDialogDefaults } from '../utils/tui-execution-preferences'
@@ -162,7 +162,10 @@ export function ExecutePlanPanel(props: {
     const planText = props.planContent
     const title = extractPlanTitle(planText)
 
-    const matchedLabel = matchExecutionLabel(mode)
+    const normalizedMode = mode.toLowerCase()
+    const matchedLabel = PLAN_EXECUTION_LABELS.find(
+      label => normalizedMode === label.toLowerCase() || normalizedMode.startsWith(label.toLowerCase())
+    ) ?? null
 
     const apiMode: import('../utils/tui-client').ApiExecutionMode = matchedLabel === 'Execute here'
       ? 'execute-here'

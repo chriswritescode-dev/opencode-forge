@@ -53,9 +53,7 @@ export interface ModelSortOptions {
   recents?: string[]
   connectedProviderIds?: string[]
   configuredProviderIds?: string[]
-}
-
-export type LoopInfo = {
+}export type LoopInfo = {
   name: string
   phase: string
   iteration: number
@@ -226,27 +224,6 @@ export function flattenProviders(providers: ProviderInfo[]): ModelInfo[] {
 }
 
 /**
- * Builds select options with a leading "Use default" entry.
- */
-export function buildModelOptions(
-  models: ModelInfo[]
-): Array<{ name: string; value: string; description: string }> {
-  const defaultOption = {
-    name: 'Use default',
-    value: '',
-    description: 'Use config default model',
-  }
-
-  const modelOptions = models.map(m => ({
-    name: m.name,
-    value: m.fullName,
-    description: `${m.providerName} - ${m.capabilities?.reasoning ? 'Reasoning, ' : ''}${m.capabilities?.toolcall ? 'Tools' : 'No tools'}`,
-  }))
-
-  return [defaultOption, ...modelOptions]
-}
-
-/**
  * Builds DialogSelect-compatible options with a Recent section
  * at the top, followed by all models grouped by provider.
  */
@@ -310,22 +287,6 @@ export function getModelDisplayLabel(
     return fallbackModel ? fallbackModel.name : fallbackFullName
   }
   return 'default'
-}
-
-/**
- * Resolves the selected index for a select component.
- * Returns the index of the matching model, or 0 (Use default) if not found.
- */
-export function resolveModelSelectedIndex(
-  options: Array<{ value: string }>,
-  selectedValue: string | undefined
-): number {
-  if (!selectedValue) {
-    return 0 // Default to "Use default"
-  }
-  
-  const index = options.findIndex(opt => opt.value === selectedValue)
-  return index >= 0 ? index : 0 // Fall back to "Use default" if not found
 }
 
 const RECENT_MODELS_KEY = 'tui:model-recents'

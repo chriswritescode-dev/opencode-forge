@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, mkdirSync, copyFileSync, writeFileSync } from 'fs'
+import { readFileSync, existsSync, mkdirSync, copyFileSync, writeFileSync, cpSync, readdirSync } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
@@ -88,6 +88,7 @@ function parseJsonc<T = unknown>(content: string): T {
 
 export function loadPluginConfig(): PluginConfig {
   ensureGlobalConfig()
+  ensureBundledSkills()
 
   const configPath = resolveConfigPath()
 
@@ -124,11 +125,47 @@ function normalizeConfig(config: PluginConfig): PluginConfig {
   return result
 }
 
+function ensureBundledSkills(): void {
+  const configDir = resolveConfigDir()
+  const skillsDir = join(configDir, 'skills')
+
+  if (!existsSync(skillsDir)) {
+    mkdirSync(skillsDir, { recursive: true })
+  }
+
+  const pluginDir = dirname(fileURLToPath(import.meta.url))
+  const bundledSkillsDir = join(pluginDir, '..', 'skills')
+
+  if (!existsSync(bundledSkillsDir)) {
+    return
+  }
+
+  try {
+    const skillNames = readdirSync(bundledSkillsDir, { withFileTypes: true })
+      .filter(d => d.isDirectory())
+      .map(d => d.name)
+
+    for (const skillName of skillNames) {
+      const srcDir = join(bundledSkillsDir, skillName)
+      const destDir = join(skillsDir, skillName)
+
+      if (existsSync(destDir)) {
+        continue
+      }
+
+      cpSync(srcDir, destDir, { recursive: true })
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.warn(`[forge] Failed to install bundled skills: ${message}`)
+  }
+}
+
 /**
  * Saves the plugin config to disk while preserving comments and formatting.
  * Uses jsonc-parser to apply targeted edits without disturbing existing structure.
  */
-export function savePluginConfig(next: PluginConfig): void {
+function savePluginConfig(next: PluginConfig): void {
   const configDir = resolveConfigDir()
   mkdirSync(configDir, { recursive: true })
   const configPath = resolveConfigPath()

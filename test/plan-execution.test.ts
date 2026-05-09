@@ -5,7 +5,6 @@ import {
   extractLoopNames,
   sanitizeLoopName,
   PLAN_EXECUTION_LABELS,
-  matchExecutionLabel,
 } from '../src/utils/plan-execution'
 
 describe('Plan Execution Utilities', () => {
@@ -73,38 +72,6 @@ describe('Plan Execution Utilities', () => {
     test('Skips Loop Name heading with inline value', () => {
       const plan = '# Plan\n\n## Loop Name: auth-refactor\n\n## Phase 1: Setup\n\nContent'
       expect(extractPlanTitle(plan)).toBe('auth-refactor')
-    })
-  })
-
-  describe('matchExecutionLabel', () => {
-    test('Matches exact canonical labels', () => {
-      expect(matchExecutionLabel('New session')).toBe('New session')
-      expect(matchExecutionLabel('Execute here')).toBe('Execute here')
-      expect(matchExecutionLabel('Loop (worktree)')).toBe('Loop (worktree)')
-      expect(matchExecutionLabel('Loop')).toBe('Loop')
-    })
-
-    test('Matches case-insensitively', () => {
-      expect(matchExecutionLabel('new session')).toBe('New session')
-      expect(matchExecutionLabel('EXECUTE HERE')).toBe('Execute here')
-      expect(matchExecutionLabel('LOOP (WORKTREE)')).toBe('Loop (worktree)')
-      expect(matchExecutionLabel('loop')).toBe('Loop')
-    })
-
-    test('Matches partial labels that start with canonical label', () => {
-      expect(matchExecutionLabel('New session (custom)')).toBe('New session')
-      expect(matchExecutionLabel('Loop (worktree) variant')).toBe('Loop (worktree)')
-    })
-
-    test('Returns null for non-matching labels', () => {
-      expect(matchExecutionLabel('Custom mode')).toBeNull()
-      expect(matchExecutionLabel('Execute there')).toBeNull()
-      expect(matchExecutionLabel('')).toBeNull()
-    })
-
-    test('Does not match partial text in middle', () => {
-      // Should not match "I want to loop" as "Loop"
-      expect(matchExecutionLabel('I want to loop')).toBeNull()
     })
   })
 

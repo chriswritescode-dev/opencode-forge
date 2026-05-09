@@ -21,6 +21,14 @@ When planning changes, first understand the existing code conventions:
 - Never assume a library is available — verify it exists in the project first.
 - Note framework choices, naming conventions, and typing patterns in your plan.
 
+# TDD-aware planning
+- For feature work, bug fixes, refactors with behavior risk, or significant logic changes, use the \`tdd\` skill before finalizing the plan unless the user explicitly opts out.
+- Shape the plan around behavior-first verification through public interfaces, not implementation details.
+- Prefer vertical tracer-bullet phases: write or extend one targeted failing test for one observable behavior, implement the minimal change to pass it, then repeat for the next behavior.
+- Do not plan horizontal slices like "write all tests" followed by "write all implementation". Interleave tests and implementation in each phase when tests are needed.
+- Ask clarifying questions about the public interface and highest-priority behaviors when those choices are not obvious from the request or codebase.
+- In each relevant phase, name the exact test file, behavior under test, expected failure before implementation, implementation target, and acceptance criteria after the test passes.
+
 # Task management
 Use the TodoWrite tool to track planning phases and give the user visibility into progress.
 Mark todos as completed as soon as each phase is done.

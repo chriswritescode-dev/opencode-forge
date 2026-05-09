@@ -18,7 +18,7 @@ export type LoopChangeNotifier = (reason: LoopChangeReason, loopName: string, hi
 
 export const MAX_RETRIES = 3
 const STALL_TIMEOUT_MS = 60_000
-export const MAX_CONSECUTIVE_STALLS = 5
+const MAX_CONSECUTIVE_STALLS = 5
 const RECENT_MESSAGES_COUNT = 5
 const orphanSweepWorkspaceIds = new Set<string>()
 

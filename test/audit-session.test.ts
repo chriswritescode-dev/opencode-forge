@@ -1,5 +1,5 @@
 import { describe, test, expect, mock } from 'bun:test'
-import { createAuditSession, promptAuditSession, deleteAuditSession } from '../src/utils/audit-session'
+import { createAuditSession, promptAuditSession } from '../src/utils/audit-session'
 import { buildAuditSessionPermissionRuleset } from '../src/constants/loop'
 import type { Logger } from '../src/types'
 
@@ -144,27 +144,5 @@ describe('promptAuditSession', () => {
     const callArgs = (mockV2.session.promptAsync as any).mock.calls[0][0]
     expect(callArgs.model).toEqual({ providerID: 'openai', modelID: 'gpt-4' })
     expect(callArgs.agent).toBe('auditor-loop')
-  })
-})
-
-describe('deleteAuditSession', () => {
-  test('deletes session successfully', async () => {
-    const mockV2 = createMockV2Client()
-    const logger = { log: mock(), error: mock() } as unknown as Logger
-
-    await deleteAuditSession(mockV2 as any, 'sess_audit_123', '/tmp/test', logger)
-
-    expect(mockV2.session.delete).toHaveBeenCalledWith({ sessionID: 'sess_audit_123', directory: '/tmp/test' })
-  })
-
-  test('swallows errors and logs them', async () => {
-    const mockV2 = createMockV2Client()
-    const deleteError = new Error('delete failed')
-    mockV2.session.delete = mock(() => Promise.reject(deleteError))
-    const logger = { log: mock(), error: mock() } as unknown as Logger
-
-    await deleteAuditSession(mockV2 as any, 'sess_audit_123', '/tmp/test', logger)
-
-    expect(logger.error).toHaveBeenCalled()
   })
 })
