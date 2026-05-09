@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'bun:test'
 import { createExecutionContextCache } from '../../src/utils/tui-execution-context-cache'
 import type { ExecutionPreferences } from '../../src/utils/tui-execution-preferences'
 import type { PluginConfig } from '../../src/types'

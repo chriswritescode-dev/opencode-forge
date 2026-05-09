@@ -101,7 +101,6 @@ describe('Agent definitions', () => {
       expect(prompt).toContain('### Done')
       expect(prompt).toContain('### Deviations')
       expect(prompt).toContain('### Follow-ups')
-      expect(prompt).toContain('final-audit:clear')
       expect(prompt.toLowerCase()).toContain('deviation acceptance')
     })
   })

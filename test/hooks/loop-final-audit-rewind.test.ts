@@ -1,14 +1,16 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { Database } from 'bun:sqlite'
+import type { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import { randomUUID } from 'crypto'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopService, MAX_RETRIES } from '../../src/services/loop'
 import { createLoopEventHandler } from '../../src/hooks/loop'
+import { openForgeDatabase } from '../../src/storage/database'
 import type { Logger, PluginConfig } from '../../src/types'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 
@@ -27,106 +29,7 @@ describe('Loop final audit rewind behavior', () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-final-audit-rewind-test-'))
     const dbPath = join(tempDir, 'loop-final-audit-rewind-test.db')
-    db = new Database(dbPath)
-
-    db.run(`
-      CREATE TABLE loops (
-        project_id           TEXT NOT NULL,
-        loop_name            TEXT NOT NULL,
-        status               TEXT NOT NULL,
-        current_session_id   TEXT NOT NULL,
-        worktree             INTEGER NOT NULL,
-        worktree_dir         TEXT NOT NULL,
-        session_directory    TEXT,
-        worktree_branch      TEXT,
-        project_dir          TEXT NOT NULL,
-        max_iterations       INTEGER NOT NULL,
-        iteration            INTEGER NOT NULL DEFAULT 0,
-        audit_count          INTEGER NOT NULL DEFAULT 0,
-        error_count          INTEGER NOT NULL DEFAULT 0,
-        phase                TEXT NOT NULL,
-        execution_model      TEXT,
-        auditor_model        TEXT,
-        model_failed         INTEGER NOT NULL DEFAULT 0,
-        sandbox              INTEGER NOT NULL DEFAULT 0,
-        sandbox_container    TEXT,
-        started_at           INTEGER NOT NULL,
-        completed_at         INTEGER,
-        termination_reason   TEXT,
-        completion_summary   TEXT,
-        workspace_id         TEXT,
-        host_session_id      TEXT,
-        audit_session_id     TEXT,
-        decomposition_status TEXT NOT NULL DEFAULT 'pending' CHECK (decomposition_status IN ('pending','running','completed','failed','skipped')),
-        decomposition_mode TEXT NOT NULL DEFAULT 'agent' CHECK (decomposition_mode IN ('agent','deterministic')),
-        decomposition_session_id TEXT,
-        current_section_index INTEGER NOT NULL DEFAULT 0,
-        total_sections INTEGER NOT NULL DEFAULT 0,
-        final_audit_done INTEGER NOT NULL DEFAULT 0,
-        final_audit_attempts INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (project_id, loop_name)
-      )
-    `)
-
-    db.run(`
-      CREATE TABLE loop_large_fields (
-        project_id          TEXT NOT NULL,
-        loop_name           TEXT NOT NULL,
-        prompt              TEXT,
-        last_audit_result   TEXT,
-        PRIMARY KEY (project_id, loop_name),
-        FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
-      )
-    `)
-
-    db.run(`
-      CREATE TABLE plans (
-        project_id   TEXT NOT NULL,
-        loop_name    TEXT,
-        session_id   TEXT,
-        content      TEXT NOT NULL,
-        updated_at   INTEGER NOT NULL,
-        CHECK (loop_name IS NOT NULL OR session_id IS NOT NULL),
-        CHECK (NOT (loop_name IS NOT NULL AND session_id IS NOT NULL)),
-        UNIQUE (project_id, loop_name),
-        UNIQUE (project_id, session_id)
-      )
-    `)
-
-    db.run(`
-      CREATE TABLE review_findings (
-        project_id TEXT NOT NULL,
-        loop_name TEXT NOT NULL DEFAULT '',
-        file TEXT NOT NULL,
-        line INTEGER NOT NULL,
-        severity TEXT NOT NULL,
-        description TEXT NOT NULL,
-        scenario TEXT,
-        created_at INTEGER NOT NULL,
-        section_index INTEGER,
-        PRIMARY KEY (project_id, loop_name, file, line, section_index)
-      )
-    `)
-
-    db.run(`
-      CREATE TABLE section_plans (
-        project_id    TEXT    NOT NULL,
-        loop_name     TEXT    NOT NULL,
-        section_index INTEGER NOT NULL,
-        title         TEXT    NOT NULL,
-        content       TEXT    NOT NULL,
-        status        TEXT    NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','in_progress','completed','failed')),
-        attempts      INTEGER NOT NULL DEFAULT 0,
-        summary_done           TEXT,
-        summary_deviations     TEXT,
-        summary_follow_ups     TEXT,
-        started_at    INTEGER,
-        completed_at  INTEGER,
-        created_at    INTEGER NOT NULL,
-        PRIMARY KEY (project_id, loop_name, section_index),
-        FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
-      )
-    `)
+    db = openForgeDatabase(dbPath)
 
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
@@ -164,7 +67,6 @@ describe('Loop final audit rewind behavior', () => {
       current_section_index: 0,
       total_sections: 3,
       final_audit_done: 0,
-      final_audit_attempts: 0,
     }
     const values = { ...defaults, ...overrides }
     db.run(
@@ -199,31 +101,7 @@ describe('Loop final audit rewind behavior', () => {
     )
   }
 
-  describe('parseFinalAuditClear', () => {
-    test('detects final-audit:clear marker and returns true', () => {
-      const text = 'Some audit text\n<!-- final-audit:clear -->\nMore text'
-      expect(loopService.parseFinalAuditClear(text)).toBe(true)
-    })
 
-    test('detects marker with extra whitespace', () => {
-      const text = '<!--  final-audit:clear  -->'
-      expect(loopService.parseFinalAuditClear(text)).toBe(true)
-    })
-
-    test('returns false when text does not contain the marker', () => {
-      const text = 'Some audit text without the marker'
-      expect(loopService.parseFinalAuditClear(text)).toBe(false)
-    })
-
-    test('returns false for empty string', () => {
-      expect(loopService.parseFinalAuditClear('')).toBe(false)
-    })
-
-    test('returns false for similar but incorrect marker', () => {
-      expect(loopService.parseFinalAuditClear('<!-- final-audit-clear -->')).toBe(false)
-      expect(loopService.parseFinalAuditClear('<!-- final-audit:clear:extra -->')).toBe(false)
-    })
-  })
 
   describe('buildFinalAuditPrompt', () => {
     test('includes section summaries when sections are completed', () => {
@@ -257,7 +135,6 @@ describe('Loop final audit rewind behavior', () => {
       expect(prompt).toContain('## Section 2: API Endpoints')
       expect(prompt).toContain('### Done\nAdded CRUD endpoints')
       expect(prompt).toContain('### Follow-ups\nAdd rate limiting later')
-      expect(prompt).toContain('<!-- final-audit:clear -->')
     })
 
     test('returns prompt without summaries when no sections are completed', () => {
@@ -271,17 +148,6 @@ describe('Loop final audit rewind behavior', () => {
       expect(prompt).toContain('[Final integration audit]')
       expect(prompt).toContain('## Master Plan')
       expect(prompt).not.toContain("### Completed Sections' Summaries")
-      expect(prompt).toContain('<!-- final-audit:clear -->')
-    })
-
-    test('increments attempt number on each call', () => {
-      insertLoop({ loop_name: 'attempt-loop', total_sections: 1, final_audit_attempts: 2 })
-
-      const state = loopService.getActiveState('attempt-loop')
-      expect(state).not.toBeNull()
-
-      const prompt = loopService.buildFinalAuditPrompt(state!)
-      expect(prompt).toContain('[Final integration audit]')
     })
   })
 
@@ -496,106 +362,7 @@ describe('Event-handler level final audit and retry cap', () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-final-audit-event-test-'))
     const dbPath = join(tempDir, 'test.db')
-    db = new Database(dbPath)
-
-    db.run(`
-      CREATE TABLE loops (
-        project_id           TEXT NOT NULL,
-        loop_name            TEXT NOT NULL,
-        status               TEXT NOT NULL,
-        current_session_id   TEXT NOT NULL,
-        worktree             INTEGER NOT NULL,
-        worktree_dir         TEXT NOT NULL,
-        session_directory    TEXT,
-        worktree_branch      TEXT,
-        project_dir          TEXT NOT NULL,
-        max_iterations       INTEGER NOT NULL,
-        iteration            INTEGER NOT NULL DEFAULT 0,
-        audit_count          INTEGER NOT NULL DEFAULT 0,
-        error_count          INTEGER NOT NULL DEFAULT 0,
-        phase                TEXT NOT NULL,
-        execution_model      TEXT,
-        auditor_model        TEXT,
-        model_failed         INTEGER NOT NULL DEFAULT 0,
-        sandbox              INTEGER NOT NULL DEFAULT 0,
-        sandbox_container    TEXT,
-        started_at           INTEGER NOT NULL,
-        completed_at         INTEGER,
-        termination_reason   TEXT,
-        completion_summary   TEXT,
-        workspace_id         TEXT,
-        host_session_id      TEXT,
-        audit_session_id     TEXT,
-        decomposition_status TEXT NOT NULL DEFAULT 'pending' CHECK (decomposition_status IN ('pending','running','completed','failed','skipped')),
-        decomposition_mode   TEXT NOT NULL DEFAULT 'agent' CHECK (decomposition_mode IN ('agent','deterministic')),
-        decomposition_session_id TEXT,
-        current_section_index INTEGER NOT NULL DEFAULT 0,
-        total_sections       INTEGER NOT NULL DEFAULT 0,
-        final_audit_done     INTEGER NOT NULL DEFAULT 0,
-        final_audit_attempts INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (project_id, loop_name)
-      )
-    `)
-
-    db.run(`
-      CREATE TABLE loop_large_fields (
-        project_id          TEXT NOT NULL,
-        loop_name           TEXT NOT NULL,
-        prompt              TEXT,
-        last_audit_result   TEXT,
-        PRIMARY KEY (project_id, loop_name),
-        FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
-      )
-    `)
-
-    db.run(`
-      CREATE TABLE plans (
-        project_id   TEXT NOT NULL,
-        loop_name    TEXT,
-        session_id   TEXT,
-        content      TEXT NOT NULL,
-        updated_at   INTEGER NOT NULL,
-        CHECK (loop_name IS NOT NULL OR session_id IS NOT NULL),
-        CHECK (NOT (loop_name IS NOT NULL AND session_id IS NOT NULL)),
-        UNIQUE (project_id, loop_name),
-        UNIQUE (project_id, session_id)
-      )
-    `)
-
-    db.run(`
-      CREATE TABLE review_findings (
-        project_id TEXT NOT NULL,
-        loop_name TEXT NOT NULL DEFAULT '',
-        file TEXT NOT NULL,
-        line INTEGER NOT NULL,
-        severity TEXT NOT NULL,
-        description TEXT NOT NULL,
-        scenario TEXT,
-        created_at INTEGER NOT NULL,
-        section_index INTEGER,
-        PRIMARY KEY (project_id, loop_name, file, line, section_index)
-      )
-    `)
-
-    db.run(`
-      CREATE TABLE section_plans (
-        project_id    TEXT    NOT NULL,
-        loop_name     TEXT    NOT NULL,
-        section_index INTEGER NOT NULL,
-        title         TEXT    NOT NULL,
-        content       TEXT    NOT NULL,
-        status        TEXT    NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','in_progress','completed','failed')),
-        attempts      INTEGER NOT NULL DEFAULT 0,
-        started_at    INTEGER,
-        completed_at  INTEGER,
-        summary_done           TEXT,
-        summary_deviations     TEXT,
-        summary_follow_ups     TEXT,
-        created_at    INTEGER NOT NULL,
-        PRIMARY KEY (project_id, loop_name, section_index),
-        FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
-      )
-    `)
+    db = openForgeDatabase(dbPath)
 
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
@@ -633,7 +400,6 @@ describe('Event-handler level final audit and retry cap', () => {
       current_section_index: 0,
       total_sections: 3,
       final_audit_done: 0,
-      final_audit_attempts: 0,
     }
     const values = { ...defaults, ...overrides }
     db.run(
@@ -953,7 +719,7 @@ describe('Event-handler level final audit and retry cap', () => {
     })
 
     test('jump straight back to final_auditing when all sections complete after rewind', async () => {
-      insertLoop({ loop_name: 'jump-final', phase: 'auditing', current_section_index: 0, total_sections: 2, final_audit_attempts: 1 })
+      insertLoop({ loop_name: 'jump-final', phase: 'auditing', current_section_index: 0, total_sections: 2 })
       insertSectionPlan('jump-final', 0, { status: 'in_progress' })
       insertSectionPlan('jump-final', 1, { status: 'completed', summaryDone: 'Done 1' })
 

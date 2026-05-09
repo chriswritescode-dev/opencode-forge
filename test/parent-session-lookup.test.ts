@@ -155,7 +155,6 @@ describe('createParentSessionLookup', () => {
 
     const result = await lookup(sessionId)
     expect(result).toBe(parentId)
-    expect(callOrder[0]).toBe('no-dir')
-    expect(callOrder[callOrder.length - 1]).toBe(`dir:${worktreeDir}`)
+    expect(callOrder).toEqual([`dir:${worktreeDir}`])
   })
 })

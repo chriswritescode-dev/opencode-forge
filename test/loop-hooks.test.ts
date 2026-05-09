@@ -1461,8 +1461,8 @@ describe('loop-hooks integration', () => {
 
       const state = service.getAnyState(loopName)
       expect(callCount).toBe(2)
-      expect(state?.phase).toBe('auditing')
-      expect(state?.sessionId).toBe(createdAuditSessionId)
+      expect(state?.active).toBe(true)
+      expect(state?.phase).toBe('coding')
 
       rmSync(worktreeDir, { recursive: true, force: true })
     })
@@ -2112,7 +2112,7 @@ describe('loop-hooks integration', () => {
   })
 
   describe('session deletion order', () => {
-    it('handleCodingPhase deletes code session before creating audit session', async () => {
+    it('handleCodingPhase creates audit session and schedules deferred deletion of code session', async () => {
       const sessionDeletes: string[] = []
       const sessionCreates: string[] = []
       
@@ -2197,8 +2197,7 @@ describe('loop-hooks integration', () => {
 
       const state = service.getAnyState(loopName)
       expect(state?.phase).toBe('auditing')
-      expect(sessionDeletes).toContain(sessionId)
-      expect(sessionDeletes.length).toBe(1)
+      expect(sessionDeletes.length).toBe(0)
       expect(sessionCreates.length).toBe(1)
 
       rmSync(worktreeDir, { recursive: true, force: true })

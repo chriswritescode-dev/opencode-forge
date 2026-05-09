@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
-import { Database } from 'bun:sqlite'
+import type { Database } from 'bun:sqlite'
 import { mkdirSync } from 'fs'
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
@@ -10,79 +10,16 @@ import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-r
 import { createLoopTools } from '../src/tools/loop'
 import { createLogger } from '../src/utils/logger'
 import { createLoopEventHandler } from '../src/hooks/loop'
+import { openForgeDatabase } from '../src/storage/database'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { randomUUID } from 'crypto'
 
 const TEST_DIR = '/tmp/opencode-loop-status-test-' + Date.now()
 
 function createTestDb(): { db: Database; path: string } {
-  const path = `${TEST_DIR}-${Math.random().toString(36).slice(2)}.db`
-  const db = new Database(path)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS loops (
-      project_id TEXT NOT NULL,
-      loop_name TEXT NOT NULL,
-      status TEXT NOT NULL CHECK(status IN ('running','completed','cancelled','errored','stalled')),
-      current_session_id TEXT NOT NULL,
-      worktree INTEGER NOT NULL,
-      worktree_dir TEXT NOT NULL,
-      worktree_branch TEXT,
-      project_dir TEXT NOT NULL,
-      max_iterations INTEGER NOT NULL,
-      iteration INTEGER NOT NULL DEFAULT 0,
-      audit_count INTEGER NOT NULL DEFAULT 0,
-      error_count INTEGER NOT NULL DEFAULT 0,
-      phase TEXT NOT NULL CHECK(phase IN ('coding','auditing')),
-      execution_model TEXT,
-      auditor_model TEXT,
-      model_failed INTEGER NOT NULL DEFAULT 0,
-      sandbox INTEGER NOT NULL DEFAULT 0,
-      sandbox_container TEXT,
-      started_at INTEGER NOT NULL,
-      completed_at INTEGER,
-      termination_reason TEXT,
-      completion_summary TEXT,
-      workspace_id         TEXT,
-      host_session_id      TEXT,
-      audit_session_id     TEXT,
-      session_directory    TEXT,
-      PRIMARY KEY (project_id, loop_name)
-    )
-  `)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS loop_large_fields (
-      project_id TEXT NOT NULL,
-      loop_name TEXT NOT NULL,
-      prompt TEXT,
-      last_audit_result TEXT,
-      PRIMARY KEY (project_id, loop_name),
-      FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
-    )
-  `)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS plans (
-      project_id TEXT NOT NULL,
-      session_id TEXT,
-      loop_name TEXT,
-      content TEXT NOT NULL,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (project_id, session_id)
-    )
-  `)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS review_findings (
-      project_id TEXT NOT NULL,
-        loop_name TEXT NOT NULL DEFAULT '',
-      file TEXT NOT NULL,
-      line INTEGER NOT NULL,
-      severity TEXT NOT NULL,
-      description TEXT NOT NULL,
-      scenario TEXT,
-      created_at INTEGER NOT NULL,
-      section_index INTEGER,
-      PRIMARY KEY (project_id, loop_name, file, line, section_index)
-    )
-  `)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_loops_status ON loops(project_id, status)`)
-  db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_loops_session ON loops(project_id, current_session_id)`)
+  const path = join(tmpdir(), `forge-test-${randomUUID()}.db`)
+  const db = openForgeDatabase(path)
   return { db, path }
 }
 
