@@ -14,14 +14,14 @@ export interface CaptureLatestPlanDeps {
   logger: Logger
 }
 
-export type CaptureLatestPlanResult =
+type CaptureLatestPlanResult =
   | { status: 'captured'; planText: string; messageId?: string }
   | { status: 'already-current'; planText: string; messageId?: string }
   | { status: 'not-found' }
   | { status: 'invalid'; reason: string }
   | { status: 'read-failed'; error: unknown }
 
-export interface CaptureMarkedPlanTextDeps {
+interface CaptureMarkedPlanTextDeps {
   plansRepo: PlansRepo
   projectId: string
   logger: Logger
