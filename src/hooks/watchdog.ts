@@ -1,6 +1,7 @@
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import type { LoopService, LoopState } from '../services/loop'
 import type { Logger } from '../types'
+import type { TerminationReason } from '../loop/termination'
 
 export type LoopWatchdogStallReason =
   | 'non_busy_status'
@@ -55,7 +56,7 @@ export function createLoopWatchdog(input: {
   v2Client: OpencodeClient
   logger: Logger
   recover(loopName: string, state: LoopState, context: LoopWatchdogRecoveryContext): Promise<void>
-  terminate(loopName: string, state: LoopState, reason: 'stall_timeout'): Promise<void>
+  terminate(loopName: string, state: LoopState, reason: TerminationReason): Promise<void>
   statusRetryAttempts?: number
   statusRetryBackoffMs?: number
 }): LoopWatchdog {
@@ -125,7 +126,7 @@ export function createLoopWatchdog(input: {
 
     if (maxStalls > 0 && stallCount >= maxStalls) {
       input.logger.error(`Loop watchdog: loop ${loopName} exceeded max consecutive stalls (${maxStalls}), terminating`)
-      await input.terminate(loopName, state, 'stall_timeout')
+      await input.terminate(loopName, state, { kind: 'stall_timeout' })
       return
     }
 

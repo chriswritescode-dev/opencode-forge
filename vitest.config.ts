@@ -20,6 +20,10 @@ export default defineConfig({
       'test/workspace/forge-worktree-list.test.ts',
       'test/utils/tui-client-workspaces.test.ts',
       'test/index/session-lookup.test.ts',
+      'test/loop/termination.test.ts',
+      'test/loop/state-mapper.test.ts',
+      'test/loop/prompts.test.ts',
+      'test/loop/transitions.test.ts',
     ],
   },
 })

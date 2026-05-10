@@ -8,7 +8,7 @@ import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopService, type LoopService } from '../../src/services/loop'
-import { SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../../src/utils/section-summary'
+import { parseSectionSummary, SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../../src/loop/section-summary'
 import type { Logger } from '../../src/types'
 
 const mockLogger: Logger = {
@@ -157,7 +157,7 @@ describe('parseSectionSummary', () => {
 - Handled in section 2
 <!-- section-summary:end -->`
 
-    const result = loopService.parseSectionSummary(text)
+    const result = parseSectionSummary(text)
     expect(result).not.toBeNull()
     expect(result!.done).toContain('Implemented feature X')
     expect(result!.deviations).toContain('None')
@@ -165,7 +165,7 @@ describe('parseSectionSummary', () => {
   })
 
   test('returns null when no section summary marker', () => {
-    const result = loopService.parseSectionSummary('No summary here')
+    const result = parseSectionSummary('No summary here')
     expect(result).toBeNull()
   })
 
@@ -174,7 +174,7 @@ describe('parseSectionSummary', () => {
 ### Done
 - Completed work`
 
-    const result = loopService.parseSectionSummary(text)
+    const result = parseSectionSummary(text)
     expect(result).toBeNull()
   })
 
@@ -183,7 +183,7 @@ describe('parseSectionSummary', () => {
 - Completed work
 <!-- section-summary:end -->`
 
-    const result = loopService.parseSectionSummary(text)
+    const result = parseSectionSummary(text)
     expect(result).toBeNull()
   })
 
@@ -193,7 +193,7 @@ describe('parseSectionSummary', () => {
 - Completed work
 <!-- section-summary:end -->`
 
-    const result = loopService.parseSectionSummary(text)
+    const result = parseSectionSummary(text)
     expect(result).not.toBeNull()
     expect(result!.done).toContain('Completed work')
     expect(result!.deviations).toBeNull()
@@ -213,7 +213,7 @@ describe('parseSectionSummary', () => {
 - Add test coverage
 <!-- section-summary:end -->`
 
-    const result = loopService.parseSectionSummary(text)
+    const result = parseSectionSummary(text)
     expect(result).not.toBeNull()
     expect(result!.done).toContain('Implemented feature A')
     expect(result!.done).toContain('Fixed bug B')
@@ -224,7 +224,7 @@ describe('parseSectionSummary', () => {
   test('accepts \\r\\n line endings', () => {
     const text = `<!-- section-summary:start -->\r\n### Done\r\n- Feature X\r\n### Deviations\r\n- None\r\n### Follow-ups\r\n- Deferred\r\n<!-- section-summary:end -->`
 
-    const result = loopService.parseSectionSummary(text)
+    const result = parseSectionSummary(text)
     expect(result).not.toBeNull()
     expect(result!.done).toContain('Feature X')
     expect(result!.deviations).toContain('None')
@@ -241,7 +241,7 @@ describe('parseSectionSummary', () => {
 - Some follow-up
   <!-- section-summary:end -->  `
 
-    const result = loopService.parseSectionSummary(text)
+    const result = parseSectionSummary(text)
     expect(result).not.toBeNull()
     expect(result!.done).toContain('Work done')
     expect(result!.deviations).toContain('No deviation')
@@ -258,7 +258,7 @@ describe('parseSectionSummary', () => {
 - None
 <!-- section-summary:end -->`
 
-    const result = loopService.parseSectionSummary(text)
+    const result = parseSectionSummary(text)
     expect(result).not.toBeNull()
     expect(result!.done).toContain('Implemented feature X')
     expect(result!.deviations).toContain('None')
@@ -271,7 +271,7 @@ describe('parseSectionSummary', () => {
 - Implemented feature X
 <!-- section-summary:end -->`
 
-    const result = loopService.parseSectionSummary(text)
+    const result = parseSectionSummary(text)
     expect(result).not.toBeNull()
     expect(result!.done).toContain('Implemented feature X')
   })
@@ -289,7 +289,7 @@ More diagnostics.
 - Deferred
 <!-- section-summary:end -->`
 
-    const result = loopService.parseSectionSummary(text)
+    const result = parseSectionSummary(text)
     expect(result).not.toBeNull()
     expect(result!.done).toContain('Completed work')
     expect(result!.deviations).toContain('None')

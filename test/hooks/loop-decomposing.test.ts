@@ -9,7 +9,7 @@ import { createReviewFindingsRepo } from '../../src/storage/repos/review-finding
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopService, type LoopState, MAX_RETRIES } from '../../src/services/loop'
 import { createLoopEventHandler } from '../../src/hooks/loop'
-import { sessionsAwaitingBusy } from '../../src/hooks/loop-idle-gate'
+import { sessionsAwaitingBusy } from '../../src/loop/idle-gate'
 import type { Logger, PluginConfig } from '../../src/types'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 
@@ -602,7 +602,7 @@ describe('Loop Decomposing Phase Handler', () => {
         tempDir,
       )
 
-      await handler.terminateLoopByName(state.loopName, 'decomposition_failed')
+      await handler.terminateLoopByName(state.loopName, { kind: 'decomposition_failed' })
 
       const after = loopService.getAnyState(state.loopName)
       expect(after!.active).toBe(false)
@@ -628,11 +628,11 @@ describe('Loop Decomposing Phase Handler', () => {
         tempDir,
       )
 
-      await handler.terminateLoopByName(state.loopName, 'user_cancelled')
+      await handler.terminateLoopByName(state.loopName, { kind: 'cancelled' })
 
       const after = loopService.getAnyState(state.loopName)
       expect(after!.active).toBe(false)
-      expect(after!.terminationReason).toBe('user_cancelled')
+      expect(after!.terminationReason).toBe('cancelled')
     })
 
     test('cancelBySessionId cancels loop with decomp session ID', async () => {

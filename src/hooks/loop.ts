@@ -16,7 +16,9 @@ import { formatAuditSessionTitle, formatLoopSessionTitle } from '../utils/sessio
 import { bindSessionToWorkspace } from '../workspace/forge-worktree'
 import { extractSections } from '../utils/section-capture'
 import { decomposeDeterministically } from '../services/deterministic-decomposer'
-import { markPromptSent, clearPromptPending, sessionsAwaitingBusy, isAwaitingBusy, isAwaitingBusyExpired } from './loop-idle-gate'
+import { markPromptSent, clearPromptPending, sessionsAwaitingBusy, isAwaitingBusy, isAwaitingBusyExpired } from '../loop/idle-gate'
+import type { TerminationReason } from '../loop/termination'
+import { terminationStatusFor, terminationReasonToString } from '../loop/termination'
 
 export interface LoopEventHandler {
   onEvent(input: { event: { type: string; properties?: Record<string, unknown> } }): Promise<void>
@@ -25,7 +27,7 @@ export interface LoopEventHandler {
   startWatchdog(loopName: string): void
   getStallInfo(loopName: string): LoopWatchdogStallInfo | null
   cancelBySessionId(sessionId: string): Promise<boolean>
-  terminateLoopByName(loopName: string, reason: string): Promise<boolean>
+  terminateLoopByName(loopName: string, reason: TerminationReason): Promise<boolean>
   runExclusive<T>(loopName: string, fn: () => Promise<T>): Promise<T>
   clearLoopTimers(loopName: string): void
   recordActivity(loopName: string, source?: string): void
@@ -188,7 +190,7 @@ export function createLoopEventHandler(
     terminate: terminateLoop,
   })
 
-  async function terminateLoop(loopName: string, state: LoopState, reason: string): Promise<void> {
+  async function terminateLoop(loopName: string, state: LoopState, reason: TerminationReason): Promise<void> {
     const sessionId = state.sessionId
     const projectDir = state.projectDir ?? state.worktreeDir
     watchdog.stop(loopName)
@@ -221,15 +223,9 @@ export function createLoopEventHandler(
     }
 
     const now = Date.now()
-    const statusMap = (r: string): 'completed' | 'cancelled' | 'errored' | 'stalled' => {
-      if (r === 'completed') return 'completed'
-      if (r === 'cancelled' || r === 'user_aborted' || r === 'shutdown') return 'cancelled'
-      if (r === 'max_iterations' || r === 'stall_timeout') return 'stalled'
-      return 'errored'
-    }
     loopService.terminate(loopName, {
-      status: statusMap(reason),
-      reason,
+      status: terminationStatusFor(reason),
+      reason: terminationReasonToString(reason),
       completedAt: now,
     })
 
@@ -239,13 +235,13 @@ export function createLoopEventHandler(
       // Session may already be idle
     }
 
-    logger.log(`Loop terminated: reason="${reason}", loop="${state.loopName}", iteration=${state.iteration}`)
+    logger.log(`Loop terminated: reason="${terminationReasonToString(reason)}", loop="${state.loopName}", iteration=${state.iteration}`)
 
-    logger.debug(`Loop: terminateLoop reason=${reason} worktree=${!!state.worktree} logEligible=${reason === 'completed' && !!state.worktree}`)
+    logger.debug(`Loop: terminateLoop reason=${terminationReasonToString(reason)} worktree=${!!state.worktree} logEligible=${reason.kind === 'completed' && !!state.worktree}`)
 
     // Log worktree completion if configured and loop completed successfully
     // Write directly from host context using filesystem calls
-    if (reason === 'completed' && state.worktree) {
+    if (reason.kind === 'completed' && state.worktree) {
       const completionTimestamp = new Date()
       const planText = loopService.getPlanText(state.loopName, state.sessionId)
 
@@ -276,18 +272,18 @@ export function createLoopEventHandler(
     }
 
     if (v2Client.tui) {
-      const toastVariant = reason === 'completed' ? 'success'
-        : reason === 'cancelled' || reason === 'user_aborted' ? 'info'
-        : reason === 'max_iterations' ? 'warning'
-        : reason === 'stall_timeout' ? 'error'
+      const toastVariant = reason.kind === 'completed' ? 'success'
+        : reason.kind === 'cancelled' || reason.kind === 'user_aborted' ? 'info'
+        : reason.kind === 'max_iterations' ? 'warning'
+        : reason.kind === 'stall_timeout' ? 'error'
         : 'error'
 
-      const toastMessage = reason === 'completed' ? `Completed after ${state.iteration} iteration${state.iteration !== 1 ? 's' : ''}`
-        : reason === 'cancelled' ? 'Loop cancelled'
-        : reason === 'max_iterations' ? `Reached max iterations (${state.maxIterations})`
-        : reason === 'stall_timeout' ? `Stalled after ${state.iteration} iteration${state.iteration !== 1 ? 's' : ''}`
-        : reason === 'user_aborted' ? 'Loop aborted by user'
-        : `Loop ended: ${reason}`
+      const toastMessage = reason.kind === 'completed' ? `Completed after ${state.iteration} iteration${state.iteration !== 1 ? 's' : ''}`
+        : reason.kind === 'cancelled' ? 'Loop cancelled'
+        : reason.kind === 'max_iterations' ? `Reached max iterations (${state.maxIterations})`
+        : reason.kind === 'stall_timeout' ? `Stalled after ${state.iteration} iteration${state.iteration !== 1 ? 's' : ''}`
+        : reason.kind === 'user_aborted' ? 'Loop aborted by user'
+        : `Loop ended: ${terminationReasonToString(reason)}`
 
       v2Client.tui.publish({
         directory: state.projectDir ?? state.worktreeDir,
@@ -297,7 +293,7 @@ export function createLoopEventHandler(
             title: state.loopName,
             message: toastMessage,
             variant: toastVariant,
-            duration: reason === 'completed' ? 5000 : 3000,
+            duration: reason.kind === 'completed' ? 5000 : 3000,
           },
         },
       }).catch((err) => {
@@ -307,14 +303,14 @@ export function createLoopEventHandler(
 
     if (state.worktree) {
       const reasonLabel =
-        reason === 'completed' ? 'completed'
-        : reason === 'cancelled' ? 'cancelled'
-        : reason === 'stall_timeout' ? 'stalled'
-        : reason.startsWith('error') ? 'errored'
-        : reason
+        reason.kind === 'completed' ? 'completed'
+        : reason.kind === 'cancelled' ? 'cancelled'
+        : reason.kind === 'stall_timeout' ? 'stalled'
+        : reason.kind === 'error_max_retries' || reason.kind === 'decomposer_error' || reason.kind === 'worktree_failed' ? 'errored'
+        : reason.kind
 
-      const doCommit = reason !== 'missing_worktree_dir'
-      const doRemoveWorktree = reason !== 'missing_worktree_dir'
+      const doCommit = reason.kind !== 'missing_worktree_dir'
+      const doRemoveWorktree = reason.kind !== 'missing_worktree_dir'
 
       const teardown = await teardownWorktreeArtifacts({
         v2: v2Client,
@@ -376,7 +372,7 @@ export function createLoopEventHandler(
       }
     } else {
       logger.error(`Loop: ${context} (attempt ${nextErrorCount}/${MAX_RETRIES}), giving up`, err)
-      await terminateLoop(loopName, currentState, `error_max_retries: ${context}`)
+      await terminateLoop(loopName, currentState, { kind: 'error_max_retries', message: context })
     }
   }
 
@@ -621,7 +617,7 @@ export function createLoopEventHandler(
       if (isModelError) {
         const nextErrorCount = loopService.incrementError(loopName)
         if (nextErrorCount >= MAX_RETRIES) {
-          await terminateLoop(loopName, currentState, `error_max_retries: assistant error: ${assistantError}`)
+          await terminateLoop(loopName, currentState, { kind: 'error_max_retries', message: `assistant error: ${assistantError}` })
           return null
         }
         loopService.setModelFailed(loopName, true)
@@ -662,7 +658,7 @@ export function createLoopEventHandler(
       return false
     }
     logger.log(`Loop: audit all-clear, terminating loop=${loopName} iteration=${currentState.iteration} audits=${currentState.auditCount ?? 0}`)
-    await terminateLoop(loopName, currentState, 'completed')
+    await terminateLoop(loopName, currentState, { kind: 'completed' })
     logger.log(`Loop completed: auditor all-clear at iteration ${currentState.iteration} (audits=${currentState.auditCount ?? 0})`)
     return true
   }
@@ -858,7 +854,7 @@ export function createLoopEventHandler(
 
     if (attempts > MAX_CODE_LAUNCH_RECOVERIES) {
       logger.error(`Loop: coding launch failed after ${attempts} no-assistant idle events for ${loopName} (last=${lastMessageRole})`)
-      await terminateLoop(loopName, state, 'coding_no_assistant')
+      await terminateLoop(loopName, state, { kind: 'coding_no_assistant' })
       return
     }
 
@@ -980,7 +976,7 @@ export function createLoopEventHandler(
 
     if (!codeSessionResult) {
       logger.error(`Loop: failed to create code session after decomposition for ${loopName}`)
-      await terminateLoop(loopName, updatedState, 'session_creation_failed')
+      await terminateLoop(loopName, updatedState, { kind: 'session_creation_failed' })
       return
     }
 
@@ -1082,7 +1078,7 @@ export function createLoopEventHandler(
 
     if (!currentState.worktreeDir) {
       logger.error(`Loop: loop ${loopName} missing worktreeDir in decomposing phase, terminating`)
-      await terminateLoop(loopName, currentState, 'missing_worktree_dir')
+      await terminateLoop(loopName, currentState, { kind: 'missing_worktree_dir' })
       return
     }
 
@@ -1118,7 +1114,7 @@ export function createLoopEventHandler(
 
       if (!codeSessionResult) {
         logger.error(`Loop: failed to create code session for legacy fallback for ${loopName}`)
-        await terminateLoop(loopName, fallbackState, 'session_creation_failed')
+        await terminateLoop(loopName, fallbackState, { kind: 'session_creation_failed' })
         return
       }
 
@@ -1188,7 +1184,7 @@ export function createLoopEventHandler(
 
       if (errorCount >= MAX_RETRIES) {
         logger.error(`Loop: decomposition failed after ${MAX_RETRIES} retries for ${loopName}`)
-        await terminateLoop(loopName, currentState, 'decomposition_failed')
+        await terminateLoop(loopName, currentState, { kind: 'decomposition_failed' })
         return
       }
       loopService.incrementError(loopName)
@@ -1209,7 +1205,7 @@ export function createLoopEventHandler(
 
       if (!decomposerSessionResult) {
         logger.error(`Loop: failed to re-create decomposer session for ${loopName}`)
-        await terminateLoop(loopName, freshState, 'session_creation_failed')
+        await terminateLoop(loopName, freshState, { kind: 'session_creation_failed' })
         return
       }
 
@@ -1240,7 +1236,7 @@ export function createLoopEventHandler(
       } catch (err) {
         clearPromptPending(loopName, logger)
         logger.error(`Loop: failed to re-prompt decomposer for ${loopName}`, err)
-        await terminateLoop(loopName, freshState, 'decomposer_prompt_failed')
+        await terminateLoop(loopName, freshState, { kind: 'decomposer_prompt_failed' })
         return
       }
       return
@@ -1263,7 +1259,7 @@ export function createLoopEventHandler(
 
     if (!currentState.worktreeDir) {
       logger.error(`Loop: loop ${loopName} missing worktreeDir in final audit phase, terminating`)
-      await terminateLoop(loopName, currentState, 'missing_worktree_dir')
+      await terminateLoop(loopName, currentState, { kind: 'missing_worktree_dir' })
       return
     }
 
@@ -1276,7 +1272,7 @@ export function createLoopEventHandler(
       if (attempts >= MAX_IDLE_RETRIES) {
         logger.error(`Loop: final audit phase retry exhausted for ${loopName} (last message: ${lastMessageRole}), terminating`)
         idleRetryAttempts.delete(loopName)
-        await terminateLoop(loopName, currentState, 'final_audit_retry_exhausted')
+        await terminateLoop(loopName, currentState, { kind: 'final_audit_retry_exhausted' })
         return
       }
       logger.log(`Loop: final audit idle without assistant message (last=${lastMessageRole}), retrying in ${IDLE_RETRY_DELAY_MS}ms (attempt ${attempts + 1}/${MAX_IDLE_RETRIES})`)
@@ -1315,7 +1311,7 @@ export function createLoopEventHandler(
       if (!hasOutstandingBugs) {
         logger.log(`Loop: final audit clean for ${loopName} (no outstanding bug findings), completing`)
         loopService.setFinalAuditDone(loopName, true)
-        await terminateLoop(loopName, currentState, 'completed')
+        await terminateLoop(loopName, currentState, { kind: 'completed' })
         return
       }
 
@@ -1335,7 +1331,7 @@ export function createLoopEventHandler(
       const nextIter = (currentState.iteration ?? 0) + 1
       if ((currentState.maxIterations ?? 0) > 0 && nextIter > currentState.maxIterations) {
         logger.log(`Loop: max iterations reached (${nextIter}/${currentState.maxIterations}), terminating`)
-        await terminateLoop(loopName, currentState, 'max_iterations')
+        await terminateLoop(loopName, currentState, { kind: 'max_iterations' })
         return
       }
 
@@ -1417,7 +1413,7 @@ export function createLoopEventHandler(
 
     if (!currentState.worktreeDir) {
       logger.error(`Loop: loop ${loopName} missing worktreeDir in coding phase, terminating`)
-      await terminateLoop(loopName, currentState, 'missing_worktree_dir')
+      await terminateLoop(loopName, currentState, { kind: 'missing_worktree_dir' })
       return
     }
 
@@ -1662,7 +1658,7 @@ export function createLoopEventHandler(
 
     if (!currentState.worktreeDir) {
       logger.error(`Loop: loop ${loopName} missing worktreeDir in auditing phase, terminating`)
-      await terminateLoop(loopName, currentState, 'missing_worktree_dir')
+      await terminateLoop(loopName, currentState, { kind: 'missing_worktree_dir' })
       return
     }
 
@@ -1675,7 +1671,7 @@ export function createLoopEventHandler(
       if (attempts >= MAX_IDLE_RETRIES) {
         logger.error(`Loop: auditing phase retry exhausted for ${loopName} (last message: ${lastMessageRole}), terminating`)
         idleRetryAttempts.delete(loopName)
-        await terminateLoop(loopName, currentState, 'audit_retry_exhausted')
+        await terminateLoop(loopName, currentState, { kind: 'audit_retry_exhausted' })
         return
       }
       logger.log(`Loop: auditing idle without assistant message (last=${lastMessageRole}), retrying in ${IDLE_RETRY_DELAY_MS}ms (attempt ${attempts + 1}/${MAX_IDLE_RETRIES})`)
@@ -1821,7 +1817,7 @@ export function createLoopEventHandler(
             const nextIter = (currentState.iteration ?? 0) + 1
             if ((currentState.maxIterations ?? 0) > 0 && nextIter > currentState.maxIterations) {
               logger.log(`Loop: max iterations reached (${nextIter}/${currentState.maxIterations}), terminating`)
-              await terminateLoop(loopName, currentState, 'max_iterations')
+        await terminateLoop(loopName, currentState, { kind: 'max_iterations' })
               return
             }
             logger.log(`Loop: advancing from section ${idx} to section ${nextIdx}`)
@@ -1936,7 +1932,7 @@ export function createLoopEventHandler(
         const nextIter = (currentState.iteration ?? 0) + 1
         if ((currentState.maxIterations ?? 0) > 0 && nextIter > currentState.maxIterations) {
           logger.log(`Loop: max iterations reached (${nextIter}/${currentState.maxIterations}), terminating`)
-          await terminateLoop(loopName, currentState, 'max_iterations')
+          await terminateLoop(loopName, currentState, { kind: 'max_iterations' })
           return
         }
 
@@ -1972,7 +1968,7 @@ export function createLoopEventHandler(
 
       const nextIteration = (currentState.iteration ?? 0) + 1
       if ((currentState.maxIterations ?? 0) > 0 && nextIteration > (currentState.maxIterations ?? 0)) {
-        await terminateLoop(loopName, currentState, 'max_iterations')
+        await terminateLoop(loopName, currentState, { kind: 'max_iterations' })
         return
       }
 
@@ -2029,7 +2025,7 @@ export function createLoopEventHandler(
         const activeLoops = loopService.listActive()
         const affectedLoop = activeLoops.find((s) => s.worktreeDir === directory)
         if (affectedLoop) {
-          await terminateLoop(affectedLoop.loopName!, affectedLoop, `worktree_failed: ${message}`)
+          await terminateLoop(affectedLoop.loopName!, affectedLoop, { kind: 'worktree_failed', message })
         }
       }
       return
@@ -2067,7 +2063,7 @@ export function createLoopEventHandler(
           }
           if (state.phase === 'decomposing') {
             logger.log(`Loop: decomposer session ${eventSessionId} aborted, terminating loop`)
-            await terminateLoop(loopName, state, 'user_aborted')
+            await terminateLoop(loopName, state, { kind: 'user_aborted' })
             return
           }
           if (state.phase === 'final_auditing') {
@@ -2082,7 +2078,7 @@ export function createLoopEventHandler(
             return
           }
           logger.log(`Loop: session ${eventSessionId} aborted, terminating loop`)
-          await terminateLoop(loopName, state, 'user_aborted')
+          await terminateLoop(loopName, state, { kind: 'user_aborted' })
         })
         return
       }
@@ -2106,7 +2102,7 @@ export function createLoopEventHandler(
         if (state.phase === 'decomposing') {
           const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
           logger.error(`Loop: decomposer session error for ${eventSessionId}: ${errorMessage}, terminating loop`)
-          await terminateLoop(loopName, state, `decomposer_error: ${errorMessage}`)
+          await terminateLoop(loopName, state, { kind: 'decomposer_error', message: errorMessage })
           return
         }
         if (state.phase === 'final_auditing') {
@@ -2227,11 +2223,11 @@ export function createLoopEventHandler(
     if (!loopName) return false
     const state = loopService.getActiveState(loopName)
     if (!state?.active) return false
-    await terminateLoop(loopName, state, 'cancelled')
+    await terminateLoop(loopName, state, { kind: 'cancelled' })
     return true
   }
 
-  async function terminateLoopByName(loopName: string, reason: string): Promise<boolean> {
+  async function terminateLoopByName(loopName: string, reason: TerminationReason): Promise<boolean> {
     const state = loopService.getActiveState(loopName)
     if (!state?.active) return false
     await terminateLoop(loopName, state, reason)

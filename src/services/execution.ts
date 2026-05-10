@@ -24,7 +24,8 @@ import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '.
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { decomposeDeterministically } from './deterministic-decomposer'
-import { markPromptSent, clearPromptPending } from '../hooks/loop-idle-gate'
+import { markPromptSent, clearPromptPending } from '../loop/idle-gate'
+import { terminationStatusFor, parseTerminationReasonString } from '../loop/termination'
 
 // ============================================================================
 // Surface Types - Identifies the caller boundary
@@ -1646,10 +1647,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     
     const statusFromState = (state: import('../services/loop').LoopState): LoopStatusView['status'] => {
       if (state.active) return 'running'
-      if (state.terminationReason === 'completed') return 'completed'
-      if (state.terminationReason === 'cancelled' || state.terminationReason === 'user_aborted' || state.terminationReason === 'shutdown') return 'cancelled'
-      if (state.terminationReason === 'max_iterations' || state.terminationReason === 'stall_timeout') return 'stalled'
-      if (state.terminationReason) return 'errored'
+      if (state.terminationReason) return terminationStatusFor(parseTerminationReasonString(state.terminationReason))
       return 'completed'
     }
 
@@ -1805,7 +1803,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     if (stoppedState.active && !command.force) {
       return fail('conflict', 409, `Loop "${stoppedState.loopName}" is currently active. Use force=true to force-restart a stuck loop.`)
     }
-    if (stoppedState.terminationReason === 'completed') {
+    if (stoppedState.terminationReason && parseTerminationReasonString(stoppedState.terminationReason).kind === 'completed') {
       return fail('conflict', 409, `Loop "${stoppedState.loopName}" completed successfully and cannot be restarted.`)
     }
     if (stoppedState.worktree && stoppedState.worktreeDir) {

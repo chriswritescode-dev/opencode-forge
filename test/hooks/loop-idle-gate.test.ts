@@ -6,7 +6,7 @@ import {
   isAwaitingBusy,
   isAwaitingBusyExpired,
   AWAITING_BUSY_TIMEOUT_MS,
-} from '../../src/hooks/loop-idle-gate'
+} from '../../src/loop/idle-gate'
 import type { Logger } from '../../src/types'
 
 function createMockLogger(): Logger {
