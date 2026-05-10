@@ -22,12 +22,14 @@ type TuiKeybinds = {
   viewPlan: string
   executePlan: string
   showLoops: string
+  loadPlan: string
 }
 
 const DEFAULT_KEYBINDS: TuiKeybinds = {
   viewPlan: '<leader>v',
   executePlan: '<leader>e',
   showLoops: '<leader>w',
+  loadPlan: '<leader>i',
 }
 
 type TuiOptions = {
@@ -1062,6 +1064,42 @@ const tui: TuiPlugin = async (api) => {
             sessionId={sessionID}
             // onRefresh omitted - sidebar refreshes via loops.changed events
             startInExecuteMode={true}
+          />
+        ))
+      },
+    }]
+  })
+
+  api.command.register(() => {
+    return [{
+      title: 'Forge: Load plan',
+      value: 'forge.plan.load',
+      description: 'Load an archived plan',
+      category: 'Forge',
+      keybind: opts.keybinds.loadPlan,
+      onSelect: async () => {
+        const currentClient = await ensureClient()
+        if (!currentClient) return
+
+        const plans = listArchivedPlans(currentClient.projectId)
+        if (plans.length === 0) {
+          api.ui.toast({
+            message: `No archived plans in ${resolvePlanArchiveDir(currentClient.projectId)}`,
+            variant: 'info',
+            duration: 4000,
+          })
+          return
+        }
+
+        api.ui.dialog.setSize('large')
+        api.ui.dialog.replace(() => (
+          <LoadPlanDialog
+            api={api}
+            client={currentClient}
+            cache={executionContextCache}
+            pluginConfig={pluginConfig}
+            sessionId={undefined}
+            plans={plans}
           />
         ))
       },

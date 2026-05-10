@@ -96,12 +96,14 @@ export interface TuiConfig {
   planArchiveTtlMs?: number
   /** Keyboard shortcut overrides for Forge commands. */
   keybinds?: {
-    /** View plan dialog. Default: Meta+Shift+P */
+    /** View plan dialog. Default: <leader>v */
     viewPlan?: string
-    /** Execute plan dialog. Default: Meta+Shift+E */
+    /** Execute plan dialog. Default: <leader>e */
     executePlan?: string
-    /** Show loops dialog. Default: Meta+Shift+L */
+    /** Show loops dialog. Default: <leader>w */
     showLoops?: string
+    /** Load archived plans dialog. Default: <leader>i */
+    loadPlan?: string
   }
 }
 
