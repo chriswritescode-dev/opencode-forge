@@ -14,7 +14,6 @@ import type { SandboxManager } from '../sandbox/manager'
 import { extractPlanTitle, extractLoopNames } from '../utils/plan-execution'
 import { parseModelString, retryWithModelFallback, resolveDecomposerModel } from '../utils/model-fallback'
 
-import { resolveCurrentGitBranch } from '../utils/git-branch'
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
 import { buildLoopPermissionRuleset } from '../constants/loop'
 import { findPartialMatch } from '../utils/partial-match'
@@ -92,7 +91,7 @@ export interface StartLoopCommand {
   source: PlanSource
   title?: string
   loopName?: string
-  mode: 'in-place' | 'worktree'
+  mode: 'worktree'
   maxIterations?: number
   executionModel?: string
   auditorModel?: string
@@ -103,7 +102,7 @@ export interface StartLoopCommand {
     startWatchdog?: boolean
     abortSourceSessionOnSuccess?: boolean
     onStarted?: (info: {
-      mode: 'in-place' | 'worktree'
+      mode: 'worktree'
       sessionId: string
       loopName: string
       displayName: string
@@ -117,7 +116,7 @@ export interface BuildStartLoopCommandInput {
   source: PlanSource
   title?: string
   loopName?: string
-  mode: 'in-place' | 'worktree'
+  mode: 'worktree'
   maxIterations?: number
   executionModel?: string
   auditorModel?: string
@@ -203,7 +202,7 @@ export interface PlanExecutionStartedResult {
 
 export interface LoopStartedResult {
   operation: 'loop.start'
-  mode: 'in-place' | 'worktree'
+  mode: 'worktree'
   sessionId: string
   loopName: string
   displayName: string
@@ -847,11 +846,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     
     try {
       let sessionId: string
-      let workspaceId: string | undefined
       let initialBoundWorkspaceId: string | undefined
 
       const selectInitialWorktreeSession = (targetSessionId: string, boundWorkspaceId: string | undefined, context: string): void => {
-        if (command.mode !== 'worktree' || !boundWorkspaceId || !command.lifecycle?.selectSession) return
+        if (!boundWorkspaceId || !command.lifecycle?.selectSession) return
         selectSessionWithFallback(deps, { sessionID: targetSessionId, workspace: boundWorkspaceId }).catch((err: unknown) => {
           deps.logger.error(`handleStartLoop: failed to navigate TUI to worktree session ${context}`, err as Error)
         })
@@ -863,125 +861,114 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // Determine decomposer mode early so we don't create an unused code session in agent mode
       const decomposerConfig = deps.config.decomposer ?? { enabled: true, mode: 'agent' as const, onParseFailure: 'legacy' as const, maxSections: 12 }
       const isAgentDecomposer = decomposerConfig.enabled !== false && decomposerConfig.mode === 'agent'
+
+      if (!deps.sandboxManager) {
+        deps.logger.error('handleStartLoop: sandbox manager not initialized; loops require Docker')
+        return fail(
+          'internal_error',
+          500,
+          'Sandbox required: Docker is not available. Install Docker and build oc-forge-sandbox:latest before starting a loop.',
+        )
+      }
       
-      if (command.mode === 'worktree') {
-        // Create builtin worktree workspace (single call — no separate worktree.create)
-        const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
-        const ws = await createBuiltinWorktreeWorkspace(deps.v2, {
-          loopName: uniqueLoopName,
-          directory: ctx.directory,
-        }, deps.logger)
-        if (!ws) {
-          deps.logger.error('handleStartLoop: failed to create builtin worktree workspace')
-          return fail('internal_error', 500, 'Failed to create worktree workspace')
-        }
-        hostWorktreeDir = ws.directory
-        worktreeBranch = ws.branch
-        workspaceId = ws.workspaceId
-        createdWorkspaceId = ws.workspaceId
-        
-        // Build permissions
-        const sandboxEnabled = isSandboxEnabled(deps.config, deps.sandboxManager)
-        sandboxEnabledForLoop = sandboxEnabled
-        
-        const permissionRuleset = buildLoopPermissionRuleset({
-          isWorktree: true,
-          isSandbox: sandboxEnabled,
+      // Create builtin worktree workspace (single call — no separate worktree.create)
+      const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
+      const ws = await createBuiltinWorktreeWorkspace(deps.v2, {
+        loopName: uniqueLoopName,
+        directory: ctx.directory,
+      }, deps.logger)
+      if (!ws) {
+        deps.logger.error('handleStartLoop: failed to create builtin worktree workspace')
+        return fail('internal_error', 500, 'Failed to create worktree workspace')
+      }
+      hostWorktreeDir = ws.directory
+      worktreeBranch = ws.branch
+      const workspaceId = ws.workspaceId
+      createdWorkspaceId = ws.workspaceId
+
+      // Build permissions
+      const sandboxEnabled = isSandboxEnabled(deps.config, deps.sandboxManager)
+      sandboxEnabledForLoop = sandboxEnabled
+
+      const permissionRuleset = buildLoopPermissionRuleset({
+        isSandbox: sandboxEnabled,
+      })
+
+      // Create session (code session or decomposer session based on decomposer mode)
+      if (isAgentDecomposer) {
+        const createResult = await createLoopSessionWithWorkspace({
+          v2: deps.v2,
+          title: `decomposer-${uniqueLoopName}`,
+          directory: hostWorktreeDir!,
+          permission: permissionRuleset,
+          workspaceId,
+          logPrefix: 'handleStartLoop:decomposer',
+          logger: deps.logger,
+          legacyClient: deps.legacyClient,
         })
-        
-        // Create session (code session or decomposer session based on decomposer mode)
-        if (isAgentDecomposer) {
-          const createResult = await createLoopSessionWithWorkspace({
-            v2: deps.v2,
-            title: `decomposer-${uniqueLoopName}`,
-            directory: hostWorktreeDir!,
-            permission: permissionRuleset,
-            workspaceId,
-            logPrefix: 'handleStartLoop:decomposer',
-            logger: deps.logger,
-            legacyClient: deps.legacyClient,
-          })
-          if (!createResult) {
-            deps.logger.error('handleStartLoop: failed to create decomposer session')
-            await rollbackLoopStart()
-            return fail('internal_error', 500, 'Failed to create decomposer session')
-          }
-          sessionId = createResult.sessionId
-          createdSessionId = sessionId
-          initialBoundWorkspaceId = createResult.boundWorkspaceId
-          if (createResult.bindFailed) {
-            deps.logger.log(
-              `handleStartLoop: workspace ${workspaceId} created but initial decomposer bind failed; will retry on next session`,
-            )
-          }
-        } else {
-          const createResult = await createLoopSessionWithWorkspace({
-            v2: deps.v2,
-            title: sessionTitle,
-            directory: hostWorktreeDir!,
-            permission: permissionRuleset,
-            workspaceId,
-            logPrefix: 'handleStartLoop',
-            logger: deps.logger,
-          })
-
-          if (!createResult) {
-            deps.logger.error('handleStartLoop: failed to create session')
-            await rollbackLoopStart()
-            return fail('internal_error', 500, 'Failed to create loop session')
-          }
-
-          sessionId = createResult.sessionId
-          createdSessionId = sessionId
-          initialBoundWorkspaceId = createResult.boundWorkspaceId
-
-          if (createResult.bindFailed) {
-            deps.logger.log(`handleStartLoop: workspace ${workspaceId} created but initial bind failed; will retry on next session`)
-          }
+        if (!createResult) {
+          deps.logger.error('handleStartLoop: failed to create decomposer session')
+          await rollbackLoopStart()
+          return fail('internal_error', 500, 'Failed to create decomposer session')
         }
-        
-        // Start sandbox if enabled
-        if (sandboxEnabled && deps.sandboxManager) {
-          try {
-            sandboxStartAttempted = true
-            const result = await deps.sandboxManager.start(uniqueLoopName, hostWorktreeDir!)
-            sandboxStarted = true
-            sandboxContainer = result.containerName
-            deps.logger.log(`handleStartLoop: sandbox container ${result.containerName} started`)
-          } catch (err) {
-            deps.logger.error('handleStartLoop: failed to start sandbox', err)
-            await rollbackLoopStart()
-            return fail('internal_error', 500, 'Failed to start sandbox')
-          }
+        sessionId = createResult.sessionId
+        createdSessionId = sessionId
+        initialBoundWorkspaceId = createResult.boundWorkspaceId
+        if (createResult.bindFailed) {
+          deps.logger.log(
+            `handleStartLoop: workspace ${workspaceId} created but initial decomposer bind failed; will retry on next session`,
+          )
         }
-        
       } else {
-        // In-place mode
-        worktreeBranch = resolveCurrentGitBranch(ctx.directory)
-        if (isAgentDecomposer) {
-          const decomposerSessionResult = await createSessionWithFallback(deps, {
-            title: `decomposer-${uniqueLoopName}`,
-            directory: ctx.directory,
-          })
-          if (!decomposerSessionResult.data) {
-            deps.logger.error('handleStartLoop: failed to create decomposer session')
-            return fail('internal_error', 500, 'Failed to create decomposer session')
-          }
-          sessionId = decomposerSessionResult.data.id
-          createdSessionId = sessionId
-        } else {
-          const createResult = await createSessionWithFallback(deps, {
-            title: sessionTitle,
-            directory: ctx.directory,
-          })
-          
-          if (!createResult.data) {
-            deps.logger.error('handleStartLoop: failed to create session', createResult.error)
-            return fail('internal_error', 500, 'Failed to create loop session')
-          }
-          
-          sessionId = createResult.data.id
-          createdSessionId = sessionId
+        const createResult = await createLoopSessionWithWorkspace({
+          v2: deps.v2,
+          title: sessionTitle,
+          directory: hostWorktreeDir!,
+          permission: permissionRuleset,
+          workspaceId,
+          logPrefix: 'handleStartLoop',
+          logger: deps.logger,
+        })
+
+        if (!createResult) {
+          deps.logger.error('handleStartLoop: failed to create session')
+          await rollbackLoopStart()
+          return fail('internal_error', 500, 'Failed to create loop session')
+        }
+
+        sessionId = createResult.sessionId
+        createdSessionId = sessionId
+        initialBoundWorkspaceId = createResult.boundWorkspaceId
+
+        if (createResult.bindFailed) {
+          deps.logger.log(`handleStartLoop: workspace ${workspaceId} created but initial bind failed; will retry on next session`)
+        }
+      }
+
+      // Start sandbox if enabled
+      if (sandboxEnabled && deps.sandboxManager) {
+        try {
+          sandboxStartAttempted = true
+          const result = await deps.sandboxManager.start(uniqueLoopName, hostWorktreeDir!)
+          sandboxStarted = true
+          sandboxContainer = result.containerName
+          deps.logger.log(`handleStartLoop: sandbox container ${result.containerName} started`)
+        } catch (err) {
+          deps.logger.error('handleStartLoop: failed to start sandbox', err)
+          await rollbackLoopStart()
+          return fail('internal_error', 500, 'Failed to start sandbox')
+        }
+
+        try {
+          await deps.sandboxManager.provisionDependencies(uniqueLoopName, hostWorktreeDir!)
+        } catch (err) {
+          deps.logger.error('handleStartLoop: dependency provisioning failed', err)
+          await rollbackLoopStart()
+          return fail(
+            'internal_error',
+            500,
+            `Failed to provision dependencies: ${(err as Error).message ?? 'unknown error'}`,
+          )
         }
       }
       
@@ -1000,7 +987,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         phase: 'coding',
         errorCount: 0,
         auditCount: 0,
-        worktree: command.mode === 'worktree',
+        worktree: true,
         sandbox: sandboxEnabledForLoop,
         sandboxContainer: sandboxContainer ?? undefined,
         executionModel: resolvedExecutionModel,
@@ -1051,7 +1038,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         selectInitialWorktreeSession(sessionId, initialBoundWorkspaceId, 'after decomposer start')
 
         // Wait for sandbox readiness in worktree+sandbox mode BEFORE prompting
-        if (command.mode === 'worktree' && sandboxEnabledForLoop && deps.sandboxManager && deps.dataDir) {
+        if (sandboxEnabledForLoop && deps.sandboxManager && deps.dataDir) {
           const dbPath = join(deps.dataDir, 'forge.db')
           if (existsSync(dbPath)) {
             const { waitForSandboxReady } = await import('../utils/sandbox-ready')
@@ -1174,7 +1161,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           selectInitialWorktreeSession(sessionId, initialBoundWorkspaceId, 'after section start')
 
           // Wait for sandbox readiness in worktree+sandbox mode BEFORE prompting
-          if (command.mode === 'worktree' && sandboxEnabledForLoop && deps.sandboxManager && deps.dataDir) {
+          if (sandboxEnabledForLoop && deps.sandboxManager && deps.dataDir) {
             const dbPath = join(deps.dataDir, 'forge.db')
             if (existsSync(dbPath)) {
               const { waitForSandboxReady } = await import('../utils/sandbox-ready')
@@ -1206,7 +1193,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
           // Send section-based prompt via the code session
           let sectionPromptResult: { result: SessionPromptResult; usedModel?: typeof loopModel }
-          if (command.mode === 'worktree' && loopModel) {
+          if (loopModel) {
             sectionPromptResult = await retryWithModelFallback(
               async () => {
                 markPromptSent(uniqueLoopName, sessionId, deps.logger)
@@ -1262,9 +1249,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             
             let decomposerSessionId: string
             let fallbackBoundWorkspaceId: string | undefined
-            if (command.mode === 'worktree' && createdWorkspaceId) {
+            if (createdWorkspaceId) {
               const fallbackPermission = buildLoopPermissionRuleset({
-                isWorktree: true,
                 isSandbox: sandboxEnabledForLoop,
               })
               const createResult = await createLoopSessionWithWorkspace({
@@ -1425,7 +1411,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       })
       
       // Wait for sandbox readiness in worktree+sandbox mode (after persistence)
-      if (command.mode === 'worktree' && sandboxEnabledForLoop && deps.sandboxManager && deps.dataDir) {
+      if (sandboxEnabledForLoop && deps.sandboxManager && deps.dataDir) {
         const dbPath = join(deps.dataDir, 'forge.db')
         if (existsSync(dbPath)) {
           const { waitForSandboxReady } = await import('../utils/sandbox-ready')
@@ -1478,7 +1464,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       let promptResult: { result: SessionPromptResult; usedModel?: typeof loopModel }
       let actualModel: typeof loopModel | null = null
       
-      if (command.mode === 'worktree' && loopModel) {
+      if (loopModel) {
         const retryResult = await retryWithModelFallback(
           async () => {
             markPromptSent(uniqueLoopName, sessionId, deps.logger)
@@ -1803,9 +1789,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     deps.logger.log(
       `handleRestartLoop: [perm-diag] worktree=${String(stoppedState.worktree)} sandbox=${String(restartSandbox)}`
     )
-    const permissionRuleset = stoppedState.worktree
-      ? buildLoopPermissionRuleset({ isWorktree: true, isSandbox: restartSandbox })
-      : undefined
+    const permissionRuleset = buildLoopPermissionRuleset({ isSandbox: restartSandbox })
     const previousTermination = stoppedState.terminationReason
     const previousState = { ...stoppedState }
     let restartedState: import('../loop/state').LoopState | null = null
@@ -1857,6 +1841,15 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         } catch (err) {
           deps.logger.error('loop-restart: failed to start sandbox container', err)
           return { ok: false, error: 'Restart failed: could not start sandbox container.' }
+        }
+
+        // Best-effort dependency provisioning on restart. The worktree may already have node_modules
+        // from the prior run; a re-install is wasteful but harmless if the lockfile changed.
+        try {
+          await deps.sandboxManager.provisionDependencies(stoppedState.loopName, stoppedState.worktreeDir)
+        } catch (err) {
+          deps.logger.error('loop-restart: dependency provisioning failed (best-effort)', err)
+          // Do NOT abort restart on provision failure — worktree may already have node_modules.
         }
       }
 
@@ -1917,7 +1910,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
               let didBindFail = false
               if (stoppedState.worktree && stoppedState.workspaceId) {
                 const restartPermission = buildLoopPermissionRuleset({
-                  isWorktree: true,
                   isSandbox: restartSandbox,
                 })
                 const createResult = await createLoopSessionWithWorkspace({
@@ -1965,7 +1957,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           
           if (stoppedState.worktree && stoppedState.workspaceId) {
             const restartPermission = buildLoopPermissionRuleset({
-              isWorktree: true,
               isSandbox: restartSandbox,
             })
             const createResult = await createLoopSessionWithWorkspace({

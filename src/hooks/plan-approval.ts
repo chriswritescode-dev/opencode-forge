@@ -301,8 +301,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
             return
           }
           
-          if (matchedLabel === 'Loop (worktree)' || matchedLabel === 'Loop') {
-            const isWorktree = matchedLabel === 'Loop (worktree)'
+          if (matchedLabel === 'Loop (worktree)') {
             const { executionName } = extractLoopNames(planText)
             const uniqueLoopName = ctx.loop.generateUniqueLoopName(executionName)
 
@@ -318,7 +317,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
                 source: { kind: 'inline', planText },
                 title,
                 loopName: uniqueLoopName,
-                mode: isWorktree ? 'worktree' : 'in-place',
+                mode: 'worktree',
                 maxIterations: config.loop?.defaultMaxIterations ?? 0,
                 executionModel,
                 auditorModel,
@@ -336,7 +335,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
                 publishPlanApprovalToast(ctx, input, 'error', `Failed to start loop: ${result.error.message}`)
                 return
               }
-              publishPlanApprovalToast(ctx, input, 'success', `Started ${isWorktree ? 'worktree ' : ''}loop: ${uniqueLoopName}`)
+              publishPlanApprovalToast(ctx, input, 'success', `Started worktree loop: ${uniqueLoopName}`)
               logger.log('Plan approval: loop setup complete')
             }, logger)
 

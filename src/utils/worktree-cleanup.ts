@@ -140,40 +140,18 @@ export async function teardownWorktreeArtifacts(input: TeardownInput): Promise<T
     }
   }
 
-  // Step 2: Delete session. Loop sessions are created against worktreeDir
-  // (see hooks/loop.ts rotateSession + executePromptOnce), so delete must
-  // target worktreeDir first. projectDir is the host project root and would
-  // silently 404 the delete, leaving a ghost in the session list.
-  const candidates: string[] = []
-  candidates.push(input.worktreeDir)
-  if (input.projectDir && input.projectDir !== input.worktreeDir) {
-    candidates.push(input.projectDir)
-  }
-
-  for (const sessionDir of candidates) {
-    try {
-      const deleteResult = await input.v2.session.delete({
-        sessionID: input.sessionId,
-        directory: sessionDir,
-      })
-      if (!deleteResult.error) {
-        result.sessionDeleted = true
-        log(`${input.logPrefix}: deleted session ${input.sessionId} for ${input.loopName} (directory=${sessionDir})`)
-        break
-      }
-      logError(`${input.logPrefix}: session.delete ${input.sessionId} returned error in ${sessionDir}, trying fallback`, deleteResult.error)
-    } catch (err) {
-      logError(`${input.logPrefix}: session.delete threw for ${input.sessionId} in ${sessionDir}`, err)
-    }
-  }
-  if (!result.sessionDeleted) {
-    logError(`${input.logPrefix}: failed to delete loop session ${input.sessionId} across ${candidates.join(', ')}`)
-  }
+  // Step 2: Preserve session. Loop sessions are created against worktreeDir.
+  // Instead of deleting, we keep them so users can review full session history
+  // after the loop completes. Session deletion only happens in abnormal cleanup paths
+  // (failed start, orphan sweep).
+  result.sessionDeleted = false
+  log(`${input.logPrefix}: skipping session delete to preserve session history for ${input.loopName}`)
 
   // Step 3: Rename worktree branch for user discoverability.
   // Must happen BEFORE workspace removal because workspace.remove cascades to
   // git worktree remove, which deletes the directory that git branch -m needs.
-  if (input.worktree && input.worktreeBranch && input.worktreeDir) {
+  if (input.worktree && input.worktreeBranch && input.worktreeDir
+      && !input.worktreeBranch.startsWith('forge/')) {
     const renameResult = await finalizeWorktreeBranch({
       worktreeDir: input.worktreeDir,
       currentBranch: input.worktreeBranch,

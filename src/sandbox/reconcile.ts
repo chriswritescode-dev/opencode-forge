@@ -48,9 +48,7 @@ export async function reconcileSandboxes(deps: ReconcileSandboxesDeps): Promise<
 
     for (const state of activeLoops) {
       // Only process loops with sandbox enabled, worktree mode, and a worktree directory.
-      // In-place (non-worktree) loops never use a sandbox container even if sandbox=true
-      // is persisted in state, so skip them to avoid starting unused containers.
-      if (state.sandbox !== true || state.worktree !== true || !state.worktreeDir || !state.loopName) {
+      if (state.sandbox !== true || !state.worktreeDir || !state.loopName) {
         continue
       }
 

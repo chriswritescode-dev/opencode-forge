@@ -486,15 +486,11 @@ describe('audit→code rotation ordering', () => {
     expect(restoreIndex).toBeGreaterThanOrEqual(0)
     expect(createIndex).toBeLessThan(restoreIndex)
 
+    // Session deletion is disabled; old sessions are preserved for history
     const deleteCalls = successCallTracker.filter(c => 
       c.kind === 'delete' && (c.args as any).sessionID === 'audit-1'
     )
-    expect(deleteCalls.length).toBe(1)
-    const deleteIndex = successCallTracker.findIndex(c => 
-      c.kind === 'delete' && (c.args as any).sessionID === 'audit-1'
-    )
-    expect(deleteIndex).toBeGreaterThan(createIndex)
-    expect(deleteIndex).toBeGreaterThan(restoreIndex)
+    expect(deleteCalls.length).toBe(0)
 
     const restoreCall = successCallTracker.find(c => c.kind === 'restore')
     expect((restoreCall?.args as any).id).toBe('ws-1')
@@ -570,15 +566,11 @@ describe('audit→code rotation ordering', () => {
     expect(restoreIndex).toBeGreaterThanOrEqual(0)
     expect(createIndex).toBeLessThan(restoreIndex)
 
+    // Session deletion is disabled; old sessions are preserved for history
     const deleteCalls = failureCallTracker.filter(c => 
       c.kind === 'delete' && (c.args as any).sessionID === 'audit-fail-1'
     )
-    expect(deleteCalls.length).toBe(1)
-    const deleteIndex = failureCallTracker.findIndex(c => 
-      c.kind === 'delete' && (c.args as any).sessionID === 'audit-fail-1'
-    )
-    expect(deleteIndex).toBeGreaterThan(createIndex)
-    expect(deleteIndex).toBeGreaterThan(restoreIndex)
+    expect(deleteCalls.length).toBe(0)
 
     const restoreCall = failureCallTracker.find(c => c.kind === 'restore')
     expect((restoreCall?.args as any).id).toBe('ws-1')

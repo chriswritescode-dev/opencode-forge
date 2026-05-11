@@ -284,16 +284,6 @@ describe('Loop Runtime start()', () => {
       expect(persisted.phase).toBe('decomposing')
     })
 
-    test('supports in-place mode (non-worktree)', () => {
-      const { loop } = createRuntime()
-      const state = makeState({ worktree: false })
-
-      loop.start({ state })
-
-      const persisted = loopService.getActiveState(state.loopName)!
-      expect(persisted.worktree).toBe(false)
-      expect(persisted.worktreeBranch).toBeDefined()
-    })
   })
 
   describe('start derives initial phase from decomposition settings', () => {
@@ -520,20 +510,5 @@ describe('Loop Runtime start()', () => {
       expect(persisted.phase).toBe('coding')
     })
 
-    test('loop.start() correctly derives phase for in-place agent decomposer without worktree', () => {
-      const { loop } = createRuntime()
-      const state = makeState({
-        phase: 'coding',
-        worktree: false,
-        decompositionMode: 'agent',
-        decompositionStatus: 'pending',
-      })
-
-      loop.start({ state })
-
-      const persisted = loopService.getActiveState(state.loopName)!
-      expect(persisted.phase).toBe('decomposing')
-      expect(persisted.worktree).toBe(false)
-    })
   })
 })

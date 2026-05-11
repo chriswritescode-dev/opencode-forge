@@ -63,20 +63,17 @@ describe('teardownWorktreeArtifacts', () => {
 
     const result = await teardownWorktreeArtifacts(input)
 
-    expect(result.sessionDeleted).toBe(true)
+    expect(result.sessionDeleted).toBe(false)
     expect(result.workspaceDeleted).toBe(true)
     expect(result.worktreeRemoved).toBe(false)
     expect(result.committed).toBe(false)
     expect(result.errors).toEqual([])
 
     expect(mockV2.experimental.workspace.remove).toHaveBeenCalledWith({ id: 'workspace-456' })
-    expect(mockV2.session.delete).toHaveBeenCalledWith({
-      sessionID: 'session-123',
-      directory: '/tmp/test-worktree',
-    })
+    expect(mockV2.session.delete).not.toHaveBeenCalled()
   })
 
-  it('uses worktreeDir for session.delete first, not projectDir', async () => {
+  it('does not call session.delete (sessions are preserved)', async () => {
     const input: TeardownInput = {
       v2: mockV2 as any,
       loopName: 'test-loop',
@@ -94,15 +91,10 @@ describe('teardownWorktreeArtifacts', () => {
 
     await teardownWorktreeArtifacts(input)
 
-    expect(mockV2.session.delete).toHaveBeenCalledWith({
-      sessionID: 'session-123',
-      directory: '/path/to/worktree',
-    })
-    const callArg = (mockV2.session.delete as any).mock.calls[0][0]
-    expect(callArg.directory).toBe('/path/to/worktree')
+    expect(mockV2.session.delete).not.toHaveBeenCalled()
   })
 
-  it('continues when session.delete fails', async () => {
+  it('does not call session.delete even if it would fail', async () => {
     mockV2.session.delete = vi.fn().mockRejectedValue(new Error('session delete failed'))
 
     const input: TeardownInput = {
@@ -123,7 +115,7 @@ describe('teardownWorktreeArtifacts', () => {
 
     expect(result.sessionDeleted).toBe(false)
     expect(result.workspaceDeleted).toBe(true)
-    expect(result.errors).toContain('session delete failed')
+    expect(mockV2.session.delete).not.toHaveBeenCalled()
   })
 
   it('continues when workspace.remove fails', async () => {
@@ -146,7 +138,7 @@ describe('teardownWorktreeArtifacts', () => {
     const result = await teardownWorktreeArtifacts(input)
 
     expect(result.workspaceDeleted).toBe(false)
-    expect(result.sessionDeleted).toBe(true)
+    expect(result.sessionDeleted).toBe(false)
     expect(result.errors).toContain('workspace remove failed')
   })
 
@@ -168,7 +160,7 @@ describe('teardownWorktreeArtifacts', () => {
     const result = await teardownWorktreeArtifacts(input)
 
     expect(result.workspaceDeleted).toBe(false)
-    expect(result.sessionDeleted).toBe(true)
+    expect(result.sessionDeleted).toBe(false)
     expect(mockV2.experimental.workspace.remove).not.toHaveBeenCalled()
   })
 
@@ -191,7 +183,7 @@ describe('teardownWorktreeArtifacts', () => {
 
     expect(result.workspaceDeleted).toBe(false)
     expect(result.worktreeRemoved).toBe(false)
-    expect(result.sessionDeleted).toBe(true)
+    expect(result.sessionDeleted).toBe(false)
     expect(mockV2.experimental.workspace.remove).not.toHaveBeenCalled()
   })
 
@@ -213,7 +205,7 @@ describe('teardownWorktreeArtifacts', () => {
     const result = await teardownWorktreeArtifacts(input)
 
     expect(result.worktreeRemoved).toBe(false)
-    expect(result.sessionDeleted).toBe(true)
+    expect(result.sessionDeleted).toBe(false)
     expect(result.workspaceDeleted).toBe(true)
   })
 
@@ -238,7 +230,7 @@ describe('teardownWorktreeArtifacts', () => {
     expect(result.worktreeRemoved).toBe(false)
   })
 
-  it('deletes session against worktreeDir, not projectDir', async () => {
+  it('does not call session.delete (sessions are preserved in normal lifecycle)', async () => {
     const input: TeardownInput = {
       v2: mockV2 as any,
       loopName: 'test-loop',
@@ -256,77 +248,33 @@ describe('teardownWorktreeArtifacts', () => {
 
     const result = await teardownWorktreeArtifacts(input)
 
-    expect(mockV2.session.delete).toHaveBeenCalledTimes(1)
-    expect(mockV2.session.delete).toHaveBeenCalledWith({
-      sessionID: 'session-123',
-      directory: '/tmp/wt',
-    })
-    expect(result.sessionDeleted).toBe(true)
-  })
-
-  it('falls back to projectDir on first-attempt error', async () => {
-    mockV2.session.delete = vi.fn()
-      .mockResolvedValueOnce({ error: { message: 'not found' } })
-      .mockResolvedValueOnce({ error: undefined })
-
-    const input: TeardownInput = {
-      v2: mockV2 as any,
-      loopName: 'test-loop',
-      sessionId: 'session-123',
-      workspaceId: undefined,
-      worktreeDir: '/tmp/wt',
-      projectDir: '/host/proj',
-      worktree: true,
-      doCommit: false,
-      doRemoveWorktree: false,
-      reasonLabel: 'completed',
-      logPrefix: 'Test',
-      logger: mockLogger,
-    }
-
-    const result = await teardownWorktreeArtifacts(input)
-
-    expect(mockV2.session.delete).toHaveBeenCalledTimes(2)
-    expect(mockV2.session.delete).toHaveBeenNthCalledWith(1, {
-      sessionID: 'session-123',
-      directory: '/tmp/wt',
-    })
-    expect(mockV2.session.delete).toHaveBeenNthCalledWith(2, {
-      sessionID: 'session-123',
-      directory: '/host/proj',
-    })
-    expect(result.sessionDeleted).toBe(true)
-  })
-
-  it('records error when both attempts fail', async () => {
-    mockV2.session.delete = vi.fn()
-      .mockResolvedValue({ error: { message: 'not found' } })
-
-    const input: TeardownInput = {
-      v2: mockV2 as any,
-      loopName: 'test-loop',
-      sessionId: 'session-123',
-      workspaceId: undefined,
-      worktreeDir: '/tmp/wt',
-      projectDir: '/host/proj',
-      worktree: true,
-      doCommit: false,
-      doRemoveWorktree: false,
-      reasonLabel: 'completed',
-      logPrefix: 'Test',
-      logger: mockLogger,
-    }
-
-    const result = await teardownWorktreeArtifacts(input)
-
+    expect(mockV2.session.delete).not.toHaveBeenCalled()
     expect(result.sessionDeleted).toBe(false)
-    expect(result.errors.length).toBeGreaterThanOrEqual(1)
   })
 
-  it('does not retry projectDir when it equals worktreeDir', async () => {
-    mockV2.session.delete = vi.fn()
-      .mockResolvedValue({ error: { message: 'not found' } })
+  it('does not call session.delete even with fallback dirs', async () => {
+    const input: TeardownInput = {
+      v2: mockV2 as any,
+      loopName: 'test-loop',
+      sessionId: 'session-123',
+      workspaceId: undefined,
+      worktreeDir: '/tmp/wt',
+      projectDir: '/host/proj',
+      worktree: true,
+      doCommit: false,
+      doRemoveWorktree: false,
+      reasonLabel: 'completed',
+      logPrefix: 'Test',
+      logger: mockLogger,
+    }
 
+    const result = await teardownWorktreeArtifacts(input)
+
+    expect(mockV2.session.delete).not.toHaveBeenCalled()
+    expect(result.sessionDeleted).toBe(false)
+  })
+
+  it('does not call session.delete when both dirs are same', async () => {
     const input: TeardownInput = {
       v2: mockV2 as any,
       loopName: 'test-loop',
@@ -344,16 +292,10 @@ describe('teardownWorktreeArtifacts', () => {
 
     const result = await teardownWorktreeArtifacts(input)
 
-    expect(mockV2.session.delete).toHaveBeenCalledTimes(1)
-    expect(mockV2.session.delete).toHaveBeenCalledWith({
-      sessionID: 'session-123',
-      directory: '/tmp/wt',
-    })
+    expect(mockV2.session.delete).not.toHaveBeenCalled()
     expect(result.sessionDeleted).toBe(false)
   })
-})
-
-it('renames branch BEFORE removing workspace', async () => {
+  it('renames branch BEFORE removing workspace', async () => {
     const childProcess = await import('child_process')
     const callOrder: string[] = []
     const workspaceRemoveCallOrder = { index: -1 }
@@ -402,6 +344,83 @@ it('renames branch BEFORE removing workspace', async () => {
     expect(removeIdx).toBeGreaterThanOrEqual(0)
     expect(branchMIdx).toBeLessThan(removeIdx)
   })
+
+  it('skips branch rename when worktreeBranch has forge/ prefix', async () => {
+    const childProcess = await import('child_process')
+    let branchRenameCalled = false
+
+    vi.spyOn(childProcess, 'spawnSync').mockImplementation((cmd: any, args?: any, _opts?: any) => {
+      if (cmd === 'git' && Array.isArray(args) && args[0] === 'branch' && args.includes('-m')) {
+        branchRenameCalled = true
+      }
+      return { status: 0, stdout: '', stderr: '', error: undefined, pid: 0, output: [null, null, null], signal: null }
+    })
+
+    const input: TeardownInput = {
+      v2: {
+        session: { delete: vi.fn().mockResolvedValue({ error: undefined }), abort: vi.fn() },
+        experimental: { workspace: { remove: vi.fn().mockResolvedValue({}) } },
+      },
+      loopName: 'my-loop',
+      sessionId: 'session-1',
+      workspaceId: 'ws_test',
+      worktreeDir: '/tmp/wt',
+      projectDir: '/tmp/wt',
+      worktree: true,
+      doCommit: false,
+      doRemoveWorktree: true,
+      reasonLabel: 'completed',
+      worktreeBranch: 'forge/my-loop',
+      iteration: 1,
+      logPrefix: 'Test',
+      logger: createMockLogger(),
+    } as any
+
+    await teardownWorktreeArtifacts(input)
+
+    expect(branchRenameCalled).toBe(false)
+  })
+
+  it('renames branch when worktreeBranch does NOT have forge/ prefix', async () => {
+    const childProcess = await import('child_process')
+    let branchRenameCalled = false
+
+    vi.spyOn(childProcess, 'spawnSync').mockImplementation((cmd: any, args?: any, _opts?: any) => {
+      if (cmd === 'git' && Array.isArray(args) && args[0] === 'branch' && args.includes('-m')) {
+        branchRenameCalled = true
+      }
+      if (cmd === 'git' && Array.isArray(args) && args[0] === 'show-ref') {
+        return { status: 1, stdout: '', stderr: '', error: undefined, pid: 0, output: [null, null, null], signal: null }
+      }
+      return { status: 0, stdout: '', stderr: '', error: undefined, pid: 0, output: [null, null, null], signal: null }
+    })
+
+    const input: TeardownInput = {
+      v2: {
+        session: { delete: vi.fn().mockResolvedValue({ error: undefined }), abort: vi.fn() },
+        experimental: { workspace: { remove: vi.fn().mockResolvedValue({}) } },
+      },
+      loopName: 'my-loop',
+      sessionId: 'session-1',
+      workspaceId: 'ws_test',
+      worktreeDir: '/tmp/wt',
+      projectDir: '/tmp/wt',
+      worktree: true,
+      doCommit: false,
+      doRemoveWorktree: true,
+      reasonLabel: 'completed',
+      worktreeBranch: 'old-branch',
+      iteration: 1,
+      logPrefix: 'Test',
+      logger: createMockLogger(),
+    } as any
+
+    await teardownWorktreeArtifacts(input)
+
+    expect(branchRenameCalled).toBe(true)
+  })
+
+})
 
 describe('cleanupLoopWorktree', () => {
   let mockLogger: ReturnType<typeof createMockLogger>

@@ -81,8 +81,8 @@ describe('sweepOrphanWorkspaces', () => {
 
     mockV2.experimental!.workspace.list = vi.fn().mockResolvedValue({
       data: [
-        { id: activeWorkspaceId, type: 'worktree', directory: '/tmp/active' },
-        { id: orphanWorkspaceId, type: 'worktree', directory: '/tmp/orphan' },
+        { id: activeWorkspaceId, type: 'forge', directory: '/tmp/active' },
+        { id: orphanWorkspaceId, type: 'forge', directory: '/tmp/orphan' },
         { id: 'other-ws-3', type: 'other-type', directory: '/tmp/other' },
       ],
     })
@@ -110,7 +110,7 @@ describe('sweepOrphanWorkspaces', () => {
 
     mockV2.experimental!.workspace.list = vi.fn().mockResolvedValue({
       data: [
-        { id: orphanWorkspaceId, type: 'worktree', directory: '/tmp/orphan' },
+        { id: orphanWorkspaceId, type: 'forge', directory: '/tmp/orphan' },
       ],
     })
 
@@ -144,7 +144,7 @@ describe('sweepOrphanWorkspaces', () => {
 
     mockV2.experimental!.workspace.list = vi.fn().mockResolvedValue({
       data: [
-        { id: orphanWorkspaceId, type: 'worktree', directory: '/tmp/orphan' },
+        { id: orphanWorkspaceId, type: 'forge', directory: '/tmp/orphan' },
       ],
     })
 
@@ -188,7 +188,7 @@ describe('sweepOrphanWorkspaces', () => {
 
     mockV2.experimental!.workspace.list = vi.fn().mockResolvedValue({
       data: [
-        { id: orphanWorkspaceId, type: 'worktree', directory: '/tmp/orphan' },
+        { id: orphanWorkspaceId, type: 'forge', directory: '/tmp/orphan' },
       ],
     })
 
@@ -217,7 +217,7 @@ describe('sweepOrphanWorkspaces', () => {
 
     mockV2.experimental!.workspace.list = vi.fn().mockResolvedValue({
       data: [
-        { id: activeWorkspaceId, type: 'worktree', directory: '/tmp/active' },
+        { id: activeWorkspaceId, type: 'forge', directory: '/tmp/active' },
       ],
     })
 
@@ -263,7 +263,7 @@ describe('sweepOrphanWorkspaces', () => {
 
     mockV2.experimental!.workspace.list = vi.fn().mockResolvedValue({
       data: [
-        { id: orphanWorkspaceId, type: 'worktree', directory: '/tmp/orphan' },
+        { id: orphanWorkspaceId, type: 'forge', directory: '/tmp/orphan' },
       ],
     })
 
@@ -292,7 +292,7 @@ describe('sweepOrphanWorkspaces', () => {
 
     mockV2.experimental!.workspace.list = vi.fn().mockResolvedValue({
       data: [
-        { id: orphanWorkspaceId, type: 'worktree', directory: '/tmp/orphan' },
+        { id: orphanWorkspaceId, type: 'forge', directory: '/tmp/orphan' },
       ],
     })
 
@@ -333,7 +333,7 @@ describe('sweepOrphanWorkspaces', () => {
         workspace: {
           list: vi.fn().mockResolvedValue({
             data: [
-              { id: orphanWorkspaceId, type: 'worktree', directory: '/tmp/orphan' },
+              { id: orphanWorkspaceId, type: 'forge', directory: '/tmp/orphan' },
             ],
           }),
           remove: vi.fn().mockResolvedValue({}),

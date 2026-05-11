@@ -474,12 +474,7 @@ describe('Loop Runtime', () => {
         expect(clientState.selectCalls).toEqual([{ sessionID: 'sess', workspace: 'ws-1' }])
         expect(loopService.getActiveState(state.loopName)!.decompositionSessionId).toBeNull()
 
-        await vi.advanceTimersByTimeAsync(15_000)
-
-        expect(clientState.deleteCalls).toContainEqual({
-          sessionID: 'decomp-sess-1',
-          directory: tempDir,
-        })
+        expect(clientState.deleteCalls).toHaveLength(0)
       } finally {
         vi.useRealTimers()
       }
@@ -564,7 +559,7 @@ describe('runtime re-provisioning updates state.workspaceId', () => {
     // createBuiltinWorktreeWorkspace was invoked (proves internal state mutation occurred)
     expect(wsCreateMock).toHaveBeenCalledTimes(1)
     expect(wsCreateMock).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'worktree' }),
+      expect.objectContaining({ type: 'forge', extra: { loopName: 'test-loop' } }),
     )
   })
 })

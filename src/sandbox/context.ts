@@ -7,6 +7,6 @@ export interface SandboxContext {
   hostDir: string
 }
 
-export function isSandboxEnabled(config: PluginConfig, sandboxManager: unknown): boolean {
-  return config.sandbox?.mode === 'docker' && !!sandboxManager
+export function isSandboxEnabled(_config: PluginConfig, sandboxManager: unknown): boolean {
+  return !!sandboxManager
 }

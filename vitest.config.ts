@@ -30,6 +30,10 @@ export default defineConfig({
       'test/plan-execution.test.ts',
       'test/loop-status-tool.test.ts',
       'test/workspace/forge-worktree.test.ts',
+      'test/workspace/forge-adapter.test.ts',
+      'test/workspace/forge-adapter-e2e.test.ts',
+      'test/sandbox/context.test.ts',
+      'test/sandbox/manager.provision.test.ts',
     ],
   },
 })

@@ -150,7 +150,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const IDLE_RETRY_DELAY_MS = 1500
   const MAX_IDLE_RETRIES = 1
   const MAX_CODE_LAUNCH_RECOVERIES = MAX_RETRIES
-  const DELAYED_SESSION_DELETE_MS = 15_000
 
   const codingLaunchRecoveryAttempts = new Map<string, number>()
   const delayedSessionDeleteTimeouts = new Map<string, NodeJS.Timeout>()
@@ -416,9 +415,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       `Loop: [perm-diag] rotate loop=${loopName} state.worktree=${String(state.worktree)} state.sandbox=${String(state.sandbox)}`
     )
 
-    const permissionRuleset = state.worktree
-      ? buildLoopPermissionRuleset({ isWorktree: true, isSandbox: !!state.sandbox })
-      : undefined
+    const permissionRuleset = buildLoopPermissionRuleset({ isSandbox: !!state.sandbox })
 
     const ensured = await ensureWorkspaceForLoop(loopName, state, 'during session rotation')
 
@@ -453,9 +450,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     watchdog.stop(loopName)
     watchdog.start(loopName)
 
-    v2Client.session.delete({ sessionID: oldSessionId, directory: sessionDir }).catch((err: unknown) => {
-      logger.error(`Loop: failed to delete old session ${oldSessionId}`, err)
-    })
+    logger.log(`Loop: preserving old session ${oldSessionId} after rotation to ${newSessionId}`)
 
     logger.log(`Loop: rotated session ${oldSessionId} → ${newSessionId}`)
 
@@ -711,41 +706,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     directory: string
     context: string
   }): void {
-    const { loopName, sessionId, directory, context } = input
-
-    const existingTimeout = delayedSessionDeleteTimeouts.get(sessionId)
-    if (existingTimeout) {
-      clearTimeout(existingTimeout)
-      delayedSessionDeleteTimeouts.delete(sessionId)
-    }
-
-    const loopSet = loopDelayedDeletes.get(loopName)
-    if (!loopSet) {
-      loopDelayedDeletes.set(loopName, new Set())
-    }
-    loopDelayedDeletes.get(loopName)!.add(sessionId)
-
-    const timeout = setTimeout(async () => {
-      delayedSessionDeleteTimeouts.delete(sessionId)
-      const loopSetForCleanup = loopDelayedDeletes.get(loopName)
-      if (loopSetForCleanup) {
-        loopSetForCleanup.delete(sessionId)
-        if (loopSetForCleanup.size === 0) loopDelayedDeletes.delete(loopName)
-      }
-
-      try {
-        const activeState = loopService.getActiveState(loopName)
-        if (activeState?.active && activeState.sessionId === sessionId) {
-          logger.debug(`Loop: skipping delayed delete for active session ${sessionId} (${context})`)
-          return
-        }
-        await v2Client.session.delete({ sessionID: sessionId, directory })
-      } catch (err) {
-        logger.error(`Loop: delayed delete failed for ${sessionId} (${context})`, err)
-      }
-    }, DELAYED_SESSION_DELETE_MS)
-
-    delayedSessionDeleteTimeouts.set(sessionId, timeout)
+    const { sessionId } = input
+    logger.debug(`Loop: delayed session delete disabled; preserving ${sessionId}`)
   }
 
   async function transitionToCoding(loopName: string, state: LoopState): Promise<void> {
@@ -759,7 +721,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       v2: v2Client,
       title: formatLoopSessionTitle(loopName),
       directory: updatedState.worktreeDir,
-      ...(updatedState.worktree ? { permission: buildLoopPermissionRuleset({ isWorktree: true, isSandbox: !!updatedState.sandbox }) } : {}),
+      ...(updatedState.worktree ? { permission: buildLoopPermissionRuleset({ isSandbox: !!updatedState.sandbox }) } : {}),
       workspaceId: updatedState.workspaceId,
       logPrefix: 'Loop',
       logger,
@@ -895,12 +857,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
 
     for (const sid of pendingSessionDeletes) {
-      try {
-        await v2Client.session.delete({ sessionID: sid, directory: state.worktreeDir })
-        logger.log(`Loop: flushed delayed delete for session ${sid} before terminating ${loopName}`)
-      } catch (err) {
-        logger.error(`Loop: failed to flush delayed delete for session ${sid} before terminating ${loopName}`, err)
-      }
+      logger.debug(`Loop: delayed session delete disabled; preserving ${sid}`)
     }
 
     logger.log(`Loop terminated: reason="${terminationReasonToString(reason)}", loop="${state.loopName}", iteration=${state.iteration}`)
@@ -1569,7 +1526,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         v2: v2Client,
         title: formatLoopSessionTitle(loopName),
         directory: fallbackState.worktreeDir,
-        ...(fallbackState.worktree ? { permission: buildLoopPermissionRuleset({ isWorktree: true, isSandbox: !!fallbackState.sandbox }) } : {}),
+        ...(fallbackState.worktree ? { permission: buildLoopPermissionRuleset({ isSandbox: !!fallbackState.sandbox }) } : {}),
         workspaceId: fallbackState.workspaceId,
         logPrefix: 'Loop',
         logger,
@@ -1651,7 +1608,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         v2: v2Client,
         title: `decomposer-${loopName}`,
         directory: freshState.worktreeDir,
-        ...(freshState.worktree ? { permission: buildLoopPermissionRuleset({ isWorktree: true, isSandbox: !!freshState.sandbox }) } : {}),
+        ...(freshState.worktree ? { permission: buildLoopPermissionRuleset({ isSandbox: !!freshState.sandbox }) } : {}),
         workspaceId: freshState.workspaceId,
         logPrefix: 'Loop',
         logger,

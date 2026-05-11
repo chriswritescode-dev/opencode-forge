@@ -87,7 +87,7 @@ See [loop-system.md](loop-system.md) for detailed documentation.
 
 ## Sandbox System
 
-The sandbox system provides isolated Docker container execution for loops.
+Sandbox is mandatory for all loops. Docker must be available before any loop starts.
 
 ### Components
 

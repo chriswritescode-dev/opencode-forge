@@ -26,7 +26,7 @@ interface LoopState {
   active: boolean                    // Whether loop is currently running
   sessionId: string                  // Current OpenCode session ID
   loopName: string                   // Unique loop identifier
-  worktreeDir: string                // Worktree path (empty if in-place)
+  worktreeDir: string                // Worktree path
   projectDir?: string                // Project directory path
   worktreeBranch?: string            // Branch name if using worktree
   iteration: number                  // Current iteration count
@@ -120,29 +120,27 @@ Outstanding `severity: 'bug'` findings block loop completion — the loop termin
 
 ## Worktree Isolation
 
-Loops default to in-place execution. Set `worktree: true` for isolated git worktree mode:
+All loops run in an isolated git worktree with mandatory Docker sandbox.
 
 ```mermaid
 graph TD
-    A[loop tool invoked] --> B{worktree?}
-    B -->|false| C[In-place execution]
-    B -->|true| D[Create worktree]
-    D --> E[Create new branch]
-    E --> F[Start coding session]
-    F --> G[Iterate until completion]
-    G --> H[Loop completes or is cancelled]
-    H --> I[Cleanup worktree]
-    I --> J[Branch preserved]
+    A[loop tool invoked] --> B[Create worktree]
+    B --> C[Create new branch]
+    C --> D[Start coding session]
+    D --> E[Iterate until completion]
+    E --> F[Loop completes or is cancelled]
+    F --> G[Cleanup worktree]
+    G --> H[Branch preserved]
 ```
 
-Benefits of worktree mode:
+Benefits of worktree isolation:
 - Isolation from ongoing development
 - Safe to experiment without affecting main branch
 - Branch preserved for later review/merge
 
 ## Sandbox Integration
 
-When `sandbox.mode` is `"docker"` and `worktree: true`, loops run inside a Docker container:
+Sandbox is mandatory for all loops. Docker must be available before any loop starts.
 
 1. Container created with worktree mounted at `/workspace`
 2. `bash`, `glob`, `grep` tools redirect into container

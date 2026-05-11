@@ -202,7 +202,7 @@ export function buildArchitectAgent(): AgentDefinition {
       },
     },
     tools: {
-      exclude: ['plan'],
+      exclude: ['plan', 'plan_exit'],
     },
     systemPrompt: buildPrompt(),
   }

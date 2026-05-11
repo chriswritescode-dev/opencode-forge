@@ -279,6 +279,38 @@ describe('createForgePlugin', () => {
     expect(process.listenerCount('SIGINT')).toBe(baselineSigintListeners)
   })
 
+  test('registers forge workspace adapter on init', async () => {
+    const registerCalls: Array<{ type: string; adapter: unknown }> = []
+    const config: PluginConfig = {
+      dataDir: `${testDir}/.opencode/memory`,
+    }
+
+    const plugin = createForgePlugin(config)
+
+    const mockInput = {
+      directory: testDir,
+      worktree: testDir,
+      client: {} as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+      experimental_workspace: {
+        register: (type: string, adapter: unknown) => { registerCalls.push({ type, adapter }) },
+      },
+    }
+
+    const hooks = await plugin(mockInput)
+    currentHooks = hooks as { getCleanup?: () => Promise<void> }
+
+    expect(registerCalls.length).toBe(1)
+    expect(registerCalls[0].type).toBe('forge')
+    const adapter = registerCalls[0].adapter as Record<string, unknown>
+    expect(typeof adapter.configure).toBe('function')
+    expect(typeof adapter.create).toBe('function')
+    expect(typeof adapter.remove).toBe('function')
+    expect(typeof adapter.target).toBe('function')
+  })
+
 })
 
 describe('PluginConfig', () => {

@@ -169,11 +169,9 @@ export function ExecutePlanPanel(props: {
 
     const apiMode: import('../utils/tui-client').ApiExecutionMode = matchedLabel === 'Execute here'
       ? 'execute-here'
-      : matchedLabel === 'Loop'
-        ? 'loop'
-        : matchedLabel === 'Loop (worktree)'
-          ? 'loop-worktree'
-          : 'new-session'
+      : matchedLabel === 'Loop (worktree)'
+        ? 'loop-worktree'
+        : 'new-session'
 
     props.api.ui.dialog.clear()
     props.api.ui.toast({ message: 'Executing plan...', variant: 'info', duration: 3000 })
@@ -202,7 +200,7 @@ export function ExecutePlanPanel(props: {
     await props.onExecuted?.()
     // Refresh workspace list so the new workspace appears in session list
     props.client.workspaces.list().catch(() => {})
-    if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop-worktree' || apiMode === 'loop')) {
+    if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop-worktree')) {
       await selectTuiSession(props.api, result.sessionId, result.workspaceId)
     }
   }

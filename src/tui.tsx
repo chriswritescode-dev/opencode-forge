@@ -816,7 +816,7 @@ function Sidebar(props: {
                     // so navigating to loop.sessionId would land on a dead session.
                     // Workspace-backed active worktree loop: navigate directly to its session.
                     // Legacy active worktree loop (no workspaceId): open the details dialog.
-                    // Active in-place loop: navigate directly.
+                    // Active worktree loop: navigate directly.
                     if (!loop.active) {
                       props.api.ui.dialog.setSize("medium")
                       props.api.ui.dialog.replace(() => (

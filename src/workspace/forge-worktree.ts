@@ -32,9 +32,10 @@ export async function createBuiltinWorktreeWorkspace(
     return null
   }
   try {
-    const createParams: { type: string; branch: string | null } = {
-      type: 'worktree',
+    const createParams: { type: string; branch: string | null; extra: { loopName: string } } = {
+      type: 'forge',
       branch: null,
+      extra: { loopName: options.loopName },
     }
     const result = await workspaceApi.create(createParams)
 

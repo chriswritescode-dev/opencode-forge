@@ -35,7 +35,6 @@ Decide whether to run in:
 Run \`loop\` with:
 - plan: The full implementation plan
 - title: A short descriptive title
-- worktree: true for worktree mode, false for in-place
 
 The loop will automatically continue through iterations until complete.
 Use \`loop-status\` to check progress or \`loop-cancel\` to stop.

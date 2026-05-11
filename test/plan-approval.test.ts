@@ -1709,33 +1709,6 @@ describe('plan execute API loop dispatch', () => {
     return { ctx, logger: ctx.logger, projectId: 'api-project', registry: {} as never }
   }
 
-  test('loop mode launches an in-place loop and persists default auditor model', async () => {
-    const { ctx, sessionCreate } = createApiDeps()
-    const body = { mode: 'loop', title: 'API Plan', plan: '# API Plan' }
-
-    const res = await handleExecutePlan(apiDeps(ctx), {
-      projectId: 'api-project',
-      sessionId: 'host-session',
-    }, body)
-
-    const createArgs = sessionCreate.mock.calls[0]?.[0]
-    expect(createArgs).toEqual(expect.objectContaining({
-      directory: '/repo',
-    }))
-    expect(createArgs).not.toHaveProperty('parentID')
-    
-    const row = db.prepare('SELECT worktree, execution_model, auditor_model, host_session_id FROM loops WHERE project_id = ?').get('api-project') as {
-      worktree: number
-      execution_model: string
-      auditor_model: string
-      host_session_id: string
-    }
-    expect(row.worktree).toBe(0)
-    expect(row.execution_model).toBe('provider/default-exec')
-    expect(row.auditor_model).toBe('provider/default-auditor')
-    expect(row.host_session_id).toBe('host-session')
-  })
-
   test('loop-worktree mode launches a worktree loop and honors explicit auditor model', async () => {
     const { ctx, worktreeCreate } = createApiDeps()
     const body = {

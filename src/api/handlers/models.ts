@@ -16,9 +16,8 @@ function mapModelPrefsMode(mode: string | undefined): ExecutionPreferences['mode
       return 'New session'
     case 'execute-here':
       return 'Execute here'
-    case 'loop':
-      return 'Loop'
     case 'loop-worktree':
+    case 'loop':
       return 'Loop (worktree)'
     default:
       return 'New session'

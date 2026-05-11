@@ -8,6 +8,7 @@ const AUDITOR_TOOL_EXCLUDES = [
   'multiedit',
   'plan-execute',
   'plan',
+  'plan_exit',
   'loop',
   'loop-cancel',
   'loop-status',

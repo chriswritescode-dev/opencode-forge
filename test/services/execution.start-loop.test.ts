@@ -217,6 +217,19 @@ describe('handleStartLoop builtin worktree workspace', () => {
 
     const { createForgeExecutionService } = await import('../../src/services/execution')
 
+    const mockSandboxManager = {
+      docker: {} as any,
+      start: vi.fn().mockResolvedValue({ containerName: 'opencode-forge-sandbox-test' }),
+      stop: vi.fn().mockResolvedValue(undefined),
+      getActive: vi.fn().mockReturnValue(null),
+      isActive: vi.fn().mockReturnValue(false),
+      isLive: vi.fn().mockResolvedValue(false),
+      isLiveByName: vi.fn().mockResolvedValue(false),
+      cleanupOrphans: vi.fn().mockResolvedValue(0),
+      restore: vi.fn().mockResolvedValue(undefined),
+      provisionDependencies: vi.fn().mockResolvedValue(undefined),
+    }
+
     const service = createForgeExecutionService({
       projectId: PROJECT_ID,
       directory: '/tmp/test',
@@ -233,6 +246,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
       loop: loopService as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
+      sandboxManager: mockSandboxManager as any,
     })
 
     const result = await service.dispatch(
@@ -250,7 +264,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
     // Assert: experimental.workspace.create was called (builtin worktree path)
     expect(experimentalWorkspaceCreateMock).toHaveBeenCalledTimes(1)
     expect(experimentalWorkspaceCreateMock).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'worktree', branch: null }),
+      expect.objectContaining({ type: 'forge', branch: null, extra: { loopName: 'test-plan' } }),
     )
 
     // Assert: old v2.worktree.create was NOT called
@@ -273,5 +287,393 @@ describe('handleStartLoop builtin worktree workspace', () => {
     expect(state!.workspaceId).toBe('ws_test')
     expect(state!.worktreeDir).toBe('/tmp/wt/abc')
     expect(state!.worktreeBranch).toBe('opencode/abc')
+  })
+
+  test('hard-fails when sandbox manager is missing', async () => {
+    const experimentalWorkspaceCreateMock = vi.fn().mockResolvedValue({
+      data: {
+        id: 'ws_test',
+        directory: '/tmp/wt/abc',
+        branch: 'opencode/abc',
+        type: 'worktree',
+        name: 'opencode/abc',
+        extra: null,
+        projectID: PROJECT_ID,
+        timeUsed: Date.now(),
+      },
+    })
+
+    const mockV2Client = {
+      session: {
+        create: vi.fn().mockResolvedValue({ data: { id: 'session_test' } }),
+        get: vi.fn().mockResolvedValue({ data: {} }),
+        promptAsync: async () => ({ error: null }),
+        abort: async () => ({}),
+        delete: async () => ({}),
+        messages: async () => ({ data: [] }),
+        status: async () => ({ data: {} }),
+      },
+      experimental: {
+        workspace: {
+          create: experimentalWorkspaceCreateMock,
+          warp: vi.fn().mockResolvedValue({}),
+          remove: vi.fn().mockResolvedValue({}),
+          list: vi.fn().mockResolvedValue({ data: [] }),
+          status: vi.fn().mockResolvedValue({ data: {} }),
+        },
+      },
+      tui: {
+        publish: async () => {},
+        selectSession: vi.fn().mockResolvedValue({}),
+      },
+      worktree: {
+        create: vi.fn().mockResolvedValue({ data: { directory: '/tmp/wt/abc', branch: 'opencode/abc' } }),
+        remove: async () => {},
+      },
+    }
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+      v2: mockV2Client as any,
+      plansRepo,
+      loopsRepo,
+      loop: loopService as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      // No sandboxManager passed — simulates Docker not available
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# Test Plan\n\nThis is a test plan.' },
+        mode: 'worktree' as const,
+        lifecycle: { selectSession: true },
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.message).toContain('Sandbox required')
+  })
+
+  test('hard-fails when sandbox start throws docker-unavailable', async () => {
+    const experimentalWorkspaceCreateMock = vi.fn().mockResolvedValue({
+      data: {
+        id: 'ws_test',
+        directory: '/tmp/wt/abc',
+        branch: 'opencode/abc',
+        type: 'worktree',
+        name: 'opencode/abc',
+        extra: null,
+        projectID: PROJECT_ID,
+        timeUsed: Date.now(),
+      },
+    })
+
+    const mockV2Client = {
+      session: {
+        create: vi.fn().mockResolvedValue({ data: { id: 'session_test' } }),
+        get: vi.fn().mockResolvedValue({ data: {} }),
+        promptAsync: async () => ({ error: null }),
+        abort: async () => ({}),
+        delete: async () => ({}),
+        messages: async () => ({ data: [] }),
+        status: async () => ({ data: {} }),
+      },
+      experimental: {
+        workspace: {
+          create: experimentalWorkspaceCreateMock,
+          warp: vi.fn().mockResolvedValue({}),
+          remove: vi.fn().mockResolvedValue({}),
+          list: vi.fn().mockResolvedValue({ data: [] }),
+          status: vi.fn().mockResolvedValue({ data: {} }),
+        },
+      },
+      tui: {
+        publish: async () => {},
+        selectSession: vi.fn().mockResolvedValue({}),
+      },
+      worktree: {
+        create: vi.fn().mockResolvedValue({ data: { directory: '/tmp/wt/abc', branch: 'opencode/abc' } }),
+        remove: async () => {},
+      },
+    }
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const mockSandboxManager = {
+      docker: {} as any,
+      start: vi.fn().mockRejectedValue(new Error('Docker is not available. Please ensure Docker is running.')),
+      stop: vi.fn().mockResolvedValue(undefined),
+      getActive: vi.fn().mockReturnValue(null),
+      isActive: vi.fn().mockReturnValue(false),
+      isLive: vi.fn().mockResolvedValue(false),
+      isLiveByName: vi.fn().mockResolvedValue(false),
+      cleanupOrphans: vi.fn().mockResolvedValue(0),
+      restore: vi.fn().mockResolvedValue(undefined),
+      provisionDependencies: vi.fn().mockResolvedValue(undefined),
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+      v2: mockV2Client as any,
+      plansRepo,
+      loopsRepo,
+      loop: loopService as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      sandboxManager: mockSandboxManager as any,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# Test Plan\n\nThis is a test plan.' },
+        mode: 'worktree' as const,
+        lifecycle: { selectSession: true },
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.message).toContain('Failed to start sandbox')
+  })
+
+  test('runs provisionDependencies after sandbox start and before returning success', async () => {
+    const experimentalWorkspaceCreateMock = vi.fn().mockResolvedValue({
+      data: {
+        id: 'ws_test',
+        directory: '/tmp/wt/abc',
+        branch: 'opencode/abc',
+        type: 'worktree',
+        name: 'opencode/abc',
+        extra: null,
+        projectID: PROJECT_ID,
+        timeUsed: Date.now(),
+      },
+    })
+    const experimentalWorkspaceWarpMock = vi.fn().mockResolvedValue({})
+    const sessionCreateMock = vi.fn().mockResolvedValue({ data: { id: 'session_test' } })
+    const sessionGetMock = vi.fn().mockResolvedValue({ data: {} })
+    const tuiSelectSessionMock = vi.fn().mockResolvedValue({})
+
+    const mockV2Client = {
+      session: {
+        create: sessionCreateMock,
+        get: sessionGetMock,
+        promptAsync: async () => ({ error: null }),
+        abort: async () => ({}),
+        delete: async () => ({}),
+        messages: async () => ({ data: [] }),
+        status: async () => ({ data: {} }),
+      },
+      experimental: {
+        workspace: {
+          create: experimentalWorkspaceCreateMock,
+          warp: experimentalWorkspaceWarpMock,
+          remove: vi.fn().mockResolvedValue({}),
+          list: vi.fn().mockResolvedValue({ data: [] }),
+          status: vi.fn().mockResolvedValue({ data: {} }),
+        },
+      },
+      tui: {
+        publish: async () => {},
+        selectSession: tuiSelectSessionMock,
+      },
+      worktree: {
+        create: vi.fn().mockResolvedValue({ data: { directory: '/tmp/wt/abc', branch: 'opencode/abc' } }),
+        remove: async () => {},
+      },
+    }
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    // Track call order for sandbox start vs provisioning
+    const callOrder: string[] = []
+    const mockSandboxManager = {
+      docker: {} as any,
+      start: vi.fn(async () => { callOrder.push('start'); return { containerName: 'op-forge-sandbox-test' } }),
+      stop: vi.fn().mockResolvedValue(undefined),
+      getActive: vi.fn().mockReturnValue(null),
+      isActive: vi.fn().mockReturnValue(false),
+      isLive: vi.fn().mockResolvedValue(false),
+      isLiveByName: vi.fn().mockResolvedValue(false),
+      cleanupOrphans: vi.fn().mockResolvedValue(0),
+      restore: vi.fn().mockResolvedValue(undefined),
+      provisionDependencies: vi.fn(async () => { callOrder.push('provision'); return undefined }),
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+      v2: mockV2Client as any,
+      plansRepo,
+      loopsRepo,
+      loop: loopService as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      sandboxManager: mockSandboxManager as any,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# Test Plan\n\nThis is a test plan.' },
+        mode: 'worktree' as const,
+        lifecycle: { selectSession: true },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    expect(callOrder).toEqual(['start', 'provision'])
+  })
+
+  test('rolls back loop state when provisionDependencies throws', async () => {
+    const experimentalWorkspaceCreateMock = vi.fn().mockResolvedValue({
+      data: {
+        id: 'ws_test',
+        directory: '/tmp/wt/abc',
+        branch: 'opencode/abc',
+        type: 'worktree',
+        name: 'opencode/abc',
+        extra: null,
+        projectID: PROJECT_ID,
+        timeUsed: Date.now(),
+      },
+    })
+
+    const mockV2Client = {
+      session: {
+        create: vi.fn().mockResolvedValue({ data: { id: 'session_test' } }),
+        get: vi.fn().mockResolvedValue({ data: {} }),
+        promptAsync: async () => ({ error: null }),
+        abort: vi.fn().mockResolvedValue({}),
+        delete: vi.fn().mockResolvedValue({}),
+        messages: async () => ({ data: [] }),
+        status: async () => ({ data: {} }),
+      },
+      experimental: {
+        workspace: {
+          create: experimentalWorkspaceCreateMock,
+          warp: vi.fn().mockResolvedValue({}),
+          remove: vi.fn().mockResolvedValue({}),
+          list: vi.fn().mockResolvedValue({ data: [] }),
+          status: vi.fn().mockResolvedValue({ data: {} }),
+        },
+      },
+      tui: {
+        publish: async () => {},
+        selectSession: vi.fn().mockResolvedValue({}),
+      },
+      worktree: {
+        create: vi.fn().mockResolvedValue({ data: { directory: '/tmp/wt/abc', branch: 'opencode/abc' } }),
+        remove: async () => {},
+      },
+    }
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const mockSandboxManager = {
+      docker: {} as any,
+      start: vi.fn().mockResolvedValue({ containerName: 'test-container' }),
+      stop: vi.fn().mockResolvedValue(undefined),
+      getActive: vi.fn().mockReturnValue(null),
+      isActive: vi.fn().mockReturnValue(false),
+      isLive: vi.fn().mockResolvedValue(false),
+      isLiveByName: vi.fn().mockResolvedValue(false),
+      cleanupOrphans: vi.fn().mockResolvedValue(0),
+      restore: vi.fn().mockResolvedValue(undefined),
+      provisionDependencies: vi.fn().mockRejectedValue(new Error('pnpm install failed (exit 1)')),
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+      v2: mockV2Client as any,
+      plansRepo,
+      loopsRepo,
+      loop: loopService as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      sandboxManager: mockSandboxManager as any,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# Test Plan\n\nThis is a test plan.' },
+        mode: 'worktree' as const,
+        lifecycle: { selectSession: true },
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.message).toContain('Failed to provision dependencies')
+
+    // Assert rollback was triggered
+    expect(mockV2Client.session.abort).toHaveBeenCalled()
+    expect(mockSandboxManager.stop).toHaveBeenCalled()
   })
 })

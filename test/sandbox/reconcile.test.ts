@@ -157,18 +157,6 @@ describe('reconcileSandboxes', () => {
     expect(mockSandboxManager.restore).not.toHaveBeenCalled()
   })
 
-  it('should skip in-place (non-worktree) loops even when sandbox is true', async () => {
-    const state = createBaseState({ worktree: false })
-
-    mockLoopService.listActive.mockReturnValue([state])
-
-    await reconcileSandboxes(deps)
-
-    expect(mockSandboxManager.start).not.toHaveBeenCalled()
-    expect(mockSandboxManager.restore).not.toHaveBeenCalled()
-    expect(mockSandboxManager.isActive).not.toHaveBeenCalled()
-  })
-
   it('should correct stale sandboxContainer when it differs from manager value', async () => {
     const state = createBaseState({ sandboxContainer: 'oc-forge-sandbox-stale-name' })
 

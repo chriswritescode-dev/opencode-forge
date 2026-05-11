@@ -152,7 +152,7 @@ describe('createBuiltinWorktreeWorkspace', () => {
       )
 
       expect(result).toEqual({ workspaceId: 'ws-scoped', directory: '/tmp/wt-scoped', branch: 'feature/scoped' })
-      expect(createMock).toHaveBeenCalledWith({ type: 'worktree', branch: null })
+      expect(createMock).toHaveBeenCalledWith({ type: 'forge', branch: null, extra: { loopName: 'scoped-loop' } })
       expect(syncListMock).toHaveBeenCalledWith()
     })
 

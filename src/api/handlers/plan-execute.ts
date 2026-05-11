@@ -97,8 +97,6 @@ export async function handleExecutePlan(
 
     case 'loop':
     case 'loop-worktree': {
-      const isWorktree = parsed.mode === 'loop-worktree'
-
       let started = false
       let resolveStarted!: (info: LoopStartedInfo) => void
       const startedPromise = new Promise<LoopStartedInfo>((resolve) => {
@@ -107,7 +105,7 @@ export async function handleExecutePlan(
 
       const command = buildStartLoopCommand({
         source,
-        mode: isWorktree ? 'worktree' : 'in-place',
+        mode: 'worktree',
         executionModel,
         auditorModel,
         hostSessionId: sessionId,

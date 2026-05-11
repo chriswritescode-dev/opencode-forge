@@ -32,7 +32,7 @@ export async function sweepOrphanWorkspaces(opts: {
       extra?: unknown
     }>
 
-    const forgeWorktreeWorkspaces = workspaces.filter((w) => w.type === 'worktree')
+    const forgeWorktreeWorkspaces = workspaces.filter((w) => w.type === 'forge')
     if (forgeWorktreeWorkspaces.length === 0) {
       return result
     }
@@ -50,7 +50,7 @@ export async function sweepOrphanWorkspaces(opts: {
       }
 
       orphanSweepWorkspaceIds.add(workspace.id)
-      logger.log(`Sweep: found orphan workspace ${workspace.id} (type=worktree)`)
+      logger.log(`Sweep: found orphan workspace ${workspace.id} (type=forge)`)
 
       try {
         const sessionApi = v2Client.experimental?.session

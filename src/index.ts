@@ -1,4 +1,5 @@
 import type { Plugin, PluginInput, Hooks } from '@opencode-ai/plugin'
+import { join } from 'path'
 import { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2'
 import { buildAgents } from './agents'
 import { createConfigHandler } from './config'
@@ -232,7 +233,18 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     logger.log(`v2 client fetch: ${legacyFetch ? 'in-process' : 'globalThis'}; auth: ${legacyAuthHeader ? 'inherited' : 'none'}`)
 
     const dataDir = config.dataDir || resolveDataDir()
-    
+
+    // Register the forge workspace adapter so loop worktrees are created under <dataDir>/worktrees/
+    if (input.experimental_workspace?.register) {
+      const { createForgeWorkspaceAdapter } = await import('./workspace/forge-adapter')
+      input.experimental_workspace.register('forge', createForgeWorkspaceAdapter({
+        dataDir,
+        projectRoot: input.worktree,
+        logger,
+      }))
+      logger.log(`Registered forge workspace adapter (worktrees under ${join(dataDir, 'worktrees')})`)
+    }
+
     const db = initializeDatabase(dataDir, { completedLoopTtlMs: config.completedLoopTtlMs })
 
     const loopsRepo = createLoopsRepo(db)
@@ -268,16 +280,14 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     }
 
     let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
-    if (config.sandbox?.mode === 'docker') {
-      const dockerService = createDockerService(logger)
-      try {
-        sandboxManager = createSandboxManager(dockerService, {
-          image: config.sandbox?.image || 'oc-forge-sandbox:latest',
-        }, logger)
-        logger.log('Docker sandbox manager initialized')
-      } catch (err) {
-        logger.error('Failed to initialize Docker sandbox manager', err)
-      }
+    const dockerService = createDockerService(logger)
+    try {
+      sandboxManager = createSandboxManager(dockerService, {
+        image: config.sandbox?.image ?? 'oc-forge-sandbox:latest',
+      }, logger)
+      logger.log('Docker sandbox manager initialized')
+    } catch (err) {
+      logger.error('Failed to initialize Docker sandbox manager', err)
     }
 
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, v2, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange)

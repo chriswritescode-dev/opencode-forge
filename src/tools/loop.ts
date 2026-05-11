@@ -43,16 +43,15 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
   return {
     loop: tool({
-      description: 'Execute a plan using an iterative development loop. Default runs in current directory. Set worktree to true for isolated git worktree.',
+      description: 'Execute a plan using an iterative development loop in an isolated git worktree (sandboxed).',
       args: {
         plan: z.string().optional().describe('The full implementation plan. If omitted, reads from the session plan store.'),
         title: z.string().describe('Short title for the session (shown in session list)'),
-        worktree: z.boolean().optional().default(false).describe('Run in isolated git worktree instead of current directory'),
         loopName: z.string().optional().describe('Name for the loop (max 25 chars, auto-incremented if collision exists)'),
         hostSessionId: z.string().optional().describe('Host session ID for post-completion redirect'),
       },
       execute: async (args, context) => {
-        logger.log(`loop: creating ${args.worktree ? 'worktree' : 'in-place'} loop for plan="${args.title}"`)
+        logger.log(`loop: creating loop for plan="${args.title}"`)
 
         let source: PlanSource
         if (!args.plan) {
@@ -92,7 +91,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           source,
           title: sessionTitle,
           loopName,
-          mode: args.worktree ? 'worktree' : 'in-place',
+          mode: 'worktree' as const,
           maxIterations: config.loop?.defaultMaxIterations ?? 0,
           executionModel,
           auditorModel,
@@ -112,22 +111,16 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         // Format success message to match existing output
         const maxInfo = result.data.maxIterations > 0 ? result.data.maxIterations.toString() : 'unlimited'
         const modelInfo = result.data.modelUsed ?? 'default'
-        const modeInfo = result.data.mode === 'worktree' ? '' : ' (in-place mode)'
-
         const lines: string[] = [
-          `Memory loop activated!${modeInfo}`,
+          'Memory loop activated!',
           '',
           `Session: ${result.data.sessionId}`,
           `Title: ${formatLoopSessionTitle(sessionTitle)}`,
         ]
 
-        if (result.data.mode === 'worktree') {
-          lines.push(`Loop name: ${result.data.loopName}`)
-          lines.push(`Worktree: ${result.data.worktreeDir}`)
-          lines.push(`Branch: ${result.data.worktreeBranch ?? 'unknown'}`)
-        } else {
-          lines.push(`Directory: ${ctx.directory}`)
-        }
+        lines.push(`Loop name: ${result.data.loopName}`)
+        lines.push(`Worktree: ${result.data.worktreeDir}`)
+        lines.push(`Branch: ${result.data.worktreeBranch ?? 'unknown'}`)
 
         lines.push(
           `Model: ${modelInfo}`,
@@ -159,9 +152,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           return result.error.message
         }
         const d = result.data
-        const modeInfo = !d.worktree ? ' (in-place)' : ''
         const branchInfo = d.worktreeBranch ? `\nBranch: ${d.worktreeBranch}` : ''
-        return `Cancelled loop "${d.loopName}"${modeInfo} (was at iteration ${d.iteration}).\nDirectory: ${d.worktreeDir}${branchInfo}`
+        return `Cancelled loop "${d.loopName}" (was at iteration ${d.iteration}).\nDirectory: ${d.worktreeDir}${branchInfo}`
       },
     }),
 
@@ -192,10 +184,9 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             return result.error.message
           }
           const d = result.data
-          const modeInfo = !d.worktree ? ' (in-place)' : ''
           const branchInfo = d.worktreeBranch ? `\nBranch: ${d.worktreeBranch}` : ''
           return [
-            `Restarted loop "${d.loopName}"${modeInfo}`,
+            `Restarted loop "${d.loopName}"`,
             '',
             `New session: ${d.sessionId}`,
             `Continuing from iteration: ${d.iteration}`,
@@ -240,12 +231,11 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             const duration = formatDuration(computeElapsedSeconds(s.startedAt))
             const iterInfo = s.maxIterations && s.maxIterations > 0 ? `${s.iteration} / ${s.maxIterations}` : `${s.iteration} (unlimited)`
             const sessionStatus = statuses[s.sessionId]?.type ?? 'unavailable'
-            const modeIndicator = !s.worktree ? ' (in-place)' : ''
             const stallInfo = loopHandler.getStallInfo(s.loopName!)
             const stallCount = stallInfo?.consecutiveStalls ?? 0
             const stallReason = stallInfo?.lastReason ? ` (${stallInfo.lastReason})` : ''
             const stallSuffix = stallCount > 0 ? ` | Stalls: ${stallCount}${stallReason}` : ''
-            lines.push(`${i + 1}. ${s.loopName}${modeIndicator}`)
+            lines.push(`${i + 1}. ${s.loopName}`)
             lines.push(`   Phase: ${s.phase} | Iteration: ${iterInfo} | Duration: ${duration} | Status: ${sessionStatus}${stallSuffix}`)
             lines.push('')
           })
@@ -278,7 +268,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           return `No loop found for loop "${args.name}".`
         }
 
-        if (!state.active) {
+          if (!state.active) {
           const maxInfo = state.maxIterations && state.maxIterations > 0 ? `${state.iteration} / ${state.maxIterations}` : `${state.iteration} (unlimited)`
           const durationStr = formatDuration(computeElapsedSeconds(state.startedAt, state.completedAt))
 
@@ -287,12 +277,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             '',
             `Name: ${state.loopName}`,
             `Session: ${state.sessionId}`,
+            `Worktree: ${state.worktreeDir}`,
           ]
-          if (!state.worktree) {
-            statusLines.push(`Mode: in-place | Directory: ${state.worktreeDir}`)
-          } else {
-            statusLines.push(`Worktree: ${state.worktreeDir}`)
-          }
           statusLines.push(
             `Iteration: ${maxInfo}`,
             `Duration: ${durationStr}`,
@@ -357,12 +343,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           '',
           `Name: ${state.loopName}`,
           `Session: ${state.sessionId}`,
+          `Worktree: ${state.worktreeDir}`,
         ]
-        if (!state.worktree) {
-          statusLines.push(`Mode: in-place | Directory: ${state.worktreeDir}`)
-        } else {
-          statusLines.push(`Worktree: ${state.worktreeDir}`)
-        }
         statusLines.push(
           `Status: ${sessionStatus}`,
           `Phase: ${state.phase}`,

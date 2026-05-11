@@ -43,9 +43,10 @@
     }
   },
 
-  // Docker sandbox configuration for isolated loop execution
+  // Sandbox configuration. Sandbox is required for all loops.
+  // Currently only Docker is supported; additional modes may be added later.
   "sandbox": {
-    "mode": "off",
+    "mode": "docker",
     "image": "oc-forge-sandbox:latest"
   },
 

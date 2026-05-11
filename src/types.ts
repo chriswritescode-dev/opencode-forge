@@ -54,8 +54,8 @@ export interface LoopConfig {
  * Configuration for sandbox execution environment.
  */
 export interface SandboxConfig {
-  /** Sandbox mode - 'off' disables sandboxing, 'docker' enables it. */
-  mode: 'off' | 'docker'
+  /** Sandbox mode. Currently only 'docker' is supported. Reserved for future modes. */
+  mode: 'docker'
   /** Docker image to use for sandboxed execution. */
   image?: string
 }

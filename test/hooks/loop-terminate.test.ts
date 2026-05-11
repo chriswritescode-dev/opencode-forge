@@ -286,33 +286,6 @@ describe('Loop Terminate Handler', () => {
     })
   })
 
-  describe('session.delete skipped for non-worktree loops', () => {
-    test('in-place (worktree=false) cancelled loop does not call session.delete', async () => {
-      const state = makeState({ worktree: false })
-      loopService.setState(state.loopName, state)
-
-      const clientState: MockClientState = { deleteCalls: [], publishCalls: [], deleteThrows: false }
-      const v2Client = createMockV2Client(clientState)
-      const { logger } = createCapturingLogger()
-
-      const handler = createLoopEventHandler(
-        loopService,
-        { client: {} as any },
-        v2Client,
-        logger,
-        () => mockConfig,
-        undefined,
-        projectId,
-        tempDir,
-      )
-
-      const cancelled = await handler.cancelBySessionId(state.sessionId)
-      expect(cancelled).toBe(true)
-
-      expect(clientState.deleteCalls).toHaveLength(0)
-    })
-  })
-
   describe('hostSessionId persistence through termination', () => {
     test('hostSessionId on loop row is preserved after termination', async () => {
       const hostSessionId = 'host-session-abc'

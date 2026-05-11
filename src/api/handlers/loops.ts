@@ -105,7 +105,7 @@ export async function handleStartLoop(
   const command = buildStartLoopCommand({
     source: { kind: 'inline', planText: parsed.plan },
     title: parsed.title,
-    mode: parsed.worktree ?? false ? 'worktree' : 'in-place',
+    mode: 'worktree',
     executionModel: parsed.executionModel,
     auditorModel: parsed.auditorModel,
     hostSessionId: parsed.hostSessionId,

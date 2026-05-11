@@ -3,7 +3,7 @@ import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '
 
 describe('buildLoopPermissionRuleset', () => {
   test('worktree + sandbox ruleset: allow-all first, external_directory allowed, code-agent denies, then operational denies last', () => {
-    const rules = buildLoopPermissionRuleset({ isWorktree: true, isSandbox: true })
+    const rules = buildLoopPermissionRuleset({ isSandbox: true })
     expect(rules).toEqual([
       { permission: '*',                  pattern: '*',          action: 'allow' },
       { permission: 'external_directory', pattern: '*',          action: 'allow' },
@@ -18,7 +18,7 @@ describe('buildLoopPermissionRuleset', () => {
   })
 
   test('worktree + non-sandbox ruleset: allow-all first, external_directory denied, code-agent denies, then operational denies last', () => {
-    const rules = buildLoopPermissionRuleset({ isWorktree: true, isSandbox: false })
+    const rules = buildLoopPermissionRuleset({ isSandbox: false })
     expect(rules).toEqual([
       { permission: '*',                  pattern: '*',          action: 'allow' },
       { permission: 'external_directory', pattern: '*',          action: 'deny' },
@@ -32,29 +32,12 @@ describe('buildLoopPermissionRuleset', () => {
     ])
   })
 
-  test('in-place ruleset: no blanket allow, no external_directory rule, code-agent denies, then operational denies', () => {
-    const rules = buildLoopPermissionRuleset({ isWorktree: false })
-    expect(rules).toEqual([
-      { permission: 'review-write',       pattern: '*',          action: 'deny' },
-      { permission: 'review-delete',      pattern: '*',          action: 'deny' },
-      { permission: 'plan-execute',       pattern: '*',          action: 'deny' },
-      { permission: 'loop',               pattern: '*',          action: 'deny' },
-      { permission: 'bash',               pattern: 'git push *', action: 'deny' },
-      { permission: 'loop-cancel',        pattern: '*',          action: 'deny' },
-      { permission: 'loop-status',        pattern: '*',          action: 'deny' },
-    ])
-  })
-
   test('EMITS session-level denies for code-agent tool exclusions (auditor now runs in separate session)', () => {
-    // These tools are now denied at the session level because the auditor runs
-    // in a separate session. Per-agent `tools` maps still restrict the code agent.
     const required = ['review-write', 'review-delete', 'plan-execute', 'loop']
-    for (const isWorktree of [true, false]) {
-      for (const isSandbox of [true, false]) {
-        const rules = buildLoopPermissionRuleset({ isWorktree, isSandbox })
-        for (const tool of required) {
-          expect(rules.find((r) => r.permission === tool && r.action === 'deny')).toBeDefined()
-        }
+    for (const isSandbox of [true, false]) {
+      const rules = buildLoopPermissionRuleset({ isSandbox })
+      for (const tool of required) {
+        expect(rules.find((r) => r.permission === tool && r.action === 'deny')).toBeDefined()
       }
     }
   })

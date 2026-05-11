@@ -246,58 +246,6 @@ describe('ensureWorkspaceForLoop - audit path', () => {
     expect(sessionCreateCall.workspaceID).toBe('ws_test_123')
   })
 
-  test('in-place loop: does not provision workspace', async () => {
-    const loopName = 'test-inplace-loop'
-    
-    const state: LoopState = {
-      active: true,
-      sessionId: 'sess_code_123',
-      loopName,
-      worktreeDir: '/tmp/project',
-      projectDir: '/tmp/project',
-      iteration: 1,
-      maxIterations: 10,
-      startedAt: new Date().toISOString(),
-      prompt: 'Test prompt',
-      phase: 'coding',
-      errorCount: 0,
-      auditCount: 0,
-      worktree: false,
-      sandbox: false,
-      executionModel: 'test/test-model',
-      auditorModel: 'test/test-auditor',
-    }
-
-    loopService.setState(loopName, state)
-    loopService.registerLoopSession('sess_code_123', loopName)
-
-    const { createLoopEventHandler } = await import('../../src/hooks/loop')
-    const handler = createLoopEventHandler(
-      loopService,
-      mockClient as any,
-      mockV2 as any,
-      mockLogger,
-      () => ({ loop: { model: 'test/test-model' } }),
-      undefined,
-      projectId,
-      tempDir,
-    )
-
-    await handler.onEvent({
-      event: {
-        type: 'session.status',
-        properties: {
-          status: { type: 'idle' },
-          sessionID: 'sess_code_123',
-        },
-      },
-    })
-
-    expect(mockV2.experimental.workspace.create).not.toHaveBeenCalled()
-    const sessionCreateCall = (mockV2.session.create as any).mock.calls[0][0]
-    expect(sessionCreateCall).not.toHaveProperty('workspaceID')
-  })
-
   test('workspace creation fails: audit proceeds without workspace', async () => {
     const loopName = 'test-fail-workspace'
     const worktreeDir = join(tempDir, 'worktree')
