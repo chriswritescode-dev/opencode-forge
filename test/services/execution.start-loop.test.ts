@@ -175,6 +175,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
       data: { id: 'session_test' },
     })
     const sessionGetMock = vi.fn().mockResolvedValue({ data: {} })
+    const tuiSelectSessionMock = vi.fn().mockResolvedValue({})
     const worktreeCreateMock = vi.fn().mockResolvedValue({
       data: { directory: '/tmp/wt/abc', branch: 'opencode/abc' },
     })
@@ -200,7 +201,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
       },
       tui: {
         publish: async () => {},
-        selectSession: async () => {},
+        selectSession: tuiSelectSessionMock,
       },
       worktree: {
         create: worktreeCreateMock,
@@ -240,6 +241,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
         type: 'loop.start' as const,
         source: { kind: 'inline', planText: '# Test Plan\n\nThis is a test plan.' },
         mode: 'worktree' as const,
+        lifecycle: { selectSession: true },
       },
     )
 
@@ -262,6 +264,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
 
     // Assert: warp was called
     expect(experimentalWorkspaceWarpMock).toHaveBeenCalledTimes(1)
+    expect(tuiSelectSessionMock).toHaveBeenCalledWith({ sessionID: 'session_test', workspace: 'ws_test' })
 
     // Assert: loops state has workspace info
     if (!result.ok) return

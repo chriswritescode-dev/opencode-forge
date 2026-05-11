@@ -201,6 +201,9 @@ export function buildArchitectAgent(): AgentDefinition {
         '*': 'deny',
       },
     },
+    tools: {
+      exclude: ['plan'],
+    },
     systemPrompt: buildPrompt(),
   }
 }

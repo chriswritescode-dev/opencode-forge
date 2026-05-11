@@ -2329,6 +2329,100 @@ describe('Fire-and-forget dispatch behavior', () => {
     expect((duplicateOutput.metadata as any).forgePlanApprovalDuplicate).toBe(true)
   })
 
+  test('Duplicate New session approval with a different callID schedules one dispatch', async () => {
+    let resolveAbort: () => void
+    const abortPromise = new Promise<{ data: {} }>((resolve) => {
+      resolveAbort = () => resolve({ data: {} })
+    })
+    const legacyCreateSpy = mock(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
+    const legacyPromptSpy = mock(() => Promise.resolve({ data: {} } as any))
+    const legacyAbortSpy = mock(() => abortPromise as any)
+    const v2CreateSpy = mock(() => Promise.resolve({ data: { id: 'new-session-id' } }))
+    const sharedClient = {
+      session: {
+        abort: legacyAbortSpy,
+        promptAsync: legacyPromptSpy,
+        create: legacyCreateSpy,
+      },
+    } as any
+
+    const ctx = createMockContext({
+      v2: {
+        session: {
+          abort: async () => ({ data: {} }),
+          promptAsync: async () => ({ data: {} }),
+          create: v2CreateSpy,
+        },
+        tui: {
+          selectSession: async () => ({ data: {} }),
+          publish: async () => ({ data: {} }),
+        },
+      } as unknown as ToolContext['v2'],
+      input: {
+        messages: [] as any,
+        systemPrompt: '',
+        client: sharedClient,
+      } as any,
+    })
+
+    ctx.plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
+
+    const hook = createToolExecuteAfterHook(ctx)
+
+    const args = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop (worktree)', description: 'Loop worktree' },
+          { label: 'Loop', description: 'Loop in place' },
+        ],
+      }],
+    }
+
+    const firstHook = hook(
+      {
+        tool: 'question',
+        sessionID,
+        callID: 'test-call-1',
+        args,
+      },
+      {
+        title: 'Asked 1 question',
+        output: 'New session',
+        metadata: { answers: [['New session']] },
+      }
+    )
+
+    const duplicateOutput = {
+      title: 'Asked 1 question',
+      output: 'New session',
+      metadata: { answers: [['New session']] },
+    }
+
+    const duplicateHook = hook(
+      {
+        tool: 'question',
+        sessionID,
+        callID: 'test-call-2',
+        args,
+      },
+      duplicateOutput
+    )
+
+    resolveAbort!()
+
+    await expect(duplicateHook).resolves.toBeUndefined()
+    await expect(firstHook).resolves.toBeUndefined()
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    expect(v2CreateSpy).toHaveBeenCalledTimes(1)
+    expect(legacyAbortSpy).toHaveBeenCalledTimes(2)
+    expect((duplicateOutput.metadata as any).forgePlanApprovalDuplicate).toBe(true)
+  })
+
   test('Dispatch IIFE survives slow source-session abort', async () => {
     let resolveAbort: () => void
     const abortPromise = new Promise<{ data: {} }>((resolve) => {

@@ -848,6 +848,14 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     try {
       let sessionId: string
       let workspaceId: string | undefined
+      let initialBoundWorkspaceId: string | undefined
+
+      const selectInitialWorktreeSession = (targetSessionId: string, boundWorkspaceId: string | undefined, context: string): void => {
+        if (command.mode !== 'worktree' || !boundWorkspaceId || !command.lifecycle?.selectSession) return
+        selectSessionWithFallback(deps, { sessionID: targetSessionId, workspace: boundWorkspaceId }).catch((err: unknown) => {
+          deps.logger.error(`handleStartLoop: failed to navigate TUI to worktree session ${context}`, err as Error)
+        })
+      }
       
       // Compute host session ID for metadata persistence only (not session parenting)
       const hostSessionId = command.hostSessionId ?? ctx.sourceSessionId
@@ -900,6 +908,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           }
           sessionId = createResult.sessionId
           createdSessionId = sessionId
+          initialBoundWorkspaceId = createResult.boundWorkspaceId
           if (createResult.bindFailed) {
             deps.logger.log(
               `handleStartLoop: workspace ${workspaceId} created but initial decomposer bind failed; will retry on next session`,
@@ -924,6 +933,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
           sessionId = createResult.sessionId
           createdSessionId = sessionId
+          initialBoundWorkspaceId = createResult.boundWorkspaceId
 
           if (createResult.bindFailed) {
             deps.logger.log(`handleStartLoop: workspace ${workspaceId} created but initial bind failed; will retry on next session`)
@@ -1028,15 +1038,17 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         deps.loop.registerLoopSession(sessionId, uniqueLoopName)
         deps.loop.setPhase(uniqueLoopName, 'decomposing')
         
-            // Emit lifecycle event for TUI to resolve RPC
-            command.lifecycle?.onStarted?.({
-              mode: command.mode,
-              sessionId,
-              loopName: uniqueLoopName,
-              displayName,
-              worktreeDir: hostWorktreeDir,
-              workspaceId: createdWorkspaceId,
-            })
+        // Emit lifecycle event for TUI to resolve RPC
+        command.lifecycle?.onStarted?.({
+          mode: command.mode,
+          sessionId,
+          loopName: uniqueLoopName,
+          displayName,
+          worktreeDir: hostWorktreeDir,
+          workspaceId: createdWorkspaceId,
+        })
+
+        selectInitialWorktreeSession(sessionId, initialBoundWorkspaceId, 'after decomposer start')
 
         // Wait for sandbox readiness in worktree+sandbox mode BEFORE prompting
         if (command.mode === 'worktree' && sandboxEnabledForLoop && deps.sandboxManager && deps.dataDir) {
@@ -1159,6 +1171,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             workspaceId: createdWorkspaceId,
           })
 
+          selectInitialWorktreeSession(sessionId, initialBoundWorkspaceId, 'after section start')
+
           // Wait for sandbox readiness in worktree+sandbox mode BEFORE prompting
           if (command.mode === 'worktree' && sandboxEnabledForLoop && deps.sandboxManager && deps.dataDir) {
             const dbPath = join(deps.dataDir, 'forge.db')
@@ -1247,6 +1261,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             deps.loopsRepo.setDecompositionStatus(ctx.projectId, uniqueLoopName, 'running')
             
             let decomposerSessionId: string
+            let fallbackBoundWorkspaceId: string | undefined
             if (command.mode === 'worktree' && createdWorkspaceId) {
               const fallbackPermission = buildLoopPermissionRuleset({
                 isWorktree: true,
@@ -1268,6 +1283,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
                 return fail('internal_error', 500, 'Failed to create decomposer session')
               }
               decomposerSessionId = createResult.sessionId
+              fallbackBoundWorkspaceId = createResult.boundWorkspaceId
               if (createResult.bindFailed) {
                 deps.logger.log(
                   `handleStartLoop: workspace ${createdWorkspaceId} created but salvage decomposer bind failed`,
@@ -1301,6 +1317,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
               worktreeDir: hostWorktreeDir,
               workspaceId: createdWorkspaceId,
             })
+
+            selectInitialWorktreeSession(decomposerSessionId, fallbackBoundWorkspaceId, 'after fallback decomposer start')
 
             const decomposerPrompt = deps.loop.buildDecomposerInitialPrompt(state)
             
@@ -1346,6 +1364,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
               worktreeDir: hostWorktreeDir,
               workspaceId: createdWorkspaceId,
             })
+
+            selectInitialWorktreeSession(sessionId, initialBoundWorkspaceId, 'after legacy fallback start')
 
             // Legacy fallback: prompt the code session with the plan text
             const legacyPrompt = planText ?? ''

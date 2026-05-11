@@ -14,6 +14,11 @@ describe('Agent definitions', () => {
       expect(architectAgent.mode).toBe('primary')
     })
 
+    test('architect agent excludes plan tool', () => {
+      expect(architectAgent.tools?.exclude).toBeDefined()
+      expect(architectAgent.tools?.exclude).toContain('plan')
+    })
+
     test('code agent has stable metadata', () => {
       expect(codeAgent.role).toBe('code')
       expect(codeAgent.id).toBe('opencode-code')
@@ -35,6 +40,7 @@ describe('Agent definitions', () => {
       expect(auditorAgent.tools?.exclude).toContain('write')
       expect(auditorAgent.tools?.exclude).toContain('multiedit')
       expect(auditorAgent.tools?.exclude).toContain('plan-execute')
+      expect(auditorAgent.tools?.exclude).toContain('plan')
       expect(auditorAgent.tools?.exclude).toContain('loop')
       expect(auditorAgent.tools?.exclude).toContain('loop-cancel')
       expect(auditorAgent.tools?.exclude).toContain('loop-status')
@@ -44,6 +50,7 @@ describe('Agent definitions', () => {
       expect(codeAgent.tools?.exclude).toBeDefined()
       expect(codeAgent.tools?.exclude).toContain('review-delete')
       expect(codeAgent.tools?.exclude).toContain('plan-execute')
+      expect(codeAgent.tools?.exclude).toContain('plan')
       expect(codeAgent.tools?.exclude).not.toContain('loop-cancel')
       expect(codeAgent.tools?.exclude).not.toContain('loop-status')
     })
@@ -121,6 +128,7 @@ describe('Agent definitions', () => {
       expect(decomposerAgent.tools?.exclude).toContain('write')
       expect(decomposerAgent.tools?.exclude).toContain('multiedit')
       expect(decomposerAgent.tools?.exclude).toContain('plan-execute')
+      expect(decomposerAgent.tools?.exclude).toContain('plan')
       expect(decomposerAgent.tools?.exclude).toContain('loop')
       expect(decomposerAgent.tools?.exclude).toContain('loop-cancel')
       expect(decomposerAgent.tools?.exclude).toContain('loop-status')

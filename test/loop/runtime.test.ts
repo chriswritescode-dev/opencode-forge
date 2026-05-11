@@ -30,7 +30,7 @@ interface MockClientState {
   createCalls: Array<Record<string, unknown>>
   deleteCalls: Array<{ sessionID: string; directory: string }>
   publishCalls: Array<{ directory: string; body: unknown }>
-  selectCalls: Array<{ sessionID: string }>
+  selectCalls: Array<{ sessionID: string; workspace?: string }>
   deleteThrows: boolean
   abortCalls: string[]
   promptCalls: Array<{ sessionID: string; agent?: string }>
@@ -69,12 +69,19 @@ function createMockV2Client(state: MockClientState): OpencodeClient {
         state.publishCalls.push(params as { directory: string; body: unknown })
       },
       selectSession: async (params) => {
-        state.selectCalls.push(params as { sessionID: string })
+        state.selectCalls.push(params as { sessionID: string; workspace?: string })
       },
     },
     worktree: {
       create: async () => ({ error: null, data: { directory: '/tmp/wt', branch: 'b' } }),
       remove: async () => {},
+    },
+    experimental: {
+      workspace: {
+        warp: async () => ({ error: null }),
+        list: async () => ({ error: null, data: [] }),
+        status: async () => ({ error: null, data: [] }),
+      },
     },
   } as unknown as OpencodeClient
 }
@@ -431,6 +438,51 @@ describe('Loop Runtime', () => {
       expect(clientState.selectCalls).toEqual([{ sessionID: 'sess' }])
       expect(clientState.createCalls[0].permission).toBeUndefined()
       expect(clientState.promptCalls[0]).toEqual({ sessionID: 'sess', agent: 'code' })
+      expect(loopService.getActiveState(state.loopName)!.decompositionSessionId).toBeNull()
+    })
+
+    test('worktree loops select the bound code session after transitioning', async () => {
+      vi.useFakeTimers()
+      try {
+        const { loop, clientState } = createRuntime()
+        const state = makeState({
+          phase: 'decomposing',
+          sessionId: 'decomp-sess-1',
+          decompositionSessionId: 'decomp-sess-1',
+          decompositionStatus: 'completed',
+          decompositionMode: 'agent',
+          totalSections: 1,
+          worktree: true,
+          worktreeDir: tempDir,
+          workspaceId: 'ws-1',
+        })
+        loopService.setState(state.loopName, state)
+        sectionPlansRepo.bulkInsert({
+          projectId: PROJECT_ID,
+          loopName: state.loopName,
+          sections: [{ index: 0, title: 'Setup', content: '## Setup\nDo the work' }],
+        })
+
+        await loop.tick({
+          type: 'session.status',
+          properties: {
+            status: { type: 'idle' },
+            sessionID: 'decomp-sess-1',
+          },
+        })
+
+        expect(clientState.selectCalls).toEqual([{ sessionID: 'sess', workspace: 'ws-1' }])
+        expect(loopService.getActiveState(state.loopName)!.decompositionSessionId).toBeNull()
+
+        await vi.advanceTimersByTimeAsync(15_000)
+
+        expect(clientState.deleteCalls).toContainEqual({
+          sessionID: 'decomp-sess-1',
+          directory: tempDir,
+        })
+      } finally {
+        vi.useRealTimers()
+      }
     })
   })
 

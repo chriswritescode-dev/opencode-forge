@@ -13,6 +13,9 @@ import type { OpencodeClient } from '@opencode-ai/sdk/v2'
  * Uses `experimental.workspace.create({ type: 'worktree', branch: null })` so the
  * workspace appears as fully connected (green dot) in the TUI.
  *
+ * After a successful create, also issues a best-effort `experimental.workspace.syncList()`
+ * so the new workspace is registered in the Warp picker, not just reachable from the session list.
+ *
  * @returns `{ workspaceId, directory, branch }` or `null` on failure.
  */
 export async function createBuiltinWorktreeWorkspace(
@@ -29,12 +32,9 @@ export async function createBuiltinWorktreeWorkspace(
     return null
   }
   try {
-    const createParams: { type: string; branch: string | null; directory?: string } = {
+    const createParams: { type: string; branch: string | null } = {
       type: 'worktree',
       branch: null,
-    }
-    if (options.directory) {
-      createParams.directory = options.directory
     }
     const result = await workspaceApi.create(createParams)
 
@@ -81,6 +81,39 @@ export async function createBuiltinWorktreeWorkspace(
 
     (logger ?? console).log?.(`createBuiltinWorktreeWorkspace: workspace ${id} created for ${options.loopName}`)
 
+    if (typeof workspaceApi.syncList === 'function') {
+      try {
+        await workspaceApi.syncList()
+        ;(logger ?? console).log?.(`createBuiltinWorktreeWorkspace: workspace ${id} registered via syncList`)
+      } catch (err) {
+        ;(logger ?? console).error('createBuiltinWorktreeWorkspace: syncList after create failed; workspace may be reachable via session list but not visible in Warp picker', err)
+      }
+    } else {
+      ;(logger ?? console).log?.('createBuiltinWorktreeWorkspace: syncList not available on SDK, skipping registration')
+    }
+
+    if (typeof client.sync?.start === 'function') {
+      try {
+        await client.sync.start()
+        ;(logger ?? console).log?.(`createBuiltinWorktreeWorkspace: workspace sync started for ${id}`)
+      } catch (err) {
+        ;(logger ?? console).error('createBuiltinWorktreeWorkspace: sync.start after create failed; workspace status may remain unavailable in the TUI', err)
+      }
+    }
+
+    try {
+      const [listResult, statusResult] = await Promise.all([
+        typeof workspaceApi.list === 'function' ? workspaceApi.list() : Promise.resolve(undefined),
+        typeof workspaceApi.status === 'function' ? workspaceApi.status() : Promise.resolve(undefined),
+      ])
+      const listed = ((listResult as { data?: Array<{ id?: string }> } | undefined)?.data ?? []).some((workspace) => workspace.id === id)
+      const status = ((statusResult as { data?: Array<{ workspaceID?: string; status?: string }> } | undefined)?.data ?? [])
+        .find((entry) => entry.workspaceID === id)?.status
+      ;(logger ?? console).log?.(`createBuiltinWorktreeWorkspace: workspace ${id} visibility listed=${listed} status=${status ?? 'unknown'}`)
+    } catch (err) {
+      ;(logger ?? console).error('createBuiltinWorktreeWorkspace: post-create workspace visibility check failed', err)
+    }
+
     return { workspaceId: id, directory, branch }
   } catch (err) {
     (logger ?? console).error('createBuiltinWorktreeWorkspace: workspace.create threw', err)
@@ -95,20 +128,47 @@ export async function bindSessionToWorkspace(
   client: OpencodeClient,
   workspaceId: string,
   sessionId: string,
-  logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void }
+  logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void },
+  options?: { copyChanges?: boolean }
 ): Promise<void> {
   const workspaceApi = client.experimental?.workspace
   if (!workspaceApi || typeof workspaceApi.warp !== 'function') {
     (logger ?? console).log?.('bindSessionToWorkspace: experimental.workspace.warp not available')
     throw new Error('experimental.workspace.warp not available on this host')
   }
-  const result = await workspaceApi.warp({
+  const warpParams: { id: string; sessionID: string; copyChanges?: boolean } = {
     id: workspaceId,
     sessionID: sessionId,
-  })
+  }
+  if (typeof options?.copyChanges === 'boolean') warpParams.copyChanges = options.copyChanges
+
+  const result = await workspaceApi.warp(warpParams)
 
   if ('error' in result && result.error) {
     (logger ?? console).error(`bindSessionToWorkspace: warp failed for workspace=${workspaceId} session=${sessionId}`, result.error)
     throw new Error(`Session warp failed: ${JSON.stringify(result.error)}`)
+  }
+
+  if (typeof client.sync?.start === 'function') {
+    try {
+      await client.sync.start()
+      ;(logger ?? console).log?.(`bindSessionToWorkspace: workspace sync started for workspace=${workspaceId} session=${sessionId}`)
+    } catch (err) {
+      ;(logger ?? console).error('bindSessionToWorkspace: sync.start after warp failed; workspace status may remain unavailable in the TUI', err)
+    }
+  }
+
+  try {
+    const [listResult, statusResult] = await Promise.all([
+      typeof workspaceApi.list === 'function' ? workspaceApi.list() : Promise.resolve(undefined),
+      typeof workspaceApi.status === 'function' ? workspaceApi.status() : Promise.resolve(undefined),
+    ])
+    const listed = ((listResult as { data?: Array<{ id?: string }> } | undefined)?.data ?? [])
+      .some((workspace) => workspace.id === workspaceId)
+    const status = ((statusResult as { data?: Array<{ workspaceID?: string; status?: string }> } | undefined)?.data ?? [])
+      .find((entry) => entry.workspaceID === workspaceId)?.status
+    ;(logger ?? console).log?.(`bindSessionToWorkspace: workspace ${workspaceId} visibility after warp listed=${listed} status=${status ?? 'unknown'}`)
+  } catch (err) {
+    ;(logger ?? console).error('bindSessionToWorkspace: post-warp workspace visibility check failed', err)
   }
 }

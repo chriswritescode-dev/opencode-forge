@@ -81,7 +81,7 @@ describe('createConfigHandler', () => {
       const permission = code.permission as Record<string, string>
 
       expect(permission).toBeDefined()
-      for (const tool of ['review-write', 'review-delete', 'plan-execute', 'loop']) {
+      for (const tool of ['review-write', 'review-delete', 'plan-execute', 'loop', 'plan']) {
         expect(permission[tool]).toBe('deny')
       }
     })

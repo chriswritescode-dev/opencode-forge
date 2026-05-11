@@ -7,6 +7,7 @@ const DECOMPOSER_TOOL_EXCLUDES = [
   'write',
   'multiedit',
   'plan-execute',
+  'plan',
   'loop',
   'loop-cancel',
   'loop-status',

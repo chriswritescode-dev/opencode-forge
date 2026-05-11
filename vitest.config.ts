@@ -29,6 +29,7 @@ export default defineConfig({
       'test/loop/cancel.test.ts',
       'test/plan-execution.test.ts',
       'test/loop-status-tool.test.ts',
+      'test/workspace/forge-worktree.test.ts',
     ],
   },
 })

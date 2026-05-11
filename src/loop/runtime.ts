@@ -459,11 +459,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     logger.log(`Loop: rotated session ${oldSessionId} → ${newSessionId}`)
 
-    if (!state.worktree && v2Client.tui) {
-      v2Client.tui.selectSession({ sessionID: newSessionId }).catch((err: unknown) => {
-        logger.error(`Loop: failed to navigate TUI to rotated session`, err)
-      })
-    }
+    await maybeSelectTuiSession(state, newSessionId, createResult.boundWorkspaceId)
 
     return newSessionId
   }
@@ -776,17 +772,24 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
 
     const codeSessionId = codeSessionResult.sessionId
+    const decomposerSessionId = updatedState.decompositionSessionId
     loopService.replaceSession(loopName, {
       newSessionId: codeSessionId,
       phase: 'coding',
       resetError: false,
     })
 
-    if (!updatedState.worktree && v2Client.tui) {
-      await v2Client.tui.selectSession({ sessionID: codeSessionId }).catch((err: unknown) => {
-        logger.error(`Loop: failed to navigate TUI to code session`, err)
+    if (decomposerSessionId && decomposerSessionId !== codeSessionId) {
+      scheduleSessionDelete({
+        loopName,
+        sessionId: decomposerSessionId,
+        directory: updatedState.worktreeDir,
+        context: 'after transition to coding',
       })
+      loopService.setDecompositionSessionId(loopName, null)
     }
+
+    await maybeSelectTuiSession(updatedState, codeSessionId, codeSessionResult.boundWorkspaceId)
 
     const codeState = loopService.getActiveState(loopName) ?? updatedState
     const sectionPrompt = loopService.buildSectionInitialPrompt(codeState)
@@ -864,6 +867,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     codingLaunchRecoveryAttempts.delete(loopName)
     clearPromptPending(loopName, logger)
 
+    const pendingSessionDeletes: string[] = []
     const loopDeleteSet = loopDelayedDeletes.get(loopName)
     if (loopDeleteSet) {
       for (const sid of loopDeleteSet) {
@@ -872,6 +876,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           clearTimeout(t)
           delayedSessionDeleteTimeouts.delete(sid)
         }
+        if (sid !== sessionId) pendingSessionDeletes.push(sid)
       }
       loopDelayedDeletes.delete(loopName)
     }
@@ -887,6 +892,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       await v2Client.session.abort({ sessionID: sessionId })
     } catch {
       // Session may already be idle
+    }
+
+    for (const sid of pendingSessionDeletes) {
+      try {
+        await v2Client.session.delete({ sessionID: sid, directory: state.worktreeDir })
+        logger.log(`Loop: flushed delayed delete for session ${sid} before terminating ${loopName}`)
+      } catch (err) {
+        logger.error(`Loop: failed to flush delayed delete for session ${sid} before terminating ${loopName}`, err)
+      }
     }
 
     logger.log(`Loop terminated: reason="${terminationReasonToString(reason)}", loop="${state.loopName}", iteration=${state.iteration}`)
@@ -942,7 +956,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     isSandbox: boolean
     auditorModel?: { providerID: string; modelID: string }
     prompt: string
-  }): Promise<{ auditSessionId: string; bindFailed: boolean; bindError?: unknown } | null> {
+  }): Promise<{ auditSessionId: string; boundWorkspaceId?: string; bindFailed: boolean; bindError?: unknown } | null> {
     const created = await createAuditSession({
       v2: v2Client,
       loopName: input.loopName,
@@ -954,7 +968,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       prompt: input.prompt,
       logger,
     })
-    if (created) return { auditSessionId: created.auditSessionId, bindFailed: created.bindFailed, bindError: created.bindError }
+    if (created) {
+      return {
+        auditSessionId: created.auditSessionId,
+        boundWorkspaceId: created.boundWorkspaceId,
+        bindFailed: created.bindFailed,
+        bindError: created.bindError,
+      }
+    }
 
     try {
       logger.log(`Loop: falling back to plugin client for audit session creation (${input.loopName})`)
@@ -1066,7 +1087,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       phase: 'final_auditing',
     })
 
-    maybeSelectTuiSession(currentState, created.auditSessionId)
+    await maybeSelectTuiSession(currentState, created.auditSessionId, created.boundWorkspaceId)
 
     scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after final audit creation' })
 
@@ -1087,10 +1108,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return true
   }
 
-  function maybeSelectTuiSession(state: LoopState, sessionId: string): void {
-    if (state.worktree) return
+  async function maybeSelectTuiSession(state: LoopState, sessionId: string, boundWorkspaceId?: string): Promise<void> {
     if (!v2Client.tui) return
-    v2Client.tui.selectSession({ sessionID: sessionId }).catch((err: unknown) => {
+    const workspace = state.worktree ? boundWorkspaceId : undefined
+    if (state.worktree && !workspace) return
+    await v2Client.tui.selectSession({
+      sessionID: sessionId,
+      ...(workspace ? { workspace } : {}),
+    }).catch((err: unknown) => {
       logger.error(`Loop: failed to navigate TUI to session ${sessionId}`, err)
     })
   }
@@ -1170,7 +1195,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       isSandbox: boolean
       auditorModel?: { providerID: string; modelID: string }
       prompt: string
-    }, attempts = MAX_RETRIES): Promise<{ auditSessionId: string; bindFailed: boolean; bindError?: unknown } | null> {
+    }, attempts = MAX_RETRIES): Promise<{ auditSessionId: string; boundWorkspaceId?: string; bindFailed: boolean; bindError?: unknown } | null> {
       for (let i = 0; i < attempts; i++) {
         const created = await createAuditSessionWithFallback(input)
         if (created) return created
@@ -1237,7 +1262,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       phase: 'auditing',
     })
 
-    maybeSelectTuiSession(currentState, created.auditSessionId)
+    await maybeSelectTuiSession(currentState, created.auditSessionId, created.boundWorkspaceId)
 
     scheduleSessionDelete({ loopName, sessionId: codeSessionId, directory: currentState.worktreeDir, context: 'after audit creation' })
 
@@ -1556,11 +1581,24 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         return
       }
 
+      const decomposerSessionId = fallbackState.decompositionSessionId
       loopService.replaceSession(loopName, {
         newSessionId: codeSessionResult.sessionId,
         phase: 'coding',
         resetError: false,
       })
+
+      if (decomposerSessionId && decomposerSessionId !== codeSessionResult.sessionId) {
+        scheduleSessionDelete({
+          loopName,
+          sessionId: decomposerSessionId,
+          directory: fallbackState.worktreeDir,
+          context: 'after zero-section fallback to coding',
+        })
+        loopService.setDecompositionSessionId(loopName, null)
+      }
+
+      await maybeSelectTuiSession(fallbackState, codeSessionResult.sessionId, codeSessionResult.boundWorkspaceId)
 
       const continuationPrompt = loopService.buildContinuationPrompt(
         { ...fallbackState, iteration: fallbackState.iteration ?? 0 },
@@ -1629,6 +1667,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       loopService.setDecompositionSessionId(loopName, decomposerSessionId)
       loopService.registerLoopSession(decomposerSessionId, loopName)
       loopService.setPhase(loopName, 'decomposing')
+
+      await maybeSelectTuiSession(freshState, decomposerSessionId, decomposerSessionResult.boundWorkspaceId)
 
       const decomposerPrompt = loopService.buildDecomposerInitialPrompt(freshState)
       try {

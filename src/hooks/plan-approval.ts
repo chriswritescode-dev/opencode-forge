@@ -95,6 +95,7 @@ interface PendingExecution {
 
 const pendingExecutions = new Map<string, PendingExecution>()
 const processedApprovalCalls = new WeakMap<ToolContext, Set<string>>()
+const activeApprovalPlans = new Set<string>()
 
 export { LOOP_BLOCKED_TOOLS }
 export { extractPlanTitle }
@@ -103,21 +104,42 @@ function isActiveLoopToolSession(state: { active?: boolean; sessionId?: string }
   return state.active === true && state.sessionId === sessionID
 }
 
-function claimApprovalCall(ctx: ToolContext, input: { sessionID: string; callID: string }, label: string): boolean {
+function hashApprovalPlan(planText: string): string {
+  let hash = 5381
+  for (let i = 0; i < planText.length; i += 1) {
+    hash = ((hash << 5) + hash) ^ planText.charCodeAt(i)
+  }
+  return (hash >>> 0).toString(36)
+}
+
+function claimApprovalCall(ctx: ToolContext, input: { sessionID: string }, label: string, planKey: string): boolean {
   let processed = processedApprovalCalls.get(ctx)
   if (!processed) {
     processed = new Set<string>()
     processedApprovalCalls.set(ctx, processed)
   }
-  const key = `${input.sessionID}:${input.callID}:${label}`
-  if (processed.has(key)) return false
+  const callKey = `${input.sessionID}:${(input as { callID?: string }).callID ?? ''}:${label}`
+  if (processed.has(callKey)) return false
   if (processed.size > 1000) processed.clear()
-  processed.add(key)
+  processed.add(callKey)
+
+  const planApprovalKey = `${ctx.projectId}:${ctx.directory}:${input.sessionID}:${label}:${planKey}`
+  if (activeApprovalPlans.has(planApprovalKey)) return false
+  activeApprovalPlans.add(planApprovalKey)
   return true
 }
 
-function resolveCurrentSessionPlan(ctx: ToolContext, sessionID: string): string | null {
-  return ctx.plansRepo.getForSession(ctx.projectId, sessionID)?.content ?? null
+function releaseApprovalCall(ctx: ToolContext, input: { sessionID: string }, label: string, planKey: string): void {
+  activeApprovalPlans.delete(`${ctx.projectId}:${ctx.directory}:${input.sessionID}:${label}:${planKey}`)
+}
+
+function resolveCurrentSessionPlan(ctx: ToolContext, sessionID: string): { content: string; key: string } | null {
+  const plan = ctx.plansRepo.getForSession(ctx.projectId, sessionID)
+  if (!plan) return null
+  return {
+    content: plan.content,
+    key: `${plan.updatedAt}:${hashApprovalPlan(plan.content)}`,
+  }
 }
 
 export function createToolExecuteBeforeHook(ctx: ToolContext): Hooks['tool.execute.before'] {
@@ -165,15 +187,6 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
             answerLower === l.toLowerCase() || answerLower.startsWith(l.toLowerCase())
           )
 
-          if (matchedLabel && !claimApprovalCall(ctx, input, matchedLabel)) {
-            markApprovalHandled(output, true)
-            logger.log(`Plan approval: duplicate "${matchedLabel}" call ignored for ${input.callID}`)
-            logger.log(`Plan approval: duplicate "${matchedLabel}" — awaiting source session abort`)
-            await abortApprovalSourceSession(ctx, input.sessionID)
-            logger.log(`Plan approval: duplicate "${matchedLabel}" — abort completed`)
-            return
-          }
-
           if (matchedLabel) {
             markApprovalHandled(output)
             logger.log(`Plan approval: question answer matched "${matchedLabel}" for call ${input.callID}`)
@@ -181,38 +194,58 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
           }
           
           if (matchedLabel?.toLowerCase() === 'execute here') {
-            const planText = resolveCurrentSessionPlan(ctx, input.sessionID)
-            if (!planText) {
+            const plan = resolveCurrentSessionPlan(ctx, input.sessionID)
+            if (!plan) {
               publishPlanApprovalToast(ctx, input, 'error', 'Plan not found for execution')
               logger.error('Plan approval: plan not found for "Execute here"')
               await abortApprovalSourceSession(ctx, input.sessionID)
               logger.log('Plan approval: "Execute here" — abort completed (plan not found)')
               return
             }
+
+            if (!claimApprovalCall(ctx, input, matchedLabel, plan.key)) {
+              markApprovalHandled(output, true)
+              logger.log(`Plan approval: duplicate "${matchedLabel}" call ignored for ${input.callID}`)
+              logger.log(`Plan approval: duplicate "${matchedLabel}" — awaiting source session abort`)
+              await abortApprovalSourceSession(ctx, input.sessionID)
+              logger.log(`Plan approval: duplicate "${matchedLabel}" — abort completed`)
+              return
+            }
             
             pendingExecutions.set(input.sessionID, {
               directory: ctx.directory,
               executionModel: parseModelString(ctx.config.executionModel),
-              planText,
+              planText: plan.content,
             })
 
             logger.log('Plan approval: "Execute here" — pending code agent switch set; awaiting source session abort')
             await abortApprovalSourceSession(ctx, input.sessionID)
+            releaseApprovalCall(ctx, input, matchedLabel, plan.key)
             logger.log('Plan approval: "Execute here" — abort completed')
             return
           }
           
           // Programmatic dispatch for "New session" and "Loop" paths
-          const planText = resolveCurrentSessionPlan(ctx, input.sessionID)
-          if (!planText) {
+          const plan = resolveCurrentSessionPlan(ctx, input.sessionID)
+          if (!plan) {
             publishPlanApprovalToast(ctx, input, 'error', 'Plan not found for execution')
             logger.error('Plan approval: plan not found')
             await abortApprovalSourceSession(ctx, input.sessionID)
             logger.log('Plan approval: plan not found — abort completed')
             return
           }
+          const planText = plan.content
           const title = extractPlanTitle(planText)
-          
+
+          if (matchedLabel && !claimApprovalCall(ctx, input, matchedLabel, plan.key)) {
+            markApprovalHandled(output, true)
+            logger.log(`Plan approval: duplicate "${matchedLabel}" call ignored for ${input.callID}`)
+            logger.log(`Plan approval: duplicate "${matchedLabel}" — awaiting source session abort`)
+            await abortApprovalSourceSession(ctx, input.sessionID)
+            logger.log(`Plan approval: duplicate "${matchedLabel}" — abort completed`)
+            return
+          }
+           
           const execCtx: ForgeExecutionRequestContext = {
             surface: 'approval-hook',
             projectId: ctx.projectId,
@@ -263,6 +296,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
 
             logger.log('Plan approval: "New session" — awaiting source session abort')
             const aborted = await abortApprovalSourceSession(ctx, input.sessionID)
+            releaseApprovalCall(ctx, input, matchedLabel, plan.key)
             logger.log(`Plan approval: "New session" — abort completed (success=${aborted})`)
             return
           }
@@ -308,6 +342,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
 
             logger.log(`Plan approval: "${matchedLabel}" — awaiting source session abort`)
             const aborted = await abortApprovalSourceSession(ctx, input.sessionID)
+            releaseApprovalCall(ctx, input, matchedLabel, plan.key)
             logger.log(`Plan approval: "${matchedLabel}" — abort completed (success=${aborted})`)
             return
           }
