@@ -98,8 +98,6 @@ export interface TuiConfig {
   keybinds?: {
     /** View plan dialog. Default: <leader>v */
     viewPlan?: string
-    /** Execute plan dialog. Default: <leader>e */
-    executePlan?: string
     /** Show loops dialog. Default: <leader>w */
     showLoops?: string
     /** Load archived plans dialog. Default: <leader>i */

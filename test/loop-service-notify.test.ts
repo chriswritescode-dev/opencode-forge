@@ -1,5 +1,6 @@
 import { describe, it, expect, mock } from 'bun:test'
-import { createLoopService, type LoopChangeNotifier } from '../src/services/loop'
+import { createLoop } from '../src/loop/runtime'
+import type { LoopChangeNotifier } from '../src/loop/service'
 import type { LoopsRepo } from '../src/storage/repos/loops-repo'
 import type { PlansRepo } from '../src/storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
@@ -60,17 +61,19 @@ describe('LoopChangeNotifier', () => {
         notifyCalls.push({ reason, loopName })
       }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify,
+      })
 
-      loopService.setState('test-loop', baseState as any)
+      loop.setState('test-loop', baseState as any)
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('insert')
@@ -86,17 +89,19 @@ describe('LoopChangeNotifier', () => {
         notifyCalls.push({ reason, loopName })
       }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify,
+      })
 
-      loopService.deleteState('test-loop')
+      loop.deleteState('test-loop')
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('delete')
@@ -112,17 +117,19 @@ describe('LoopChangeNotifier', () => {
         notifyCalls.push({ reason, loopName })
       }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify,
+      })
 
-      loopService.setStatus('test-loop', 'running')
+      loop.setStatus('test-loop', 'running')
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('status')
@@ -138,17 +145,19 @@ describe('LoopChangeNotifier', () => {
         notifyCalls.push({ reason, loopName })
       }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify,
+      })
 
-      loopService.registerLoopSession('s1', 'test-loop')
+      loop.registerLoopSession('s1', 'test-loop')
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('session')
@@ -164,17 +173,19 @@ describe('LoopChangeNotifier', () => {
         notifyCalls.push({ reason, loopName })
       }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify,
+      })
 
-      loopService.incrementError('test-loop')
+      loop.incrementError('test-loop')
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('error')
@@ -190,17 +201,19 @@ describe('LoopChangeNotifier', () => {
         notifyCalls.push({ reason, loopName })
       }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify,
+      })
 
-      loopService.resetError('test-loop')
+      loop.resetError('test-loop')
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('error')
@@ -216,17 +229,19 @@ describe('LoopChangeNotifier', () => {
         notifyCalls.push({ reason, loopName })
       }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify,
+      })
 
-      loopService.setPhase('test-loop', 'auditing')
+      loop.setPhase('test-loop', 'auditing')
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('phase')
@@ -242,17 +257,19 @@ describe('LoopChangeNotifier', () => {
         notifyCalls.push({ reason, loopName })
       }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify,
+      })
 
-      loopService.setPhaseAndResetError('test-loop', 'auditing')
+      loop.setPhaseAndResetError('test-loop', 'auditing')
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('phase')
@@ -268,17 +285,19 @@ describe('LoopChangeNotifier', () => {
         notifyCalls.push({ reason, loopName })
       }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify,
+      })
 
-      loopService.setModelFailed('test-loop', true)
+      loop.setModelFailed('test-loop', true)
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('model-failed')
@@ -294,17 +313,19 @@ describe('LoopChangeNotifier', () => {
         notifyCalls.push({ reason, loopName })
       }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify,
+      })
 
-      loopService.setLastAuditResult('test-loop', 'audit result text')
+      loop.setLastAuditResult('test-loop', 'audit result text')
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('audit-result')
@@ -322,17 +343,19 @@ describe('LoopChangeNotifier', () => {
         notifyCalls.push({ reason, loopName })
       }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify,
+      })
 
-      loopService.replaceSession('test-loop', { newSessionId: 's5', phase: 'auditing' })
+      loop.replaceSession('test-loop', { newSessionId: 's5', phase: 'auditing' })
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('rotate')
@@ -348,17 +371,19 @@ describe('LoopChangeNotifier', () => {
         notifyCalls.push({ reason, loopName })
       }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify,
+      })
 
-      loopService.terminate('test-loop', { status: 'completed', reason: 'done', completedAt: Date.now() })
+      loop.terminate('test-loop', { status: 'completed', reason: 'done', completedAt: Date.now() })
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('terminate')
@@ -374,17 +399,19 @@ describe('LoopChangeNotifier', () => {
         notifyCalls.push({ reason, loopName })
       }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify,
+      })
 
-      loopService.setSandboxContainer('test-loop', 'container-123')
+      loop.setSandboxContainer('test-loop', 'container-123')
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('sandbox')
@@ -400,17 +427,19 @@ describe('LoopChangeNotifier', () => {
         notifyCalls.push({ reason, loopName })
       }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify,
+      })
 
-      loopService.clearWorkspaceId('test-loop')
+      loop.clearWorkspaceId('test-loop')
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('workspace')
@@ -426,17 +455,19 @@ describe('LoopChangeNotifier', () => {
         notifyCalls.push({ reason, loopName })
       }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify,
+      })
 
-      loopService.setWorkspaceId('test-loop', 'ws-123')
+      loop.setWorkspaceId('test-loop', 'ws-123')
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('workspace')
@@ -486,17 +517,19 @@ describe('LoopChangeNotifier', () => {
         notifyCalls.push({ reason, loopName })
       }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify,
+      })
 
-      loopService.terminateAll()
+      loop.terminateAll()
 
       expect(notifyCalls.length).toBe(2)
       expect(notifyCalls[0].reason).toBe('terminate')
@@ -548,17 +581,19 @@ describe('LoopChangeNotifier', () => {
         notifyCalls.push({ reason, loopName })
       }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify,
+      })
 
-      const result = await loopService.reconcileStale()
+      const result = await loop.reconcileStale()
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('reconcile')
@@ -607,18 +642,20 @@ describe('LoopChangeNotifier', () => {
         notifyCalls.push({ reason, loopName })
       }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify,
+      })
 
       const isSandboxLive = mock(async (name: string) => name === 'live-sandbox-loop')
-      const result = await loopService.reconcileStale({ isSandboxLive })
+      const result = await loop.reconcileStale({ isSandboxLive })
 
       expect(notifyCalls.length).toBe(0)
       expect(result.cancelled).toBe(0)
@@ -665,18 +702,20 @@ describe('LoopChangeNotifier', () => {
         notifyCalls.push({ reason, loopName })
       }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify,
+      })
 
       const isSandboxLive = mock(async () => false)
-      const result = await loopService.reconcileStale({ isSandboxLive })
+      const result = await loop.reconcileStale({ isSandboxLive })
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('reconcile')
@@ -725,18 +764,20 @@ describe('LoopChangeNotifier', () => {
         notifyCalls.push({ reason, loopName })
       }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify,
+      })
 
       const isSandboxLive = mock(async () => true)
-      const result = await loopService.reconcileStale({ isSandboxLive })
+      const result = await loop.reconcileStale({ isSandboxLive })
 
       expect(isSandboxLive).not.toHaveBeenCalled()
       expect(notifyCalls.length).toBe(1)
@@ -786,18 +827,20 @@ describe('LoopChangeNotifier', () => {
         notifyCalls.push({ reason, loopName })
       }
 
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        notify
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify,
+      })
 
       const isSandboxLive = mock(async () => true)
-      const result = await loopService.reconcileStale({ isSandboxLive })
+      const result = await loop.reconcileStale({ isSandboxLive })
 
       expect(isSandboxLive).not.toHaveBeenCalled()
       expect(notifyCalls.length).toBe(1)
@@ -813,19 +856,21 @@ describe('LoopChangeNotifier', () => {
       const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
 
       // This should not throw
-      const loopService = createLoopService(
-        mockLoopsRepo,
-        mockPlansRepo,
-        mockReviewFindingsRepo,
-        'test-project',
-        mockLogger,
-        undefined,
-        undefined // no notifier
-      )
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: mockReviewFindingsRepo,
+        projectId: 'test-project',
+        logger: mockLogger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify: undefined,
+      })
 
       // Should not throw
       expect(() => {
-        loopService.setState('test-loop', baseState as any)
+        loop.setState('test-loop', baseState as any)
       }).not.toThrow()
     })
   })

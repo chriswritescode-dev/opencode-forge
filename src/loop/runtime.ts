@@ -1,16 +1,22 @@
 import type { PluginInput } from '@opencode-ai/plugin'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
-import type { LoopService, LoopState } from '../services/loop'
-import { MAX_RETRIES } from '../services/loop'
-import type { Logger, PluginConfig } from '../types'
+import type { LoopChangeNotifier } from './service'
+import { createLoopService, MAX_RETRIES } from './service'
+import { generateUniqueName } from './name-uniqueness'
+import type { LoopState } from './state'
+import type { Logger, PluginConfig, LoopConfig } from '../types'
+import type { LoopsRepo } from '../storage/repos/loops-repo'
+import type { PlansRepo } from '../storage/repos/plans-repo'
+import type { ReviewFindingsRepo, ReviewFindingRow } from '../storage/repos/review-findings-repo'
+import type { SectionPlansRepo, SectionPlanRow } from '../storage/repos/section-plans-repo'
 import { createLoopWatchdog, type LoopWatchdogStallInfo, type LoopWatchdogRecoveryContext } from '../hooks/watchdog'
 import { retryWithModelFallback, resolveDecomposerModel } from '../utils/model-fallback'
 import { resolveLoopModel, resolveLoopAuditorModel } from '../utils/loop-helpers'
 import type { createSandboxManager } from '../sandbox/manager'
-import { buildWorktreeCompletionPayload, writeWorktreeCompletionLog } from '../services/worktree-log'
+// worktree-completion imports moved to hooks/loop.ts (termination side-effects)
 import { buildLoopPermissionRuleset } from '../constants/loop'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
-import { teardownWorktreeArtifacts } from '../utils/worktree-cleanup'
+// worktree-cleanup imports moved to hooks/loop.ts (termination side-effects)
 import { createAuditSession, promptAuditSession } from '../utils/audit-session'
 import { formatAuditSessionTitle, formatLoopSessionTitle } from '../utils/session-titles'
 import { bindSessionToWorkspace } from '../workspace/forge-worktree'
@@ -26,18 +32,36 @@ export interface LoopEvent {
   properties?: Record<string, unknown>
 }
 
+/**
+ * Callback invoked after the core state-machine portion of termination completes.
+ * Host-specific side-effects (teardown, toast, completion-log, sandbox-stop) live here.
+ */
+export type OnTerminatedCallback = (state: LoopState, reason: TerminationReason) => Promise<void>
+
 export interface LoopRuntimeDeps {
-  loopService: LoopService
+  loopsRepo: LoopsRepo
+  plansRepo: PlansRepo
+  reviewFindingsRepo: ReviewFindingsRepo
+  projectId: string
   client: PluginInput['client']
   v2Client: OpencodeClient
   logger: Logger
   getConfig: () => PluginConfig
   sandboxManager?: ReturnType<typeof createSandboxManager>
   dataDir?: string
+  onTerminated?: OnTerminatedCallback
+  notify?: LoopChangeNotifier
+  loopConfig?: LoopConfig
+  sectionPlansRepo?: SectionPlansRepo
+}
+
+export interface StartLoopInput {
+  state: LoopState
 }
 
 export interface Loop {
   tick(event: LoopEvent): Promise<void>
+  start(input: StartLoopInput): void
   cancel(name: string): Promise<void>
   inspect(name: string): LoopState | null
   listActive(): LoopState[]
@@ -50,9 +74,63 @@ export interface Loop {
   runExclusive<T>(name: string, fn: () => Promise<T>): Promise<T>
   clearLoopTimers(name: string): void
   clearAllRetryTimeouts(): void
-  recordActivity(name: string): void
+  recordActivity(name: string, source?: string): void
   startWatchdog(name: string): void
   getStallInfo(name: string): LoopWatchdogStallInfo | null
+  restart(name: string, params: { newState: LoopState; newSessionId: string }): void
+  generateUniqueLoopName(baseName: string): string
+  /** Transition a running loop's phase. Used when decomposer mode changes mid-startup. */
+  setPhase(name: string, phase: LoopState['phase']): void
+
+  // State management methods (from LoopService)
+  resolveLoopName(sessionId: string): string | null
+  getActiveState(name: string): LoopState | null
+  getAnyState(name: string): LoopState | null
+  setState(name: string, state: LoopState): void
+  deleteState(name: string): void
+  registerLoopSession(sessionId: string, loopName: string): void
+  replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void
+  setStatus(name: string, status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'): void
+  setPhaseAndResetError(name: string, phase: LoopState['phase']): void
+  setModelFailed(name: string, failed: boolean): void
+  setLastAuditResult(name: string, text: string): void
+  clearLastAuditResult(name: string): void
+  setSandboxContainer(name: string, containerName: string | null): void
+  clearWorkspaceId(name: string): void
+  setWorkspaceId(name: string, workspaceId: string): void
+  incrementError(name: string): number
+  resetError(name: string): void
+  terminateLoop(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
+  getOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[]
+  reconcileStale(opts?: { isSandboxLive?: (loopName: string) => Promise<boolean> }): Promise<{ cancelled: number; preserved: string[] }>
+  getStallTimeoutMs(): number
+  getMaxConsecutiveStalls(): number
+
+  // Prompt building methods
+  buildContinuationPrompt(state: LoopState, auditFindings?: string): string
+  buildAuditPrompt(state: LoopState): string
+  buildDecomposerInitialPrompt(state: LoopState): string
+  buildSectionInitialPrompt(state: LoopState): string
+  buildSectionAuditPrompt(state: LoopState): string
+  buildSectionContinuationPrompt(state: LoopState, auditText: string): string
+  buildFinalAuditPrompt(state: LoopState): string
+
+  // Plan and section methods
+  getPlanText(loopName: string, sessionId: string): string | null
+  getSectionPlan(state: LoopState, index: number): SectionPlanRow | null
+  getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null
+  getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[]
+  parseSectionSummary(text: string): { done: string | null; deviations: string | null; followUps: string | null } | null
+  completeSection(loopName: string, index: number, summary: { done: string | null; deviations: string | null; followUps: string | null }): void
+  incrementSectionAttempts(loopName: string, index: number): void
+  resetSectionForRewind(loopName: string, index: number): void
+  setCurrentSectionIndex(loopName: string, index: number): void
+  setFinalAuditDone(loopName: string, done: boolean): void
+  startSection(loopName: string, index: number): void
+  setDecompositionStatus(loopName: string, status: LoopState['decompositionStatus']): void
+  setDecompositionSessionId(loopName: string, sessionId: string | null): void
+  bulkInsertSections(loopName: string, sections: { index: number; title: string; content: string }[]): void
+  setTotalSections(loopName: string, total: number): void
 }
 
 export function isWorkspaceNotFoundError(err: unknown): boolean {
@@ -61,7 +139,8 @@ export function isWorkspaceNotFoundError(err: unknown): boolean {
 }
 
 export function createLoop(deps: LoopRuntimeDeps): Loop {
-  const { loopService, client, v2Client, logger, getConfig, sandboxManager, dataDir } = deps
+  const { loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, v2Client, logger, getConfig, onTerminated, notify, loopConfig, sectionPlansRepo } = deps
+  const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, loopConfig, notify, undefined, sectionPlansRepo)
 
   const retryTimeouts = new Map<string, NodeJS.Timeout>()
   const idleRetryTimeouts = new Map<string, NodeJS.Timeout>()
@@ -404,17 +483,17 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
 
     logger.error(`Loop: assistant error detected in ${phase} phase: ${assistantError}`)
-      const isModelError = /provider|auth|model|api\s*error/i.test(assistantError)
-      if (isModelError) {
-        const nextErrorCount = loopService.incrementError(loopName)
-        if (nextErrorCount >= MAX_RETRIES) {
-          await terminateLoop(loopName, currentState, { kind: 'error_max_retries', message: `assistant error: ${assistantError}` })
-          return null
-        }
-        loopService.setModelFailed(loopName, true)
-        logger.log(`Loop: marking model as failed, will fall back to default model (error ${nextErrorCount}/${MAX_RETRIES})`)
-        return { assistantErrorDetected: true, currentState: loopService.getActiveState(loopName)! }
+    const isModelError = /provider|auth|model|api\s*error/i.test(assistantError)
+    if (isModelError) {
+      const nextErrorCount = loopService.incrementError(loopName)
+      if (nextErrorCount >= MAX_RETRIES) {
+        await terminateLoop(loopName, currentState, { kind: 'error_max_retries', message: `assistant error: ${assistantError}` })
+        return null
       }
+      loopService.setModelFailed(loopName, true)
+      logger.log(`Loop: marking model as failed, will fall back to default model (error ${nextErrorCount}/${MAX_RETRIES})`)
+      return { assistantErrorDetected: true, currentState: loopService.getActiveState(loopName)! }
+    }
 
     return { assistantErrorDetected: true, currentState }
   }
@@ -442,7 +521,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       logger.log(`Loop: audit complete but ${findings.length} review finding(s) remain, continuing`)
       return false
     }
-    // Hard gate: refuse completion if any bug-severity findings remain
     const bugFindings = loopService.getOutstandingFindings(currentState.loopName, 'bug')
     if (bugFindings.length > 0) {
       logger.log(`Loop: refused completion — ${bugFindings.length} bug finding(s) still open`)
@@ -600,45 +678,29 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (!freshState?.active || freshState.phase !== 'coding' || freshState.sessionId !== codeSessionId) return
 
       const currentConfig = getConfig()
-      const sendWithModel = async () => {
-        const fresh = loopService.getActiveState(loopName)
-        if (!fresh?.active || fresh.phase !== 'coding' || fresh.sessionId !== codeSessionId) throw new Error('loop_cancelled')
-        markPromptSent(loopName, codeSessionId, logger)
-        return v2Client.session.promptAsync({
-          sessionID: codeSessionId,
-          directory: fresh.worktreeDir,
-          ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
-          agent: 'code',
-          parts: [{ type: 'text' as const, text: recoveryPrompt }],
-          model: resolveLoopModel(currentConfig, loopService, loopName),
-        })
-      }
-      const sendWithoutModel = async () => {
-        const fresh = loopService.getActiveState(loopName)
-        if (!fresh?.active || fresh.phase !== 'coding' || fresh.sessionId !== codeSessionId) throw new Error('loop_cancelled')
-        markPromptSent(loopName, codeSessionId, logger)
-        return v2Client.session.promptAsync({
-          sessionID: codeSessionId,
-          directory: fresh.worktreeDir,
-          ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
-          agent: 'code',
-          parts: [{ type: 'text' as const, text: recoveryPrompt }],
-        })
-      }
-      const { result: promptResult } = await retryWithModelFallback(
-        sendWithModel,
-        sendWithoutModel,
-        resolveLoopModel(currentConfig, loopService, loopName),
-        logger,
-      )
-      if (promptResult.error) {
+      const { error: promptResultError } = await sendPromptWithFallback({
+        loopName,
+        sessionId: codeSessionId,
+        promptText: recoveryPrompt,
+        agent: 'code',
+        model: resolveLoopModel(currentConfig, loopService, loopName),
+      })
+      if (promptResultError) {
         clearPromptPending(loopName, logger)
-        logger.error(`Loop: failed to send recovery prompt for ${loopName}`, promptResult.error)
+        logger.error(`Loop: failed to send recovery prompt for ${loopName}`, promptResultError)
         const retryFn = async () => {
-          const retry = await sendWithoutModel()
-          if ('error' in retry && retry.error) throw retry.error
+          const fresh = loopService.getActiveState(loopName)
+          if (!fresh?.active || fresh.phase !== 'coding' || fresh.sessionId !== codeSessionId) throw new Error('loop_cancelled')
+          const result = await v2Client.session.promptAsync({
+            sessionID: codeSessionId,
+            directory: fresh.worktreeDir,
+            ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
+            agent: 'code',
+            parts: [{ type: 'text' as const, text: recoveryPrompt }],
+          })
+          if (result.error) throw result.error
         }
-        await handlePromptError(loopName, freshState ?? state, 'failed to recover code launch', promptResult.error, retryFn)
+        await handlePromptError(loopName, freshState ?? state, 'failed to recover code launch', promptResultError, retryFn)
       }
     } catch (err) {
       logger.error(`Loop: failed to recover code launch for ${loopName}`, err)
@@ -778,7 +840,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   async function terminateLoop(loopName: string, state: LoopState, reason: TerminationReason): Promise<void> {
     const sessionId = state.sessionId
-    const projectDir = state.projectDir ?? state.worktreeDir
     watchdog.stop(loopName)
 
     const retryTimeout = retryTimeouts.get(loopName)
@@ -825,104 +886,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     logger.debug(`Loop: terminateLoop reason=${terminationReasonToString(reason)} worktree=${!!state.worktree} logEligible=${reason.kind === 'completed' && !!state.worktree}`)
 
-    if (reason.kind === 'completed' && state.worktree) {
-      const completionTimestamp = new Date()
-      const planText = loopService.getPlanText(state.loopName, state.sessionId)
-
-      const completionResult = buildWorktreeCompletionPayload(
-        getConfig(),
-        {
-          projectDir,
-          loopName: state.loopName,
-          completionTimestamp,
-          iteration: state.iteration,
-          worktreeBranch: state.worktreeBranch,
-          dataDir,
-        },
-        logger,
-      )
-
-      if (completionResult) {
-        completionResult.payload.planText = planText
-        const written = writeWorktreeCompletionLog(completionResult.payload, logger)
-        if (written) {
-          logger.log(`Loop: worktree completion log written to ${completionResult.hostPath}`)
-        } else {
-          logger.error(`Loop: failed to write worktree completion log to ${completionResult.hostPath}`)
-        }
-      } else {
-        logger.log(`Loop: worktree completion logging skipped (payload build failed or disabled)`)
-      }
-    }
-
-    if (v2Client.tui) {
-      const toastVariant = reason.kind === 'completed' ? 'success'
-        : reason.kind === 'cancelled' || reason.kind === 'user_aborted' ? 'info'
-        : reason.kind === 'max_iterations' ? 'warning'
-        : reason.kind === 'stall_timeout' ? 'error'
-        : 'error'
-
-      const toastMessage = reason.kind === 'completed' ? `Completed after ${state.iteration} iteration${state.iteration !== 1 ? 's' : ''}`
-        : reason.kind === 'cancelled' ? 'Loop cancelled'
-        : reason.kind === 'max_iterations' ? `Reached max iterations (${state.maxIterations})`
-        : reason.kind === 'stall_timeout' ? `Stalled after ${state.iteration} iteration${state.iteration !== 1 ? 's' : ''}`
-        : reason.kind === 'user_aborted' ? 'Loop aborted by user'
-        : `Loop ended: ${terminationReasonToString(reason)}`
-
-      v2Client.tui.publish({
-        directory: state.projectDir ?? state.worktreeDir,
-        body: {
-          type: 'tui.toast.show',
-          properties: {
-            title: state.loopName,
-            message: toastMessage,
-            variant: toastVariant,
-            duration: reason.kind === 'completed' ? 5000 : 3000,
-          },
-        },
-      }).catch((err: unknown) => {
-        logger.error('Loop: failed to publish toast notification', err)
-      })
-    }
-
-    if (state.worktree) {
-      const reasonLabel =
-        reason.kind === 'completed' ? 'completed'
-        : reason.kind === 'cancelled' ? 'cancelled'
-        : reason.kind === 'stall_timeout' ? 'stalled'
-        : reason.kind === 'error_max_retries' || reason.kind === 'decomposer_error' || reason.kind === 'worktree_failed' ? 'errored'
-        : reason.kind
-
-      const doCommit = reason.kind !== 'missing_worktree_dir'
-      const doRemoveWorktree = reason.kind !== 'missing_worktree_dir'
-
-      const teardown = await teardownWorktreeArtifacts({
-        v2: v2Client,
-        loopName: state.loopName,
-        sessionId,
-        workspaceId: state.workspaceId,
-        worktreeDir: state.worktreeDir,
-        projectDir: state.projectDir,
-        worktree: true,
-        doCommit,
-        doRemoveWorktree,
-        reasonLabel,
-        worktreeBranch: state.worktreeBranch,
-        iteration: state.iteration,
-        logPrefix: 'Loop',
-        logger,
-      })
-
-      logger.log(`Loop: teardown for ${state.loopName} sessionDeleted=${teardown.sessionDeleted} workspaceDeleted=${teardown.workspaceDeleted} worktreeRemoved=${teardown.worktreeRemoved}`)
-    }
-
-    if (state.sandbox && state.sandboxContainer && sandboxManager) {
-      try {
-        await sandboxManager.stop(state.loopName!)
-        logger.log(`Loop: stopped sandbox container for ${state.loopName}`)
-      } catch (err) {
-        logger.error(`Loop: failed to stop sandbox container`, err)
-      }
+    // Delegate host-specific side-effects to the provided callback.
+    // This keeps worktree teardown, completion log, sandbox stop, TUI toast outside the core module.
+    if (onTerminated) {
+      await onTerminated(state, reason)
     }
   }
 
@@ -1188,7 +1155,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const auditPrompt = loopService.buildAuditPrompt(currentState)
     const codeSessionId = currentState.sessionId
 
-    // Create audit session with retry
     async function createAuditWithRetry(input: {
       loopName: string
       iteration: number
@@ -1408,7 +1374,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             const nextIter = (currentState.iteration ?? 0) + 1
             if ((currentState.maxIterations ?? 0) > 0 && nextIter > currentState.maxIterations) {
               logger.log(`Loop: max iterations reached (${nextIter}/${currentState.maxIterations}), terminating`)
-        await terminateLoop(loopName, currentState, { kind: 'max_iterations' })
+              await terminateLoop(loopName, currentState, { kind: 'max_iterations' })
               return
             }
             logger.log(`Loop: advancing from section ${idx} to section ${nextIdx}`)
@@ -2024,7 +1990,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (!loopName) return false
     const state = loopService.getActiveState(loopName)
     if (!state?.active) return false
-    await terminateLoop(loopName, state, { kind: 'cancelled' })
+    await terminateLoop(loopName, state, { kind: 'user_aborted' })
     return true
   }
 
@@ -2090,15 +2056,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   async function cancel(name: string): Promise<void> {
-    await terminateLoopByName(name, { kind: 'cancelled' })
+    await terminateLoopByName(name, { kind: 'user_aborted' })
   }
 
   async function terminate(name: string, reason: TerminationReason): Promise<boolean> {
     return await terminateLoopByName(name, reason)
   }
 
-  function recordActivity(name: string): void {
-    watchdog.recordActivity(name)
+  function recordActivity(name: string, source?: string): void {
+    watchdog.recordActivity(name, source)
   }
 
   function startWatchdog(name: string): void {
@@ -2109,8 +2075,47 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return watchdog.getStallInfo(name)
   }
 
+  function generateUniqueLoopName(baseName: string): string {
+    const existing = listActive()
+      .map(s => s.loopName)
+    const recent = listRecent()
+      .map(s => s.loopName)
+    return generateUniqueName(baseName, [...existing, ...recent])
+  }
+
+  function start(input: StartLoopInput): void {
+    const { state } = input
+
+    const allNames = [...listActive(), ...listRecent()].map(s => s.loopName)
+    if (allNames.includes(state.loopName)) {
+      state.loopName = generateUniqueName(state.loopName, allNames)
+      logger.log(`Loop: auto-renamed to ${state.loopName} because requested name already exists`)
+    }
+
+    // Derive the initial phase from decomposition settings so that
+    // agent-decomposer loops enter 'decomposing' without requiring an external setPhase call.
+    if (state.decompositionMode === 'agent' && (state.decompositionStatus === 'pending' || state.decompositionStatus === 'running')) {
+      state.phase = 'decomposing'
+    }
+
+    loopService.setState(state.loopName, state)
+    loopService.registerLoopSession(state.sessionId, state.loopName)
+    logger.log(`Loop: started loop=${state.loopName} session=${state.sessionId}`)
+  }
+
+  function restart(name: string, params: { newState: LoopState; newSessionId: string }): void {
+    loopService.deleteState(name)
+    loopService.setState(name, params.newState)
+    loopService.registerLoopSession(params.newSessionId, name)
+  }
+
+  function setPhase(name: string, phase: LoopState['phase']): void {
+    loopService.setPhase(name, phase)
+  }
+
   return {
     tick,
+    start,
     cancel,
     inspect,
     listActive,
@@ -2126,5 +2131,58 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     recordActivity,
     startWatchdog,
     getStallInfo,
+    restart,
+    generateUniqueLoopName,
+    setPhase,
+
+    // State management methods (delegated from loopService)
+    resolveLoopName: (sessionId: string) => loopService.resolveLoopName(sessionId),
+    getActiveState: (name: string) => loopService.getActiveState(name),
+    getAnyState: (name: string) => loopService.getAnyState(name),
+    setState: (name: string, state: LoopState) => loopService.setState(name, state),
+    deleteState: (name: string) => loopService.deleteState(name),
+    registerLoopSession: (sessionId: string, loopName: string) => loopService.registerLoopSession(sessionId, loopName),
+    replaceSession: (name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }) => loopService.replaceSession(name, opts),
+    setStatus: (name: string, status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled') => loopService.setStatus(name, status),
+    setPhaseAndResetError: (name: string, phase: LoopState['phase']) => loopService.setPhaseAndResetError(name, phase),
+    setModelFailed: (name: string, failed: boolean) => loopService.setModelFailed(name, failed),
+    setLastAuditResult: (name: string, text: string) => loopService.setLastAuditResult(name, text),
+    clearLastAuditResult: (name: string) => loopService.clearLastAuditResult(name),
+    setSandboxContainer: (name: string, containerName: string | null) => loopService.setSandboxContainer(name, containerName),
+    clearWorkspaceId: (name: string) => loopService.clearWorkspaceId(name),
+    setWorkspaceId: (name: string, workspaceId: string) => loopService.setWorkspaceId(name, workspaceId),
+    incrementError: (name: string) => loopService.incrementError(name),
+    resetError: (name: string) => loopService.resetError(name),
+    terminateLoop: (name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }) => loopService.terminate(name, opts),
+    getOutstandingFindings: (loopName?: string, severity?: 'bug' | 'warning') => loopService.getOutstandingFindings(loopName, severity),
+    reconcileStale: (opts?: { isSandboxLive?: (loopName: string) => Promise<boolean> }) => loopService.reconcileStale(opts),
+    getStallTimeoutMs: () => loopService.getStallTimeoutMs(),
+    getMaxConsecutiveStalls: () => loopService.getMaxConsecutiveStalls(),
+
+    // Prompt building methods (delegated from loopService)
+    buildContinuationPrompt: (state: LoopState, auditFindings?: string) => loopService.buildContinuationPrompt(state, auditFindings),
+    buildAuditPrompt: (state: LoopState) => loopService.buildAuditPrompt(state),
+    buildDecomposerInitialPrompt: (state: LoopState) => loopService.buildDecomposerInitialPrompt(state),
+    buildSectionInitialPrompt: (state: LoopState) => loopService.buildSectionInitialPrompt(state),
+    buildSectionAuditPrompt: (state: LoopState) => loopService.buildSectionAuditPrompt(state),
+    buildSectionContinuationPrompt: (state: LoopState, auditText: string) => loopService.buildSectionContinuationPrompt(state, auditText),
+    buildFinalAuditPrompt: (state: LoopState) => loopService.buildFinalAuditPrompt(state),
+
+    // Plan and section methods (delegated from loopService)
+    getPlanText: (loopName: string, sessionId: string) => loopService.getPlanText(loopName, sessionId),
+    getSectionPlan: (state: LoopState, index: number) => loopService.getSectionPlan(state, index),
+    getNextIncompleteSectionPlan: (state: LoopState) => loopService.getNextIncompleteSectionPlan(state),
+    getCompletedSectionDigest: (state: LoopState) => loopService.getCompletedSectionDigest(state),
+    parseSectionSummary: (text: string) => loopService.parseSectionSummary(text),
+    completeSection: (loopName: string, index: number, summary: { done: string | null; deviations: string | null; followUps: string | null }) => loopService.completeSection(loopName, index, summary),
+    incrementSectionAttempts: (loopName: string, index: number) => loopService.incrementSectionAttempts(loopName, index),
+    resetSectionForRewind: (loopName: string, index: number) => loopService.resetSectionForRewind(loopName, index),
+    setCurrentSectionIndex: (loopName: string, index: number) => loopService.setCurrentSectionIndex(loopName, index),
+    setFinalAuditDone: (loopName: string, done: boolean) => loopService.setFinalAuditDone(loopName, done),
+    startSection: (loopName: string, index: number) => loopService.startSection(loopName, index),
+    setDecompositionStatus: (loopName: string, status: LoopState['decompositionStatus']) => loopService.setDecompositionStatus(loopName, status),
+    setDecompositionSessionId: (loopName: string, sessionId: string | null) => loopService.setDecompositionSessionId(loopName, sessionId),
+    bulkInsertSections: (loopName: string, sections: { index: number; title: string; content: string }[]) => loopService.bulkInsertSections(loopName, sections),
+    setTotalSections: (loopName: string, total: number) => loopService.setTotalSections(loopName, total),
   }
 }

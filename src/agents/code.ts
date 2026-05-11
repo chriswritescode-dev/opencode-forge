@@ -24,7 +24,7 @@ Mark todos as completed as soon as each task is done — do not batch completion
 const FOOTER = `## General guidelines
 - When doing file search or exploring the codebase, prefer the Task tool to reduce context usage.
 - Proactively use the Task tool with specialized agents — use explore agents for codebase search, and the auditor for code review.
-- For implementation work with multiple TodoWrite tasks, use the Task tool to delegate focused implementation tasks to \`code\` subagents in fixed batches of two: launch tasks 1 and 2 in parallel, wait for both to finish, reconcile their changes, then launch tasks 3 and 4, and continue until all todo tasks are complete.
+- For implementation work with multiple TodoWrite tasks 
 - Each \`code\` subagent must receive exactly one focused todo task with clear file targets, expected changes, validation commands, and expected output. Do not launch more than two code subagents at the same time.
 - After each subagent returns, inspect and reconcile its changes before marking the todo complete. Resolve conflicts, duplicate abstractions, incomplete validation, or deviations from the requested task before launching the next batch.
 - Each subagent should report: files changed, behavior implemented, validation run, results, and any blockers or deviations.

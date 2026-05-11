@@ -22,8 +22,8 @@ describe('terminationStatusFor', () => {
     expect(terminationStatusFor({ kind: 'shutdown' })).toBe('cancelled')
   })
 
-  it('maps max_iterations to stalled', () => {
-    expect(terminationStatusFor({ kind: 'max_iterations' })).toBe('stalled')
+  it('maps max_iterations to errored', () => {
+    expect(terminationStatusFor({ kind: 'max_iterations' })).toBe('errored')
   })
 
   it('maps stall_timeout to stalled', () => {

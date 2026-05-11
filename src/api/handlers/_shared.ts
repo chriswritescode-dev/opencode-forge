@@ -14,8 +14,8 @@ export function buildService(deps: ApiDeps, projectId: string) {
     legacyClient: ctx.input?.client,
     plansRepo: ctx.plansRepo,
     loopsRepo: ctx.loopsRepo,
-    loopService: ctx.loopService,
     loopHandler: ctx.loopHandler,
+    loop: ctx.loop,
     sandboxManager: ctx.sandboxManager,
     sectionPlansRepo: ctx.sectionPlansRepo,
   })

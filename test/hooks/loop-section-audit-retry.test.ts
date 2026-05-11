@@ -7,7 +7,8 @@ import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
-import { createLoopService, type LoopState, MAX_RETRIES } from '../../src/services/loop'
+import { createLoopService, MAX_RETRIES } from '../../src/loop/service'
+import type { LoopState } from '../../src/loop/state'
 import { createLoopEventHandler } from '../../src/hooks/loop'
 import type { Logger, PluginConfig } from '../../src/types'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
@@ -22,6 +23,9 @@ const PROJECT_ID = 'test-project'
 
 describe('Loop Section Audit Retry', () => {
   let db: Database
+  let loopsRepo: ReturnType<typeof createLoopsRepo>
+  let plansRepo: ReturnType<typeof createPlansRepo>
+  let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
   let loopService: ReturnType<typeof createLoopService>
   let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
   let tempDir: string
@@ -128,9 +132,9 @@ describe('Loop Section Audit Retry', () => {
       )
     `)
 
-    const loopsRepo = createLoopsRepo(db)
-    const plansRepo = createPlansRepo(db)
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    loopsRepo = createLoopsRepo(db)
+    plansRepo = createPlansRepo(db)
+    reviewFindingsRepo = createReviewFindingsRepo(db)
     sectionPlansRepo = createSectionPlansRepo(db)
 
     loopService = createLoopService(
@@ -297,7 +301,7 @@ describe('Loop Section Audit Retry', () => {
 
       const getConfig = () => mockConfig as PluginConfig
 
-      const handler = createLoopEventHandler(loopService, pluginClient as any, v2Client as any, logger, getConfig)
+      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, pluginClient as any, v2Client as any, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
 
       await handler.onEvent({
         event: {
@@ -358,7 +362,7 @@ describe('Loop Section Audit Retry', () => {
 
       const getConfig = () => mockConfig as PluginConfig
 
-      const handler = createLoopEventHandler(loopService, pluginClient as any, v2Client as any, logger, getConfig)
+      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, pluginClient as any, v2Client as any, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
 
       await handler.onEvent({
         event: {
@@ -424,7 +428,7 @@ describe('Loop Section Audit Retry', () => {
 
       const getConfig = () => mockConfig as PluginConfig
 
-      const handler = createLoopEventHandler(loopService, pluginClient as any, v2Client as any, logger, getConfig)
+      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, pluginClient as any, v2Client as any, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
 
       await handler.onEvent({
         event: {
@@ -491,7 +495,7 @@ describe('Loop Section Audit Retry', () => {
 
       const getConfig = () => mockConfig as PluginConfig
 
-      const handler = createLoopEventHandler(loopService, pluginClient as any, v2Client as any, logger, getConfig)
+      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, pluginClient as any, v2Client as any, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
 
       await handler.onEvent({
         event: {

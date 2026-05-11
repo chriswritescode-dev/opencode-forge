@@ -26,7 +26,6 @@ export function terminationStatusFor(reason: TerminationReason): TerminationStat
     case 'user_aborted':
     case 'shutdown':
       return 'cancelled'
-    case 'max_iterations':
     case 'stall_timeout':
       return 'stalled'
     default:

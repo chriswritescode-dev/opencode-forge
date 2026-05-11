@@ -10,7 +10,8 @@ class MockForgeRpcError extends Error {
   }
 }
 
-import { createLoopService, generateUniqueName } from '../src/services/loop'
+import { createLoopService } from '../src/loop/service'
+import { generateUniqueName } from '../src/loop/name-uniqueness'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'

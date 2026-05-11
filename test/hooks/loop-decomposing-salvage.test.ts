@@ -9,7 +9,8 @@ import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
-import { createLoopService, type LoopState, MAX_RETRIES } from '../../src/services/loop'
+import { createLoopService, MAX_RETRIES } from '../../src/loop/service'
+import type { LoopState } from '../../src/loop/state'
 import { createLoopEventHandler } from '../../src/hooks/loop'
 import type { Logger, PluginConfig } from '../../src/types'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
@@ -363,6 +364,10 @@ describe('Transcript Salvage', () => {
     let db: Database
     let loopService: ReturnType<typeof createLoopService>
     let tempDir: string
+    let loopsRepo: ReturnType<typeof createLoopsRepo>
+    let plansRepo: ReturnType<typeof createPlansRepo>
+    let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
+    let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
 
     beforeEach(() => {
       tempDir = mkdtempSync(join(tmpdir(), 'salvage-transition-test-'))
@@ -466,10 +471,10 @@ describe('Transcript Salvage', () => {
         )
       `)
 
-      const loopsRepo = createLoopsRepo(db)
-      const plansRepo = createPlansRepo(db)
-      const reviewFindingsRepo = createReviewFindingsRepo(db)
-      const sectionPlansRepo = createSectionPlansRepo(db)
+      loopsRepo = createLoopsRepo(db)
+      plansRepo = createPlansRepo(db)
+      reviewFindingsRepo = createReviewFindingsRepo(db)
+      sectionPlansRepo = createSectionPlansRepo(db)
 
       loopService = createLoopService(
         loopsRepo,
@@ -624,7 +629,7 @@ describe('Transcript Salvage', () => {
       const { logger } = createCapturingLogger()
       const getConfig = () => mockConfig as PluginConfig
 
-      const handler = createLoopEventHandler(loopService, {} as any, v2Client, logger, getConfig)
+      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, {} as any, v2Client, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
 
       await handler.onEvent({
         event: {
@@ -714,7 +719,7 @@ describe('Transcript Salvage', () => {
       const { logger } = createCapturingLogger()
       const getConfig = () => mockConfig as PluginConfig
 
-      const handler = createLoopEventHandler(loopService, {} as any, v2Client, logger, getConfig)
+      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, {} as any, v2Client, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
 
       await handler.onEvent({
         event: {
@@ -794,7 +799,7 @@ describe('Transcript Salvage', () => {
       const { logger } = createCapturingLogger()
       const getConfig = () => mockConfig as PluginConfig
 
-      const handler = createLoopEventHandler(loopService, {} as any, v2Client, logger, getConfig)
+      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, {} as any, v2Client, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
 
       await handler.onEvent({
         event: {
@@ -868,7 +873,7 @@ describe('Transcript Salvage', () => {
       const { logger } = createCapturingLogger()
       const getConfig = () => mockConfig as PluginConfig
 
-      const handler = createLoopEventHandler(loopService, {} as any, v2Client, logger, getConfig)
+      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, {} as any, v2Client, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
 
       await handler.onEvent({
         event: {

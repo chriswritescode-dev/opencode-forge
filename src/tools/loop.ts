@@ -3,7 +3,7 @@ import type { ToolContext } from './types'
 
 import { slugify } from '../utils/logger'
 import { formatSessionOutput, formatAuditResult } from '../utils/loop-format'
-import { fetchSessionOutput, MAX_RETRIES, type LoopSessionOutput } from '../services/loop'
+import { fetchSessionOutput, type LoopSessionOutput, MAX_RETRIES } from '../loop'
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
 import { captureLatestPlanForSession } from '../services/plan-capture'
@@ -12,7 +12,7 @@ import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session
 const z = tool.schema
 
 export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
-  const { v2, loopService, loopHandler, config, logger } = ctx
+  const { v2, loopHandler, config, logger } = ctx
 
   function makeService(sourceSessionId?: string) {
     const execCtx: ForgeExecutionRequestContext = {
@@ -31,8 +31,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
       legacyClient: ctx.input?.client,
       plansRepo: ctx.plansRepo,
       loopsRepo: ctx.loopsRepo,
-      loopService: ctx.loopService,
       loopHandler: ctx.loopHandler,
+      loop: ctx.loop,
       sandboxManager: ctx.sandboxManager,
       sectionPlansRepo: ctx.sectionPlansRepo,
     })
@@ -171,7 +171,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         force: z.boolean().optional().default(false).describe('Force restart an active/stuck loop'),
       },
       execute: async (args) => {
-        const active = loopService.listActive()
+        const active = ctx.loop.listActive()
 
         if (args.restart) {
           if (!args.name) {
@@ -203,7 +203,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         }
 
         if (!args.name) {
-          const recent = loopService.listRecent()
+          const recent = ctx.loop.listRecent()
 
           if (active.length === 0) {
             if (recent.length === 0) return 'No loops found.'
@@ -268,7 +268,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           return lines.join('\n')
         }
 
-        const { match: state, candidates } = loopService.findMatchByName(args.name)
+        const { match: state, candidates } = ctx.loop.findMatchByName(args.name)
         if (!state) {
           if (candidates.length > 0) {
             return `Multiple loops match "${args.name}":\n${candidates.map((s) => `- ${s.loopName}`).join('\n')}\n\nBe more specific.`

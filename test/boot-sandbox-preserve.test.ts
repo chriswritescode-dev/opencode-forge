@@ -1,5 +1,5 @@
 import { describe, it, expect, mock } from 'bun:test'
-import { createLoopService } from '../src/services/loop'
+import { createLoopService } from '../src/loop/service'
 import type { LoopsRepo, LoopRow } from '../src/storage/repos/loops-repo'
 import type { PlansRepo } from '../src/storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'

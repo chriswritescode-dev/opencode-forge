@@ -20,14 +20,12 @@ import { savePlanToArchive, listArchivedPlans, readArchivedPlan, resolvePlanArch
 
 type TuiKeybinds = {
   viewPlan: string
-  executePlan: string
   showLoops: string
   loadPlan: string
 }
 
 const DEFAULT_KEYBINDS: TuiKeybinds = {
   viewPlan: '<leader>v',
-  executePlan: '<leader>e',
   showLoops: '<leader>w',
   loadPlan: '<leader>i',
 }
@@ -943,6 +941,8 @@ const tui: TuiPlugin = async (api) => {
     void startClientConnection()
   })
 
+  if (!api.command) return
+
   api.command.register(() => {
     return [
       {
@@ -1002,19 +1002,25 @@ const tui: TuiPlugin = async (api) => {
     ]
   })
 
-  api.command.register(() => {
+  function resolveSessionID(): string | null {
     const route = api.route.current
-    if (route.name !== 'session') return []
+    if (route.name !== 'session') return null
+    return (route as { params: { sessionID: string } }).params.sessionID
+  }
 
-    const sessionID = (route as { params: { sessionID: string } }).params.sessionID
-
-    return [{
+  api.command.register(() => [
+    {
       title: 'Forge: View plan',
       value: 'forge.plan.view',
       description: 'View cached plan for this session',
       category: 'Forge',
       keybind: opts.keybinds.viewPlan,
       onSelect: async () => {
+        const sessionID = resolveSessionID()
+        if (!sessionID) {
+          api.ui.toast({ message: 'Open a session to view its plan', variant: 'info', duration: 3000 })
+          return
+        }
         const currentClient = await ensureClient()
         if (!currentClient) return
 
@@ -1033,42 +1039,11 @@ const tui: TuiPlugin = async (api) => {
             pluginConfig={pluginConfig}
             planContent={freshPlan}
             sessionId={sessionID}
-            // onRefresh omitted - sidebar refreshes via loops.changed events
           />
         ))
       },
-    }, {
-      title: 'Forge: Execute plan',
-      value: 'forge.plan.execute',
-      description: 'Execute cached plan',
-      category: 'Forge',
-      keybind: opts.keybinds.executePlan,
-      onSelect: async () => {
-        const currentClient = await ensureClient()
-        if (!currentClient) return
-
-        const freshPlan = await currentClient.plan.read(sessionID)
-        if (!freshPlan) {
-          api.ui.toast({ message: 'No plan found for this session', variant: 'info', duration: 3000 })
-          return
-        }
-        const cache = executionContextCache()
-        api.ui.dialog.setSize("xlarge")
-        api.ui.dialog.replace(() => (
-          <PlanViewerDialog
-            api={api}
-            client={currentClient}
-            cache={cache}
-            pluginConfig={pluginConfig}
-            planContent={freshPlan}
-            sessionId={sessionID}
-            // onRefresh omitted - sidebar refreshes via loops.changed events
-            startInExecuteMode={true}
-          />
-        ))
-      },
-    }]
-  })
+    },
+  ])
 
   api.command.register(() => {
     return [{

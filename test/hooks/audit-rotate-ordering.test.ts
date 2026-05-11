@@ -5,9 +5,9 @@ import { tmpdir } from 'os'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
-import { createLoopService } from '../../src/services/loop'
+import { createLoopService } from '../../src/loop/service'
 import type { Logger } from '../../src/types'
-import type { LoopState } from '../../src/services/loop'
+import type { LoopState } from '../../src/loop/state'
 
 interface Database {
   run: (sql: string) => void
@@ -357,8 +357,10 @@ function createMockClient(): MockClient {
 
 describe('audit→code rotation ordering', () => {
   let db: Database
-  let loopService: ReturnType<typeof createLoopService>
+  let loopsRepo: ReturnType<typeof createLoopsRepo>
+  let plansRepo: ReturnType<typeof createPlansRepo>
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
+  let loopService: ReturnType<typeof createLoopService>
   let tempDir: string
   let mockV2: MockV2Client
   let mockClient: MockClient
@@ -381,8 +383,8 @@ describe('audit→code rotation ordering', () => {
     plansStore.clear()
     findingsStore.clear()
 
-    const loopsRepo = createLoopsRepo(db as any)
-    const plansRepo = createPlansRepo(db as any)
+    loopsRepo = createLoopsRepo(db as any)
+    plansRepo = createPlansRepo(db as any)
     reviewFindingsRepo = createReviewFindingsRepo(db as any)
 
     loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger)
@@ -424,6 +426,12 @@ describe('audit→code rotation ordering', () => {
       executionModel: 'test/test-model',
       auditorModel: 'test/test-auditor',
       workspaceId: 'ws-1',
+      decompositionStatus: 'skipped',
+      decompositionMode: 'deterministic',
+      decompositionSessionId: null,
+      currentSectionIndex: 0,
+      totalSections: 1,
+      finalAuditDone: false,
     }
 
     loopService.setState(loopName, state)
@@ -449,13 +457,15 @@ describe('audit→code rotation ordering', () => {
 
     const { createLoopEventHandler } = await import('../../src/hooks/loop')
     const handler = createLoopEventHandler(
-      loopService,
+      loopsRepo,
+      plansRepo,
+      reviewFindingsRepo,
+      projectId,
       mockClient as any,
       successMockV2 as any,
       mockLogger,
       () => ({ loop: { model: 'test/test-model' } }),
       undefined,
-      projectId,
       tempDir,
     )
 
@@ -514,6 +524,12 @@ describe('audit→code rotation ordering', () => {
       executionModel: 'test/test-model',
       auditorModel: 'test/test-auditor',
       workspaceId: 'ws-1',
+      decompositionStatus: 'skipped',
+      decompositionMode: 'deterministic',
+      decompositionSessionId: null,
+      currentSectionIndex: 0,
+      totalSections: 1,
+      finalAuditDone: false,
     }
 
     loopService.setState(loopName, state)
@@ -525,13 +541,15 @@ describe('audit→code rotation ordering', () => {
 
     const { createLoopEventHandler } = await import('../../src/hooks/loop')
     const handler = createLoopEventHandler(
-      loopService,
+      loopsRepo,
+      plansRepo,
+      reviewFindingsRepo,
+      projectId,
       mockClient as any,
       failureMockV2 as any,
       mockLogger,
       () => ({ loop: { model: 'test/test-model' } }),
       undefined,
-      projectId,
       tempDir,
     )
 

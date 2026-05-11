@@ -7,7 +7,7 @@ import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
-import { createLoopService } from '../../src/services/loop'
+import { createLoopService } from '../../src/loop/service'
 import { createSectionReadTool } from '../../src/tools/section-read'
 import type { Logger } from '../../src/types'
 

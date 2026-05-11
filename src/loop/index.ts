@@ -1,5 +1,3 @@
-import type { LoopState } from './state'
-
 export type { LoopState } from './state'
 export type { CodingState, AuditingState, DecomposingState, FinalAuditingState } from './state'
 export type { Phase } from './state'
@@ -45,18 +43,18 @@ export {
   isAwaitingBusyExpired,
 } from './idle-gate'
 
-export interface LoopEvent {
-  type: string
-  properties?: Record<string, unknown>
-}
+export { createLoop, isWorkspaceNotFoundError } from './runtime'
+export type { Loop, LoopEvent, LoopRuntimeDeps, OnTerminatedCallback, StartLoopInput } from './runtime'
 
-export interface Loop {
-  tick(event: LoopEvent): Promise<void>
-  cancel(name: string): Promise<void>
-  inspect(name: string): LoopState | null
-  listActive(): LoopState[]
-  listRecent(): LoopState[]
-  findMatchByName(name: string): { match: LoopState | null; candidates: LoopState[] }
-  hasOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): boolean
-  terminateAll(): Promise<void>
-}
+export {
+  rowToLoopState,
+  MAX_RETRIES,
+} from './service'
+export type { LoopService, LoopChangeReason, LoopChangeNotifier } from './service'
+
+export { generateUniqueName } from './name-uniqueness'
+
+export { sweepOrphanWorkspaces } from './orphan-sweep'
+
+export { fetchSessionOutput } from './session-output'
+export type { LoopSessionOutput } from './session-output'

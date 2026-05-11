@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test'
 import { createLoopWatchdog } from '../src/hooks/watchdog'
-import type { LoopState } from '../src/services/loop'
+import type { LoopState } from '../src/loop/state'
 
 function createState(overrides?: Partial<LoopState>): LoopState {
   return {

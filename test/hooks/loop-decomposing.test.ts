@@ -7,7 +7,8 @@ import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
-import { createLoopService, type LoopState, MAX_RETRIES } from '../../src/services/loop'
+import { createLoopService, MAX_RETRIES } from '../../src/loop/service'
+import type { LoopState } from '../../src/loop/state'
 import { createLoopEventHandler } from '../../src/hooks/loop'
 import { sessionsAwaitingBusy } from '../../src/loop/idle-gate'
 import type { Logger, PluginConfig } from '../../src/types'
@@ -74,6 +75,9 @@ describe('Loop Decomposing Phase Handler', () => {
   let db: Database
   let loopService: ReturnType<typeof createLoopService>
   let tempDir: string
+  let loopsRepo: ReturnType<typeof createLoopsRepo>
+  let plansRepo: ReturnType<typeof createPlansRepo>
+  let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
   const projectId = 'test-project'
 
   beforeEach(() => {
@@ -179,9 +183,9 @@ describe('Loop Decomposing Phase Handler', () => {
       )
     `)
 
-    const loopsRepo = createLoopsRepo(db)
-    const plansRepo = createPlansRepo(db)
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    loopsRepo = createLoopsRepo(db)
+    plansRepo = createPlansRepo(db)
+    reviewFindingsRepo = createReviewFindingsRepo(db)
     const sectionPlansRepo = createSectionPlansRepo(db)
 
     loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, { log: () => {}, error: () => {}, debug: () => {} }, undefined, undefined, undefined, sectionPlansRepo)
@@ -567,13 +571,15 @@ describe('Loop Decomposing Phase Handler', () => {
       const { logger } = createCapturingLogger()
 
       const handler = createLoopEventHandler(
-        loopService,
+        loopsRepo,
+        plansRepo,
+        reviewFindingsRepo,
+        projectId,
         { client: {} as any },
         v2Client,
         logger,
         () => mockConfig,
         undefined,
-        projectId,
         tempDir,
       )
 
@@ -592,13 +598,15 @@ describe('Loop Decomposing Phase Handler', () => {
       const { logger } = createCapturingLogger()
 
       const handler = createLoopEventHandler(
-        loopService,
+        loopsRepo,
+        plansRepo,
+        reviewFindingsRepo,
+        projectId,
         { client: {} as any },
         v2Client,
         logger,
         () => mockConfig,
         undefined,
-        projectId,
         tempDir,
       )
 
@@ -618,13 +626,15 @@ describe('Loop Decomposing Phase Handler', () => {
       const { logger } = createCapturingLogger()
 
       const handler = createLoopEventHandler(
-        loopService,
+        loopsRepo,
+        plansRepo,
+        reviewFindingsRepo,
+        projectId,
         { client: {} as any },
         v2Client,
         logger,
         () => mockConfig,
         undefined,
-        projectId,
         tempDir,
       )
 
@@ -644,13 +654,15 @@ describe('Loop Decomposing Phase Handler', () => {
       const { logger } = createCapturingLogger()
 
       const handler = createLoopEventHandler(
-        loopService,
+        loopsRepo,
+        plansRepo,
+        reviewFindingsRepo,
+        projectId,
         { client: {} as any },
         v2Client,
         logger,
         () => mockConfig,
         undefined,
-        projectId,
         tempDir,
       )
 
@@ -659,7 +671,7 @@ describe('Loop Decomposing Phase Handler', () => {
 
       const after = loopService.getAnyState(state.loopName)
       expect(after!.active).toBe(false)
-      expect(after!.terminationReason).toBe('cancelled')
+      expect(after!.terminationReason).toBe('user_aborted')
     })
   })
 
@@ -802,13 +814,15 @@ describe('Loop Decomposing Phase Handler', () => {
       const { logger } = createCapturingLogger()
 
       const handler = createLoopEventHandler(
-        loopService,
+        loopsRepo,
+        plansRepo,
+        reviewFindingsRepo,
+        projectId,
         { client: {} as any },
         v2Client,
         logger,
         () => mockConfig,
         undefined,
-        projectId,
         tempDir,
       )
 
@@ -897,13 +911,15 @@ describe('Loop Decomposing Phase Handler', () => {
       const { logger } = createCapturingLogger()
 
       const handler = createLoopEventHandler(
-        loopService,
+        loopsRepo,
+        plansRepo,
+        reviewFindingsRepo,
+        projectId,
         { client: {} as any },
         v2Client,
         logger,
         () => mockConfig,
         undefined,
-        projectId,
         tempDir,
       )
 

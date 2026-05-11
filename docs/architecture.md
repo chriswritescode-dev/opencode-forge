@@ -46,9 +46,33 @@ The loop system provides autonomous iterative development with automatic auditin
 
 ### Components
 
-- **LoopService** (`services/loop.ts`) - State management for loops
-- **LoopEventHandler** (`hooks/loop.ts`) - Event handling and session rotation
-- **ReviewStore** (`tools/review.ts`) - Persistent audit findings
+- **Loop Runtime** (`src/loop/runtime.ts`) - Factory for creating Loop instances with phase handlers
+- **Loop Service** (`src/loop/service.ts`) - State management for loops (DB-backed)
+- **Transition Table** (`src/loop/transitions.ts`) - Pure state machine for loop phases
+- **Termination** (`src/loop/termination.ts`) - Termination reason mapping and status checks
+- **Prompts** (`src/loop/prompts.ts`) - Prompt builders for each loop phase
+- **Idle Gate** (`src/loop/idle-gate.ts`) - Session busy detection and timeout tracking
+- **LoopEventHandler** (`src/hooks/loop.ts`) - Event handling, session rotation, watchdog integration
+
+### Module Layout
+
+```
+src/loop/
+├── index.ts          # Public API barrel (all re-exports)
+├── runtime.ts        # createLoop() factory, Loop interface (~2100 lines)
+├── service.ts        # DB-backed LoopService (createLoopService, rowToLoopState)
+├── state.ts          # Discriminated union LoopState (4 phases), converters
+├── transitions.ts    # Pure nextTransition() table
+├── termination.ts    # TerminationReason union, terminationStatusFor()
+├── prompts.ts        # build*Prompt() builders
+├── section-summary.ts # parseSectionSummary() for audit output
+├── idle-gate.ts      # sessionsAwaitingBusy map, timeout tracking
+├── name-uniqueness.ts # generateUniqueName() for unique loop names
+├── orphan-sweep.ts   # sweepOrphanWorkspaces()
+└── session-output.ts # fetchSessionOutput(), LoopSessionOutput type
+```
+
+All external consumers import through the barrel `src/loop/index.ts`.
 
 ### Loop Lifecycle
 
@@ -60,17 +84,6 @@ The loop system provides autonomous iterative development with automatic auditin
 6. Repeat until max iterations reached, error threshold exceeded, review findings block, or loop cancelled
 
 See [loop-system.md](loop-system.md) for detailed documentation.
-
-### State Management
-
-Loop state is stored in the KV store with keys:
-- `loop:{name}` - Loop state object
-- `loop-session:{sessionId}` - Session to loop name mapping
-- `review-finding:{id}` - Audit findings scoped to branch
-
-### Session Rotation
-
-Each iteration runs in a fresh session to keep context small. The original task prompt and audit findings are re-injected into the new session as a continuation prompt.
 
 ## Sandbox System
 

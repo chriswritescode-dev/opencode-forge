@@ -25,10 +25,10 @@ function makeState(overrides: Partial<LoopState> & { phase: LoopState['phase'] }
 
 describe('nextTransition', () => {
   describe('coding phase', () => {
-    it('transitions to continue on idle-complete', () => {
+    it('rotates to auditing on idle-complete', () => {
       const state = makeState({ phase: 'coding' })
       const transition = nextTransition(state, { type: 'coding-idle-complete' })
-      expect(transition).toEqual({ kind: 'continue' })
+      expect(transition).toEqual({ kind: 'rotate' })
     })
 
     it('terminates with missing_worktree_dir on missing-worktree-dir event', () => {
@@ -103,24 +103,24 @@ describe('nextTransition', () => {
       expect(transition).toEqual({ kind: 'advance-section' })
     })
 
-    it('continues to final audit on last section clean', () => {
+    it('rotates to final audit on last section clean', () => {
       const state = makeState({
         phase: 'auditing',
         totalSections: 3,
         currentSectionIndex: 2,
       })
       const transition = nextTransition(state, { type: 'section-clean', isLastSection: true })
-      expect(transition).toEqual({ kind: 'continue' })
+      expect(transition).toEqual({ kind: 'rotate' })
     })
 
-    it('continues to retry on dirty section', () => {
+    it('rotates to coding on dirty section', () => {
       const state = makeState({
         phase: 'auditing',
         totalSections: 3,
         currentSectionIndex: 1,
       })
       const transition = nextTransition(state, { type: 'section-dirty' })
-      expect(transition).toEqual({ kind: 'continue' })
+      expect(transition).toEqual({ kind: 'rotate' })
     })
   })
 
@@ -235,10 +235,10 @@ describe('nextTransition', () => {
   })
 
   describe('decomposing phase', () => {
-    it('transitions to continue when decomposer-complete has sections > 0', () => {
+    it('rotates to coding when decomposer-complete has sections > 0', () => {
       const state = makeState({ phase: 'decomposing' })
       const transition = nextTransition(state, { type: 'decomposer-complete', sectionCount: 3 })
-      expect(transition).toEqual({ kind: 'continue' })
+      expect(transition).toEqual({ kind: 'rotate' })
     })
 
     it('terminates with decomposition_failed when decomposer-complete has sections === 0', () => {

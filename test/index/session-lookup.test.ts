@@ -45,7 +45,7 @@ function createMockV2Client(responses: Map<string, { data?: unknown; error?: unk
   }
 }
 
-function createMockLoopService(activeLoops: Array<{ loopName: string; worktreeDir: string; workspaceId?: string }>) {
+function createMockLoop(activeLoops: Array<{ loopName: string; worktreeDir: string; workspaceId?: string }>) {
   return {
     listActive: () => activeLoops.map((l) => ({
       ...l,
@@ -58,8 +58,6 @@ function createMockLoopService(activeLoops: Array<{ loopName: string; worktreeDi
       maxIterations: 0,
       phase: 'coding' as const,
     })),
-    resolveLoopName: () => null,
-    getActiveState: () => null,
   }
 }
 
@@ -72,14 +70,14 @@ describe('createParentSessionLookup', () => {
       },
     }
 
-    const loopService = createMockLoopService([
+    const loopService = createMockLoop([
       { loopName: 'test-loop', worktreeDir: '/wt', workspaceId: 'wrk_x' },
     ])
 
     const lookup = createParentSessionLookup({
       v2: v2 as any,
       directory: '/host',
-      loopService: loopService as any,
+      loop: loopService as any,
       logger: createMockLogger() as any,
       negativeTtlMs: 50,
     })
@@ -111,7 +109,7 @@ describe('createParentSessionLookup', () => {
       },
     }
 
-    const loopService = createMockLoopService([
+    const loopService = createMockLoop([
       { loopName: 'loop-1', worktreeDir: '/wt-1', workspaceId: 'wrk_1' },
       { loopName: 'loop-2', worktreeDir: '/wt-2', workspaceId: 'wrk_2' },
     ])
@@ -119,7 +117,7 @@ describe('createParentSessionLookup', () => {
     const lookup = createParentSessionLookup({
       v2: v2 as any,
       directory: '/host',
-      loopService: loopService as any,
+      loop: loopService as any,
       logger: createMockLogger() as any,
       negativeTtlMs: 50,
     })
@@ -143,7 +141,7 @@ describe('createParentSessionLookup', () => {
       },
     }
 
-    const loopService = createMockLoopService([
+    const loopService = createMockLoop([
       { loopName: 'test-loop', worktreeDir: '/wt', workspaceId: 'wrk_x' },
     ])
     const logger = createMockLogger()
@@ -151,7 +149,7 @@ describe('createParentSessionLookup', () => {
     const lookup = createParentSessionLookup({
       v2: v2 as any,
       directory: '/host',
-      loopService: loopService as any,
+      loop: loopService as any,
       logger: logger as any,
       negativeTtlMs: 1000,
     })
@@ -174,14 +172,14 @@ describe('createParentSessionLookup', () => {
       },
     }
 
-    const loopService = createMockLoopService([
+    const loopService = createMockLoop([
       { loopName: 'test-loop', worktreeDir: '/wt', workspaceId: 'wrk_x' },
     ])
 
     const lookup = createParentSessionLookup({
       v2: v2 as any,
       directory: '/host',
-      loopService: loopService as any,
+      loop: loopService as any,
       logger: createMockLogger() as any,
       negativeTtlMs: 50,
     })
@@ -203,12 +201,12 @@ describe('createParentSessionLookup', () => {
       },
     }
 
-    const loopService = createMockLoopService([])
+    const loopService = createMockLoop([])
 
     const lookup = createParentSessionLookup({
       v2: v2 as any,
       directory: '/host',
-      loopService: loopService as any,
+      loop: loopService as any,
       logger: createMockLogger() as any,
       negativeTtlMs: 50,
     })
@@ -232,14 +230,14 @@ describe('createParentSessionLookup', () => {
       },
     }
 
-    const loopService = createMockLoopService([
+    const loopService = createMockLoop([
       { loopName: 'test-loop', worktreeDir: '/wt' },
     ])
 
     const lookup = createParentSessionLookup({
       v2: v2 as any,
       directory: '/host',
-      loopService: loopService as any,
+      loop: loopService as any,
       logger: createMockLogger() as any,
       negativeTtlMs: 50,
     })
@@ -266,7 +264,7 @@ describe('createParentSessionLookup', () => {
       },
     }
 
-    const loopService = createMockLoopService([
+    const loopService = createMockLoop([
       { loopName: 'test-loop', worktreeDir: '/wt', workspaceId: 'wrk_x' },
     ])
     const logger = createMockLogger()
@@ -279,7 +277,7 @@ describe('createParentSessionLookup', () => {
       const lookup = createParentSessionLookup({
         v2: v2 as any,
         directory: '/host',
-        loopService: loopService as any,
+        loop: loopService as any,
         logger: logger as any,
       })
 
@@ -310,7 +308,7 @@ describe('createParentSessionLookup', () => {
     }
 
     // Active loop with empty worktreeDir (so it's skipped)
-    const loopService = createMockLoopService([
+    const loopService = createMockLoop([
       { loopName: 'test-loop', worktreeDir: '' },
     ])
     const logger = createMockLogger()
@@ -318,7 +316,7 @@ describe('createParentSessionLookup', () => {
     const lookup = createParentSessionLookup({
       v2: v2 as any,
       directory: '/host',
-      loopService: loopService as any,
+      loop: loopService as any,
       logger: logger as any,
       negativeTtlMs: 50,
     })
@@ -346,14 +344,14 @@ describe('createSessionDirectoryLookup', () => {
       },
     }
 
-    const loopService = createMockLoopService([
+    const loopService = createMockLoop([
       { loopName: 'test-loop', worktreeDir: '/wt', workspaceId: 'wrk_x' },
     ])
 
     const lookup = createSessionDirectoryLookup({
       v2: v2 as any,
       directory: '/host',
-      loopService: loopService as any,
+      loop: loopService as any,
     })
 
     await lookup(sessionId)
@@ -383,14 +381,14 @@ describe('createSessionDirectoryLookup', () => {
       },
     }
 
-    const loopService = createMockLoopService([
+    const loopService = createMockLoop([
       { loopName: 'test-loop', worktreeDir: '/wt', workspaceId: 'wrk_x' },
     ])
 
     const lookup = createSessionDirectoryLookup({
       v2: v2 as any,
       directory: '/host',
-      loopService: loopService as any,
+      loop: loopService as any,
     })
 
     const result1 = await lookup(sessionId)

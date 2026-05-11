@@ -1,9 +1,15 @@
-import type { LoopService } from '../services/loop'
+import type { LoopState } from '../loop'
 import { execSync } from 'child_process'
 
 export type FindingScope =
   | { kind: 'loop'; loopName: string }
   | { kind: 'none' }
+
+export interface LoopScopeResolver {
+  resolveLoopName(sessionId: string): string | null
+  listActive(): LoopState[]
+  getActiveState(name: string): LoopState | null
+}
 
 /**
  * Resolves the finding scope for the current context.
@@ -11,7 +17,7 @@ export type FindingScope =
  * 1. If sessionId is provided, resolve loop name from loop service
  * 2. Match active loop by worktreeDir or projectDir
  * 3. Return none if no loop scope found
- * 
+ *
  * @param directory - The directory to match against active loops
  * @param loopService - The loop service for checking active loops
  * @param sessionId - Optional session ID to resolve loop state directly
@@ -19,7 +25,7 @@ export type FindingScope =
  */
 export function resolveFindingScope(
   directory: string,
-  loopService: LoopService,
+  loopService: LoopScopeResolver,
   sessionId?: string,
 ): FindingScope {
   // Priority 1: If sessionId is provided, resolve loop name directly
@@ -46,7 +52,7 @@ export function resolveFindingScope(
  * Resolution order:
  * 1. If sessionId is provided, use the loop state for that session
  * 2. Match active loop by worktreeDir or projectDir
- * 
+ *
  * @param value - The object to inject the scope field into
  * @param directory - The directory to check for git branch
  * @param loopService - The loop service for checking active loops
@@ -55,7 +61,7 @@ export function resolveFindingScope(
 export function injectScopeField(
   value: unknown,
   directory: string,
-  loopService: LoopService,
+  loopService: LoopScopeResolver,
   sessionId?: string,
 ): void {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return

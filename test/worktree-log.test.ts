@@ -11,7 +11,7 @@ import {
   formatWorktreeCompletionEntry,
 } from '../src/services/worktree-log'
 import { buildLoopPermissionRuleset } from '../src/constants/loop'
-import type { LoopSessionOutput } from '../src/services/loop'
+import type { LoopSessionOutput } from '../src/loop/session-output'
 
 const TEST_DIR = '/tmp/opencode-worktree-log-test-' + Date.now()
 

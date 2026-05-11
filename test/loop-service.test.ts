@@ -6,12 +6,12 @@ import { tmpdir } from 'os'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
-import { createLoopService } from '../src/services/loop'
+import { createLoop } from '../src/loop/runtime'
 import type { Logger } from '../src/types'
 
-describe('LoopService', () => {
+describe('Loop', () => {
   let db: Database
-  let loopService: ReturnType<typeof createLoopService>
+  let loop: ReturnType<typeof createLoop>
   let tempDir: string
   const projectId = 'test-project'
 
@@ -110,7 +110,16 @@ describe('LoopService', () => {
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
 
-    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger)
+    loop = createLoop({
+      loopsRepo,
+      plansRepo,
+      reviewFindingsRepo,
+      projectId,
+      logger: mockLogger,
+      client: {} as any,
+      v2Client: {} as any,
+      getConfig: () => ({} as any),
+    })
   })
 
   afterEach(() => {
@@ -135,7 +144,7 @@ describe('LoopService', () => {
         loopName: 'b1',
       })
 
-      expect(loopService.hasOutstandingFindings('b1')).toBe(true)
+      expect(loop.hasOutstandingFindings('b1')).toBe(true)
     })
 
     test('returns false when only warning findings exist and severity=bug filter is applied', () => {
@@ -150,8 +159,8 @@ describe('LoopService', () => {
         loopName: 'b1',
       })
 
-      expect(loopService.hasOutstandingFindings('b1', 'bug')).toBe(false)
-      expect(loopService.hasOutstandingFindings('b1', 'warning')).toBe(true)
+      expect(loop.hasOutstandingFindings('b1', 'bug')).toBe(false)
+      expect(loop.hasOutstandingFindings('b1', 'warning')).toBe(true)
     })
 
     test('returns true when bug findings exist with severity=bug filter', () => {
@@ -175,8 +184,8 @@ describe('LoopService', () => {
         loopName: 'b2',
       })
 
-      expect(loopService.hasOutstandingFindings('b2', 'bug')).toBe(true)
-      const bugFindings = loopService.getOutstandingFindings('b2', 'bug')
+      expect(loop.hasOutstandingFindings('b2', 'bug')).toBe(true)
+      const bugFindings = loop.getOutstandingFindings('b2', 'bug')
       expect(bugFindings.length).toBe(1)
       expect(bugFindings[0].severity).toBe('bug')
     })
@@ -204,10 +213,10 @@ describe('LoopService', () => {
         loopName: 'b2',
       })
 
-      const allFindings = loopService.getOutstandingFindings('b2')
+      const allFindings = loop.getOutstandingFindings('b2')
       expect(allFindings.length).toBe(2)
 
-      const warningFindings = loopService.getOutstandingFindings('b2', 'warning')
+      const warningFindings = loop.getOutstandingFindings('b2', 'warning')
       expect(warningFindings.length).toBe(1)
       expect(warningFindings[0].severity).toBe('warning')
     })
@@ -230,7 +239,7 @@ describe('LoopService', () => {
         auditCount: 0,
       }
 
-      const prompt = loopService.buildAuditPrompt(state as any)
+      const prompt = loop.buildAuditPrompt(state as any)
 
       expect(prompt).toContain('Plan completeness check:')
       expect(prompt).toContain('severity: "bug"')
@@ -241,7 +250,7 @@ describe('LoopService', () => {
 
   describe('getMinAudits removal', () => {
     test('getMinAudits is not exposed on the service', () => {
-      expect((loopService as any).getMinAudits).toBeUndefined()
+      expect((loop as any).getMinAudits).toBeUndefined()
     })
   })
 
@@ -274,7 +283,7 @@ describe('LoopService', () => {
         auditCount: 0,
       }
 
-      const prompt = loopService.buildContinuationPrompt(state as any)
+      const prompt = loop.buildContinuationPrompt(state as any)
 
       expect(prompt).toContain('Outstanding Review Findings')
       expect(prompt).toContain('test.ts:1')
@@ -296,7 +305,7 @@ describe('LoopService', () => {
         auditCount: 1,
       }
 
-      const prompt = loopService.buildContinuationPrompt(state as any, 'audit findings text')
+      const prompt = loop.buildContinuationPrompt(state as any, 'audit findings text')
 
       expect(prompt).not.toContain('ORIGINAL_PLAN_BODY_SHOULD_NOT_APPEAR')
       expect(prompt).toContain('audit findings text')

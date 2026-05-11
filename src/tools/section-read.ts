@@ -4,7 +4,7 @@ import type { ToolContext } from './types'
 const z = tool.schema
 
 export function createSectionReadTool(ctx: ToolContext): ReturnType<typeof tool> {
-  const { loopService } = ctx
+  const loop = ctx.loop
 
   return tool({
     description: 'Read a section plan and its status for the active loop session. If section_index is omitted, returns the lowest-index incomplete section.',
@@ -13,13 +13,13 @@ export function createSectionReadTool(ctx: ToolContext): ReturnType<typeof tool>
     },
     execute: async (args, toolCtx) => {
       const sessionId = toolCtx?.sessionID ?? ''
-      const loopName = loopService.resolveLoopName(sessionId)
+      const loopName = loop.resolveLoopName(sessionId)
 
       if (!loopName) {
         return JSON.stringify({ error: 'Not in a loop session. This tool can only be used within an active loop session.' })
       }
 
-      const state = loopService.getAnyState(loopName)
+      const state = loop.getAnyState(loopName)
       if (!state) return JSON.stringify({ error: `Loop "${loopName}" not found.` })
 
       if (state.totalSections === 0) {
@@ -28,7 +28,7 @@ export function createSectionReadTool(ctx: ToolContext): ReturnType<typeof tool>
 
       const explicitIndex = args.section_index
       const selectedSection = explicitIndex === undefined
-        ? loopService.getNextIncompleteSectionPlan(state)
+        ? loop.getNextIncompleteSectionPlan(state)
         : null
 
       const idx = explicitIndex ?? selectedSection?.sectionIndex ?? state.currentSectionIndex
@@ -38,10 +38,10 @@ export function createSectionReadTool(ctx: ToolContext): ReturnType<typeof tool>
 
       const section = explicitIndex === undefined && selectedSection?.sectionIndex === idx
         ? selectedSection
-        : loopService.getSectionPlan(state, idx)
+        : loop.getSectionPlan(state, idx)
       if (!section) return JSON.stringify({ error: `Section ${idx} not found in loop "${loopName}".` })
 
-      const digest = loopService.getCompletedSectionDigest(state)
+      const digest = loop.getCompletedSectionDigest(state)
       const summary = digest.find(s => s.index === idx)
 
       const result = {

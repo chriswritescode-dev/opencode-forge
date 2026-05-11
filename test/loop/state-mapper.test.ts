@@ -167,36 +167,42 @@ describe('loopRowToState', () => {
 describe('loopStateToRow', () => {
   it('preserves phase value', () => {
     const state = loopRowToState(makeRow({ phase: 'decomposing' }))
-    const row = loopStateToRow(state)
+    const row = loopStateToRow(state, 'proj-1')
     expect(row.phase).toBe('decomposing')
   })
 
   it('maps active flag to status', () => {
     const active = loopRowToState(makeRow({ status: 'running' }))
-    expect(loopStateToRow(active).status).toBe('running')
+    expect(loopStateToRow(active, 'proj-1').status).toBe('running')
 
     const inactive = loopRowToState(makeRow({ status: 'completed' }))
-    expect(loopStateToRow(inactive).status).toBe('completed')
+    expect(loopStateToRow(inactive, 'proj-1').status).toBe('completed')
+  })
+
+  it('uses provided projectId instead of empty string', () => {
+    const state = loopRowToState(makeRow())
+    const row = loopStateToRow(state, 'proj-42')
+    expect(row.projectId).toBe('proj-42')
   })
 
   it('converts ISO string back to epoch millis', () => {
     const ts = new Date('2025-01-15T12:00:00.000Z').getTime()
     const state = loopRowToState(makeRow({ startedAt: ts }))
-    const row = loopStateToRow(state)
+    const row = loopStateToRow(state, 'proj-1')
     expect(row.startedAt).toBe(ts)
   })
 
   it('converts boolean back to 1 or 0 for finalAuditDone', () => {
     const done = loopRowToState(makeRow({ finalAuditDone: 1 }))
-    expect(loopStateToRow(done).finalAuditDone).toBe(1)
+    expect(loopStateToRow(done, 'proj-1').finalAuditDone).toBe(1)
 
     const notDone = loopRowToState(makeRow({ finalAuditDone: 0 }))
-    expect(loopStateToRow(notDone).finalAuditDone).toBe(0)
+    expect(loopStateToRow(notDone, 'proj-1').finalAuditDone).toBe(0)
   })
 
   it('converts optional values back to null', () => {
     const state = loopRowToState(makeRow())
-    const row = loopStateToRow(state)
+    const row = loopStateToRow(state, 'proj-1')
     expect(row.terminationReason).toBeNull()
     expect(row.completionSummary).toBeNull()
     expect(row.sandboxContainer).toBeNull()
@@ -215,7 +221,7 @@ describe('loopStateToRow', () => {
       projectDir: '/tmp/proj',
     })
     const state = loopRowToRow_backwardCompat(row)
-    const result = loopStateToRow(state)
+    const result = loopStateToRow(state, 'proj-1')
     expect(result.loopName).toBe('my-loop')
     expect(result.currentSessionId).toBe('sess-abc')
     expect(result.worktreeDir).toBe('/tmp/my-wt')
@@ -233,7 +239,7 @@ describe('loopRowToState + loopStateToRow round-trip', () => {
       totalSections: 7,
     })
     const state = loopRowToRow_backwardCompat(row)
-    const result = loopStateToRow(state)
+    const result = loopStateToRow(state, 'proj-1')
     expect(result.iteration).toBe(5)
     expect(result.maxIterations).toBe(10)
     expect(result.auditCount).toBe(3)
@@ -251,12 +257,21 @@ describe('loopRowToState + loopStateToRow round-trip', () => {
       decompositionMode: 'agent',
     })
     const state = loopRowToRow_backwardCompat(row)
-    const result = loopStateToRow(state)
+    const result = loopStateToRow(state, 'proj-1')
     expect(result.worktree).toBe(true)
     expect(result.modelFailed).toBe(true)
     expect(result.sandbox).toBe(true)
     expect(result.decompositionStatus).toBe('completed')
     expect(result.decompositionMode).toBe('agent')
+  })
+
+  it('preserves projectId through round-trip for each phase', () => {
+    for (const phase of ['coding', 'auditing', 'decomposing', 'final_auditing'] as const) {
+      const row = makeRow({ phase, projectId: 'proj-round' })
+      const state = loopRowToState(row)
+      const result = loopStateToRow(state, 'proj-round')
+      expect(result.projectId).toBe('proj-round')
+    }
   })
 })
 

@@ -4,7 +4,7 @@ import { buildAgents } from './agents'
 import { createConfigHandler } from './config'
 import { createSessionHooks, createLoopEventHandler } from './hooks'
 import { initializeDatabase, resolveDataDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo } from './storage'
-import { createLoopService } from './services/loop'
+import type { LoopChangeNotifier } from './loop'
 import { loadPluginConfig } from './setup'
 import { resolveLogPath } from './storage'
 import { createLogger } from './utils/logger'
@@ -26,7 +26,6 @@ import { createPlanCaptureEventHook } from './hooks/plan-capture'
 import { createSectionCaptureHook } from './hooks/section-capture'
 import { createBusRpcEventHook } from './api/bus-rpc'
 import { encodeEvent } from './api/bus-protocol'
-import type { LoopChangeNotifier } from './services/loop'
 
 const registeredWorkspaceApis = new WeakSet<object>()
 
@@ -36,7 +35,7 @@ export async function cleanupSandboxOrphansAcrossRegistry(
 ): Promise<string[]> {
   const preserveLoops = registry
     .list()
-    .flatMap((ctx) => ctx.loopService.listActive())
+    .flatMap((ctx) => ctx.loop.listActive())
     .filter((state) => state.sandbox && state.loopName)
     .map((state) => state.loopName!)
 
@@ -47,7 +46,7 @@ export async function cleanupSandboxOrphansAcrossRegistry(
 export interface CreateParentSessionLookupOptions {
   v2: ReturnType<typeof createV2Client>
   directory: string
-  loopService: ReturnType<typeof createLoopService>
+  loop: import('./loop').Loop
   logger: ReturnType<typeof createLogger>
   negativeTtlMs?: number
 }
@@ -57,7 +56,7 @@ const PARENT_LOOKUP_NEGATIVE_TTL_MS = 15000
 export function createParentSessionLookup({
   v2,
   directory,
-  loopService,
+  loop,
   logger,
   negativeTtlMs = PARENT_LOOKUP_NEGATIVE_TTL_MS,
 }: CreateParentSessionLookupOptions): (sessionId: string) => Promise<string | null> {
@@ -80,7 +79,7 @@ export function createParentSessionLookup({
     const attempts: Array<{ label: string; directory?: string; input: SessionGetInput }> = []
 
     const seenDirectories = new Set<string>()
-    const activeLoops = loopService.listActive()
+    const activeLoops = loop.listActive()
 
     for (const state of activeLoops) {
       if (!state.worktreeDir || seenDirectories.has(state.worktreeDir)) continue
@@ -134,13 +133,13 @@ export function createParentSessionLookup({
 export interface CreateSessionDirectoryLookupOptions {
   v2: ReturnType<typeof createV2Client>
   directory: string
-  loopService: ReturnType<typeof createLoopService>
+  loop: import('./loop').Loop
 }
 
 export function createSessionDirectoryLookup({
   v2,
   directory,
-  loopService,
+  loop,
 }: CreateSessionDirectoryLookupOptions): (sessionId: string) => Promise<string | null> {
   const cache = new LRUCache<string | null>(500)
 
@@ -154,7 +153,7 @@ export function createSessionDirectoryLookup({
     const attempts: Array<{ label: string; directory?: string; input: SessionGetInput }> = []
 
     const seenDirectories = new Set<string>()
-    const activeLoops = loopService.listActive()
+    const activeLoops = loop.listActive()
 
     for (const state of activeLoops) {
       if (!state.worktreeDir || seenDirectories.has(state.worktreeDir)) continue
@@ -286,8 +285,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       }
     }
 
-    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, config.loop, notifyLoopChange, v2, sectionPlansRepo)
-
     let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
     if (config.sandbox?.mode === 'docker') {
       const dockerService = createDockerService(logger)
@@ -301,9 +298,11 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       }
     }
 
-    const reconcileResult = await loopService.reconcileStale(
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, v2, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange)
+
+    const reconcileResult = await loopHandler.loop.reconcileStale(
       sandboxManager
-        ? { isSandboxLive: (name) => sandboxManager!.isLiveByName(name) }
+        ? { isSandboxLive: (name: string) => sandboxManager!.isLiveByName(name) }
         : undefined
     )
     if (reconcileResult.cancelled > 0) {
@@ -315,8 +314,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 
     // Sandbox reconciliation interval handle
     let sandboxReconcileInterval: ReturnType<typeof setInterval> | null = null
-
-    const loopHandler = createLoopEventHandler(loopService, client, v2, logger, () => config, sandboxManager || undefined, projectId, dataDir)
 
     const agents = buildAgents()
 
@@ -374,8 +371,8 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       logger,
       db,
       dataDir,
-      loopService,
       loopHandler,
+      loop: loopHandler.loop,
       v2,
       cleanup,
       input,
@@ -391,7 +388,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     if (sandboxManager) {
       await cleanupSandboxOrphansAcrossRegistry(registry, sandboxManager)
 
-      const reconcileDeps = { sandboxManager, loopService, logger }
+      const reconcileDeps = { sandboxManager, loop: loopHandler.loop, logger }
       await reconcileSandboxes(reconcileDeps)
 
       sandboxReconcileInterval = setInterval(() => {
@@ -426,15 +423,15 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       logger,
     })
 
-    const parentSessionLookup = createParentSessionLookup({ v2, directory, loopService, logger })
-    const sessionDirectoryLookup = createSessionDirectoryLookup({ v2, directory, loopService })
+    const parentSessionLookup = createParentSessionLookup({ v2, directory, loop: loopHandler.loop, logger })
+    const sessionDirectoryLookup = createSessionDirectoryLookup({ v2, directory, loop: loopHandler.loop })
     const sessionLoopResolver = createSessionLoopResolver({
-      loopService,
+      loop: loopHandler.loop,
       getParentSessionId: parentSessionLookup,
       getSessionDirectory: sessionDirectoryLookup,
       logger,
     })
-    const permissionAskHandler = createPermissionAskHandler({ resolver: sessionLoopResolver, logger, v2 })
+    const permissionAskHandler = createPermissionAskHandler({ resolver: sessionLoopResolver, logger })
 
     // Resolves sandbox context for a session by following parent hops until an
     // active sandbox loop is found. Returns null if no sandbox is active for

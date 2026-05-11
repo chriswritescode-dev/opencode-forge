@@ -9,15 +9,15 @@ import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
-import { createLoopService } from '../../src/services/loop'
+import { createLoopService } from '../../src/loop/service'
 import { decomposeDeterministically } from '../../src/services/deterministic-decomposer'
 import type { Logger } from '../../src/types'
-import type { LoopState } from '../../src/services/loop'
+import type { LoopState } from '../../src/loop/state'
 import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
 import type { PlansRepo } from '../../src/storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import type { SectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
-import type { LoopService } from '../../src/services/loop'
+import type { LoopService } from '../../src/loop/service'
 
 const mockLogger: Logger = {
   log: () => {},
@@ -739,7 +739,7 @@ describe('Execution decomposer integration', () => {
         v2: mockV2Client as any,
         plansRepo: mockPlansRepo,
         loopsRepo: mockLoopsRepo,
-        loopService: mockLoopService as any,
+        loop: mockLoopService as any,
         sectionPlansRepo: {
           bulkInsert: noopFn,
           count: () => 0,
@@ -825,7 +825,7 @@ describe('Execution decomposer integration', () => {
         v2: mockV2Client as any,
         plansRepo: mockPlansRepo,
         loopsRepo: mockLoopsRepo,
-        loopService: mockLoopService as any,
+        loop: mockLoopService as any,
         sectionPlansRepo: {
           bulkInsert: noopFn,
           count: () => 0,
@@ -906,7 +906,7 @@ describe('Execution decomposer integration', () => {
         v2: mockV2Client as any,
         plansRepo: mockPlansRepo,
         loopsRepo: mockLoopsRepo,
-        loopService: mockLoopService as any,
+        loop: mockLoopService as any,
         sectionPlansRepo: {
           bulkInsert: noopFn,
           count: () => 0,
@@ -1031,7 +1031,7 @@ describe('Execution decomposer integration', () => {
         v2: mockV2Client as any,
         plansRepo: mockPlansRepo,
         loopsRepo: mockLoopsRepo,
-        loopService: mockLoopService as any,
+        loop: mockLoopService as any,
         sectionPlansRepo: {
           bulkInsert: noopFn,
           count: () => 0,
@@ -1134,7 +1134,7 @@ describe('Execution decomposer integration', () => {
         v2: mockV2Client as any,
         plansRepo: mockPlansRepo,
         loopsRepo: mockLoopsRepo,
-        loopService: mockLoopService as any,
+        loop: mockLoopService as any,
         sectionPlansRepo: {
           bulkInsert: noopFn,
           count: () => 0,

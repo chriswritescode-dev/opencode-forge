@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { sweepOrphanWorkspaces } from '../../src/services/loop'
+import { sweepOrphanWorkspaces } from '../../src/loop/orphan-sweep'
 import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 

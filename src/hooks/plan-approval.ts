@@ -121,17 +121,20 @@ function resolveCurrentSessionPlan(ctx: ToolContext, sessionID: string): string 
 }
 
 export function createToolExecuteBeforeHook(ctx: ToolContext): Hooks['tool.execute.before'] {
-  const { loopService, logger } = ctx
+  const loop = ctx.loop
+  const { logger } = ctx
 
   return async (
     input: { tool: string; sessionID: string; callID: string },
     _output: { args: unknown }
   ) => {
-    const loopName = loopService.resolveLoopName(input.sessionID)
-    const state = loopName ? loopService.getActiveState(loopName) : null
+    const loopName = loop.resolveLoopName(input.sessionID)
+    const state = loopName ? loop.getActiveState(loopName) : null
     if (!state?.active || !isActiveLoopToolSession(state, input.sessionID)) return
 
     if (!(input.tool in LOOP_BLOCKED_TOOLS)) return
+
+    if (input.tool === 'question' && !state.worktree) return
 
     logger.log(`Loop: blocking ${input.tool} tool before execution in ${state.phase} phase for session ${input.sessionID}`)
 
@@ -140,7 +143,8 @@ export function createToolExecuteBeforeHook(ctx: ToolContext): Hooks['tool.execu
 }
 
 export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execute.after'] {
-  const { loopService, logger, config } = ctx
+  const loop = ctx.loop
+  const { logger, config } = ctx
 
   return async (
     input: { tool: string; sessionID: string; callID: string; args: unknown },
@@ -225,8 +229,8 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
             legacyClient: ctx.input?.client,
             plansRepo: ctx.plansRepo,
             loopsRepo: ctx.loopsRepo,
-            loopService: ctx.loopService,
             loopHandler: ctx.loopHandler,
+            loop: ctx.loop,
             sandboxManager: ctx.sandboxManager,
             sectionPlansRepo: ctx.sectionPlansRepo,
           })
@@ -266,7 +270,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
           if (matchedLabel === 'Loop (worktree)' || matchedLabel === 'Loop') {
             const isWorktree = matchedLabel === 'Loop (worktree)'
             const { executionName } = extractLoopNames(planText)
-            const uniqueLoopName = ctx.loopService.generateUniqueLoopName(executionName)
+            const uniqueLoopName = ctx.loop.generateUniqueLoopName(executionName)
 
             logger.log(`Plan approval: "${matchedLabel}" — scheduling dispatch IIFE for loop "${uniqueLoopName}"`)
 
@@ -316,8 +320,8 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
       return
     }
 
-    const loopName = loopService.resolveLoopName(input.sessionID)
-    const state = loopName ? loopService.getActiveState(loopName) : null
+    const loopName = loop.resolveLoopName(input.sessionID)
+    const state = loopName ? loop.getActiveState(loopName) : null
     if (!state?.active || !isActiveLoopToolSession(state, input.sessionID)) return
 
     if (!(input.tool in LOOP_BLOCKED_TOOLS)) return

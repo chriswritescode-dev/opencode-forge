@@ -59,7 +59,7 @@ export function nextTransition(state: LoopState, event: TransitionEvent): Transi
 function handleCodingEvent(event: TransitionEvent): Transition {
   switch (event.type) {
     case 'coding-idle-complete':
-      return { kind: 'continue' }
+      return { kind: 'rotate' }
     case 'missing-worktree-dir':
       return { kind: 'terminate', reason: { kind: 'missing_worktree_dir' } }
     case 'session-creation-failed':
@@ -89,11 +89,11 @@ function handleAuditingEvent(event: TransitionEvent): Transition {
   switch (event.type) {
     case 'section-clean':
       if (event.isLastSection) {
-        return { kind: 'continue' }
+        return { kind: 'rotate' }
       }
       return { kind: 'advance-section' }
     case 'section-dirty':
-      return { kind: 'continue' }
+      return { kind: 'rotate' }
     case 'audit-clear':
       return { kind: 'terminate', reason: { kind: 'completed' } }
     case 'audit-dirty':
@@ -125,7 +125,7 @@ function handleDecomposingEvent(event: TransitionEvent): Transition {
   switch (event.type) {
     case 'decomposer-complete':
       if (event.sectionCount > 0) {
-        return { kind: 'continue' }
+        return { kind: 'rotate' }
       }
       return { kind: 'terminate', reason: { kind: 'decomposition_failed' } }
     case 'decomposer-empty':

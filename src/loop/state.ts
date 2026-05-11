@@ -102,9 +102,9 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
   }
 }
 
-export function loopStateToRow(state: LoopState): Omit<LoopRow, 'createdAt' | 'updatedAt'> {
+export function loopStateToRow(state: LoopState, projectId: string): Omit<LoopRow, 'createdAt' | 'updatedAt'> {
   return {
-    projectId: '',
+    projectId,
     loopName: state.loopName,
     status: state.active ? 'running' : 'completed',
     currentSessionId: state.sessionId,

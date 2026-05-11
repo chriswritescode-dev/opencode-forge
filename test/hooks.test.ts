@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
 import { createSessionHooks } from '../src/hooks/session'
 import { createLoopEventHandler } from '../src/hooks/loop'
-import { createLoopService } from '../src/services/loop'
+import { createLoopService } from '../src/loop/service'
 import { Database } from 'bun:sqlite'
 import type { Logger } from '../src/types'
 import type { PluginInput } from '@opencode-ai/plugin'

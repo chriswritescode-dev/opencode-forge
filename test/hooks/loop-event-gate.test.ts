@@ -7,7 +7,8 @@ import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
-import { createLoopService, type LoopState } from '../../src/services/loop'
+import { createLoopService } from '../../src/loop/service'
+import type { LoopState } from '../../src/loop/state'
 import { createLoopEventHandler } from '../../src/hooks/loop'
 import { markPromptSent, clearPromptPending, sessionsAwaitingBusy, isAwaitingBusy, isAwaitingBusyExpired, AWAITING_BUSY_TIMEOUT_MS } from '../../src/loop/idle-gate'
 import type { Logger, PluginConfig } from '../../src/types'
@@ -66,6 +67,10 @@ describe('Loop Event Idle Gate', () => {
   let db: Database
   let loopService: ReturnType<typeof createLoopService>
   let tempDir: string
+  let loopsRepo: ReturnType<typeof createLoopsRepo>
+  let plansRepo: ReturnType<typeof createPlansRepo>
+  let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
+  let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-event-gate-test-'))
@@ -169,10 +174,10 @@ describe('Loop Event Idle Gate', () => {
       )
     `)
 
-    const loopsRepo = createLoopsRepo(db)
-    const plansRepo = createPlansRepo(db)
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const sectionPlansRepo = createSectionPlansRepo(db)
+    loopsRepo = createLoopsRepo(db)
+    plansRepo = createPlansRepo(db)
+    reviewFindingsRepo = createReviewFindingsRepo(db)
+    sectionPlansRepo = createSectionPlansRepo(db)
 
     loopService = createLoopService(
       loopsRepo,
@@ -241,13 +246,15 @@ describe('Loop Event Idle Gate', () => {
     const { logger } = createCapturingLogger()
 
     return createLoopEventHandler(
-      loopService,
+      loopsRepo,
+      plansRepo,
+      reviewFindingsRepo,
+      PROJECT_ID,
       { client: {} as any },
       mockClient,
       logger,
       () => mockConfig,
       undefined,
-      PROJECT_ID,
       tempDir,
     )
   }

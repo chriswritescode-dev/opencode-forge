@@ -7,14 +7,16 @@ type PermissionRule = { permission: string; pattern: string; action: 'allow' | '
  *   more restrictive rules layered on top:
  *   - Worktree + sandbox: external_directory is allowed (no prompt)
  *   - Worktree + non-sandbox: external_directory is denied (no prompt)
- * - In-place loops omit the allow-all so the agent's own permissions apply,
- *   and no external_directory rule is added (OpenCode will ask by default).
+ * - In-place loops return `undefined` so opencode falls back to the user's
+ *   global permission config (allowing rm/edit/etc. to prompt normally).
+ *   Forge-specific tool denies (review-*, plan-execute, loop) are enforced
+ *   per-agent via the `tools.exclude` map in src/agents/code.ts.
  *
  * Per-agent tool restrictions are enforced by opencode's per-agent `tools` map
  * (see `src/config.ts`), not at the session level. However, now that the auditor
  * runs in a separate session (not a subtask), we add explicit session-level denies
- * for tools the code agent should not call (review-write, review-delete, plan-*, loop).
- * These denies are placed AFTER the *:allow so findLast picks them up.
+ * for tools the code agent should not call (review-write, review-delete, plan-*, loop)
+ * for worktree loops where the blanket allow-all would otherwise let them through.
  *
  * Worktree completion logs are written by the host session (see
  * `src/hooks/loop.ts` -> `writeWorktreeCompletionLog`), so the loop session
@@ -23,33 +25,34 @@ type PermissionRule = { permission: string; pattern: string; action: 'allow' | '
 /**
  * @param options.isWorktree - Defaults to false (in-place loop). Worktree loops are isolated.
  * @param options.isSandbox - Defaults to false (non-sandbox). Sandbox provides container isolation.
+ * @returns The ruleset for worktree loops, or `undefined` for in-place loops
+ *          (defers to user's global permission config).
  */
 export function buildLoopPermissionRuleset(
   options?: { isWorktree?: boolean; isSandbox?: boolean },
-): PermissionRule[] {
+): PermissionRule[] | undefined {
   const isWorktree = options?.isWorktree ?? false
   const isSandbox = options?.isSandbox ?? false
+
+  // In-place loops: defer to user's global permission config so rm/edit/etc.
+  // prompt normally. Forge tool denies are enforced via per-agent tools.exclude.
+  if (!isWorktree) return undefined
+
   const rules: PermissionRule[] = []
 
-  if (isWorktree) {
-    // Blanket allow-all for worktree loops (isolated environment).
-    // More restrictive rules below layer on top of this.
-    rules.push({ permission: '*', pattern: '*', action: 'allow' })
+  // Blanket allow-all for worktree loops (isolated environment).
+  // More restrictive rules below layer on top of this.
+  rules.push({ permission: '*', pattern: '*', action: 'allow' })
 
-    // External directory access: explicit rule to avoid prompting.
-    if (isSandbox) {
-      // Sandbox worktree: allow external directory access
-      rules.push({ permission: 'external_directory', pattern: '*', action: 'allow' })
-    } else {
-      // Non-sandbox worktree: deny external directory access
-      rules.push({ permission: 'external_directory', pattern: '*', action: 'deny' })
-    }
-  }
-  // In-place loops: no blanket allow and no external_directory rule;
-  // the agent's own permissions apply and OpenCode will ask by default.
+  // External directory access: explicit rule to avoid prompting.
+  rules.push({
+    permission: 'external_directory',
+    pattern: '*',
+    action: isSandbox ? 'allow' : 'deny',
+  })
 
-  // Code agent forbidden tools (enforced at session level now that audit runs
-  // in a separate session). Placed after *:allow so findLast picks these.
+  // Code agent forbidden tools (enforced at session level so worktree's
+  // *:allow above does not accidentally permit them).
   rules.push(
     { permission: 'review-write',  pattern: '*', action: 'deny' },
     { permission: 'review-delete', pattern: '*', action: 'deny' },
@@ -57,7 +60,7 @@ export function buildLoopPermissionRuleset(
     { permission: 'loop',          pattern: '*', action: 'deny' },
   )
 
-  // Common restrictions for all loop types
+  // Common restrictions for worktree loops
   rules.push(
     { permission: 'bash',        pattern: 'git push *', action: 'deny' },
     { permission: 'loop-cancel', pattern: '*',          action: 'deny' },

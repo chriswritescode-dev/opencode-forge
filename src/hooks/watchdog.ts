@@ -1,7 +1,6 @@
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
-import type { LoopService, LoopState } from '../services/loop'
+import type { LoopService, LoopState, TerminationReason } from '../loop'
 import type { Logger } from '../types'
-import type { TerminationReason } from '../loop/termination'
 
 export type LoopWatchdogStallReason =
   | 'non_busy_status'

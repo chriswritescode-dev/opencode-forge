@@ -9,12 +9,11 @@ import type { PluginConfig, Logger } from '../types'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
-import type { LoopService } from '../services/loop'
 import type { createLoopEventHandler } from '../hooks'
 import type { SandboxManager } from '../sandbox/manager'
 import { extractPlanTitle, extractLoopNames } from '../utils/plan-execution'
 import { parseModelString, retryWithModelFallback, resolveDecomposerModel } from '../utils/model-fallback'
-import { generateUniqueName, rowToLoopState } from '../services/loop'
+
 import { resolveCurrentGitBranch } from '../utils/git-branch'
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
 import { buildLoopPermissionRuleset } from '../constants/loop'
@@ -24,8 +23,7 @@ import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '.
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { decomposeDeterministically } from './deterministic-decomposer'
-import { markPromptSent, clearPromptPending } from '../loop/idle-gate'
-import { terminationStatusFor, parseTerminationReasonString } from '../loop/termination'
+import { markPromptSent, clearPromptPending, terminationStatusFor, parseTerminationReasonString } from '../loop'
 
 // ============================================================================
 // Surface Types - Identifies the caller boundary
@@ -322,8 +320,8 @@ export interface ForgeExecutionServiceDeps {
   legacyClient?: import('@opencode-ai/sdk').OpencodeClient
   plansRepo: PlansRepo
   loopsRepo: LoopsRepo
-  loopService?: LoopService
   loopHandler?: ReturnType<typeof createLoopEventHandler>
+  loop: import('../loop/runtime').Loop
   sandboxManager?: SandboxManager | null
   sectionPlansRepo?: import('../storage/repos/section-plans-repo').SectionPlansRepo
 }
@@ -379,14 +377,11 @@ async function resolvePlanSource(
     }
     
     case 'loop-state': {
-      // Try loopService first if available
-      if (deps.loopService) {
-        const planText = deps.loopService.getPlanText(source.loopName, ctx.sourceSessionId ?? '')
-        if (planText) {
-          return { ok: true, planText }
-        }
+      const planText = deps.loop.getPlanText(source.loopName, ctx.sourceSessionId ?? '')
+      if (planText) {
+        return { ok: true, planText }
       }
-      
+
       // Fallback to loopsRepo
       const large = deps.loopsRepo.getLarge(ctx.projectId, source.loopName)
       if (large?.prompt) {
@@ -800,16 +795,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const sessionTitle = formatLoopSessionTitle(title)
     
     // Generate unique loop name
-    let uniqueLoopName: string
-    if (deps.loopService) {
-      uniqueLoopName = deps.loopService.generateUniqueLoopName(command.loopName ?? executionName)
-    } else {
-      // Fallback to loopsRepo-based uniqueness
-      const existingNames = deps.loopsRepo.listByStatus(ctx.projectId, ['running', 'completed', 'cancelled', 'errored', 'stalled'])
-        .map(row => row.loopName)
-      uniqueLoopName = generateUniqueName(command.loopName ?? executionName, existingNames)
-    }
-    
+    const uniqueLoopName = deps.loop.generateUniqueLoopName(command.loopName ?? executionName)
+
     // Resolve models
     const resolvedExecutionModel = command.executionModel ?? deps.config.executionModel
     const resolvedAuditorModel = command.auditorModel ?? deps.config.auditorModel
@@ -834,7 +821,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         await deps.v2.session.abort({ sessionID: createdSessionId }).catch(() => {})
       }
       if (loopStatePersisted) {
-        deps.loopService!.deleteState(uniqueLoopName)
+        deps.loop.deleteState(uniqueLoopName)
         loopStatePersisted = false
       }
       if ((sandboxStarted || sandboxStartAttempted) && deps.sandboxManager) {
@@ -1000,7 +987,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       }
       
       // Persist loop state
-      const state: import('../services/loop').LoopState = {
+      const state: import('../loop/state').LoopState = {
         active: true,
         sessionId,
         loopName: uniqueLoopName,
@@ -1029,9 +1016,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         finalAuditDone: false,
       }
       
-      deps.loopService!.setState(uniqueLoopName, state)
+      deps.loop.setState(uniqueLoopName, state)
       loopStatePersisted = true
-      deps.loopService!.registerLoopSession(sessionId, uniqueLoopName)
+      deps.loop.registerLoopSession(sessionId, uniqueLoopName)
       
       deps.logger.log(`handleStartLoop: state stored for loop=${uniqueLoopName}`)
       
@@ -1049,8 +1036,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         
         deps.loopsRepo.setDecompositionSessionId(ctx.projectId, uniqueLoopName, sessionId)
         deps.loopsRepo.setCurrentSessionId(ctx.projectId, uniqueLoopName, sessionId)
-        deps.loopService!.registerLoopSession(sessionId, uniqueLoopName)
-        deps.loopService!.setPhase(uniqueLoopName, 'decomposing')
+        deps.loop.registerLoopSession(sessionId, uniqueLoopName)
+        deps.loop.setPhase(uniqueLoopName, 'decomposing')
         
             // Emit lifecycle event for TUI to resolve RPC
             command.lifecycle?.onStarted?.({
@@ -1093,7 +1080,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           }
         }
 
-        const decomposerPrompt = deps.loopService!.buildDecomposerInitialPrompt(state)
+        const decomposerPrompt = deps.loop.buildDecomposerInitialPrompt(state)
 
         try {
           markPromptSent(uniqueLoopName, sessionId, deps.logger)
@@ -1171,7 +1158,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             totalSections: sections.length,
           }
           
-          const sectionPrompt = deps.loopService!.buildSectionInitialPrompt(updatedState)
+          const sectionPrompt = deps.loop.buildSectionInitialPrompt(updatedState)
           
           // Emit lifecycle event for TUI to resolve RPC
           command.lifecycle?.onStarted?.({
@@ -1313,8 +1300,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             
             deps.loopsRepo.setDecompositionSessionId(ctx.projectId, uniqueLoopName, decomposerSessionId)
             deps.loopsRepo.setCurrentSessionId(ctx.projectId, uniqueLoopName, decomposerSessionId)
-            deps.loopService!.registerLoopSession(decomposerSessionId, uniqueLoopName)
-            deps.loopService!.setPhase(uniqueLoopName, 'decomposing')
+            deps.loop.registerLoopSession(decomposerSessionId, uniqueLoopName)
+            deps.loop.setPhase(uniqueLoopName, 'decomposing')
 
             // Emit lifecycle event for TUI to resolve RPC
             command.lifecycle?.onStarted?.({
@@ -1326,7 +1313,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
               workspaceId: createdWorkspaceId,
             })
 
-            const decomposerPrompt = deps.loopService!.buildDecomposerInitialPrompt(state)
+            const decomposerPrompt = deps.loop.buildDecomposerInitialPrompt(state)
             
             try {
               markPromptSent(uniqueLoopName, decomposerSessionId, deps.logger)
@@ -1594,26 +1581,17 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
   }
   
   async function handleLoopStatus(
-    ctx: ForgeExecutionRequestContext,
+    _ctx: ForgeExecutionRequestContext,
     command: GetLoopStatusCommand,
   ): Promise<ForgeExecutionResponse<LoopStatusResult>> {
-    let states: import('../services/loop').LoopState[]
+    let states: import('../loop/state').LoopState[]
     
-    if (deps.loopService) {
-      if (command.selector?.kind === 'only-active') {
-        states = deps.loopService.listActive()
-      } else {
-        const active = deps.loopService.listActive()
-        const recent = deps.loopService.listRecent()
-        states = [...active, ...recent]
-      }
+    if (command.selector?.kind === 'only-active') {
+      states = deps.loop.listActive()
     } else {
-      // Repository fallback: read persisted loop states from DB
-      const rows = deps.loopsRepo.listByStatus(ctx.projectId, ['running', 'completed', 'cancelled', 'errored', 'stalled'])
-      states = rows.map(row => {
-        const large = deps.loopsRepo.getLarge(ctx.projectId, row.loopName)
-        return rowToLoopState(row, large)
-      })
+      const active = deps.loop.listActive()
+      const recent = deps.loop.listRecent()
+      states = [...active, ...recent]
     }
     
     // Apply selector filtering
@@ -1645,7 +1623,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       states = states.slice(0, limit)
     }
     
-    const statusFromState = (state: import('../services/loop').LoopState): LoopStatusView['status'] => {
+    const statusFromState = (state: import('../loop/state').LoopState): LoopStatusView['status'] => {
       if (state.active) return 'running'
       if (state.terminationReason) return terminationStatusFor(parseTerminationReasonString(state.terminationReason))
       return 'completed'
@@ -1657,8 +1635,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         s ? (s.length > 200 ? s.slice(0, 200) : s) : null
       const sectionViews = state.totalSections > 0 
         ? Array.from({ length: state.totalSections }, (_, i) => {
-            const section = deps.loopService?.getSectionPlan(state, i)
-            const digest = deps.loopService?.getCompletedSectionDigest(state)
+            const section = deps.loop.getSectionPlan(state, i)
+            const digest = deps.loop.getCompletedSectionDigest(state)
             const summary = digest?.find(s => s.index === i)
             return {
               index: i,
@@ -1716,15 +1694,15 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     _ctx: ForgeExecutionRequestContext,
     command: CancelLoopCommand,
   ): Promise<ForgeExecutionResponse<LoopCancelledResult>> {
-    if (!deps.loopService || !deps.loopHandler) {
-      return fail('internal_error', 500, 'Loop service not available')
+    if (!deps.loopHandler) {
+      return fail('internal_error', 500, 'Loop handler not available')
     }
 
-    let state: import('../services/loop').LoopState
+    let state: import('../loop/state').LoopState
 
     // Resolve loop by selector
     if (!command.selector || command.selector.kind === 'only-active') {
-      const active = deps.loopService.listActive()
+      const active = deps.loop.listActive()
       if (active.length === 0) return fail('not_found', 404, 'No active loops.')
       if (active.length !== 1) {
         return fail('conflict', 409, 'Multiple active loops. Specify a name.', undefined, active.map(s => s.loopName))
@@ -1732,12 +1710,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       state = active[0]
     } else {
       const name = command.selector.name
-      const { match, candidates } = deps.loopService.findMatchByName(name)
+      const { match, candidates } = deps.loop.findMatchByName(name)
       if (!match) {
         if (candidates.length > 0) {
           return fail('conflict', 409, `Multiple loops match "${name}". Be more specific.`, undefined, candidates.map(s => s.loopName))
         }
-        const recent = deps.loopService.listRecent()
+        const recent = deps.loop.listRecent()
         const foundRecent = recent.find(s => s.loopName === name || (s.worktreeBranch && s.worktreeBranch.toLowerCase().includes(name.toLowerCase())))
         if (foundRecent) {
           return fail('conflict', 409, `Loop "${foundRecent.loopName}" has already completed.`)
@@ -1781,8 +1759,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     ctx: ForgeExecutionRequestContext,
     command: RestartLoopCommand,
   ): Promise<ForgeExecutionResponse<LoopRestartedResult>> {
-    if (!deps.loopService || !deps.loopHandler) {
-      return fail('internal_error', 500, 'Loop service not available')
+    if (!deps.loopHandler) {
+      return fail('internal_error', 500, 'Loop handler not available')
     }
 
     if (command.selector.kind === 'only-active') {
@@ -1790,8 +1768,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     }
 
     const name = command.selector.name
-    const active = deps.loopService.listActive()
-    const recent = deps.loopService.listRecent()
+    const active = deps.loop.listActive()
+    const recent = deps.loop.listRecent()
     const allStates = [...active, ...recent]
     const { match: stoppedState, candidates } = findPartialMatch(name, allStates, s => [s.loopName, s.worktreeBranch])
     if (!stoppedState && candidates.length > 0) {
@@ -1819,7 +1797,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const permissionRuleset = buildLoopPermissionRuleset({ isWorktree: !!stoppedState.worktree, isSandbox: restartSandbox })
     const previousTermination = stoppedState.terminationReason
     const previousState = { ...stoppedState }
-    let restartedState: import('../services/loop').LoopState | null = null
+    let restartedState: import('../loop/state').LoopState | null = null
     let bindFailed = false
 
     type RestartOutcome =
@@ -1828,7 +1806,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
     const outcome = await deps.loopHandler.runExclusive<RestartOutcome>(stoppedState.loopName, async () => {
       if (stoppedState.active) {
-        const latestState = deps.loopService!.getActiveState(stoppedState.loopName)
+        const latestState = deps.loop.getActiveState(stoppedState.loopName)
         if (latestState?.active) {
           try { await deps.v2.session.abort({ sessionID: latestState.sessionId }) } catch {}
           deps.loopHandler!.clearLoopTimers(stoppedState.loopName)
@@ -1912,7 +1890,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             deps.sectionPlansRepo.setStatus(ctx.projectId, stoppedState.loopName, 0, 'in_progress')
             deps.sectionPlansRepo.setStartedAt(ctx.projectId, stoppedState.loopName, 0, Date.now())
             
-            deps.loopService!.registerLoopSession(newSessionId, stoppedState.loopName)
+            deps.loop.registerLoopSession(newSessionId, stoppedState.loopName)
             deps.loopsRepo.setDecompositionSessionId(ctx.projectId, stoppedState.loopName, newSessionId)
             deps.loopsRepo.setCurrentSessionId(ctx.projectId, stoppedState.loopName, newSessionId)
             
@@ -1956,7 +1934,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
                 }
                 decomposerSessionId = decomposerResult.data.id
               }
-              deps.loopService!.registerLoopSession(decomposerSessionId, stoppedState.loopName)
+              deps.loop.registerLoopSession(decomposerSessionId, stoppedState.loopName)
               deps.loopsRepo.setDecompositionStatus(ctx.projectId, stoppedState.loopName, 'running')
               deps.loopsRepo.setDecompositionSessionId(ctx.projectId, stoppedState.loopName, decomposerSessionId)
               deps.loopsRepo.setCurrentSessionId(ctx.projectId, stoppedState.loopName, decomposerSessionId)
@@ -2008,7 +1986,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             }
             decomposerSessionId = decomposerResult.data.id
           }
-          deps.loopService!.registerLoopSession(decomposerSessionId, stoppedState.loopName)
+          deps.loop.registerLoopSession(decomposerSessionId, stoppedState.loopName)
           deps.loopsRepo.setDecompositionStatus(ctx.projectId, stoppedState.loopName, 'running')
           deps.loopsRepo.setDecompositionSessionId(ctx.projectId, stoppedState.loopName, decomposerSessionId)
           deps.loopsRepo.setCurrentSessionId(ctx.projectId, stoppedState.loopName, decomposerSessionId)
@@ -2038,7 +2016,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       const restartPhase = effectiveNeedsDecomposerRestart ? 'decomposing' as const : stoppedState.phase === 'final_auditing' ? 'final_auditing' as const : 'coding' as const
       const effectiveSessionId = decomposerSessionId || newSessionId!
 
-      const newState: import('../services/loop').LoopState = {
+      const newState: import('../loop/state').LoopState = {
         active: true,
         sessionId: effectiveSessionId,
         loopName: stoppedState.loopName,
@@ -2091,13 +2069,13 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
     if (needsDecomposerRestart) {
       // Re-enter decomposition: prompt the decomposer session
-      promptText = deps.loopService!.buildDecomposerInitialPrompt(stoppedState)
+      promptText = deps.loop.buildDecomposerInitialPrompt(stoppedState)
     } else if (stoppedState.totalSections > 0 && stoppedState.decompositionStatus === 'completed') {
       // Use persisted section state to build the correct section prompt
       if (stoppedState.phase === 'final_auditing') {
-        promptText = deps.loopService!.buildFinalAuditPrompt(stoppedState)
+        promptText = deps.loop.buildFinalAuditPrompt(stoppedState)
       } else {
-        promptText = deps.loopService!.buildSectionInitialPrompt(stoppedState)
+        promptText = deps.loop.buildSectionInitialPrompt(stoppedState)
       }
     } else {
       // Legacy non-sectioned prompt
@@ -2146,10 +2124,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       deps.logger.error('loop-restart: failed to send prompt', promptResult.error)
       // Save section plans before deleteState (which cascades to section_plans)
       const savedPlans = deps.sectionPlansRepo?.list(ctx.projectId, stoppedState.loopName) ?? []
-      deps.loopService.deleteState(stoppedState.loopName)
+      deps.loop.deleteState(stoppedState.loopName)
       try {
-        deps.loopService.setState(previousState.loopName, previousState)
-        if (previousState.active) deps.loopService.registerLoopSession(previousState.sessionId, previousState.loopName)
+        deps.loop.setState(previousState.loopName, previousState)
+        if (previousState.active) deps.loop.registerLoopSession(previousState.sessionId, previousState.loopName)
         // Restore section plans after setState
         if (savedPlans.length > 0) {
           deps.sectionPlansRepo?.restoreAll(savedPlans)
@@ -2165,9 +2143,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     // Save section plans before deleteState (which cascades to section_plans)
     const savedSectionPlans = deps.sectionPlansRepo?.list(ctx.projectId, stoppedState.loopName) ?? []
 
-    deps.loopService.deleteState(stoppedState.loopName)
-    deps.loopService.setState(stoppedState.loopName, restartedState!)
-    deps.loopService.registerLoopSession(outcome.newSessionId, stoppedState.loopName)
+    deps.loop.deleteState(stoppedState.loopName)
+    deps.loop.setState(stoppedState.loopName, restartedState!)
+    deps.loop.registerLoopSession(outcome.newSessionId, stoppedState.loopName)
 
     // Restore section plans after setState
     if (savedSectionPlans.length > 0) {

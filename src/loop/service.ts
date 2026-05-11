@@ -4,9 +4,23 @@ import type { LoopsRepo, LoopRow, LoopLargeFields } from '../storage/repos/loops
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo, ReviewFindingRow } from '../storage/repos/review-findings-repo'
 import type { SectionPlansRepo, SectionPlanRow } from '../storage/repos/section-plans-repo'
-import { teardownWorktreeArtifacts } from '../utils/worktree-cleanup'
-import { buildContinuationPrompt as _buildContinuationPrompt, buildAuditPrompt as _buildAuditPrompt, buildDecomposerInitialPrompt as _buildDecomposerInitialPrompt, buildSectionInitialPrompt as _buildSectionInitialPrompt, buildSectionAuditPrompt as _buildSectionAuditPrompt, buildSectionContinuationPrompt as _buildSectionContinuationPrompt, buildFinalAuditPrompt as _buildFinalAuditPrompt, type PromptContext } from '../loop/prompts'
-import { parseSectionSummary as _parseSectionSummary } from '../loop/section-summary'
+import type { LoopState } from './state'
+import {
+  buildContinuationPrompt as _buildContinuationPrompt,
+  buildAuditPrompt as _buildAuditPrompt,
+  buildDecomposerInitialPrompt as _buildDecomposerInitialPrompt,
+  buildSectionInitialPrompt as _buildSectionInitialPrompt,
+  buildSectionAuditPrompt as _buildSectionAuditPrompt,
+  buildSectionContinuationPrompt as _buildSectionContinuationPrompt,
+  buildFinalAuditPrompt as _buildFinalAuditPrompt,
+  type PromptContext,
+} from './prompts'
+import { parseSectionSummary as _parseSectionSummary } from './section-summary'
+import { generateUniqueName } from './name-uniqueness'
+
+export const MAX_RETRIES = 3
+const STALL_TIMEOUT_MS = 60_000
+const MAX_CONSECUTIVE_STALLS = 5
 
 export type LoopChangeReason =
   | 'insert' | 'delete' | 'terminate'
@@ -16,53 +30,6 @@ export type LoopChangeReason =
   | 'model-failed' | 'error' | 'reconcile'
 
 export type LoopChangeNotifier = (reason: LoopChangeReason, loopName: string, hint?: { projectDir?: string; worktreeDir?: string }) => void
-
-export const MAX_RETRIES = 3
-const STALL_TIMEOUT_MS = 60_000
-const MAX_CONSECUTIVE_STALLS = 5
-const RECENT_MESSAGES_COUNT = 5
-const orphanSweepWorkspaceIds = new Set<string>()
-
-function isNotFoundError(err: unknown): boolean {
-  return err instanceof Error && (err.name === 'NotFoundError' || err.message.includes('NotFoundError'))
-}
-
-/**
- * Represents the runtime state of an autonomous loop.
- */
-export interface LoopState {
-  active: boolean
-  sessionId: string
-  loopName: string
-  worktreeDir: string
-  projectDir?: string
-  worktreeBranch?: string
-  iteration: number
-  maxIterations: number
-  startedAt: string
-  prompt?: string
-  phase: 'coding' | 'auditing' | 'decomposing' | 'final_auditing'
-  lastAuditResult?: string
-  errorCount: number
-  auditCount: number
-  terminationReason?: string
-  completedAt?: string
-  worktree?: boolean
-  modelFailed?: boolean
-  sandbox?: boolean
-  sandboxContainer?: string
-  completionSummary?: string
-  executionModel?: string
-  auditorModel?: string
-  workspaceId?: string
-  hostSessionId?: string
-  decompositionStatus: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
-  decompositionMode: 'agent' | 'deterministic'
-  decompositionSessionId: string | null
-  currentSectionIndex: number
-  totalSections: number
-  finalAuditDone: boolean
-}
 
 export interface LoopService {
   getActiveState(name: string): LoopState | null
@@ -163,7 +130,7 @@ export function createLoopService(
   logger: Logger,
   loopConfig?: LoopConfig,
   notify?: LoopChangeNotifier,
-  v2Client?: OpencodeClient,
+  _v2Client?: OpencodeClient,
   sectionPlansRepo?: SectionPlansRepo,
 ): LoopService {
   const notifyLoopChange: LoopChangeNotifier = notify ?? (() => {})
@@ -219,7 +186,6 @@ export function createLoopService(
   }
 
   function setState(name: string, state: LoopState): void {
-    // Assert that the name parameter matches state.loopName to prevent silent data corruption
     if (state.loopName !== name) {
       throw new Error(`setState: name parameter "${name}" does not match state.loopName "${state.loopName}"`)
     }
@@ -228,7 +194,6 @@ export function createLoopService(
       prompt: state.prompt ?? null,
       lastAuditResult: state.lastAuditResult ?? null,
     }
-    // Use insert which errors on conflict - should never happen for setState
     const ok = loopsRepo.insert(row, large)
     if (!ok) {
       throw new Error(`setState: loop "${name}" already exists`)
@@ -353,28 +318,6 @@ export function createLoopService(
     const active = listActive()
     const now = Date.now()
     for (const state of active) {
-      if (state.worktree && v2Client) {
-        try {
-          await teardownWorktreeArtifacts({
-            v2: v2Client,
-            loopName: state.loopName,
-            sessionId: state.sessionId,
-            workspaceId: state.workspaceId,
-            worktreeDir: state.worktreeDir,
-            worktree: true,
-            doCommit: true,
-            doRemoveWorktree: true,
-            reasonLabel: 'shutdown',
-            worktreeBranch: state.worktreeBranch,
-            iteration: state.iteration,
-            logPrefix: 'Loop',
-            logger,
-          })
-          logger.log(`Loop: teardown for ${state.loopName} sessionDeleted=true workspaceDeleted=true worktreeRemoved=true`)
-        } catch (err) {
-          logger.error(`Loop: teardown failed for ${state.loopName}`, err)
-        }
-      }
       loopsRepo.terminate(projectId, state.loopName, {
         status: 'cancelled',
         reason: 'shutdown',
@@ -394,28 +337,6 @@ export function createLoopService(
     // Back-compatible path: no opts means cancel everything (old behavior)
     if (!opts?.isSandboxLive) {
       for (const state of active) {
-        if (state.worktree && v2Client) {
-          try {
-            await teardownWorktreeArtifacts({
-              v2: v2Client,
-              loopName: state.loopName,
-              sessionId: state.sessionId,
-              workspaceId: state.workspaceId,
-              worktreeDir: state.worktreeDir,
-              worktree: true,
-              doCommit: true,
-              doRemoveWorktree: true,
-              reasonLabel: 'shutdown',
-              worktreeBranch: state.worktreeBranch,
-              iteration: state.iteration,
-              logPrefix: 'Loop',
-              logger,
-            })
-            logger.log(`Loop: teardown for ${state.loopName} sessionDeleted=true workspaceDeleted=true worktreeRemoved=true`)
-          } catch (err) {
-            logger.error(`Loop: teardown failed for ${state.loopName}`, err)
-          }
-        }
         loopsRepo.terminate(projectId, state.loopName, {
           status: 'cancelled',
           reason: 'shutdown',
@@ -441,32 +362,9 @@ export function createLoopService(
       if (live) {
         preserved.push(state.loopName)
         logger.log(`Loop: preserved active sandbox loop across plugin restart: ${state.loopName} (iteration ${String(state.iteration)})`)
-        // No status change, no notify — the row stays running.
         continue
       }
 
-      if (state.worktree && v2Client) {
-        try {
-          await teardownWorktreeArtifacts({
-            v2: v2Client,
-            loopName: state.loopName,
-            sessionId: state.sessionId,
-            workspaceId: state.workspaceId,
-            worktreeDir: state.worktreeDir,
-            worktree: true,
-            doCommit: true,
-            doRemoveWorktree: true,
-            reasonLabel: 'shutdown',
-            worktreeBranch: state.worktreeBranch,
-            iteration: state.iteration,
-            logPrefix: 'Loop',
-            logger,
-          })
-          logger.log(`Loop: teardown for ${state.loopName} sessionDeleted=true workspaceDeleted=true worktreeRemoved=true`)
-        } catch (err) {
-          logger.error(`Loop: teardown failed for ${state.loopName}`, err)
-        }
-      }
       loopsRepo.terminate(projectId, state.loopName, {
         status: 'cancelled',
         reason: 'shutdown',
@@ -719,219 +617,5 @@ export function createLoopService(
   }
 }
 
-export function generateUniqueName(baseName: string, existingNames: readonly string[]): string {
-  const maxLength = 25
-  const truncated = baseName.length > maxLength ? baseName.substring(0, maxLength) : baseName
-  
-  if (!existingNames.includes(truncated)) {
-    return truncated
-  }
-  
-  let counter = 1
-  let candidate = `${truncated}-${counter}`
-  
-  while (existingNames.includes(candidate)) {
-    counter++
-    candidate = `${truncated}-${counter}`
-  }
-  
-  return candidate
-}
-
-export interface LoopSessionOutput {
-  messages: { text: string; cost: number; tokens: { input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number } }[]
-  totalCost: number
-  totalTokens: { input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number }
-  fileChanges: { additions: number; deletions: number; files: number } | null
-}
-
-export async function sweepOrphanWorkspaces(opts: {
-  v2Client: OpencodeClient
-  loopsRepo: LoopsRepo
-  projectId: string
-  logger: Logger
-}): Promise<{ removed: number; errors: string[] }> {
-  const { v2Client, loopsRepo, projectId, logger } = opts
-  const result = { removed: 0, errors: [] as string[] }
-
-  const workspaceApi = v2Client.experimental?.workspace
-  if (!workspaceApi?.list) {
-    logger.log('Sweep: experimental.workspace.list not available, skipping orphan sweep')
-    return result
-  }
-
-  try {
-    const listResult = await workspaceApi.list()
-    const workspaces = (listResult.data ?? []) as Array<{
-      id: string
-      type?: string
-      directory?: string
-      extra?: unknown
-    }>
-
-    const forgeWorktreeWorkspaces = workspaces.filter((w) => w.type === 'forge-worktree')
-    if (forgeWorktreeWorkspaces.length === 0) {
-      return result
-    }
-
-    const activeRows = loopsRepo.listByStatus(projectId, ['running'])
-    const activeWorkspaceIds = new Set(activeRows.map((r) => r.workspaceId).filter((id): id is string => id !== null))
-
-    for (const workspace of forgeWorktreeWorkspaces) {
-      if (activeWorkspaceIds.has(workspace.id)) {
-        continue
-      }
-      if (orphanSweepWorkspaceIds.has(workspace.id)) {
-        logger.debug(`Sweep: workspace ${workspace.id} already being swept, skipping`)
-        continue
-      }
-
-      orphanSweepWorkspaceIds.add(workspace.id)
-      logger.log(`Sweep: found orphan workspace ${workspace.id} (type=forge-worktree)`)
-
-      try {
-        const sessionApi = v2Client.experimental?.session
-        if (sessionApi?.list) {
-          try {
-            const sessionResult = await sessionApi.list({ workspace: workspace.id })
-            const sessions = (sessionResult.data ?? []) as Array<{ id: string }>
-            for (const session of sessions) {
-              try {
-                await v2Client.session.delete({ sessionID: session.id, directory: workspace.directory ?? projectId })
-                logger.log(`Sweep: deleted orphan session ${session.id} in workspace ${workspace.id}`)
-              } catch (err) {
-                if (isNotFoundError(err)) {
-                  logger.debug(`Sweep: orphan session ${session.id} already deleted`)
-                  continue
-                }
-
-                const msg = err instanceof Error ? err.message : String(err)
-                result.errors.push(`Failed to delete session ${session.id}: ${msg}`)
-                logger.error(`Sweep: failed to delete session ${session.id}`, err)
-              }
-            }
-          } catch (err) {
-            logger.error(`Sweep: failed to list sessions in workspace ${workspace.id}`, err)
-          }
-        }
-
-        try {
-          await workspaceApi.remove({ id: workspace.id })
-          result.removed++
-          logger.log(`Sweep: removed orphan workspace ${workspace.id}`)
-        } catch (err) {
-          if (isNotFoundError(err)) {
-            logger.debug(`Sweep: orphan workspace ${workspace.id} already removed`)
-            continue
-          }
-
-          const msg = err instanceof Error ? err.message : String(err)
-          result.errors.push(`Failed to remove workspace ${workspace.id}: ${msg}`)
-          logger.error(`Sweep: failed to remove workspace ${workspace.id}`, err)
-        }
-      } finally {
-        orphanSweepWorkspaceIds.delete(workspace.id)
-      }
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    result.errors.push(`Orphan sweep failed: ${msg}`)
-    logger.error('Sweep: orphan sweep failed', err)
-  }
-
-  return result
-}
-
-export async function fetchSessionOutput(
-  v2Client: OpencodeClient,
-  sessionId: string,
-  directory: string,
-  logger?: Logger,
-): Promise<LoopSessionOutput | null> {
-  if (!directory || !sessionId) {
-    logger?.debug('fetchSessionOutput: invalid directory or sessionId')
-    return null
-  }
-
-  try {
-    const messagesResult = await v2Client.session.messages({
-      sessionID: sessionId,
-      directory,
-    })
-
-    const messages = (messagesResult.data ?? []) as {
-      info: { role: string; cost?: number; tokens?: { input: number; output: number; reasoning: number; cache: { read: number; write: number } } }
-      parts: { type: string; text?: string }[]
-    }[]
-
-    const assistantMessages = messages.filter((m) => m.info.role === 'assistant')
-    const lastThree = assistantMessages.slice(-RECENT_MESSAGES_COUNT)
-
-    const extractedMessages = lastThree.map((msg) => {
-      const text = msg.parts
-        .filter((p) => p.type === 'text' && p.text !== undefined)
-        .map((p) => p.text!)
-        .join('\n')
-      const cost = msg.info.cost ?? 0
-      const tokens = msg.info.tokens ?? { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
-      return {
-        text,
-        cost,
-        tokens: {
-          input: tokens.input,
-          output: tokens.output,
-          reasoning: tokens.reasoning,
-          cacheRead: tokens.cache.read,
-          cacheWrite: tokens.cache.write,
-        },
-      }
-    })
-
-    let totalCost = 0
-    let totalInputTokens = 0
-    let totalOutputTokens = 0
-    let totalReasoningTokens = 0
-    let totalCacheRead = 0
-    let totalCacheWrite = 0
-
-    for (const msg of assistantMessages) {
-      totalCost += msg.info.cost ?? 0
-      const tokens = msg.info.tokens
-      if (tokens) {
-        totalInputTokens += tokens.input
-        totalOutputTokens += tokens.output
-        totalReasoningTokens += tokens.reasoning
-        totalCacheRead += tokens.cache.read
-        totalCacheWrite += tokens.cache.write
-      }
-    }
-
-    const sessionResult = await v2Client.session.get({ sessionID: sessionId, directory })
-    const session = sessionResult.data as { summary?: { additions: number; deletions: number; files: number } } | undefined
-    const fileChanges = session?.summary
-      ? {
-          additions: session.summary.additions,
-          deletions: session.summary.deletions,
-          files: session.summary.files,
-        }
-      : null
-
-    return {
-      messages: extractedMessages,
-      totalCost,
-      totalTokens: {
-        input: totalInputTokens,
-        output: totalOutputTokens,
-        reasoning: totalReasoningTokens,
-        cacheRead: totalCacheRead,
-        cacheWrite: totalCacheWrite,
-      },
-      fileChanges,
-    }
-  } catch (err) {
-    if (logger) {
-      logger.error(`Loop: could not fetch session output for ${sessionId}`, err)
-    }
-    return null
-  }
-}
+// Re-export generateUniqueName for backward compatibility
+export { generateUniqueName } from './name-uniqueness'

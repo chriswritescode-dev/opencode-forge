@@ -7,7 +7,8 @@ import { spawnSync } from 'child_process'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
-import { createLoopService, type LoopState } from '../../src/services/loop'
+import { createLoopService } from '../../src/loop/service'
+import type { LoopState } from '../../src/loop/state'
 import { createLoopEventHandler } from '../../src/hooks/loop'
 import type { Logger, PluginConfig } from '../../src/types'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
@@ -339,7 +340,7 @@ describe('Loop Terminate Handler', () => {
       expect(after).toBeTruthy()
       expect(after!.hostSessionId).toBe(hostSessionId)
       expect(after!.active).toBe(false)
-      expect(after!.terminationReason).toBe('cancelled')
+      expect(after!.terminationReason).toBe('user_aborted')
     })
   })
 
@@ -375,7 +376,7 @@ describe('Loop Terminate Handler', () => {
 
       const after = loopService.getAnyState(state.loopName)
       expect(after!.active).toBe(false)
-      expect(after!.terminationReason).toBe('cancelled')
+      expect(after!.terminationReason).toBe('user_aborted')
       // Verify the commit message in git log
       const logResult = spawnSync('git', ['log', '-1', '--format=%s'], { cwd: worktreeDir, encoding: 'utf-8' })
       const commitMessage = logResult.stdout.trim()

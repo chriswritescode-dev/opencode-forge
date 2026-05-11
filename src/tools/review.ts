@@ -5,17 +5,18 @@ import { injectScopeField } from '../utils/git-branch'
 const z = tool.schema
 
 function resolveLoopNameForToolContext(
-  loopService: ToolContext['loopService'],
+  loop: { resolveLoopName(sessionId: string): string | null },
   toolCtx?: { sessionID?: string },
 ): string | null | undefined {
   if (!toolCtx?.sessionID) {
     return undefined
   }
-  return loopService.resolveLoopName(toolCtx.sessionID) ?? undefined
+  return loop.resolveLoopName(toolCtx.sessionID) ?? undefined
 }
 
 export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
-  const { reviewFindingsRepo, projectId, logger, loopService } = ctx
+  const { reviewFindingsRepo, projectId, logger } = ctx
+  const loop = ctx.loop
 
   return {
     'review-write': tool({
@@ -43,7 +44,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         }
 
         const executionDirectory = toolCtx?.directory ?? toolCtx?.worktree ?? ctx.directory
-        injectScopeField(row, executionDirectory, loopService, toolCtx?.sessionID)
+        injectScopeField(row, executionDirectory, loop, toolCtx?.sessionID)
 
         // Apply explicit section index or crossSection override
         if (args.crossSection) {
@@ -54,7 +55,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
           }
           const loopName = row.loopName
           if (loopName) {
-            const loopState = loopService.getActiveState(loopName)
+            const loopState = loop.getActiveState(loopName)
             if (loopState && loopState.totalSections > 0) {
               if (args.sectionIndex < 0 || args.sectionIndex >= loopState.totalSections) {
                 return `Invalid sectionIndex ${args.sectionIndex}: must be between 0 and ${loopState.totalSections - 1}.`
@@ -84,7 +85,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         allSections: z.boolean().optional().describe('Return all findings across all sections, ignoring current section scoping.'),
       },
       execute: async (args, toolCtx) => {
-        const loopName = resolveLoopNameForToolContext(loopService, toolCtx)
+        const loopName = resolveLoopNameForToolContext(loop, toolCtx)
         let findings = loopName !== undefined
           ? reviewFindingsRepo.listByLoopName(projectId, loopName)
           : reviewFindingsRepo.listAll(projectId)
@@ -92,7 +93,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         // Filter by section scope when in a sectioned loop
         // During final_auditing, return all sections so the auditor can see cross-section findings
         if (loopName && !args.allSections) {
-          const loopState = loopService.getActiveState(loopName)
+          const loopState = loop.getActiveState(loopName)
           if (loopState && loopState.totalSections > 0 && loopState.phase !== 'final_auditing') {
             if (args.crossSection) {
               // crossSection: return only cross-section findings (sectionIndex === null)
@@ -149,13 +150,13 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         crossSection: z.boolean().optional().describe('Set to true to delete cross-section findings (sectionIndex=null). Overrides sectionIndex.'),
       },
       execute: async (args, toolCtx) => {
-        const loopName = resolveLoopNameForToolContext(loopService, toolCtx)
+        const loopName = resolveLoopNameForToolContext(loop, toolCtx)
         let sectionIndex: number | null | undefined = args.sectionIndex
 
         if (args.crossSection === true) {
           sectionIndex = null
         } else if (sectionIndex === undefined && loopName) {
-          const loopState = loopService.getActiveState(loopName)
+          const loopState = loop.getActiveState(loopName)
           if (loopState && loopState.totalSections > 0) {
             sectionIndex = loopState.currentSectionIndex
           }

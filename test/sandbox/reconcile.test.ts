@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test'
 import { reconcileSandboxes, type ReconcileSandboxesDeps } from '../../src/sandbox/reconcile'
 import type { SandboxManager } from '../../src/sandbox/manager'
-import type { LoopService } from '../../src/services/loop'
+import type { LoopService } from '../../src/loop/service'
 import type { Logger } from '../../src/types'
 import type { LoopRow } from '../../src/storage'
 
@@ -36,7 +36,7 @@ describe('reconcileSandboxes', () => {
 
     deps = {
       sandboxManager: mockSandboxManager as SandboxManager,
-      loopService: mockLoopService as LoopService,
+      loop: mockLoopService as unknown as import('../../src/loop').Loop,
       logger: mockLogger as Logger,
     }
   })
