@@ -414,10 +414,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       `Loop: [perm-diag] rotate loop=${loopName} state.worktree=${String(state.worktree)} state.sandbox=${String(state.sandbox)}`
     )
 
-    const permissionRuleset = buildLoopPermissionRuleset({
-      isWorktree: !!state.worktree,
-      isSandbox: !!state.sandbox,
-    })
+    const permissionRuleset = state.worktree
+      ? buildLoopPermissionRuleset({ isWorktree: true, isSandbox: !!state.sandbox })
+      : undefined
 
     const ensured = await ensureWorkspaceForLoop(loopName, state, 'during session rotation')
 
@@ -762,7 +761,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       v2: v2Client,
       title: formatLoopSessionTitle(loopName),
       directory: updatedState.worktreeDir,
-      permission: buildLoopPermissionRuleset({ isWorktree: !!updatedState.worktree, isSandbox: !!updatedState.sandbox }),
+      ...(updatedState.worktree ? { permission: buildLoopPermissionRuleset({ isWorktree: true, isSandbox: !!updatedState.sandbox }) } : {}),
       workspaceId: updatedState.workspaceId,
       logPrefix: 'Loop',
       logger,
@@ -780,6 +779,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       phase: 'coding',
       resetError: false,
     })
+
+    if (!updatedState.worktree && v2Client.tui) {
+      await v2Client.tui.selectSession({ sessionID: codeSessionId }).catch((err: unknown) => {
+        logger.error(`Loop: failed to navigate TUI to code session`, err)
+      })
+    }
 
     const codeState = loopService.getActiveState(loopName) ?? updatedState
     const sectionPrompt = loopService.buildSectionInitialPrompt(codeState)
@@ -1537,7 +1542,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         v2: v2Client,
         title: formatLoopSessionTitle(loopName),
         directory: fallbackState.worktreeDir,
-        permission: buildLoopPermissionRuleset({ isWorktree: !!fallbackState.worktree, isSandbox: !!fallbackState.sandbox }),
+        ...(fallbackState.worktree ? { permission: buildLoopPermissionRuleset({ isWorktree: true, isSandbox: !!fallbackState.sandbox }) } : {}),
         workspaceId: fallbackState.workspaceId,
         logPrefix: 'Loop',
         logger,
@@ -1606,7 +1611,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         v2: v2Client,
         title: `decomposer-${loopName}`,
         directory: freshState.worktreeDir,
-        permission: buildLoopPermissionRuleset({ isWorktree: !!freshState.worktree, isSandbox: !!freshState.sandbox }),
+        ...(freshState.worktree ? { permission: buildLoopPermissionRuleset({ isWorktree: true, isSandbox: !!freshState.sandbox }) } : {}),
         workspaceId: freshState.workspaceId,
         logPrefix: 'Loop',
         logger,

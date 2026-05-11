@@ -69,6 +69,26 @@ export function extractMarkedPlan(text: string): MarkedPlanExtraction {
   return { ok: true, planText }
 }
 
+export function sanitizePlanPaths(planText: string, projectDir: string | undefined): string {
+  if (!projectDir) return planText
+  const trimmed = projectDir.replace(/\/+$/, '')
+  if (!trimmed) return planText
+
+  let result = planText
+  const prefixes = new Set<string>()
+  prefixes.add(trimmed + '/')
+
+  const home = typeof process !== 'undefined' ? process.env?.HOME : undefined
+  if (home && trimmed.startsWith(home + '/')) {
+    prefixes.add('~' + trimmed.slice(home.length) + '/')
+  }
+
+  for (const prefix of prefixes) {
+    result = result.split(prefix).join('')
+  }
+  return result
+}
+
 export function messageText(message: PlanCaptureMessage): string {
   const textParts = message.parts
     .filter((p) => p.type === 'text' && p.text !== undefined)

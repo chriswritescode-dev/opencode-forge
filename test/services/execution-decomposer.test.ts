@@ -680,6 +680,88 @@ describe('Execution decomposer integration', () => {
   })
 
   describe('Integration smoke: decomposer model wired through promptAsync', () => {
+    test('initial in-place decomposer session keeps default permissions', async () => {
+      const { createForgeExecutionService } = await import('../../src/services/execution')
+
+      const createCalls: Array<Record<string, unknown>> = []
+
+      const mockV2Client = {
+        session: {
+          create: async (args: Record<string, unknown>) => {
+            createCalls.push(args)
+            return { data: { id: 'session-permission' } }
+          },
+          promptAsync: async () => ({}),
+          abort: async () => ({}),
+          delete: async () => ({}),
+          get: async () => ({ data: {} }),
+          messages: async () => ({ data: [] }),
+          status: async () => ({ data: {} }),
+        },
+        experimental: {
+          workspace: { list: async () => ({ data: [] }), remove: async () => ({}) },
+          session: { list: async () => ({ data: [] }) },
+        },
+        tui: { publish: async () => ({}) },
+        worktree: { create: async () => ({ data: { directory: '/tmp/wt', branch: 'main' } }) },
+      }
+
+      const noopFn = () => {}
+      const mockLoopsRepo = new Proxy({}, { get: () => noopFn }) as any
+      mockLoopsRepo.listByStatus = () => []
+      mockLoopsRepo.get = () => null
+
+      const mockPlansRepo = new Proxy({}, { get: () => noopFn }) as any
+      mockPlansRepo.getForSession = () => null
+
+      const mockLoopService = {
+        generateUniqueLoopName: () => 'test-loop-permission',
+        setState: noopFn,
+        registerLoopSession: noopFn,
+        setPhase: noopFn,
+        buildDecomposerInitialPrompt: () => 'Decompose this plan',
+        deleteState: noopFn,
+        getActiveState: () => null,
+        getAnyState: () => null,
+      }
+
+      const service = createForgeExecutionService({
+        projectId: 'test-project',
+        directory: '/tmp/test',
+        config: {
+          executionModel: 'prov/exec',
+          auditorModel: 'prov/aud',
+          decomposer: { enabled: true, mode: 'agent' },
+          loop: { enabled: true },
+        },
+        logger: mockLogger,
+        dataDir: '/tmp',
+        v2: mockV2Client as any,
+        plansRepo: mockPlansRepo,
+        loopsRepo: mockLoopsRepo,
+        loop: mockLoopService as any,
+        sectionPlansRepo: {
+          bulkInsert: noopFn,
+          count: () => 0,
+          list: () => [],
+          setStatus: noopFn,
+          setStartedAt: noopFn,
+        } as any,
+      })
+
+      await service.dispatch(
+        { surface: 'api', projectId: 'test-project', directory: '/tmp/test' },
+        {
+          type: 'loop.start',
+          source: { kind: 'inline', planText: '## Phase 1: Setup\nDo something' },
+          mode: 'in-place',
+          maxIterations: 3,
+        },
+      )
+
+      expect(createCalls[0].permission).toBeUndefined()
+    })
+
     test('initial launch passes auditor model to promptAsync when only auditor and execution are configured', async () => {
       const { createForgeExecutionService } = await import('../../src/services/execution')
 

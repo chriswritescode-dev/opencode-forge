@@ -7,52 +7,52 @@ type PermissionRule = { permission: string; pattern: string; action: 'allow' | '
  *   more restrictive rules layered on top:
  *   - Worktree + sandbox: external_directory is allowed (no prompt)
  *   - Worktree + non-sandbox: external_directory is denied (no prompt)
- * - In-place loops return `undefined` so opencode falls back to the user's
- *   global permission config (allowing rm/edit/etc. to prompt normally).
- *   Forge-specific tool denies (review-*, plan-execute, loop) are enforced
- *   per-agent via the `tools.exclude` map in src/agents/code.ts.
+ * - In-place loops omit the blanket allow-all so opencode still consults the
+ *   user's global config (and the plugin's `permission.ask` hook), but we
+ *   *must* return a non-empty session ruleset. Returning `undefined` causes
+ *   opencode to skip the plugin hook entirely and route `ask` rules directly
+ *   to a TUI prompt that, in plugin-launched loop sessions, never resolves
+ *   the reply back to the paused tool. The forge-specific tool denies are
+ *   sufficient to keep the session-level evaluation path active.
  *
- * Per-agent tool restrictions are enforced by opencode's per-agent `tools` map
- * (see `src/config.ts`), not at the session level. However, now that the auditor
- * runs in a separate session (not a subtask), we add explicit session-level denies
- * for tools the code agent should not call (review-write, review-delete, plan-*, loop)
- * for worktree loops where the blanket allow-all would otherwise let them through.
+ * Per-agent tool restrictions are also enforced by opencode's per-agent
+ * `tools` map (see `src/config.ts`), but session-level denies are included
+ * here so the worktree blanket allow-all does not accidentally permit them,
+ * and so in-place loops continue to evaluate at the session level.
  *
  * Worktree completion logs are written by the host session (see
- * `src/hooks/loop.ts` -> `writeWorktreeCompletionLog`), so the loop session
- * itself does not need an external_directory allow rule for the log path.
- */
-/**
+ * `src/hooks/host-side-effects.ts` -> `writeWorktreeCompletionLog`), so the
+ * loop session itself does not need an external_directory allow rule for the
+ * log path.
+ *
  * @param options.isWorktree - Defaults to false (in-place loop). Worktree loops are isolated.
  * @param options.isSandbox - Defaults to false (non-sandbox). Sandbox provides container isolation.
- * @returns The ruleset for worktree loops, or `undefined` for in-place loops
- *          (defers to user's global permission config).
  */
 export function buildLoopPermissionRuleset(
   options?: { isWorktree?: boolean; isSandbox?: boolean },
-): PermissionRule[] | undefined {
+): PermissionRule[] {
   const isWorktree = options?.isWorktree ?? false
   const isSandbox = options?.isSandbox ?? false
-
-  // In-place loops: defer to user's global permission config so rm/edit/etc.
-  // prompt normally. Forge tool denies are enforced via per-agent tools.exclude.
-  if (!isWorktree) return undefined
-
   const rules: PermissionRule[] = []
 
-  // Blanket allow-all for worktree loops (isolated environment).
-  // More restrictive rules below layer on top of this.
-  rules.push({ permission: '*', pattern: '*', action: 'allow' })
+  if (isWorktree) {
+    // Blanket allow-all for worktree loops (isolated environment).
+    // More restrictive rules below layer on top of this.
+    rules.push({ permission: '*', pattern: '*', action: 'allow' })
 
-  // External directory access: explicit rule to avoid prompting.
-  rules.push({
-    permission: 'external_directory',
-    pattern: '*',
-    action: isSandbox ? 'allow' : 'deny',
-  })
+    // External directory access: explicit rule to avoid prompting.
+    rules.push({
+      permission: 'external_directory',
+      pattern: '*',
+      action: isSandbox ? 'allow' : 'deny',
+    })
+  }
 
-  // Code agent forbidden tools (enforced at session level so worktree's
-  // *:allow above does not accidentally permit them).
+  // Code agent forbidden tools. Placed after any *:allow so findLast picks
+  // them up for worktree loops. For in-place loops these denies are the
+  // entire session ruleset, which is enough to keep opencode on the
+  // session-level evaluation path (and therefore invoking the plugin's
+  // permission.ask hook for everything else).
   rules.push(
     { permission: 'review-write',  pattern: '*', action: 'deny' },
     { permission: 'review-delete', pattern: '*', action: 'deny' },
@@ -60,7 +60,7 @@ export function buildLoopPermissionRuleset(
     { permission: 'loop',          pattern: '*', action: 'deny' },
   )
 
-  // Common restrictions for worktree loops
+  // Common restrictions for all loop types.
   rules.push(
     { permission: 'bash',        pattern: 'git push *', action: 'deny' },
     { permission: 'loop-cancel', pattern: '*',          action: 'deny' },

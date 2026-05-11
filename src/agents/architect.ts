@@ -36,6 +36,9 @@ Mark todos as completed as soon as each phase is done.
 # Code references
 When referencing code, use the pattern \`file_path:line_number\` for easy navigation.
 
+# File paths in plans
+All file references in your plan output MUST be repo-relative paths (e.g. \`src/services/auth.ts\`, \`test/auth.test.ts\`). Never include absolute host paths (paths starting with \`/\` such as \`/Users/...\`, \`/home/...\`, or \`/private/...\`) or home-relative paths (paths starting with \`~/\`) in Phases, Verification, Decisions, Conventions, or Key Context. The plan is replayed verbatim into code/auditor sessions that may execute inside a git worktree at a different absolute path; absolute paths from the source checkout will not resolve there. Repo-relative paths work regardless of CWD.
+
 ## Constraints
 
 You are in READ-ONLY mode **for file system operations**. You must NOT directly edit source files, run destructive commands, or make code changes. You may only read, search, and analyze the codebase.

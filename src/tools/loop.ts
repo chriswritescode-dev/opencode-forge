@@ -39,6 +39,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
     return { service, execCtx }
   }
 
+   
+
   return {
     loop: tool({
       description: 'Execute a plan using an iterative development loop. Default runs in current directory. Set worktree to true for isolated git worktree.',

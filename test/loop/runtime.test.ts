@@ -27,8 +27,10 @@ const mockConfig: PluginConfig = {
 }
 
 interface MockClientState {
+  createCalls: Array<Record<string, unknown>>
   deleteCalls: Array<{ sessionID: string; directory: string }>
   publishCalls: Array<{ directory: string; body: unknown }>
+  selectCalls: Array<{ sessionID: string }>
   deleteThrows: boolean
   abortCalls: string[]
   promptCalls: Array<{ sessionID: string; agent?: string }>
@@ -38,7 +40,10 @@ interface MockClientState {
 function createMockV2Client(state: MockClientState): OpencodeClient {
   return {
     session: {
-      create: async () => ({ error: null, data: { id: 'sess' } }),
+      create: async (params) => {
+        state.createCalls.push(params as Record<string, unknown>)
+        return { error: null, data: { id: 'sess' } }
+      },
       promptAsync: async (params) => {
         state.promptCalls.push({ sessionID: (params as any).sessionID ?? '', agent: (params as any).agent })
         return { error: null, data: null }
@@ -63,7 +68,9 @@ function createMockV2Client(state: MockClientState): OpencodeClient {
       publish: async (params) => {
         state.publishCalls.push(params as { directory: string; body: unknown })
       },
-      selectSession: async () => {},
+      selectSession: async (params) => {
+        state.selectCalls.push(params as { sessionID: string })
+      },
     },
     worktree: {
       create: async () => ({ error: null, data: { directory: '/tmp/wt', branch: 'b' } }),
@@ -266,7 +273,9 @@ describe('Loop Runtime', () => {
   } = {}): { loop: Loop; clientState: MockClientState; logger: Logger; logs: Array<{ level: string; message: string }> } {
     const clientState: MockClientState = {
       deleteCalls: [],
+      createCalls: [],
       publishCalls: [],
+      selectCalls: [],
       deleteThrows: false,
       abortCalls: [],
       promptCalls: [],
@@ -391,6 +400,40 @@ describe('Loop Runtime', () => {
     })
   })
 
+  describe('decomposing transition to coding', () => {
+    test('in-place loops select the new code session before prompting', async () => {
+      const { loop, clientState } = createRuntime()
+      const state = makeState({
+        phase: 'decomposing',
+        sessionId: 'decomp-sess-1',
+        decompositionSessionId: 'decomp-sess-1',
+        decompositionStatus: 'completed',
+        decompositionMode: 'agent',
+        totalSections: 1,
+        worktree: false,
+        worktreeDir: tempDir,
+      })
+      loopService.setState(state.loopName, state)
+      sectionPlansRepo.bulkInsert({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        sections: [{ index: 0, title: 'Setup', content: '## Setup\nDo the work' }],
+      })
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: 'decomp-sess-1',
+        },
+      })
+
+      expect(clientState.selectCalls).toEqual([{ sessionID: 'sess' }])
+      expect(clientState.createCalls[0].permission).toBeUndefined()
+      expect(clientState.promptCalls[0]).toEqual({ sessionID: 'sess', agent: 'code' })
+    })
+  })
+
   describe('stall handling terminates with stall timeout when configured cap is reached', () => {
     test('repeated stall recovery attempts eventually terminate with stall_timeout', async () => {
       // Create a runtime with low stall limits for testing
@@ -414,7 +457,9 @@ describe('Loop Runtime', () => {
 
       const clientState: MockClientState = {
         deleteCalls: [],
+        createCalls: [],
         publishCalls: [],
+        selectCalls: [],
         deleteThrows: false,
         abortCalls: [],
         promptCalls: [],

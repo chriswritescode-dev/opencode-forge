@@ -954,10 +954,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       } else {
         // In-place mode
         worktreeBranch = resolveCurrentGitBranch(ctx.directory)
-        const permissionRuleset = buildLoopPermissionRuleset({
-          isWorktree: false,
-        })
-        
         if (isAgentDecomposer) {
           const decomposerSessionResult = await createSessionWithFallback(deps, {
             title: `decomposer-${uniqueLoopName}`,
@@ -973,7 +969,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           const createResult = await createSessionWithFallback(deps, {
             title: sessionTitle,
             directory: ctx.directory,
-            permission: permissionRuleset,
           })
           
           if (!createResult.data) {
@@ -1794,7 +1789,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     deps.logger.log(
       `handleRestartLoop: [perm-diag] worktree=${String(stoppedState.worktree)} sandbox=${String(restartSandbox)}`
     )
-    const permissionRuleset = buildLoopPermissionRuleset({ isWorktree: !!stoppedState.worktree, isSandbox: restartSandbox })
+    const permissionRuleset = stoppedState.worktree
+      ? buildLoopPermissionRuleset({ isWorktree: true, isSandbox: restartSandbox })
+      : undefined
     const previousTermination = stoppedState.terminationReason
     const previousState = { ...stoppedState }
     let restartedState: import('../loop/state').LoopState | null = null
@@ -2199,5 +2196,3 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 // ============================================================================
 // Internal Helpers
 // ============================================================================
-
-

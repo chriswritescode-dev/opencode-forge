@@ -11,7 +11,7 @@ export function createPlanCaptureEventHook(ctx: ToolContext) {
       if (!sessionID || part?.type !== 'text' || !part.text) return
 
       const result = captureMarkedPlanTextForSession(
-        { plansRepo, projectId, logger },
+        { plansRepo, projectId, directory, logger },
         sessionID,
         part.text,
         part.messageID
