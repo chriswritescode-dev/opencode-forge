@@ -3,6 +3,7 @@ import { resolve } from 'path'
 import { existsSync } from 'fs'
 import type { Logger } from '../types'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
+import { finalizeWorktreeBranch } from './worktree-branch'
 
 interface WorktreeCleanupInput {
   worktreeDir: string
@@ -169,7 +170,24 @@ export async function teardownWorktreeArtifacts(input: TeardownInput): Promise<T
     logError(`${input.logPrefix}: failed to delete loop session ${input.sessionId} across ${candidates.join(', ')}`)
   }
 
-  // Step 3: Delete workspace (if applicable)
+  // Step 3: Rename worktree branch for user discoverability.
+  // Must happen BEFORE workspace removal because workspace.remove cascades to
+  // git worktree remove, which deletes the directory that git branch -m needs.
+  if (input.worktree && input.worktreeBranch && input.worktreeDir) {
+    const renameResult = await finalizeWorktreeBranch({
+      worktreeDir: input.worktreeDir,
+      currentBranch: input.worktreeBranch,
+      loopName: input.loopName,
+      logger: input.logger,
+    })
+    if (renameResult) {
+      log(`${input.logPrefix}: renamed branch to ${renameResult.renamedTo}`)
+    }
+  }
+
+  // Step 4: Delete workspace (if applicable). This cascades to remove the
+  // git worktree directory via the builtin adapter, so it must come after the
+  // branch rename in Step 3.
   if (input.worktree && input.workspaceId) {
     const workspaceApi = input.v2.experimental?.workspace
     if (workspaceApi?.remove) {
@@ -189,7 +207,7 @@ export async function teardownWorktreeArtifacts(input: TeardownInput): Promise<T
     }
   }
 
-  // Step 4: Remove worktree (if requested)
+  // Step 5: Remove worktree (if requested)
   if (input.doRemoveWorktree && input.worktree) {
     const cleanupResult = await cleanupLoopWorktree({
       worktreeDir: input.worktreeDir,

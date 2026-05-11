@@ -328,7 +328,7 @@ describe('workspace recovery', () => {
       rmSync(worktreeDir, { recursive: true, force: true })
     })
 
-    it('re-provision fails: createLoopWorkspace returns null', async () => {
+    it('re-provision fails: createBuiltinWorktreeWorkspace returns null', async () => {
       const workspaceId = 'test-workspace-stale'
       const toastCalls: Array<{ variant?: string; message?: string }> = []
 

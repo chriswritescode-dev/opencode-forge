@@ -240,7 +240,7 @@ describe('ensureWorkspaceForLoop - audit path', () => {
     expect(currentState?.workspaceId).toBe('ws_test_123')
     expect(mockV2.experimental.workspace.create).toHaveBeenCalled()
     const createCall = (mockV2.experimental.workspace.create as any).mock.calls[0][0]
-    expect(createCall.type).toBe('forge-worktree')
+    expect(createCall.type).toBe('worktree')
     
     const sessionCreateCall = (mockV2.session.create as any).mock.calls[0][0]
     expect(sessionCreateCall.workspaceID).toBe('ws_test_123')

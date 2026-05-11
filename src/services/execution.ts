@@ -829,6 +829,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         sandboxStarted = false
         sandboxContainer = null
       }
+      if (createdWorkspaceId) {
+        const workspaceApi = deps.v2.experimental?.workspace
+        if (workspaceApi?.remove) {
+          await workspaceApi.remove({ id: createdWorkspaceId }).catch(() => {})
+        }
+      }
       if (hostWorktreeDir) {
         const { cleanupLoopWorktree } = await import('../utils/worktree-cleanup')
         await cleanupLoopWorktree({
@@ -851,32 +857,20 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       const isAgentDecomposer = decomposerConfig.enabled !== false && decomposerConfig.mode === 'agent'
       
       if (command.mode === 'worktree') {
-        // Create worktree
-        const worktreeResult = await deps.v2.worktree.create({
-          worktreeCreateInput: { name: uniqueLoopName },
-        })
-        
-        if (worktreeResult.error || !worktreeResult.data) {
-          deps.logger.error('handleStartLoop: failed to create worktree', worktreeResult.error)
-          return fail('internal_error', 500, 'Failed to create worktree')
-        }
-        
-        hostWorktreeDir = worktreeResult.data.directory!
-        worktreeBranch = worktreeResult.data.branch ?? undefined
-        
-        // Create workspace
-        const { createLoopWorkspace } = await import('../workspace/forge-worktree')
-        const workspace = await createLoopWorkspace(deps.v2, {
+        // Create builtin worktree workspace (single call — no separate worktree.create)
+        const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
+        const ws = await createBuiltinWorktreeWorkspace(deps.v2, {
           loopName: uniqueLoopName,
-          directory: hostWorktreeDir!,
-          branch: worktreeBranch,
+          directory: ctx.directory,
         }, deps.logger)
-        
-        if (workspace) {
-          deps.logger.log(`handleStartLoop: workspace ${workspace.workspaceId} created for ${uniqueLoopName}`)
-          workspaceId = workspace.workspaceId
-          createdWorkspaceId = workspace.workspaceId
+        if (!ws) {
+          deps.logger.error('handleStartLoop: failed to create builtin worktree workspace')
+          return fail('internal_error', 500, 'Failed to create worktree workspace')
         }
+        hostWorktreeDir = ws.directory
+        worktreeBranch = ws.branch
+        workspaceId = ws.workspaceId
+        createdWorkspaceId = ws.workspaceId
         
         // Build permissions
         const sandboxEnabled = isSandboxEnabled(deps.config, deps.sandboxManager)

@@ -16,7 +16,7 @@ import { createTools } from './tools'
 import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from './hooks'
 import { createSandboxToolBeforeHook, createSandboxToolAfterHook } from './hooks/sandbox-tools'
 import type { ToolContext } from './tools'
-import { FORGE_WORKTREE_WORKSPACE_TYPE, createForgeWorktreeAdaptor, type ForgeWorktreeListEntry } from './workspace/forge-worktree'
+
 import { LRUCache } from './utils/lru-cache'
 import { createSessionLoopResolver } from './services/session-loop-resolver'
 import { getProjectRegistry } from './api/project-registry'
@@ -25,8 +25,6 @@ import { createPlanCaptureEventHook } from './hooks/plan-capture'
 import { createSectionCaptureHook } from './hooks/section-capture'
 import { createBusRpcEventHook } from './api/bus-rpc'
 import { encodeEvent } from './api/bus-protocol'
-
-const registeredWorkspaceApis = new WeakSet<object>()
 
 export async function cleanupSandboxOrphansAcrossRegistry(
   registry: ProjectRegistry,
@@ -241,21 +239,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     const sectionPlansRepo = createSectionPlansRepo(db)
-
-    registerForgeWorktreeAdaptor(input, logger, {
-      listResolver: (projectID: string) => {
-        const rows = loopsRepo.listAll(projectID)
-        return rows
-          .filter((r) => r.workspaceId && r.worktreeDir)
-          .map((r) => ({
-            id: r.workspaceId!,
-            name: r.loopName,
-            branch: r.worktreeBranch,
-            directory: r.worktreeDir,
-            extra: { loopName: r.loopName, directory: r.worktreeDir, branch: r.worktreeBranch },
-          }))
-      },
-    })
 
     const notifyLoopChange: LoopChangeNotifier = (reason, loopName, hint) => {
       const targetDirectories = Array.from(new Set([
@@ -532,44 +515,8 @@ use the \`question\` tool to request execution approval with: "New session", "Ex
   }
 }
 
-function registerForgeWorktreeAdaptor(input: PluginInput, logger?: Pick<ReturnType<typeof createLogger>, 'log' | 'error'>, opts?: { listResolver?: (projectID: string) => ForgeWorktreeListEntry[] | Promise<ForgeWorktreeListEntry[]> }): void {
-  const workspaceApi = (input as PluginInput & {
-    experimental_workspace?: PluginInput['experimental_workspace']
-  }).experimental_workspace
-
-  if (!workspaceApi) {
-    logger?.log('Workspace adaptor registration skipped: experimental_workspace API not available')
-    return
-  }
-
-  if (registeredWorkspaceApis.has(workspaceApi)) {
-    logger?.log(`Workspace adaptor already registered: ${FORGE_WORKTREE_WORKSPACE_TYPE}`)
-    return
-  }
-
-  try {
-    workspaceApi.register(FORGE_WORKTREE_WORKSPACE_TYPE, createForgeWorktreeAdaptor({ listResolver: opts?.listResolver }))
-    registeredWorkspaceApis.add(workspaceApi)
-    logger?.log(`Workspace adaptor registered: ${FORGE_WORKTREE_WORKSPACE_TYPE}`)
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    if (/already|duplicate/i.test(message)) {
-      registeredWorkspaceApis.add(workspaceApi)
-      logger?.log(`Workspace adaptor already registered: ${FORGE_WORKTREE_WORKSPACE_TYPE}`)
-      return
-    }
-    logger?.error(`Workspace adaptor registration failed: ${FORGE_WORKTREE_WORKSPACE_TYPE}: ${message}`, err)
-  }
-}
-
 const plugin: Plugin = async (input: PluginInput): Promise<Hooks> => {
   const config = loadPluginConfig()
-  const bootstrapLogger = createLogger({
-    enabled: config.logging?.enabled ?? false,
-    file: config.logging?.file ?? resolveLogPath(),
-    debug: config.logging?.debug ?? false,
-  })
-  registerForgeWorktreeAdaptor(input, bootstrapLogger)
 
   const factory = createForgePlugin(config)
   const hooks = await factory(input)

@@ -4,9 +4,9 @@ function createMockApi(overrides?: { syncList?: () => Promise<{ data?: unknown[]
   const workspace = {
     list: vi.fn().mockResolvedValue({
       data: [
-        { id: 'ws-1', name: 'loop-a', type: 'forge-worktree', directory: '/wt/a', timeUsed: 100 },
-        { id: 'ws-2', name: 'loop-b', type: 'forge-worktree', directory: '/wt/b', timeUsed: 200 },
-        { id: 'ws-3', name: 'loop-c', type: 'forge-worktree', directory: '/wt/c', timeUsed: 50 },
+        { id: 'ws-1', name: 'loop-a', type: 'worktree', directory: '/wt/a', timeUsed: 100 },
+        { id: 'ws-2', name: 'loop-b', type: 'worktree', directory: '/wt/b', timeUsed: 200 },
+        { id: 'ws-3', name: 'loop-c', type: 'worktree', directory: '/wt/c', timeUsed: 50 },
       ],
     }),
     status: vi.fn().mockResolvedValue({
@@ -25,7 +25,7 @@ describe('TUI client workspaces.list()', () => {
   it('calls syncList when available and uses its result', async () => {
     const syncList = vi.fn().mockResolvedValue({
       data: [
-        { id: 'ws-sync-1', name: 'sync-loop', type: 'forge-worktree', directory: '/wt/sync', timeUsed: 300 },
+        { id: 'ws-sync-1', name: 'sync-loop', type: 'worktree', directory: '/wt/sync', timeUsed: 300 },
       ],
     })
     const api = createMockApi({ syncList }) as any

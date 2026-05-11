@@ -1,203 +1,95 @@
 /**
- * Forge worktree workspace adaptor.
- * 
- * This module provides a workspace adaptor that binds forge worktree loops
- * to OpenCode workspaces, enabling TUI switching and workspace-aware session management.
+ * Forge worktree workspace helpers.
+ *
+ * The recommended entry point is {@link createBuiltinWorktreeWorkspace}, which uses
+ * opencode's builtin `worktree` workspace type for fully connected TUI status.
  */
 
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
-import type { WorkspaceInfo, WorkspaceAdapter, WorkspaceTarget } from '@opencode-ai/plugin'
-
-export type { WorkspaceInfo, WorkspaceAdapter }
-
-export interface ForgeWorktreeAdapter extends WorkspaceAdapter {
-  list?: (opts?: { projectID?: string }) => Promise<WorkspaceInfo[]>
-}
 
 /**
- * Workspace type constant for forge worktree workspaces.
+ * Creates a builtin worktree workspace via opencode's built-in worktree adapter.
+ *
+ * Uses `experimental.workspace.create({ type: 'worktree', branch: null })` so the
+ * workspace appears as fully connected (green dot) in the TUI.
+ *
+ * @returns `{ workspaceId, directory, branch }` or `null` on failure.
  */
-export const FORGE_WORKTREE_WORKSPACE_TYPE = 'forge-worktree'
-
-/**
- * Extra payload shape for forge worktree workspace info.
- */
-export interface ForgeWorktreeExtra {
-  loopName: string
-  directory: string
-  branch?: string | null
-}
-
-function readForgeWorktreeExtra(extra: unknown): Partial<ForgeWorktreeExtra> {
-  if (!extra) return {}
-  if (typeof extra === 'string') {
-    try {
-      const parsed = JSON.parse(extra) as unknown
-      return parsed && typeof parsed === 'object' ? parsed as Partial<ForgeWorktreeExtra> : {}
-    } catch {
-      return {}
-    }
-  }
-  return typeof extra === 'object' ? extra as Partial<ForgeWorktreeExtra> : {}
-}
-
-export interface ForgeWorktreeListEntry {
-  id: string
-  name: string
-  branch: string | null
-  directory: string
-  extra: { loopName: string; directory: string; branch: string | null }
-}
-
-export type ForgeWorktreeListResolver = (projectID: string) => ForgeWorktreeListEntry[] | Promise<ForgeWorktreeListEntry[]>
-
-/**
- * Creates a forge worktree workspace adaptor.
- * 
- * This adaptor:
- * - configure(): Normalizes loop metadata from extra into workspace fields
- * - create(): No-op for already-created forge worktrees
- * - remove(): No-op to prevent implicit deletion during view/switch
- * - target(): Returns local directory target
- * - list(): Returns workspace entries from the loops repo (if resolver provided)
- * 
- * @returns WorkspaceAdapter compatible with experimental_workspace.register
- */
-export function createForgeWorktreeAdaptor(opts?: { listResolver?: ForgeWorktreeListResolver }): ForgeWorktreeAdapter {
-  const listResolver = opts?.listResolver
-  return {
-    name: 'Forge Worktree',
-    description: 'Workspace adaptor for forge worktree loops',
-    
-    configure(info: WorkspaceInfo): WorkspaceInfo {
-      const extra = readForgeWorktreeExtra(info.extra)
-      const name = extra.loopName ?? (info.name === 'unknown' ? info.id : info.name)
-
-      // Normalize workspace info from loop metadata
-      return {
-        ...info,
-        name,
-        directory: extra.directory ?? info.directory,
-        branch: extra.branch ?? info.branch,
-      }
-    },
-    
-    async create(_info: WorkspaceInfo, _env?: Record<string, string | undefined>, _from?: WorkspaceInfo): Promise<void> {
-      // No-op: forge worktrees are already created by the time workspace is registered
-      // This adaptor only surfaces existing worktrees to the workspace system
-      // Do NOT create a second git worktree here
-    },
-    
-    async remove(_info: WorkspaceInfo): Promise<void> {
-      // No-op: prevent workspace operations from implicitly deleting forge worktrees
-      // Worktree lifecycle is managed by forge loop commands, not workspace commands
-    },
-    
-    target(info: WorkspaceInfo): WorkspaceTarget {
-      // Return local directory target for workspace routing
-      return {
-        type: 'local',
-        directory: info.directory!,
-      }
-    },
-
-    list: listResolver ? (opts?: { projectID?: string }) =>
-      Promise.resolve(listResolver(opts?.projectID ?? '')).then((entries) =>
-        entries.map((e) => ({
-          id: e.id,
-          type: FORGE_WORKTREE_WORKSPACE_TYPE,
-          name: e.name,
-          branch: e.branch,
-          directory: e.directory,
-          extra: e.extra,
-          projectID: opts?.projectID ?? '',
-        }))
-      )
-    : undefined,
-  }
-}
-
-/**
- * Creates a workspace for a loop session.
- * 
- * For forge worktrees, this creates a workspace record with the forge-worktree type
- * and the directory as the workspace ID. The workspace database entry is created
- * by calling the upstream workspace.create API.
- * 
- * @param client - OpenCode v2 client
- * @param options - Workspace creation options
- * @param logger - Optional logger for diagnostic output
- * @returns Promise resolving to workspace ID or null on failure
- */
-export async function createLoopWorkspace(
+export async function createBuiltinWorktreeWorkspace(
   client: OpencodeClient,
   options: {
     loopName: string
-    directory: string
-    branch?: string | null
+    directory?: string
   },
   logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void }
-): Promise<{ workspaceId: string } | null> {
+): Promise<{ workspaceId: string; directory: string; branch: string } | null> {
   const workspaceApi = client.experimental?.workspace
   if (!workspaceApi || typeof workspaceApi.create !== 'function') {
-    (logger ?? console).log?.('createLoopWorkspace: experimental.workspace API not available on this host')
+    (logger ?? console).log?.('createBuiltinWorktreeWorkspace: experimental.workspace API not available')
     return null
   }
   try {
-    const result = await workspaceApi.create({
-      type: FORGE_WORKTREE_WORKSPACE_TYPE,
-      branch: options.branch ?? null,
-      extra: {
-        loopName: options.loopName,
-        directory: options.directory,
-        branch: options.branch ?? null,
-      },
-    })
+    const createParams: { type: string; branch: string | null; directory?: string } = {
+      type: 'worktree',
+      branch: null,
+    }
+    if (options.directory) {
+      createParams.directory = options.directory
+    }
+    const result = await workspaceApi.create(createParams)
 
     if ('error' in result && result.error) {
-      (logger ?? console).error('createLoopWorkspace: workspace.create returned error', result.error)
+      (logger ?? console).error('createBuiltinWorktreeWorkspace: workspace.create returned error', result.error)
       return null
     }
 
     const rawResult = result as unknown
-    const rawWorkspaceId = rawResult && typeof rawResult === 'object' && 'id' in rawResult && typeof rawResult.id === 'string'
-      ? rawResult.id
-      : null
 
     const workspaceData = 'data' in result ? result.data as unknown : rawResult
-    const workspaceId = typeof workspaceData === 'string'
+
+    const wsId =
+      rawResult && typeof rawResult === 'object' && 'id' in rawResult && typeof rawResult.id === 'string'
+        ? rawResult.id
+        : null
+
+    const id = typeof workspaceData === 'string'
       ? workspaceData
       : workspaceData && typeof workspaceData === 'object' && 'id' in workspaceData && typeof workspaceData.id === 'string'
         ? workspaceData.id
-        : rawWorkspaceId
+        : wsId
 
-    if (!workspaceId) {
-      (logger ?? console).error('createLoopWorkspace: workspace.create returned no workspace id', result.data)
+    const directory = workspaceData && typeof workspaceData === 'object' && 'directory' in workspaceData
+      ? String((workspaceData as Record<string, unknown>).directory ?? '')
+      : ''
+
+    const branch = workspaceData && typeof workspaceData === 'object' && 'branch' in workspaceData
+      ? String((workspaceData as Record<string, unknown>).branch ?? '')
+      : ''
+
+    if (!id) {
+      (logger ?? console).error('createBuiltinWorktreeWorkspace: workspace.create returned no workspace id', workspaceData)
       return null
     }
 
-    (logger ?? console).log?.(`createLoopWorkspace: workspace ${workspaceId} created for ${options.loopName}`)
-
-    return {
-      workspaceId,
+    // opencode awaits the connected event internally before returning,
+    // see opencode source workspace.ts (Event.Status loop). The response should
+    // not reach us until the worktree is ready or errored — verify directory is populated.
+    if (!directory) {
+      (logger ?? console).error('createBuiltinWorktreeWorkspace: workspace.create returned empty directory', workspaceData)
+      return null
     }
+
+    (logger ?? console).log?.(`createBuiltinWorktreeWorkspace: workspace ${id} created for ${options.loopName}`)
+
+    return { workspaceId: id, directory, branch }
   } catch (err) {
-    (logger ?? console).error('createLoopWorkspace: workspace.create threw', err)
+    (logger ?? console).error('createBuiltinWorktreeWorkspace: workspace.create threw', err)
     return null
   }
 }
 
 /**
  * Binds a session to a workspace by calling the warp API.
- * 
- * This calls the upstream experimental.workspace.warp endpoint to
- * move a session's sync history into the target workspace, making the
- * session workspace-scoped.
- * 
- * @param client - OpenCode v2 client
- * @param workspaceId - The workspace ID
- * @param sessionId - The session ID
- * @param logger - Optional logger for diagnostic output
  */
 export async function bindSessionToWorkspace(
   client: OpencodeClient,

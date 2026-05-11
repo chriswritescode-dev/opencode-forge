@@ -1068,7 +1068,7 @@ describe('Execution decomposer integration', () => {
           workspace: {
             list: async () => ({ data: [] }),
             remove: async () => ({}),
-            create: async () => ({ data: { id: 'wrk_1' } }),
+            create: async () => ({ data: { id: 'wrk_1', directory: '/tmp/wt/wrk_1', branch: 'opencode/wrk_1' } }),
             warp: async (args: Record<string, unknown>) => {
               warpCalls.push(args)
               return { data: {} }
@@ -1171,7 +1171,7 @@ describe('Execution decomposer integration', () => {
           workspace: {
             list: async () => ({ data: [] }),
             remove: async () => ({}),
-            create: async () => ({ data: { id: 'wrk_1' } }),
+            create: async () => ({ data: { id: 'wrk_1', directory: '/tmp/wt/wrk_1', branch: 'opencode/wrk_1' } }),
             warp: async (args: Record<string, unknown>) => {
               warpCalls.push(args)
               return { data: {} }

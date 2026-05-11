@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
@@ -434,7 +434,90 @@ describe('Loop Runtime', () => {
     })
   })
 
-  describe('stall handling terminates with stall timeout when configured cap is reached', () => {
+describe('runtime re-provisioning updates state.workspaceId', () => {
+  test('ensureWorkspaceForLoop provisions workspace and sets workspaceId', async () => {
+    const clientState: MockClientState = {
+      deleteCalls: [],
+      createCalls: [],
+      publishCalls: [],
+      selectCalls: [],
+      deleteThrows: false,
+      abortCalls: [],
+      promptCalls: [],
+      messagesResult: [
+        {
+          info: { role: 'assistant', finish: 'stop' },
+          parts: [{ type: 'text', text: 'Audit passed.' }],
+        },
+      ],
+    }
+
+    const wsCreateMock = vi.fn().mockResolvedValue({
+      data: { id: 'ws_new', directory: '/tmp/wt/new', branch: 'opencode/new' },
+    })
+    const warpMock = vi.fn().mockResolvedValue({ error: null })
+
+    const v2Client = {
+      ...createMockV2Client(clientState),
+      experimental: {
+        workspace: {
+          create: wsCreateMock,
+          warp: warpMock,
+        },
+      },
+    } as unknown as OpencodeClient
+
+    const { logger } = createCapturingLogger()
+    const config: PluginConfig = { ...mockConfig }
+
+    const loop = createLoop({
+      loopsRepo,
+      plansRepo,
+      reviewFindingsRepo,
+      sectionPlansRepo,
+      projectId: PROJECT_ID,
+      client: { client: {} as any } as any,
+      v2Client,
+      logger,
+      getConfig: () => config,
+      sandboxManager: undefined,
+      dataDir: tempDir,
+    })
+
+    const state = makeState({
+      phase: 'coding',
+      totalSections: 0,
+      decompositionStatus: 'completed',
+      auditCount: 0,
+      worktree: true,
+      workspaceId: undefined,
+      worktreeBranch: 'test/original-branch',
+      worktreeDir: '/tmp/wt/original',
+    })
+    loopService.setState(state.loopName, state)
+
+    await loop.tick({
+      type: 'session.status',
+      properties: {
+        status: { type: 'idle' },
+        sessionID: state.sessionId,
+      },
+    })
+
+    // workspaceId IS persisted to DB by setWorkspaceId
+    const afterState = loopService.getAnyState(state.loopName)
+    expect(afterState).not.toBeNull()
+    expect(afterState!.workspaceId).toBe('ws_new')
+
+    // createBuiltinWorktreeWorkspace was invoked (proves internal state mutation occurred)
+    expect(wsCreateMock).toHaveBeenCalledTimes(1)
+    expect(wsCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'worktree' }),
+    )
+  })
+})
+
+describe('stall handling terminates with stall timeout when configured cap is reached', () => {
     test('repeated stall recovery attempts eventually terminate with stall_timeout', async () => {
       // Create a runtime with low stall limits for testing
       // Need to also configure the loopService with matching stall settings

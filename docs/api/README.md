@@ -559,7 +559,7 @@ Worktree loops can optionally register as **OpenCode workspaces**, letting you s
 
 ### When it runs
 
-Workspace integration is **host-gated, not config-gated**. Forge registers a `forge-worktree` workspace adaptor at plugin load time only if the host runtime exposes the experimental workspace API (`experimental_workspace` on the plugin input, `experimental.workspace` on the SDK client).
+Workspace integration is **host-gated, not config-gated**. Forge uses opencode's builtin `worktree` workspace type, which is always available on hosts that expose the experimental workspace API (`experimental_workspace` on the plugin input, `experimental.workspace` on the SDK client).
 
 - **Host exposes the API** → worktree loops become workspace-backed. The worktree directory appears as a switchable workspace in the TUI, and its sessions are bound to that workspace.
 - **Host does not expose the API** → forge skips registration, logs a note, and worktree loops run exactly as before. Everything else (iteration, auditing, sandbox, status, cancel, restart) is unaffected.
@@ -572,7 +572,7 @@ When a worktree loop starts on a supported host, forge:
 
 1. Creates the git worktree (as usual)
 2. Creates a new Code session pointed at the worktree directory
-3. Calls `experimental.workspace.create` with `type: "forge-worktree"` and the loop metadata (`loopName`, `directory`, `branch`) in the `extra` payload
+3. Calls `experimental.workspace.create` with `type: "worktree"` and `branch: null` to create a builtin worktree workspace
 4. Calls `experimental.workspace.warp` to bind the session to that workspace
 5. Persists the workspace ID on the loop record (`loops.workspace_id`) so the TUI can route clicks on a loop into the correct workspace
 

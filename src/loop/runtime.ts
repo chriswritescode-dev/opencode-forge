@@ -336,13 +336,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     detachFromWorkspace(loopName, state, contextLabel)
 
-    const createLoopWorkspaceMod = await import('../workspace/forge-worktree')
-    const newWorkspace = await createLoopWorkspaceMod.createLoopWorkspace(
+    const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
+    const newWorkspace = await createBuiltinWorktreeWorkspace(
       v2Client,
       {
         loopName,
-        directory: state.worktreeDir,
-        branch: state.worktreeBranch ?? null,
+        directory: state.projectDir ?? state.worktreeDir,
       },
       logger,
     )
@@ -356,6 +355,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       await bindSessionToWorkspace(v2Client, newWorkspace.workspaceId, sessionId, logger)
       loopService.setWorkspaceId(loopName, newWorkspace.workspaceId)
       state.workspaceId = newWorkspace.workspaceId
+      if (newWorkspace.directory) state.worktreeDir = newWorkspace.directory
+      if (newWorkspace.branch) state.worktreeBranch = newWorkspace.branch
       logger.log(`Loop: re-provisioned workspace ${newWorkspace.workspaceId} for ${loopName} after stale id`)
       return { workspaceId: newWorkspace.workspaceId, recovered: true }
     } catch (err) {
@@ -377,13 +378,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return {}
     }
 
-    const createLoopWorkspaceMod = await import('../workspace/forge-worktree')
-    const workspace = await createLoopWorkspaceMod.createLoopWorkspace(
+    const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
+    const workspace = await createBuiltinWorktreeWorkspace(
       v2Client,
       {
         loopName,
-        directory: state.worktreeDir,
-        branch: state.worktreeBranch ?? null,
+        directory: state.projectDir,
       },
       logger,
     )
@@ -395,6 +395,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     loopService.setWorkspaceId(loopName, workspace.workspaceId)
     state.workspaceId = workspace.workspaceId
+    if (workspace.directory) state.worktreeDir = workspace.directory
+    if (workspace.branch) state.worktreeBranch = workspace.branch
     logger.log(`Loop: provisioned workspace ${workspace.workspaceId} for ${loopName} (${contextLabel})`)
     return { workspaceId: workspace.workspaceId }
   }
