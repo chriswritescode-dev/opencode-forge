@@ -157,7 +157,7 @@ export function createSandboxManager(
   }
 
   async function cleanupOrphans(preserveWorktrees?: string[]): Promise<number> {
-    const containers = await docker.listContainersByPrefix('oc-forge-sandbox-')
+    const containers = await docker.listContainersByPrefix('forge-')
     let removed = 0
 
     const preserveSet = preserveWorktrees

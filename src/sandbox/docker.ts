@@ -31,7 +31,7 @@ export function createDockerService(logger: Logger): DockerService {
   const DEFAULT_TIMEOUT = 120000
 
   function containerName(worktreeName: string): string {
-    return `oc-forge-sandbox-${worktreeName}`
+    return `forge-${worktreeName}`
   }
 
   async function checkDocker(): Promise<boolean> {
