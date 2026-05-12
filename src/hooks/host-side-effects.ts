@@ -4,7 +4,7 @@ import type { Logger, PluginConfig } from '../types'
 import type { createSandboxManager } from '../sandbox/manager'
 import { terminationReasonToString } from '../loop'
 import { buildWorktreeCompletionPayload, writeWorktreeCompletionLog } from '../services/worktree-log'
-import { teardownWorktreeArtifacts } from '../utils/worktree-cleanup'
+import type { PendingTeardownRegistry } from '../workspace/pending-teardown'
 
 export interface TerminationSideEffectsContext {
   v2Client: OpencodeClient
@@ -13,16 +13,23 @@ export interface TerminationSideEffectsContext {
   sandboxManager?: ReturnType<typeof createSandboxManager>
   dataDir?: string
   getPlanText?: (loopName: string, sessionId: string) => string | null
+  pendingTeardowns?: PendingTeardownRegistry
 }
 
 /**
  * Host-specific termination side-effects invoked via onTerminated callback.
- * Keeps worktree teardown, completion log, sandbox stop, TUI toast outside the core runtime module.
+ *
+ * Worktree teardown (commit, branch rename, sandbox stop, worktree remove,
+ * branch delete) lives in the forge workspace adapter so the same logic runs
+ * whether the loop terminates normally, the orphan sweep removes a stale
+ * workspace, or the user deletes the workspace from the TUI. We only set the
+ * pending-teardown context here so the adapter can build an informative
+ * commit message.
  */
 export async function performTerminationSideEffects(
   state: LoopState,
   reason: TerminationReason,
-  sessionId: string,
+  _sessionId: string,
   ctx: TerminationSideEffectsContext,
 ): Promise<void> {
   const projectDir = state.projectDir ?? state.worktreeDir
@@ -87,7 +94,7 @@ export async function performTerminationSideEffects(
     })
   }
 
-  if (state.worktree) {
+  if (state.worktree && state.workspaceId) {
     const reasonLabel =
       reason.kind === 'completed' ? 'completed'
       : reason.kind === 'cancelled' ? 'cancelled'
@@ -95,35 +102,34 @@ export async function performTerminationSideEffects(
       : reason.kind === 'error_max_retries' || reason.kind === 'decomposer_error' || reason.kind === 'worktree_failed' ? 'errored'
       : reason.kind
 
+    // The worktree directory may already be gone when the reason is
+    // `missing_worktree_dir`; skip the commit step in that case but still
+    // route through workspace.remove so the workspace record and any
+    // residual git metadata are cleaned up.
     const doCommit = reason.kind !== 'missing_worktree_dir'
-    const doRemoveWorktree = reason.kind !== 'missing_worktree_dir'
 
-    const teardown = await teardownWorktreeArtifacts({
-      v2: ctx.v2Client,
-      loopName: state.loopName,
-      sessionId,
-      workspaceId: state.workspaceId,
-      worktreeDir: state.worktreeDir,
-      projectDir: state.projectDir,
-      worktree: true,
-      doCommit,
-      doRemoveWorktree,
-      reasonLabel,
-      worktreeBranch: state.worktreeBranch,
+    ctx.pendingTeardowns?.set(state.loopName, {
       iteration: state.iteration,
-      logPrefix: 'Loop',
-      logger: ctx.logger,
+      reasonLabel,
+      doCommit,
     })
 
-    ctx.logger.log(`Loop: teardown for ${state.loopName} sessionDeleted=${teardown.sessionDeleted} workspaceDeleted=${teardown.workspaceDeleted} worktreeRemoved=${teardown.worktreeRemoved}`)
-  }
-
-  if (state.sandbox && state.sandboxContainer && ctx.sandboxManager) {
     try {
-      await ctx.sandboxManager.stop(state.loopName!)
-      ctx.logger.log(`Loop: stopped sandbox container for ${state.loopName}`)
+      const workspaceApi = ctx.v2Client.experimental?.workspace
+      if (workspaceApi?.remove) {
+        const result = await workspaceApi.remove({ id: state.workspaceId })
+        if (result.error) {
+          ctx.logger.error(`Loop: workspace.remove returned error for ${state.workspaceId}`, result.error)
+        } else {
+          ctx.logger.log(`Loop: workspace ${state.workspaceId} removed for ${state.loopName}`)
+        }
+      } else {
+        ctx.logger.error('Loop: experimental.workspace.remove not available; cannot tear down worktree')
+      }
     } catch (err) {
-      ctx.logger.error(`Loop: failed to stop sandbox container`, err)
+      ctx.logger.error(`Loop: workspace.remove threw for ${state.workspaceId}`, err)
+    } finally {
+      ctx.pendingTeardowns?.clear(state.loopName)
     }
   }
 }

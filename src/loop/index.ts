@@ -54,7 +54,5 @@ export type { LoopService, LoopChangeReason, LoopChangeNotifier } from './servic
 
 export { generateUniqueName } from './name-uniqueness'
 
-export { sweepOrphanWorkspaces } from './orphan-sweep'
-
 export { fetchSessionOutput } from './session-output'
 export type { LoopSessionOutput } from './session-output'

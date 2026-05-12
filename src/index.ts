@@ -234,13 +234,33 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 
     const dataDir = config.dataDir || resolveDataDir()
 
+    let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
+    const dockerService = createDockerService(logger)
+    try {
+      sandboxManager = createSandboxManager(dockerService, {
+        image: config.sandbox?.image ?? 'oc-forge-sandbox:latest',
+        ...(config.sandbox?.resources ? { resources: config.sandbox.resources } : {}),
+      }, logger)
+      logger.log('Docker sandbox manager initialized')
+    } catch (err) {
+      logger.error('Failed to initialize Docker sandbox manager', err)
+    }
+
+    // Pending-teardown registry: caller (loop termination side-effects) writes
+    // iteration/reason/doCommit here right before invoking workspace.remove so
+    // the forge adapter can build informative commit messages while remaining
+    // the single source of truth for teardown behavior.
+    const { createPendingTeardownRegistry } = await import('./workspace/pending-teardown')
+    const pendingTeardowns = createPendingTeardownRegistry()
+
     // Register the forge workspace adapter so loop worktrees are created under <dataDir>/worktrees/
     if (input.experimental_workspace?.register) {
       const { createForgeWorkspaceAdapter } = await import('./workspace/forge-adapter')
       input.experimental_workspace.register('forge', createForgeWorkspaceAdapter({
         dataDir,
-        projectRoot: input.worktree,
         logger,
+        sandboxManager,
+        getTeardownContext: (loopName) => pendingTeardowns.get(loopName),
       }))
       logger.log(`Registered forge workspace adapter (worktrees under ${join(dataDir, 'worktrees')})`)
     }
@@ -279,18 +299,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       }
     }
 
-    let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
-    const dockerService = createDockerService(logger)
-    try {
-      sandboxManager = createSandboxManager(dockerService, {
-        image: config.sandbox?.image ?? 'oc-forge-sandbox:latest',
-      }, logger)
-      logger.log('Docker sandbox manager initialized')
-    } catch (err) {
-      logger.error('Failed to initialize Docker sandbox manager', err)
-    }
-
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, v2, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, v2, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns)
 
     const reconcileResult = await loopHandler.loop.reconcileStale(
       sandboxManager
@@ -302,6 +311,61 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     }
     if (reconcileResult.preserved.length > 0) {
       logger.log(`Preserved ${reconcileResult.preserved.length} active sandbox loop(s) across restart: ${reconcileResult.preserved.join(', ')}`)
+    }
+
+    if (reconcileResult.restartCandidates.length > 0) {
+      const { existsSync } = await import('node:fs')
+      const { createForgeExecutionService } = await import('./services/execution')
+      const restartService = createForgeExecutionService({
+        projectId,
+        directory,
+        config,
+        logger,
+        dataDir,
+        v2,
+        legacyClient: client,
+        plansRepo,
+        loopsRepo,
+        loopHandler,
+        loop: loopHandler.loop,
+        sandboxManager,
+        sectionPlansRepo,
+      })
+
+      let restored = 0
+      let restoreFailed = 0
+      for (const candidate of reconcileResult.restartCandidates) {
+        if (!candidate.worktreeDir || !existsSync(candidate.worktreeDir)) {
+          logger.log(`Loop: cannot auto-restart ${candidate.loopName}, worktree missing at ${candidate.worktreeDir}`)
+          loopHandler.loop.reconcileFinalize(candidate.loopName, 'cancel')
+          restoreFailed++
+          continue
+        }
+        try {
+          const result = await restartService.dispatch(
+            { surface: 'tool', projectId, directory: candidate.projectDir ?? candidate.worktreeDir },
+            { type: 'loop.restart', selector: { kind: 'partial', name: candidate.loopName }, force: true },
+          )
+          if (result.ok) {
+            loopHandler.loop.reconcileFinalize(candidate.loopName, 'restored')
+            restored++
+          } else {
+            logger.error(`Loop: auto-restart failed for ${candidate.loopName}: ${result.error.message}`)
+            loopHandler.loop.reconcileFinalize(candidate.loopName, 'cancel')
+            restoreFailed++
+          }
+        } catch (err) {
+          logger.error(`Loop: auto-restart threw for ${candidate.loopName}`, err)
+          loopHandler.loop.reconcileFinalize(candidate.loopName, 'cancel')
+          restoreFailed++
+        }
+      }
+      if (restored > 0) {
+        logger.log(`Auto-restored ${restored} loop(s) across plugin restart`)
+      }
+      if (restoreFailed > 0) {
+        logger.log(`Auto-restart unavailable for ${restoreFailed} loop(s); cancelled`)
+      }
     }
 
     // Sandbox reconciliation interval handle

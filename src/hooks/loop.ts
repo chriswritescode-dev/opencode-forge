@@ -11,6 +11,7 @@ import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../storage/repos/review-findings-repo'
 import type { SectionPlansRepo } from '../storage/repos/section-plans-repo'
+import type { PendingTeardownRegistry } from '../workspace/pending-teardown'
 
 export interface LoopEventHandler {
   onEvent(input: { event: { type: string; properties?: Record<string, unknown> } }): Promise<void>
@@ -46,6 +47,7 @@ export function createLoopEventHandler(
   loopConfig?: LoopConfig,
   sectionPlansRepo?: SectionPlansRepo,
   notify?: LoopChangeNotifier,
+  pendingTeardowns?: PendingTeardownRegistry,
 ): LoopEventHandler {
   const loop = createLoop({
     loopsRepo,
@@ -69,6 +71,7 @@ export function createLoopEventHandler(
         sandboxManager,
         dataDir,
         getPlanText: loop.getPlanText,
+        pendingTeardowns,
       })
     },
   })

@@ -102,7 +102,8 @@ export interface Loop {
   resetError(name: string): void
   terminateLoop(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
   getOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[]
-  reconcileStale(opts?: { isSandboxLive?: (loopName: string) => Promise<boolean> }): Promise<{ cancelled: number; preserved: string[] }>
+  reconcileStale(opts?: { isSandboxLive?: (loopName: string) => Promise<boolean> }): Promise<{ cancelled: number; preserved: string[]; restartCandidates: LoopState[] }>
+  reconcileFinalize(loopName: string, action: 'cancel' | 'restored'): void
   getStallTimeoutMs(): number
   getMaxConsecutiveStalls(): number
 
@@ -336,11 +337,16 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     detachFromWorkspace(loopName, state, contextLabel)
 
     const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
+    const projectDirectory = state.projectDir ?? state.worktreeDir
+    if (!projectDirectory) {
+      logger.log(`Loop: cannot recover workspace for ${loopName}: no projectDir/worktreeDir`)
+      return { recovered: false }
+    }
     const newWorkspace = await createBuiltinWorktreeWorkspace(
       v2Client,
       {
         loopName,
-        directory: state.projectDir ?? state.worktreeDir,
+        directory: projectDirectory,
       },
       logger,
     )
@@ -378,11 +384,16 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
 
     const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
+    const projectDirectory = state.projectDir ?? state.worktreeDir
+    if (!projectDirectory) {
+      logger.log(`Loop: cannot provision workspace for ${loopName} (${contextLabel}): no projectDir/worktreeDir`)
+      return {}
+    }
     const workspace = await createBuiltinWorktreeWorkspace(
       v2Client,
       {
         loopName,
-        directory: state.projectDir,
+        directory: projectDirectory,
       },
       logger,
     )
@@ -2160,6 +2171,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     terminateLoop: (name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }) => loopService.terminate(name, opts),
     getOutstandingFindings: (loopName?: string, severity?: 'bug' | 'warning') => loopService.getOutstandingFindings(loopName, severity),
     reconcileStale: (opts?: { isSandboxLive?: (loopName: string) => Promise<boolean> }) => loopService.reconcileStale(opts),
+    reconcileFinalize: (loopName: string, action: 'cancel' | 'restored') => loopService.reconcileFinalize(loopName, action),
     getStallTimeoutMs: () => loopService.getStallTimeoutMs(),
     getMaxConsecutiveStalls: () => loopService.getMaxConsecutiveStalls(),
 

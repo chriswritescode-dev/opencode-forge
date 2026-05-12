@@ -28,14 +28,14 @@ describe('createForgeWorkspaceAdapter', () => {
     }
   })
 
-  function makeInfo(loopName: string) {
+  function makeInfo(loopName: string, projectDirectory?: string) {
     return {
       id: 'ws-1',
       type: 'forge',
       name: '',
       branch: null,
       directory: null,
-      extra: { loopName },
+      extra: projectDirectory ? { loopName, projectDirectory } : { loopName },
       projectID: 'p1',
     }
   }
@@ -43,7 +43,6 @@ describe('createForgeWorkspaceAdapter', () => {
   it('configure returns correct info for valid loopName', () => {
     const adapter = createForgeWorkspaceAdapter({
       dataDir: tmpDataDir,
-      projectRoot: '/tmp/project',
       logger,
     })
     const result = adapter.configure(makeInfo('my-loop'))
@@ -61,7 +60,6 @@ describe('createForgeWorkspaceAdapter', () => {
   it('configure throws when extra.loopName is missing', () => {
     const adapter = createForgeWorkspaceAdapter({
       dataDir: tmpDataDir,
-      projectRoot: '/tmp/project',
       logger,
     })
     expect(() =>
@@ -80,7 +78,6 @@ describe('createForgeWorkspaceAdapter', () => {
   it('configure throws when extra.loopName is non-string', () => {
     const adapter = createForgeWorkspaceAdapter({
       dataDir: tmpDataDir,
-      projectRoot: '/tmp/project',
       logger,
     })
     expect(() =>
@@ -99,7 +96,6 @@ describe('createForgeWorkspaceAdapter', () => {
   it('configure slugifies and caps loopName to 60 chars', () => {
     const adapter = createForgeWorkspaceAdapter({
       dataDir: tmpDataDir,
-      projectRoot: '/tmp/project',
       logger,
     })
     const longName = 'My Loop Name With Many Words And Special Characters!@#$'
@@ -115,10 +111,9 @@ describe('createForgeWorkspaceAdapter', () => {
       execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
-        projectRoot: tmpRepo,
         logger,
       })
-      const configured = adapter.configure(makeInfo('test-loop'))
+      const configured = adapter.configure(makeInfo('test-loop', tmpRepo))
 
       await adapter.create(configured, {})
 
@@ -132,16 +127,55 @@ describe('createForgeWorkspaceAdapter', () => {
     }
   })
 
-  it('create propagates failure when git command fails', async () => {
-    const adapter = createForgeWorkspaceAdapter({
-      dataDir: tmpDataDir,
-      projectRoot: '/nonexistent-dir',
-      logger,
+  it('create uses info.extra.projectDirectory as the git cwd, ignoring deps', async () => {
+    const realRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-projdir-'))
+    try {
+      execSync('git init && git commit --allow-empty -m init', { cwd: realRepo, encoding: 'utf-8' })
+      const adapter = createForgeWorkspaceAdapter({ dataDir: tmpDataDir, logger })
+      const configured = adapter.configure({
+        id: 'ws-1', type: 'forge', name: '', branch: null, directory: null,
+        extra: { loopName: 'proj-loop', projectDirectory: realRepo }, projectID: 'p1',
+      })
+      await adapter.create(configured, {})
+      expect(existsSync(configured.directory)).toBe(true)
+    } finally {
+      rmSync(realRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('create throws a clear error when extra.projectDirectory is not a git work tree', async () => {
+    const notARepo = mkdtempSync(join(tmpdir(), 'forge-adapter-notrepo-'))
+    try {
+      const adapter = createForgeWorkspaceAdapter({ dataDir: tmpDataDir, logger })
+      const configured = adapter.configure({
+        id: 'ws-1', type: 'forge', name: '', branch: null, directory: null,
+        extra: { loopName: 'notrepo-loop', projectDirectory: notARepo }, projectID: 'p1',
+      })
+      await expect(adapter.create(configured, {})).rejects.toThrow(
+        /forge workspace adapter: projectDirectory .* is not a git work tree/,
+      )
+    } finally {
+      rmSync(notARepo, { recursive: true, force: true })
+    }
+  })
+
+  it('create throws when extra.projectDirectory is missing', async () => {
+    const adapter = createForgeWorkspaceAdapter({ dataDir: tmpDataDir, logger })
+    const configured = adapter.configure({
+      id: 'ws-1', type: 'forge', name: '', branch: null, directory: null,
+      extra: { loopName: 'no-proj-loop' }, projectID: 'p1',
     })
-    const configured = adapter.configure(makeInfo('fail-loop'))
+    await expect(adapter.create(configured, {})).rejects.toThrow(
+      /forge workspace adapter: extra\.projectDirectory is required/,
+    )
+  })
+
+  it('create throws when projectDirectory does not exist', async () => {
+    const adapter = createForgeWorkspaceAdapter({ dataDir: tmpDataDir, logger })
+    const configured = adapter.configure(makeInfo('fail-loop', '/nonexistent-dir'))
 
     await expect(adapter.create(configured, {})).rejects.toThrow(
-      /git worktree add failed/,
+      /projectDirectory .* is not a git work tree/,
     )
   })
 
@@ -152,10 +186,9 @@ describe('createForgeWorkspaceAdapter', () => {
       const nestedDataDir = join(tmpDataDir, 'nested', 'deep')
       const adapter = createForgeWorkspaceAdapter({
         dataDir: nestedDataDir,
-        projectRoot: tmpRepo,
         logger,
       })
-      const configured = adapter.configure(makeInfo('deep-loop'))
+      const configured = adapter.configure(makeInfo('deep-loop', tmpRepo))
 
       await adapter.create(configured, {})
 
@@ -168,16 +201,63 @@ describe('createForgeWorkspaceAdapter', () => {
     }
   })
 
+  it('create starts sandbox after creating the worktree', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo-sandbox-'))
+    try {
+      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const sandboxManager = {
+        start: vi.fn().mockResolvedValue({ containerName: 'forge-sandbox-loop' }),
+        stop: vi.fn().mockResolvedValue(undefined),
+      }
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+        sandboxManager,
+      })
+      const configured = adapter.configure(makeInfo('sandbox-loop', tmpRepo))
+
+      await adapter.create(configured, {})
+
+      expect(existsSync(configured.directory)).toBe(true)
+      expect(sandboxManager.start).toHaveBeenCalledWith('sandbox-loop', configured.directory, expect.any(String))
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('create cleans up worktree and sandbox when sandbox start fails', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo-sandbox-fail-'))
+    try {
+      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const sandboxManager = {
+        start: vi.fn().mockRejectedValue(new Error('docker unavailable')),
+        stop: vi.fn().mockResolvedValue(undefined),
+      }
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+        sandboxManager,
+      })
+      const configured = adapter.configure(makeInfo('sandbox-fail-loop', tmpRepo))
+
+      await expect(adapter.create(configured, {})).rejects.toThrow('docker unavailable')
+
+      expect(sandboxManager.stop).toHaveBeenCalledWith('sandbox-fail-loop')
+      expect(existsSync(configured.directory)).toBe(false)
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
   it('remove runs git worktree remove and prune', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo3-'))
     try {
       execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
-        projectRoot: tmpRepo,
         logger,
       })
-      const configured = adapter.configure(makeInfo('removal-loop'))
+      const configured = adapter.configure(makeInfo('removal-loop', tmpRepo))
       await adapter.create(configured, {})
 
       expect(existsSync(configured.directory)).toBe(true)
@@ -199,17 +279,169 @@ describe('createForgeWorkspaceAdapter', () => {
       execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
-        projectRoot: tmpRepo,
         logger,
       })
-      const configured = adapter.configure(makeInfo('idempotent-loop'))
+      const configured = adapter.configure(makeInfo('idempotent-loop', tmpRepo))
       configured.directory = join(tmpDataDir, 'worktrees', 'idempotent-nonexistent')
 
       await adapter.remove(configured)
 
       expect(logger.log).toHaveBeenCalledWith(
-        expect.stringContaining('removed worktree'),
+        expect.stringContaining('worktree directory already removed'),
       )
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('remove commits pending changes before tearing down (rename preserves history)', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-commit-'))
+    try {
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+        getTeardownContext: () => ({ iteration: 3, reasonLabel: 'completed', doCommit: true }),
+      })
+      const configured = adapter.configure(makeInfo('commit-loop', tmpRepo))
+      await adapter.create(configured, {})
+      execSync('git config user.email t@t && git config user.name t', { cwd: configured.directory, encoding: 'utf-8' })
+
+      // Rename the branch so it falls outside `forge/` — that way the rename
+      // step preserves the commit history we can assert on after teardown.
+      execSync('git branch -m forge/commit-loop custom/work', { cwd: configured.directory, encoding: 'utf-8' })
+      configured.branch = 'custom/work'
+
+      // Create a pending change inside the worktree.
+      execSync('echo hello > pending.txt', { cwd: configured.directory, encoding: 'utf-8' })
+
+      await adapter.remove(configured)
+
+      // The branch was renamed to opencode/commit-loop and should contain the teardown commit.
+      const log = execSync('git log opencode/commit-loop --format=%s', { cwd: tmpRepo, encoding: 'utf-8' })
+      expect(log).toMatch(/loop: commit-loop completed after 3 iterations/)
+      expect(logger.log).toHaveBeenCalledWith(
+        expect.stringContaining('committed pending changes'),
+      )
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('remove uses default teardown context when none is registered', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-default-ctx-'))
+    try {
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+      })
+      const configured = adapter.configure(makeInfo('default-ctx-loop', tmpRepo))
+      await adapter.create(configured, {})
+      execSync('git config user.email t@t && git config user.name t', { cwd: configured.directory, encoding: 'utf-8' })
+      execSync('git branch -m forge/default-ctx-loop custom/default', { cwd: configured.directory, encoding: 'utf-8' })
+      configured.branch = 'custom/default'
+      execSync('echo hi > a.txt', { cwd: configured.directory, encoding: 'utf-8' })
+
+      await adapter.remove(configured)
+
+      const log = execSync('git log opencode/default-ctx-loop --format=%s', { cwd: tmpRepo, encoding: 'utf-8' })
+      expect(log).toMatch(/loop: default-ctx-loop removed after 0 iterations/)
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('remove skips commit when doCommit is false in teardown context', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-no-commit-'))
+    try {
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+        getTeardownContext: () => ({ iteration: 1, reasonLabel: 'cancelled', doCommit: false }),
+      })
+      const configured = adapter.configure(makeInfo('no-commit-loop', tmpRepo))
+      await adapter.create(configured, {})
+      execSync('git config user.email t@t && git config user.name t', { cwd: configured.directory, encoding: 'utf-8' })
+      execSync('echo hi > a.txt', { cwd: configured.directory, encoding: 'utf-8' })
+
+      await adapter.remove(configured)
+
+      expect(logger.log).not.toHaveBeenCalledWith(
+        expect.stringContaining('committed pending changes'),
+      )
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('remove renames non-forge branches via finalizeWorktreeBranch', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-rename-'))
+    try {
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+      })
+      const configured = adapter.configure(makeInfo('rename-loop', tmpRepo))
+      await adapter.create(configured, {})
+
+      // Simulate a custom (non-forge) branch landing on this workspace.
+      configured.branch = 'custom/work'
+      execSync('git branch -m forge/rename-loop custom/work', { cwd: configured.directory, encoding: 'utf-8' })
+
+      await adapter.remove(configured)
+
+      // After remove, the branch should have been renamed to opencode/<slug>.
+      const branches = execSync('git branch --list', { cwd: tmpRepo, encoding: 'utf-8' })
+      expect(branches).toMatch(/opencode\/rename-loop/)
+      expect(branches).not.toMatch(/custom\/work/)
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('remove skips rename for forge/-prefixed branches and force-deletes them', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-noname-'))
+    try {
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+      })
+      const configured = adapter.configure(makeInfo('skip-rename-loop', tmpRepo))
+      await adapter.create(configured, {})
+
+      await adapter.remove(configured)
+
+      const branches = execSync('git branch --list', { cwd: tmpRepo, encoding: 'utf-8' })
+      expect(branches).not.toMatch(/forge\/skip-rename-loop/)
+      expect(branches).not.toMatch(/opencode\/skip-rename-loop/)
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('remove stops the sandbox during teardown', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-sandbox-stop-'))
+    try {
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const sandboxManager = {
+        start: vi.fn().mockResolvedValue({ containerName: 'forge-sandbox-loop' }),
+        stop: vi.fn().mockResolvedValue(undefined),
+      }
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+        sandboxManager,
+      })
+      const configured = adapter.configure(makeInfo('sandbox-stop-loop', tmpRepo))
+      await adapter.create(configured, {})
+
+      await adapter.remove(configured)
+
+      expect(sandboxManager.stop).toHaveBeenCalledWith('sandbox-stop-loop')
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
     }
@@ -218,7 +450,6 @@ describe('createForgeWorkspaceAdapter', () => {
   it('target returns local directory', () => {
     const adapter = createForgeWorkspaceAdapter({
       dataDir: tmpDataDir,
-      projectRoot: '/tmp/project',
       logger,
     })
     const configured = adapter.configure(makeInfo('target-loop'))

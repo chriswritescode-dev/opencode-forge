@@ -46,7 +46,7 @@ describe('createBuiltinWorktreeWorkspace', () => {
 
       const result = await createBuiltinWorktreeWorkspace(
         client,
-        { loopName: 'foo' },
+        { loopName: 'foo', directory: '/tmp/project' },
         logger,
       )
 
@@ -67,7 +67,7 @@ describe('createBuiltinWorktreeWorkspace', () => {
 
       const result = await createBuiltinWorktreeWorkspace(
         client,
-        { loopName: 'bar' },
+        { loopName: 'bar', directory: '/tmp/project' },
         logger,
       )
 
@@ -86,7 +86,7 @@ describe('createBuiltinWorktreeWorkspace', () => {
 
       const result = await createBuiltinWorktreeWorkspace(
         client,
-        { loopName: 'baz' },
+        { loopName: 'baz', directory: '/tmp/project' },
         logger,
       )
 
@@ -109,7 +109,7 @@ describe('createBuiltinWorktreeWorkspace', () => {
 
       const result = await createBuiltinWorktreeWorkspace(
         client,
-        { loopName: 'qux' },
+        { loopName: 'qux', directory: '/tmp/project' },
         logger,
       )
 
@@ -152,7 +152,7 @@ describe('createBuiltinWorktreeWorkspace', () => {
       )
 
       expect(result).toEqual({ workspaceId: 'ws-scoped', directory: '/tmp/wt-scoped', branch: 'feature/scoped' })
-      expect(createMock).toHaveBeenCalledWith({ type: 'forge', branch: null, extra: { loopName: 'scoped-loop' } })
+      expect(createMock).toHaveBeenCalledWith({ type: 'forge', branch: null, extra: { loopName: 'scoped-loop', projectDirectory: '/tmp/project' } })
       expect(syncListMock).toHaveBeenCalledWith()
     })
 
@@ -167,7 +167,7 @@ describe('createBuiltinWorktreeWorkspace', () => {
 
       const result = await createBuiltinWorktreeWorkspace(
         client,
-        { loopName: 'sync-loop' },
+        { loopName: 'sync-loop', directory: '/tmp/project' },
         logger,
       )
 

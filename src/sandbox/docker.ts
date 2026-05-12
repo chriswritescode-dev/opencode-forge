@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'child_process'
-import type { Logger } from '../types'
+import type { Logger, SandboxResources } from '../types'
 
 export interface DockerExecOpts {
   timeout?: number
@@ -18,7 +18,7 @@ export interface DockerService {
   checkDocker(): Promise<boolean>
   imageExists(image: string): Promise<boolean>
   buildImage(dockerfilePath: string, tag: string): Promise<void>
-  createContainer(name: string, projectDir: string, image: string, extraMounts?: string[]): Promise<void>
+  createContainer(name: string, projectDir: string, image: string, extraMounts?: string[], resources?: SandboxResources): Promise<void>
   removeContainer(name: string): Promise<void>
   exec(name: string, command: string, opts?: DockerExecOpts): Promise<DockerExecResult>
   execPipe(name: string, command: string, stdin: string, opts?: { timeout?: number; abort?: AbortSignal }): Promise<DockerExecResult>
@@ -75,7 +75,7 @@ export function createDockerService(logger: Logger): DockerService {
     })
   }
 
-  async function createContainer(name: string, projectDir: string, image: string, extraMounts?: string[]): Promise<void> {
+  async function createContainer(name: string, projectDir: string, image: string, extraMounts?: string[], resources?: SandboxResources): Promise<void> {
     const args = [
       'run',
       '-d',
@@ -84,6 +84,11 @@ export function createDockerService(logger: Logger): DockerService {
       '-v',
       `${projectDir}:/workspace`,
     ]
+
+    if (resources?.memory) args.push('--memory', resources.memory)
+    if (resources?.memorySwap) args.push('--memory-swap', resources.memorySwap)
+    if (resources?.cpus) args.push('--cpus', resources.cpus)
+    if (resources?.shmSize) args.push('--shm-size', resources.shmSize)
 
     if (extraMounts) {
       for (const mount of extraMounts) {

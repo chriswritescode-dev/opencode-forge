@@ -190,7 +190,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             '',
             `New session: ${d.sessionId}`,
             `Continuing from iteration: ${d.iteration}`,
-            `Previous termination: ${d.previousTermination ?? 'unknown'}`,
             `Directory: ${d.worktreeDir}${branchInfo}`,
           ].join('\n')
         }

@@ -24,7 +24,6 @@ describe('forge workspace adapter e2e', () => {
 
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
-        projectRoot: tmpRepo,
         logger: mockLogger,
       })
 
@@ -34,7 +33,7 @@ describe('forge workspace adapter e2e', () => {
         name: '',
         branch: null,
         directory: null,
-        extra: { loopName: 'e2e-loop' },
+        extra: { loopName: 'e2e-loop', projectDirectory: tmpRepo },
         projectID: 'p1',
       }
 

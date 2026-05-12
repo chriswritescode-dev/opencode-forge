@@ -220,7 +220,6 @@ export interface LoopRestartedResult {
   loopName: string
   sessionId: string
   previousSessionId: string
-  previousTermination?: string
   worktreeDir?: string
   worktreeBranch?: string
   worktree: boolean
@@ -565,7 +564,7 @@ async function selectSessionWithFallback(
   // Try v2 TUI selectSession first
   try {
     if (deps.v2.tui) {
-      await deps.v2.tui.selectSession(selection)
+      await deps.v2.tui.selectSession({ sessionID: selection.sessionID })
       return
     }
   } catch (err) {
@@ -582,7 +581,6 @@ async function selectSessionWithFallback(
     if (deps.v2.tui) {
       await deps.v2.tui.publish({
         directory: deps.directory,
-        ...(selection.workspace ? { workspace: selection.workspace } : {}),
         body: {
           type: 'tui.session.select',
           properties: {
@@ -610,7 +608,6 @@ async function selectSessionWithFallback(
   try {
     // Fallback to publish with tui.session.select event
     await deps.legacyClient.tui.publish({
-      ...(selection.workspace ? { workspace: selection.workspace } : {}),
       body: {
         type: 'tui.session.select',
         properties: {
@@ -854,7 +851,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           deps.logger.error(`handleStartLoop: failed to navigate TUI to worktree session ${context}`, err as Error)
         })
       }
-      
+
       // Compute host session ID for metadata persistence only (not session parenting)
       const hostSessionId = command.hostSessionId ?? ctx.sourceSessionId
       
@@ -919,6 +916,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             `handleStartLoop: workspace ${workspaceId} created but initial decomposer bind failed; will retry on next session`,
           )
         }
+        // Navigate the TUI to the worktree session immediately so the user sees the new
+        // session before the slow sandbox + provisioning + prompt path runs.
+        selectInitialWorktreeSession(sessionId, initialBoundWorkspaceId, 'after session create (decomposer)')
       } else {
         const createResult = await createLoopSessionWithWorkspace({
           v2: deps.v2,
@@ -943,32 +943,30 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         if (createResult.bindFailed) {
           deps.logger.log(`handleStartLoop: workspace ${workspaceId} created but initial bind failed; will retry on next session`)
         }
+        // Navigate the TUI to the worktree session immediately so the user sees the new
+        // session before the slow sandbox + provisioning + prompt path runs.
+        selectInitialWorktreeSession(sessionId, initialBoundWorkspaceId, 'after session create')
       }
 
       // Start sandbox if enabled
       if (sandboxEnabled && deps.sandboxManager) {
-        try {
-          sandboxStartAttempted = true
-          const result = await deps.sandboxManager.start(uniqueLoopName, hostWorktreeDir!)
+        const existingSandbox = deps.sandboxManager.getActive(uniqueLoopName)
+        if (existingSandbox) {
           sandboxStarted = true
-          sandboxContainer = result.containerName
-          deps.logger.log(`handleStartLoop: sandbox container ${result.containerName} started`)
-        } catch (err) {
-          deps.logger.error('handleStartLoop: failed to start sandbox', err)
-          await rollbackLoopStart()
-          return fail('internal_error', 500, 'Failed to start sandbox')
-        }
-
-        try {
-          await deps.sandboxManager.provisionDependencies(uniqueLoopName, hostWorktreeDir!)
-        } catch (err) {
-          deps.logger.error('handleStartLoop: dependency provisioning failed', err)
-          await rollbackLoopStart()
-          return fail(
-            'internal_error',
-            500,
-            `Failed to provision dependencies: ${(err as Error).message ?? 'unknown error'}`,
-          )
+          sandboxContainer = existingSandbox.containerName
+          deps.logger.log(`handleStartLoop: sandbox container ${existingSandbox.containerName} already provisioned by forge workspace adapter`)
+        } else {
+          try {
+            sandboxStartAttempted = true
+            const result = await deps.sandboxManager.start(uniqueLoopName, hostWorktreeDir!)
+            sandboxStarted = true
+            sandboxContainer = result.containerName
+            deps.logger.log(`handleStartLoop: sandbox container ${result.containerName} started`)
+          } catch (err) {
+            deps.logger.error('handleStartLoop: failed to start sandbox', err)
+            await rollbackLoopStart()
+            return fail('internal_error', 500, 'Failed to start sandbox')
+          }
         }
       }
       
@@ -1007,6 +1005,15 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       deps.loop.registerLoopSession(sessionId, uniqueLoopName)
       
       deps.logger.log(`handleStartLoop: state stored for loop=${uniqueLoopName}`)
+
+      command.lifecycle?.onStarted?.({
+        mode: command.mode,
+        sessionId,
+        loopName: uniqueLoopName,
+        displayName,
+        worktreeDir: hostWorktreeDir,
+        workspaceId: createdWorkspaceId,
+      })
       
       // === Decomposer logic ===
       
@@ -1025,18 +1032,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         deps.loop.registerLoopSession(sessionId, uniqueLoopName)
         deps.loop.setPhase(uniqueLoopName, 'decomposing')
         
-        // Emit lifecycle event for TUI to resolve RPC
-        command.lifecycle?.onStarted?.({
-          mode: command.mode,
-          sessionId,
-          loopName: uniqueLoopName,
-          displayName,
-          worktreeDir: hostWorktreeDir,
-          workspaceId: createdWorkspaceId,
-        })
-
-        selectInitialWorktreeSession(sessionId, initialBoundWorkspaceId, 'after decomposer start')
-
         // Wait for sandbox readiness in worktree+sandbox mode BEFORE prompting
         if (sandboxEnabledForLoop && deps.sandboxManager && deps.dataDir) {
           const dbPath = join(deps.dataDir, 'forge.db')
@@ -1148,18 +1143,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           
           const sectionPrompt = deps.loop.buildSectionInitialPrompt(updatedState)
           
-          // Emit lifecycle event for TUI to resolve RPC
-          command.lifecycle?.onStarted?.({
-            mode: command.mode,
-            sessionId,
-            loopName: uniqueLoopName,
-            displayName,
-            worktreeDir: hostWorktreeDir,
-            workspaceId: createdWorkspaceId,
-          })
-
-          selectInitialWorktreeSession(sessionId, initialBoundWorkspaceId, 'after section start')
-
           // Wait for sandbox readiness in worktree+sandbox mode BEFORE prompting
           if (sandboxEnabledForLoop && deps.sandboxManager && deps.dataDir) {
             const dbPath = join(deps.dataDir, 'forge.db')
@@ -1294,16 +1277,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             deps.loop.registerLoopSession(decomposerSessionId, uniqueLoopName)
             deps.loop.setPhase(uniqueLoopName, 'decomposing')
 
-            // Emit lifecycle event for TUI to resolve RPC
-            command.lifecycle?.onStarted?.({
-              mode: command.mode,
-              sessionId: decomposerSessionId,
-              loopName: uniqueLoopName,
-              displayName,
-              worktreeDir: hostWorktreeDir,
-              workspaceId: createdWorkspaceId,
-            })
-
+            // The original session was aborted above; navigate the TUI to the new decomposer
+            // session. onStarted already fired with the original sessionId, so the caller's RPC
+            // is already resolved.
             selectInitialWorktreeSession(decomposerSessionId, fallbackBoundWorkspaceId, 'after fallback decomposer start')
 
             const decomposerPrompt = deps.loop.buildDecomposerInitialPrompt(state)
@@ -1340,18 +1316,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           } else {
             deps.loopsRepo.setDecompositionStatus(ctx.projectId, uniqueLoopName, 'skipped')
             deps.loopsRepo.setTotalSections(ctx.projectId, uniqueLoopName, 0)
-
-            // Emit lifecycle event for TUI to resolve RPC
-            command.lifecycle?.onStarted?.({
-              mode: command.mode,
-              sessionId,
-              loopName: uniqueLoopName,
-              displayName,
-              worktreeDir: hostWorktreeDir,
-              workspaceId: createdWorkspaceId,
-            })
-
-            selectInitialWorktreeSession(sessionId, initialBoundWorkspaceId, 'after legacy fallback start')
 
             // Legacy fallback: prompt the code session with the plan text
             const legacyPrompt = planText ?? ''
@@ -1399,16 +1363,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           maxIterations,
         })
       }
-      
-      // Emit early event for TUI to resolve RPC without waiting for full loop start
-      command.lifecycle?.onStarted?.({
-        mode: command.mode,
-        sessionId,
-        loopName: uniqueLoopName,
-        displayName,
-        worktreeDir: hostWorktreeDir,
-        workspaceId: createdWorkspaceId,
-      })
       
       // Wait for sandbox readiness in worktree+sandbox mode (after persistence)
       if (sandboxEnabledForLoop && deps.sandboxManager && deps.dataDir) {
@@ -1790,10 +1744,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       `handleRestartLoop: [perm-diag] worktree=${String(stoppedState.worktree)} sandbox=${String(restartSandbox)}`
     )
     const permissionRuleset = buildLoopPermissionRuleset({ isSandbox: restartSandbox })
-    const previousTermination = stoppedState.terminationReason
     const previousState = { ...stoppedState }
     let restartedState: import('../loop/state').LoopState | null = null
     let bindFailed = false
+    const previousSessionId = stoppedState.sessionId
 
     type RestartOutcome =
       | { ok: true; newSessionId: string; previousSessionId: string; sandbox: boolean; bindFailed: boolean; decomposerSessionId?: string }
@@ -1823,8 +1777,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
       }
 
-      const previousSessionId = stoppedState.sessionId
-
       // Determine if decomposition needs to be re-entered before creating sessions
       const needsDecomposerRestart =
         stoppedState.decompositionStatus === 'pending' ||
@@ -1841,15 +1793,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         } catch (err) {
           deps.logger.error('loop-restart: failed to start sandbox container', err)
           return { ok: false, error: 'Restart failed: could not start sandbox container.' }
-        }
-
-        // Best-effort dependency provisioning on restart. The worktree may already have node_modules
-        // from the prior run; a re-install is wasteful but harmless if the lockfile changed.
-        try {
-          await deps.sandboxManager.provisionDependencies(stoppedState.loopName, stoppedState.worktreeDir)
-        } catch (err) {
-          deps.logger.error('loop-restart: dependency provisioning failed (best-effort)', err)
-          // Do NOT abort restart on provision failure — worktree may already have node_modules.
         }
       }
 
@@ -2161,7 +2104,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       loopName: stoppedState.loopName,
       sessionId: outcome.newSessionId,
       previousSessionId: outcome.previousSessionId,
-      previousTermination,
       worktreeDir: stoppedState.worktreeDir,
       worktreeBranch: stoppedState.worktreeBranch,
       worktree: !!stoppedState.worktree,

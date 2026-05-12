@@ -46,7 +46,8 @@ export interface LoopService {
   getStallTimeoutMs(): number
   getMaxConsecutiveStalls(): number
   terminateAll(): Promise<void>
-  reconcileStale(opts?: { isSandboxLive?: (loopName: string) => Promise<boolean> }): Promise<{ cancelled: number; preserved: string[] }>
+  reconcileStale(opts?: { isSandboxLive?: (loopName: string) => Promise<boolean> }): Promise<{ cancelled: number; preserved: string[]; restartCandidates: LoopState[] }>
+  reconcileFinalize(loopName: string, action: 'cancel' | 'restored'): void
   hasOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): boolean
   getOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[]
   generateUniqueLoopName(baseName: string): string
@@ -328,10 +329,11 @@ export function createLoopService(
     logger.log(`Loop: terminated ${String(active.length)} active loop(s)`)
   }
 
-  async function reconcileStale(opts?: { isSandboxLive?: (loopName: string) => Promise<boolean> }): Promise<{ cancelled: number; preserved: string[] }> {
+  async function reconcileStale(opts?: { isSandboxLive?: (loopName: string) => Promise<boolean> }): Promise<{ cancelled: number; preserved: string[]; restartCandidates: LoopState[] }> {
     const active = listActive()
     const now = Date.now()
     const preserved: string[] = []
+    const restartCandidates: LoopState[] = []
     let cancelled = 0
 
     // Back-compatible path: no opts means cancel everything (old behavior)
@@ -345,10 +347,11 @@ export function createLoopService(
         notifyLoopChange('reconcile', state.loopName, { projectDir: state.projectDir, worktreeDir: state.worktreeDir })
         logger.log(`Reconciled stale active loop: ${state.loopName} (was at iteration ${String(state.iteration)})`)
       }
-      return { cancelled: active.length, preserved: [] }
+      return { cancelled: active.length, preserved: [], restartCandidates: [] }
     }
 
-    // Selective path: preserve loops with live sandbox containers
+    // Selective path: preserve loops with live sandbox containers; flag dead-sandbox loops
+    // with intact worktrees as restart candidates (caller decides whether to actually restart).
     for (const state of active) {
       const eligibleForPreserve =
         !!state.sandbox &&
@@ -365,6 +368,18 @@ export function createLoopService(
         continue
       }
 
+      const eligibleForRestart =
+        !!state.sandbox &&
+        !!state.worktree &&
+        !!state.worktreeDir &&
+        !!state.loopName
+
+      if (eligibleForRestart) {
+        restartCandidates.push(state)
+        logger.log(`Loop: queued for auto-restart attempt: ${state.loopName} (iteration ${String(state.iteration)}, phase=${state.phase})`)
+        continue
+      }
+
       loopsRepo.terminate(projectId, state.loopName, {
         status: 'cancelled',
         reason: 'shutdown',
@@ -375,7 +390,23 @@ export function createLoopService(
       cancelled++
     }
 
-    return { cancelled, preserved }
+    return { cancelled, preserved, restartCandidates }
+  }
+
+  function reconcileFinalize(loopName: string, action: 'cancel' | 'restored'): void {
+    const state = getAnyState(loopName)
+    if (action === 'cancel') {
+      loopsRepo.terminate(projectId, loopName, {
+        status: 'cancelled',
+        reason: 'shutdown',
+        completedAt: Date.now(),
+      })
+      notifyLoopChange('reconcile', loopName, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
+      logger.log(`Loop: auto-restart unavailable, cancelled stale loop: ${loopName}`)
+    } else {
+      notifyLoopChange('reconcile', loopName, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
+      logger.log(`Loop: auto-restored stale loop across plugin restart: ${loopName}`)
+    }
   }
 
   function getOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[] {
@@ -578,6 +609,7 @@ export function createLoopService(
     getMaxConsecutiveStalls,
     terminateAll,
     reconcileStale,
+    reconcileFinalize,
     hasOutstandingFindings,
     getOutstandingFindings,
     generateUniqueLoopName,

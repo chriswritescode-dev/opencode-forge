@@ -51,6 +51,22 @@ export interface LoopConfig {
 }
 
 /**
+ * Resource limits for the sandbox container. Maps directly to `docker run` flags.
+ * Docker Desktop's defaults (often 2GB / 2 CPUs) are too tight for many real projects
+ * — `pnpm install` gets OOM-killed (exit 137) and shell commands run slowly.
+ */
+export interface SandboxResources {
+  /** Memory limit, e.g. '8g', '4096m'. Maps to `--memory`. */
+  memory?: string
+  /** Memory+swap limit, e.g. '12g'. Maps to `--memory-swap`. */
+  memorySwap?: string
+  /** Number of CPUs, e.g. '4', '2.5'. Maps to `--cpus`. */
+  cpus?: string
+  /** Shared memory size, e.g. '512m'. Maps to `--shm-size`. */
+  shmSize?: string
+}
+
+/**
  * Configuration for sandbox execution environment.
  */
 export interface SandboxConfig {
@@ -58,6 +74,8 @@ export interface SandboxConfig {
   mode: 'docker'
   /** Docker image to use for sandboxed execution. */
   image?: string
+  /** Container resource limits. Defaults to memory=8g, cpus=4, shmSize=1g. */
+  resources?: SandboxResources
 }
 
 /**

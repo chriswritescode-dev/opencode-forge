@@ -67,9 +67,10 @@ describe('tui-client bus-RPC integration', () => {
   })
 
   describe('selectTuiSession', () => {
-    it('sets the current workspace before selecting a workspace session', async () => {
+    it('does not pre-set workspace before selecting a workspace session', async () => {
       const workspaceSet = vi.fn()
-      const selectSession = vi.fn().mockResolvedValue({ data: {} })
+      const selectSession = vi.fn().mockResolvedValue({ data: true })
+      const routeNavigate = vi.fn()
       const mockApi = {
         workspace: {
           current: () => undefined,
@@ -79,14 +80,38 @@ describe('tui-client bus-RPC integration', () => {
           tui: { selectSession },
         },
         route: {
-          navigate: vi.fn(),
+          navigate: routeNavigate,
         },
       } as unknown as TuiPluginApi
 
       await selectTuiSession(mockApi, 'session-1', 'workspace-1')
 
-      expect(workspaceSet).toHaveBeenCalledWith('workspace-1')
-      expect(selectSession).toHaveBeenCalledWith({ sessionID: 'session-1', workspace: 'workspace-1' })
+      expect(workspaceSet).not.toHaveBeenCalled()
+      expect(selectSession).toHaveBeenCalledWith({ sessionID: 'session-1' })
+      expect(routeNavigate).not.toHaveBeenCalled()
+    })
+
+    it('falls back to route navigation without setting workspace when selectSession rejects', async () => {
+      const workspaceSet = vi.fn()
+      const selectSession = vi.fn().mockRejectedValue(new Error('tui unavailable'))
+      const routeNavigate = vi.fn()
+      const mockApi = {
+        workspace: {
+          current: () => undefined,
+          set: workspaceSet,
+        },
+        client: {
+          tui: { selectSession },
+        },
+        route: {
+          navigate: routeNavigate,
+        },
+      } as unknown as TuiPluginApi
+
+      await selectTuiSession(mockApi, 'session-1', 'workspace-1')
+
+      expect(workspaceSet).not.toHaveBeenCalled()
+      expect(routeNavigate).toHaveBeenCalledWith('session', { sessionID: 'session-1' })
     })
   })
 

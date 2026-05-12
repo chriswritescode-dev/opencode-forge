@@ -33,7 +33,6 @@ export default defineConfig({
       'test/workspace/forge-adapter.test.ts',
       'test/workspace/forge-adapter-e2e.test.ts',
       'test/sandbox/context.test.ts',
-      'test/sandbox/manager.provision.test.ts',
     ],
   },
 })

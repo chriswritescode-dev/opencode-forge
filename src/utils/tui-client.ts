@@ -1,6 +1,6 @@
 import type { ExecutionPreferences } from './tui-execution-preferences'
 import type { LoopInfo } from './tui-models'
-import type { TuiPluginApi, TuiWorkspace } from '@opencode-ai/plugin/tui'
+import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 import { appendFileSync, mkdirSync } from 'fs'
 import { dirname } from 'path'
 import { resolveLogPath } from '../storage'
@@ -14,6 +14,7 @@ import {
   decodeEvent,
   newRid,
 } from '../api/bus-protocol'
+import { listConnectedWorkspaces, type WorkspaceListApi } from './workspace-listing'
 
 export type ApiExecutionMode = 'new-session' | 'execute-here' | 'loop' | 'loop-worktree'
 
@@ -105,21 +106,9 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-type WorkspaceAwareTuiApi = TuiPluginApi & { workspace?: TuiWorkspace }
-
-export async function selectTuiSession(api: TuiPluginApi, sessionId: string, workspaceId?: string): Promise<void> {
-  const workspaceApi = (api as WorkspaceAwareTuiApi).workspace
-  if (workspaceId && workspaceApi?.set) {
-    const current = workspaceApi.current?.()
-    if (current !== workspaceId) workspaceApi.set(workspaceId)
-  }
-
+export async function selectTuiSession(api: TuiPluginApi, sessionId: string, _workspaceId?: string): Promise<void> {
   try {
-    await api.client.tui.selectSession(
-      workspaceId
-        ? { sessionID: sessionId, workspace: workspaceId }
-        : { sessionID: sessionId }
-    )
+    await api.client.tui.selectSession({ sessionID: sessionId })
   } catch {
     try { api.route.navigate('session', { sessionID: sessionId }) } catch {}
   }
@@ -193,7 +182,6 @@ export async function connectForgeProject(
       return
     }
 
-    // Check for early event first (loop.started)
     const earlyEvent = decodeEvent(command)
     if (earlyEvent) {
       const pendingRpc = 'rid' in earlyEvent ? pending.get(earlyEvent.rid) : undefined
@@ -201,7 +189,6 @@ export async function connectForgeProject(
         tuiDebug(`event matched rid=${earlyEvent.rid} name=${earlyEvent.name}`)
         clearTimeout(pendingRpc.timer)
         pending.delete(earlyEvent.rid)
-        // Prune old entries before adding new one
         const now = Date.now()
         for (const [k, ts] of earlyLoopStartedRids) {
           if (now - ts > 5 * 60_000) earlyLoopStartedRids.delete(k)
@@ -495,7 +482,7 @@ export async function connectForgeProject(
               auditorModel: req.auditorModel,
               targetSessionId: req.targetSessionId,
             },
-            60_000, // longer timeout for loop start (worktree + sandbox)
+            60_000,
             (rid) => { requestRid = rid },
           )
         } catch (err) {
@@ -613,46 +600,7 @@ export async function connectForgeProject(
   const workspaces: ForgeProjectClient['workspaces'] = {
     async list() {
       try {
-        const workspaceApi = api.client.experimental?.workspace
-        if (!workspaceApi) return []
-
-        let rawEntries: Array<{ id: string; name: string; type: string; branch?: string; directory?: string; timeUsed?: number }> = []
-
-        const wsApi = workspaceApi as typeof workspaceApi & { syncList?: () => Promise<{ data?: unknown[] }> }
-        if (typeof wsApi.syncList === 'function') {
-          try {
-            const syncResult = await wsApi.syncList()
-            rawEntries = (syncResult.data ?? []) as typeof rawEntries
-          } catch {
-            const data = await workspaceApi.list()
-            rawEntries = (data.data ?? []) as typeof rawEntries
-          }
-        } else {
-          const data = await workspaceApi.list()
-          rawEntries = (data.data ?? []) as typeof rawEntries
-        }
-
-        let statusMap: Record<string, string> = {}
-        try {
-          const statusResult = await workspaceApi.status()
-          const entries = (statusResult.data ?? []) as Array<{ workspaceID: string; status: string }>
-          statusMap = Object.fromEntries(entries.map((s) => [s.workspaceID, s.status]))
-        } catch {
-          // ignore status errors
-        }
-
-        const filtered = rawEntries.filter((w) => {
-          const status = statusMap[w.id]
-          return !status || status === 'connected'
-        })
-
-        filtered.sort((a, b) => {
-          const ta = a.timeUsed ?? 0
-          const tb = b.timeUsed ?? 0
-          return tb - ta
-        })
-
-        return filtered
+        return await listConnectedWorkspaces(api.client.experimental?.workspace as WorkspaceListApi | undefined)
       } catch {
         return []
       }

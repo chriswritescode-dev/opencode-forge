@@ -1,12 +1,17 @@
 import type { DockerService } from './docker'
-import type { Logger } from '../types'
+import type { Logger, SandboxResources } from '../types'
 import { resolve } from 'path'
-import { join } from 'path'
-import { existsSync } from 'fs'
 import { spawnSync } from 'child_process'
 
 export interface SandboxManagerConfig {
   image: string
+  resources?: SandboxResources
+}
+
+const DEFAULT_RESOURCES: Required<Pick<SandboxResources, 'memory' | 'cpus' | 'shmSize'>> = {
+  memory: '8g',
+  cpus: '4',
+  shmSize: '1g',
 }
 
 export interface ActiveSandbox {
@@ -25,7 +30,6 @@ export interface SandboxManager {
   isLiveByName(worktreeName: string): Promise<boolean>
   cleanupOrphans(preserveWorktrees?: string[]): Promise<number>
   restore(worktreeName: string, projectDir: string, startedAt: string): Promise<void>
-  provisionDependencies(worktreeName: string, projectDir: string): Promise<void>
 }
 
 export function createSandboxManager(
@@ -97,8 +101,14 @@ export function createSandboxManager(
     if (extraMounts.length > 0) {
       logger.log(`Sandbox: mounting git metadata: ${extraMounts.join(', ')}`)
     }
-    logger.log(`Creating sandbox container ${containerName} for ${absoluteProjectDir}`)
-    await docker.createContainer(containerName, absoluteProjectDir, config.image, extraMounts)
+    const resources: SandboxResources = {
+      memory: config.resources?.memory ?? DEFAULT_RESOURCES.memory,
+      cpus: config.resources?.cpus ?? DEFAULT_RESOURCES.cpus,
+      shmSize: config.resources?.shmSize ?? DEFAULT_RESOURCES.shmSize,
+      ...(config.resources?.memorySwap ? { memorySwap: config.resources.memorySwap } : {}),
+    }
+    logger.log(`Creating sandbox container ${containerName} for ${absoluteProjectDir} (memory=${resources.memory} cpus=${resources.cpus} shmSize=${resources.shmSize}${resources.memorySwap ? ` memorySwap=${resources.memorySwap}` : ''})`)
+    await docker.createContainer(containerName, absoluteProjectDir, config.image, extraMounts, resources)
 
     const active: ActiveSandbox = {
       containerName,
@@ -206,25 +216,6 @@ export function createSandboxManager(
     }
   }
 
-  async function provisionDependencies(worktreeName: string, projectDir: string): Promise<void> {
-    const lockfilePath = join(resolve(projectDir), 'pnpm-lock.yaml')
-    if (!existsSync(lockfilePath)) {
-      logger.log(`[sandbox] no pnpm-lock.yaml at ${lockfilePath}; skipping dependency provisioning`)
-      return
-    }
-    const containerName = docker.containerName(worktreeName)
-    logger.log(`[sandbox] provisioning dependencies for ${containerName}: pnpm install --prefer-offline --frozen-lockfile`)
-    const result = await docker.exec(containerName, 'pnpm install --prefer-offline --frozen-lockfile', {
-      cwd: '/workspace',
-      timeout: 10 * 60 * 1000, // 10 minutes
-    })
-    if (result.exitCode !== 0) {
-      const tail = result.stderr.split('\n').slice(-40).join('\n')
-      throw new Error(`pnpm install failed (exit ${result.exitCode}) for ${containerName}:\n${tail}`)
-    }
-    logger.log(`[sandbox] provisioning complete for ${containerName}`)
-  }
-
   return {
     docker,
     start,
@@ -235,6 +226,5 @@ export function createSandboxManager(
     isLiveByName,
     cleanupOrphans,
     restore,
-    provisionDependencies,
   }
 }

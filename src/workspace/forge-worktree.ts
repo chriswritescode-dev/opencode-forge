@@ -1,16 +1,20 @@
 /**
- * Forge worktree workspace helpers.
+ * Forge workspace helpers using opencode's experimental workspace API.
  *
- * The recommended entry point is {@link createBuiltinWorktreeWorkspace}, which uses
- * opencode's builtin `worktree` workspace type for fully connected TUI status.
+ * The recommended entry point is {@link createBuiltinWorktreeWorkspace}, which creates
+ * a Forge workspace with `type: 'forge'` through opencode's experimental adapter,
+ * then registers it via syncList so the TUI can show it as connected (green dot).
+ *
+ * Workspaces are created with `type: 'forge'` (not `type: 'worktree'`) because
+ * Forge uses its own adapter registered in the experimental workspace API.
  */
 
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 
 /**
- * Creates a builtin worktree workspace via opencode's built-in worktree adapter.
+ * Creates a Forge workspace via opencode's experimental workspace API with the `forge` adapter.
  *
- * Uses `experimental.workspace.create({ type: 'worktree', branch: null })` so the
+ * Uses `experimental.workspace.create({ type: 'forge', branch: null })` so the
  * workspace appears as fully connected (green dot) in the TUI.
  *
  * After a successful create, also issues a best-effort `experimental.workspace.syncList()`
@@ -22,7 +26,7 @@ export async function createBuiltinWorktreeWorkspace(
   client: OpencodeClient,
   options: {
     loopName: string
-    directory?: string
+    directory: string
   },
   logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void }
 ): Promise<{ workspaceId: string; directory: string; branch: string } | null> {
@@ -31,11 +35,15 @@ export async function createBuiltinWorktreeWorkspace(
     (logger ?? console).log?.('createBuiltinWorktreeWorkspace: experimental.workspace API not available')
     return null
   }
+  if (!options.directory) {
+    (logger ?? console).error('createBuiltinWorktreeWorkspace: options.directory is required')
+    return null
+  }
   try {
-    const createParams: { type: string; branch: string | null; extra: { loopName: string } } = {
+    const createParams: { type: string; branch: string | null; extra: { loopName: string; projectDirectory: string } } = {
       type: 'forge',
       branch: null,
-      extra: { loopName: options.loopName },
+      extra: { loopName: options.loopName, projectDirectory: options.directory },
     }
     const result = await workspaceApi.create(createParams)
 

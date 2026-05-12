@@ -114,12 +114,12 @@ export async function handleExecutePlan(
           selectSession: true,
           selectSessionTiming: 'after-create',
           startWatchdog: true,
-            onStarted: (info) => {
-              started = true
-              const response = toPlanLoopResponse(parsed.mode as PlanLoopMode, info)
-              deps.eventPublisher?.('loop.started', response)
-              resolveStarted(info)
-            },
+          onStarted: (info) => {
+            started = true
+            const response = toPlanLoopResponse(parsed.mode as PlanLoopMode, info)
+            deps.eventPublisher?.('loop.started', response)
+            resolveStarted(info)
+          },
         },
       })
 

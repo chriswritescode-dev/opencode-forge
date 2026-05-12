@@ -1737,7 +1737,7 @@ describe('plan execute API loop dispatch', () => {
     expect(row.auditor_model).toBe('provider/request-auditor')
   })
 
-  test('loop-worktree mode selects the created workspace when navigating', async () => {
+  test('loop-worktree mode warps before selecting the created session', async () => {
     const { ctx } = createApiDeps()
     const selectSession = mock(() => Promise.resolve({ data: {} }))
     ;(ctx.v2 as any).tui = { selectSession }
@@ -1756,15 +1756,18 @@ describe('plan execute API loop dispatch', () => {
     }, body)
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    expect(selectSession).toHaveBeenCalledWith(expect.objectContaining({
+    expect(selectSession).toHaveBeenCalledWith({ sessionID: expect.any(String) })
+    expect((ctx.v2 as any).experimental.workspace.warp).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'server-generated-ws-id',
       sessionID: expect.any(String),
-      workspace: 'server-generated-ws-id',
     }))
   })
 
   test('loop-worktree mode persists sandbox container name', async () => {
     const sandboxManager = {
+      getActive: mock(() => null),
       start: mock(async () => ({ containerName: 'oc-forge-sandbox-api-worktree-plan' })),
+      provisionDependencies: mock(async () => {}),
       stop: mock(async () => {}),
     }
     const { ctx } = createApiDeps({
@@ -1832,7 +1835,9 @@ describe('plan execute API loop dispatch', () => {
 
   test('loop-worktree mode rolls back session and loop state when sandbox startup fails', async () => {
     const sandboxManager = {
+      getActive: mock(() => null),
       start: mock(async () => { throw new Error('sandbox failed') }),
+      provisionDependencies: mock(async () => {}),
       stop: mock(async () => {}),
     }
     const { ctx, sessionAbort } = createApiDeps({

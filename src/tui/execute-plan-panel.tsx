@@ -198,7 +198,8 @@ export function ExecutePlanPanel(props: {
 
     props.api.ui.toast({ message: result.loopName ? `Loop started: ${result.loopName}` : 'Plan execution started', variant: 'success', duration: 3000 })
     await props.onExecuted?.()
-    // Refresh workspace list so the new workspace appears in session list
+    // Best-effort SDK sync trigger; actual TUI session-list refresh happens via selectTuiSession
+    // route bootstrap which detects the workspace transition and re-runs workspace/session init.
     props.client.workspaces.list().catch(() => {})
     if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop-worktree')) {
       await selectTuiSession(props.api, result.sessionId, result.workspaceId)
