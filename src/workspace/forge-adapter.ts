@@ -1,7 +1,7 @@
-import { join, resolve } from 'path'
+import { join } from 'path'
 import { mkdir } from 'fs/promises'
 import { existsSync } from 'fs'
-import { spawnSync, execSync } from 'child_process'
+import { spawnSync } from 'child_process'
 import type { WorkspaceAdapter, WorkspaceInfo } from '@opencode-ai/plugin'
 import type { Logger } from '../types'
 import type { SandboxManager } from '../sandbox/manager'
@@ -21,6 +21,10 @@ export interface TeardownContext {
   iteration: number
   reasonLabel: string
   doCommit: boolean
+  /** When false the worktree directory stays in place for restart. */
+  doRemoveWorktree: boolean
+  /** When false the branch is preserved for restart. */
+  doDeleteBranch: boolean
 }
 
 export type TeardownContextProvider = (loopName: string) => TeardownContext | undefined
@@ -40,6 +44,8 @@ const DEFAULT_TEARDOWN_CONTEXT: TeardownContext = {
   iteration: 0,
   reasonLabel: 'removed',
   doCommit: true,
+  doRemoveWorktree: true,
+  doDeleteBranch: true,
 }
 
 export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAdapter {
@@ -57,6 +63,109 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
     const dir = typeof extra.projectDirectory === 'string' ? extra.projectDirectory : ''
     if (!dir) throw new Error('forge workspace adapter: extra.projectDirectory is required')
     return dir
+  }
+
+  function resolveLoopName(info: WorkspaceInfo): string {
+    try {
+      return deriveLoopName(info)
+    } catch {
+      return info.name || 'unknown'
+    }
+  }
+
+  function resolveProjectDir(info: WorkspaceInfo): string | null {
+    const extra = (info.extra ?? {}) as { projectDirectory?: unknown }
+    if (typeof extra.projectDirectory === 'string' && extra.projectDirectory) {
+      return extra.projectDirectory
+    }
+    if (!info.directory || !existsSync(info.directory)) return null
+    try {
+      const commonDir = spawnSync('git', ['rev-parse', '--git-common-dir'], { cwd: info.directory, encoding: 'utf-8' }).stdout?.trim()
+      if (commonDir) {
+        return join(info.directory, commonDir, '..')
+      }
+    } catch {}
+    return null
+  }
+
+  async function stepCommitChanges(loopName: string, directory: string, branchLabel: string, ctx: TeardownContext): Promise<void> {
+    if (!ctx.doCommit || !existsSync(directory)) return
+
+    try {
+      const addResult = spawnSync('git', ['add', '-A'], { cwd: directory, encoding: 'utf-8' })
+      if (addResult.status !== 0) {
+        logger.log(`forge-adapter: git add failed during teardown: ${addResult.stderr?.trim() || 'unknown error'}`)
+        return
+      }
+
+      const statusResult = spawnSync('git', ['status', '--porcelain'], { cwd: directory, encoding: 'utf-8' })
+      if (statusResult.status !== 0 || !statusResult.stdout.trim()) {
+        logger.log(`forge-adapter: no pending changes to commit on ${branchLabel}`)
+        return
+      }
+
+      const iterLabel = ctx.iteration === 1 ? 'iteration' : 'iterations'
+      const message = `loop: ${loopName} ${ctx.reasonLabel} after ${ctx.iteration} ${iterLabel}`
+      const commitResult = spawnSync('git', ['commit', '-m', message], { cwd: directory, encoding: 'utf-8' })
+
+      if (commitResult.status === 0) {
+        logger.log(`forge-adapter: committed pending changes on ${branchLabel}`)
+      } else {
+        logger.log(`forge-adapter: commit failed on ${branchLabel}: ${commitResult.stderr?.trim() || 'unknown error'}`)
+      }
+    } catch (err) {
+      logger.error('forge-adapter: commit step threw during teardown', err)
+    }
+  }
+
+  async function stepRenameBranch(loopName: string, branch: string | null | undefined, worktreeDir: string): Promise<void> {
+    if (!branch || !existsSync(worktreeDir) || branch.startsWith('forge/')) return
+
+    const result = await finalizeWorktreeBranch({
+      worktreeDir,
+      currentBranch: branch,
+      loopName,
+      logger,
+    })
+    if (result) {
+      logger.log(`forge-adapter: renamed branch ${branch} -> ${result.renamedTo}`)
+    }
+  }
+
+  async function stepStopSandbox(sandboxManager: Pick<SandboxManager, 'start' | 'stop'> | null | undefined, name: string | undefined): Promise<void> {
+    if (!sandboxManager || !name) return
+
+    await sandboxManager.stop(name).catch((err) => {
+      logger.log(`forge-adapter: sandbox stop failed for ${name}: ${err instanceof Error ? err.message : String(err)}`)
+    })
+  }
+
+  async function stepRemoveWorktree(worktreeDir: string, ctx: TeardownContext): Promise<void> {
+    if (!ctx.doRemoveWorktree) return
+
+    const result = await cleanupLoopWorktree({
+      worktreeDir,
+      logPrefix: 'forge-adapter',
+      logger,
+    })
+    if (result.error) {
+      throw new Error(result.error)
+    }
+  }
+
+  function stepDeleteBranch(branch: string | undefined, projectDir: string | undefined): void {
+    if (!branch || !projectDir) return
+
+    const res = spawnSync('git', ['branch', '-D', branch], { cwd: projectDir, encoding: 'utf-8' })
+    if (res.status === 0) {
+      logger.log(`forge-adapter: deleted branch ${branch}`)
+      return
+    }
+
+    const stderr = res.stderr?.trim() || ''
+    if (stderr && !stderr.includes('not found')) {
+      logger.log(`forge-adapter: could not delete branch ${branch}: ${stderr}`)
+    }
   }
 
   return {
@@ -132,116 +241,29 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
     async remove(info) {
       if (!info.directory) return
 
-      // Resolve loopName from the workspace metadata. Falls back to info.name
-      // when extra.loopName is missing (e.g., legacy workspaces) so teardown
-      // is best-effort rather than throwing.
-      let loopName: string
-      try {
-        loopName = deriveLoopName(info)
-      } catch {
-        loopName = info.name || 'unknown'
-      }
-
+      const loopName = resolveLoopName(info)
       const ctx = getTeardownContext?.(loopName) ?? DEFAULT_TEARDOWN_CONTEXT
+      const projectDir = resolveProjectDir(info)
 
-      // Derive a best-effort project directory for branch deletion.
-      let projectDir: string | null = null
-      const extra = (info.extra ?? {}) as { projectDirectory?: unknown }
-      if (typeof extra.projectDirectory === 'string' && extra.projectDirectory) {
-        projectDir = extra.projectDirectory
-      } else if (existsSync(info.directory)) {
-        try {
-          const commonDir = execSync('git rev-parse --git-common-dir', { cwd: info.directory, encoding: 'utf-8' }).trim()
-          projectDir = resolve(info.directory, commonDir, '..')
-        } catch {
-          projectDir = null
-        }
-      }
+      // Always commit changes so work isn't lost — skip only when the worktree
+      // directory itself is already gone.
+      await stepCommitChanges(loopName, info.directory, info.branch ?? '<branch>', ctx)
 
-      // Step 1 (inverse of any worktree commits the loop made): commit pending
-      // changes so the user can recover them from the renamed branch.
-      if (ctx.doCommit && existsSync(info.directory)) {
-        try {
-          const addResult = spawnSync('git', ['add', '-A'], { cwd: info.directory, encoding: 'utf-8' })
-          if (addResult.status !== 0) {
-            logger.log(`forge-adapter: git add failed during teardown: ${addResult.stderr?.trim() || 'unknown error'}`)
-          } else {
-            const statusResult = spawnSync('git', ['status', '--porcelain'], { cwd: info.directory, encoding: 'utf-8' })
-            if (statusResult.status === 0 && statusResult.stdout.trim()) {
-              const iterations = ctx.iteration === 1 ? 'iteration' : 'iterations'
-              const message = `loop: ${loopName} ${ctx.reasonLabel} after ${ctx.iteration} ${iterations}`
-              const commitResult = spawnSync('git', ['commit', '-m', message], { cwd: info.directory, encoding: 'utf-8' })
-              if (commitResult.status === 0) {
-                logger.log(`forge-adapter: committed pending changes on ${info.branch ?? '<branch>'}`)
-              } else {
-                logger.log(`forge-adapter: commit failed on ${info.branch ?? '<branch>'}: ${commitResult.stderr?.trim() || 'unknown error'}`)
-              }
-            } else {
-              logger.log(`forge-adapter: no pending changes to commit on ${info.branch ?? '<branch>'}`)
-            }
-          }
-        } catch (err) {
-          logger.error('forge-adapter: commit step threw during teardown', err)
-        }
-      }
+      // Rename non-forge branches to opencode/<slug> before removal.
+      await stepRenameBranch(loopName, info.branch, info.directory)
 
-      // Step 2 (preserve work for user discoverability): rename the worktree
-      // branch to `opencode/<slug>`. Must happen BEFORE removing the worktree
-      // since `git branch -m` needs a live working directory.
-      //
-      // Branches in the `forge/` namespace are intentionally skipped: those
-      // are scratch branches that get hard-deleted in step 5. Custom branches
-      // (anything outside `forge/`) are renamed to keep the history reachable.
-      if (info.branch && existsSync(info.directory) && !info.branch.startsWith('forge/')) {
-        const renameResult = await finalizeWorktreeBranch({
-          worktreeDir: info.directory,
-          currentBranch: info.branch,
-          loopName,
-          logger,
-        })
-        if (renameResult) {
-          logger.log(`forge-adapter: renamed branch ${info.branch} -> ${renameResult.renamedTo}`)
-        }
-      }
+      // Stop sandbox container if running.
+      await stepStopSandbox(sandboxManager, info.name)
 
-      // Step 3 (inverse of create's sandbox start): stop the sandbox container.
-      if (sandboxManager && info.name) {
-        await sandboxManager.stop(info.name).catch((err) => {
-          logger.log(`forge-adapter: sandbox stop during remove failed for ${info.name}: ${err instanceof Error ? err.message : String(err)}`)
-        })
-      }
+      // Remove the worktree directory and prune dead records.
+      // Skip on error/stall/abort so restart can reuse it.
+      await stepRemoveWorktree(info.directory, ctx)
 
-      // Step 4 (inverse of `git worktree add`): remove the worktree directory
-      // and prune dead worktree records. Delegates to the shared utility so
-      // we share the already-removed / permission-denied edge cases.
-      const cleanupResult = await cleanupLoopWorktree({
-        worktreeDir: info.directory,
-        logPrefix: 'forge-adapter',
-        logger,
-      })
-      if (cleanupResult.error) {
-        throw new Error(cleanupResult.error)
-      }
-
-      // Step 5 (inverse of `-b <branch>`): delete the forge/<loopName> branch.
-      // Best-effort — the branch may have been renamed in step 2, may have
-      // never been created, or may already be gone.
-      if (info.branch && projectDir) {
-        const branchRes = spawnSync('git', ['branch', '-D', info.branch], {
-          cwd: projectDir,
-          encoding: 'utf-8',
-        })
-        if (branchRes.status !== 0) {
-          const stderr = branchRes.stderr?.trim() || ''
-          if (stderr && !stderr.includes('not found')) {
-            logger.log(`forge-adapter: could not delete branch ${info.branch}: ${stderr}`)
-          }
-        } else {
-          logger.log(`forge-adapter: deleted branch ${info.branch}`)
-        }
-      } else if (info.branch) {
-        logger.log(`forge-adapter: skipping branch delete for ${info.branch}: no projectDirectory and worktree already gone`)
-      }
+      // Only delete scratch branches (`forge/*`) — they have no meaningful
+      // history. Non-forge branches were renamed to `opencode/*` above.
+      // Skip on error/stall/abort so restart can use them.
+      if (!info.branch?.startsWith('forge/') || !ctx.doDeleteBranch) return
+      stepDeleteBranch(info.branch, projectDir ?? undefined)
     },
     target(info) {
       return { type: 'local', directory: info.directory! }
