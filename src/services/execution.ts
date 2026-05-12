@@ -897,12 +897,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       const isAgentDecomposer = decomposerConfig.enabled !== false && decomposerConfig.mode === 'agent'
 
       if (!deps.sandboxManager) {
-        deps.logger.error('handleStartLoop: sandbox manager not initialized; loops require Docker')
-        return fail(
-          'internal_error',
-          500,
-          'Sandbox required: Docker is not available. Install Docker and build oc-forge-sandbox:latest before starting a loop.',
-        )
+        deps.logger.log('handleStartLoop: sandbox manager not initialized; running in worktree-only mode')
       }
       
       // Create builtin worktree workspace (single call — no separate worktree.create)
