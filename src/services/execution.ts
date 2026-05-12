@@ -565,7 +565,10 @@ async function selectSessionWithFallback(
   // Try v2 TUI selectSession first
   try {
     if (deps.v2.tui) {
-      await deps.v2.tui.selectSession({ sessionID: selection.sessionID })
+      await deps.v2.tui.selectSession({
+        sessionID: selection.sessionID,
+        ...(selection.workspace ? { workspace: selection.workspace } : {}),
+      })
       return
     }
   } catch (err) {
@@ -586,6 +589,7 @@ async function selectSessionWithFallback(
           type: 'tui.session.select',
           properties: {
             sessionID: selection.sessionID,
+            ...(selection.workspace ? { workspace: selection.workspace } : {}),
           },
         },
       })
@@ -613,6 +617,7 @@ async function selectSessionWithFallback(
         type: 'tui.session.select',
         properties: {
           sessionID: selection.sessionID,
+          ...(selection.workspace ? { workspace: selection.workspace } : {}),
         },
       },
     } as unknown as Parameters<typeof deps.legacyClient.tui.publish>[0])

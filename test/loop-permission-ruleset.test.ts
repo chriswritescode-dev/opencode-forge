@@ -9,7 +9,7 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'external_directory', pattern: '*',          action: 'allow' },
       { permission: 'review-write',       pattern: '*',          action: 'deny' },
       { permission: 'review-delete',      pattern: '*',          action: 'deny' },
-      { permission: 'plan-execute',       pattern: '*',          action: 'deny' },
+      { permission: 'plan_exit',          pattern: '*',          action: 'deny' },
       { permission: 'loop',               pattern: '*',          action: 'deny' },
       { permission: 'bash',               pattern: 'git push *', action: 'deny' },
       { permission: 'loop-cancel',        pattern: '*',          action: 'deny' },
@@ -24,7 +24,7 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'external_directory', pattern: '*',          action: 'deny' },
       { permission: 'review-write',       pattern: '*',          action: 'deny' },
       { permission: 'review-delete',      pattern: '*',          action: 'deny' },
-      { permission: 'plan-execute',       pattern: '*',          action: 'deny' },
+      { permission: 'plan_exit',          pattern: '*',          action: 'deny' },
       { permission: 'loop',               pattern: '*',          action: 'deny' },
       { permission: 'bash',               pattern: 'git push *', action: 'deny' },
       { permission: 'loop-cancel',        pattern: '*',          action: 'deny' },
@@ -33,7 +33,7 @@ describe('buildLoopPermissionRuleset', () => {
   })
 
   test('EMITS session-level denies for code-agent tool exclusions (auditor now runs in separate session)', () => {
-    const required = ['review-write', 'review-delete', 'plan-execute', 'loop']
+    const required = ['review-write', 'review-delete', 'loop']
     for (const isSandbox of [true, false]) {
       const rules = buildLoopPermissionRuleset({ isSandbox })
       for (const tool of required) {
@@ -66,7 +66,6 @@ describe('buildAuditSessionPermissionRuleset', () => {
     
     // Loop/plan denies
     expect(rules.some(r => r.permission === 'loop' && r.pattern === '*' && r.action === 'deny')).toBe(true)
-    expect(rules.some(r => r.permission === 'plan-execute' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'loop-cancel' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'loop-status' && r.pattern === '*' && r.action === 'deny')).toBe(true)
   })

@@ -106,7 +106,7 @@ describe('Plan Approval Tool Interception', () => {
             output.output = `${output.output}\n\n[Programmatic dispatch - no directive]`
           } else {
             // Custom answer fallback
-            output.output = `${output.output}\n\n<system-reminder>\nThe user provided a custom response instead of selecting a predefined option. Review their answer and respond accordingly. If they want to proceed with execution, use the appropriate tool (plan-execute or loop) based on their intent. If they want to cancel or revise the plan, help them with that instead.\n</system-reminder>`
+            output.output = `${output.output}\n\n<system-reminder>\nThe user provided a custom response instead of selecting a predefined option. Review their answer and respond accordingly. If they want to proceed with execution, ask the question tool again with one of: "New session", "Execute here", "Loop (worktree)", "Loop". If they want to cancel or revise the plan, help them with that instead.\n</system-reminder>`
           }
         }
       }
@@ -117,7 +117,6 @@ describe('Plan Approval Tool Interception', () => {
 
     const LOOP_BLOCKED_TOOLS: Record<string, string> = {
       question: 'The question tool is not available during a loop. Do not ask questions — continue working on the task autonomously.',
-      'plan-execute': 'The plan-execute tool is not available during a loop. Focus on executing the current plan.',
       loop: 'The loop tool is not available during a loop. Focus on executing the current plan.',
     }
 
@@ -145,7 +144,6 @@ describe('Plan Approval Tool Interception', () => {
 
     expect(output.output).toContain('New session')
     expect(output.output).not.toContain('<system-reminder>')
-    expect(output.output).not.toContain('plan-execute')
   })
 
   test('Detects plan approval question and handles "Execute here" with abort', () => {
@@ -332,15 +330,6 @@ describe('Plan Approval Tool Interception', () => {
     expect(output.output).toBe('test')
   })
 
-  test('Loop blocking works for plan-execute tool', () => {
-    const output = { title: '', output: 'test', metadata: {} }
-
-    simulateToolExecuteAfter('plan-execute', {}, output, true)
-
-    expect(output.title).toBe('Tool blocked')
-    expect(output.output).toContain('plan-execute tool is not available')
-  })
-
   test('Loop blocking works for loop tool', () => {
     const output = { title: '', output: 'test', metadata: {} }
 
@@ -362,7 +351,7 @@ describe('Plan Approval Tool Interception', () => {
   test('Loop blocking only applies when loop is active', () => {
     const output = { title: '', output: 'test', metadata: {} }
 
-    simulateToolExecuteAfter('plan-execute', {}, output, false)
+    simulateToolExecuteAfter('loop', {}, output, false)
 
     expect(output.title).toBe('')
     expect(output.output).toBe('test')
@@ -959,7 +948,7 @@ describe('Tool blocking hook', () => {
     }))!
     const output = { title: '', output: 'original output', metadata: {} }
 
-    await hook({ tool: 'plan-execute', sessionID, callID: 'call-1', args: {} }, output)
+    await hook({ tool: 'loop', sessionID, callID: 'call-1', args: {} }, output)
 
     expect(output.title).toBe('')
     expect(output.output).toBe('original output')

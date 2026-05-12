@@ -110,7 +110,7 @@ The plugin bundles three agents:
 
 The auditor agent is a read-only subagent (`temperature: 0.0`) that cannot write, edit, or delete entries or execute plans. It is invoked by other agents via the Task tool to review code changes against stored project conventions and decisions.
 
-**Tool restrictions:** The auditor cannot use `plan-execute` or `loop` tools to prevent interference with active workflows.
+**Tool restrictions:** The auditor cannot use the `loop` tool to prevent interference with active workflows.
 
 The architect agent operates in read-only mode (`temperature: 0.0`, all edits denied) with message-level enforcement via the `experimental.chat.messages.transform` hook. Final plans are rendered once in the assistant response between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers, then auto-captured into SQL before execution approval. After user approval via the question tool, execution is dispatched programmatically — no additional LLM calls are needed. The user can view and edit the cached plan from the sidebar or command palette before or during execution. 
 
@@ -123,7 +123,6 @@ Session-scoped plan storage backed by SQL for managing implementation plans. Loo
 | Tool | Description |
 |------|-------------|
 | `plan-read` | Retrieve the plan. Supports pagination with offset/limit and pattern search. |
-| `plan-execute` | Create a new Code session and send an approved plan as the first prompt |
 
 ### Review Tools
 
@@ -256,7 +255,7 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
 #### Top-level
 - `dataDir` - Data directory for plugin storage. When empty, resolves to `~/.local/share/opencode/forge` (or `XDG_DATA_HOME` equivalent) (default: `""`)
 - `completedLoopTtlMs` - TTL for completed/cancelled/errored/stalled loops before sweep (default: `604800000` / 7 days).
-- `executionModel` - Model override for plan execution sessions, format: `provider/model` (e.g. `anthropic/claude-sonnet-4-20250514`). When set, `plan-execute` uses this model for the new Code session. When empty or omitted, OpenCode's default model is used (typically the `model` field from `opencode.json`). **Recommended:** Set this to a fast, cheap model (e.g. Haiku or MiniMax) and use a smart model (e.g. Opus) for the Architect session — planning needs reasoning, execution needs speed. This value is used as a fallback when no per-launch selection is made.
+- `executionModel` - Model override for plan execution sessions, format: `provider/model` (e.g. `anthropic/claude-sonnet-4-20250514`). When set, plan execution (via the architect's approval flow or the TUI Execute panel) uses this model for the new Code session. When empty or omitted, OpenCode's default model is used (typically the `model` field from `opencode.json`). **Recommended:** Set this to a fast, cheap model (e.g. Haiku or MiniMax) and use a smart model (e.g. Opus) for the Architect session — planning needs reasoning, execution needs speed. This value is used as a fallback when no per-launch selection is made.
 - `auditorModel` - Model override for the auditor agent (`provider/model`). When set, overrides the auditor agent's default model. When not set, uses platform default (default: `""`). This value is used as a fallback when no per-launch selection is made.
 - `agents` - Per-agent temperature overrides keyed by display name (e.g., `"code"`, `"architect"`, `"auditor"`). Temperature range: `0.0` - `2.0` (default: `undefined`)
 
@@ -537,7 +536,7 @@ On model errors during execution, automatic fallback to the default model kicks 
 ### Safety
 
 - `git push` is denied inside active loop sessions
-- Tools like `question`, `plan-execute`, and `loop` are blocked to prevent recursive loops and keep execution autonomous
+- Tools like `question` and `loop` are blocked to prevent recursive loops and keep execution autonomous
 
 ### Management
 

@@ -278,7 +278,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
 
     // Assert: warp was called
     expect(experimentalWorkspaceWarpMock).toHaveBeenCalledTimes(1)
-    expect(tuiSelectSessionMock).toHaveBeenCalledWith({ sessionID: 'session_test' })
+    expect(tuiSelectSessionMock).toHaveBeenCalledWith({ sessionID: 'session_test', workspace: 'ws_test' })
     expect(experimentalWorkspaceWarpMock.mock.invocationCallOrder[0]).toBeLessThan(
       tuiSelectSessionMock.mock.invocationCallOrder[0],
     )

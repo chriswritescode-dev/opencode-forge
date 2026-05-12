@@ -1,6 +1,8 @@
 import { describe, test, expect } from 'bun:test'
 import { createConfigHandler } from '../src/config'
-import { agents } from '../src/agents'
+import { buildAgents } from '../src/agents'
+
+const agents = buildAgents()
 
 describe('createConfigHandler', () => {
   describe('config merge behavior', () => {
@@ -81,7 +83,7 @@ describe('createConfigHandler', () => {
       const permission = code.permission as Record<string, string>
 
       expect(permission).toBeDefined()
-      for (const tool of ['review-write', 'review-delete', 'plan-execute', 'loop', 'plan']) {
+      for (const tool of ['review-write', 'review-delete', 'loop', 'plan']) {
         expect(permission[tool]).toBe('deny')
       }
     })
@@ -105,7 +107,7 @@ describe('createConfigHandler', () => {
       const permission = code.permission as Record<string, string>
 
       expect(permission['review-delete']).toBe('deny')
-      expect(permission['plan-execute']).toBe('deny')
+      expect(permission['plan-execute']).toBeUndefined()
     })
 
     test('user tool override preserves built-in excludes during merge', async () => {

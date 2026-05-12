@@ -40,7 +40,6 @@ describe('Agent definitions', () => {
       expect(auditorAgent.tools?.exclude).toContain('edit')
       expect(auditorAgent.tools?.exclude).toContain('write')
       expect(auditorAgent.tools?.exclude).toContain('multiedit')
-      expect(auditorAgent.tools?.exclude).toContain('plan-execute')
       expect(auditorAgent.tools?.exclude).toContain('plan')
       expect(auditorAgent.tools?.exclude).toContain('plan_exit')
       expect(auditorAgent.tools?.exclude).toContain('loop')
@@ -51,7 +50,6 @@ describe('Agent definitions', () => {
     test('code agent has expected tool exclusions', () => {
       expect(codeAgent.tools?.exclude).toBeDefined()
       expect(codeAgent.tools?.exclude).toContain('review-delete')
-      expect(codeAgent.tools?.exclude).toContain('plan-execute')
       expect(codeAgent.tools?.exclude).toContain('plan')
       expect(codeAgent.tools?.exclude).toContain('plan_exit')
       expect(codeAgent.tools?.exclude).not.toContain('loop-cancel')
@@ -130,7 +128,6 @@ describe('Agent definitions', () => {
       expect(decomposerAgent.tools?.exclude).toContain('edit')
       expect(decomposerAgent.tools?.exclude).toContain('write')
       expect(decomposerAgent.tools?.exclude).toContain('multiedit')
-      expect(decomposerAgent.tools?.exclude).toContain('plan-execute')
       expect(decomposerAgent.tools?.exclude).toContain('plan')
       expect(decomposerAgent.tools?.exclude).toContain('plan_exit')
       expect(decomposerAgent.tools?.exclude).toContain('loop')
@@ -138,6 +135,12 @@ describe('Agent definitions', () => {
       expect(decomposerAgent.tools?.exclude).toContain('loop-status')
       expect(decomposerAgent.tools?.exclude).toContain('review-write')
       expect(decomposerAgent.tools?.exclude).toContain('review-delete')
+    })
+
+    test('no agent excludes the removed plan-execute tool', () => {
+      expect(auditorAgent.tools?.exclude ?? []).not.toContain('plan-execute')
+      expect(codeAgent.tools?.exclude ?? []).not.toContain('plan-execute')
+      expect(decomposerAgent.tools?.exclude ?? []).not.toContain('plan-execute')
     })
 
     test('decomposer agent prompt contains section marker instructions', () => {

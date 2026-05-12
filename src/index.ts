@@ -21,25 +21,10 @@ import type { ToolContext } from './tools'
 import { LRUCache } from './utils/lru-cache'
 import { createSessionLoopResolver } from './services/session-loop-resolver'
 import { getProjectRegistry } from './api/project-registry'
-import type { ProjectRegistry } from './api/project-registry'
 import { createPlanCaptureEventHook } from './hooks/plan-capture'
 import { createSectionCaptureHook } from './hooks/section-capture'
 import { createBusRpcEventHook } from './api/bus-rpc'
 import { encodeEvent } from './api/bus-protocol'
-
-export async function cleanupSandboxOrphansAcrossRegistry(
-  registry: ProjectRegistry,
-  sandboxManager: Pick<ReturnType<typeof createSandboxManager>, 'cleanupOrphans'>
-): Promise<string[]> {
-  const preserveLoops = registry
-    .list()
-    .flatMap((ctx) => ctx.loop.listActive())
-    .filter((state) => state.sandbox && state.loopName)
-    .map((state) => state.loopName!)
-
-  await sandboxManager.cleanupOrphans(preserveLoops)
-  return preserveLoops
-}
 
 export interface CreateParentSessionLookupOptions {
   v2: ReturnType<typeof createV2Client>
@@ -442,8 +427,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     registry.register(ctx)
 
     if (sandboxManager) {
-      await cleanupSandboxOrphansAcrossRegistry(registry, sandboxManager)
-
       const reconcileDeps = { sandboxManager, loop: loopHandler.loop, logger }
       await reconcileSandboxes(reconcileDeps)
 

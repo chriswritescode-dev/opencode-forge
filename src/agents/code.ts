@@ -66,7 +66,7 @@ export function buildCodeAgent(): AgentDefinition {
       question: 'allow',
     },
     tools: {
-      exclude: ['review-write','review-delete','plan-execute', 'loop', 'plan', 'plan_exit']
+      exclude: ['review-write','review-delete', 'loop', 'plan', 'plan_exit']
     },
     systemPrompt: buildPrompt(),
   }

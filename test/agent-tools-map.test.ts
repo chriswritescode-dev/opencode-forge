@@ -1,21 +1,29 @@
 import { describe, test, expect } from 'bun:test'
-import { agents } from '../src/agents'
+import { buildAgents } from '../src/agents'
+
+const agents = buildAgents()
 
 describe('per-agent tools.exclude (regression guard)', () => {
   test('code agent excludes review/plan/loop tools', () => {
     const excluded = agents.code.tools?.exclude ?? []
-    for (const tool of ['review-write', 'review-delete', 'plan-execute', 'loop', 'plan', 'plan_exit']) {
+    for (const tool of ['review-write', 'review-delete', 'loop', 'plan', 'plan_exit']) {
       expect(excluded).toContain(tool)
     }
   })
 
   test('auditor agent excludes plan/loop tools but NOT review tools', () => {
     const excluded = agents.auditor.tools?.exclude ?? []
-    for (const tool of ['plan-execute', 'plan', 'plan_exit', 'loop', 'loop-cancel', 'loop-status']) {
+    for (const tool of ['plan', 'plan_exit', 'loop', 'loop-cancel', 'loop-status']) {
       expect(excluded).toContain(tool)
     }
     // Auditor MUST be allowed to use review-write and review-delete.
     expect(excluded).not.toContain('review-write')
     expect(excluded).not.toContain('review-delete')
+  })
+
+  test('no agent retains plan-execute in tools.exclude (regression: tool removed)', () => {
+    for (const role of ['code', 'auditor', 'decomposer'] as const) {
+      expect(agents[role].tools?.exclude ?? []).not.toContain('plan-execute')
+    }
   })
 })

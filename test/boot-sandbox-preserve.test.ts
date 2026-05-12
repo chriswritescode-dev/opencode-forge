@@ -113,15 +113,8 @@ describe('boot sandbox preserve integration', () => {
     expect(reconcileResult.preserved).toEqual(['alpha'])
     expect(mockLoopsRepo.terminate).not.toHaveBeenCalled()
 
-    // Step 2: cleanupSandboxOrphansAcrossRegistry (simulate)
-    const preserveLoops = loopService.listActive()
-      .filter((state) => state.sandbox && state.loopName)
-      .map((state) => state.loopName!)
-    await mockSandboxManager.cleanupOrphans(preserveLoops)
-
-    expect(mockSandboxManager.cleanupOrphans).toHaveBeenCalledWith(['alpha'])
-
-    // Step 3: reconcileSandboxes
+    // Step 2: reconcileSandboxes (boot no longer eagerly cleans orphans;
+    // the DB-driven per-project reconcile restores containers for preserved loops)
     const reconcileDeps: ReconcileSandboxesDeps = {
       sandboxManager: mockSandboxManager,
       loopService,
@@ -136,6 +129,8 @@ describe('boot sandbox preserve integration', () => {
     expect(mockSandboxManager.start).not.toHaveBeenCalled()
     // stop should NOT be called
     expect(mockSandboxManager.stop).not.toHaveBeenCalled()
+    // cleanupOrphans must NOT be called at boot
+    expect(mockSandboxManager.cleanupOrphans).not.toHaveBeenCalled()
 
     // Loop row should still be running (not cancelled)
     const state = loopService.getActiveState('alpha')
@@ -192,15 +187,7 @@ describe('boot sandbox preserve integration', () => {
     expect(mockLoopsRepo.terminate).not.toHaveBeenCalled()
     expect(loopRow.status).toBe('running')
 
-    // Step 2: cleanupSandboxOrphansAcrossRegistry (simulate)
-    const preserveLoops = loopService.listActive()
-      .filter((state) => state.sandbox && state.loopName)
-      .map((state) => state.loopName!)
-    await mockSandboxManager.cleanupOrphans(preserveLoops)
-
-    expect(mockSandboxManager.cleanupOrphans).toHaveBeenCalledWith(['alpha'])
-
-    // Step 3: reconcileSandboxes - should call restore to repopulate map
+    // Step 2: reconcileSandboxes - should call restore to repopulate map
     const reconcileDeps: ReconcileSandboxesDeps = {
       sandboxManager: mockSandboxManager,
       loopService,
@@ -214,6 +201,7 @@ describe('boot sandbox preserve integration', () => {
     expect(mockSandboxManager.restore).toHaveBeenCalledWith('alpha', '/tmp/wt', expect.any(String))
     // start should NOT be called - restore handles it
     expect(mockSandboxManager.start).not.toHaveBeenCalled()
+    expect(mockSandboxManager.cleanupOrphans).not.toHaveBeenCalled()
   })
 
   it('should start fresh container when loop is active but container is gone', async () => {
@@ -263,15 +251,7 @@ describe('boot sandbox preserve integration', () => {
     expect(reconcileResult.preserved).toEqual(['alpha'])
     expect(mockLoopsRepo.terminate).not.toHaveBeenCalled()
 
-    // Step 2: cleanupSandboxOrphansAcrossRegistry (simulate)
-    const preserveLoops = loopService.listActive()
-      .filter((state) => state.sandbox && state.loopName)
-      .map((state) => state.loopName!)
-    await mockSandboxManager.cleanupOrphans(preserveLoops)
-
-    expect(mockSandboxManager.cleanupOrphans).toHaveBeenCalledWith(['alpha'])
-
-    // Step 3: reconcileSandboxes - since container is not active, should start fresh
+    // Step 2: reconcileSandboxes - since container is not active, restore is called
     const reconcileDeps: ReconcileSandboxesDeps = {
       sandboxManager: mockSandboxManager,
       loopService,
@@ -285,6 +265,7 @@ describe('boot sandbox preserve integration', () => {
     expect(mockSandboxManager.restore).toHaveBeenCalledWith('alpha', '/tmp/wt', expect.any(String))
     // start should NOT be called directly - restore handles it
     expect(mockSandboxManager.start).not.toHaveBeenCalled()
+    expect(mockSandboxManager.cleanupOrphans).not.toHaveBeenCalled()
   })
 
   it('should cancel stale loop and restore preserved loop (negative case)', async () => {
@@ -359,15 +340,7 @@ describe('boot sandbox preserve integration', () => {
     expect(alphaRow.status).toBe('cancelled')
     expect(betaRow.status).toBe('running')
 
-    // Step 2: cleanupSandboxOrphans - preserve set contains only beta
-    const preserveLoops = loopService.listActive()
-      .filter((state) => state.sandbox && state.loopName)
-      .map((state) => state.loopName!)
-    await mockSandboxManager.cleanupOrphans(preserveLoops)
-
-    expect(mockSandboxManager.cleanupOrphans).toHaveBeenCalledWith(['beta'])
-
-    // Step 3: reconcileSandboxes - only beta is processed (alpha is cancelled)
+    // Step 2: reconcileSandboxes - only beta is processed (alpha is cancelled)
     const reconcileDeps: ReconcileSandboxesDeps = {
       sandboxManager: mockSandboxManager,
       loopService,
@@ -381,5 +354,6 @@ describe('boot sandbox preserve integration', () => {
     expect(mockSandboxManager.restore).not.toHaveBeenCalledWith('alpha', expect.any(String), expect.any(String))
     // start should NOT be called (restore handles it)
     expect(mockSandboxManager.start).not.toHaveBeenCalled()
+    expect(mockSandboxManager.cleanupOrphans).not.toHaveBeenCalled()
   })
 })

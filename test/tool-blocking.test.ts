@@ -98,27 +98,22 @@ describe('Tool Blocking Logic', () => {
 
   describe('Blocked tools list', () => {
     test('includes question tool', () => {
-      const blockedTools = ['question', 'plan-execute', 'loop']
+      const blockedTools = ['question', 'loop']
       expect(blockedTools).toContain('question')
     })
 
-    test('includes plan-execute tool', () => {
-      const blockedTools = ['question', 'plan-execute', 'loop']
-      expect(blockedTools).toContain('plan-execute')
-    })
-
     test('includes loop tool', () => {
-      const blockedTools = ['question', 'plan-execute', 'loop']
+      const blockedTools = ['question', 'loop']
       expect(blockedTools).toContain('loop')
     })
 
     test('does not include memory-read tool', () => {
-      const blockedTools = ['question', 'plan-execute', 'loop']
+      const blockedTools = ['question', 'loop']
       expect(blockedTools).not.toContain('memory-read')
     })
 
     test('does not include memory-write tool', () => {
-      const blockedTools = ['question', 'plan-execute', 'loop']
+      const blockedTools = ['question', 'loop']
       expect(blockedTools).not.toContain('memory-write')
     })
   })
@@ -127,19 +122,9 @@ describe('Tool Blocking Logic', () => {
     test('question tool has appropriate error message', () => {
       const messages: Record<string, string> = {
         'question': 'The question tool is not available during a loop. Do not ask questions — continue working on the task autonomously.',
-        'plan-execute': 'The plan-execute tool is not available during a loop. Focus on executing the current plan.',
         'loop': 'The loop tool is not available during a loop. Focus on executing the current plan.',
       }
       expect(messages['question']).toContain('question tool is not available')
-    })
-
-    test('plan-execute tool has appropriate error message', () => {
-      const messages: Record<string, string> = {
-        'question': 'The question tool is not available during a loop. Do not ask questions — continue working on the task autonomously.',
-        'plan-execute': 'The plan-execute tool is not available during a loop. Focus on executing the current plan.',
-        'loop': 'The loop tool is not available during a loop. Focus on executing the current plan.',
-      }
-      expect(messages['plan-execute']).toContain('plan-execute tool is not available')
     })
   })
 })

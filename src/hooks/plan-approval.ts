@@ -81,7 +81,6 @@ function scheduleApprovalDispatch(
 
 const LOOP_BLOCKED_TOOLS: Record<string, string> = {
   question: 'The question tool is not available during a loop. Do not ask questions — continue working on the task autonomously.',
-  'plan-execute': 'The plan-execute tool is not available during a loop. Focus on executing the current plan.',
   loop: 'The loop tool is not available during a loop. Focus on executing the current plan.',
 }
 
@@ -337,7 +336,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
           }
           
           // Custom answer fallback
-              output.output = `${output.output}\n\n<system-reminder>\nThe user provided a custom response instead of selecting a predefined option. Review their answer and respond accordingly. If they want to proceed with execution, use the appropriate tool (plan-execute or loop) based on their intent. If they want to cancel or revise the plan, help them with that instead.\n</system-reminder>`
+              output.output = `${output.output}\n\n<system-reminder>\nThe user provided a custom response instead of selecting a predefined option. Review their answer and respond accordingly. If they want to proceed with execution, ask the question tool again with one of: "New session", "Execute here", "Loop (worktree)", "Loop". If they want to cancel or revise the plan, help them with that instead.\n</system-reminder>`
           logger.log(`Plan approval: detected custom answer`)
         }
       }

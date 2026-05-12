@@ -106,9 +106,12 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-export async function selectTuiSession(api: TuiPluginApi, sessionId: string, _workspaceId?: string): Promise<void> {
+export async function selectTuiSession(api: TuiPluginApi, sessionId: string, workspaceId?: string): Promise<void> {
   try {
-    await api.client.tui.selectSession({ sessionID: sessionId })
+    await api.client.tui.selectSession({
+      sessionID: sessionId,
+      ...(workspaceId ? { workspace: workspaceId } : {}),
+    })
   } catch {
     try { api.route.navigate('session', { sessionID: sessionId }) } catch {}
   }

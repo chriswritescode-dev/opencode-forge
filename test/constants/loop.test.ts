@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../../src/constants/loop'
 
 describe('buildLoopPermissionRuleset', () => {
-  it('default (non-sandbox): rules[0] is *:*:allow; rules[1] is external_directory:*:deny; length 10', () => {
+  it('default (non-sandbox): rules[0] is *:*:allow; rules[1] is external_directory:*:deny; length 9', () => {
     const rules = buildLoopPermissionRuleset()
     expect(rules).toEqual([
       { permission: '*', pattern: '*', action: 'allow' },
@@ -10,7 +10,6 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'review-write', pattern: '*', action: 'deny' },
       { permission: 'review-delete', pattern: '*', action: 'deny' },
       { permission: 'plan_exit', pattern: '*', action: 'deny' },
-      { permission: 'plan-execute', pattern: '*', action: 'deny' },
       { permission: 'loop', pattern: '*', action: 'deny' },
       { permission: 'bash', pattern: 'git push *', action: 'deny' },
       { permission: 'loop-cancel', pattern: '*', action: 'deny' },
@@ -18,7 +17,7 @@ describe('buildLoopPermissionRuleset', () => {
     ])
   })
 
-  it('isSandbox: true: rules[0] is *:*:allow; rules[1] is external_directory:*:allow; length 10', () => {
+  it('isSandbox: true: rules[0] is *:*:allow; rules[1] is external_directory:*:allow; length 9', () => {
     const rules = buildLoopPermissionRuleset({ isSandbox: true })
     expect(rules).toEqual([
       { permission: '*', pattern: '*', action: 'allow' },
@@ -26,7 +25,6 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'review-write', pattern: '*', action: 'deny' },
       { permission: 'review-delete', pattern: '*', action: 'deny' },
       { permission: 'plan_exit', pattern: '*', action: 'deny' },
-      { permission: 'plan-execute', pattern: '*', action: 'deny' },
       { permission: 'loop', pattern: '*', action: 'deny' },
       { permission: 'bash', pattern: 'git push *', action: 'deny' },
       { permission: 'loop-cancel', pattern: '*', action: 'deny' },

@@ -155,7 +155,7 @@ A loop completes when ALL of these are true:
 
 1. The auditor has run at least once (`auditCount >= 1`)
 2. Zero outstanding `severity: 'bug'` findings remain
-3. All verification commands in the plan pass (if using plan-execute)
+3. All verification commands in the plan pass
 
 ## Cancellation
 
@@ -182,5 +182,5 @@ Cancellation:
 
 Inside active loop sessions:
 - `git push` is denied (permission hook)
-- `loop`, `plan-execute` are blocked (tool hooks)
+- `loop` is blocked (tool hooks)
 - `question` is blocked (tool hooks)
