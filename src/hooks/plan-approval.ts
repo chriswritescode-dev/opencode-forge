@@ -132,7 +132,7 @@ function resolveCurrentSessionPlan(ctx: ToolContext, sessionID: string): { conte
   if (!plan) return null
   return {
     content: plan.content,
-    key: `${plan.updatedAt}:${hashApprovalPlan(plan.content)}`,
+    key: hashApprovalPlan(plan.content),
   }
 }
 

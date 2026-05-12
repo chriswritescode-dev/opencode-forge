@@ -65,6 +65,25 @@ export interface LoopsRepo {
     loopName: string,
     opts: { sessionId: string; phase: LoopRow['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }
   ): void
+  restart(
+    projectId: string,
+    loopName: string,
+    opts: {
+      sessionId: string
+      phase: LoopRow['phase']
+      iteration: number
+      auditCount: number
+      sandbox: boolean
+      sandboxContainer: string | null
+      workspaceId: string | null
+      decompositionStatus: LoopRow['decompositionStatus']
+      decompositionSessionId: string | null
+      currentSectionIndex: number
+      totalSections: number
+      finalAuditDone: boolean
+      startedAt: number
+    }
+  ): void
   terminate(
     projectId: string,
     loopName: string,
@@ -297,6 +316,30 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     WHERE project_id = ? AND loop_name = ?
   `)
 
+  const restartStmt = db.prepare(`
+    UPDATE loops SET
+      status = 'running',
+      current_session_id = ?,
+      phase = ?,
+      iteration = ?,
+      audit_count = ?,
+      error_count = 0,
+      model_failed = 0,
+      sandbox = ?,
+      sandbox_container = ?,
+      workspace_id = ?,
+      started_at = ?,
+      completed_at = NULL,
+      termination_reason = NULL,
+      completion_summary = NULL,
+      decomposition_status = ?,
+      decomposition_session_id = ?,
+      current_section_index = ?,
+      total_sections = ?,
+      final_audit_done = ?
+    WHERE project_id = ? AND loop_name = ?
+  `)
+
   const terminateStmt = db.prepare(`
     UPDATE loops SET
       status = ?,
@@ -460,6 +503,26 @@ export function createLoopsRepo(db: Database): LoopsRepo {
         }
       })
       runTxn()
+    },
+
+    restart(projectId, loopName, opts) {
+      restartStmt.run(
+        opts.sessionId,
+        opts.phase,
+        opts.iteration,
+        opts.auditCount,
+        opts.sandbox ? 1 : 0,
+        opts.sandboxContainer,
+        opts.workspaceId,
+        opts.startedAt,
+        opts.decompositionStatus,
+        opts.decompositionSessionId,
+        opts.currentSectionIndex,
+        opts.totalSections,
+        opts.finalAuditDone ? 1 : 0,
+        projectId,
+        loopName,
+      )
     },
 
     setStatus(projectId: string, loopName: string, status: LoopRow['status']): void {

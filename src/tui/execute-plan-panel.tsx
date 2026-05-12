@@ -7,6 +7,7 @@ import { buildDialogSelectOptions, flattenProviders, getModelDisplayLabel, sortM
 import { resolveExecutionDialogDefaults } from '../utils/tui-execution-preferences'
 import { selectTuiSession, type ForgeProjectClient } from '../utils/tui-client'
 import type { ExecutionContextCache, ExecutionContextSnapshot } from '../utils/tui-execution-context-cache'
+import { withBusyGuard } from '../utils/busy-guard'
 import type { PluginConfig } from '../types'
 
 export function ExecutePlanPanel(props: {
@@ -49,6 +50,7 @@ export function ExecutePlanPanel(props: {
   const [recents, setRecents] = createSignal<string[]>(initialSnapshot?.recents ?? [])
   const [modelsError, setModelsError] = createSignal<string | undefined>(initialSnapshot?.modelsError)
   const [modelsLoaded, setModelsLoaded] = createSignal(!!initialSnapshot)
+  const [busy, setBusy] = createSignal(false)
 
   const applyDefaults = (defaults: { executionModel: string; auditorModel: string }) => {
     if (!hasInitialOverrides() && !props.initialExecutionModel && !executionModel()) {
@@ -158,7 +160,7 @@ export function ExecutePlanPanel(props: {
     }
   }
 
-  const handleExecuteMode = async (mode: string, execModel?: string, auditModel?: string) => {
+  async function runExecuteMode(mode: string, execModel?: string, auditModel?: string): Promise<void> {
     const planText = props.planContent
     const title = extractPlanTitle(planText)
 
@@ -198,13 +200,18 @@ export function ExecutePlanPanel(props: {
 
     props.api.ui.toast({ message: result.loopName ? `Loop started: ${result.loopName}` : 'Plan execution started', variant: 'success', duration: 3000 })
     await props.onExecuted?.()
-    // Best-effort SDK sync trigger; actual TUI session-list refresh happens via selectTuiSession
-    // route bootstrap which detects the workspace transition and re-runs workspace/session init.
     props.client.workspaces.list().catch(() => {})
     if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop-worktree')) {
       await selectTuiSession(props.api, result.sessionId, result.workspaceId)
     }
   }
+
+  // eslint-disable-next-line solid/reactivity
+  const handleExecuteMode = withBusyGuard(runExecuteMode, {
+    isBusy: busy,
+    setBusy,
+    onBusy: () => props.api.ui.toast({ message: 'Plan execution already starting...', variant: 'info', duration: 2000 }),
+  })
 
   return (
     <box flexDirection="column" paddingBottom={1} gap={1} minHeight={20} maxHeight="75%">

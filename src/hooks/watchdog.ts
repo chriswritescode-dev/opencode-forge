@@ -51,7 +51,7 @@ function formatError(err: unknown): string {
 }
 
 export function createLoopWatchdog(input: {
-  loopService: Pick<LoopService, 'getActiveState' | 'getStallTimeoutMs' | 'getMaxConsecutiveStalls'>
+  loopService: Pick<LoopService, 'getActiveState' | 'getStallTimeoutMs' | 'getMaxConsecutiveStalls' | 'resolveLoopName'>
   v2Client: OpencodeClient
   logger: Logger
   recover(loopName: string, state: LoopState, context: LoopWatchdogRecoveryContext): Promise<void>
@@ -185,14 +185,23 @@ export function createLoopWatchdog(input: {
           return
         }
 
-        const statusSnapshot = statusResult.data[state.sessionId]
-        const status = statusSnapshot?.type
+        // Check if any session registered to this loop is busy (main session + child/subagent sessions)
+        const resolvedLoopName = input.loopService.resolveLoopName(state.sessionId) ?? loopName
+        let anyBusy = false
+        for (const [sid, snap] of Object.entries(statusResult.data)) {
+          if ((snap as SessionStatusSnapshot).type === 'busy' && input.loopService.resolveLoopName(sid) === resolvedLoopName) {
+            anyBusy = true
+            break
+          }
+        }
 
-        if (status === 'busy') {
+        if (anyBusy) {
           resetActivity(loopName, 'status:busy')
-          input.logger.debug(`Loop watchdog: loop ${loopName} remains busy, resetting timer`)
+          input.logger.debug(`Loop watchdog: loop ${loopName} remains busy (main or child session), resetting timer`)
           return
         }
+
+        const status = statusResult.data[state.sessionId]?.type
 
         await handleStall(loopName, state, {
           reason: status === undefined ? 'missing_status' : 'non_busy_status',

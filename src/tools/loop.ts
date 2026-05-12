@@ -229,7 +229,11 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           active.forEach((s, i) => {
             const duration = formatDuration(computeElapsedSeconds(s.startedAt))
             const iterInfo = s.maxIterations && s.maxIterations > 0 ? `${s.iteration} / ${s.maxIterations}` : `${s.iteration} (unlimited)`
-            const sessionStatus = statuses[s.sessionId]?.type ?? 'unavailable'
+            // Check if any session registered to this loop is busy (main + child/subagent sessions)
+            const isBusy = Object.entries(statuses).some(([sid, v]) =>
+              ctx.loop.resolveLoopName(sid) === s.loopName && v.type === 'busy',
+            )
+            const sessionStatus = isBusy ? 'busy' : (statuses[s.sessionId]?.type ?? 'unavailable')
             const stallInfo = loopHandler.getStallInfo(s.loopName!)
             const stallCount = stallInfo?.consecutiveStalls ?? 0
             const stallReason = stallInfo?.lastReason ? ` (${stallInfo.lastReason})` : ''
@@ -316,11 +320,19 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         try {
           const statusResult = await v2.session.status({ directory: state.worktreeDir })
           const statuses = statusResult.data as Record<string, { type: string; attempt?: number; message?: string; next?: number }> | undefined
-          const status = statuses?.[state.sessionId]
-          if (status) {
-            sessionStatus = status.type === 'retry'
-              ? `retry (attempt ${status.attempt}, next in ${Math.round(((status.next ?? 0) - Date.now()) / 1000)}s)`
-              : status.type
+          // Check if any session registered to this loop is busy (main + child/subagent sessions)
+          const isBusy = Object.entries(statuses ?? {}).some(([sid, s]) =>
+            ctx.loop.resolveLoopName(sid) === state.loopName && s.type === 'busy',
+          )
+          if (isBusy) {
+            sessionStatus = 'busy'
+          } else {
+            const status = statuses?.[state.sessionId]
+            if (status) {
+              sessionStatus = status.type === 'retry'
+                ? `retry (attempt ${status.attempt}, next in ${Math.round(((status.next ?? 0) - Date.now()) / 1000)}s)`
+                : status.type
+            }
           }
         } catch {
           sessionStatus = 'unavailable'

@@ -213,6 +213,7 @@ export interface LoopStartedResult {
   hostSessionId?: string
   modelUsed: string | null
   maxIterations: number
+  deduped?: boolean
 }
 
 export interface LoopRestartedResult {
@@ -626,6 +627,13 @@ async function selectSessionWithFallback(
 
 export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): ForgeExecutionService {
   
+  const inFlightLoopStarts = new Map<string, Promise<ForgeExecutionResponse<LoopStartedResult>>>()
+  function hashPlanForDedupe(text: string): string {
+    let h = 5381
+    for (let i = 0; i < text.length; i += 1) h = ((h << 5) + h) ^ text.charCodeAt(i)
+    return (h >>> 0).toString(36)
+  }
+
   async function handlePlanNewSession(
     ctx: ForgeExecutionRequestContext,
     command: ExecutePlanNewSessionCommand,
@@ -793,6 +801,20 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     // Generate unique loop name
     const uniqueLoopName = deps.loop.generateUniqueLoopName(command.loopName ?? executionName)
 
+    // In-flight dedupe: suppress concurrent starts for the same source
+    const dedupeKey = `${ctx.projectId}::${command.hostSessionId ?? ctx.sourceSessionId ?? ''}::${hashPlanForDedupe(planText)}`
+    const existing = inFlightLoopStarts.get(dedupeKey)
+    if (existing) {
+      deps.logger.log(`handleStartLoop: dedupe — concurrent start suppressed for key=${dedupeKey}`)
+      const prior = await existing
+      if (prior.ok) {
+        return { ok: true, data: { ...prior.data, deduped: true } }
+      }
+      return prior
+    }
+
+    // Wrapped inner async to store/clean up in-flight promise
+    async function doStart(): Promise<ForgeExecutionResponse<LoopStartedResult>> {
     // Resolve models
     const resolvedExecutionModel = command.executionModel ?? deps.config.executionModel
     const resolvedAuditorModel = command.auditorModel ?? deps.config.auditorModel
@@ -845,11 +867,21 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       let sessionId: string
       let initialBoundWorkspaceId: string | undefined
 
-      const selectInitialWorktreeSession = (targetSessionId: string, boundWorkspaceId: string | undefined, context: string): void => {
+      const selectInitialWorktreeSession = async (
+        targetSessionId: string,
+        boundWorkspaceId: string | undefined,
+        context: string,
+      ): Promise<void> => {
         if (!boundWorkspaceId || !command.lifecycle?.selectSession) return
-        selectSessionWithFallback(deps, { sessionID: targetSessionId, workspace: boundWorkspaceId }).catch((err: unknown) => {
+        const SELECT_TIMEOUT_MS = 2000
+        try {
+          await Promise.race([
+            selectSessionWithFallback(deps, { sessionID: targetSessionId, workspace: boundWorkspaceId }),
+            new Promise<void>((resolve) => setTimeout(resolve, SELECT_TIMEOUT_MS)),
+          ])
+        } catch (err) {
           deps.logger.error(`handleStartLoop: failed to navigate TUI to worktree session ${context}`, err as Error)
-        })
+        }
       }
 
       // Compute host session ID for metadata persistence only (not session parenting)
@@ -918,7 +950,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
         // Navigate the TUI to the worktree session immediately so the user sees the new
         // session before the slow sandbox + provisioning + prompt path runs.
-        selectInitialWorktreeSession(sessionId, initialBoundWorkspaceId, 'after session create (decomposer)')
+        await selectInitialWorktreeSession(sessionId, initialBoundWorkspaceId, 'after session create (decomposer)')
       } else {
         const createResult = await createLoopSessionWithWorkspace({
           v2: deps.v2,
@@ -945,7 +977,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
         // Navigate the TUI to the worktree session immediately so the user sees the new
         // session before the slow sandbox + provisioning + prompt path runs.
-        selectInitialWorktreeSession(sessionId, initialBoundWorkspaceId, 'after session create')
+        await selectInitialWorktreeSession(sessionId, initialBoundWorkspaceId, 'after session create')
       }
 
       // Start sandbox if enabled
@@ -1006,6 +1038,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       
       deps.logger.log(`handleStartLoop: state stored for loop=${uniqueLoopName}`)
 
+      // Order: createBuiltinWorktreeWorkspace → createLoopSessionWithWorkspace → await selectInitialWorktreeSession
+      // (with bounded 2s timeout) → sandbox start → loop-state persist → onStarted.
       command.lifecycle?.onStarted?.({
         mode: command.mode,
         sessionId,
@@ -1526,6 +1560,16 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       await rollbackLoopStart()
       
       return fail('internal_error', 500, 'Failed to start loop')
+    }
+
+    }
+
+    const promise = doStart()
+    inFlightLoopStarts.set(dedupeKey, promise)
+    try {
+      return await promise
+    } finally {
+      inFlightLoopStarts.delete(dedupeKey)
     }
   }
   
@@ -2085,17 +2129,22 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       }
       return fail('internal_error', 500, 'Restart failed: could not send prompt to new session.')
     }
-    // Save section plans before deleteState (which cascades to section_plans)
-    const savedSectionPlans = deps.sectionPlansRepo?.list(ctx.projectId, stoppedState.loopName) ?? []
-
-    deps.loop.deleteState(stoppedState.loopName)
-    deps.loop.setState(stoppedState.loopName, restartedState!)
+    deps.loopsRepo.restart(ctx.projectId, stoppedState.loopName, {
+      sessionId: restartedState!.sessionId,
+      phase: restartedState!.phase,
+      iteration: restartedState!.iteration,
+      auditCount: restartedState!.auditCount,
+      sandbox: restartedState!.sandbox ?? false,
+      sandboxContainer: restartedState!.sandboxContainer ?? null,
+      workspaceId: restartedState!.workspaceId ?? null,
+      decompositionStatus: restartedState!.decompositionStatus,
+      decompositionSessionId: restartedState!.decompositionSessionId ?? null,
+      currentSectionIndex: restartedState!.currentSectionIndex,
+      totalSections: restartedState!.totalSections,
+      finalAuditDone: restartedState!.finalAuditDone,
+      startedAt: new Date(restartedState!.startedAt).getTime(),
+    })
     deps.loop.registerLoopSession(outcome.newSessionId, stoppedState.loopName)
-
-    // Restore section plans after setState
-    if (savedSectionPlans.length > 0) {
-      deps.sectionPlansRepo?.restoreAll(savedSectionPlans)
-    }
 
     deps.loopHandler.startWatchdog(stoppedState.loopName)
 

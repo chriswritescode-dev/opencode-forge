@@ -7,6 +7,14 @@ import { buildService } from './_shared'
 type LoopStartedInfo = Parameters<NonNullable<NonNullable<StartLoopCommand['lifecycle']>['onStarted']>>[0]
 type PlanLoopMode = 'loop' | 'loop-worktree'
 
+const inFlightPlanExecuteLoops = new Map<string, Promise<unknown>>()
+
+function hashPlan(text: string): string {
+  let h = 5381
+  for (let i = 0; i < text.length; i += 1) h = ((h << 5) + h) ^ text.charCodeAt(i)
+  return (h >>> 0).toString(36)
+}
+
 function toPlanLoopResponse(mode: PlanLoopMode, info: LoopStartedInfo) {
   return {
     mode,
@@ -97,62 +105,80 @@ export async function handleExecutePlan(
 
     case 'loop':
     case 'loop-worktree': {
-      let started = false
-      let resolveStarted!: (info: LoopStartedInfo) => void
-      const startedPromise = new Promise<LoopStartedInfo>((resolve) => {
-        resolveStarted = resolve
-      })
+      const planTextForHash = parsed.plan
+        ?? (await Promise.resolve(deps.ctx.plansRepo.getForSession(projectId, sessionId)?.content)) ?? ''
+      const dedupeKey = `${projectId}::${sessionId}::${parsed.mode}::${hashPlan(planTextForHash)}`
+      const existing = inFlightPlanExecuteLoops.get(dedupeKey)
+      if (existing) {
+        deps.logger.log(`handleExecutePlan: dedupe — concurrent ${parsed.mode} suppressed for key=${dedupeKey}`)
+        return existing
+      }
 
-      const command = buildStartLoopCommand({
-        source,
-        mode: 'worktree',
-        executionModel,
-        auditorModel,
-        hostSessionId: sessionId,
-        title: parsed.title,
-        lifecycle: {
-          selectSession: true,
-          selectSessionTiming: 'after-create',
-          startWatchdog: true,
-          onStarted: (info) => {
-            started = true
-            const response = toPlanLoopResponse(parsed.mode as PlanLoopMode, info)
-            deps.eventPublisher?.('loop.started', response)
-            resolveStarted(info)
+      const promise = (async (): Promise<unknown> => {
+        let started = false
+        let resolveStarted!: (info: LoopStartedInfo) => void
+        const startedPromise = new Promise<LoopStartedInfo>((resolve) => {
+          resolveStarted = resolve
+        })
+
+        const command = buildStartLoopCommand({
+          source,
+          mode: 'worktree',
+          executionModel,
+          auditorModel,
+          hostSessionId: sessionId,
+          title: parsed.title,
+          lifecycle: {
+            selectSession: true,
+            selectSessionTiming: 'after-create',
+            startWatchdog: true,
+            onStarted: (info) => {
+              started = true
+              const response = toPlanLoopResponse(parsed.mode as PlanLoopMode, info)
+              deps.eventPublisher?.('loop.started', response)
+              resolveStarted(info)
+            },
           },
-        },
-      })
+        })
 
-      const dispatchPromise = service.dispatch(execCtx, command)
+        const dispatchPromise = service.dispatch(execCtx, command)
 
-      void dispatchPromise.then((result) => {
-        if (!result.ok && started) {
-          deps.logger.error(`plan.execute loop failed after start: ${result.error.message}`)
+        void dispatchPromise.then((result) => {
+          if (!result.ok && started) {
+            deps.logger.error(`plan.execute loop failed after start: ${result.error.message}`)
+          }
+        }).catch((err) => {
+          deps.logger.error('plan.execute loop dispatch rejected after start', err)
+        })
+
+        const outcome = await Promise.race([
+          startedPromise.then((info) => ({ kind: 'started' as const, info })),
+          dispatchPromise.then((result) => ({ kind: 'complete' as const, result })),
+        ])
+
+        if (outcome.kind === 'started') {
+          return toPlanLoopResponse(parsed.mode as PlanLoopMode, outcome.info)
         }
-      }).catch((err) => {
-        deps.logger.error('plan.execute loop dispatch rejected after start', err)
-      })
 
-      const outcome = await Promise.race([
-        startedPromise.then((info) => ({ kind: 'started' as const, info })),
-        dispatchPromise.then((result) => ({ kind: 'complete' as const, result })),
-      ])
+        if (!outcome.result.ok) {
+          throw new ForgeRpcError(outcome.result.error.code, outcome.result.error.message)
+        }
 
-      if (outcome.kind === 'started') {
-        return toPlanLoopResponse(parsed.mode, outcome.info)
-      }
+        return {
+          mode: parsed.mode,
+          sessionId: outcome.result.data.sessionId,
+          loopName: outcome.result.data.loopName,
+          displayName: outcome.result.data.displayName,
+          worktreeDir: outcome.result.data.worktreeDir,
+          workspaceId: outcome.result.data.workspaceId,
+        }
+      })()
 
-      if (!outcome.result.ok) {
-        throw new ForgeRpcError(outcome.result.error.code, outcome.result.error.message)
-      }
-
-      return {
-        mode: parsed.mode,
-        sessionId: outcome.result.data.sessionId,
-        loopName: outcome.result.data.loopName,
-        displayName: outcome.result.data.displayName,
-        worktreeDir: outcome.result.data.worktreeDir,
-        workspaceId: outcome.result.data.workspaceId,
+      inFlightPlanExecuteLoops.set(dedupeKey, promise)
+      try {
+        return await promise
+      } finally {
+        inFlightPlanExecuteLoops.delete(dedupeKey)
       }
     }
 

@@ -33,6 +33,9 @@ export default defineConfig({
       'test/workspace/forge-adapter.test.ts',
       'test/workspace/forge-adapter-e2e.test.ts',
       'test/sandbox/context.test.ts',
+      'test/api/plan-execute-dedupe.test.ts',
+      'test/tui/execute-plan-panel-busy.test.ts',
+      'test/hooks/plan-approval-dedupe.test.ts',
     ],
   },
 })

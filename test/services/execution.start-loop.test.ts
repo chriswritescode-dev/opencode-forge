@@ -474,5 +474,450 @@ describe('handleStartLoop builtin worktree workspace', () => {
     if (result.ok) return
     expect(result.error.message).toContain('Failed to start sandbox')
   })
+})
 
+describe('handleStartLoop concurrent-start dedupe', () => {
+  const noopFn = () => {}
+
+  function buildDedupeMocks() {
+    const experimentalWorkspaceCreateMock = vi.fn().mockResolvedValue({
+      data: {
+        id: 'ws_test',
+        directory: '/tmp/wt/abc',
+        branch: 'opencode/abc',
+        type: 'worktree',
+        name: 'opencode/abc',
+        extra: null,
+        projectID: PROJECT_ID,
+        timeUsed: Date.now(),
+      },
+    })
+    const experimentalWorkspaceWarpMock = vi.fn().mockResolvedValue({})
+    const sessionCreateMock = vi.fn().mockResolvedValue({
+      data: { id: 'session_test' },
+    })
+    const sessionGetMock = vi.fn().mockResolvedValue({ data: {} })
+    const tuiSelectSessionMock = vi.fn().mockResolvedValue({})
+    const worktreeCreateMock = vi.fn().mockResolvedValue({
+      data: { directory: '/tmp/wt/abc', branch: 'opencode/abc' },
+    })
+
+    const mockV2Client = {
+      session: {
+        create: sessionCreateMock,
+        get: sessionGetMock,
+        promptAsync: async () => ({ error: null }),
+        abort: async () => ({}),
+        delete: async () => ({}),
+        messages: async () => ({ data: [] }),
+        status: async () => ({ data: {} }),
+      },
+      experimental: {
+        workspace: {
+          create: experimentalWorkspaceCreateMock,
+          warp: experimentalWorkspaceWarpMock,
+          remove: vi.fn().mockResolvedValue({}),
+          list: vi.fn().mockResolvedValue({ data: [] }),
+          status: vi.fn().mockResolvedValue({ data: {} }),
+        },
+      },
+      tui: {
+        publish: async () => {},
+        selectSession: tuiSelectSessionMock,
+      },
+      worktree: {
+        create: worktreeCreateMock,
+        remove: async () => {},
+      },
+    }
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const mockSandboxManager = {
+      docker: {} as any,
+      start: vi.fn().mockResolvedValue({ containerName: 'opencode-forge-sandbox-test' }),
+      stop: vi.fn().mockResolvedValue(undefined),
+      getActive: vi.fn().mockReturnValue(null),
+      isActive: vi.fn().mockReturnValue(false),
+      isLive: vi.fn().mockResolvedValue(false),
+      isLiveByName: vi.fn().mockResolvedValue(false),
+      cleanupOrphans: vi.fn().mockResolvedValue(0),
+      restore: vi.fn().mockResolvedValue(undefined),
+      provisionDependencies: vi.fn().mockResolvedValue(undefined),
+    }
+
+    return {
+      mockV2Client,
+      mockLoopHandler,
+      mockSandboxManager,
+      experimentalWorkspaceCreateMock,
+      experimentalWorkspaceWarpMock,
+      sessionCreateMock,
+      tuiSelectSessionMock,
+    }
+  }
+
+  test('two concurrent calls with same source produce only one workspace + session', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'exec-dedupe-concurrent-'))
+    const db = new Database(join(tempDir, 'test.db'))
+    db.exec(DB_SCHEMA); db.exec(LOOP_LARGE_FIELDS_SCHEMA); db.exec(PLANS_SCHEMA); db.exec(REVIEW_FINDINGS_SCHEMA); db.exec(SECTION_PLANS_SCHEMA)
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const sectionPlansRepo = createSectionPlansRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, undefined, sectionPlansRepo)
+
+    const mocks = buildDedupeMocks()
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID, directory: '/tmp/test',
+      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
+      logger: mockLogger, dataDir: '/tmp', v2: mocks.mockV2Client as any,
+      plansRepo, loopsRepo, loop: loopService as any, loopHandler: mocks.mockLoopHandler as any,
+      sectionPlansRepo, sandboxManager: mocks.mockSandboxManager as any,
+    })
+
+    const ctx = { surface: 'api' as const, projectId: PROJECT_ID, directory: '/tmp/test' }
+    const command = {
+      type: 'loop.start' as const,
+      source: { kind: 'inline' as const, planText: '# Dedupe Plan\n\nTest plan for dedupe.' },
+      mode: 'worktree' as const,
+      lifecycle: { selectSession: true },
+      hostSessionId: 'host-1',
+    }
+
+    const [r1, r2] = await Promise.all([
+      service.dispatch(ctx, command),
+      service.dispatch(ctx, command),
+    ])
+
+    // With dedupe implemented: exactly 1 workspace/session/warp creation per concurrent batch
+    expect(mocks.experimentalWorkspaceCreateMock).toHaveBeenCalledTimes(1)
+    expect(mocks.sessionCreateMock).toHaveBeenCalledTimes(1)
+    expect(mocks.experimentalWorkspaceWarpMock).toHaveBeenCalledTimes(1)
+
+    expect(r1.ok).toBe(true)
+    expect(r2.ok).toBe(true)
+
+    if (!r1.ok || !r2.ok) return
+
+    // At least one result should be flagged as deduped; both share the same sessionId/loopName
+    const dedupedResults = [r1, r2].filter(r => (r.data as any).deduped === true)
+    const realResult = [r1, r2].find(r => !(r.data as any).deduped)
+    expect(dedupedResults.length).toBe(1)
+    expect(realResult).toBeDefined()
+
+    db.close()
+  })
+
+  test('different source sessions do not dedupe each other', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'exec-dedupe-diffsource-'))
+    const db = new Database(join(tempDir, 'test.db'))
+    db.exec(DB_SCHEMA); db.exec(LOOP_LARGE_FIELDS_SCHEMA); db.exec(PLANS_SCHEMA); db.exec(REVIEW_FINDINGS_SCHEMA); db.exec(SECTION_PLANS_SCHEMA)
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const sectionPlansRepo = createSectionPlansRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, undefined, sectionPlansRepo)
+
+    const mocks = buildDedupeMocks()
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID, directory: '/tmp/test',
+      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
+      logger: mockLogger, dataDir: '/tmp', v2: mocks.mockV2Client as any,
+      plansRepo, loopsRepo, loop: loopService as any, loopHandler: mocks.mockLoopHandler as any,
+      sectionPlansRepo, sandboxManager: mocks.mockSandboxManager as any,
+    })
+
+    const ctx = { surface: 'api' as const, projectId: PROJECT_ID, directory: '/tmp/test' }
+    const cmd1 = {
+      type: 'loop.start' as const,
+      source: { kind: 'inline' as const, planText: '# Plan Alpha\n\nDifferent plan A.' },
+      mode: 'worktree' as const,
+      lifecycle: { selectSession: true },
+      hostSessionId: 'host-A',
+    }
+    const cmd2 = {
+      type: 'loop.start' as const,
+      source: { kind: 'inline' as const, planText: '# Plan Beta\n\nDifferent plan B.' },
+      mode: 'worktree' as const,
+      lifecycle: { selectSession: true },
+      hostSessionId: 'host-B',
+    }
+
+    const [r1, r2] = await Promise.all([
+      service.dispatch(ctx, cmd1),
+      service.dispatch(ctx, cmd2),
+    ])
+
+    // Different sources: no dedupe; both proceed independently
+    expect(mocks.experimentalWorkspaceCreateMock).toHaveBeenCalledTimes(2)
+    expect(mocks.sessionCreateMock).toHaveBeenCalledTimes(2)
+    expect(r1.ok).toBe(true)
+    expect(r2.ok).toBe(true)
+
+    if (!r1.ok || !r2.ok) return
+    expect(r1.data.loopName).not.toBe(r2.data.loopName)
+
+    db.close()
+  })
+
+  test('sequential second call after first completes is not deduped', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'exec-dedupe-seq-'))
+    const db = new Database(join(tempDir, 'test.db'))
+    db.exec(DB_SCHEMA); db.exec(LOOP_LARGE_FIELDS_SCHEMA); db.exec(PLANS_SCHEMA); db.exec(REVIEW_FINDINGS_SCHEMA); db.exec(SECTION_PLANS_SCHEMA)
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const sectionPlansRepo = createSectionPlansRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, undefined, sectionPlansRepo)
+
+    const mocks = buildDedupeMocks()
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID, directory: '/tmp/test',
+      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
+      logger: mockLogger, dataDir: '/tmp', v2: mocks.mockV2Client as any,
+      plansRepo, loopsRepo, loop: loopService as any, loopHandler: mocks.mockLoopHandler as any,
+      sectionPlansRepo, sandboxManager: mocks.mockSandboxManager as any,
+    })
+
+    const ctx = { surface: 'api' as const, projectId: PROJECT_ID, directory: '/tmp/test' }
+    const cmd = {
+      type: 'loop.start' as const,
+      source: { kind: 'inline' as const, planText: '# Sequential Plan\n\nSequential test.' },
+      mode: 'worktree' as const,
+      lifecycle: { selectSession: true },
+      hostSessionId: 'host-seq',
+    }
+
+    await service.dispatch(ctx, cmd)
+    const second = await service.dispatch(ctx, cmd)
+
+    // Sequential: first completed, in-flight entry cleared, so no dedupe
+    expect(mocks.experimentalWorkspaceCreateMock).toHaveBeenCalledTimes(2)
+    expect(mocks.sessionCreateMock).toHaveBeenCalledTimes(2)
+    expect(second.ok).toBe(true)
+
+    db.close()
+  })
+})
+
+describe('handleStartLoop select-session ordering', () => {
+  const noopFn = () => {}
+
+  function buildOrderingMocks() {
+    const experimentalWorkspaceCreateMock = vi.fn().mockResolvedValue({
+      data: {
+        id: 'ws_test', directory: '/tmp/wt/abc', branch: 'opencode/abc',
+        type: 'worktree', name: 'opencode/abc', extra: null,
+        projectID: PROJECT_ID, timeUsed: Date.now(),
+      },
+    })
+    const experimentalWorkspaceWarpMock = vi.fn().mockResolvedValue({})
+    const sessionCreateMock = vi.fn().mockResolvedValue({ data: { id: 'session_test' } })
+    const sessionGetMock = vi.fn().mockResolvedValue({ data: {} })
+
+    // Deferred pattern: control when selectSession resolves or rejects
+    let resolveSelect!: (value?: unknown) => void
+    let rejectSelect!: (reason?: unknown) => void
+    const selectPromise = new Promise<void>((resolve, reject) => {
+      resolveSelect = () => { resolve(); }
+      rejectSelect = (reason) => { reject(reason); }
+    })
+    const tuiSelectSessionMock = vi.fn().mockImplementation(() => selectPromise)
+
+    const worktreeCreateMock = vi.fn().mockResolvedValue({
+      data: { directory: '/tmp/wt/abc', branch: 'opencode/abc' },
+    })
+
+    const mockV2Client = {
+      session: {
+        create: sessionCreateMock, get: sessionGetMock,
+        promptAsync: async () => ({ error: null }),
+        abort: async () => ({}), delete: async () => ({}),
+        messages: async () => ({ data: [] }), status: async () => ({ data: {} }),
+      },
+      experimental: {
+        workspace: {
+          create: experimentalWorkspaceCreateMock, warp: experimentalWorkspaceWarpMock,
+          remove: vi.fn().mockResolvedValue({}), list: vi.fn().mockResolvedValue({ data: [] }),
+          status: vi.fn().mockResolvedValue({ data: {} }),
+        },
+      },
+      tui: { publish: async () => {}, selectSession: tuiSelectSessionMock },
+      worktree: { create: worktreeCreateMock, remove: async () => {} },
+    }
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn, clearLoopTimers: noopFn,
+    }
+
+    const mockSandboxManager = {
+      docker: {} as any,
+      start: vi.fn().mockResolvedValue({ containerName: 'opencode-forge-sandbox-test' }),
+      stop: vi.fn().mockResolvedValue(undefined),
+      getActive: vi.fn().mockReturnValue(null), isActive: vi.fn().mockReturnValue(false),
+      isLive: vi.fn().mockResolvedValue(false), isLiveByName: vi.fn().mockResolvedValue(false),
+      cleanupOrphans: vi.fn().mockResolvedValue(0), restore: vi.fn().mockResolvedValue(undefined),
+      provisionDependencies: vi.fn().mockResolvedValue(undefined),
+    }
+
+    return { mockV2Client, mockLoopHandler, mockSandboxManager, tuiSelectSessionMock, resolveSelect, rejectSelect, selectPromise }
+  }
+
+  test('onStarted fires only after selectSessionWithFallback resolves', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'exec-ordering-resolve-'))
+    const db = new Database(join(tempDir, 'test.db'))
+    db.exec(DB_SCHEMA); db.exec(LOOP_LARGE_FIELDS_SCHEMA); db.exec(PLANS_SCHEMA); db.exec(REVIEW_FINDINGS_SCHEMA); db.exec(SECTION_PLANS_SCHEMA)
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const sectionPlansRepo = createSectionPlansRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, undefined, sectionPlansRepo)
+
+    const mocks = buildOrderingMocks()
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID, directory: '/tmp/test',
+      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
+      logger: mockLogger, dataDir: '/tmp', v2: mocks.mockV2Client as any,
+      plansRepo, loopsRepo, loop: loopService as any, loopHandler: mocks.mockLoopHandler as any,
+      sectionPlansRepo, sandboxManager: mocks.mockSandboxManager as any,
+    })
+
+    let onStartedTs: number | null = null
+    const resultPromise = service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline' as const, planText: '# Order Plan\n\nTest ordering.' },
+        mode: 'worktree' as const,
+        lifecycle: {
+          selectSession: true,
+          onStarted: (info) => { onStartedTs = Date.now() },
+        },
+      },
+    )
+
+    // Allow session creation to proceed but don't resolve selectSession yet
+    await new Promise(r => setTimeout(r, 100))
+
+    // At this point, with the fix in place, onStarted should NOT have fired yet
+    // because selectSession hasn't resolved
+    const beforeResolveTs = Date.now()
+
+    // Now resolve the deferred selectSession
+    mocks.resolveSelect!()
+    const selectResolvedTs = Date.now()
+
+    await resultPromise
+
+    expect(onStartedTs).not.toBeNull()
+    expect(onStartedTs!).toBeGreaterThanOrEqual(selectResolvedTs - 5)
+
+    db.close()
+  })
+
+  test('onStarted still fires if selectSession rejects', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'exec-ordering-reject-'))
+    const db = new Database(join(tempDir, 'test.db'))
+    db.exec(DB_SCHEMA); db.exec(LOOP_LARGE_FIELDS_SCHEMA); db.exec(PLANS_SCHEMA); db.exec(REVIEW_FINDINGS_SCHEMA); db.exec(SECTION_PLANS_SCHEMA)
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const sectionPlansRepo = createSectionPlansRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, undefined, sectionPlansRepo)
+
+    const mocks = buildOrderingMocks()
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID, directory: '/tmp/test',
+      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
+      logger: mockLogger, dataDir: '/tmp', v2: mocks.mockV2Client as any,
+      plansRepo, loopsRepo, loop: loopService as any, loopHandler: mocks.mockLoopHandler as any,
+      sectionPlansRepo, sandboxManager: mocks.mockSandboxManager as any,
+    })
+
+    let onStartedCalled = false
+    const resultPromise = service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline' as const, planText: '# Reject Plan\n\nTest rejection.' },
+        mode: 'worktree' as const,
+        lifecycle: {
+          selectSession: true,
+          onStarted: () => { onStartedCalled = true },
+        },
+      },
+    )
+
+    // Wait a bit then reject the selectSession promise
+    await new Promise(r => setTimeout(r, 50))
+    mocks.rejectSelect!(new Error('TUI connection lost'))
+    
+    const result = await resultPromise
+
+    expect(result.ok).toBe(true)
+    expect(onStartedCalled).toBe(true)
+
+    db.close()
+  })
+
+  test('onStarted fires after a bounded timeout if selectSession hangs', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'exec-ordering-timeout-'))
+    const db = new Database(join(tempDir, 'test.db'))
+    db.exec(DB_SCHEMA); db.exec(LOOP_LARGE_FIELDS_SCHEMA); db.exec(PLANS_SCHEMA); db.exec(REVIEW_FINDINGS_SCHEMA); db.exec(SECTION_PLANS_SCHEMA)
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const sectionPlansRepo = createSectionPlansRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, undefined, sectionPlansRepo)
+
+    const mocks = buildOrderingMocks()
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID, directory: '/tmp/test',
+      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
+      logger: mockLogger, dataDir: '/tmp', v2: mocks.mockV2Client as any,
+      plansRepo, loopsRepo, loop: loopService as any, loopHandler: mocks.mockLoopHandler as any,
+      sectionPlansRepo, sandboxManager: mocks.mockSandboxManager as any,
+    })
+
+    let onStartedCalled = false
+    const resultPromise = service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline' as const, planText: '# Timeout Plan\n\nTest timeout.' },
+        mode: 'worktree' as const,
+        lifecycle: {
+          selectSession: true,
+          onStarted: () => { onStartedCalled = true },
+        },
+      },
+    )
+
+    // The selectSession mock never resolves — it hangs forever.
+    // After the fix, a bounded timeout will kick in (SELECT_TIMEOUT_MS).
+    // We wait long enough to see if onStarted fires within that window.
+    const elapsed = Date.now()
+    const result = await resultPromise
+    const totalElapsed = Date.now() - elapsed
+
+    expect(result.ok).toBe(true)
+    expect(onStartedCalled).toBe(true)
+
+    // Should have completed reasonably quickly (within timeout budget + some margin)
+    expect(totalElapsed).toBeLessThan(5000)
+
+    db.close()
+  })
 })

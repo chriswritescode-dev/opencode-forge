@@ -303,13 +303,12 @@ describe('createSectionCaptureHook - streaming completion', () => {
     // But it should still process and potentially update content
   })
 
-  test('failed status only set when no sections exist and not already completed', async () => {
+  test('idle without observed decomposer output leaves decomposition running', async () => {
     const hook = createHook()
 
     const addLoop = (mockLoopsRepo as any)._addLoop
     addLoop('decomp-sess', 'my-loop', 'running')
 
-    // Idle with no sections and no prior streaming should mark failed
     await hook({
       event: {
         type: 'session.status',
@@ -320,8 +319,7 @@ describe('createSectionCaptureHook - streaming completion', () => {
       },
     })
 
-    expect(statusCalls).toHaveLength(1)
-    expect(statusCalls[0].status).toBe('failed')
+    expect(statusCalls).toHaveLength(0)
   })
 
   test('idle after streaming completion does not mark failed even with no additional sections', async () => {

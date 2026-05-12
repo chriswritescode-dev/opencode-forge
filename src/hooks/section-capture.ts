@@ -64,6 +64,8 @@ export function createSectionCaptureHook(deps: {
       const alreadyCompleted = loop.decompositionStatus === 'completed'
       if (!alreadyCompleted && loop.decompositionStatus !== 'running') return
 
+      const hadStreamedText = textBuffers.has(sessionID)
+      let sawAssistantMessage = false
       let text = textBuffers.get(sessionID) ?? ''
 
       // Always attempt to fetch the complete final assistant transcript at idle.
@@ -82,6 +84,7 @@ export function createSectionCaptureHook(deps: {
           }>
           const lastAssistant = [...messages].reverse().find(m => m.info.role === 'assistant' && (!m.info.finish || m.info.finish === 'stop'))
           if (lastAssistant) {
+            sawAssistantMessage = true
             const fetchedText = lastAssistant.parts
               .filter(p => p.type === 'text' && typeof p.text === 'string')
               .map(p => p.text as string)
@@ -119,6 +122,8 @@ export function createSectionCaptureHook(deps: {
         }
         deps.loopsRepo.setTotalSections(deps.projectId, loop.loopName, count)
         deps.logger.log(`section-capture: decomposition completed with ${count} sections for loop ${loop.loopName}`)
+      } else if (!hadStreamedText && !sawAssistantMessage && !alreadyCompleted) {
+        deps.logger.log(`section-capture: idle without decomposer output for session ${sessionID}, leaving decomposition running`)
       } else if ((persistedCounts.get(sessionID) ?? 0) === 0 && finalSections.length === 0 && !alreadyCompleted) {
         deps.loopsRepo.setDecompositionStatus(deps.projectId, loop.loopName, 'failed')
         deps.logger.log(`section-capture: no sections found for loop ${loop.loopName}, marking failed`)

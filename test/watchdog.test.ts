@@ -38,6 +38,23 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function createMockLoopService(overrides?: {
+  getActiveState?: () => LoopState | null
+  resolveLoopName?: (sessionId: string) => string | null
+}) {
+  return {
+    getActiveState: overrides?.getActiveState ?? (() => getState()),
+    getStallTimeoutMs: () => 10,
+    getMaxConsecutiveStalls: () => 3,
+    resolveLoopName: overrides?.resolveLoopName ?? ((sessionId: string) =>
+      sessionId === 'coding-session' || sessionId === 'audit-session' ? 'test-loop' : null),
+  }
+
+  function getState(): LoopState {
+    return createState()
+  }
+}
+
 describe('createLoopWatchdog', () => {
   it('resets while current session remains busy', async () => {
     const stateRef = { current: createState() }
@@ -47,9 +64,9 @@ describe('createLoopWatchdog', () => {
     const logger = createLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
-        getActiveState: () => stateRef.current,
-        getStallTimeoutMs: () => 10,
-        getMaxConsecutiveStalls: () => 3,
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+        }),
       },
       v2Client: {
         session: {
@@ -79,7 +96,7 @@ describe('createLoopWatchdog', () => {
     watchdog.stop(loopName)
   })
 
-  it('uses current session only when deciding busy activity', async () => {
+  it('treats busy child/subagent sessions as loop being busy', async () => {
     const stateRef = { current: createState({ sessionId: 'coding-session' }) }
     const recoverCalls: unknown[] = []
     const terminateCalls: unknown[] = []
@@ -87,9 +104,9 @@ describe('createLoopWatchdog', () => {
     const logger = createLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
-        getActiveState: () => stateRef.current,
-        getStallTimeoutMs: () => 10,
-        getMaxConsecutiveStalls: () => 3,
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+        }),
       },
       v2Client: {
         session: {
@@ -113,11 +130,57 @@ describe('createLoopWatchdog', () => {
 
     const loopName = 'test-loop'
     watchdog.start(loopName)
+    await wait(60)
+
+    // Both sessions belong to 'test-loop' -> audit being busy counts as loop busy
+    expect(recoverCalls.length).toBe(0)
+    expect(terminateCalls.length).toBe(0)
+    expect(watchdog.getStallInfo(loopName)?.consecutiveStalls).toBe(0)
+
+    watchdog.stop(loopName)
+  })
+
+  it('does NOT treat busy session from another loop as this loop being busy', async () => {
+    const stateRef = { current: createState({ sessionId: 'coding-session' }) }
+    const recoverCalls: unknown[] = []
+    const terminateCalls: unknown[] = []
+
+    const logger = createLogger()
+    const watchdog = createLoopWatchdog({
+      loopService: {
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+          resolveLoopName: (sessionId) =>
+            sessionId === 'coding-session' ? 'test-loop' : null,
+        }),
+      },
+      v2Client: {
+        session: {
+          status: async () => ({
+            data: {
+              'coding-session': { type: 'idle' },
+              'unrelated-session': { type: 'busy' },
+            },
+          }),
+        },
+      },
+      logger,
+      recover: async (ln, _s, ctx) => {
+        recoverCalls.push(ctx)
+      },
+      terminate: async (ln, _s, reason) => {
+        terminateCalls.push(reason)
+        watchdog.stop(ln)
+      },
+    })
+
+    const loopName = 'test-loop'
+    watchdog.start(loopName)
     await wait(70)
 
+    // unrelated-session belongs to no loop -> this loop should stall
     expect(recoverCalls.length).toBeGreaterThanOrEqual(1)
     expect((recoverCalls[recoverCalls.length - 1] as { reason: string }).reason).toBe('non_busy_status')
-    expect(terminateCalls.length).toBe(1)
 
     watchdog.stop(loopName)
   })
@@ -130,9 +193,9 @@ describe('createLoopWatchdog', () => {
     const logger = createLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
-        getActiveState: () => stateRef.current,
-        getStallTimeoutMs: () => 10,
-        getMaxConsecutiveStalls: () => 3,
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+        }),
       },
       v2Client: {
         session: {
@@ -173,9 +236,9 @@ describe('createLoopWatchdog', () => {
     const logger = createLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
-        getActiveState: () => stateRef.current,
-        getStallTimeoutMs: () => 10,
-        getMaxConsecutiveStalls: () => 3,
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+        }),
       },
       v2Client: {
         session: {
@@ -222,9 +285,9 @@ describe('createLoopWatchdog', () => {
     const logger = createLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
-        getActiveState: () => stateRef.current,
-        getStallTimeoutMs: () => 10,
-        getMaxConsecutiveStalls: () => 3,
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+        }),
       },
       v2Client: {
         session: {
@@ -262,9 +325,9 @@ describe('createLoopWatchdog', () => {
     const logger = createLogger()
     const watchdog = createLoopWatchdog({
       loopService: {
-        getActiveState: () => stateRef.current,
-        getStallTimeoutMs: () => 10,
-        getMaxConsecutiveStalls: () => 3,
+        ...createMockLoopService({
+          getActiveState: () => stateRef.current,
+        }),
       },
       v2Client: {
         session: {
