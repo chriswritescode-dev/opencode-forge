@@ -4,8 +4,6 @@ import { parseModelString, retryWithModelFallback } from '../utils/model-fallbac
 import { extractPlanTitle, extractLoopNames, PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext } from '../services/execution'
 
-
-
 function publishPlanApprovalToast(
   ctx: ToolContext,
   _input: { sessionID: string },
@@ -95,7 +93,7 @@ interface PendingExecution {
 
 const pendingExecutions = new Map<string, PendingExecution>()
 const processedApprovalCalls = new WeakMap<ToolContext, Set<string>>()
-const activeApprovalPlans = new Set<string>()
+const claimedApprovalPlans = new Set<string>()
 
 export { LOOP_BLOCKED_TOOLS }
 export { extractPlanTitle }
@@ -123,14 +121,10 @@ function claimApprovalCall(ctx: ToolContext, input: { sessionID: string }, label
   if (processed.size > 1000) processed.clear()
   processed.add(callKey)
 
-  const planApprovalKey = `${ctx.projectId}:${ctx.directory}:${input.sessionID}:${label}:${planKey}`
-  if (activeApprovalPlans.has(planApprovalKey)) return false
-  activeApprovalPlans.add(planApprovalKey)
+  const planApprovalKey = `${ctx.projectId}:${ctx.directory}:${input.sessionID}:${planKey}`
+  if (claimedApprovalPlans.has(planApprovalKey)) return false
+  claimedApprovalPlans.add(planApprovalKey)
   return true
-}
-
-function releaseApprovalCall(ctx: ToolContext, input: { sessionID: string }, label: string, planKey: string): void {
-  activeApprovalPlans.delete(`${ctx.projectId}:${ctx.directory}:${input.sessionID}:${label}:${planKey}`)
 }
 
 function resolveCurrentSessionPlan(ctx: ToolContext, sessionID: string): { content: string; key: string } | null {
@@ -143,7 +137,7 @@ function resolveCurrentSessionPlan(ctx: ToolContext, sessionID: string): { conte
 }
 
 export function createToolExecuteBeforeHook(ctx: ToolContext): Hooks['tool.execute.before'] {
-  const loop = ctx.loop
+  const loop = ctx.loop ?? (ctx as ToolContext & { loopService: ToolContext['loop'] }).loopService
   const { logger } = ctx
 
   return async (
@@ -156,8 +150,6 @@ export function createToolExecuteBeforeHook(ctx: ToolContext): Hooks['tool.execu
 
     if (!(input.tool in LOOP_BLOCKED_TOOLS)) return
 
-    if (input.tool === 'question' && !state.worktree) return
-
     logger.log(`Loop: blocking ${input.tool} tool before execution in ${state.phase} phase for session ${input.sessionID}`)
 
     throw new Error(LOOP_BLOCKED_TOOLS[input.tool]!)
@@ -165,7 +157,7 @@ export function createToolExecuteBeforeHook(ctx: ToolContext): Hooks['tool.execu
 }
 
 export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execute.after'] {
-  const loop = ctx.loop
+  const loop = ctx.loop ?? (ctx as ToolContext & { loopService: ToolContext['loop'] }).loopService
   const { logger, config } = ctx
 
   return async (
@@ -220,7 +212,6 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
 
             logger.log('Plan approval: "Execute here" — pending code agent switch set; awaiting source session abort')
             await abortApprovalSourceSession(ctx, input.sessionID)
-            releaseApprovalCall(ctx, input, matchedLabel, plan.key)
             logger.log('Plan approval: "Execute here" — abort completed')
             return
           }
@@ -263,7 +254,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
             plansRepo: ctx.plansRepo,
             loopsRepo: ctx.loopsRepo,
             loopHandler: ctx.loopHandler,
-            loop: ctx.loop,
+            loop,
             sandboxManager: ctx.sandboxManager,
             sectionPlansRepo: ctx.sectionPlansRepo,
           })
@@ -296,14 +287,14 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
 
             logger.log('Plan approval: "New session" — awaiting source session abort')
             const aborted = await abortApprovalSourceSession(ctx, input.sessionID)
-            releaseApprovalCall(ctx, input, matchedLabel, plan.key)
             logger.log(`Plan approval: "New session" — abort completed (success=${aborted})`)
             return
           }
           
-          if (matchedLabel === 'Loop (worktree)') {
+          if (matchedLabel === 'Loop (worktree)' || matchedLabel === 'Loop') {
+            const isWorktree = matchedLabel === 'Loop (worktree)'
             const { executionName } = extractLoopNames(planText)
-            const uniqueLoopName = ctx.loop.generateUniqueLoopName(executionName)
+            const uniqueLoopName = loop.generateUniqueLoopName(executionName)
 
             logger.log(`Plan approval: "${matchedLabel}" — scheduling dispatch IIFE for loop "${uniqueLoopName}"`)
 
@@ -317,7 +308,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
                 source: { kind: 'inline', planText },
                 title,
                 loopName: uniqueLoopName,
-                mode: 'worktree',
+                mode: isWorktree ? 'worktree' : 'in-place',
                 maxIterations: config.loop?.defaultMaxIterations ?? 0,
                 executionModel,
                 auditorModel,
@@ -335,13 +326,12 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
                 publishPlanApprovalToast(ctx, input, 'error', `Failed to start loop: ${result.error.message}`)
                 return
               }
-              publishPlanApprovalToast(ctx, input, 'success', `Started worktree loop: ${uniqueLoopName}`)
+              publishPlanApprovalToast(ctx, input, 'success', `Started ${isWorktree ? 'worktree ' : ''}loop: ${uniqueLoopName}`)
               logger.log('Plan approval: loop setup complete')
             }, logger)
 
             logger.log(`Plan approval: "${matchedLabel}" — awaiting source session abort`)
             const aborted = await abortApprovalSourceSession(ctx, input.sessionID)
-            releaseApprovalCall(ctx, input, matchedLabel, plan.key)
             logger.log(`Plan approval: "${matchedLabel}" — abort completed (success=${aborted})`)
             return
           }

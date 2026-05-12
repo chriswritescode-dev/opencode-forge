@@ -91,7 +91,7 @@ export interface StartLoopCommand {
   source: PlanSource
   title?: string
   loopName?: string
-  mode: 'worktree'
+  mode: 'in-place' | 'worktree'
   maxIterations?: number
   executionModel?: string
   auditorModel?: string
@@ -102,7 +102,7 @@ export interface StartLoopCommand {
     startWatchdog?: boolean
     abortSourceSessionOnSuccess?: boolean
     onStarted?: (info: {
-      mode: 'worktree'
+      mode: 'in-place' | 'worktree'
       sessionId: string
       loopName: string
       displayName: string
@@ -116,7 +116,7 @@ export interface BuildStartLoopCommandInput {
   source: PlanSource
   title?: string
   loopName?: string
-  mode: 'worktree'
+  mode: 'in-place' | 'worktree'
   maxIterations?: number
   executionModel?: string
   auditorModel?: string
@@ -202,7 +202,7 @@ export interface PlanExecutionStartedResult {
 
 export interface LoopStartedResult {
   operation: 'loop.start'
-  mode: 'worktree'
+  mode: 'in-place' | 'worktree'
   sessionId: string
   loopName: string
   displayName: string

@@ -13,6 +13,7 @@ export const PLAN_EXECUTION_LABELS = [
   'New session',
   'Execute here',
   'Loop (worktree)',
+  'Loop',
 ] as const
 
 export type PlanExecutionLabel = typeof PLAN_EXECUTION_LABELS[number]
@@ -193,5 +194,4 @@ export function sanitizeLoopName(name: string): string {
     .replace(/^-+|-+$/g, '')
     .substring(0, 60) || 'loop'
 }
-
 

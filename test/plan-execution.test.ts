@@ -9,11 +9,12 @@ import {
 
 describe('Plan Execution Utilities', () => {
   describe('PLAN_EXECUTION_LABELS', () => {
-    test('Contains all three canonical execution labels', () => {
-      expect(PLAN_EXECUTION_LABELS).toHaveLength(3)
+    test('Contains all four canonical execution labels', () => {
+      expect(PLAN_EXECUTION_LABELS).toHaveLength(4)
       expect(PLAN_EXECUTION_LABELS).toContain('New session')
       expect(PLAN_EXECUTION_LABELS).toContain('Execute here')
       expect(PLAN_EXECUTION_LABELS).toContain('Loop (worktree)')
+      expect(PLAN_EXECUTION_LABELS).toContain('Loop')
     })
 
     test('Labels match the exact strings used by plan-approval.ts', () => {
@@ -21,6 +22,7 @@ describe('Plan Execution Utilities', () => {
       expect(PLAN_EXECUTION_LABELS[0]).toBe('New session')
       expect(PLAN_EXECUTION_LABELS[1]).toBe('Execute here')
       expect(PLAN_EXECUTION_LABELS[2]).toBe('Loop (worktree)')
+      expect(PLAN_EXECUTION_LABELS[3]).toBe('Loop')
     })
   })
 

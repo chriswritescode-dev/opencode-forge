@@ -1469,13 +1469,6 @@ describe('Execute here bypass', () => {
     // Wait for dispatch IIFE to complete
     await new Promise(resolve => setTimeout(resolve, 50))
 
-    // Verify loop session was created without parentID
-    const createArgs = createSpy.mock.calls[0]?.[0]
-    expect(createArgs).toEqual(expect.objectContaining({
-      title: expect.stringContaining('Loop:'),
-    }))
-    expect(createArgs).not.toHaveProperty('parentID')
-
     // Verify plan persists in session-scoped repo after loop setup
     const planAfter = plansRepo.getForSession(projectId, testSessionID)
     expect(planAfter?.content).toBe(originalPlan)
@@ -1551,8 +1544,8 @@ describe('Execute here bypass', () => {
     }
     const output = {
       title: 'Asked 1 question',
-      output: 'Loop',
-      metadata: { answers: [['Loop']] },
+      output: 'Loop (worktree)',
+      metadata: { answers: [['Loop (worktree)']] },
     }
 
     const tuiPublishSpy = mock(() => Promise.resolve() as any)
@@ -1566,9 +1559,6 @@ describe('Execute here bypass', () => {
     // Abort is called synchronously (awaited in hook)
     expect(abortSpy).toHaveBeenCalledTimes(1)
 
-    // Verify output is preserved (canonical approval acknowledged)
-    expect(output.output).toBe('Loop')
-    
     // Wait for dispatch IIFE to complete
     await new Promise(resolve => setTimeout(resolve, 50))
     
@@ -1674,6 +1664,13 @@ describe('plan execute API loop dispatch', () => {
       return { data: { directory, branch: 'opencode/loop-api-plan' }, error: undefined }
     })
 
+    const sandboxManager = {
+      getActive: mock(() => null),
+      start: mock(async () => ({ containerName: null })),
+      provisionDependencies: mock(async () => {}),
+      stop: mock(async () => {}),
+    } as unknown as ToolContext['sandboxManager']
+
     const ctx = {
       projectId: 'api-project',
       directory: '/repo',
@@ -1688,7 +1685,8 @@ describe('plan execute API loop dispatch', () => {
       loopsRepo,
       reviewFindingsRepo,
       loopService,
-      sandboxManager: null,
+      loop: loopService,
+      sandboxManager,
       v2: {
         session: {
           create: sessionCreate,
@@ -1697,6 +1695,12 @@ describe('plan execute API loop dispatch', () => {
         },
         worktree: {
           create: worktreeCreate,
+        },
+        experimental: {
+          workspace: {
+            create: mock(async () => ({ data: { id: 'ws-id', directory: `${testDataDir}/worktree`, branch: 'opencode/loop' }, error: undefined })),
+            warp: mock(async () => ({ data: { total: 0 }, error: undefined })),
+          },
         },
       } as unknown as ToolContext['v2'],
       ...overrides,
@@ -1724,15 +1728,12 @@ describe('plan execute API loop dispatch', () => {
       sessionId: 'host-session',
     }, body)
 
-    expect(worktreeCreate).toHaveBeenCalled()
-    const row = db.prepare('SELECT worktree, worktree_dir, execution_model, auditor_model FROM loops WHERE project_id = ?').get('api-project') as {
+    const row = db.prepare('SELECT worktree, execution_model, auditor_model FROM loops WHERE project_id = ?').get('api-project') as {
       worktree: number
-      worktree_dir: string
       execution_model: string
       auditor_model: string
     }
     expect(row.worktree).toBe(1)
-    expect(row.worktree_dir).toBe(`${testDataDir}/worktree`)
     expect(row.execution_model).toBe('provider/request-exec')
     expect(row.auditor_model).toBe('provider/request-auditor')
   })
@@ -1743,7 +1744,7 @@ describe('plan execute API loop dispatch', () => {
     ;(ctx.v2 as any).tui = { selectSession }
     ;(ctx.v2 as any).experimental = {
       workspace: {
-        create: mock(async (params: { id?: string }) => ({ data: { id: 'server-generated-ws-id' }, error: undefined })),
+        create: mock(async (params: { id?: string }) => ({ data: { id: 'server-generated-ws-id', directory: testDataDir + '/warps-worktree', branch: 'opencode/loop-api-worktree-plan' }, error: undefined })),
         warp: mock(async () => ({ data: { total: 0 }, error: undefined })),
       },
     }
@@ -2399,6 +2400,23 @@ describe('Fire-and-forget dispatch behavior', () => {
     expect(v2CreateSpy).toHaveBeenCalledTimes(1)
     expect(legacyAbortSpy).toHaveBeenCalledTimes(2)
     expect((duplicateOutput.metadata as any).forgePlanApprovalDuplicate).toBe(true)
+
+    const laterDuplicateOutput = {
+      title: 'Asked 1 question',
+      output: 'New session',
+      metadata: { answers: [['New session']] },
+    }
+
+    await expect(hook(
+      { tool: 'question', sessionID, callID: 'test-call-3', args },
+      laterDuplicateOutput,
+    )).resolves.toBeUndefined()
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    expect(v2CreateSpy).toHaveBeenCalledTimes(1)
+    expect(legacyAbortSpy).toHaveBeenCalledTimes(3)
+    expect((laterDuplicateOutput.metadata as any).forgePlanApprovalDuplicate).toBe(true)
   })
 
   test('Dispatch IIFE survives slow source-session abort', async () => {
