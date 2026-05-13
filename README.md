@@ -29,7 +29,7 @@ Add to your `opencode.json` to enable Forge’s server-side hooks, tools, and ag
 }
 ```
 
-**For TUI features:** Also add to your `tui.json` to enable the sidebar, plan viewer, execution dialog, and loop UI:
+**For TUI features:** Also add to your `tui.json` to enable the sidebar, plan viewer, execution dialog, and load-plan UI:
 
 ```json
 {
@@ -45,7 +45,7 @@ Forge ships two user-facing surfaces:
 - **Server plugin** — enabled through OpenCode plugin config in `opencode.json`. The package declares the `server` oc-plugin surface and exports `./server` for the server entrypoint.
 - **TUI plugin** — enabled separately in `tui.json`. The package declares the `tui` oc-plugin surface and exports `./tui` for the terminal UI entrypoint.
 
-The server plugin provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, and sandbox support. The TUI plugin layers on sidebar, plan, execution, and loop dialogs.
+The server plugin provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, and sandbox support. The TUI plugin layers on sidebar, plan viewer/editor, execution dialog, and load-plan UI.
 
 ## Screenshots
 
@@ -61,17 +61,13 @@ Plan editor with raw text editing:
 
 ![Plan Editor](docs/images/plan-editor.webp)
 
-Loop search dialog:
-
-![Search Loops](docs/images/search-loops.webp)
-
 ## Features
 
 - **Plans** — architect produces marked plans that are auto-captured to SQL storage
 - **Execution** — `New session`, `Execute here`, and `Loop` launch paths for approved plans
 - **Loops** — iterative coding/auditing with isolated git worktree and optional Docker sandbox
 - **Review Findings** — persistent, branch-aware review findings across loop sessions
-- **TUI** — sidebar, plan viewer/editor, execution dialog, and loop details
+- **TUI** — sidebar, plan viewer/editor, execution dialog, and load-plan UI
 - **Sandbox** — Optional Docker worktree loop isolation with bind-mounted project files
 
 ## Agents
@@ -219,14 +215,12 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
   // TUI sidebar widget configuration
   "tui": {
     "sidebar": true,               // Show Forge sidebar in OpenCode TUI
-    "showLoops": true,             // Display loop status in sidebar
     "showVersion": true,           // Show plugin version in sidebar title
     "autoSavePlans": false,        // Auto-save captured plans to disk under <dataDir>/plans/<projectId>/
     "planArchiveTtlMs": 604800000, // TTL in ms for archived plans before pruning. 0 disables pruning.
     "keybinds": {                  // Keyboard shortcut overrides
       "viewPlan": "<leader>v",     // View plan dialog
-      "executePlan": "<leader>e",  // Execute plan dialog
-      "showLoops": "<leader>w"     // Show loops dialog
+      "loadPlan": "<leader>i"      // Load archived plans dialog
     }
   },
 
@@ -294,31 +288,27 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 
 #### TUI
 - `tui.sidebar` - Show the forge sidebar widget in OpenCode TUI (default: `true`)
-- `tui.showLoops` - Display active loop status in the sidebar (default: `true`)
 - `tui.showVersion` - Show plugin version number in the sidebar title (default: `true`)
 - `tui.autoSavePlans` - Auto-save captured plans to disk under `<dataDir>/plans/<projectId>/`. Default: `false`.
 - `tui.planArchiveTtlMs` - TTL in ms for archived plans before pruning. 0 disables pruning. Default: `604800000` (7 days).
 - `tui.keybinds.viewPlan` - View plan dialog keybind. Default: `<leader>v`.
-- `tui.keybinds.executePlan` - Execute plan dialog keybind. Default: `<leader>e`.
-- `tui.keybinds.showLoops` - Show loops dialog keybind. Default: `<leader>w`.
 - `tui.keybinds.loadPlan` - Load archived plans dialog keybind. Default: `<leader>i`.
 
 ## TUI Plugin
 
-The plugin includes a TUI sidebar widget and dialog system for monitoring and managing loops directly in the OpenCode terminal interface.
+The plugin includes a TUI sidebar widget and dialog system for viewing, editing, executing plans directly in the OpenCode terminal interface.
 
 ### Sidebar
 
-The sidebar shows all loops for the current project:
+The sidebar provides quick access to plans and configuration:
 
-- Loop name (truncated to 25 chars with middle ellipsis) with a colored status dot
-- Status text: current phase for active loops, termination reason for completed/cancelled
-- Clicking a worktree loop opens the Loop Details dialog
-- **Plan indicator** — When a plan exists for the current session, a 📋 Plan link appears. Click it to open the Plan Viewer dialog.
+- **Auto-save plans** — Toggle checkbox to auto-save captured plans to disk under `<dataDir>/plans/<projectId>/`
+- **Load plan** — Opens the Load Plan dialog with archived plans from disk
+- **Plan indicator** — When a plan exists, shows `· plan` in collapsed sidebar header
 
 ### Plan Viewer
 
-When an architect session produces a plan, it is cached in the current session plan store. The plan is accessible from the sidebar (📋 Plan link) or the command palette (`Forge: View plan`). Missing plans show an informational toast.
+When an architect session produces a plan, it is cached in the current session plan store. The plan is accessible from the sidebar (Load plan button) or the command palette (`Forge: View plan`). Missing plans show an informational toast.
 
 The plan viewer dialog renders the full plan as GitHub-flavored markdown with syntax highlighting:
 
@@ -360,24 +350,12 @@ Your selections are automatically saved in `tui_preferences` after launch:
 - Subsequent plan executions pre-fill with your previous choices
 - Recent models are tracked across all dialog interactions
 
-### Loop Details Dialog
-
-The Loop Details dialog shows a detailed view of a single loop:
-
-- Name and status badge (active / completed / error / cancelled / stalled)
-- Session stats: session ID, iteration count, token usage (input/output/cache), cost
-- Latest output from the last assistant message (scrollable, up to 500 chars)
-- **Back** — return to the loop list (when opened from the command palette)
-- **Cancel loop** — abort the active loop session (visible only when loop is active)
-- **Close (esc)** — dismiss the dialog
-
 ### Command Palette
 
-The command palette registers three Forge commands when the relevant session or loop data exists:
+The command palette registers two Forge commands:
 
-- `Forge: Show loops` — opens the worktree loop list, then drills into Loop Details with a Back button to return
-- `Forge: View plan` — opens the cached plan for the current session
-- `Forge: Execute plan` — opens the execution flow for the cached plan
+- `Forge: View plan` (`<leader>v`) — View cached plan for this session
+- `Forge: Load plan` (`<leader>i`) — Load an archived plan from disk
 
 ### Setup
 
@@ -426,7 +404,6 @@ TUI options are configured in `~/.config/opencode/forge-config.jsonc` under the 
 {
   "tui": {
     "sidebar": true,
-    "showLoops": true,
     "showVersion": true
   }
 }
@@ -453,7 +430,7 @@ Plan with a smart model, execute with a fast model. The architect agent research
 
 The architect is read-only and must output exactly one final plan between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers. Forge auto-captures that marked plan into SQL storage for the current session.
 
-The user can view the cached plan at any time from the **sidebar** (📋 Plan link) or the **command palette** (`Forge: View plan`). The plan viewer renders full GitHub-flavored markdown and supports inline editing — the user can modify the plan directly before approving.
+The user can view the cached plan at any time from the **sidebar** (Load plan button) or the **command palette** (`Forge: View plan`). The plan viewer renders full GitHub-flavored markdown and supports inline editing — the user can modify the plan directly before approving.
 
 ### Execution
 
@@ -593,8 +570,8 @@ If workspace creation or session binding fails at runtime (network error, API mi
 
 ### From the TUI
 
-- Clicking a worktree loop in the sidebar opens its Loop Details dialog as before
-- On hosts with workspace support, the loop is additionally accessible via the workspace switcher, letting you jump between your main project and any active worktree loop inline
+- Loops are launched via the Execute tab in the Plan Viewer dialog (select Loop mode)
+- On hosts with workspace support, active loops appear as switchable workspaces alongside your main project
 
 ## Docker Sandbox
 
@@ -672,6 +649,12 @@ pnpm build      # Compile TypeScript to dist/
 pnpm test       # Run tests
 pnpm typecheck  # Type check without emitting
 ```
+
+## Loop Flow
+
+The diagram below shows the overall flow of the Forge loop system — from plan decomposition through iterative coding/auditing phases with section advancement and session rotation.
+
+![Loop Flow](diagrams/loop-flow.jpg)
 
 ## License
 
