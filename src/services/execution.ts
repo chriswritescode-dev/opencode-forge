@@ -323,6 +323,7 @@ export interface ForgeExecutionServiceDeps {
   loop: import('../loop/runtime').Loop
   sandboxManager?: SandboxManager | null
   sectionPlansRepo?: import('../storage/repos/section-plans-repo').SectionPlansRepo
+  workspaceStatusRegistry: import('../utils/workspace-status-registry').WorkspaceStatusRegistry
 }
 
 // ============================================================================
@@ -562,27 +563,44 @@ async function selectSessionWithFallback(
   deps: ForgeExecutionServiceDeps,
   selection: { sessionID: string; workspace?: string },
 ): Promise<void> {
-  // Try v2 TUI selectSession first
-  try {
-    if (deps.v2.tui) {
+  const maxAttempts = 3
+  const backoffMs = 250
+
+  async function attemptSelectSession(attempt: number): Promise<boolean> {
+    try {
+      if (!deps.v2.tui) {
+        deps.logger.log(`[warp] select.v2.selectSession skipped attempt=${attempt} reason=no-v2-tui`)
+        return false
+      }
       await deps.v2.tui.selectSession({
         sessionID: selection.sessionID,
         ...(selection.workspace ? { workspace: selection.workspace } : {}),
       })
-      return
-    }
-  } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : String(err)
-    if (errorMsg.includes('Unable to connect')) {
-      deps.logger.log('selectSessionWithFallback: v2 TUI unavailable, falling back to publish')
-    } else {
-      deps.logger.error('selectSessionWithFallback: v2 TUI error', err)
+      deps.logger.log(`[warp] select.v2.selectSession ok attempt=${attempt}`)
+      return true
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err)
+      deps.logger.log(`[warp] select.v2.selectSession failed attempt=${attempt} error="${errorMsg}"`)
+      if (errorMsg.includes('Unable to connect')) {
+        deps.logger.log('selectSessionWithFallback: v2 TUI unavailable, falling back to publish')
+      } else {
+        deps.logger.error('selectSessionWithFallback: v2 TUI error', err)
+      }
+      return false
     }
   }
-  
-  // Fallback to v2 TUI publish with tui.session.select event
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (await attemptSelectSession(attempt)) return
+    if (attempt < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, backoffMs))
+    }
+  }
+
   try {
-    if (deps.v2.tui) {
+    if (!deps.v2.tui) {
+      deps.logger.log('[warp] select.v2.publish skipped reason=no-v2-tui')
+    } else {
       await deps.v2.tui.publish({
         directory: deps.directory,
         body: {
@@ -593,25 +611,26 @@ async function selectSessionWithFallback(
           },
         },
       })
+      deps.logger.log('[warp] select.v2.publish ok')
       return
     }
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err)
+    deps.logger.log(`[warp] select.v2.publish failed error="${errorMsg}"`)
     if (errorMsg.includes('Unable to connect')) {
       deps.logger.log('selectSessionWithFallback: v2 TUI publish unavailable, falling back to legacy SDK')
     } else {
       deps.logger.error('selectSessionWithFallback: v2 TUI publish error', err)
     }
   }
-  
-  // Fallback to legacy SDK TUI
+
   if (!deps.legacyClient?.tui) {
+    deps.logger.log('[warp] select.legacy.publish skipped reason=no-legacy-tui')
     deps.logger.error('selectSessionWithFallback: no legacy TUI available')
     return
   }
-  
+
   try {
-    // Fallback to publish with tui.session.select event
     await deps.legacyClient.tui.publish({
       body: {
         type: 'tui.session.select',
@@ -621,8 +640,71 @@ async function selectSessionWithFallback(
         },
       },
     } as unknown as Parameters<typeof deps.legacyClient.tui.publish>[0])
+    deps.logger.log('[warp] select.legacy.publish ok')
   } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err)
+    deps.logger.log(`[warp] select.legacy.publish failed error="${errorMsg}"`)
     deps.logger.error('selectSessionWithFallback: legacy TUI failed', err)
+  }
+}
+
+export interface SelectInitialWorktreeSessionOpts {
+  selectSession: boolean | undefined
+  logger: Logger | Console
+  workspaceStatusRegistry: import('../utils/workspace-status-registry').WorkspaceStatusRegistry
+  selectSessionFn: (selection: { sessionID: string; workspace?: string }) => Promise<void>
+}
+
+export async function selectInitialWorktreeSession(
+  targetSessionId: string,
+  boundWorkspaceId: string | undefined,
+  context: string,
+  opts: SelectInitialWorktreeSessionOpts,
+): Promise<void> {
+  opts.logger.log(`[warp] select.entry context="${context}" targetSessionId=${targetSessionId} workspaceId=${boundWorkspaceId ?? 'none'}`)
+
+  if (!opts.selectSession) {
+    opts.logger.log(`[warp] select.exit context="${context}" reason=no-select-session`)
+    return
+  }
+
+  if (!boundWorkspaceId) {
+    opts.logger.log(`[warp] select.exit context="${context}" reason=no-workspace`)
+    return
+  }
+
+  const totalStart = Date.now()
+
+  try {
+    const connectedResult = await opts.workspaceStatusRegistry.awaitConnected(boundWorkspaceId, {
+      timeoutMs: 5000,
+      logger: opts.logger as Logger,
+    })
+
+    const readyElapsedMs = Date.now() - totalStart
+
+    if (connectedResult.connected) {
+      opts.logger.log(
+        `[warp] select.ready context="${context}" source=${connectedResult.source} elapsedMs=${readyElapsedMs}`,
+      )
+    } else {
+      opts.logger.log(
+        `[warp] select.degraded context="${context}" reason="${connectedResult.reason ?? 'unknown'}" lastStatus="${connectedResult.lastStatus ?? 'none'}" elapsedMs=${readyElapsedMs}`,
+      )
+    }
+
+    const SELECT_TIMEOUT_MS = 2000
+    await Promise.race([
+      opts.selectSessionFn({ sessionID: targetSessionId, workspace: boundWorkspaceId }),
+      new Promise<void>((resolve) => setTimeout(resolve, SELECT_TIMEOUT_MS)),
+    ])
+    const totalMs = Date.now() - totalStart
+    opts.logger.log(`[warp] select.complete context="${context}" totalMs=${totalMs}`)
+  } catch (err) {
+    const totalMs = Date.now() - totalStart
+    opts.logger.error(
+      `[warp] select.failed context="${context}" error="${err instanceof Error ? err.message : String(err)}" totalMs=${totalMs}`,
+    )
   }
 }
 
@@ -872,21 +954,17 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       let sessionId: string
       let initialBoundWorkspaceId: string | undefined
 
-      const selectInitialWorktreeSession = async (
+      const doSelectInitialWorktreeSession = async (
         targetSessionId: string,
         boundWorkspaceId: string | undefined,
         context: string,
       ): Promise<void> => {
-        if (!boundWorkspaceId || !command.lifecycle?.selectSession) return
-        const SELECT_TIMEOUT_MS = 2000
-        try {
-          await Promise.race([
-            selectSessionWithFallback(deps, { sessionID: targetSessionId, workspace: boundWorkspaceId }),
-            new Promise<void>((resolve) => setTimeout(resolve, SELECT_TIMEOUT_MS)),
-          ])
-        } catch (err) {
-          deps.logger.error(`handleStartLoop: failed to navigate TUI to worktree session ${context}`, err as Error)
-        }
+        await selectInitialWorktreeSession(targetSessionId, boundWorkspaceId, context, {
+          selectSession: command.lifecycle?.selectSession,
+          logger: deps.logger,
+          workspaceStatusRegistry: deps.workspaceStatusRegistry,
+          selectSessionFn: (sel) => selectSessionWithFallback(deps, sel),
+        })
       }
 
       // Compute host session ID for metadata persistence only (not session parenting)
@@ -905,7 +983,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       const ws = await createBuiltinWorktreeWorkspace(deps.v2, {
         loopName: uniqueLoopName,
         directory: ctx.directory,
-      }, deps.logger)
+      }, deps.logger, deps.workspaceStatusRegistry)
       if (!ws) {
         deps.logger.error('handleStartLoop: failed to create builtin worktree workspace')
         return fail('internal_error', 500, 'Failed to create worktree workspace')
@@ -929,9 +1007,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           directory: hostWorktreeDir!,
           permission: permissionRuleset,
           workspaceId,
+          loopName: uniqueLoopName,
           logPrefix: 'handleStartLoop:decomposer',
           logger: deps.logger,
           legacyClient: deps.legacyClient,
+          workspaceStatusRegistry: deps.workspaceStatusRegistry,
         })
         if (!createResult) {
           deps.logger.error('handleStartLoop: failed to create decomposer session')
@@ -948,7 +1028,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
         // Navigate the TUI to the worktree session immediately so the user sees the new
         // session before the slow sandbox + provisioning + prompt path runs.
-        await selectInitialWorktreeSession(sessionId, initialBoundWorkspaceId, 'after session create (decomposer)')
+        await doSelectInitialWorktreeSession(sessionId, initialBoundWorkspaceId, 'after session create (decomposer)')
       } else {
         const createResult = await createLoopSessionWithWorkspace({
           v2: deps.v2,
@@ -956,8 +1036,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           directory: hostWorktreeDir!,
           permission: permissionRuleset,
           workspaceId,
+          loopName: uniqueLoopName,
           logPrefix: 'handleStartLoop',
           logger: deps.logger,
+          workspaceStatusRegistry: deps.workspaceStatusRegistry,
         })
 
         if (!createResult) {
@@ -975,7 +1057,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
         // Navigate the TUI to the worktree session immediately so the user sees the new
         // session before the slow sandbox + provisioning + prompt path runs.
-        await selectInitialWorktreeSession(sessionId, initialBoundWorkspaceId, 'after session create')
+        await doSelectInitialWorktreeSession(sessionId, initialBoundWorkspaceId, 'after session create')
       }
 
       // Start sandbox if enabled
@@ -1037,7 +1119,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       deps.logger.log(`handleStartLoop: state stored for loop=${uniqueLoopName}`)
 
       // Order: createBuiltinWorktreeWorkspace → createLoopSessionWithWorkspace → await selectInitialWorktreeSession
-      // (with bounded 2s timeout) → sandbox start → loop-state persist → onStarted.
+      // (with awaitConnected up to 5s) → sandbox start → loop-state persist → onStarted.
+      deps.logger.log(`[warp] lifecycle.onStarted loopName=${uniqueLoopName} sessionId=${sessionId} workspaceId=${createdWorkspaceId ?? 'none'} mode=${command.mode}`)
       command.lifecycle?.onStarted?.({
         mode: command.mode,
         sessionId,
@@ -1272,9 +1355,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
                 directory: state.worktreeDir,
                 permission: fallbackPermission,
                 workspaceId: createdWorkspaceId,
+                loopName: uniqueLoopName,
                 logPrefix: 'handleStartLoop:decomposer-fallback',
                 logger: deps.logger,
                 legacyClient: deps.legacyClient,
+                workspaceStatusRegistry: deps.workspaceStatusRegistry,
               })
               if (!createResult) {
                 deps.logger.error('handleStartLoop: failed to create decomposer session for fallback')
@@ -1310,7 +1395,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             // The original session was aborted above; navigate the TUI to the new decomposer
             // session. onStarted already fired with the original sessionId, so the caller's RPC
             // is already resolved.
-            selectInitialWorktreeSession(decomposerSessionId, fallbackBoundWorkspaceId, 'after fallback decomposer start')
+            doSelectInitialWorktreeSession(decomposerSessionId, fallbackBoundWorkspaceId, 'after fallback decomposer start')
 
             const decomposerPrompt = deps.loop.buildDecomposerInitialPrompt(state)
             
@@ -1850,8 +1935,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             directory: stoppedState.worktreeDir,
             permission: permissionRuleset,
             workspaceId: stoppedState.workspaceId,
+            loopName: stoppedState.loopName,
             logPrefix: 'loop-restart',
             logger: deps.logger,
+            workspaceStatusRegistry: deps.workspaceStatusRegistry,
           })
           
           if (!createResult) return { ok: false, error: 'Failed to create new session for restart.' }
@@ -1902,8 +1989,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
                   directory: stoppedState.worktreeDir,
                   permission: restartPermission,
                   workspaceId: stoppedState.workspaceId,
+                  loopName: stoppedState.loopName,
                   logPrefix: 'loop-restart:decomposer-fallback',
                   logger: deps.logger,
+                  workspaceStatusRegistry: deps.workspaceStatusRegistry,
                 })
                 if (!createResult) return { ok: false, error: 'Failed to create decomposer session for fallback.' }
                 decomposerSessionId = createResult.sessionId
@@ -1947,8 +2036,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
               directory: stoppedState.worktreeDir,
               permission: restartPermission,
               workspaceId: stoppedState.workspaceId,
+              loopName: stoppedState.loopName,
               logPrefix: 'loop-restart:decomposer',
               logger: deps.logger,
+              workspaceStatusRegistry: deps.workspaceStatusRegistry,
             })
             if (!createResult) {
               deps.logger.error('loop-restart: failed to create decomposer session')
@@ -1986,8 +2077,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           directory: stoppedState.worktreeDir,
           permission: permissionRuleset,
           workspaceId: stoppedState.workspaceId,
+          loopName: stoppedState.loopName,
           logPrefix: 'loop-restart',
           logger: deps.logger,
+          workspaceStatusRegistry: deps.workspaceStatusRegistry,
         })
 
         if (!createResult) return { ok: false, error: 'Failed to create new session for restart.' }

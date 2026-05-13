@@ -35,6 +35,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
       loop: ctx.loop,
       sandboxManager: ctx.sandboxManager,
       sectionPlansRepo: ctx.sectionPlansRepo,
+      workspaceStatusRegistry: ctx.workspaceStatusRegistry,
     })
     return { service, execCtx }
   }

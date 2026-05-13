@@ -39,6 +39,7 @@ export async function createAuditSession(
     directory: input.worktreeDir,
     permission,
     workspaceId: input.workspaceId,
+    loopName: input.loopName,
     logPrefix: `loop ${input.loopName} audit`,
     logger: input.logger,
   })

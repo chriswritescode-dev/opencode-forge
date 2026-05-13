@@ -19,6 +19,7 @@ export default defineConfig({
       'test/services/parse-section-summary.test.ts',
       'test/utils/worktree-cleanup.test.ts',
       'test/utils/tui-client-workspaces.test.ts',
+      'test/utils/workspace-status-registry.test.ts',
       'test/index/session-lookup.test.ts',
       'test/loop/termination.test.ts',
       'test/loop/state-mapper.test.ts',
@@ -36,6 +37,8 @@ export default defineConfig({
       'test/api/plan-execute-dedupe.test.ts',
       'test/tui/execute-plan-panel-busy.test.ts',
       'test/hooks/plan-approval-dedupe.test.ts',
+      'test/hooks/plan-approval-worktree-timing.test.ts',
+      'test/services/select-initial-worktree-session.test.ts',
     ],
   },
 })

@@ -238,6 +238,11 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const { createPendingTeardownRegistry } = await import('./workspace/pending-teardown')
     const pendingTeardowns = createPendingTeardownRegistry()
 
+    // Workspace status registry: tracks connected/connecting/disconnected/error
+    // state per workspace and exposes awaitConnected for deterministic readiness.
+    const { createWorkspaceStatusRegistry } = await import('./utils/workspace-status-registry')
+    const workspaceStatusRegistry = createWorkspaceStatusRegistry({ logger })
+
     // Register the forge workspace adapter so loop worktrees are created under <dataDir>/worktrees/
     if (input.experimental_workspace?.register) {
       const { createForgeWorkspaceAdapter } = await import('./workspace/forge-adapter')
@@ -315,6 +320,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         loop: loopHandler.loop,
         sandboxManager,
         sectionPlansRepo,
+        workspaceStatusRegistry,
       })
 
       let restored = 0
@@ -422,6 +428,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       reviewFindingsRepo,
       loopsRepo,
       sectionPlansRepo,
+      workspaceStatusRegistry,
     }
 
     registry.register(ctx)
@@ -491,6 +498,8 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       },
       event: async (input) => {
         const eventInput = input as { event: { type: string; properties?: Record<string, unknown> } }
+        const event = eventInput.event
+        try { workspaceStatusRegistry.recordEvent(event) } catch { /* defensive */ }
         if (eventInput.event?.type === 'server.instance.disposed') {
           await cleanup()
           return

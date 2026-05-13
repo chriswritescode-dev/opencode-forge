@@ -357,7 +357,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
 
     try {
-      await bindSessionToWorkspace(v2Client, newWorkspace.workspaceId, sessionId, logger)
+      await bindSessionToWorkspace(v2Client, newWorkspace.workspaceId, sessionId, logger, { loopName })
       loopService.setWorkspaceId(loopName, newWorkspace.workspaceId)
       state.workspaceId = newWorkspace.workspaceId
       if (newWorkspace.directory) state.worktreeDir = newWorkspace.directory
@@ -440,6 +440,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       directory: sessionDir,
       permission: permissionRuleset,
       workspaceId: ensured.workspaceId ?? state.workspaceId,
+      loopName: loopName,
       logPrefix: 'Loop',
       logger,
     })
@@ -740,6 +741,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       directory: updatedState.worktreeDir,
       ...(updatedState.worktree ? { permission: buildLoopPermissionRuleset() } : {}),
       workspaceId: updatedState.workspaceId,
+      loopName: loopName,
       logPrefix: 'Loop',
       logger,
     })
@@ -1545,6 +1547,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         directory: fallbackState.worktreeDir,
         ...(fallbackState.worktree ? { permission: buildLoopPermissionRuleset() } : {}),
         workspaceId: fallbackState.workspaceId,
+        loopName: loopName,
         logPrefix: 'Loop',
         logger,
       })
@@ -1625,6 +1628,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         directory: freshState.worktreeDir,
         ...(freshState.worktree ? { permission: buildLoopPermissionRuleset() } : {}),
         workspaceId: freshState.workspaceId,
+        loopName: loopName,
         logPrefix: 'Loop',
         logger,
       })

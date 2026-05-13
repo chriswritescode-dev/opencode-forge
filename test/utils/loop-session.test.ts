@@ -235,3 +235,67 @@ test('Returns null when v2 SDK fails and no legacy client available', async () =
 
   expect(result).toBeNull()
 })
+
+test('WorkspaceStatusRegistry primeFromSnapshot is called during bind', async () => {
+  const primeFromSnapshotCalls: Array<Array<{ workspaceID: string; status: string }>> = []
+  const mockStatusRegistry = {
+    recordEvent: () => {},
+    getStatus: () => undefined,
+    awaitConnected: () => Promise.resolve({ connected: true, elapsedMs: 0, source: 'cached' }),
+    primeFromSnapshot: (snapshot: Array<{ workspaceID: string; status: string }>) => {
+      primeFromSnapshotCalls.push(snapshot)
+    },
+  }
+
+  const mockWarpResult = {
+    data: {},
+  }
+
+  const mockStatusData = {
+    data: [
+      { workspaceID: 'ws-1', status: 'connected' },
+    ],
+  }
+
+  const mockListResult = {
+    data: [{ id: 'ws-1' }],
+  }
+
+  const mockClient = {
+    session: {
+      create: async () => ({ data: { id: 'session-123' } }),
+      get: async () => ({ data: { permission: null } }),
+    },
+    experimental: {
+      workspace: {
+        warp: () => Promise.resolve(mockWarpResult),
+        list: () => Promise.resolve(mockListResult),
+        status: () => Promise.resolve(mockStatusData),
+      },
+    },
+  } as unknown as OpencodeClient
+
+  const logger: Logger | Console = {
+    log: () => {},
+    error: () => {},
+    debug: () => {},
+  }
+
+  const result = await createLoopSessionWithWorkspace({
+    v2: mockClient,
+    title: 'Test Session',
+    directory: '/test/dir',
+    permission: buildLoopPermissionRuleset(),
+    workspaceId: 'ws-1',
+    logPrefix: 'test',
+    logger,
+    workspaceStatusRegistry: mockStatusRegistry as unknown as import('../../src/utils/workspace-status-registry').WorkspaceStatusRegistry,
+  })
+
+  expect(result).toBeDefined()
+  expect(result?.sessionId).toBe('session-123')
+  expect(primeFromSnapshotCalls.length).toBeGreaterThan(0)
+  expect(primeFromSnapshotCalls[0]).toEqual([
+    { workspaceID: 'ws-1', status: 'connected' },
+  ])
+})

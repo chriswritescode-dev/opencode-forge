@@ -1,5 +1,6 @@
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import type { Logger } from '../types'
+import type { WorkspaceStatusRegistry } from '../utils/workspace-status-registry'
 import { bindSessionToWorkspace } from '../workspace/forge-worktree'
 import { buildLoopPermissionRuleset } from '../constants/loop'
 
@@ -9,9 +10,11 @@ interface CreateLoopSessionInput {
   directory: string
   permission?: ReturnType<typeof buildLoopPermissionRuleset>
   workspaceId?: string
+  loopName?: string
   logPrefix: string
   logger: Logger | Console
   legacyClient?: import('@opencode-ai/sdk').OpencodeClient
+  workspaceStatusRegistry?: WorkspaceStatusRegistry
 }
 
 interface CreateLoopSessionResult {
@@ -37,6 +40,9 @@ export async function createLoopSessionWithWorkspace(
   if (input.workspaceId) createParams.workspaceID = input.workspaceId
 
   let sessionId: string
+
+  const _sessionStart = Date.now()
+  input.logger.log(`[warp] session.create.start loopName="${input.loopName ?? 'unknown'}" logPrefix="${input.logPrefix}"${input.workspaceId ? ` workspaceId=${input.workspaceId}` : ''}`)
 
   // Try v2 SDK first
   const createResult = await input.v2.session.create(createParams)
@@ -80,6 +86,8 @@ export async function createLoopSessionWithWorkspace(
     sessionId = createResult.data.id
   }
 
+  input.logger.log(`[warp] session.create.complete loopName="${input.loopName ?? 'unknown'}" logPrefix="${input.logPrefix}" sessionId=${sessionId}${input.workspaceId ? ` workspaceId=${input.workspaceId}` : ''} elapsedMs=${Date.now() - _sessionStart}`)
+
   try {
     const verify = await input.v2.session.get({ sessionID: sessionId, directory: input.directory })
     const persisted = (verify.data as { permission?: unknown })?.permission ?? null
@@ -96,10 +104,13 @@ export async function createLoopSessionWithWorkspace(
   }
 
   if (input.workspaceId) {
+    const _bindStart = Date.now()
     try {
-      await bindSessionToWorkspace(input.v2, input.workspaceId, result.sessionId, input.logger)
+      input.logger.log(`[warp] bind.start loopName="${input.loopName ?? 'unknown'}" workspaceId=${input.workspaceId} sessionId=${result.sessionId}`)
+      await bindSessionToWorkspace(input.v2, input.workspaceId, result.sessionId, input.logger, { loopName: input.loopName }, input.workspaceStatusRegistry)
       result.boundWorkspaceId = input.workspaceId
       input.logger.log(`${input.logPrefix}: workspace ${input.workspaceId} bound to session ${result.sessionId}`)
+      input.logger.log(`[warp] bind.complete loopName="${input.loopName ?? 'unknown'}" workspaceId=${input.workspaceId} sessionId=${result.sessionId} elapsedMs=${Date.now() - _bindStart}`)
 
       try {
         const afterBind = await input.v2.session.get({ sessionID: result.sessionId, directory: input.directory })
@@ -117,6 +128,7 @@ export async function createLoopSessionWithWorkspace(
       }
     } catch (bindErr) {
       input.logger.error(`${input.logPrefix}: failed to bind session to workspace; clearing workspace id`, bindErr)
+      input.logger.log(`[warp] bind.failed loopName="${input.loopName ?? 'unknown'}" workspaceId=${input.workspaceId} sessionId=${result.sessionId} elapsedMs=${Date.now() - _bindStart} error="${bindErr instanceof Error ? bindErr.message : String(bindErr)}"`)
       result.bindFailed = true
       result.bindError = bindErr
     }

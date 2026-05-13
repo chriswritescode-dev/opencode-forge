@@ -21,6 +21,13 @@ const mockLogger: Logger = {
   debug: () => {},
 }
 
+const mockWorkspaceStatusRegistry = {
+  recordEvent: vi.fn(),
+  getStatus: vi.fn().mockReturnValue('connected' as const),
+  awaitConnected: vi.fn().mockResolvedValue({ connected: true, elapsedMs: 0, source: 'cached' as const }),
+  primeFromSnapshot: vi.fn(),
+}
+
 const PROJECT_ID = 'test-project'
 
 const DB_SCHEMA = `
@@ -247,6 +254,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       sandboxManager: mockSandboxManager as any,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
     })
 
     const result = await service.dispatch(
@@ -360,6 +368,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       // No sandboxManager passed — simulates Docker not available
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
     })
 
     const result = await service.dispatch(
@@ -464,6 +473,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       sandboxManager: mockSandboxManager as any,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
     })
 
     const result = await service.dispatch(
@@ -585,6 +595,7 @@ describe('handleStartLoop concurrent-start dedupe', () => {
       logger: mockLogger, dataDir: '/tmp', v2: mocks.mockV2Client as any,
       plansRepo, loopsRepo, loop: loopService as any, loopHandler: mocks.mockLoopHandler as any,
       sectionPlansRepo, sandboxManager: mocks.mockSandboxManager as any,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
     })
 
     const ctx = { surface: 'api' as const, projectId: PROJECT_ID, directory: '/tmp/test' }
@@ -638,6 +649,7 @@ describe('handleStartLoop concurrent-start dedupe', () => {
       logger: mockLogger, dataDir: '/tmp', v2: mocks.mockV2Client as any,
       plansRepo, loopsRepo, loop: loopService as any, loopHandler: mocks.mockLoopHandler as any,
       sectionPlansRepo, sandboxManager: mocks.mockSandboxManager as any,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
     })
 
     const ctx = { surface: 'api' as const, projectId: PROJECT_ID, directory: '/tmp/test' }
@@ -691,6 +703,7 @@ describe('handleStartLoop concurrent-start dedupe', () => {
       logger: mockLogger, dataDir: '/tmp', v2: mocks.mockV2Client as any,
       plansRepo, loopsRepo, loop: loopService as any, loopHandler: mocks.mockLoopHandler as any,
       sectionPlansRepo, sandboxManager: mocks.mockSandboxManager as any,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
     })
 
     const ctx = { surface: 'api' as const, projectId: PROJECT_ID, directory: '/tmp/test' }
@@ -796,6 +809,7 @@ describe('handleStartLoop select-session ordering', () => {
       logger: mockLogger, dataDir: '/tmp', v2: mocks.mockV2Client as any,
       plansRepo, loopsRepo, loop: loopService as any, loopHandler: mocks.mockLoopHandler as any,
       sectionPlansRepo, sandboxManager: mocks.mockSandboxManager as any,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
     })
 
     let onStartedTs: number | null = null
@@ -849,6 +863,7 @@ describe('handleStartLoop select-session ordering', () => {
       logger: mockLogger, dataDir: '/tmp', v2: mocks.mockV2Client as any,
       plansRepo, loopsRepo, loop: loopService as any, loopHandler: mocks.mockLoopHandler as any,
       sectionPlansRepo, sandboxManager: mocks.mockSandboxManager as any,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
     })
 
     let onStartedCalled = false
@@ -895,6 +910,7 @@ describe('handleStartLoop select-session ordering', () => {
       logger: mockLogger, dataDir: '/tmp', v2: mocks.mockV2Client as any,
       plansRepo, loopsRepo, loop: loopService as any, loopHandler: mocks.mockLoopHandler as any,
       sectionPlansRepo, sandboxManager: mocks.mockSandboxManager as any,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
     })
 
     let onStartedCalled = false

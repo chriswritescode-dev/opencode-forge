@@ -256,6 +256,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
             loop,
             sandboxManager: ctx.sandboxManager,
             sectionPlansRepo: ctx.sectionPlansRepo,
+            workspaceStatusRegistry: ctx.workspaceStatusRegistry,
           })
           
           if (matchedLabel === 'New session') {
@@ -314,6 +315,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
                 hostSessionId: input.sessionID,
                 lifecycle: {
                   selectSession: true,
+                  selectSessionTiming: 'after-create',
                   startWatchdog: true,
                   abortSourceSessionOnSuccess: false,
                 },

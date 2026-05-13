@@ -10,6 +10,7 @@
  */
 
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
+import type { WorkspaceStatusRegistry } from '../utils/workspace-status-registry'
 
 /**
  * Creates a Forge workspace via opencode's experimental workspace API with the `forge` adapter.
@@ -28,7 +29,8 @@ export async function createBuiltinWorktreeWorkspace(
     loopName: string
     directory: string
   },
-  logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void }
+  logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void },
+  statusRegistry?: WorkspaceStatusRegistry,
 ): Promise<{ workspaceId: string; directory: string; branch: string } | null> {
   const workspaceApi = client.experimental?.workspace
   if (!workspaceApi || typeof workspaceApi.create !== 'function') {
@@ -40,6 +42,8 @@ export async function createBuiltinWorktreeWorkspace(
     return null
   }
   try {
+    const _wsStart = Date.now()
+    ;(logger ?? console).log?.(`[warp] workspace.create.start loopName=${options.loopName}`)
     const createParams: { type: string; branch: string | null; extra: { loopName: string; projectDirectory: string } } = {
       type: 'forge',
       branch: null,
@@ -89,11 +93,13 @@ export async function createBuiltinWorktreeWorkspace(
     }
 
     (logger ?? console).log?.(`createBuiltinWorktreeWorkspace: workspace ${id} created for ${options.loopName}`)
+    ;(logger ?? console).log?.(`[warp] workspace.create.complete loopName=${options.loopName} workspaceId=${id} elapsedMs=${Date.now() - _wsStart}`)
 
     if (typeof workspaceApi.syncList === 'function') {
       try {
         await workspaceApi.syncList()
         ;(logger ?? console).log?.(`createBuiltinWorktreeWorkspace: workspace ${id} registered via syncList`)
+        ;(logger ?? console).log?.(`[warp] syncList.complete loopName=${options.loopName} workspaceId=${id} elapsedMs=${Date.now() - _wsStart}`)
       } catch (err) {
         ;(logger ?? console).error('createBuiltinWorktreeWorkspace: syncList after create failed; workspace may be reachable via session list but not visible in Warp picker', err)
       }
@@ -105,6 +111,7 @@ export async function createBuiltinWorktreeWorkspace(
       try {
         await client.sync.start()
         ;(logger ?? console).log?.(`createBuiltinWorktreeWorkspace: workspace sync started for ${id}`)
+        ;(logger ?? console).log?.(`[warp] sync.start.complete loopName=${options.loopName} workspaceId=${id} elapsedMs=${Date.now() - _wsStart}`)
       } catch (err) {
         ;(logger ?? console).error('createBuiltinWorktreeWorkspace: sync.start after create failed; workspace status may remain unavailable in the TUI', err)
       }
@@ -116,8 +123,9 @@ export async function createBuiltinWorktreeWorkspace(
         typeof workspaceApi.status === 'function' ? workspaceApi.status() : Promise.resolve(undefined),
       ])
       const listed = ((listResult as { data?: Array<{ id?: string }> } | undefined)?.data ?? []).some((workspace) => workspace.id === id)
-      const status = ((statusResult as { data?: Array<{ workspaceID?: string; status?: string }> } | undefined)?.data ?? [])
-        .find((entry) => entry.workspaceID === id)?.status
+      const statusData = ((statusResult as { data?: Array<{ workspaceID?: string; status?: string }> } | undefined)?.data ?? [])
+      const status = statusData.find((entry) => entry.workspaceID === id)?.status
+      statusRegistry?.primeFromSnapshot(statusData.map((entry) => ({ workspaceID: entry.workspaceID ?? '', status: entry.status ?? '' })))
       ;(logger ?? console).log?.(`createBuiltinWorktreeWorkspace: workspace ${id} visibility listed=${listed} status=${status ?? 'unknown'}`)
     } catch (err) {
       ;(logger ?? console).error('createBuiltinWorktreeWorkspace: post-create workspace visibility check failed', err)
@@ -138,7 +146,8 @@ export async function bindSessionToWorkspace(
   workspaceId: string,
   sessionId: string,
   logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void },
-  options?: { copyChanges?: boolean }
+  options?: { copyChanges?: boolean; loopName?: string },
+  statusRegistry?: WorkspaceStatusRegistry,
 ): Promise<void> {
   const workspaceApi = client.experimental?.workspace
   if (!workspaceApi || typeof workspaceApi.warp !== 'function') {
@@ -151,12 +160,18 @@ export async function bindSessionToWorkspace(
   }
   if (typeof options?.copyChanges === 'boolean') warpParams.copyChanges = options.copyChanges
 
+  const _warpStart = Date.now()
+  ;(logger ?? console).log?.(`[warp] warp.start loopName=${options?.loopName ?? 'unknown'} workspaceId=${workspaceId} sessionId=${sessionId}`)
   const result = await workspaceApi.warp(warpParams)
 
   if ('error' in result && result.error) {
-    (logger ?? console).error(`bindSessionToWorkspace: warp failed for workspace=${workspaceId} session=${sessionId}`, result.error)
+    const _warpError = String(result.error)
+    ;(logger ?? console).error(`[warp] warp.failed loopName=${options?.loopName ?? 'unknown'} workspaceId=${workspaceId} sessionId=${sessionId} elapsedMs=${Date.now() - _warpStart} error="${_warpError}"`)
+    ;(logger ?? console).error(`bindSessionToWorkspace: warp failed for workspace=${workspaceId} session=${sessionId}`, result.error)
     throw new Error(`Session warp failed: ${JSON.stringify(result.error)}`)
   }
+
+  ;(logger ?? console).log?.(`[warp] warp.complete loopName=${options?.loopName ?? 'unknown'} workspaceId=${workspaceId} sessionId=${sessionId} elapsedMs=${Date.now() - _warpStart}`)
 
   if (typeof client.sync?.start === 'function') {
     try {
@@ -174,8 +189,9 @@ export async function bindSessionToWorkspace(
     ])
     const listed = ((listResult as { data?: Array<{ id?: string }> } | undefined)?.data ?? [])
       .some((workspace) => workspace.id === workspaceId)
-    const status = ((statusResult as { data?: Array<{ workspaceID?: string; status?: string }> } | undefined)?.data ?? [])
-      .find((entry) => entry.workspaceID === workspaceId)?.status
+    const statusData = ((statusResult as { data?: Array<{ workspaceID?: string; status?: string }> } | undefined)?.data ?? [])
+    const status = statusData.find((entry) => entry.workspaceID === workspaceId)?.status
+    statusRegistry?.primeFromSnapshot(statusData.map((entry) => ({ workspaceID: entry.workspaceID ?? '', status: entry.status ?? '' })))
     ;(logger ?? console).log?.(`bindSessionToWorkspace: workspace ${workspaceId} visibility after warp listed=${listed} status=${status ?? 'unknown'}`)
   } catch (err) {
     ;(logger ?? console).error('bindSessionToWorkspace: post-warp workspace visibility check failed', err)
