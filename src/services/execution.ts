@@ -1785,7 +1785,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     )
     const permissionRuleset = buildLoopPermissionRuleset()
     const previousState = { ...stoppedState }
-    let restartedState: import('../loop/state').LoopState | null = null
     let bindFailed = false
     const previousSessionId = stoppedState.sessionId
 
@@ -2033,7 +2032,107 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         totalSections: stoppedState.totalSections,
         finalAuditDone: stoppedState.finalAuditDone,
       }
-      restartedState = newState
+      // Build appropriate prompt based on persisted decomposition state
+      let promptText: string
+      const promptNeedsDecomposer =
+        stoppedState.decompositionStatus === 'pending' ||
+        stoppedState.decompositionStatus === 'running' ||
+        stoppedState.decompositionStatus === 'failed'
+
+      if (promptNeedsDecomposer) {
+        // Re-enter decomposition: prompt the decomposer session
+        promptText = deps.loop.buildDecomposerInitialPrompt(stoppedState)
+      } else if (stoppedState.totalSections > 0 && stoppedState.decompositionStatus === 'completed') {
+        // Use persisted section state to build the correct section prompt
+        if (stoppedState.phase === 'final_auditing') {
+          promptText = deps.loop.buildFinalAuditPrompt(stoppedState)
+        } else {
+          promptText = deps.loop.buildSectionInitialPrompt(stoppedState)
+        }
+      } else {
+        // Legacy non-sectioned prompt
+        promptText = stoppedState.prompt ?? ''
+      }
+
+      const loopModel = promptNeedsDecomposer
+        ? resolveDecomposerModel({
+            decomposerModel: deps.config.decomposer?.model,
+            auditorModel: stoppedState.auditorModel ?? deps.config.auditorModel,
+            executionModel: stoppedState.executionModel ?? deps.config.executionModel,
+          })
+        : parseModelString(stoppedState.executionModel) ?? parseModelString(deps.config.executionModel)
+      const workspaceParam = stoppedState.workspaceId ? { workspace: stoppedState.workspaceId } : {}
+
+      const promptAgent = promptNeedsDecomposer ? 'decomposer' : stoppedState.phase === 'final_auditing' ? 'auditor-loop' : 'code'
+
+      deps.loopsRepo.restart(ctx.projectId, stoppedState.loopName, {
+        sessionId: newState.sessionId,
+        phase: newState.phase,
+        iteration: newState.iteration,
+        auditCount: newState.auditCount,
+        sandbox: newState.sandbox ?? false,
+        sandboxContainer: newState.sandboxContainer ?? null,
+        workspaceId: newState.workspaceId ?? null,
+        decompositionStatus: newState.decompositionStatus,
+        decompositionSessionId: newState.decompositionSessionId ?? null,
+        currentSectionIndex: newState.currentSectionIndex,
+        totalSections: newState.totalSections,
+        finalAuditDone: newState.finalAuditDone,
+        startedAt: new Date(newState.startedAt).getTime(),
+      })
+
+      deps.loop.registerLoopSession(effectiveSessionId, stoppedState.loopName)
+
+      const { result: promptResult } = await retryWithModelFallback(
+        () => {
+          markPromptSent(stoppedState.loopName, effectiveSessionId, deps.logger)
+          return deps.v2.session.promptAsync({
+            sessionID: effectiveSessionId,
+            directory: stoppedState.worktreeDir,
+            parts: [{ type: 'text' as const, text: promptText }],
+            agent: promptAgent,
+            model: loopModel!,
+            ...workspaceParam,
+          })
+        },
+        () => {
+          markPromptSent(stoppedState.loopName, effectiveSessionId, deps.logger)
+          return deps.v2.session.promptAsync({
+            sessionID: effectiveSessionId,
+            directory: stoppedState.worktreeDir,
+            parts: [{ type: 'text' as const, text: promptText }],
+            agent: promptAgent,
+            ...workspaceParam,
+          })
+        },
+        loopModel,
+        deps.logger,
+      )
+
+      if (promptResult.error) {
+        clearPromptPending(stoppedState.loopName, deps.logger)
+        deps.logger.error('loop-restart: failed to send prompt', promptResult.error)
+        // Save section plans before deleteState (which cascades to section_plans)
+        const savedPlans = deps.sectionPlansRepo?.list(ctx.projectId, stoppedState.loopName) ?? []
+        deps.loop.deleteState(stoppedState.loopName)
+        try {
+          deps.loop.setState(previousState.loopName, previousState)
+          if (previousState.active) deps.loop.registerLoopSession(previousState.sessionId, previousState.loopName)
+          // Restore section plans after setState
+          if (savedPlans.length > 0) {
+            deps.sectionPlansRepo?.restoreAll(savedPlans)
+          }
+        } catch (restoreErr) {
+          deps.logger.error('loop-restart: failed to restore previous loop state', restoreErr)
+        }
+        if (restartSandbox && deps.sandboxManager) {
+          await deps.sandboxManager.stop(stoppedState.loopName).catch(() => {})
+        }
+        return { ok: false, error: 'Restart failed: could not send prompt to new session.' }
+      }
+
+      deps.loopHandler!.startWatchdog(stoppedState.loopName)
+
       return { ok: true, newSessionId: effectiveSessionId, previousSessionId, sandbox: restartSandbox, bindFailed, decomposerSessionId }
     })
 
@@ -2048,105 +2147,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         context: 'on restart',
       })
     }
-
-    // Build appropriate prompt based on persisted decomposition state
-    let promptText: string
-    const needsDecomposerRestart =
-      stoppedState.decompositionStatus === 'pending' ||
-      stoppedState.decompositionStatus === 'running' ||
-      stoppedState.decompositionStatus === 'failed'
-
-    if (needsDecomposerRestart) {
-      // Re-enter decomposition: prompt the decomposer session
-      promptText = deps.loop.buildDecomposerInitialPrompt(stoppedState)
-    } else if (stoppedState.totalSections > 0 && stoppedState.decompositionStatus === 'completed') {
-      // Use persisted section state to build the correct section prompt
-      if (stoppedState.phase === 'final_auditing') {
-        promptText = deps.loop.buildFinalAuditPrompt(stoppedState)
-      } else {
-        promptText = deps.loop.buildSectionInitialPrompt(stoppedState)
-      }
-    } else {
-      // Legacy non-sectioned prompt
-      promptText = stoppedState.prompt ?? ''
-    }
-
-    const loopModel = needsDecomposerRestart
-      ? resolveDecomposerModel({
-          decomposerModel: deps.config.decomposer?.model,
-          auditorModel: stoppedState.auditorModel ?? deps.config.auditorModel,
-          executionModel: stoppedState.executionModel ?? deps.config.executionModel,
-        })
-      : parseModelString(stoppedState.executionModel) ?? parseModelString(deps.config.executionModel)
-    const workspaceParam = stoppedState.workspaceId ? { workspace: stoppedState.workspaceId } : {}
-
-    const promptAgent = needsDecomposerRestart ? 'decomposer' : stoppedState.phase === 'final_auditing' ? 'auditor-loop' : 'code'
-
-    const { result: promptResult } = await retryWithModelFallback(
-      () => {
-        markPromptSent(stoppedState.loopName, outcome.newSessionId, deps.logger)
-        return deps.v2.session.promptAsync({
-          sessionID: outcome.newSessionId,
-          directory: stoppedState.worktreeDir,
-          parts: [{ type: 'text' as const, text: promptText }],
-          agent: promptAgent,
-          model: loopModel!,
-          ...workspaceParam,
-        })
-      },
-      () => {
-        markPromptSent(stoppedState.loopName, outcome.newSessionId, deps.logger)
-        return deps.v2.session.promptAsync({
-          sessionID: outcome.newSessionId,
-          directory: stoppedState.worktreeDir,
-          parts: [{ type: 'text' as const, text: promptText }],
-          agent: promptAgent,
-          ...workspaceParam,
-        })
-      },
-      loopModel,
-      deps.logger,
-    )
-
-    if (promptResult.error) {
-      clearPromptPending(stoppedState.loopName, deps.logger)
-      deps.logger.error('loop-restart: failed to send prompt', promptResult.error)
-      // Save section plans before deleteState (which cascades to section_plans)
-      const savedPlans = deps.sectionPlansRepo?.list(ctx.projectId, stoppedState.loopName) ?? []
-      deps.loop.deleteState(stoppedState.loopName)
-      try {
-        deps.loop.setState(previousState.loopName, previousState)
-        if (previousState.active) deps.loop.registerLoopSession(previousState.sessionId, previousState.loopName)
-        // Restore section plans after setState
-        if (savedPlans.length > 0) {
-          deps.sectionPlansRepo?.restoreAll(savedPlans)
-        }
-      } catch (restoreErr) {
-        deps.logger.error('loop-restart: failed to restore previous loop state', restoreErr)
-      }
-      if (restartSandbox && deps.sandboxManager) {
-        await deps.sandboxManager.stop(stoppedState.loopName).catch(() => {})
-      }
-      return fail('internal_error', 500, 'Restart failed: could not send prompt to new session.')
-    }
-    deps.loopsRepo.restart(ctx.projectId, stoppedState.loopName, {
-      sessionId: restartedState!.sessionId,
-      phase: restartedState!.phase,
-      iteration: restartedState!.iteration,
-      auditCount: restartedState!.auditCount,
-      sandbox: restartedState!.sandbox ?? false,
-      sandboxContainer: restartedState!.sandboxContainer ?? null,
-      workspaceId: restartedState!.workspaceId ?? null,
-      decompositionStatus: restartedState!.decompositionStatus,
-      decompositionSessionId: restartedState!.decompositionSessionId ?? null,
-      currentSectionIndex: restartedState!.currentSectionIndex,
-      totalSections: restartedState!.totalSections,
-      finalAuditDone: restartedState!.finalAuditDone,
-      startedAt: new Date(restartedState!.startedAt).getTime(),
-    })
-    deps.loop.registerLoopSession(outcome.newSessionId, stoppedState.loopName)
-
-    deps.loopHandler.startWatchdog(stoppedState.loopName)
 
     return ok({
       operation: 'loop.restart',

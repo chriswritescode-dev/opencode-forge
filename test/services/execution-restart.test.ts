@@ -648,4 +648,230 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect(promptAsyncCalls.length).toBeGreaterThan(0)
     expect(promptAsyncCalls[0].agent).toBe('decomposer')
   })
+
+  test('restart commits new current_session_id BEFORE runExclusive releases (no stale-event race)', async () => {
+    insertLoop({
+      loopName: 'race-loop',
+      phase: 'auditing',
+      decompositionStatus: 'completed',
+      totalSections: 0,
+      iteration: 1,
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+    })
+
+    const noopFn = () => {}
+
+    const mockV2Client = {
+      session: {
+        create: async () => ({ data: { id: 'race-new-session' } }),
+        get: async () => ({ data: {} }),
+        promptAsync: async () => ({}),
+        abort: async () => ({}),
+        delete: async () => ({}),
+        messages: async () => ({ data: [] }),
+        status: async () => ({ data: {} }),
+      },
+      experimental: {
+        workspace: { list: async () => ({ data: [] }), remove: async () => ({}) },
+        session: { list: async () => ({ data: [] }) },
+      },
+      tui: { publish: async () => ({}), selectSession: async () => ({}) },
+      worktree: { create: async () => ({ data: { directory: '/tmp/wt', branch: 'main' } }) },
+    }
+
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: (sid: string, name: string) => loopService.registerLoopSession(sid, name),
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: (name, phase) => loopService.setPhase(name, phase),
+      buildDecomposerInitialPrompt: () => 'decompose prompt',
+      buildSectionInitialPrompt: () => 'section prompt',
+      buildFinalAuditPrompt: () => 'audit prompt',
+      generateUniqueLoopName: () => 'race-loop',
+    }
+
+    let capturedResolvedNew: string | null | undefined
+    let capturedResolvedOld: string | null | undefined
+    let capturedPhase: string | null | undefined
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => {
+        const result = await fn()
+        // Capture loop service state at the exact moment the lock release completes,
+        // BEFORE the outer restart body sends prompts and persists to DB.
+        capturedResolvedNew = loopService.resolveLoopName('race-new-session')
+        capturedResolvedOld = loopService.resolveLoopName('session-old')
+        capturedPhase = loopService.getActiveState('race-loop')?.phase ?? null
+        return result
+      },
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+      v2: mockV2Client as any,
+      plansRepo,
+      loopsRepo,
+      loop: mockLoopService as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'race-loop' },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+
+    // At the moment runExclusive released, the new session should already be
+    // registered so concurrent observers never see the stale old session.
+    expect(capturedResolvedNew).toBe('race-loop')
+    expect(capturedResolvedOld).toBeNull()
+    expect(capturedPhase).toBe('coding')
+  })
+
+  test('force-restart from auditing phase sends exactly one code prompt and detaches old session', async () => {
+    insertLoop({
+      loopName: 'audit-restart-loop',
+      phase: 'auditing',
+      decompositionStatus: 'completed',
+      totalSections: 0,
+      iteration: 2,
+      status: 'running',
+      terminationReason: null,
+      active: true,
+    })
+
+    const noopFn = () => {}
+
+    const createCalls: Array<Record<string, unknown>> = []
+    const promptAsyncCalls: Array<Record<string, unknown>> = []
+    const abortCalls: Array<Record<string, unknown>> = []
+
+    const mockV2Client = {
+      session: {
+        create: async (args: Record<string, unknown>) => {
+          createCalls.push(args)
+          return { data: { id: 'new-code-session' } }
+        },
+        get: async () => ({ data: {} }),
+        promptAsync: async (args: Record<string, unknown>) => {
+          promptAsyncCalls.push(args)
+          return {}
+        },
+        abort: async (args: Record<string, unknown>) => {
+          abortCalls.push(args)
+          return {}
+        },
+        delete: async () => ({}),
+        messages: async () => ({ data: [] }),
+        status: async () => ({ data: {} }),
+      },
+      experimental: {
+        workspace: { list: async () => ({ data: [] }), remove: async () => ({}) },
+        session: { list: async () => ({ data: [] }) },
+      },
+      tui: { publish: async () => ({}), selectSession: async () => ({}) },
+      worktree: { create: async () => ({ data: { directory: '/tmp/wt', branch: 'main' } }) },
+    }
+
+    let capturedResolvedNew: string | null | undefined
+    let capturedResolvedOld: string | null | undefined
+    let capturedPhase: string | null | undefined
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => {
+        const result = await fn()
+        capturedResolvedNew = loopService.resolveLoopName('new-code-session')
+        capturedResolvedOld = loopService.resolveLoopName('session-old')
+        capturedPhase = loopService.getActiveState('audit-restart-loop')?.phase ?? null
+        return result
+      },
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: (sid: string, name: string) => loopService.registerLoopSession(sid, name),
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: (name, phase) => loopService.setPhase(name, phase),
+      buildDecomposerInitialPrompt: () => 'decompose prompt',
+      buildSectionInitialPrompt: () => 'section prompt',
+      buildFinalAuditPrompt: () => 'audit prompt',
+      generateUniqueLoopName: () => 'audit-restart-loop',
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+      v2: mockV2Client as any,
+      plansRepo,
+      loopsRepo,
+      loop: mockLoopService as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'audit-restart-loop' },
+        force: true,
+      },
+    )
+
+    expect(result.ok).toBe(true)
+
+    // Exactly one session create and one prompt dispatch
+    expect(createCalls.length).toBe(1)
+    expect(promptAsyncCalls.length).toBe(1)
+
+    // Prompt sent with code agent to new session
+    expect(promptAsyncCalls[0].agent).toBe('code')
+    expect(promptAsyncCalls[0].sessionID).toBe('new-code-session')
+
+    // At the moment runExclusive released, new session is registered and old is gone
+    expect(capturedResolvedNew).toBe('audit-restart-loop')
+    expect(capturedResolvedOld).toBeNull()
+    expect(capturedPhase).toBe('coding')
+
+    // Exactly one abort for the old session
+    expect(abortCalls.length).toBe(1)
+    expect(abortCalls[0].sessionID).toBe('session-old')
+  })
 })
