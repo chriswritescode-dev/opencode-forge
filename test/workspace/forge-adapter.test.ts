@@ -294,7 +294,7 @@ describe('createForgeWorkspaceAdapter', () => {
     }
   })
 
-  it('remove commits pending changes before tearing down (rename preserves history)', async () => {
+  it('remove commits pending changes before tearing down', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-commit-'))
     try {
       execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
@@ -307,7 +307,7 @@ describe('createForgeWorkspaceAdapter', () => {
       await adapter.create(configured, {})
       execSync('git config user.email t@t && git config user.name t', { cwd: configured.directory, encoding: 'utf-8' })
 
-      // Rename the branch so it falls outside `forge/` — that way the rename
+      // Rename the branch so it falls outside `forge/` — that way the commit
       // step preserves the commit history we can assert on after teardown.
       execSync('git branch -m forge/commit-loop custom/work', { cwd: configured.directory, encoding: 'utf-8' })
       configured.branch = 'custom/work'
@@ -317,8 +317,8 @@ describe('createForgeWorkspaceAdapter', () => {
 
       await adapter.remove(configured)
 
-      // The branch was renamed to opencode/commit-loop and should contain the teardown commit.
-      const log = execSync('git log opencode/commit-loop --format=%s', { cwd: tmpRepo, encoding: 'utf-8' })
+      // The branch is preserved as-is (no rename) and contains the teardown commit.
+      const log = execSync('git log custom/work --format=%s', { cwd: tmpRepo, encoding: 'utf-8' })
       expect(log).toMatch(/loop: commit-loop completed after 3 iterations/)
       expect(logger.log).toHaveBeenCalledWith(
         expect.stringContaining('committed pending changes'),
@@ -345,7 +345,7 @@ describe('createForgeWorkspaceAdapter', () => {
 
       await adapter.remove(configured)
 
-      const log = execSync('git log opencode/default-ctx-loop --format=%s', { cwd: tmpRepo, encoding: 'utf-8' })
+      const log = execSync('git log custom/default --format=%s', { cwd: tmpRepo, encoding: 'utf-8' })
       expect(log).toMatch(/loop: default-ctx-loop removed after 0 iterations/)
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
@@ -371,53 +371,6 @@ describe('createForgeWorkspaceAdapter', () => {
       expect(logger.log).not.toHaveBeenCalledWith(
         expect.stringContaining('committed pending changes'),
       )
-    } finally {
-      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
-    }
-  })
-
-  it('remove renames non-forge branches via finalizeWorktreeBranch', async () => {
-    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-rename-'))
-    try {
-      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
-      const adapter = createForgeWorkspaceAdapter({
-        dataDir: tmpDataDir,
-        logger,
-      })
-      const configured = adapter.configure(makeInfo('rename-loop', tmpRepo))
-      await adapter.create(configured, {})
-
-      // Simulate a custom (non-forge) branch landing on this workspace.
-      configured.branch = 'custom/work'
-      execSync('git branch -m forge/rename-loop custom/work', { cwd: configured.directory, encoding: 'utf-8' })
-
-      await adapter.remove(configured)
-
-      // After remove, the branch should have been renamed to opencode/<slug>.
-      const branches = execSync('git branch --list', { cwd: tmpRepo, encoding: 'utf-8' })
-      expect(branches).toMatch(/opencode\/rename-loop/)
-      expect(branches).not.toMatch(/custom\/work/)
-    } finally {
-      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
-    }
-  })
-
-  it('remove skips rename for forge/-prefixed branches and force-deletes them', async () => {
-    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-noname-'))
-    try {
-      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
-      const adapter = createForgeWorkspaceAdapter({
-        dataDir: tmpDataDir,
-        logger,
-      })
-      const configured = adapter.configure(makeInfo('skip-rename-loop', tmpRepo))
-      await adapter.create(configured, {})
-
-      await adapter.remove(configured)
-
-      const branches = execSync('git branch --list', { cwd: tmpRepo, encoding: 'utf-8' })
-      expect(branches).not.toMatch(/forge\/skip-rename-loop/)
-      expect(branches).not.toMatch(/opencode\/skip-rename-loop/)
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
     }

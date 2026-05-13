@@ -162,14 +162,12 @@ async function teardownWorktree(
   const reasonLabel = resolveReasonLabel(reason)
   const doCommit = reason.kind !== 'missing_worktree_dir'
   const doRemoveWorktree = reason.kind === 'completed'
-  const doDeleteBranch = reason.kind === 'completed'
 
   ctx.pendingTeardowns?.set(state.loopName, {
     iteration: state.iteration,
     reasonLabel,
     doCommit,
     doRemoveWorktree,
-    doDeleteBranch,
   })
 
   try {

@@ -7,7 +7,7 @@ import type { Logger } from '../types'
 import type { SandboxManager } from '../sandbox/manager'
 import { slugify } from '../utils/logger'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
-import { finalizeWorktreeBranch } from '../utils/worktree-branch'
+
 
 /**
  * Runtime context for a forge workspace teardown. Populated by the caller
@@ -23,8 +23,6 @@ export interface TeardownContext {
   doCommit: boolean
   /** When false the worktree directory stays in place for restart. */
   doRemoveWorktree: boolean
-  /** When false the branch is preserved for restart. */
-  doDeleteBranch: boolean
 }
 
 export type TeardownContextProvider = (loopName: string) => TeardownContext | undefined
@@ -45,7 +43,6 @@ const DEFAULT_TEARDOWN_CONTEXT: TeardownContext = {
   reasonLabel: 'removed',
   doCommit: true,
   doRemoveWorktree: true,
-  doDeleteBranch: true,
 }
 
 export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAdapter {
@@ -100,20 +97,6 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
       }
     } catch (err) {
       logger.error('forge-adapter: commit step threw during teardown', err)
-    }
-  }
-
-  async function stepRenameBranch(loopName: string, branch: string | null | undefined, worktreeDir: string): Promise<void> {
-    if (!branch || !existsSync(worktreeDir) || branch.startsWith('forge/')) return
-
-    const result = await finalizeWorktreeBranch({
-      worktreeDir,
-      currentBranch: branch,
-      loopName,
-      logger,
-    })
-    if (result) {
-      logger.log(`forge-adapter: renamed branch ${branch} -> ${result.renamedTo}`)
     }
   }
 
@@ -220,9 +203,6 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
       // directory itself is already gone.
       await stepCommitChanges(loopName, info.directory, info.branch ?? '<branch>', ctx)
 
-      // Rename non-forge branches to opencode/<slug> before removal.
-      await stepRenameBranch(loopName, info.branch, info.directory)
-
       // Stop sandbox container if running.
       await stepStopSandbox(sandboxManager, info.name)
 
@@ -230,8 +210,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
       // Skip on error/stall/abort so restart can reuse it.
       await stepRemoveWorktree(info.directory, ctx)
 
-      // Branches are never deleted — non-forge ones are renamed to `opencode/*`
-      // above; `forge/*` scratch branches stay in place for potential restart.
+      // Branches are never deleted — `forge/*` scratch branches stay in place for potential restart.
     },
     target(info) {
       return { type: 'local', directory: info.directory! }
