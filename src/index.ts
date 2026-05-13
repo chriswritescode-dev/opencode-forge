@@ -20,11 +20,9 @@ import type { ToolContext } from './tools'
 
 import { LRUCache } from './utils/lru-cache'
 import { createSessionLoopResolver } from './services/session-loop-resolver'
-import { getProjectRegistry } from './api/project-registry'
 import { createPlanCaptureEventHook } from './hooks/plan-capture'
 import { createSectionCaptureHook } from './hooks/section-capture'
-import { createBusRpcEventHook } from './api/bus-rpc'
-import { encodeEvent } from './api/bus-protocol'
+import { createForgeSessionAttachHook } from './hooks/forge-session-attach'
 
 export interface CreateParentSessionLookupOptions {
   v2: ReturnType<typeof createV2Client>
@@ -269,24 +267,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         directory,
       ].filter((dir): dir is string => !!dir)))
       logger.debug(`[notifyLoopChange] reason=${reason} loop=${loopName} dirs=${targetDirectories.join(',')} projectId=${projectId}`)
-      for (const targetDir of targetDirectories) {
-        v2.tui.publish({
-          directory: targetDir,
-          body: {
-            type: 'tui.command.execute',
-            properties: {
-              command: encodeEvent({
-                name: 'loops.changed',
-                projectId,
-                directory: targetDir,
-                payload: { reason, loopName },
-              }),
-            },
-          },
-        })
-          .then(() => logger.debug(`[notifyLoopChange] published to ${targetDir}`))
-          .catch((err) => logger.error(`[forge] loops.changed publish failed for ${targetDir}`, err))
-      }
     }
 
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, v2, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns)
@@ -367,7 +347,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const compactionConfig: CompactionConfig | undefined = config.compaction
     const messagesTransformConfig = config.messagesTransform
     const sessionHooks = createSessionHooks(projectId, logger, input, compactionConfig)
-    const registry = getProjectRegistry()
 
     let cleanupPromise: Promise<void> | null = null
 
@@ -388,8 +367,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           clearInterval(sandboxReconcileInterval)
           sandboxReconcileInterval = null
         }
-
-        registry.unregister(projectId)
 
         logger.log('Loop: active loops preserved during plugin cleanup')
         
@@ -431,8 +408,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       workspaceStatusRegistry,
     }
 
-    registry.register(ctx)
-
     if (sandboxManager) {
       const reconcileDeps = { sandboxManager, loop: loopHandler.loop, logger }
       await reconcileSandboxes(reconcileDeps)
@@ -444,8 +419,29 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       }, 2000)
     }
 
-    // Create bus-RPC event hook for handling TUI plugin RPC calls
-    const busRpcHook = createBusRpcEventHook({ registry, logger, v2, instanceDirectory: directory })
+    // Create forge-session-attach hook for triggering attachLoopToSession on session.created events
+    const forgeSessionAttachHook = createForgeSessionAttachHook({
+      v2,
+      execDeps: {
+        projectId,
+        directory,
+        config,
+        logger,
+        dataDir,
+        v2,
+        legacyClient: client,
+        plansRepo,
+        loopsRepo,
+        loopHandler,
+        loop: loopHandler.loop,
+        sandboxManager,
+        sectionPlansRepo,
+        workspaceStatusRegistry,
+      },
+      projectId,
+      directory,
+      logger,
+    })
 
     const tools = createTools(ctx)
     const toolExecuteBeforeHook = createToolExecuteBeforeHook(ctx)
@@ -507,9 +503,9 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         await sectionCaptureEventHook(eventInput)
         await planCaptureEventHook(eventInput)
         await loopHandler.onEvent(eventInput)
+        await forgeSessionAttachHook(eventInput)
         await sessionHooks.onEvent(eventInput)
         await planApprovalEventHook(eventInput)
-        await busRpcHook(eventInput)
       },
       'tool.execute.before': async (input, output) => {
         const resolved = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
