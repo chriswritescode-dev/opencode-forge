@@ -1,6 +1,6 @@
 {
   "name": "opencode-forge",
-  "version": "0.3.6-beta.0",
+  "version": "0.3.7-beta",
   "type": "module",
   "oc-plugin": [
     "server",
