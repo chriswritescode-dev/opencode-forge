@@ -30,6 +30,8 @@ describe('createAuditSession', () => {
       v2: mockV2 as any,
       loopName: 'test-loop',
       iteration: 1,
+      currentSectionIndex: 0,
+      totalSections: 0,
       worktreeDir: '/tmp/test',
       isSandbox: true,
       prompt: 'test prompt',
@@ -53,6 +55,8 @@ describe('createAuditSession', () => {
       v2: mockV2 as any,
       loopName: 'test-loop',
       iteration: 1,
+      currentSectionIndex: 0,
+      totalSections: 0,
       worktreeDir: '/tmp/test',
       isSandbox: true,
       prompt: 'test prompt',
@@ -70,6 +74,8 @@ describe('createAuditSession', () => {
       v2: mockV2 as any,
       loopName: 'test-loop',
       iteration: 1,
+      currentSectionIndex: 0,
+      totalSections: 0,
       worktreeDir: '/tmp/test',
       isSandbox: false,
       prompt: 'test prompt',
@@ -88,6 +94,8 @@ describe('createAuditSession', () => {
       v2: mockV2 as any,
       loopName: 'test-loop',
       iteration: 2,
+      currentSectionIndex: 0,
+      totalSections: 0,
       worktreeDir: '/tmp/test',
       workspaceId: 'workspace-1',
       isSandbox: false,
@@ -98,6 +106,26 @@ describe('createAuditSession', () => {
     const callArgs = (mockV2.session.create as any).mock.calls[0][0]
     expect(callArgs.workspaceID).toBe('workspace-1')
     expect(callArgs).not.toHaveProperty('parentID')
+  })
+
+  test('formats title with section context for sectioned loops', async () => {
+    const mockV2 = createMockV2Client()
+    const logger = { log: mock(), error: mock() } as unknown as Logger
+
+    await createAuditSession({
+      v2: mockV2 as any,
+      loopName: 'test-loop',
+      iteration: 3,
+      currentSectionIndex: 1,
+      totalSections: 4,
+      worktreeDir: '/tmp/test',
+      isSandbox: true,
+      prompt: 'test prompt',
+      logger,
+    })
+
+    const callArgs = (mockV2.session.create as any).mock.calls[0][0]
+    expect(callArgs.title).toBe('audit: test-loop §2/4 #3')
   })
 })
 

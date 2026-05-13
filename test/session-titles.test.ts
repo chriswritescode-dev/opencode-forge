@@ -5,6 +5,7 @@ import {
   formatLoopSessionTitle,
   formatPlanSessionTitle,
   formatAuditSessionTitle,
+  formatDecomposerSessionTitle,
 } from '../src/utils/session-titles'
 
 describe('session-titles', () => {
@@ -83,14 +84,54 @@ describe('session-titles', () => {
   })
 
   describe('formatAuditSessionTitle', () => {
-    test('formats with loop name and iteration', () => {
-      expect(formatAuditSessionTitle('test-loop', 2)).toBe('audit: test-loop #2')
+    test('formats with loop name and iteration (non-sectioned)', () => {
+      expect(formatAuditSessionTitle('test-loop', { iteration: 3, currentSectionIndex: 0, totalSections: 0 })).toBe('audit: test-loop #3')
+    })
+
+    test('formats with section context for sectioned loops', () => {
+      expect(formatAuditSessionTitle('test-loop', { iteration: 3, currentSectionIndex: 1, totalSections: 4 })).toBe('audit: test-loop §2/4 #3')
     })
 
     test('truncates long loop name', () => {
-      const longLoopName = 'a'.repeat(70)
-      const result = formatAuditSessionTitle(longLoopName, 1)
+      const longLoopName = 'x'.repeat(80)
+      const result = formatAuditSessionTitle(longLoopName, { iteration: 1, currentSectionIndex: 0, totalSections: 0 })
       expect(result.length).toBeLessThanOrEqual(MAX_SESSION_TITLE_LENGTH)
+    })
+  })
+
+  describe('formatLoopSessionTitle with context', () => {
+    test('appends iteration when context provided and totalSections is 0', () => {
+      expect(formatLoopSessionTitle('user-detail-orders', { iteration: 3, currentSectionIndex: 0, totalSections: 0 }))
+        .toBe('Loop: user-detail-orders #3')
+    })
+    test('appends section §I+1/T and iteration for sectioned loops', () => {
+      expect(formatLoopSessionTitle('user-detail-orders', { iteration: 3, currentSectionIndex: 1, totalSections: 4 }))
+        .toBe('Loop: user-detail-orders §2/4 #3')
+    })
+    test('omits both markers when context is undefined (display-only callers)', () => {
+      expect(formatLoopSessionTitle('user-detail-orders')).toBe('Loop: user-detail-orders')
+    })
+    test('is idempotent if caller accidentally passes a pre-formatted title', () => {
+      expect(formatLoopSessionTitle('Loop: user-detail-orders', { iteration: 2, currentSectionIndex: 0, totalSections: 0 }))
+        .toBe('Loop: user-detail-orders #2')
+    })
+    test('truncates after suffixes are appended', () => {
+      const long = 'x'.repeat(80)
+      const out = formatLoopSessionTitle(long, { iteration: 12, currentSectionIndex: 0, totalSections: 5 })
+      expect(out.length).toBeLessThanOrEqual(60)
+      expect(out.endsWith('...')).toBe(true)
+    })
+  })
+
+  describe('formatDecomposerSessionTitle', () => {
+    test('returns decomposer-<name>', () => {
+      expect(formatDecomposerSessionTitle('user-detail-orders')).toBe('decomposer-user-detail-orders')
+    })
+    test('truncates long loop names', () => {
+      const long = 'x'.repeat(80)
+      const out = formatDecomposerSessionTitle(long)
+      expect(out.length).toBeLessThanOrEqual(60)
+      expect(out.endsWith('...')).toBe(true)
     })
   })
 })

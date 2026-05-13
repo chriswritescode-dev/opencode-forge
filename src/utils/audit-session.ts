@@ -8,6 +8,8 @@ interface RunAuditSessionInput {
   v2: OpencodeClient
   loopName: string
   iteration: number
+  currentSectionIndex: number
+  totalSections: number
   worktreeDir: string
   workspaceId?: string
   isSandbox: boolean
@@ -29,7 +31,11 @@ export async function createAuditSession(
   const permission = buildAuditSessionPermissionRuleset({ isSandbox: input.isSandbox })
   const created = await createLoopSessionWithWorkspace({
     v2: input.v2,
-    title: formatAuditSessionTitle(input.loopName, input.iteration),
+    title: formatAuditSessionTitle(input.loopName, {
+      iteration: input.iteration,
+      currentSectionIndex: input.currentSectionIndex,
+      totalSections: input.totalSections,
+    }),
     directory: input.worktreeDir,
     permission,
     workspaceId: input.workspaceId,

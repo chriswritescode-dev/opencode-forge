@@ -18,7 +18,7 @@ import { buildLoopPermissionRuleset } from '../constants/loop'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
 // worktree-cleanup imports moved to hooks/loop.ts (termination side-effects)
 import { createAuditSession, promptAuditSession } from '../utils/audit-session'
-import { formatAuditSessionTitle, formatLoopSessionTitle } from '../utils/session-titles'
+import { formatAuditSessionTitle, formatDecomposerSessionTitle, formatLoopSessionTitle } from '../utils/session-titles'
 import { bindSessionToWorkspace } from '../workspace/forge-worktree'
 import { extractSections } from '../utils/section-capture'
 import { decomposeDeterministically } from '../services/deterministic-decomposer'
@@ -432,7 +432,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const createResult = await createLoopSessionWithWorkspace({
       v2: v2Client,
-      title: formatLoopSessionTitle(state.loopName),
+      title: formatLoopSessionTitle(state.loopName, {
+        iteration: state.iteration ?? 0,
+        currentSectionIndex: state.currentSectionIndex ?? 0,
+        totalSections: state.totalSections ?? 0,
+      }),
       directory: sessionDir,
       permission: permissionRuleset,
       workspaceId: ensured.workspaceId ?? state.workspaceId,
@@ -728,7 +732,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const codeSessionResult = await createLoopSessionWithWorkspace({
       v2: v2Client,
-      title: formatLoopSessionTitle(loopName),
+      title: formatLoopSessionTitle(loopName, {
+        iteration: updatedState.iteration ?? 0,
+        currentSectionIndex: updatedState.currentSectionIndex ?? 0,
+        totalSections: updatedState.totalSections ?? 0,
+      }),
       directory: updatedState.worktreeDir,
       ...(updatedState.worktree ? { permission: buildLoopPermissionRuleset({ isSandbox: !!updatedState.sandbox }) } : {}),
       workspaceId: updatedState.workspaceId,
@@ -915,6 +923,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   async function createAuditSessionWithFallback(input: {
     loopName: string
     iteration: number
+    currentSectionIndex: number
+    totalSections: number
     worktreeDir: string
     workspaceId?: string
     isSandbox: boolean
@@ -925,6 +935,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       v2: v2Client,
       loopName: input.loopName,
       iteration: input.iteration,
+      currentSectionIndex: input.currentSectionIndex,
+      totalSections: input.totalSections,
       worktreeDir: input.worktreeDir,
       workspaceId: input.workspaceId,
       isSandbox: input.isSandbox,
@@ -945,7 +957,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       logger.log(`Loop: falling back to plugin client for audit session creation (${input.loopName})`)
       const result = await client.session.create({
         body: {
-          title: formatAuditSessionTitle(input.loopName, input.iteration),
+          title: formatAuditSessionTitle(input.loopName, {
+            iteration: input.iteration,
+            currentSectionIndex: input.currentSectionIndex,
+            totalSections: input.totalSections,
+          }),
           ...(input.workspaceId ? { workspaceID: input.workspaceId } : {}),
         },
         query: {
@@ -1032,6 +1048,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const created = await createAuditSessionWithFallback({
       loopName,
       iteration: currentState.iteration ?? 0,
+      currentSectionIndex: currentState.currentSectionIndex ?? 0,
+      totalSections: currentState.totalSections ?? 0,
       worktreeDir: currentState.worktreeDir,
       workspaceId: ensured.workspaceId ?? currentState.workspaceId,
       isSandbox: currentState.sandbox ?? false,
@@ -1140,6 +1158,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     async function createAuditWithRetry(input: {
       loopName: string
       iteration: number
+      currentSectionIndex: number
+      totalSections: number
       worktreeDir: string
       workspaceId?: string
       isSandbox: boolean
@@ -1162,6 +1182,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const created = await createAuditWithRetry({
       loopName,
       iteration: currentState.iteration ?? 0,
+      currentSectionIndex: currentState.currentSectionIndex ?? 0,
+      totalSections: currentState.totalSections ?? 0,
       worktreeDir: currentState.worktreeDir,
       workspaceId: ensured.workspaceId ?? currentState.workspaceId,
       isSandbox: currentState.sandbox ?? false,
@@ -1515,7 +1537,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       const fallbackState = loopService.getActiveState(loopName) ?? currentState
       const codeSessionResult = await createLoopSessionWithWorkspace({
         v2: v2Client,
-        title: formatLoopSessionTitle(loopName),
+      title: formatLoopSessionTitle(loopName, {
+        iteration: fallbackState.iteration ?? 0,
+        currentSectionIndex: fallbackState.currentSectionIndex ?? 0,
+        totalSections: fallbackState.totalSections ?? 0,
+      }),
         directory: fallbackState.worktreeDir,
         ...(fallbackState.worktree ? { permission: buildLoopPermissionRuleset({ isSandbox: !!fallbackState.sandbox }) } : {}),
         workspaceId: fallbackState.workspaceId,
@@ -1595,7 +1621,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
       const decomposerSessionResult = await createLoopSessionWithWorkspace({
         v2: v2Client,
-        title: `decomposer-${loopName}`,
+        title: formatDecomposerSessionTitle(loopName),
         directory: freshState.worktreeDir,
         ...(freshState.worktree ? { permission: buildLoopPermissionRuleset({ isSandbox: !!freshState.sandbox }) } : {}),
         workspaceId: freshState.workspaceId,

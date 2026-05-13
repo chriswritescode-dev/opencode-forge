@@ -14,7 +14,7 @@ import type { SandboxManager } from '../sandbox/manager'
 import { extractPlanTitle, extractLoopNames } from '../utils/plan-execution'
 import { parseModelString, retryWithModelFallback, resolveDecomposerModel } from '../utils/model-fallback'
 
-import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
+import { formatDecomposerSessionTitle, formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
 import { buildLoopPermissionRuleset } from '../constants/loop'
 import { findPartialMatch } from '../utils/partial-match'
 import { isSandboxEnabled } from '../sandbox/context'
@@ -801,7 +801,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     // Extract loop names first so the session title can prefer the explicit Loop Name
     const { displayName, executionName } = extractLoopNames(planText)
     const title = command.title ?? displayName
-    const sessionTitle = formatLoopSessionTitle(title)
+    const sessionTitle = formatLoopSessionTitle(title, { iteration: 1, currentSectionIndex: 0, totalSections: 0 })
     
     // Generate unique loop name
     const uniqueLoopName = deps.loop.generateUniqueLoopName(command.loopName ?? executionName)
@@ -927,7 +927,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       if (isAgentDecomposer) {
         const createResult = await createLoopSessionWithWorkspace({
           v2: deps.v2,
-          title: `decomposer-${uniqueLoopName}`,
+          title: formatDecomposerSessionTitle(uniqueLoopName),
           directory: hostWorktreeDir!,
           permission: permissionRuleset,
           workspaceId,
@@ -1272,7 +1272,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
               })
               const createResult = await createLoopSessionWithWorkspace({
                 v2: deps.v2,
-                title: `decomposer-${uniqueLoopName}`,
+                title: formatDecomposerSessionTitle(uniqueLoopName),
                 directory: state.worktreeDir,
                 permission: fallbackPermission,
                 workspaceId: createdWorkspaceId,
@@ -1294,7 +1294,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
               }
             } else {
               const decomposerSessionResult = await createSessionWithFallback(deps, {
-                title: `decomposer-${uniqueLoopName}`,
+                title: formatDecomposerSessionTitle(uniqueLoopName),
                 directory: state.worktreeDir,
               })
               if (!decomposerSessionResult.data) {
@@ -1847,7 +1847,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           
           const createResult = await createLoopSessionWithWorkspace({
             v2: deps.v2,
-            title: formatLoopSessionTitle(stoppedState.loopName),
+            title: formatLoopSessionTitle(stoppedState.loopName, {
+              iteration: stoppedState.iteration ?? 0,
+              currentSectionIndex: stoppedState.currentSectionIndex ?? 0,
+              totalSections: stoppedState.totalSections ?? 0,
+            }),
             directory: stoppedState.worktreeDir,
             permission: permissionRuleset,
             workspaceId: stoppedState.workspaceId,
@@ -1901,7 +1905,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
                 })
                 const createResult = await createLoopSessionWithWorkspace({
                   v2: deps.v2,
-                  title: `decomposer-${stoppedState.loopName}`,
+                   title: formatDecomposerSessionTitle(stoppedState.loopName),
                   directory: stoppedState.worktreeDir,
                   permission: restartPermission,
                   workspaceId: stoppedState.workspaceId,
@@ -1916,7 +1920,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
                 }
               } else {
                 const decomposerResult = await createSessionWithFallback(deps, {
-                  title: `decomposer-${stoppedState.loopName}`,
+                   title: formatDecomposerSessionTitle(stoppedState.loopName),
                   directory: stoppedState.worktreeDir,
                 })
                 if (!decomposerResult.data) {
@@ -1948,7 +1952,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             })
             const createResult = await createLoopSessionWithWorkspace({
               v2: deps.v2,
-              title: `decomposer-${stoppedState.loopName}`,
+              title: formatDecomposerSessionTitle(stoppedState.loopName),
               directory: stoppedState.worktreeDir,
               permission: restartPermission,
               workspaceId: stoppedState.workspaceId,
@@ -1966,7 +1970,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             }
           } else {
             const decomposerResult = await createSessionWithFallback(deps, {
-              title: `decomposer-${stoppedState.loopName}`,
+              title: formatDecomposerSessionTitle(stoppedState.loopName),
               directory: stoppedState.worktreeDir,
             })
             if (!decomposerResult.data) {
@@ -1983,7 +1987,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       } else {
         const createResult = await createLoopSessionWithWorkspace({
           v2: deps.v2,
-          title: formatLoopSessionTitle(stoppedState.loopName),
+          title: formatLoopSessionTitle(stoppedState.loopName, {
+            iteration: stoppedState.iteration ?? 0,
+            currentSectionIndex: stoppedState.currentSectionIndex ?? 0,
+            totalSections: stoppedState.totalSections ?? 0,
+          }),
           directory: stoppedState.worktreeDir,
           permission: permissionRuleset,
           workspaceId: stoppedState.workspaceId,
