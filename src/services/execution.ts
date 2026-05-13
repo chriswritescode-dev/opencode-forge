@@ -900,11 +900,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         deps.logger.log('handleStartLoop: sandbox manager not initialized; running in worktree-only mode')
       }
 
-      // Worktree mode requires a sandbox manager.
-      if (command.mode === 'worktree' && !deps.sandboxManager) {
-        return fail('disabled', 400, 'Sandbox required: worktree mode needs a sandbox manager')
-      }
-      
       // Create builtin worktree workspace (single call — no separate worktree.create)
       const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
       const ws = await createBuiltinWorktreeWorkspace(deps.v2, {

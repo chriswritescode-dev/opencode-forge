@@ -21,7 +21,7 @@ function buildSuffix(ctx?: LoopTitleContext): string {
   if (!ctx) return ''
   const parts: string[] = []
   if (ctx.totalSections > 0) {
-    parts.push(`§${ctx.currentSectionIndex + 1}/${ctx.totalSections}`)
+    parts.push(`${ctx.currentSectionIndex + 1}/${ctx.totalSections}`)
   }
   parts.push(`#${ctx.iteration}`)
   return ` ${parts.join(' ')}`

@@ -292,7 +292,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
     expect(state!.worktreeBranch).toBe('opencode/abc')
   })
 
-  test('hard-fails when sandbox manager is missing', async () => {
+  test('worktree loop succeeds without sandbox manager (worktree-only mode)', async () => {
     const experimentalWorkspaceCreateMock = vi.fn().mockResolvedValue({
       data: {
         id: 'ws_test',
@@ -372,9 +372,15 @@ describe('handleStartLoop builtin worktree workspace', () => {
       },
     )
 
-    expect(result.ok).toBe(false)
-    if (result.ok) return
-    expect(result.error.message).toContain('Sandbox required')
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    // Verify loop state shows sandbox=false for worktree-only mode
+    const state = loopService.getActiveState(result.data.loopName)
+    expect(state).not.toBeNull()
+    expect(state!.sandbox).toBe(false)
+    expect(state!.worktree).toBe(true)
+    expect(state!.sandboxContainer).toBeUndefined()
   })
 
   test('hard-fails when sandbox start throws docker-unavailable', async () => {
