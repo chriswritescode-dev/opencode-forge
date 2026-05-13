@@ -61,6 +61,10 @@ Plan editor with raw text editing:
 
 ![Plan Editor](docs/images/plan-editor.webp)
 
+Load plans dialog showing archived plans:
+
+![Load Plans](docs/images/load-plans.webp)
+
 ## Features
 
 - **Plans** — architect produces marked plans that are auto-captured to SQL storage
