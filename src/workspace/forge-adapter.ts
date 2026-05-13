@@ -73,21 +73,6 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
     }
   }
 
-  function resolveProjectDir(info: WorkspaceInfo): string | null {
-    const extra = (info.extra ?? {}) as { projectDirectory?: unknown }
-    if (typeof extra.projectDirectory === 'string' && extra.projectDirectory) {
-      return extra.projectDirectory
-    }
-    if (!info.directory || !existsSync(info.directory)) return null
-    try {
-      const commonDir = spawnSync('git', ['rev-parse', '--git-common-dir'], { cwd: info.directory, encoding: 'utf-8' }).stdout?.trim()
-      if (commonDir) {
-        return join(info.directory, commonDir, '..')
-      }
-    } catch {}
-    return null
-  }
-
   async function stepCommitChanges(loopName: string, directory: string, branchLabel: string, ctx: TeardownContext): Promise<void> {
     if (!ctx.doCommit || !existsSync(directory)) return
 
@@ -153,20 +138,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
     }
   }
 
-  function stepDeleteBranch(branch: string | undefined, projectDir: string | undefined): void {
-    if (!branch || !projectDir) return
 
-    const res = spawnSync('git', ['branch', '-D', branch], { cwd: projectDir, encoding: 'utf-8' })
-    if (res.status === 0) {
-      logger.log(`forge-adapter: deleted branch ${branch}`)
-      return
-    }
-
-    const stderr = res.stderr?.trim() || ''
-    if (stderr && !stderr.includes('not found')) {
-      logger.log(`forge-adapter: could not delete branch ${branch}: ${stderr}`)
-    }
-  }
 
   return {
     name: 'Forge Worktree',
@@ -243,7 +215,6 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
 
       const loopName = resolveLoopName(info)
       const ctx = getTeardownContext?.(loopName) ?? DEFAULT_TEARDOWN_CONTEXT
-      const projectDir = resolveProjectDir(info)
 
       // Always commit changes so work isn't lost — skip only when the worktree
       // directory itself is already gone.
@@ -259,11 +230,8 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
       // Skip on error/stall/abort so restart can reuse it.
       await stepRemoveWorktree(info.directory, ctx)
 
-      // Only delete scratch branches (`forge/*`) — they have no meaningful
-      // history. Non-forge branches were renamed to `opencode/*` above.
-      // Skip on error/stall/abort so restart can use them.
-      if (!info.branch?.startsWith('forge/') || !ctx.doDeleteBranch) return
-      stepDeleteBranch(info.branch, projectDir ?? undefined)
+      // Branches are never deleted — non-forge ones are renamed to `opencode/*`
+      // above; `forge/*` scratch branches stay in place for potential restart.
     },
     target(info) {
       return { type: 'local', directory: info.directory! }
