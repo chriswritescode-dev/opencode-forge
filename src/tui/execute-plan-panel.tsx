@@ -151,10 +151,8 @@ export function ExecutePlanPanel(props: {
         return 'Create a new session and send the plan to the code agent'
       case 'Execute here':
         return 'Execute the plan in the current session using the code agent'
-      case 'Loop (worktree)':
-        return 'Execute using iterative development loop in an isolated git worktree'
       case 'Loop':
-        return 'Execute using iterative development loop in the current directory'
+        return 'Execute using iterative development loop in an isolated git worktree (Docker sandbox used automatically when available)'
       default:
         return ''
     }
@@ -171,8 +169,8 @@ export function ExecutePlanPanel(props: {
 
     const apiMode: import('../utils/tui-client').ApiExecutionMode = matchedLabel === 'Execute here'
       ? 'execute-here'
-      : matchedLabel === 'Loop (worktree)'
-        ? 'loop-worktree'
+      : matchedLabel === 'Loop'
+        ? 'loop'
         : 'new-session'
 
     props.api.ui.dialog.clear()
@@ -201,7 +199,7 @@ export function ExecutePlanPanel(props: {
     props.api.ui.toast({ message: result.loopName ? `Loop started: ${result.loopName}` : 'Plan execution started', variant: 'success', duration: 3000 })
     await props.onExecuted?.()
     props.client.workspaces.list().catch(() => {})
-    if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop-worktree')) {
+    if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop')) {
       await selectTuiSession(props.api, result.sessionId, result.workspaceId)
     }
   }

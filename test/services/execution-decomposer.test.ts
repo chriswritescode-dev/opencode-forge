@@ -755,7 +755,6 @@ describe('Execution decomposer integration', () => {
         {
           type: 'loop.start',
           source: { kind: 'inline', planText: '## Phase 1: Setup\nDo something' },
-          mode: 'worktree',
           maxIterations: 3,
         },
       )
@@ -842,7 +841,6 @@ describe('Execution decomposer integration', () => {
         {
           type: 'loop.start',
           source: { kind: 'inline', planText: '## Phase 1: Setup\nDo something' },
-          mode: 'worktree',
           maxIterations: 3,
         },
       )
@@ -924,7 +922,6 @@ describe('Execution decomposer integration', () => {
         {
           type: 'loop.start',
           source: { kind: 'inline', planText: '## Phase 1: Setup\nDo something' },
-          mode: 'worktree',
           maxIterations: 3,
         },
       )
@@ -1050,7 +1047,6 @@ describe('Execution decomposer integration', () => {
         {
           type: 'loop.start',
           source: { kind: 'inline', planText: '## Phase 1: Setup\nDo something' },
-          mode: 'worktree',
           maxIterations: 3,
         },
       )

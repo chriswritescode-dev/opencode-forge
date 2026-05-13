@@ -1,6 +1,13 @@
 import { defineConfig } from 'vitest/config'
+import { resolve } from 'path'
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      'bun:sqlite': resolve(__dirname, './test/__shims__/bun-sqlite.mjs'),
+      'bun:test': resolve(__dirname, './test/__shims__/bun-test.mjs'),
+    },
+  },
   test: {
     include: [
       'test/constants/loop.test.ts',
@@ -33,12 +40,28 @@ export default defineConfig({
       'test/workspace/forge-worktree.test.ts',
       'test/workspace/forge-adapter.test.ts',
       'test/workspace/forge-adapter-e2e.test.ts',
+      'test/sandbox-docker.test.ts',
+      'test/sandbox-manager.test.ts',
+      'test/sandbox/manager.test.ts',
       'test/sandbox/context.test.ts',
+      'test/sandbox/reconcile.test.ts',
+      'test/utils/sandbox-ready.test.ts',
+      'test/loop-service.test.ts',
+      'test/loop-service-notify.test.ts',
+      'test/boot-sandbox-preserve.test.ts',
       'test/api/plan-execute-dedupe.test.ts',
+      'test/api/plan-execute-loop.test.ts',
+      'test/api/tui-client-bus.test.ts',
+      'test/api/bus-rpc-server.test.ts',
       'test/tui/execute-plan-panel-busy.test.ts',
       'test/hooks/plan-approval-dedupe.test.ts',
       'test/hooks/plan-approval-worktree-timing.test.ts',
       'test/services/select-initial-worktree-session.test.ts',
+      'test/plan-approval.test.ts',
+      'test/api-model-preferences.test.ts',
+      'test/tui-execution-preferences.test.ts',
+      'test/utils/tui-execution-context-cache.test.ts',
     ],
+    globals: true,
   },
 })

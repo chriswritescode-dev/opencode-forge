@@ -59,7 +59,7 @@ describe('boot sandbox preserve integration', () => {
       auditorModel: null,
       modelFailed: false,
       sandbox: true,
-      sandboxContainer: 'oc-forge-sandbox-alpha',
+      sandboxContainer: 'forge-alpha',
       startedAt: now,
       completedAt: null,
       terminationReason: null,
@@ -95,7 +95,7 @@ describe('boot sandbox preserve integration', () => {
     const mockSandboxManager = {
       isLiveByName: mock(async (name: string) => name === 'alpha'),
       cleanupOrphans: mock(async () => 0),
-      start: mock(async () => ({ containerName: 'oc-forge-sandbox-alpha' })),
+      start: mock(async () => ({ containerName: 'forge-alpha' })),
       restore: mock(async () => {}),
       stop: mock(async () => {}),
       isActive: mock(() => false),
@@ -117,7 +117,7 @@ describe('boot sandbox preserve integration', () => {
     // the DB-driven per-project reconcile restores containers for preserved loops)
     const reconcileDeps: ReconcileSandboxesDeps = {
       sandboxManager: mockSandboxManager,
-      loopService,
+      loop: loopService as any,
       logger: mockLogger,
     }
 
@@ -168,7 +168,7 @@ describe('boot sandbox preserve integration', () => {
     const mockSandboxManager = {
       isLiveByName: mock(async () => true),
       cleanupOrphans: mock(async () => 0),
-      start: mock(async () => ({ containerName: 'oc-forge-sandbox-alpha' })),
+      start: mock(async () => ({ containerName: 'forge-alpha' })),
       restore: mock(async () => {}),
       stop: mock(async () => {}),
       isActive: mock(() => false),
@@ -190,7 +190,7 @@ describe('boot sandbox preserve integration', () => {
     // Step 2: reconcileSandboxes - should call restore to repopulate map
     const reconcileDeps: ReconcileSandboxesDeps = {
       sandboxManager: mockSandboxManager,
-      loopService,
+      loop: loopService as any,
       logger: mockLogger,
     }
 
@@ -233,7 +233,7 @@ describe('boot sandbox preserve integration', () => {
     const mockSandboxManager = {
       isLiveByName: mock(async () => true),
       cleanupOrphans: mock(async () => 0),
-      start: mock(async () => ({ containerName: 'oc-forge-sandbox-alpha-new' })),
+      start: mock(async () => ({ containerName: 'forge-alpha-new' })),
       restore: mock(async () => {}),
       stop: mock(async () => {}),
       isActive: mock(() => false),
@@ -254,7 +254,7 @@ describe('boot sandbox preserve integration', () => {
     // Step 2: reconcileSandboxes - since container is not active, restore is called
     const reconcileDeps: ReconcileSandboxesDeps = {
       sandboxManager: mockSandboxManager,
-      loopService,
+      loop: loopService as any,
       logger: mockLogger,
     }
 
@@ -274,8 +274,8 @@ describe('boot sandbox preserve integration', () => {
     // - beta: isLiveByName=true (preserved, should be restored)
     const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
 
-    const alphaRow = createSandboxLoopRow({ loopName: 'alpha', sandboxContainer: 'oc-forge-sandbox-alpha', worktreeDir: '/tmp/wt-alpha' })
-    const betaRow = createSandboxLoopRow({ loopName: 'beta', sandboxContainer: 'oc-forge-sandbox-beta', worktreeDir: '/tmp/wt-beta' })
+    const alphaRow = createSandboxLoopRow({ loopName: 'alpha', sandboxContainer: 'forge-alpha', worktreeDir: '/tmp/wt-alpha', sandbox: false })
+    const betaRow = createSandboxLoopRow({ loopName: 'beta', sandboxContainer: 'forge-beta', worktreeDir: '/tmp/wt-beta' })
 
     // listByStatus tracks current status of both rows
     mockLoopsRepo.listByStatus = mock((projectId: string, statuses: string[]) => {
@@ -319,7 +319,7 @@ describe('boot sandbox preserve integration', () => {
     const mockSandboxManager = {
       isLiveByName: mock(async (name: string) => name === 'beta'),
       cleanupOrphans: mock(async () => 0),
-      start: mock(async () => ({ containerName: 'oc-forge-sandbox-new' })),
+      start: mock(async () => ({ containerName: 'forge-new' })),
       restore: mock(async () => {}),
       stop: mock(async () => {}),
       isActive: mock(() => false),
@@ -328,7 +328,7 @@ describe('boot sandbox preserve integration', () => {
       docker: {} as any,
     } as unknown as SandboxManager
 
-    // Step 1: reconcileStale - alpha cancelled, beta preserved
+    // Step 1: reconcileStale - alpha cancelled (non-sandbox), beta preserved
     const reconcileResult = await loopService.reconcileStale({
       isSandboxLive: (name) => mockSandboxManager.isLiveByName(name),
     })
@@ -340,10 +340,10 @@ describe('boot sandbox preserve integration', () => {
     expect(alphaRow.status).toBe('cancelled')
     expect(betaRow.status).toBe('running')
 
-    // Step 2: reconcileSandboxes - only beta is processed (alpha is cancelled)
+    // Step 2: reconcileSandboxes - only beta is processed (alpha is restart candidate)
     const reconcileDeps: ReconcileSandboxesDeps = {
       sandboxManager: mockSandboxManager,
-      loopService,
+      loop: loopService as any,
       logger: mockLogger,
     }
 

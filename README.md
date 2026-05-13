@@ -68,11 +68,11 @@ Loop search dialog:
 ## Features
 
 - **Plans** — architect produces marked plans that are auto-captured to SQL storage
-- **Execution** — `New session`, `Execute here`, and `Loop (worktree)` launch paths for approved plans
-- **Loops** — iterative coding/auditing with mandatory worktree isolation and Docker sandbox
+- **Execution** — `New session`, `Execute here`, and `Loop` launch paths for approved plans
+- **Loops** — iterative coding/auditing with isolated git worktree and optional Docker sandbox
 - **Review Findings** — persistent, branch-aware review findings across loop sessions
 - **TUI** — sidebar, plan viewer/editor, execution dialog, and loop details
-- **Sandbox** — Docker worktree loop isolation with bind-mounted project files
+- **Sandbox** — Optional Docker worktree loop isolation with bind-mounted project files
 
 ## Agents
 
@@ -113,7 +113,7 @@ Review finding storage for persisting audit results across session rotations.
 
 ### Loop Tools
 
-Iterative development loops with automatic auditing. All loops run in an isolated git worktree with mandatory Docker sandbox.
+Iterative development loops with automatic auditing. Loops always run in an isolated git worktree; Docker sandbox is used automatically when available.
 
 | Tool | Description |
 |------|-------------|
@@ -196,9 +196,9 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
     }
   },
 
-  // Docker sandbox configuration for isolated loop execution (mandatory)
+  // Docker sandbox configuration for isolated loop execution (optional; provisioned automatically when available)
   "sandbox": {
-    "mode": "docker",                // Sandbox mode: "docker" (mandatory)
+    "mode": "docker",                // Sandbox mode: "docker"
     "image": "oc-forge-sandbox:latest"  // Docker image for sandbox containers
   },
 
@@ -264,7 +264,7 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 **Migration note:** As of v0.2.0, auditing runs unconditionally after each coding iteration. The `loop.defaultAudit` option was removed and audit is now always enabled. If you previously had `"defaultAudit": false` in your config, audits will now run on every iteration regardless of that setting.
 
 #### Sandbox
-- `sandbox.mode` - Sandbox mode: `"docker"` (mandatory; Docker must be available before any loop starts)
+- `sandbox.mode` - Sandbox mode: `"docker"` (optional; Docker sandbox is provisioned automatically when available)
 - `sandbox.image` - Docker image for sandbox containers (default: `"oc-forge-sandbox:latest"`)
 
 #### TUI
@@ -307,7 +307,7 @@ Choose from three execution modes:
 
 1. **New session** — Creates a fresh Code session and sends the plan as the initial prompt
 2. **Execute here** — Takes over the current session immediately with the plan
-3. **Loop (worktree)** — Launches an iterative coding/auditing loop in an isolated git worktree
+3. **Loop** — Launches an iterative coding/auditing loop in an isolated git worktree (Docker sandbox used automatically when available)
 
 #### Model Selection
 
@@ -431,13 +431,13 @@ After the architect presents a summary, the user chooses an execution mode from 
 
 - **New session** — Creates a new Code session and sends the plan as the initial prompt.
 - **Execute here** — The code agent takes over the current session immediately with the plan.
-- **Loop (worktree)** — Creates an isolated git worktree and launches an iterative coding/auditing loop. Sandbox is mandatory; Docker must be running.
+- **Loop** — Creates an isolated git worktree and launches an iterative coding/auditing loop. Docker sandbox is provisioned automatically when available; otherwise the loop runs in worktree-only mode.
 
 | Mode | When to choose it |
 |------|-------------------|
 | `New session` | Default for normal implementation |
 | `Execute here` | When preserving current context matters |
-| `Loop (worktree)` | Safer autonomous iteration |
+| `Loop` | Safer autonomous iteration |
 
 The dialog also lets you pick the execution model and auditor model at launch time. Those selections are remembered per project and pre-filled on later launches.
 
@@ -487,7 +487,7 @@ Audit findings survive session rotation via the **review store**. The auditor st
 
 ### Worktree Isolation
 
-Loops always run in an isolated git worktree with mandatory Docker sandbox. Changes are auto-committed and the worktree is removed on completion (branch preserved for later merge).
+Loops always run in an isolated git worktree. Sandbox is optional: when Docker is available and `sandbox.mode = 'docker'` is configured, a sandbox container is provisioned automatically; otherwise the loop runs in worktree-only mode. Changes are auto-committed and the worktree is removed on completion (branch preserved for later merge).
 
 ### Auditor Integration
 
@@ -530,7 +530,7 @@ The loop terminates when any of these conditions is met:
 - **Final audit completion** — When no bug-severity review findings remain. The auditor no longer needs to emit a `<!-- final-audit:clear -->` marker; the loop completes automatically once all bugs are resolved.
 - **Consecutive errors** — 3 consecutive errors in either phase.
 
-All loops run in an isolated git worktree with mandatory Docker sandbox.
+Loops always run in an isolated git worktree. Sandbox is optional: when Docker is available and `sandbox.mode = 'docker'` is configured, a sandbox container is provisioned automatically; otherwise the loop runs in worktree-only mode.
 
 ## Workspace Integration
 
@@ -599,13 +599,13 @@ The image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, and jq.
 
 ### Usage
 
-Start a sandbox loop via the architect plan approval flow (select "Loop (worktree)") or directly with the `loop` tool:
+Start a sandbox loop via the architect plan approval flow (select "Loop") or directly with the `loop` tool:
 
 ```
 loop
 ```
 
-Sandbox is mandatory for all loops. Docker must be available before any loop starts. The loop:
+Sandbox is optional. When Docker is available and configured, a sandbox container is provisioned automatically; otherwise the loop runs in worktree-only mode. The loop:
 1. Creates a git worktree
 2. Starts a Docker container with the worktree directory bind-mounted at `/workspace`
 3. Redirects `bash`, `glob`, and `grep` tool calls into the container
@@ -617,13 +617,13 @@ Sandbox is mandatory for all loops. Docker must be available before any loop sta
 - **Tool redirection** -- `bash`, `glob`, and `grep` route through `docker exec` when a session belongs to a sandbox loop. The `read`/`write`/`edit` tools operate on the host filesystem directly (compatible with host LSP).
 - **Git blocking** -- git commands are explicitly blocked inside the container. All git operations (commit, push, branch management) are handled by the loop system on the host.
 - **Host LSP** -- since files are shared via the bind mount, OpenCode's LSP servers on the host read the same files and provide diagnostics after writes and edits.
-- **Container lifecycle** -- one container per loop, automatically started and stopped. Container name format: `opencode-forge-sandbox-<worktreeName>`.
+- **Container lifecycle** -- one container per loop, automatically started and stopped. Container name format: `forge-<worktreeName>`.
 
 ### Configuration
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `sandbox.mode` | `"docker"` | Sandbox mode (mandatory for all loops) |
+| `sandbox.mode` | `"docker"` | Sandbox mode (optional; Docker used when available) |
 | `sandbox.image` | `"oc-forge-sandbox:latest"` | Docker image to use for sandbox containers |
 
 ### Customizing the Image

@@ -291,8 +291,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
             return
           }
           
-          if (matchedLabel === 'Loop (worktree)' || matchedLabel === 'Loop') {
-            const isWorktree = matchedLabel === 'Loop (worktree)'
+          if (matchedLabel === 'Loop') {
             const { executionName } = extractLoopNames(planText)
             const uniqueLoopName = loop.generateUniqueLoopName(executionName)
 
@@ -308,7 +307,6 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
                 source: { kind: 'inline', planText },
                 title,
                 loopName: uniqueLoopName,
-                mode: isWorktree ? 'worktree' : 'in-place',
                 maxIterations: config.loop?.defaultMaxIterations ?? 0,
                 executionModel,
                 auditorModel,
@@ -327,7 +325,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
                 publishPlanApprovalToast(ctx, input, 'error', `Failed to start loop: ${result.error.message}`)
                 return
               }
-              publishPlanApprovalToast(ctx, input, 'success', `Started ${isWorktree ? 'worktree ' : ''}loop: ${uniqueLoopName}`)
+              publishPlanApprovalToast(ctx, input, 'success', `Started loop: ${uniqueLoopName}`)
               logger.log('Plan approval: loop setup complete')
             }, logger)
 
@@ -338,7 +336,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
           }
           
           // Custom answer fallback
-              output.output = `${output.output}\n\n<system-reminder>\nThe user provided a custom response instead of selecting a predefined option. Review their answer and respond accordingly. If they want to proceed with execution, ask the question tool again with one of: "New session", "Execute here", "Loop (worktree)", "Loop". If they want to cancel or revise the plan, help them with that instead.\n</system-reminder>`
+              output.output = `${output.output}\n\n<system-reminder>\nThe user provided a custom response instead of selecting a predefined option. Review their answer and respond accordingly. If they want to proceed with execution, ask the question tool again with one of: "New session", "Execute here", or "Loop". If they want to cancel or revise the plan, help them with that instead.\n</system-reminder>`
           logger.log(`Plan approval: detected custom answer`)
         }
       }

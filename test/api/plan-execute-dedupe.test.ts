@@ -16,12 +16,11 @@ describe('plan-execute RPC dedupe', () => {
     mockDispatch.mockReset()
   })
 
-  test('two concurrent plan.execute loop-worktree calls dispatch handleStartLoop only once', async () => {
+  test('two concurrent plan.execute loop calls dispatch handleStartLoop only once', async () => {
     const loopResult = {
       ok: true,
       data: {
         operation: 'loop.start',
-        mode: 'worktree',
         sessionId: 'session-loop-1',
         loopName: 'test-loop',
         displayName: 'Test Loop',
@@ -54,7 +53,7 @@ describe('plan-execute RPC dedupe', () => {
       eventPublisher: vi.fn(),
     } as any
 
-    const body = { mode: 'loop-worktree', title: 'Test Loop', plan: 'SAMPLE_PLAN' }
+    const body = { mode: 'loop', title: 'Test Loop', plan: 'SAMPLE_PLAN' }
 
     const [r1, r2] = await Promise.all([
       handleExecutePlan(deps, { projectId: 'p1', sessionId: 's1' }, body),

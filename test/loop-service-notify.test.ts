@@ -383,7 +383,7 @@ describe('LoopChangeNotifier', () => {
         notify,
       })
 
-      loop.terminate('test-loop', { status: 'completed', reason: 'done', completedAt: Date.now() })
+      loop.terminateLoop('test-loop', { status: 'completed', reason: 'done', completedAt: Date.now() })
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('terminate')
@@ -623,7 +623,7 @@ describe('LoopChangeNotifier', () => {
         auditorModel: null,
         modelFailed: false,
         sandbox: true,
-        sandboxContainer: 'oc-forge-sandbox-live-sandbox-loop',
+        sandboxContainer: 'forge-live-sandbox-loop',
         startedAt: now,
         completedAt: null,
         terminationReason: null,
@@ -670,7 +670,7 @@ describe('LoopChangeNotifier', () => {
         loopName: 'dead-sandbox-loop',
         status: 'running' as const,
         currentSessionId: 's1',
-        worktree: true,
+        worktree: false,
         worktreeDir: '/test/wt',
         worktreeBranch: null,
         projectDir: '/test',
@@ -683,7 +683,7 @@ describe('LoopChangeNotifier', () => {
         auditorModel: null,
         modelFailed: false,
         sandbox: true,
-        sandboxContainer: 'oc-forge-sandbox-dead-sandbox-loop',
+        sandboxContainer: 'forge-dead-sandbox-loop',
         startedAt: now,
         completedAt: null,
         terminationReason: null,
@@ -795,7 +795,7 @@ describe('LoopChangeNotifier', () => {
         loopName: 'no-container-loop',
         status: 'running' as const,
         currentSessionId: 's1',
-        worktree: true,
+        worktree: false,
         worktreeDir: '/test/wt',
         worktreeBranch: null,
         projectDir: '/test',

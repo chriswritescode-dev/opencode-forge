@@ -120,7 +120,7 @@ Outstanding `severity: 'bug'` findings block loop completion — the loop termin
 
 ## Worktree Isolation
 
-All loops run in an isolated git worktree with mandatory Docker sandbox.
+Loops always run in an isolated git worktree. Sandbox is optional: when Docker is available and `sandbox.mode = 'docker'` is configured, a sandbox container is provisioned automatically; otherwise the loop runs in worktree-only mode.
 
 ```mermaid
 graph TD
@@ -140,7 +140,7 @@ Benefits of worktree isolation:
 
 ## Sandbox Integration
 
-Sandbox is mandatory for all loops. Docker must be available before any loop starts.
+Sandbox is optional. When Docker is available and configured, a sandbox container is provisioned automatically; otherwise loops run in worktree-only mode.
 
 1. Container created with worktree mounted at `/workspace`
 2. `bash`, `glob`, `grep` tools redirect into container

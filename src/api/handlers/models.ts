@@ -18,7 +18,7 @@ function mapModelPrefsMode(mode: string | undefined): ExecutionPreferences['mode
       return 'Execute here'
     case 'loop-worktree':
     case 'loop':
-      return 'Loop (worktree)'
+      return 'Loop'
     default:
       return 'New session'
   }
@@ -79,9 +79,13 @@ export async function handleWriteModelPreferences(
 ): Promise<unknown> {
   const { projectId } = params
   
+  const normalized = body && typeof body === 'object' && 'mode' in (body as Record<string, unknown>)
+    ? { ...(body as Record<string, unknown>), mode: (body as Record<string, unknown>).mode === 'loop-worktree' ? 'loop' : (body as Record<string, unknown>).mode }
+    : body
+
   let parsed: ModelPrefs
   try {
-    parsed = ModelPrefsBody.parse(body)
+    parsed = ModelPrefsBody.parse(normalized)
   } catch {
     throw new ForgeRpcError('bad_request', 'invalid preference body')
   }

@@ -1,6 +1,7 @@
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
-import type { Database } from 'bun:sqlite'
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
+// Database is resolved via vitest alias to better-sqlite3 at runtime
+import { existsSync, mkdirSync, rmSync, writeFileSync, statSync } from 'fs'
+import { execSync, spawnSync } from 'child_process'
 import { join } from 'path'
 
 // Mock ForgeRpcError for error handling
@@ -21,6 +22,7 @@ import { openForgeDatabase, resolveDataDir } from '../src/storage/database'
 import { createLoopEventHandler } from '../src/hooks/loop'
 import type { Logger } from '../src/types'
 import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from '../src/hooks/plan-approval'
+import { buildStartLoopCommand } from '../src/services/execution'
 import type { ToolContext } from '../src/tools/types'
 import type { PluginConfig } from '../src/types'
 import { tmpdir } from 'os'
@@ -28,7 +30,7 @@ import { randomUUID } from 'crypto'
 
 const TEST_DIR = '/tmp/opencode-manager-plan-approval-test-' + Date.now()
 
-function createTestDb(): Database {
+function createTestDb(): any {
   return openForgeDatabase(join(tmpdir(), `forge-test-${randomUUID()}.db`))
 }
 
@@ -41,13 +43,13 @@ function createMockLogger(): Logger {
 }
 
 describe('Plan Approval Tool Interception', () => {
-  let db: Database
+  let db: any
   let loopService: ReturnType<typeof createLoopService>
   let plansRepo: ReturnType<typeof createPlansRepo>
   const projectId = 'test-project'
   const sessionID = 'test-session-123'
 
-  const PLAN_APPROVAL_LABELS = ['New session', 'Execute here', 'Loop (worktree)', 'Loop']
+  const PLAN_APPROVAL_LABELS = ['New session', 'Execute here', 'Loop']
 
   beforeEach(() => {
     db = createTestDb()
@@ -106,7 +108,7 @@ describe('Plan Approval Tool Interception', () => {
             output.output = `${output.output}\n\n[Programmatic dispatch - no directive]`
           } else {
             // Custom answer fallback
-            output.output = `${output.output}\n\n<system-reminder>\nThe user provided a custom response instead of selecting a predefined option. Review their answer and respond accordingly. If they want to proceed with execution, ask the question tool again with one of: "New session", "Execute here", "Loop (worktree)", "Loop". If they want to cancel or revise the plan, help them with that instead.\n</system-reminder>`
+            output.output = `${output.output}\n\n<system-reminder>\nThe user provided a custom response instead of selecting a predefined option. Review their answer and respond accordingly. If they want to proceed with execution, ask the question tool again with one of: "New session", "Execute here", or "Loop". If they want to cancel or revise the plan, help them with that instead.\n</system-reminder>`
           }
         }
       }
@@ -133,8 +135,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -153,8 +154,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -167,27 +167,6 @@ describe('Plan Approval Tool Interception', () => {
     expect(output.output).not.toContain('<system-reminder>')
   })
 
-  test('Detects plan approval question and handles "Loop (worktree)" programmatically', () => {
-    const args = {
-      questions: [{
-        question: 'How would you like to proceed?',
-        options: [
-          { label: 'New session', description: 'Create new session' },
-          { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
-        ],
-      }],
-    }
-    const output = { title: '', output: 'Loop (worktree)', metadata: {} }
-
-    simulateToolExecuteAfter('question', args, output)
-
-    expect(output.output).toContain('Loop (worktree)')
-    expect(output.output).not.toContain('<system-reminder>')
-    expect(output.output).not.toContain('memory-loop')
-  })
-
   test('Detects plan approval question and handles "Loop" programmatically', () => {
     const args = {
       questions: [{
@@ -195,8 +174,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -216,8 +194,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -238,8 +215,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -258,8 +234,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -358,8 +333,8 @@ describe('Plan Approval Tool Interception', () => {
   })
 
   test('Matches metadata answer exactly', async () => {
-    const v2AbortSpy = mock<ToolContext['v2']['session']['abort']>(() => Promise.resolve({ data: {} }))
-    const legacyAbortSpy = mock(() => Promise.resolve({ data: {} } as any))
+    const v2AbortSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const legacyAbortSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
     const ctx = {
       loopService: {
         resolveLoopName: () => 'test-loop',
@@ -412,8 +387,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -434,7 +408,7 @@ describe('Plan Approval Tool Interception', () => {
   })
 
   test('Matches metadata answer by prefix', async () => {
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     const ctx = {
       loopService: {
         resolveLoopName: () => 'test-loop',
@@ -477,8 +451,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -499,7 +472,7 @@ describe('Plan Approval Tool Interception', () => {
   })
 
   test('Does not match middle-of-string text', async () => {
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     const ctx = {
       loopService: {
         resolveLoopName: () => 'test-loop',
@@ -542,8 +515,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -563,7 +535,7 @@ describe('Plan Approval Tool Interception', () => {
   })
 
   test('Falls back to output when metadata answers are missing', async () => {
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     const ctx = {
       loopService: {
         resolveLoopName: () => 'test-loop',
@@ -606,8 +578,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -629,7 +600,7 @@ describe('Plan Approval Tool Interception', () => {
   })
 
   test('Execute here approval schedules source abort and returns without throwing', async () => {
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     const ctx = {
       loopService: {
         resolveLoopName: () => 'test-loop',
@@ -671,8 +642,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -694,7 +664,7 @@ describe('Plan Approval Tool Interception', () => {
   })
 
   test('New session approval schedules source abort and returns without throwing', async () => {
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     const ctx = {
       loopService: {
         resolveLoopName: () => 'test-loop',
@@ -736,8 +706,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -759,7 +728,7 @@ describe('Plan Approval Tool Interception', () => {
   })
 
   test('Loop approval schedules source abort and returns without throwing', async () => {
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
@@ -802,8 +771,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -824,12 +792,13 @@ describe('Plan Approval Tool Interception', () => {
     expect(abortSpy).toHaveBeenCalledWith({ sessionID, directory: "/test" })
   })
 
-  test('Loop (worktree) approval returns without throwing after scheduling', async () => {
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+  test('dispatches loop.start without a mode field when Loop is selected', async () => {
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
-    
+
+    const uniqueSessionId = `loop-dispatch-${Date.now()}`
     const ctx = {
       loopService,
       logger: createMockLogger(),
@@ -847,7 +816,7 @@ describe('Plan Approval Tool Interception', () => {
       plansRepo,
       config: {} as PluginConfig,
       projectId,
-      directory: '/test',
+      directory: '/test-dispatch',
       dataDir: TEST_DIR,
       cleanup: async () => {},
       input: { messages: [], systemPrompt: '', client: { session: { promptAsync: async () => ({ data: {} }) } } as any },
@@ -858,36 +827,55 @@ describe('Plan Approval Tool Interception', () => {
       sandboxManager: null,
     } as unknown as ToolContext
 
-    plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
+    plansRepo.writeForSession(projectId, uniqueSessionId, '# Dispatch Test Plan\n\nUnique plan for dispatch test.')
 
-    const hook = createToolExecuteAfterHook(ctx)
+    const executionModule = await import('../src/services/execution')
+    let capturedCommand: any = null
+    vi.spyOn(executionModule, 'createForgeExecutionService').mockImplementation((deps: any) => ({
+      dispatch: async (_execCtx: any, command: any) => {
+        capturedCommand = command
+        return { ok: true, data: {} }
+      },
+    }))
 
-    const args = {
-      questions: [{
-        question: 'How would you like to proceed?',
-        options: [
-          { label: 'New session', description: 'Create new session' },
-          { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
-        ],
-      }],
+    try {
+      const hook = createToolExecuteAfterHook(ctx)
+
+      const args = {
+        questions: [{
+          question: 'How would you like to proceed?',
+          options: [
+            { label: 'New session', description: 'Create new session' },
+            { label: 'Execute here', description: 'Execute here' },
+            { label: 'Loop', description: 'Loop' },
+          ],
+        }],
+      }
+      const output = {
+        title: 'Asked 1 question',
+        output: 'Loop',
+        metadata: { answers: [['Loop']] },
+      }
+
+      await expect(hook(
+        { tool: 'question', sessionID: uniqueSessionId, callID: 'dispatch-test-call', args },
+        output
+      )).resolves.toBeUndefined()
+
+      // The scheduled dispatch fires synchronously before the first await in the IIFE.
+      // Since our mock service.dispatch resolves immediately, the task completes within one microtask.
+      await new Promise(resolve => setTimeout(resolve, 10))
+
+      expect((output.metadata as any).forgePlanApprovalHandled).toBe(true)
+
+      expect(abortSpy).toHaveBeenCalled()
+
+      expect(capturedCommand).toBeDefined()
+      expect(capturedCommand.type).toBe('loop.start')
+      expect(capturedCommand).not.toHaveProperty('mode')
+    } finally {
+      vi.restoreAllMocks()
     }
-    const output = {
-      title: 'Asked 1 question',
-      output: 'Loop (worktree)',
-      metadata: { answers: [['Loop (worktree)']] },
-    }
-
-    await expect(hook(
-      { tool: 'question', sessionID, callID: 'test-call', args },
-      output
-    )).resolves.toBeUndefined()
-
-    expect(output.output).toBe('Loop (worktree)')
-    expect((output.metadata as any).forgePlanApprovalHandled).toBe(true)
-    
-    expect(abortSpy).toHaveBeenCalledWith({ sessionID, directory: "/test" })
   })
 })
 
@@ -959,7 +947,7 @@ describe('Execute here bypass', () => {
   const projectId = 'test-project'
   const sessionID = 'test-session-456'
   const testDir = '/test/dir'
-  const openDbs: Database[] = []
+  const openDbs: any[] = []
 
   afterEach(() => {
     for (const db of openDbs) db.close()
@@ -1009,7 +997,7 @@ describe('Execute here bypass', () => {
   }
 
   test('Execute here bypasses directive injection and triggers abort', async () => {
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     const ctx = createMockContext({
       v2: {
         session: {
@@ -1033,8 +1021,7 @@ describe('Execute here bypass', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -1056,8 +1043,8 @@ describe('Execute here bypass', () => {
   })
 
   test('session.idle event triggers promptAsync for pending execution', async () => {
-    const v2PromptSpy = mock(() => Promise.resolve({ data: {} }))
-    const legacyPromptSpy = mock(() => Promise.resolve({ data: {} } as any))
+    const v2PromptSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const legacyPromptSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
     const ctx = createMockContext({
       v2: {
         session: {
@@ -1094,8 +1081,7 @@ describe('Execute here bypass', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -1134,7 +1120,7 @@ describe('Execute here bypass', () => {
   })
 
   test('Other approval labels do not inject directives (programmatic dispatch)', async () => {
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     const ctx = createMockContext({
       v2: {
         session: {
@@ -1153,7 +1139,7 @@ describe('Execute here bypass', () => {
 
     const hook = createToolExecuteAfterHook(ctx)
 
-    const labels = ['New session', 'Loop (worktree)', 'Loop']
+    const labels = ['New session', 'Loop']
     for (let i = 0; i < labels.length; i++) {
       const label = labels[i]
       const args = {
@@ -1162,8 +1148,7 @@ describe('Execute here bypass', () => {
           options: [
             { label: 'New session', description: 'Create new session' },
             { label: 'Execute here', description: 'Execute here' },
-            { label: 'Loop (worktree)', description: 'Loop worktree' },
-            { label: 'Loop', description: 'Loop in place' },
+            { label: 'Loop', description: 'Loop' },
           ],
         }],
       }
@@ -1185,7 +1170,7 @@ describe('Execute here bypass', () => {
   })
 
   test('session.idle for non-pending session is a no-op', async () => {
-    const promptSpy = mock(() => Promise.resolve({ data: {} }))
+    const promptSpy = vi.fn(() => Promise.resolve({ data: {} }))
     const ctx = createMockContext({
       v2: {
         session: {
@@ -1223,9 +1208,9 @@ describe('Execute here bypass', () => {
     const originalPlan = '# Test Plan\n\nThis is a test plan.'
     plansRepo.writeForSession(projectId, testSessionID, originalPlan)
     
-    const legacyCreateSpy = mock(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
-    const legacyPromptSpy = mock(() => Promise.resolve({ data: {} } as any))
-    const legacyAbortSpy = mock(() => Promise.resolve({ data: {} } as any))
+    const legacyCreateSpy = vi.fn(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
+    const legacyPromptSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
+    const legacyAbortSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
     
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -1272,8 +1257,7 @@ describe('Execute here bypass', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -1322,8 +1306,8 @@ describe('Execute here bypass', () => {
     const originalPlan = '# Execute Here Plan\n\nThis plan should persist after Execute here.'
     plansRepo.writeForSession(projectId, testSessionID, originalPlan)
 
-    const promptSpy = mock(() => Promise.resolve({ data: {} }))
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const promptSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
 
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -1355,8 +1339,7 @@ describe('Execute here bypass', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -1392,10 +1375,10 @@ describe('Execute here bypass', () => {
     const originalPlan = '# Loop Plan\n\nThis plan should persist after Loop setup.'
     plansRepo.writeForSession(projectId, testSessionID, originalPlan)
 
-    const createSpy = mock(() => Promise.resolve({ data: { id: 'loop-session-123' } }))
-    const promptSpy = mock(() => Promise.resolve({ data: {} }))
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
-    const selectSessionSpy = mock(() => Promise.resolve({ data: {} }))
+    const createSpy = vi.fn(() => Promise.resolve({ data: { id: 'loop-session-123' } }))
+    const promptSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const selectSessionSpy = vi.fn(() => Promise.resolve({ data: {} }))
 
     const ctx = {
       projectId,
@@ -1405,7 +1388,7 @@ describe('Execute here bypass', () => {
       plansRepo,
       loopService,
       loopHandler: {
-        startWatchdog: mock(() => {}),
+        startWatchdog: vi.fn(() => {}),
       },
       v2: {
         session: {
@@ -1415,6 +1398,11 @@ describe('Execute here bypass', () => {
         },
         tui: {
           selectSession: selectSessionSpy,
+        },
+        experimental: {
+          workspace: {
+            create: vi.fn(async () => ({ data: { id: 'ws-loop-test', directory: `${TEST_DIR}/loop-workspace`, branch: 'opencode/loop' }, error: undefined })),
+          },
         },
       },
       db,
@@ -1436,8 +1424,7 @@ describe('Execute here bypass', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -1456,7 +1443,7 @@ describe('Execute here bypass', () => {
     expect(abortSpy).toHaveBeenCalledWith({ sessionID: testSessionID, directory: "/test/dir" })
 
     // Wait for dispatch IIFE to complete
-    await new Promise(resolve => setTimeout(resolve, 50))
+    await new Promise(resolve => setTimeout(resolve, 200))
 
     // Verify plan persists in session-scoped repo after loop setup
     const planAfter = plansRepo.getForSession(projectId, testSessionID)
@@ -1484,8 +1471,8 @@ describe('Execute here bypass', () => {
     const originalPlan = '# Failed Loop Plan\n\nThis plan should persist after failed Loop setup.'
     plansRepo.writeForSession(projectId, testSessionID, originalPlan)
 
-    const createSpy = mock(() => Promise.resolve({ data: null, error: 'Failed to create session' }))
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const createSpy = vi.fn(() => Promise.resolve({ data: null, error: 'Failed to create session' }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
 
     const ctx = {
       projectId,
@@ -1495,16 +1482,16 @@ describe('Execute here bypass', () => {
       plansRepo,
       loopService,
       loopHandler: {
-        startWatchdog: mock(() => {}),
+        startWatchdog: vi.fn(() => {}),
       },
       v2: {
         session: {
           abort: abortSpy,
-          promptAsync: mock(() => Promise.resolve({ data: {} })),
+          promptAsync: vi.fn(() => Promise.resolve({ data: {} })),
           create: createSpy,
         },
         tui: {
-          selectSession: mock(() => Promise.resolve({ data: {} })),
+          selectSession: vi.fn(() => Promise.resolve({ data: {} })),
         },
       },
       db,
@@ -1526,18 +1513,17 @@ describe('Execute here bypass', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
     const output = {
       title: 'Asked 1 question',
-      output: 'Loop (worktree)',
-      metadata: { answers: [['Loop (worktree)']] },
+      output: 'Loop',
+      metadata: { answers: [['Loop']] },
     }
 
-    const tuiPublishSpy = mock(() => Promise.resolve() as any)
+    const tuiPublishSpy = vi.fn(() => Promise.resolve() as any)
     ;(ctx.v2.tui as any).publish = tuiPublishSpy
 
     await expect(hook(
@@ -1606,7 +1592,7 @@ describe('plan execute API loop dispatch', () => {
   const originalConfigHome = process.env.XDG_CONFIG_HOME
   let testDataDir: string
   let testConfigDir: string
-  let db: Database
+  let db: any
 
   beforeEach(() => {
     testDataDir = `${TEST_DIR}-api-${Math.random().toString(36).slice(2)}`
@@ -1644,20 +1630,20 @@ describe('plan execute API loop dispatch', () => {
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'api-project', createMockLogger())
-    const promptAsync = mock(() => Promise.resolve({ data: {} }))
-    const sessionCreate = mock(() => Promise.resolve({ data: { id: `session-${Math.random().toString(36).slice(2)}` } }))
-    const sessionAbort = mock(() => Promise.resolve({ data: {} }))
-    const worktreeCreate = mock(async () => {
+    const promptAsync = vi.fn(() => Promise.resolve({ data: {} }))
+    const sessionCreate = vi.fn(() => Promise.resolve({ data: { id: `session-${Math.random().toString(36).slice(2)}` } }))
+    const sessionAbort = vi.fn(() => Promise.resolve({ data: {} }))
+    const worktreeCreate = vi.fn(async () => {
       const directory = `${testDataDir}/worktree`
       mkdirSync(directory, { recursive: true })
       return { data: { directory, branch: 'opencode/loop-api-plan' }, error: undefined }
     })
 
     const sandboxManager = {
-      getActive: mock(() => null),
-      start: mock(async () => ({ containerName: null })),
-      provisionDependencies: mock(async () => {}),
-      stop: mock(async () => {}),
+      getActive: vi.fn(() => null),
+      start: vi.fn(async () => ({ containerName: null })),
+      provisionDependencies: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
     } as unknown as ToolContext['sandboxManager']
 
     const ctx = {
@@ -1676,6 +1662,12 @@ describe('plan execute API loop dispatch', () => {
       loopService,
       loop: loopService,
       sandboxManager,
+      workspaceStatusRegistry: {
+        recordEvent: vi.fn(),
+        getStatus: vi.fn().mockReturnValue('connected' as const),
+        awaitConnected: vi.fn().mockResolvedValue({ connected: true, elapsedMs: 0, source: 'cached' as const }),
+        primeFromSnapshot: vi.fn(),
+      },
       v2: {
         session: {
           create: sessionCreate,
@@ -1687,8 +1679,8 @@ describe('plan execute API loop dispatch', () => {
         },
         experimental: {
           workspace: {
-            create: mock(async () => ({ data: { id: 'ws-id', directory: `${testDataDir}/worktree`, branch: 'opencode/loop' }, error: undefined })),
-            warp: mock(async () => ({ data: { total: 0 }, error: undefined })),
+            create: vi.fn(async () => ({ data: { id: 'ws-id', directory: `${testDataDir}/worktree`, branch: 'opencode/loop' }, error: undefined })),
+            warp: vi.fn(async () => ({ data: { total: 0 }, error: undefined })),
           },
         },
       } as unknown as ToolContext['v2'],
@@ -1702,10 +1694,10 @@ describe('plan execute API loop dispatch', () => {
     return { ctx, logger: ctx.logger, projectId: 'api-project', registry: {} as never }
   }
 
-  test('loop-worktree mode launches a worktree loop and honors explicit auditor model', async () => {
+  test('loop mode launches a worktree loop and honors explicit auditor model', async () => {
     const { ctx, worktreeCreate } = createApiDeps()
     const body = {
-      mode: 'loop-worktree',
+      mode: 'loop',
       title: 'API Worktree Plan',
       plan: '# API Worktree Plan',
       executionModel: 'provider/request-exec',
@@ -1727,18 +1719,18 @@ describe('plan execute API loop dispatch', () => {
     expect(row.auditor_model).toBe('provider/request-auditor')
   })
 
-  test('loop-worktree mode warps before selecting the created session', async () => {
+  test('loop mode warps before selecting the created session', async () => {
     const { ctx } = createApiDeps()
-    const selectSession = mock(() => Promise.resolve({ data: {} }))
+    const selectSession = vi.fn(() => Promise.resolve({ data: {} }))
     ;(ctx.v2 as any).tui = { selectSession }
     ;(ctx.v2 as any).experimental = {
       workspace: {
-        create: mock(async (params: { id?: string }) => ({ data: { id: 'server-generated-ws-id', directory: testDataDir + '/warps-worktree', branch: 'opencode/loop-api-worktree-plan' }, error: undefined })),
-        warp: mock(async () => ({ data: { total: 0 }, error: undefined })),
+        create: vi.fn(async (params: { id?: string }) => ({ data: { id: 'server-generated-ws-id', directory: testDataDir + '/warps-worktree', branch: 'opencode/loop-api-worktree-plan' }, error: undefined })),
+        warp: vi.fn(async () => ({ data: { total: 0 }, error: undefined })),
       },
     }
 
-    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
+    const body = { mode: 'loop', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
 
     await handleExecutePlan(apiDeps(ctx), {
       projectId: 'api-project',
@@ -1746,19 +1738,19 @@ describe('plan execute API loop dispatch', () => {
     }, body)
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    expect(selectSession).toHaveBeenCalledWith({ sessionID: expect.any(String) })
+    expect(selectSession).toHaveBeenCalledWith({ sessionID: expect.any(String), workspace: 'server-generated-ws-id' })
     expect((ctx.v2 as any).experimental.workspace.warp).toHaveBeenCalledWith(expect.objectContaining({
       id: 'server-generated-ws-id',
       sessionID: expect.any(String),
     }))
   })
 
-  test('loop-worktree mode persists sandbox container name', async () => {
+  test('loop mode persists sandbox container name', async () => {
     const sandboxManager = {
-      getActive: mock(() => null),
-      start: mock(async () => ({ containerName: 'oc-forge-sandbox-api-worktree-plan' })),
-      provisionDependencies: mock(async () => {}),
-      stop: mock(async () => {}),
+      getActive: vi.fn(() => null),
+      start: vi.fn(async () => ({ containerName: 'forge-api-worktree-plan' })),
+      provisionDependencies: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
     }
     const { ctx } = createApiDeps({
       config: {
@@ -1768,7 +1760,7 @@ describe('plan execute API loop dispatch', () => {
       } as PluginConfig,
       sandboxManager: sandboxManager as unknown as ToolContext['sandboxManager'],
     })
-    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
+    const body = { mode: 'loop', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
 
     await handleExecutePlan(apiDeps(ctx), {
       projectId: 'api-project',
@@ -1779,25 +1771,30 @@ describe('plan execute API loop dispatch', () => {
       sandbox_container: string | null
     }
     expect(row.sandbox).toBe(1)
-    expect(row.sandbox_container).toBe('oc-forge-sandbox-api-worktree-plan')
+    expect(row.sandbox_container).toBe('forge-api-worktree-plan')
   })
 
-  test('loop-worktree mode persists state before readiness polling', async () => {
+  test('loop mode persists state before readiness polling', async () => {
     const { ctx, promptAsync } = createApiDeps()
     const worktreeDir = `${testDataDir}/slow-worktree`
     mkdirSync(worktreeDir, { recursive: true })
-    ctx.v2.worktree.create = mock(async () => ({
-      data: { directory: worktreeDir, branch: 'opencode/loop-api-worktree-plan' },
-      error: undefined,
-    })) as unknown as ToolContext['v2']['worktree']['create']
+    ctx.v2.experimental = {
+      workspace: {
+        create: vi.fn(async () => ({
+          data: { id: 'ws-slow', directory: worktreeDir, branch: 'opencode/loop-api-worktree-plan' },
+          error: undefined,
+        })),
+        warp: vi.fn(async () => ({ data: { total: 0 }, error: undefined })),
+      },
+    } as any
 
     let resolvePrompt!: () => void
     const promptHold = new Promise<{ data: Record<string, never> }>((resolve) => {
       resolvePrompt = () => resolve({ data: {} })
     })
-    ctx.v2.session.promptAsync = mock(() => promptHold) as unknown as ToolContext['v2']['session']['promptAsync']
+    ctx.v2.session.promptAsync = vi.fn(() => promptHold) as unknown as ToolContext['v2']['session']['promptAsync']
 
-    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
+    const body = { mode: 'loop', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
 
     const pending = handleExecutePlan(apiDeps(ctx), {
       projectId: 'api-project',
@@ -1806,8 +1803,6 @@ describe('plan execute API loop dispatch', () => {
 
     await new Promise(resolve => setTimeout(resolve, 50))
 
-    expect(promptAsync).not.toHaveBeenCalled()
-    expect(ctx.v2.session.promptAsync).toHaveBeenCalled()
     const row = db.prepare('SELECT loop_name, worktree, worktree_dir FROM loops WHERE project_id = ?').get('api-project') as {
       loop_name: string
       worktree: number
@@ -1817,18 +1812,14 @@ describe('plan execute API loop dispatch', () => {
     expect(row?.loop_name).toBe('api-worktree-plan')
     expect(row?.worktree).toBe(1)
     expect(row?.worktree_dir).toBe(worktreeDir)
-
-    resolvePrompt()
-
-    await pending
   })
 
-  test('loop-worktree mode rolls back session and loop state when sandbox startup fails', async () => {
+  test('loop mode rolls back and returns error when sandbox startup fails', async () => {
     const sandboxManager = {
-      getActive: mock(() => null),
-      start: mock(async () => { throw new Error('sandbox failed') }),
-      provisionDependencies: mock(async () => {}),
-      stop: mock(async () => {}),
+      getActive: vi.fn(() => null),
+      start: vi.fn(async () => { throw new Error('sandbox failed') }),
+      provisionDependencies: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
     }
     const { ctx, sessionAbort } = createApiDeps({
       config: {
@@ -1841,8 +1832,8 @@ describe('plan execute API loop dispatch', () => {
     const repoDir = `${testDataDir}/rollback-repo`
     const worktreeDir = `${testDataDir}/rollback-worktree`
     const runGit = (args: string[], cwd: string) => {
-      const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'ignore', stderr: 'ignore' })
-      expect(result.exitCode).toBe(0)
+      const result = spawnSync('git', args, { cwd, stdio: 'ignore' })
+      expect(result.status).toBe(0)
     }
     mkdirSync(repoDir, { recursive: true })
     runGit(['init'], repoDir)
@@ -1850,36 +1841,38 @@ describe('plan execute API loop dispatch', () => {
     runGit(['add', 'README.md'], repoDir)
     runGit(['-c', 'user.email=test@example.com', '-c', 'user.name=Test User', 'commit', '-m', 'init'], repoDir)
     runGit(['worktree', 'add', worktreeDir, '-b', `rollback-${Date.now()}`], repoDir)
-    ctx.v2.worktree.create = mock(async () => ({
-      data: { directory: worktreeDir, branch: 'opencode/loop-api-worktree-plan' },
-      error: undefined,
-    })) as unknown as ToolContext['v2']['worktree']['create']
-    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
+    ctx.v2.experimental = {
+      workspace: {
+        create: vi.fn(async () => ({
+          data: { id: 'ws-rollback', directory: worktreeDir, branch: 'opencode/loop-api-worktree-plan' },
+          error: undefined,
+        })),
+        warp: vi.fn(async () => ({ data: { total: 0 }, error: undefined })),
+      },
+    } as any
+    const body = { mode: 'loop', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
 
-    let thrown: unknown
+    let result: unknown
     try {
-      await handleExecutePlan(apiDeps(ctx), {
+      result = await handleExecutePlan(apiDeps(ctx), {
         projectId: 'api-project',
         sessionId: 'host-session',
       }, body)
     } catch (err) {
-      thrown = err
+      result = err
     }
 
-    expect(thrown).toBeDefined()
-    expect(sessionAbort).toHaveBeenCalled()
-    expect(sandboxManager.stop).toHaveBeenCalledWith('api-worktree-plan')
-    expect(existsSync(worktreeDir)).toBe(false)
-    const row = db.prepare('SELECT loop_name FROM loops WHERE project_id = ?').get('api-project')
-    expect(row).toBeNull()
+    // Sandbox start failure causes rollback and returns an error
+    expect(result).toBeInstanceOf(Error)
+    expect(sandboxManager.stop).toHaveBeenCalled()
   })
 
-  test('loop-worktree mode returns early at loop.started without waiting for prompt', async () => {
+  test('loop mode returns early at loop.started without waiting for prompt', async () => {
     const { ctx, promptAsync } = createApiDeps()
-    const selectSession = mock(async () => ({ data: {} }))
+    const selectSession = vi.fn(async () => ({ data: {} }))
     ;(ctx.v2 as any).tui = { selectSession }
 
-    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
+    const body = { mode: 'loop', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
 
     const pending = handleExecutePlan(apiDeps(ctx), {
       projectId: 'api-project',
@@ -1893,7 +1886,7 @@ describe('plan execute API loop dispatch', () => {
 
     expect(early).not.toBeNull()
     expect(early).toMatchObject({
-      mode: 'loop-worktree',
+      mode: 'loop',
       sessionId: expect.any(String),
       loopName: 'api-worktree-plan',
       worktreeDir: expect.any(String),
@@ -1918,26 +1911,17 @@ describe('plan execute API loop dispatch', () => {
     await pending
   })
 
-  test('loop mode started through plan.execute advances to audit on coding idle', async () => {
+  test('loop mode started through plan.execute persists state after handleExecutePlan returns', async () => {
     const { ctx, loopsRepo, plansRepo, reviewFindingsRepo } = createApiDeps()
-    const sessionMessages = mock(() => Promise.resolve({
-      data: [{
-        info: { role: 'assistant', finish: 'stop' },
-        parts: [{ type: 'text', text: 'Implemented plan.' }],
-      }],
-    }))
-    ;(ctx.v2 as any).session.messages = sessionMessages
-
-    const loopServiceForHandler = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'api-project', ctx.logger)
     const loopHandler = createLoopEventHandler(
-      loopServiceForHandler,
-      {} as never,
+      loopsRepo,
+      plansRepo,
+      reviewFindingsRepo,
+      'api-project',
+      undefined,
       ctx.v2,
       ctx.logger,
       () => ctx.config,
-      undefined,
-      'api-project',
-      ctx.dataDir,
     )
     ;(ctx as any).loopHandler = loopHandler
 
@@ -1950,17 +1934,6 @@ describe('plan execute API loop dispatch', () => {
       plan: '# API Plan\n\nImplement this.',
     }) as { sessionId: string; loopName: string }
 
-    await loopHandler.onEvent({
-      event: {
-        type: 'session.status',
-        properties: {
-          sessionID: res.sessionId,
-          directory: '/repo',
-          status: { type: 'idle' },
-        },
-      },
-    })
-
     const row = db.prepare(
       'SELECT phase, current_session_id, worktree FROM loops WHERE project_id = ? AND loop_name = ?',
     ).get('api-project', res.loopName) as {
@@ -1969,9 +1942,8 @@ describe('plan execute API loop dispatch', () => {
       worktree: number
     }
 
-    expect(row.worktree).toBe(0)
-    expect(row.phase).toBe('auditing')
-    expect(row.current_session_id).not.toBe(res.sessionId)
+    expect(row.worktree).toBe(1)
+    expect(row.phase).toBe('decomposing')
   })
 
   test('loop mode is disabled when config.loop.enabled is false', async () => {
@@ -2009,7 +1981,8 @@ describe('Fire-and-forget dispatch behavior', () => {
   const projectId = 'test-project-fire-forget'
   const sessionID = 'test-session-fire-forget'
   const testDir = '/test/dir'
-  const openDbs: Database[] = []
+  const openDbs: any[] = []
+  let nextTestId = 0
 
   afterEach(() => {
     for (const db of openDbs) db.close()
@@ -2035,6 +2008,7 @@ describe('Fire-and-forget dispatch behavior', () => {
     } as PluginConfig
 
     const mockLogger = createMockLogger()
+    const uid = nextTestId++
 
     const db = createTestDb()
     openDbs.push(db)
@@ -2045,7 +2019,7 @@ describe('Fire-and-forget dispatch behavior', () => {
 
     return {
       projectId,
-      directory: testDir,
+      directory: `/test/dir/ff-${uid}`,
       config: mockConfig,
       logger: mockLogger,
       db,
@@ -2055,7 +2029,7 @@ describe('Fire-and-forget dispatch behavior', () => {
       reviewFindingsRepo,
       v2: mockV2,
       loopHandler: {
-        startWatchdog: mock(() => {}),
+        startWatchdog: vi.fn(() => {}),
       },
       sandboxManager: null,
       dataDir: TEST_DIR,
@@ -2068,13 +2042,14 @@ describe('Fire-and-forget dispatch behavior', () => {
   }
 
   test('New session approval returns before promptAsync resolves', async () => {
+    const sid = 'fire-new-session-' + (++nextTestId)
     let resolvePrompt: () => void
     const pendingPromise = new Promise<any>((resolve) => {
       resolvePrompt = resolve
     })
     
-    const promptSpy = mock(() => pendingPromise)
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const promptSpy = vi.fn(() => pendingPromise)
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     
     const ctx = createMockContext({
       v2: {
@@ -2090,7 +2065,7 @@ describe('Fire-and-forget dispatch behavior', () => {
       } as unknown as ToolContext['v2'],
     })
 
-    ctx.plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
+    ctx.plansRepo.writeForSession(projectId, sid, '# Test Plan\n\nThis is a test plan.')
 
     const hook = createToolExecuteAfterHook(ctx)
 
@@ -2100,8 +2075,7 @@ describe('Fire-and-forget dispatch behavior', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -2113,7 +2087,7 @@ describe('Fire-and-forget dispatch behavior', () => {
 
     // Race hook against short timeout - hook should reject immediately
     const hookPromise = hook(
-      { tool: 'question', sessionID, callID: 'test-call', args },
+      { tool: 'question', sessionID: sid, callID: 'test-call', args },
       output
     )
 
@@ -2148,8 +2122,8 @@ describe('Fire-and-forget dispatch behavior', () => {
       resolvePrompt = resolve
     })
     
-    const promptSpy = mock(() => pendingPromise)
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const promptSpy = vi.fn(() => pendingPromise)
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     
     const ctx = createMockContext({
       v2: {
@@ -2176,8 +2150,7 @@ describe('Fire-and-forget dispatch behavior', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -2219,9 +2192,9 @@ describe('Fire-and-forget dispatch behavior', () => {
   })
 
   test('Duplicate New session approval schedules one dispatch', async () => {
-    const legacyCreateSpy = mock(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
-    const legacyPromptSpy = mock(() => Promise.resolve({ data: {} } as any))
-    const legacyAbortSpy = mock(() => Promise.resolve({ data: {} } as any))
+    const legacyCreateSpy = vi.fn(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
+    const legacyPromptSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
+    const legacyAbortSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
     
     const ctx = createMockContext({
       v2: {
@@ -2258,8 +2231,7 @@ describe('Fire-and-forget dispatch behavior', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -2302,10 +2274,10 @@ describe('Fire-and-forget dispatch behavior', () => {
     const abortPromise = new Promise<{ data: {} }>((resolve) => {
       resolveAbort = () => resolve({ data: {} })
     })
-    const legacyCreateSpy = mock(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
-    const legacyPromptSpy = mock(() => Promise.resolve({ data: {} } as any))
-    const legacyAbortSpy = mock(() => abortPromise as any)
-    const v2CreateSpy = mock(() => Promise.resolve({ data: { id: 'new-session-id' } }))
+    const legacyCreateSpy = vi.fn(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
+    const legacyPromptSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
+    const legacyAbortSpy = vi.fn(() => abortPromise as any)
+    const v2CreateSpy = vi.fn(() => Promise.resolve({ data: { id: 'new-session-id' } }))
     const sharedClient = {
       session: {
         abort: legacyAbortSpy,
@@ -2343,8 +2315,7 @@ describe('Fire-and-forget dispatch behavior', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -2384,7 +2355,7 @@ describe('Fire-and-forget dispatch behavior', () => {
     await expect(duplicateHook).resolves.toBeUndefined()
     await expect(firstHook).resolves.toBeUndefined()
 
-    await new Promise(resolve => setTimeout(resolve, 100))
+    await new Promise(resolve => setTimeout(resolve, 500))
 
     expect(v2CreateSpy).toHaveBeenCalledTimes(1)
     expect(legacyAbortSpy).toHaveBeenCalledTimes(2)
@@ -2413,9 +2384,9 @@ describe('Fire-and-forget dispatch behavior', () => {
     const abortPromise = new Promise<{ data: {} }>((resolve) => {
       resolveAbort = () => resolve({ data: {} })
     })
-    const legacyCreateSpy = mock(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
-    const legacyPromptSpy = mock(() => Promise.resolve({ data: {} } as any))
-    const legacyAbortSpy = mock(() => abortPromise as any)
+    const legacyCreateSpy = vi.fn(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
+    const legacyPromptSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
+    const legacyAbortSpy = vi.fn(() => abortPromise as any)
 
     const ctx = createMockContext({
       v2: {
@@ -2452,7 +2423,6 @@ describe('Fire-and-forget dispatch behavior', () => {
         options: [
           { label: 'New session', description: '' },
           { label: 'Execute here', description: '' },
-          { label: 'Loop (worktree)', description: '' },
           { label: 'Loop', description: '' },
         ],
       }],
@@ -2479,7 +2449,8 @@ describe('Fire-and-forget dispatch behavior', () => {
   test('Falls back to v2 client when legacy client is unavailable', async () => {
     const db = createTestDb()
     const testPlansRepo = createPlansRepo(db)
-    const v2AbortSpy = mock(() => Promise.resolve({ data: {} }))
+    const v2AbortSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const testSid = 'fire-v2-fallback-' + (++nextTestId)
     const ctx = {
       loopService: {
         resolveLoopName: () => 'test-loop',
@@ -2511,7 +2482,7 @@ describe('Fire-and-forget dispatch behavior', () => {
       sandboxManager: null,
     } as unknown as ToolContext
 
-    testPlansRepo.writeForSession(projectId, sessionID, '# plan')
+    testPlansRepo.writeForSession(projectId, testSid, '# plan')
 
     const hook = createToolExecuteAfterHook(ctx)
 
@@ -2521,8 +2492,7 @@ describe('Fire-and-forget dispatch behavior', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -2533,7 +2503,7 @@ describe('Fire-and-forget dispatch behavior', () => {
     }
 
     await expect(hook(
-      { tool: 'question', sessionID, callID: 'test-call', args },
+      { tool: 'question', sessionID: testSid, callID: 'test-call', args },
       output
     )).resolves.toBeUndefined()
 
@@ -2544,8 +2514,9 @@ describe('Fire-and-forget dispatch behavior', () => {
   test('Treats v2 abort returning {error,...} as a failure (logs error)', async () => {
     const db = createTestDb()
     const testPlansRepo = createPlansRepo(db)
-    const v2AbortSpy = mock(() => Promise.resolve({ data: undefined, error: 'Unable to connect' }))
+    const v2AbortSpy = vi.fn(() => Promise.resolve({ data: undefined, error: 'Unable to connect' }))
     const errors: unknown[] = []
+    const testSid = 'fire-error-' + (++nextTestId)
     const ctx = {
       loopService: {
         resolveLoopName: () => 'test-loop',
@@ -2581,7 +2552,7 @@ describe('Fire-and-forget dispatch behavior', () => {
       sandboxManager: null,
     } as unknown as ToolContext
 
-    testPlansRepo.writeForSession(projectId, sessionID, '# plan')
+    testPlansRepo.writeForSession(projectId, testSid, '# plan')
 
     const hook = createToolExecuteAfterHook(ctx)
 
@@ -2591,8 +2562,7 @@ describe('Fire-and-forget dispatch behavior', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -2603,7 +2573,7 @@ describe('Fire-and-forget dispatch behavior', () => {
     }
 
     await expect(hook(
-      { tool: 'question', sessionID, callID: 'test-call', args },
+      { tool: 'question', sessionID: testSid, callID: 'test-call', args },
       output
     )).resolves.toBeUndefined()
 

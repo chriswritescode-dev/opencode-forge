@@ -87,7 +87,7 @@ See [loop-system.md](loop-system.md) for detailed documentation.
 
 ## Sandbox System
 
-Sandbox is mandatory for all loops. Docker must be available before any loop starts.
+Sandbox is optional. When Docker is available and `sandbox.mode = 'docker'` is configured, a sandbox container is provisioned automatically; otherwise loops run in worktree-only mode.
 
 ### Components
 

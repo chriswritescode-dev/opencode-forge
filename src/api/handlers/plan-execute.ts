@@ -5,7 +5,7 @@ import { buildStartLoopCommand, type PlanSource, type ForgeExecutionCommand, typ
 import { buildService } from './_shared'
 
 type LoopStartedInfo = Parameters<NonNullable<NonNullable<StartLoopCommand['lifecycle']>['onStarted']>>[0]
-type PlanLoopMode = 'loop' | 'loop-worktree'
+type PlanLoopMode = 'loop'
 
 const inFlightPlanExecuteLoops = new Map<string, Promise<unknown>>()
 
@@ -103,8 +103,7 @@ export async function handleExecutePlan(
       }
     }
 
-    case 'loop':
-    case 'loop-worktree': {
+    case 'loop': {
       const planTextForHash = parsed.plan
         ?? (await Promise.resolve(deps.ctx.plansRepo.getForSession(projectId, sessionId)?.content)) ?? ''
       const dedupeKey = `${projectId}::${sessionId}::${parsed.mode}::${hashPlan(planTextForHash)}`
@@ -123,7 +122,6 @@ export async function handleExecutePlan(
 
         const command = buildStartLoopCommand({
           source,
-          mode: 'worktree',
           executionModel,
           auditorModel,
           hostSessionId: sessionId,

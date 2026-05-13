@@ -72,13 +72,13 @@ describe('reconcileSandboxes', () => {
   }
 
   it('should not call start when container is already active', async () => {
-    const state = createBaseState({ sandboxContainer: 'oc-forge-sandbox-test-loop' })
+    const state = createBaseState({ sandboxContainer: 'forge-test-loop' })
 
     mockLoopService.listActive.mockReturnValue([state])
     mockSandboxManager.isActive.mockReturnValue(true)
     mockSandboxManager.isLive.mockResolvedValue(true)
     mockSandboxManager.getActive.mockReturnValue({
-      containerName: 'oc-forge-sandbox-test-loop',
+      containerName: 'forge-test-loop',
       projectDir: '/test/dir',
       startedAt: state.startedAt,
     })
@@ -97,7 +97,7 @@ describe('reconcileSandboxes', () => {
     mockSandboxManager.isActive.mockReturnValue(true)
     mockSandboxManager.isLive.mockResolvedValue(true)
     mockSandboxManager.getActive.mockReturnValue({
-      containerName: 'oc-forge-sandbox-test-loop',
+      containerName: 'forge-test-loop',
       projectDir: '/test/dir',
       startedAt: state.startedAt,
     })
@@ -105,11 +105,11 @@ describe('reconcileSandboxes', () => {
     await reconcileSandboxes(deps)
 
     expect(mockSandboxManager.start).not.toHaveBeenCalled()
-    expect(mockLoopService.setSandboxContainer).toHaveBeenCalledWith('test-loop', 'oc-forge-sandbox-test-loop')
+    expect(mockLoopService.setSandboxContainer).toHaveBeenCalledWith('test-loop', 'forge-test-loop')
   })
 
   it('should call restore when container name exists but container is not active', async () => {
-    const state = createBaseState({ sandboxContainer: 'oc-forge-sandbox-test-loop' })
+    const state = createBaseState({ sandboxContainer: 'forge-test-loop' })
 
     mockLoopService.listActive.mockReturnValue([state])
     mockSandboxManager.isActive.mockReturnValue(false)
@@ -126,12 +126,12 @@ describe('reconcileSandboxes', () => {
     mockLoopService.listActive.mockReturnValue([state])
     mockLoopService.getActiveState.mockReturnValue(state)
     mockSandboxManager.isActive.mockReturnValue(false)
-    mockSandboxManager.start.mockResolvedValue({ containerName: 'oc-forge-sandbox-test-loop' })
+    mockSandboxManager.start.mockResolvedValue({ containerName: 'forge-test-loop' })
 
     await reconcileSandboxes(deps)
 
     expect(mockSandboxManager.start).toHaveBeenCalledWith('test-loop', '/test/dir', state.startedAt)
-    expect(mockLoopService.setSandboxContainer).toHaveBeenCalledWith('test-loop', 'oc-forge-sandbox-test-loop')
+    expect(mockLoopService.setSandboxContainer).toHaveBeenCalledWith('test-loop', 'forge-test-loop')
   })
 
   it('should skip loops without sandbox enabled', async () => {
@@ -158,14 +158,14 @@ describe('reconcileSandboxes', () => {
   })
 
   it('should correct stale sandboxContainer when it differs from manager value', async () => {
-    const state = createBaseState({ sandboxContainer: 'oc-forge-sandbox-stale-name' })
+    const state = createBaseState({ sandboxContainer: 'forge-stale-name' })
 
     mockLoopService.listActive.mockReturnValue([state])
     mockLoopService.getActiveState.mockReturnValue(state)
     mockSandboxManager.isActive.mockReturnValue(true)
     mockSandboxManager.isLive.mockResolvedValue(true)
     mockSandboxManager.getActive.mockReturnValue({
-      containerName: 'oc-forge-sandbox-test-loop',
+      containerName: 'forge-test-loop',
       projectDir: '/test/dir',
       startedAt: state.startedAt,
     })
@@ -173,16 +173,16 @@ describe('reconcileSandboxes', () => {
     await reconcileSandboxes(deps)
 
     expect(mockSandboxManager.start).not.toHaveBeenCalled()
-    expect(mockLoopService.setSandboxContainer).toHaveBeenCalledWith('test-loop', 'oc-forge-sandbox-test-loop')
+    expect(mockLoopService.setSandboxContainer).toHaveBeenCalledWith('test-loop', 'forge-test-loop')
   })
 
   it('should not set state when container is active and name already matches', async () => {
-    const state = createBaseState({ sandboxContainer: 'oc-forge-sandbox-test-loop' })
+    const state = createBaseState({ sandboxContainer: 'forge-test-loop' })
 
     mockLoopService.listActive.mockReturnValue([state])
     mockSandboxManager.isActive.mockReturnValue(true)
     mockSandboxManager.getActive.mockReturnValue({
-      containerName: 'oc-forge-sandbox-test-loop',
+      containerName: 'forge-test-loop',
       projectDir: '/test/dir',
       startedAt: state.startedAt,
     })
@@ -207,7 +207,7 @@ describe('reconcileSandboxes', () => {
       if (loopName === 'test-loop-1') {
         throw new Error('Failed to start container')
       }
-      return { containerName: 'oc-forge-sandbox-test-loop-2' }
+      return { containerName: 'forge-test-loop-2' }
     })
 
     await reconcileSandboxes(deps)
@@ -218,7 +218,7 @@ describe('reconcileSandboxes', () => {
       expect.stringContaining('test-loop-1'),
       expect.any(Error)
     )
-    expect(mockLoopService.setSandboxContainer).toHaveBeenCalledWith('test-loop-2', 'oc-forge-sandbox-test-loop-2')
+    expect(mockLoopService.setSandboxContainer).toHaveBeenCalledWith('test-loop-2', 'forge-test-loop-2')
   })
 
   it('should prevent concurrent execution (re-entrancy guard)', async () => {
@@ -235,7 +235,7 @@ describe('reconcileSandboxes', () => {
     mockSandboxManager.start.mockImplementation(async () => {
       // Simulate slow start
       await new Promise(resolve => setTimeout(resolve, 50))
-      return { containerName: 'oc-forge-sandbox-test-loop' }
+      return { containerName: 'forge-test-loop' }
     })
 
     // Start two concurrent reconciliations at the same time
@@ -251,13 +251,13 @@ describe('reconcileSandboxes', () => {
   })
 
   it('should restore container when map is stale but Docker reports container missing', async () => {
-    const state = createBaseState({ sandboxContainer: 'oc-forge-sandbox-test-loop' })
+    const state = createBaseState({ sandboxContainer: 'forge-test-loop' })
     
     mockLoopService.listActive.mockReturnValue([state])
     // Map says active, but isLive will check Docker
     mockSandboxManager.isActive.mockReturnValue(true)
     mockSandboxManager.getActive.mockReturnValue({
-      containerName: 'oc-forge-sandbox-test-loop',
+      containerName: 'forge-test-loop',
       projectDir: '/test/dir',
       startedAt: state.startedAt,
     })

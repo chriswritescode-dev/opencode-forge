@@ -6,7 +6,7 @@ type Schema<T> = {
   parse(input: unknown): T
 }
 
-type ExecutionMode = 'new-session' | 'execute-here' | 'loop' | 'loop-worktree'
+type ExecutionMode = 'new-session' | 'execute-here' | 'loop'
 
 export const PlanWriteBody: Schema<{ content: string }> = z.object({
   content: z.string(),
@@ -25,7 +25,7 @@ export const PlanExecuteBody: Schema<{
   targetSessionId?: string
   plan?: string
 }> = z.object({
-  mode: z.enum(['new-session', 'execute-here', 'loop', 'loop-worktree']),
+  mode: z.enum(['new-session', 'execute-here', 'loop']),
   title: z.string(),
   executionModel: z.string().optional(),
   auditorModel: z.string().optional(),
@@ -36,14 +36,12 @@ export const PlanExecuteBody: Schema<{
 export const LoopStartBody: Schema<{
   plan: string
   title: string
-  worktree?: boolean
   executionModel?: string
   auditorModel?: string
   hostSessionId?: string
 }> = z.object({
   plan: z.string(),
   title: z.string(),
-  worktree: z.boolean().optional(),
   executionModel: z.string().optional(),
   auditorModel: z.string().optional(),
   hostSessionId: z.string().optional(),
@@ -51,7 +49,7 @@ export const LoopStartBody: Schema<{
 
 export const ModelPrefsBody: Schema<ModelPrefs> = z.object({
   mode: z
-    .enum(['new-session', 'execute-here', 'loop', 'loop-worktree'])
+    .enum(['new-session', 'execute-here', 'loop'])
     .optional(),
   executionModel: z.string().optional(),
   auditorModel: z.string().optional(),

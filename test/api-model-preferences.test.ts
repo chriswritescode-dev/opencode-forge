@@ -44,7 +44,6 @@ describe('model preferences API', () => {
     const cases = [
       ['new-session', 'New session'],
       ['execute-here', 'Execute here'],
-      ['loop-worktree', 'Loop (worktree)'],
       ['loop', 'Loop'],
     ] as const
 
@@ -70,6 +69,17 @@ describe('model preferences API', () => {
     const prefs = readExecutionPreferences(projectId)
     expect(prefs?.mode).toBe('New session')
     expect(prefs?.executionModel).toBe('test/model')
+  })
+
+  test('legacy loop-worktree mode normalizes to Loop', async () => {
+    const projectId = 'project-legacy-loop-worktree'
+    const body = { mode: 'loop-worktree' }
+
+    const result = await handleWriteModelPreferences(createMockApiDeps(projectId), { projectId }, body)
+    expect(result).toEqual({ ok: true })
+
+    const prefs = readExecutionPreferences(projectId)
+    expect(prefs?.mode).toBe('Loop')
   })
 
   test('invalid preference body throws bad_request error', async () => {

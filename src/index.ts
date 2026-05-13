@@ -572,7 +572,7 @@ After research/design, output a brief intention/goal/approach summary followed i
 
 All file references inside the marked plan MUST be repo-relative paths (e.g. \`src/foo.ts\`). Never embed absolute host paths (starting with \`/\` or \`~/\`) — the plan is replayed into loop sessions that may run in a git worktree at a different absolute path.
 
-use the \`question\` tool to request execution approval with: "New session", "Execute here", "Loop (worktree)", or "Loop". Never execute without a marked plan and explicit approval via the question tool.
+use the \`question\` tool to request execution approval with: "New session", "Execute here", or "Loop". Never execute without a marked plan and explicit approval via the question tool.
 </system-reminder>`,
           synthetic: true,
         })

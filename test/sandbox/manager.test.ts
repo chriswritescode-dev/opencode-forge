@@ -8,7 +8,7 @@ describe('SandboxManager.isLiveByName', () => {
     return {
       checkDocker: mock(async () => true),
       imageExists: mock(async () => true),
-      containerName: (worktreeName: string) => `oc-forge-sandbox-${worktreeName}`,
+      containerName: (worktreeName: string) => `forge-${worktreeName}`,
       isRunning: mock(async () => false),
       createContainer: mock(async () => {}),
       removeContainer: mock(async () => {}),
@@ -35,7 +35,7 @@ describe('SandboxManager.isLiveByName', () => {
     const result = await manager.isLiveByName('test-worktree')
 
     expect(result).toBe(true)
-    expect(mockDocker.isRunning).toHaveBeenCalledWith('oc-forge-sandbox-test-worktree')
+    expect(mockDocker.isRunning).toHaveBeenCalledWith('forge-test-worktree')
   })
 
   it('should return false when Docker reports container is not running', async () => {
@@ -49,7 +49,7 @@ describe('SandboxManager.isLiveByName', () => {
     const result = await manager.isLiveByName('test-worktree')
 
     expect(result).toBe(false)
-    expect(mockDocker.isRunning).toHaveBeenCalledWith('oc-forge-sandbox-test-worktree')
+    expect(mockDocker.isRunning).toHaveBeenCalledWith('forge-test-worktree')
   })
 
   it('should not modify activeSandboxes map', async () => {

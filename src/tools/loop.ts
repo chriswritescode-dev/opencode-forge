@@ -92,7 +92,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           source,
           title: sessionTitle,
           loopName,
-          mode: 'worktree' as const,
           maxIterations: config.loop?.defaultMaxIterations ?? 0,
           executionModel,
           auditorModel,

@@ -16,7 +16,7 @@ import {
 } from '../api/bus-protocol'
 import { listConnectedWorkspaces, type WorkspaceListApi } from './workspace-listing'
 
-export type ApiExecutionMode = 'new-session' | 'execute-here' | 'loop' | 'loop-worktree'
+export type ApiExecutionMode = 'new-session' | 'execute-here' | 'loop'
 
 export interface ExecutionContext {
   preferences: ExecutionPreferences | null
@@ -40,7 +40,6 @@ export interface ExecutePlanRequest {
 export interface StartLoopRequest {
   plan: string
   title: string
-  worktree: boolean
   executionModel?: string
   auditorModel?: string
   hostSessionId?: string
@@ -470,7 +469,7 @@ export async function connectForgeProject(
         return { sessionId: newSessionId }
       }
 
-      if (req.mode === 'loop' || req.mode === 'loop-worktree') {
+      if (req.mode === 'loop') {
         let result: { sessionId?: string; loopName?: string; worktreeDir?: string; workspaceId?: string } | null
         let requestRid = ''
         try {
@@ -570,7 +569,6 @@ export async function connectForgeProject(
           {
             plan: req.plan,
             title: req.title,
-            worktree: req.worktree,
             executionModel: req.executionModel,
             auditorModel: req.auditorModel,
             hostSessionId: req.hostSessionId,

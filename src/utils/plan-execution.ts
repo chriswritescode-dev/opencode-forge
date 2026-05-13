@@ -12,7 +12,6 @@
 export const PLAN_EXECUTION_LABELS = [
   'New session',
   'Execute here',
-  'Loop (worktree)',
   'Loop',
 ] as const
 

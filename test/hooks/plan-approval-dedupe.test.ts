@@ -76,7 +76,6 @@ function planApprovalQuestionArgs() {
         options: [
           { label: 'New session', description: '' },
           { label: 'Execute here', description: '' },
-          { label: 'Loop (worktree)', description: '' },
           { label: 'Loop', description: '' },
         ],
       },

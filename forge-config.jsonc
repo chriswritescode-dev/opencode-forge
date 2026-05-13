@@ -43,7 +43,7 @@
     }
   },
 
-  // Sandbox configuration. Sandbox is required for all loops.
+  // Sandbox configuration. Sandbox is optional; when Docker is unavailable, loops run in worktree-only mode.
   // Currently only Docker is supported; additional modes may be added later.
   "sandbox": {
     "mode": "docker",

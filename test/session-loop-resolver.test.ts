@@ -188,8 +188,8 @@ describe('createSessionLoopResolver', () => {
       const loopService = {
         resolveLoopName: () => null,
         getActiveState: (name: string) =>
-          name === 'loop-worktree' ? { loopName: 'loop-worktree', active: true, sandbox: true, worktreeDir: '/worktree' } : null,
-        listActive: () => [{ loopName: 'loop-worktree', worktreeDir: '/worktree', sandbox: true, worktree: true, active: true }],
+          name === 'active-loop' ? { loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' } : null,
+        listActive: () => [{ loopName: 'active-loop', worktreeDir: '/worktree', sandbox: true, worktree: true, active: true }],
       }
 
       const getSessionDirectory = async (_sessionId: string) => '/worktree'
@@ -202,7 +202,7 @@ describe('createSessionLoopResolver', () => {
       })
 
       const result = await resolver.resolveActiveLoopForSession('session-subagent')
-      expect(result).toEqual({ loopName: 'loop-worktree', active: true, sandbox: true, worktreeDir: '/worktree' })
+      expect(result).toEqual({ loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' })
     })
 
     it('directory-fallback: directory does not match any active loop returns null', async () => {
@@ -211,8 +211,8 @@ describe('createSessionLoopResolver', () => {
       const loopService = {
         resolveLoopName: () => null,
         getActiveState: (name: string) =>
-          name === 'loop-worktree' ? { loopName: 'loop-worktree', active: true, sandbox: true, worktreeDir: '/worktree' } : null,
-        listActive: () => [{ loopName: 'loop-worktree', worktreeDir: '/worktree', sandbox: true, worktree: true, active: true }],
+          name === 'active-loop' ? { loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' } : null,
+        listActive: () => [{ loopName: 'active-loop', worktreeDir: '/worktree', sandbox: true, worktree: true, active: true }],
       }
 
       const getSessionDirectory = async (_sessionId: string) => '/some-other-dir'
@@ -254,8 +254,8 @@ describe('createSessionLoopResolver', () => {
       const loopService = {
         resolveLoopName: () => null,
         getActiveState: (name: string) =>
-          name === 'loop-worktree' ? { loopName: 'loop-worktree', active: true, sandbox: true, worktreeDir: '/worktree' } : null,
-        listActive: () => [{ loopName: 'loop-worktree', worktreeDir: '/worktree/', sandbox: true, worktree: true, active: true }],
+          name === 'active-loop' ? { loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' } : null,
+        listActive: () => [{ loopName: 'active-loop', worktreeDir: '/worktree/', sandbox: true, worktree: true, active: true }],
       }
 
       const getSessionDirectory = async (_sessionId: string) => '/worktree'
@@ -268,7 +268,7 @@ describe('createSessionLoopResolver', () => {
       })
 
       const result = await resolver.resolveActiveLoopForSession('session-subagent')
-      expect(result).toEqual({ loopName: 'loop-worktree', active: true, sandbox: true, worktreeDir: '/worktree' })
+      expect(result).toEqual({ loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' })
     })
   })
 })

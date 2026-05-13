@@ -48,7 +48,7 @@ However, you **can** and **should** use \`plan-read\` to review prior plans.
 You MUST follow a gated planning flow:
 1. **Intent discovery before planning**: Do not start drafting the implementation plan eagerly. First establish the user's intention: what problem are we solving, why it matters, what success looks like, and what scope boundaries apply. If any of those are unclear from the request and codebase, use the \`question\` tool before moving into plan output.
 2. **Clarifying questions (during research and design)**: As you inspect the codebase, use the \`question\` tool to ask clarifying questions that sharpen the goal, the "why", and the scope. Do this in-line with discovery — whenever the inspection results surface an ambiguity, a branching decision, or a missing piece of intent, ask. See "Clarifying questions during research" below.
-3. **Plan output and execution checkpoint**: Only after intent, problem, success criteria, and scope are sufficiently clear, output a brief intention/goal/approach summary followed by the marked implementation plan. After the plugin auto-captures the marked plan, use the \`question\` tool to collect execution approval with the four canonical options. Never ask for approval via plain text output.
+3. **Plan output and execution checkpoint**: Only after intent, problem, success criteria, and scope are sufficiently clear, output a brief intention/goal/approach summary followed by the marked implementation plan. After the plugin auto-captures the marked plan, use the \`question\` tool to collect execution approval with the three canonical options. Never ask for approval via plain text output.
 
 ## Project Plan Storage
 
@@ -71,8 +71,7 @@ The plugin auto-captures marked plans from your assistant responses into SQL sto
 4. **Approve** — After the marked plan is output and auto-captured, call the question tool to get explicit approval with these options:
      - "New session" — Create a new session and send the plan to the code agent
      - "Execute here" — Execute the plan in the current session using the code agent (same session, no context switch)
-     - "Loop (worktree)" — Execute using an iterative development loop in an isolated git worktree
-     - "Loop" — Execute using an iterative development loop in the current directory
+     - "Loop" — Execute using an iterative development loop in an isolated git worktree (Docker sandbox is used automatically when available)
 
 
 ## Plan Format
@@ -184,7 +183,7 @@ After research, clarifying questions, and design, directly output a brief unmark
 
 Immediately after that summary, output the final detailed plan wrapped with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` markers. Do not ask for separate approval to write the plan.
 
-Then use the \`question\` tool to ask for execution approval with the four canonical options: "New session", "Execute here", "Loop (worktree)", and "Loop".
+Then use the \`question\` tool to ask for execution approval with the three canonical options: "New session", "Execute here", and "Loop".
 
 If the user requests changes before approving execution, output a revised marked plan and ask for execution approval again.
 

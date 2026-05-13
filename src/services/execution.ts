@@ -91,7 +91,6 @@ export interface StartLoopCommand {
   source: PlanSource
   title?: string
   loopName?: string
-  mode: 'in-place' | 'worktree'
   maxIterations?: number
   executionModel?: string
   auditorModel?: string
@@ -102,7 +101,6 @@ export interface StartLoopCommand {
     startWatchdog?: boolean
     abortSourceSessionOnSuccess?: boolean
     onStarted?: (info: {
-      mode: 'in-place' | 'worktree'
       sessionId: string
       loopName: string
       displayName: string
@@ -116,7 +114,6 @@ export interface BuildStartLoopCommandInput {
   source: PlanSource
   title?: string
   loopName?: string
-  mode: 'in-place' | 'worktree'
   maxIterations?: number
   executionModel?: string
   auditorModel?: string
@@ -130,7 +127,6 @@ export function buildStartLoopCommand(input: BuildStartLoopCommandInput): StartL
     source: input.source,
     title: input.title,
     loopName: input.loopName,
-    mode: input.mode,
     maxIterations: input.maxIterations,
     executionModel: input.executionModel,
     auditorModel: input.auditorModel,
@@ -202,7 +198,6 @@ export interface PlanExecutionStartedResult {
 
 export interface LoopStartedResult {
   operation: 'loop.start'
-  mode: 'in-place' | 'worktree'
   sessionId: string
   loopName: string
   displayName: string
@@ -566,35 +561,38 @@ async function selectSessionWithFallback(
   const maxAttempts = 3
   const backoffMs = 250
 
-  async function attemptSelectSession(attempt: number): Promise<boolean> {
+  async function attemptSelectSession(attempt: number): Promise<{ ok: boolean; retryable: boolean }> {
     try {
-      if (!deps.v2.tui) {
-        deps.logger.log(`[warp] select.v2.selectSession skipped attempt=${attempt} reason=no-v2-tui`)
-        return false
-      }
-      await deps.v2.tui.selectSession({
+      await deps.v2.tui!.selectSession({
         sessionID: selection.sessionID,
         ...(selection.workspace ? { workspace: selection.workspace } : {}),
       })
       deps.logger.log(`[warp] select.v2.selectSession ok attempt=${attempt}`)
-      return true
+      return { ok: true, retryable: false }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
       deps.logger.log(`[warp] select.v2.selectSession failed attempt=${attempt} error="${errorMsg}"`)
-      if (errorMsg.includes('Unable to connect')) {
-        deps.logger.log('selectSessionWithFallback: v2 TUI unavailable, falling back to publish')
+      const retryable = errorMsg.includes('Unable to connect')
+      if (retryable) {
+        deps.logger.log('selectSessionWithFallback: v2 TUI unavailable, will retry then fall back to publish')
       } else {
         deps.logger.error('selectSessionWithFallback: v2 TUI error', err)
       }
-      return false
+      return { ok: false, retryable }
     }
   }
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    if (await attemptSelectSession(attempt)) return
-    if (attempt < maxAttempts) {
-      await new Promise(resolve => setTimeout(resolve, backoffMs))
+  if (deps.v2.tui) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const result = await attemptSelectSession(attempt)
+      if (result.ok) return
+      if (!result.retryable) break
+      if (attempt < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, backoffMs))
+      }
     }
+  } else {
+    deps.logger.log('[warp] select.v2.selectSession skipped reason=no-v2-tui')
   }
 
   try {
@@ -918,7 +916,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     let sandboxStarted = false
     let sandboxStartAttempted = false
     let sandboxContainer: string | null = null
-    let sandboxEnabledForLoop = false
+    let sandboxEnabledForLoop: boolean
     let loopStatePersisted = false
 
     const rollbackLoopStart = async (): Promise<void> => {
@@ -1075,7 +1073,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             sandboxContainer = result.containerName
             deps.logger.log(`handleStartLoop: sandbox container ${result.containerName} started`)
           } catch (err) {
-            deps.logger.error('handleStartLoop: failed to start sandbox', err)
+            deps.logger.error('handleStartLoop: failed to start sandbox; rolling back loop start', err)
             await rollbackLoopStart()
             return fail('internal_error', 500, 'Failed to start sandbox')
           }
@@ -1120,9 +1118,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       // Order: createBuiltinWorktreeWorkspace → createLoopSessionWithWorkspace → await selectInitialWorktreeSession
       // (with awaitConnected up to 5s) → sandbox start → loop-state persist → onStarted.
-      deps.logger.log(`[warp] lifecycle.onStarted loopName=${uniqueLoopName} sessionId=${sessionId} workspaceId=${createdWorkspaceId ?? 'none'} mode=${command.mode}`)
+      deps.logger.log(`[warp] lifecycle.onStarted loopName=${uniqueLoopName} sessionId=${sessionId} workspaceId=${createdWorkspaceId ?? 'none'}`)
       command.lifecycle?.onStarted?.({
-        mode: command.mode,
         sessionId,
         loopName: uniqueLoopName,
         displayName,
@@ -1216,7 +1213,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
         return ok({
           operation: 'loop.start',
-          mode: command.mode,
           sessionId,
           loopName: uniqueLoopName,
           displayName,
@@ -1465,7 +1461,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
         return ok({
           operation: 'loop.start',
-          mode: command.mode,
           sessionId: createdSessionId,
           loopName: uniqueLoopName,
           displayName,
@@ -1623,7 +1618,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       
       return ok({
         operation: 'loop.start',
-        mode: command.mode,
         sessionId,
         loopName: uniqueLoopName,
         displayName,

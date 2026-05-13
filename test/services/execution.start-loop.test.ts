@@ -262,7 +262,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
       {
         type: 'loop.start' as const,
         source: { kind: 'inline', planText: '# Test Plan\n\nThis is a test plan.' },
-        mode: 'worktree' as const,
         lifecycle: { selectSession: true },
       },
     )
@@ -376,7 +375,6 @@ describe('handleStartLoop builtin worktree workspace', () => {
       {
         type: 'loop.start' as const,
         source: { kind: 'inline', planText: '# Test Plan\n\nThis is a test plan.' },
-        mode: 'worktree' as const,
         lifecycle: { selectSession: true },
       },
     )
@@ -392,7 +390,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
     expect(state!.sandboxContainer).toBeUndefined()
   })
 
-  test('hard-fails when sandbox start throws docker-unavailable', async () => {
+  test('fails and rolls back when sandbox manager present but start throws', async () => {
     const experimentalWorkspaceCreateMock = vi.fn().mockResolvedValue({
       data: {
         id: 'ws_test',
@@ -410,11 +408,11 @@ describe('handleStartLoop builtin worktree workspace', () => {
       session: {
         create: vi.fn().mockResolvedValue({ data: { id: 'session_test' } }),
         get: vi.fn().mockResolvedValue({ data: {} }),
-        promptAsync: async () => ({ error: null }),
-        abort: async () => ({}),
-        delete: async () => ({}),
-        messages: async () => ({ data: [] }),
-        status: async () => ({ data: {} }),
+        promptAsync: vi.fn().mockResolvedValue({ error: null }),
+        abort: vi.fn().mockResolvedValue({}),
+        delete: vi.fn().mockResolvedValue({}),
+        messages: vi.fn().mockResolvedValue({ data: [] }),
+        status: vi.fn().mockResolvedValue({ data: {} }),
       },
       experimental: {
         workspace: {
@@ -426,12 +424,12 @@ describe('handleStartLoop builtin worktree workspace', () => {
         },
       },
       tui: {
-        publish: async () => {},
+        publish: vi.fn().mockResolvedValue(undefined),
         selectSession: vi.fn().mockResolvedValue({}),
       },
       worktree: {
         create: vi.fn().mockResolvedValue({ data: { directory: '/tmp/wt/abc', branch: 'opencode/abc' } }),
-        remove: async () => {},
+        remove: vi.fn().mockResolvedValue(undefined),
       },
     }
 
@@ -481,14 +479,23 @@ describe('handleStartLoop builtin worktree workspace', () => {
       {
         type: 'loop.start' as const,
         source: { kind: 'inline', planText: '# Test Plan\n\nThis is a test plan.' },
-        mode: 'worktree' as const,
         lifecycle: { selectSession: true },
       },
     )
 
+    // Sandbox start failure should return an error, not silently fall back
     expect(result.ok).toBe(false)
-    if (result.ok) return
-    expect(result.error.message).toContain('Failed to start sandbox')
+    expect(result).toHaveProperty('error')
+    if (!result.ok) {
+      expect(result.error.code).toBe('internal_error')
+    }
+
+    // Verify rollback was invoked (session aborted, workspace removed)
+    expect(mockV2Client.session.abort).toHaveBeenCalled()
+    expect(mockV2Client.experimental.workspace.remove).toHaveBeenCalled()
+
+    // Verify sandbox stop was called during rollback
+    expect(mockSandboxManager.stop).toHaveBeenCalled()
   })
 })
 
@@ -602,7 +609,7 @@ describe('handleStartLoop concurrent-start dedupe', () => {
     const command = {
       type: 'loop.start' as const,
       source: { kind: 'inline' as const, planText: '# Dedupe Plan\n\nTest plan for dedupe.' },
-      mode: 'worktree' as const,
+      
       lifecycle: { selectSession: true },
       hostSessionId: 'host-1',
     }
@@ -656,14 +663,14 @@ describe('handleStartLoop concurrent-start dedupe', () => {
     const cmd1 = {
       type: 'loop.start' as const,
       source: { kind: 'inline' as const, planText: '# Plan Alpha\n\nDifferent plan A.' },
-      mode: 'worktree' as const,
+      
       lifecycle: { selectSession: true },
       hostSessionId: 'host-A',
     }
     const cmd2 = {
       type: 'loop.start' as const,
       source: { kind: 'inline' as const, planText: '# Plan Beta\n\nDifferent plan B.' },
-      mode: 'worktree' as const,
+      
       lifecycle: { selectSession: true },
       hostSessionId: 'host-B',
     }
@@ -710,7 +717,7 @@ describe('handleStartLoop concurrent-start dedupe', () => {
     const cmd = {
       type: 'loop.start' as const,
       source: { kind: 'inline' as const, planText: '# Sequential Plan\n\nSequential test.' },
-      mode: 'worktree' as const,
+      
       lifecycle: { selectSession: true },
       hostSessionId: 'host-seq',
     }
@@ -818,7 +825,7 @@ describe('handleStartLoop select-session ordering', () => {
       {
         type: 'loop.start' as const,
         source: { kind: 'inline' as const, planText: '# Order Plan\n\nTest ordering.' },
-        mode: 'worktree' as const,
+        
         lifecycle: {
           selectSession: true,
           onStarted: (info) => { onStartedTs = Date.now() },
@@ -872,7 +879,7 @@ describe('handleStartLoop select-session ordering', () => {
       {
         type: 'loop.start' as const,
         source: { kind: 'inline' as const, planText: '# Reject Plan\n\nTest rejection.' },
-        mode: 'worktree' as const,
+        
         lifecycle: {
           selectSession: true,
           onStarted: () => { onStartedCalled = true },
@@ -919,7 +926,7 @@ describe('handleStartLoop select-session ordering', () => {
       {
         type: 'loop.start' as const,
         source: { kind: 'inline' as const, planText: '# Timeout Plan\n\nTest timeout.' },
-        mode: 'worktree' as const,
+        
         lifecycle: {
           selectSession: true,
           onStarted: () => { onStartedCalled = true },

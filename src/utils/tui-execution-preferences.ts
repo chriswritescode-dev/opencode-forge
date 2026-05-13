@@ -1,6 +1,6 @@
 /**
  * TUI execution preferences persistence for per-loop launch settings.
- * 
+ *
  * This module provides helpers to read/write last-used execution preferences
  * from project KV, used only for dialog defaults - not for runtime behavior.
  */
@@ -12,13 +12,21 @@ import { resolveDataDir, createTuiPrefsRepo } from '../storage'
 import type { PluginConfig } from '../types'
 
 export interface ExecutionPreferences {
-  mode: 'New session' | 'Execute here' | 'Loop (worktree)' | 'Loop'
+  mode: 'New session' | 'Execute here' | 'Loop'
   executionModel?: string
   auditorModel?: string
 }
 
 const PREFERENCES_KEY = 'tui:plan-execution-preferences'
 const TTL_MS = 30 * 24 * 60 * 60 * 1000 // 30 days
+
+function normalizeMode(mode: string): ExecutionPreferences['mode'] {
+  const lower = mode.toLowerCase()
+  if (lower === 'loop' || lower.startsWith('loop ') || lower.startsWith('loop-')) {
+    return 'Loop'
+  }
+  return mode as ExecutionPreferences['mode']
+}
 
 /**
  * Gets the database path used by the memory plugin.
@@ -48,7 +56,7 @@ export function readExecutionPreferences(projectId: string, dbPathOverride?: str
     if (!stored) return null
     
     return {
-      mode: stored.mode ?? 'Loop (worktree)',
+      mode: normalizeMode(stored.mode ?? 'Loop'),
       executionModel: stored.executionModel,
       auditorModel: stored.auditorModel,
     }
@@ -112,8 +120,7 @@ export function resolveExecutionDialogDefaults(
   config: PluginConfig,
   storedPrefs: ExecutionPreferences | null
 ): { mode: string; executionModel: string; auditorModel: string } {
-  const mode = storedPrefs?.mode ?? 'Loop (worktree)'
-  
+  const mode = normalizeMode(storedPrefs?.mode ?? 'Loop')
   const executionModel = storedPrefs?.executionModel
     ?? config.executionModel
     ?? ''

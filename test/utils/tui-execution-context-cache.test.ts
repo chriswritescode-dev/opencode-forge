@@ -120,7 +120,7 @@ describe('createExecutionContextCache', () => {
 
       expect(snap.defaults.executionModel).toBe('anthropic/claude-sonnet-4')
       expect(snap.defaults.auditorModel).toBe('anthropic/claude-3-5-sonnet')
-      expect(snap.defaults.mode).toBe('Loop (worktree)')
+      expect(snap.defaults.mode).toBe('Loop')
     })
 
     it('models are flattened and sorted', async () => {

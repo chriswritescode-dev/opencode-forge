@@ -15,16 +15,16 @@ describe('DockerService containerName', () => {
 
   test('containerName returns forge-prefixed name', () => {
     const result = docker.containerName('my-worktree')
-    expect(result).toBe('oc-forge-sandbox-my-worktree')
+    expect(result).toBe('forge-my-worktree')
   })
 
   test('containerName handles names with special characters', () => {
     const result = docker.containerName('feature/test-123')
-    expect(result).toBe('oc-forge-sandbox-feature/test-123')
+    expect(result).toBe('forge-feature/test-123')
   })
 
   test('containerName handles empty string', () => {
     const result = docker.containerName('')
-    expect(result).toBe('oc-forge-sandbox-')
+    expect(result).toBe('forge-')
   })
 })

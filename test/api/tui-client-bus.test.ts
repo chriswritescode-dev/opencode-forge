@@ -87,7 +87,7 @@ describe('tui-client bus-RPC integration', () => {
       await selectTuiSession(mockApi, 'session-1', 'workspace-1')
 
       expect(workspaceSet).not.toHaveBeenCalled()
-      expect(selectSession).toHaveBeenCalledWith({ sessionID: 'session-1' })
+      expect(selectSession).toHaveBeenCalledWith({ sessionID: 'session-1', workspace: 'workspace-1' })
       expect(routeNavigate).not.toHaveBeenCalled()
     })
 
@@ -435,7 +435,6 @@ describe('tui-client bus-RPC integration', () => {
       const loopsPromise = client!.loops.start({
         plan: 'test plan',
         title: 'test title',
-        worktree: true,
       })
       
       // Wait for loops.start publish
@@ -617,22 +616,22 @@ describe('tui-client bus-RPC integration', () => {
         loopChanges.push(payload)
       })
 
-      // Now test plan.execute with loop-worktree mode
+      // Now test plan.execute with loop mode
       const eventData = {
         sessionId: 'session-event-first',
         loopName: 'test-loop-event',
         displayName: 'Test Loop Event',
         worktreeDir: '/tmp/worktree-event',
         workspaceId: 'ws-event',
-        mode: 'loop-worktree' as const,
+        mode: 'loop' as const,
       }
 
       const executePromise = client!.plan.execute('s1', {
-        mode: 'loop-worktree',
+        mode: 'loop',
         plan: 'test plan',
         title: 'test title',
         executionModel: 'test-model',
-      }, { mode: 'Loop (worktree)' })
+      }, { mode: 'Loop' })
 
       // Wait for the execute publish
       while (getPublishCount() < 2) {
@@ -711,15 +710,15 @@ describe('tui-client bus-RPC integration', () => {
         displayName: 'Test Loop Reply',
         worktreeDir: '/tmp/worktree-reply',
         workspaceId: 'ws-reply',
-        mode: 'loop-worktree' as const,
+        mode: 'loop' as const,
       }
 
       const executePromise = client!.plan.execute('s1', {
-        mode: 'loop-worktree',
+        mode: 'loop',
         plan: 'test plan',
         title: 'test title',
         executionModel: 'test-model',
-      }, { mode: 'Loop (worktree)' })
+      }, { mode: 'Loop' })
 
       // Wait for the execute publish
       while (getPublishCount() < 2) {
@@ -794,11 +793,11 @@ describe('tui-client bus-RPC integration', () => {
 
       // Now test plan.execute - no event, no reply (timeout scenario)
       const executePromise = client!.plan.execute('s1', {
-        mode: 'loop-worktree',
+        mode: 'loop',
         plan: 'test plan',
         title: 'test title',
         executionModel: 'test-model',
-      }, { mode: 'Loop (worktree)' })
+      }, { mode: 'Loop' })
 
       // Wait for the execute publish
       await waitForPublishs({ getPublishCount: () => publishMock.mock.calls.length }, 2)

@@ -108,23 +108,23 @@ describe('plan-execute-loop end-to-end race', () => {
       expect(client).not.toBeNull()
       expect(client?.projectId).toBe('proj1')
 
-      // Now test plan.execute with loop-worktree mode
+      // Now test plan.execute with loop mode
       const eventData = {
         sessionId: 'session-event-first',
         loopName: 'test-loop-event',
         displayName: 'Test Loop Event',
         worktreeDir: '/tmp/worktree-event',
         workspaceId: 'ws-event',
-        mode: 'loop-worktree' as const,
+        mode: 'loop' as const,
       }
 
       // Start the execute call - this will publish the request
       const executePromise = client!.plan.execute('s1', {
-        mode: 'loop-worktree',
+        mode: 'loop',
         plan: 'test plan',
         title: 'test title',
         executionModel: 'test-model',
-      }, { mode: 'Loop (worktree)' })
+      }, { mode: 'Loop' })
 
       // Wait for the execute publish
       await waitForPublishs({ getPublishCount: () => publishMock.mock.calls.length }, 2)
@@ -199,15 +199,15 @@ describe('plan-execute-loop end-to-end race', () => {
         displayName: 'Test Loop Reply',
         worktreeDir: '/tmp/worktree-reply',
         workspaceId: 'ws-reply',
-        mode: 'loop-worktree' as const,
+        mode: 'loop' as const,
       }
 
       const executePromise = client!.plan.execute('s1', {
-        mode: 'loop-worktree',
+        mode: 'loop',
         plan: 'test plan',
         title: 'test title',
         executionModel: 'test-model',
-      }, { mode: 'Loop (worktree)' })
+      }, { mode: 'Loop' })
 
       // Wait for the execute publish
       await waitForPublishs({ getPublishCount: () => publishMock.mock.calls.length }, 2)
@@ -286,11 +286,11 @@ describe('plan-execute-loop end-to-end race', () => {
 
       // Now test plan.execute - no event, no reply (timeout scenario)
       const executePromise = client!.plan.execute('s1', {
-        mode: 'loop-worktree',
+        mode: 'loop',
         plan: 'test plan',
         title: 'test title',
         executionModel: 'test-model',
-      }, { mode: 'Loop (worktree)' })
+      }, { mode: 'Loop' })
 
       // Wait for the execute publish
       await waitForPublishs({ getPublishCount: () => publishMock.mock.calls.length }, 2)

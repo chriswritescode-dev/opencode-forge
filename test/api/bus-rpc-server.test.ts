@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'bun:test'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { createBusRpcEventHook } from '../../src/api/bus-rpc'
 import { decodeReply, encodeRequest, decodeEvent, encodeEvent } from '../../src/api/bus-protocol'
 import type { ToolContext } from '../../src/tools/types'
@@ -376,7 +376,7 @@ describe('bus-rpc server', () => {
     expect(decoded).toContain('beta plan content')
   })
 
-  it('loop-worktree mode: publishes loop.started event before final reply', async () => {
+  it('loop mode: publishes loop.started event before final reply', async () => {
     const ctx = createMockToolContext('proj1', '/test')
     registry.register(ctx)
 
@@ -388,7 +388,7 @@ describe('bus-rpc server', () => {
       projectId: 'proj1',
       params: { sessionId: 's1' },
       body: {
-        mode: 'loop-worktree',
+        mode: 'loop',
         plan: 'test plan content',
         title: 'Test Loop',
         executionModel: 'test-model',
