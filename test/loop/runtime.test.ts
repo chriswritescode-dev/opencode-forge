@@ -408,7 +408,7 @@ describe('Loop Runtime', () => {
   })
 
   describe('decomposing transition to coding', () => {
-    test('in-place loops create the new code session without selecting it', async () => {
+    test('loops without workspace binding create the new code session without selecting it', async () => {
       const { loop, clientState } = createRuntime()
       const state = makeState({
         phase: 'decomposing',

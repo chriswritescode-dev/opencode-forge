@@ -100,6 +100,7 @@ Session-scoped plan storage backed by SQL for managing implementation plans. Loo
 | Tool | Description |
 |------|-------------|
 | `plan-read` | Retrieve the plan. Supports pagination with offset/limit and pattern search. |
+| `section-read` | Read a section plan and its status for the active loop session. Supports reading by index or defaulting to the lowest-index incomplete section. |
 
 ### Review Tools
 
@@ -117,9 +118,11 @@ Iterative development loops with automatic auditing. Loops always run in an isol
 
 | Tool | Description |
 |------|-------------|
-| `loop` | Execute a plan using an iterative development loop in an isolated git worktree (sandboxed) |
+| `loop` | Execute a plan using an iterative development loop in an isolated git worktree. Args: `title` required; `plan`, `loopName`, and `hostSessionId` optional. |
 | `loop-cancel` | Cancel an active loop by worktree name |
 | `loop-status` | List all active loops or get detailed status by worktree name. Supports `restart` to resume inactive loops. |
+
+`loop` reads the current session's captured plan when `plan` is omitted. `maxIterations`, execution model, auditor model, decomposition, and sandbox behavior come from configuration or the TUI execution dialog, not direct `loop` tool arguments.
 
 ## Slash Commands
 
@@ -187,7 +190,6 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
     "enabled": true,               // Enable iterative loops
     "defaultMaxIterations": 15,    // Max iterations (0 = unlimited)
     "cleanupWorktree": false,      // Auto-remove worktree on cancel
-    "model": "",                   // Reserved; not actively read. Use executionModel instead.
     "stallTimeoutMs": 60000,       // Stall detection timeout (60s)
     "maxConsecutiveStalls": 5,     // Consecutive stalls before termination (0 = disabled)
     "worktreeLogging": {           // Worktree loop completion logging
@@ -199,7 +201,19 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
   // Docker sandbox configuration for isolated loop execution (optional; provisioned automatically when available)
   "sandbox": {
     "mode": "docker",                // Sandbox mode: "docker"
-    "image": "oc-forge-sandbox:latest"  // Docker image for sandbox containers
+    "image": "oc-forge-sandbox:latest", // Docker image for sandbox containers
+    "resources": {                   // Container resource limits (maps to docker run flags)
+      "memory": "8g",               // Memory limit (--memory)
+      "cpus": "4",                  // CPU limit (--cpus)
+      "shmSize": "1g"              // Shared memory size (--shm-size)
+    }
+  },
+
+  // Plan decomposition settings (optional, defaults to agent-based decomposition)
+  "decomposer": {
+    "enabled": true,                 // Enable plan decomposition
+    "mode": "agent",                // Decomposition mode: "agent" or "deterministic"
+    "maxSections": 12               // Maximum number of sections
   },
 
   // TUI sidebar widget configuration
@@ -207,6 +221,8 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
     "sidebar": true,               // Show Forge sidebar in OpenCode TUI
     "showLoops": true,             // Display loop status in sidebar
     "showVersion": true,           // Show plugin version in sidebar title
+    "autoSavePlans": false,        // Auto-save captured plans to disk under <dataDir>/plans/<projectId>/
+    "planArchiveTtlMs": 604800000, // TTL in ms for archived plans before pruning. 0 disables pruning.
     "keybinds": {                  // Keyboard shortcut overrides
       "viewPlan": "<leader>v",     // View plan dialog
       "executePlan": "<leader>e",  // Execute plan dialog
@@ -255,23 +271,37 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 - `loop.enabled` - Enable iterative development loops (default: `true`)
 - `loop.defaultMaxIterations` - Default max iterations for loops, 0 = unlimited (default: `15`)
 - `loop.cleanupWorktree` - Auto-remove worktree on cancel (default: `false`)
-- `loop.model` — Reserved field in the type; not currently read by the loop system. Use `executionModel` for model overrides.
 - `loop.stallTimeoutMs` - Watchdog stall detection timeout in milliseconds (default: `60000`)
 - `loop.maxConsecutiveStalls` - Number of consecutive stalls before the loop terminates with reason `stall_timeout`. Set to `0` to disable stall-based termination (default: `5`).
 - `loop.worktreeLogging.enabled` - Enable worktree loop completion logging (default: `false`)
 - `loop.worktreeLogging.directory` - Directory for completion logs, defaults to platform data dir (default: `""`)
 
-**Migration note:** As of v0.2.0, auditing runs unconditionally after each coding iteration. The `loop.defaultAudit` option was removed and audit is now always enabled. If you previously had `"defaultAudit": false` in your config, audits will now run on every iteration regardless of that setting.
-
 #### Sandbox
 - `sandbox.mode` - Sandbox mode: `"docker"` (optional; Docker sandbox is provisioned automatically when available)
 - `sandbox.image` - Docker image for sandbox containers (default: `"oc-forge-sandbox:latest"`)
+- `sandbox.resources` - Container resource limits mapped directly to `docker run` flags:
+  - `memory` - Memory limit, e.g., `'8g'`. Maps to `--memory`.
+  - `memorySwap` - Memory+swap limit, e.g., `'12g'`. Maps to `--memory-swap`.
+  - `cpus` - Number of CPUs, e.g., `'4'`, `'2.5'`. Maps to `--cpus`.
+  - `shmSize` - Shared memory size, e.g., `'1g'`. Maps to `--shm-size`.
+
+#### Decomposer
+- `decomposer.enabled` - Enable plan decomposition into sections (default: `true`)
+- `decomposer.mode` - Decomposition mode: `"agent"` (LLM) or `"deterministic"` (parser). Defaults to `"agent"`.
+- `decomposer.model` - Model override for the decomposer agent. Ignored in deterministic mode.
+- `decomposer.onParseFailure` - Fallback when deterministic parse fails: `"legacy"` (skip decomposition) or `"agent"` (try agent mode). Defaults to `"legacy"`.
+- `decomposer.maxSections` - Maximum number of sections per plan (default: `12`).
 
 #### TUI
 - `tui.sidebar` - Show the forge sidebar widget in OpenCode TUI (default: `true`)
 - `tui.showLoops` - Display active loop status in the sidebar (default: `true`)
 - `tui.showVersion` - Show plugin version number in the sidebar title (default: `true`)
-- `tui.keybinds` - Keyboard shortcut overrides for Forge commands (default: `<leader>v`, `<leader>e`, `<leader>w`)
+- `tui.autoSavePlans` - Auto-save captured plans to disk under `<dataDir>/plans/<projectId>/`. Default: `false`.
+- `tui.planArchiveTtlMs` - TTL in ms for archived plans before pruning. 0 disables pruning. Default: `604800000` (7 days).
+- `tui.keybinds.viewPlan` - View plan dialog keybind. Default: `<leader>v`.
+- `tui.keybinds.executePlan` - Execute plan dialog keybind. Default: `<leader>e`.
+- `tui.keybinds.showLoops` - Show loops dialog keybind. Default: `<leader>w`.
+- `tui.keybinds.loadPlan` - Load archived plans dialog keybind. Default: `<leader>i`.
 
 ## TUI Plugin
 
@@ -527,7 +557,7 @@ The loop terminates when any of these conditions is met:
 
 - **Max iterations** — The global `maxIterations` cap is exceeded (0 = unlimited).
 - **Stall timeout** — After `maxConsecutiveStalls` consecutive stalls (default: 5). Use `loop-status` with `restart` to resume from the persisted section and iteration.
-- **Final audit completion** — When no bug-severity review findings remain. The auditor no longer needs to emit a `<!-- final-audit:clear -->` marker; the loop completes automatically once all bugs are resolved.
+- **Final audit completion** — When no bug-severity review findings remain after the final audit phase.
 - **Consecutive errors** — 3 consecutive errors in either phase.
 
 Loops always run in an isolated git worktree. Sandbox is optional: when Docker is available and `sandbox.mode = 'docker'` is configured, a sandbox container is provisioned automatically; otherwise the loop runs in worktree-only mode.
@@ -642,27 +672,6 @@ pnpm build      # Compile TypeScript to dist/
 pnpm test       # Run tests
 pnpm typecheck  # Type check without emitting
 ```
-
-## Breaking Changes
-
-### v0.2.0 - Typed Storage Schema
-
-Forge has replaced its generic key-value store (`project_kv` table) with typed SQL-schema tables for loops, plans, and review findings. This eliminates whole-object read-modify-write concurrency bugs, adds real indexes for branch-scoped and status-scoped queries, and removes the silent 7-day TTL on all persisted data.
-
-**What changed:**
-- `loops` table - stores loop state with atomic updates for counters (error_count, audit_count, iteration)
-- `loop_large_fields` table - stores prompt and last_audit_result (lazy-loaded)
-- `plans` table - supports both session-staged and loop-bound plans with explicit promotion
-- `review_findings` table - write-once per (file, line), existence = open
-
-**Upgrade impact:**
-- Existing `project_kv` data is dropped on upgrade
-- Active loops are preserved via the stale-reconciliation path
-- Completed loops and their plans will not be recoverable
-- No action required from users other than restarting opencode
-
-**Configuration change:**
-- `defaultKvTtlMs` renamed to `completedLoopTtlMs`
 
 ## License
 

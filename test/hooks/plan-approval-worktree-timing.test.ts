@@ -147,8 +147,8 @@ describe('plan-approval worktree timing', () => {
     capturedCommands.length = 0
     const projectId = `proj-${Math.random().toString(36).slice(2)}`
     const directory = `/tmp/${projectId}`
-    const sessionID = 'sess-loop-inplace'
-    const planContent = '# Loop Plan\n\nIn-place loop.'
+    const sessionID = 'sess-loop-default'
+    const planContent = '# Loop Plan\n\nDefault loop.'
 
     const plansRepo = createStubPlansRepo(
       new Map([[`${projectId}::${sessionID}`, { content: planContent, updatedAt: 1000 }]])

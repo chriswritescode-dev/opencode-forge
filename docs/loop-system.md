@@ -7,19 +7,23 @@ The loop system provides autonomous iterative development with automatic code au
 ```mermaid
 stateDiagram-v2
     [*] --> Coding: loop tool invoked
-    Coding --> Auditing: iteration complete
-    Auditing --> Coding: findings addressed
-    Auditing --> [*]: outstanding findings resolved
-    Coding --> [*]: max iterations reached
-    Coding --> [*]: error limit exceeded
-    Coding --> [*]: stall timeout exceeded
-    Coding --> [*]: review findings block
-    Coding --> [*]: loop cancelled
+    [*] --> Decomposing: sectioned plan
+    Decomposing --> Coding: sections captured
+    Decomposing --> [*]: decomposition failed
+    Coding --> Auditing: coding idle complete
+    Auditing --> Coding: section dirty or audit dirty
+    Auditing --> Auditing: next section
+    Auditing --> FinalAuditing: last section clean
+    Auditing --> [*]: audit clear
+    FinalAuditing --> Coding: final audit dirty
+    FinalAuditing --> [*]: final audit clean
+    Coding --> [*]: max iterations / retry limit / stall timeout / cancellation
+    Auditing --> [*]: max iterations / retry limit / stall timeout / cancellation
 ```
 
 ## Loop States
 
-Each loop has a `LoopState` stored in the KV store:
+Each loop has a `LoopState` backed by the typed `loops` and `loop_large_fields` SQLite tables:
 
 ```typescript
 interface LoopState {
@@ -33,8 +37,7 @@ interface LoopState {
   maxIterations: number              // Maximum iterations (0 = unlimited)
   startedAt: string                  // ISO timestamp
   prompt?: string                    // Original task prompt
-  phase: 'coding' | 'auditing'       // Current phase
-  audit: boolean                     // Whether auditing is enabled (always true)
+  phase: 'coding' | 'auditing' | 'decomposing' | 'final_auditing'
   lastAuditResult?: string           // Last audit output
   errorCount: number                 // Consecutive error count
   auditCount: number                 // Number of audits completed
@@ -49,6 +52,12 @@ interface LoopState {
   auditorModel?: string              // Model used for auditing
   workspaceId?: string               // OpenCode workspace ID
   hostSessionId?: string             // Host session ID for post-completion redirect
+  decompositionStatus: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+  decompositionMode: 'agent' | 'deterministic'
+  decompositionSessionId: string | null
+  currentSectionIndex: number
+  totalSections: number
+  finalAuditDone: boolean
 }
 ```
 
@@ -101,13 +110,15 @@ Audit findings survive session rotation via the **review store**:
 
 ```typescript
 interface ReviewFinding {
+  projectId: string
   file: string
   line: number
   severity: 'bug' | 'warning'
   description: string
-  scenario: string
-  status: 'open' | 'resolved'
-  branch?: string
+  scenario: string | null
+  loopName: string | null
+  sectionIndex: number | null
+  createdAt: number
 }
 ```
 
@@ -147,15 +158,15 @@ Sandbox is optional. When Docker is available and configured, a sandbox containe
 3. `read`/`write`/`edit` operate on host filesystem
 4. Container stopped and removed on loop completion
 
-See [sandbox documentation](../architecture.md#sandbox-system) for details.
+See [sandbox documentation](architecture.md#sandbox-system) for details.
 
 ## Completion Conditions
 
-A loop completes when ALL of these are true:
+A loop completes when the active phase emits a clean audit result:
 
-1. The auditor has run at least once (`auditCount >= 1`)
-2. Zero outstanding `severity: 'bug'` findings remain
-3. All verification commands in the plan pass
+- Non-sectioned loops complete on `audit-clear`.
+- Sectioned loops advance through clean section audits, then complete on `final-audit-clean`.
+- Dirty section or final audit results rotate back to coding so findings can be addressed.
 
 ## Cancellation
 
@@ -174,9 +185,10 @@ Cancellation:
 | Error Type | Behavior |
 |------------|----------|
 | Model error | Automatic fallback to default model, retry |
-| 3 consecutive errors | Loop terminates with `terminationReason: 'error'` |
-| Stall timeout | Re-trigger current phase, up to 5 times |
-| 5 stalls | Loop terminates with `terminationReason: 'stall_timeout'` |
+| Error retry limit | Loop terminates with `terminationReason: 'error_max_retries'` |
+| Audit retry limit | Loop terminates with `terminationReason: 'audit_retry_exhausted'` |
+| Final audit retry limit | Loop terminates with `terminationReason: 'final_audit_retry_exhausted'` |
+| Stall timeout | Loop terminates with `terminationReason: 'stall_timeout'` after the configured consecutive stall limit |
 
 ## Tool Restrictions
 

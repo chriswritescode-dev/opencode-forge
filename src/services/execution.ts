@@ -1425,8 +1425,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const executionModel = command.executionModel ?? deps.config.executionModel
     const parsedModel = parseModelString(executionModel)
     
-    // Build in-place prompt
-    const inPlacePrompt = `The architect agent has created an implementation plan in this conversation above. You are now the code agent taking over this session. Your job is to execute the plan — edit files, run commands, create tests, and implement every phase. Do NOT just describe or summarize the changes. Actually make them.\n\nPlan reference: ${planText}`
+    // Build execute-here prompt
+    const executeHerePrompt = `The architect agent has created an implementation plan in this conversation above. You are now the code agent taking over this session. Your job is to execute the plan — edit files, run commands, create tests, and implement every phase. Do NOT just describe or summarize the changes. Actually make them.\n\nPlan reference: ${planText}`
     
     // Prompt code agent in target session with fallback
     const { result: promptResult, usedModel: actualModel } = await promptSessionWithFallback(
@@ -1434,15 +1434,15 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       {
         sessionID: command.targetSessionId,
         directory: ctx.directory,
-        parts: [{ type: 'text' as const, text: inPlacePrompt }],
+        parts: [{ type: 'text' as const, text: executeHerePrompt }],
         agent: 'code',
       },
       parsedModel,
     )
     
     if (promptResult.error) {
-      deps.logger.error('handlePlanHere: in-place execution failed', promptResult.error)
-      return fail('prompt_failed', 502, 'Failed to execute in-place')
+      deps.logger.error('handlePlanHere: execute-here execution failed', promptResult.error)
+      return fail('prompt_failed', 502, 'Failed to execute here')
     }
     
     const modelUsed = actualModel

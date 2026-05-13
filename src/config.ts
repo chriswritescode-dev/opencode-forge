@@ -24,19 +24,15 @@ const PLUGIN_COMMANDS: Record<string, { template: string; description: string; a
 
 Ensure you have a clear implementation plan ready.
 
-## Step 2: Choose Execution Mode
-
-Decide whether to run in:
-- Worktree mode (isolated git worktree) for safe experimentation
-- In-place mode (current directory) for quick iterations
-
-## Step 3: Execute the Loop
+## Step 2: Execute the Loop
 
 Run \`loop\` with:
-- plan: The full implementation plan
-- title: A short descriptive title
+- plan: Optional full implementation plan. If omitted, Forge reads the captured plan for the current session.
+- title: Required short descriptive title.
+- loopName: Optional loop name. Forge slugifies it and auto-increments on collision.
+- hostSessionId: Optional host session ID for post-completion redirect.
 
-The loop will automatically continue through iterations until complete.
+The loop always runs in an isolated git worktree. Docker sandboxing is used automatically when configured and available.
 Use \`loop-status\` to check progress or \`loop-cancel\` to stop.
 
 $ARGUMENTS`,

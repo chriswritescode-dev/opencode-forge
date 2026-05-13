@@ -27,8 +27,6 @@ This directory contains SQL migrations for the Forge storage schema.
 - `117_branch_scope_review_findings.sql`: Add branch to primary key for branch-scoped findings
 - `119_loop_scope_review_findings.sql`: Replace branch-scope with loop-scope for review findings
 
-## Breaking Changes
+## Maintenance
 
-### v0.2.0 — KV → Typed Repos
-
-Migration 106 drops the `project_kv` table. All data in the KV store is lost on upgrade. This is intentional — the typed schema replaces JSON-blob storage with real SQL schema and indexes. See release notes for details.
+Keep this list aligned with `src/storage/migrations/index.ts` whenever a new SQL migration is added.

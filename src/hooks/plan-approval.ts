@@ -377,7 +377,7 @@ export function createPlanApprovalEventHook(ctx: ToolContext) {
       ? `\n\nImplementation Plan:\n${pending.planText}`
       : '\n\nPlan reference: Execute the implementation plan from this conversation. Review all phases above and implement each one.'
     
-    const inPlacePrompt = `The architect agent has created an implementation plan. You are now the code agent taking over this session. Your job is to execute the plan — edit files, run commands, create tests, and implement every phase. Do NOT just describe or summarize the changes. Actually make them.${planRef}`
+    const executeHerePrompt = `The architect agent has created an implementation plan. You are now the code agent taking over this session. Your job is to execute the plan — edit files, run commands, create tests, and implement every phase. Do NOT just describe or summarize the changes. Actually make them.${planRef}`
     
     const legacyClient = ctx.input?.client
 
@@ -391,7 +391,7 @@ export function createPlanApprovalEventHook(ctx: ToolContext) {
             query: { directory: pending.directory },
             body: {
               agent: 'code',
-              parts: [{ type: 'text' as const, text: inPlacePrompt }],
+              parts: [{ type: 'text' as const, text: executeHerePrompt }],
               ...(pending.executionModel ? { model: pending.executionModel } : {}),
             },
           } as Parameters<typeof legacyClient.session.promptAsync>[0]) as unknown as Promise<{ data?: unknown; error?: unknown }>,
@@ -400,7 +400,7 @@ export function createPlanApprovalEventHook(ctx: ToolContext) {
             query: { directory: pending.directory },
             body: {
               agent: 'code',
-              parts: [{ type: 'text' as const, text: inPlacePrompt }],
+              parts: [{ type: 'text' as const, text: executeHerePrompt }],
             },
           } as Parameters<typeof legacyClient.session.promptAsync>[0]) as unknown as Promise<{ data?: unknown; error?: unknown }>,
           pending.executionModel,
@@ -425,14 +425,14 @@ export function createPlanApprovalEventHook(ctx: ToolContext) {
           sessionID,
           directory: pending.directory,
           agent: 'code',
-          parts: [{ type: 'text' as const, text: inPlacePrompt }],
+          parts: [{ type: 'text' as const, text: executeHerePrompt }],
           ...(pending.executionModel ? { model: pending.executionModel } : {}),
         }),
         () => v2.session.promptAsync({
           sessionID,
           directory: pending.directory,
           agent: 'code',
-          parts: [{ type: 'text' as const, text: inPlacePrompt }],
+          parts: [{ type: 'text' as const, text: executeHerePrompt }],
         }),
         pending.executionModel,
         logger,
