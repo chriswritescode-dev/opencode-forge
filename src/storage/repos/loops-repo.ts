@@ -6,7 +6,6 @@ export interface LoopRow {
   loopName: string
   status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'
   currentSessionId: string
-  auditSessionId: string | null
   worktree: boolean
   worktreeDir: string
   worktreeBranch: string | null
@@ -15,7 +14,7 @@ export interface LoopRow {
   iteration: number
   auditCount: number
   errorCount: number
-  phase: 'coding' | 'auditing'
+  phase: 'coding' | 'auditing' | 'decomposing' | 'final_auditing'
   executionModel: string | null
   auditorModel: string | null
   modelFailed: boolean
@@ -27,6 +26,12 @@ export interface LoopRow {
   completionSummary: string | null
   workspaceId: string | null
   hostSessionId: string | null
+  decompositionStatus: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+  decompositionMode: 'agent' | 'deterministic'
+  decompositionSessionId: string | null
+  currentSectionIndex: number
+  totalSections: number
+  finalAuditDone: number
 }
 
 export interface LoopLargeFields {
@@ -41,27 +46,43 @@ export interface LoopsRepo {
   getBySessionId(projectId: string, sessionId: string): LoopRow | null
   listByStatus(projectId: string, statuses: LoopRow['status'][]): LoopRow[]
   listAll(projectId: string): LoopRow[]
-  updatePhase(projectId: string, loopName: string, phase: 'coding' | 'auditing'): void
+  updatePhase(projectId: string, loopName: string, phase: LoopRow['phase']): void
   updateIteration(projectId: string, loopName: string, iteration: number): void
   incrementError(projectId: string, loopName: string): number
   resetError(projectId: string, loopName: string): void
-  incrementAudit(projectId: string, loopName: string): number
-  setAuditCount(projectId: string, loopName: string, count: number): void
   setCurrentSessionId(projectId: string, loopName: string, sessionId: string): void
-  setAuditSessionId(projectId: string, loopName: string, sessionId: string | null): void
   setWorkspaceId(projectId: string, loopName: string, workspaceId: string): void
-  setHostSessionId(projectId: string, loopName: string, hostSessionId: string): void
   clearWorkspaceId(projectId: string, loopName: string): void
   setModelFailed(projectId: string, loopName: string, failed: boolean): void
-  setLastAuditResult(projectId: string, loopName: string, text: string | null): void
+  setLastAuditResult(projectId: string, loopName: string, text: string): void
+  clearLastAuditResult(projectId: string, loopName: string): void
   setSandboxContainer(projectId: string, loopName: string, containerName: string | null): void
-  setPhaseAndResetError(projectId: string, loopName: string, phase: 'coding' | 'auditing'): void
+  setPhaseAndResetError(projectId: string, loopName: string, phase: LoopRow['phase']): void
   setStatus(projectId: string, loopName: string, status: LoopRow['status']): void
   updatePrompt(projectId: string, loopName: string, prompt: string): boolean
-  applyRotation(
+  replaceSession(
     projectId: string,
     loopName: string,
-    opts: { sessionId: string; iteration: number; phase?: 'coding' | 'auditing'; auditCount?: number; lastAuditResult?: string | null; resetError?: boolean }
+    opts: { sessionId: string; phase: LoopRow['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }
+  ): void
+  restart(
+    projectId: string,
+    loopName: string,
+    opts: {
+      sessionId: string
+      phase: LoopRow['phase']
+      iteration: number
+      auditCount: number
+      sandbox: boolean
+      sandboxContainer: string | null
+      workspaceId: string | null
+      decompositionStatus: LoopRow['decompositionStatus']
+      decompositionSessionId: string | null
+      currentSectionIndex: number
+      totalSections: number
+      finalAuditDone: boolean
+      startedAt: number
+    }
   ): void
   terminate(
     projectId: string,
@@ -75,6 +96,12 @@ export interface LoopsRepo {
   ): void
   delete(projectId: string, loopName: string): void
   findPartial(projectId: string, name: string): { match: LoopRow | null; candidates: LoopRow[] }
+  setDecompositionStatus(projectId: string, loopName: string, status: LoopRow['decompositionStatus']): void
+  setDecompositionMode(projectId: string, loopName: string, mode: LoopRow['decompositionMode']): void
+  setDecompositionSessionId(projectId: string, loopName: string, sessionId: string | null): void
+  setCurrentSectionIndex(projectId: string, loopName: string, index: number): void
+  setTotalSections(projectId: string, loopName: string, total: number): void
+  setFinalAuditDone(projectId: string, loopName: string, done: boolean): void
 }
 
 function mapRow(row: LoopRowRaw): LoopRow {
@@ -83,7 +110,6 @@ function mapRow(row: LoopRowRaw): LoopRow {
     loopName: row.loop_name,
     status: row.status as LoopRow['status'],
     currentSessionId: row.current_session_id,
-    auditSessionId: row.audit_session_id ?? null,
     worktree: row.worktree === 1,
     worktreeDir: row.worktree_dir,
     worktreeBranch: row.worktree_branch,
@@ -104,6 +130,12 @@ function mapRow(row: LoopRowRaw): LoopRow {
     completionSummary: row.completion_summary,
     workspaceId: row.workspace_id,
     hostSessionId: row.host_session_id,
+    decompositionStatus: row.decomposition_status as LoopRow['decompositionStatus'],
+    decompositionMode: row.decomposition_mode as LoopRow['decompositionMode'],
+    decompositionSessionId: row.decomposition_session_id,
+    currentSectionIndex: row.current_section_index,
+    totalSections: row.total_sections,
+    finalAuditDone: row.final_audit_done,
   }
 }
 
@@ -112,7 +144,6 @@ interface LoopRowRaw {
   loop_name: string
   status: string
   current_session_id: string
-  audit_session_id: string | null
   worktree: number
   worktree_dir: string
   worktree_branch: string | null
@@ -133,17 +164,25 @@ interface LoopRowRaw {
   completion_summary: string | null
   workspace_id: string | null
   host_session_id: string | null
+  decomposition_status: string
+  decomposition_mode: string
+  decomposition_session_id: string | null
+  current_section_index: number
+  total_sections: number
+  final_audit_done: number
 }
 
 export function createLoopsRepo(db: Database): LoopsRepo {
   const insertStmt = db.prepare(`
     INSERT INTO loops (
-      project_id, loop_name, status, current_session_id, audit_session_id, worktree, worktree_dir,
+      project_id, loop_name, status, current_session_id, worktree, worktree_dir,
       worktree_branch, project_dir, max_iterations, iteration, audit_count,
       error_count, phase, execution_model, auditor_model,
       model_failed, sandbox, sandbox_container, started_at, completed_at,
-      termination_reason, completion_summary, workspace_id, host_session_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      termination_reason, completion_summary, workspace_id, host_session_id,
+      decomposition_status, decomposition_mode, decomposition_session_id,
+      current_section_index, total_sections, final_audit_done
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   const upsertLargeStmt = db.prepare(`
@@ -155,11 +194,13 @@ export function createLoopsRepo(db: Database): LoopsRepo {
   `)
 
   const getStmt = db.prepare(`
-    SELECT project_id, loop_name, status, current_session_id, audit_session_id, worktree, worktree_dir,
+    SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir,
            worktree_branch, project_dir, max_iterations, iteration, audit_count,
            error_count, phase, execution_model, auditor_model,
            model_failed, sandbox, sandbox_container, started_at, completed_at,
-           termination_reason, completion_summary, workspace_id, host_session_id
+           termination_reason, completion_summary, workspace_id, host_session_id,
+           decomposition_status, decomposition_mode, decomposition_session_id,
+           current_section_index, total_sections, final_audit_done
     FROM loops
     WHERE project_id = ? AND loop_name = ?
   `)
@@ -171,21 +212,25 @@ export function createLoopsRepo(db: Database): LoopsRepo {
   `)
 
   const getBySessionIdStmt = db.prepare(`
-    SELECT project_id, loop_name, status, current_session_id, audit_session_id, worktree, worktree_dir,
+    SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir,
            worktree_branch, project_dir, max_iterations, iteration, audit_count,
            error_count, phase, execution_model, auditor_model,
            model_failed, sandbox, sandbox_container, started_at, completed_at,
-           termination_reason, completion_summary, workspace_id, host_session_id
+           termination_reason, completion_summary, workspace_id, host_session_id,
+           decomposition_status, decomposition_mode, decomposition_session_id,
+           current_section_index, total_sections, final_audit_done
     FROM loops
-    WHERE project_id = ? AND (current_session_id = ? OR audit_session_id = ?)
+    WHERE project_id = ? AND current_session_id = ?
   `)
 
   const listByStatusBase = `
-    SELECT project_id, loop_name, status, current_session_id, audit_session_id, worktree, worktree_dir,
+    SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir,
            worktree_branch, project_dir, max_iterations, iteration, audit_count,
            error_count, phase, execution_model, auditor_model,
            model_failed, sandbox, sandbox_container, started_at, completed_at,
-           termination_reason, completion_summary, workspace_id, host_session_id
+           termination_reason, completion_summary, workspace_id, host_session_id,
+           decomposition_status, decomposition_mode, decomposition_session_id,
+           current_section_index, total_sections, final_audit_done
     FROM loops
     WHERE project_id = ? AND status IN
   `
@@ -209,34 +254,15 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     WHERE project_id = ? AND loop_name = ?
   `)
 
-  const incrementAuditStmt = db.prepare(`
-    UPDATE loops SET audit_count = audit_count + 1
-    WHERE project_id = ? AND loop_name = ?
-    RETURNING audit_count
-  `)
-
-  const setAuditCountStmt = db.prepare(`
-    UPDATE loops SET audit_count = ?
-    WHERE project_id = ? AND loop_name = ?
-  `)
-
   const setCurrentSessionIdStmt = db.prepare(`
     UPDATE loops SET current_session_id = ?
     WHERE project_id = ? AND loop_name = ?
   `)
 
-  const setAuditSessionIdStmt = db.prepare(`
-    UPDATE loops SET audit_session_id = ?
-    WHERE project_id = ? AND loop_name = ?
-  `)
+
 
   const setWorkspaceIdStmt = db.prepare(`
     UPDATE loops SET workspace_id = ?
-    WHERE project_id = ? AND loop_name = ?
-  `)
-
-  const setHostSessionIdStmt = db.prepare(`
-    UPDATE loops SET host_session_id = ?
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -252,6 +278,11 @@ export function createLoopsRepo(db: Database): LoopsRepo {
 
   const setLastAuditResultStmt = db.prepare(`
     UPDATE loop_large_fields SET last_audit_result = ?
+    WHERE project_id = ? AND loop_name = ?
+  `)
+
+  const clearLastAuditResultStmt = db.prepare(`
+    UPDATE loop_large_fields SET last_audit_result = NULL
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -276,16 +307,36 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     WHERE project_id = ? AND loop_name = ?
   `)
 
-  const applyRotationStmt = db.prepare(`
+  const replaceSessionStmt = db.prepare(`
     UPDATE loops SET
       current_session_id = ?,
+      phase = ?,
+      iteration = COALESCE(?, iteration),
+      audit_count = COALESCE(?, audit_count)
+    WHERE project_id = ? AND loop_name = ?
+  `)
+
+  const restartStmt = db.prepare(`
+    UPDATE loops SET
+      status = 'running',
+      current_session_id = ?,
+      phase = ?,
       iteration = ?,
-      phase = COALESCE(?, phase),
-      audit_count = COALESCE(?, audit_count),
-      audit_session_id = CASE
-        WHEN ? = 'coding' THEN NULL
-        ELSE audit_session_id
-      END
+      audit_count = ?,
+      error_count = 0,
+      model_failed = 0,
+      sandbox = ?,
+      sandbox_container = ?,
+      workspace_id = ?,
+      started_at = ?,
+      completed_at = NULL,
+      termination_reason = NULL,
+      completion_summary = NULL,
+      decomposition_status = ?,
+      decomposition_session_id = ?,
+      current_section_index = ?,
+      total_sections = ?,
+      final_audit_done = ?
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -313,7 +364,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
         row.loopName,
         row.status,
         row.currentSessionId,
-        row.auditSessionId,
         row.worktree ? 1 : 0,
         row.worktreeDir,
         row.worktreeBranch,
@@ -333,10 +383,15 @@ export function createLoopsRepo(db: Database): LoopsRepo {
         row.terminationReason,
         row.completionSummary,
         row.workspaceId,
-        row.hostSessionId
-      )
+        row.hostSessionId,
+        row.decompositionStatus ?? 'pending',
+        row.decompositionMode ?? 'agent',
+        row.decompositionSessionId ?? null,
+        row.currentSectionIndex ?? 0,
+        row.totalSections ?? 0,
+        row.finalAuditDone ?? 0,
+      ) as unknown as { changes: number }
       if (result.changes === 0) {
-        // Conflict - row already exists
         return false
       }
       upsertLargeStmt.run(row.projectId, row.loopName, large.prompt, large.lastAuditResult)
@@ -358,7 +413,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     },
 
     getBySessionId(projectId: string, sessionId: string): LoopRow | null {
-      const row = getBySessionIdStmt.get(projectId, sessionId, sessionId) as LoopRowRaw | null
+      const row = getBySessionIdStmt.get(projectId, sessionId) as LoopRowRaw | null
       return row ? mapRow(row) : null
     },
 
@@ -376,7 +431,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       return this.listByStatus(projectId, allStatuses)
     },
 
-    updatePhase(projectId: string, loopName: string, phase: 'coding' | 'auditing'): void {
+    updatePhase(projectId: string, loopName: string, phase: LoopRow['phase']): void {
       updatePhaseStmt.run(phase, projectId, loopName)
     },
 
@@ -393,29 +448,12 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       resetErrorStmt.run(projectId, loopName)
     },
 
-    incrementAudit(projectId: string, loopName: string): number {
-      const result = incrementAuditStmt.get(projectId, loopName) as { audit_count: number } | null
-      return result?.audit_count ?? 0
-    },
-
-    setAuditCount(projectId: string, loopName: string, count: number): void {
-      setAuditCountStmt.run(count, projectId, loopName)
-    },
-
     setCurrentSessionId(projectId: string, loopName: string, sessionId: string): void {
       setCurrentSessionIdStmt.run(sessionId, projectId, loopName)
     },
 
-    setAuditSessionId(projectId: string, loopName: string, sessionId: string | null): void {
-      setAuditSessionIdStmt.run(sessionId, projectId, loopName)
-    },
-
     setWorkspaceId(projectId: string, loopName: string, workspaceId: string): void {
       setWorkspaceIdStmt.run(workspaceId, projectId, loopName)
-    },
-
-    setHostSessionId(projectId: string, loopName: string, hostSessionId: string): void {
-      setHostSessionIdStmt.run(hostSessionId, projectId, loopName)
     },
 
     clearWorkspaceId(projectId: string, loopName: string): void {
@@ -426,16 +464,65 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       setModelFailedStmt.run(failed ? 1 : 0, projectId, loopName)
     },
 
-    setLastAuditResult(projectId: string, loopName: string, text: string | null): void {
+    setLastAuditResult(projectId: string, loopName: string, text: string): void {
+      if (text === '') return
       setLastAuditResultStmt.run(text, projectId, loopName)
+    },
+
+    clearLastAuditResult(projectId: string, loopName: string): void {
+      clearLastAuditResultStmt.run(projectId, loopName)
     },
 
     setSandboxContainer(projectId: string, loopName: string, containerName: string | null): void {
       setSandboxContainerStmt.run(containerName, projectId, loopName)
     },
 
-    setPhaseAndResetError(projectId: string, loopName: string, phase: 'coding' | 'auditing'): void {
+    setPhaseAndResetError(projectId: string, loopName: string, phase: LoopRow['phase']): void {
       setPhaseAndResetErrorStmt.run(phase, projectId, loopName)
+    },
+
+    replaceSession(
+      projectId: string,
+      loopName: string,
+      opts: { sessionId: string; phase: LoopRow['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }
+    ): void {
+      const runTxn = db.transaction(() => {
+        replaceSessionStmt.run(
+          opts.sessionId,
+          opts.phase,
+          opts.iteration ?? null,
+          opts.auditCount ?? null,
+          projectId,
+          loopName
+        )
+        if (opts.lastAuditResult !== undefined && opts.lastAuditResult !== null && opts.lastAuditResult !== '') {
+          setLastAuditResultStmt.run(opts.lastAuditResult, projectId, loopName)
+        }
+        if (opts.resetError) {
+          resetErrorStmt.run(projectId, loopName)
+        }
+      })
+      runTxn()
+    },
+
+    restart(projectId, loopName, opts) {
+      restartStmt.run(
+        opts.sessionId,
+        opts.phase,
+        opts.iteration,
+        opts.auditCount,
+        opts.sandbox ? 1 : 0,
+        opts.sandboxContainer,
+        opts.workspaceId,
+        opts.startedAt,
+        opts.decompositionStatus,
+        opts.decompositionSessionId,
+        opts.currentSectionIndex,
+        opts.totalSections,
+        opts.finalAuditDone ? 1 : 0,
+        projectId,
+        loopName,
+      )
     },
 
     setStatus(projectId: string, loopName: string, status: LoopRow['status']): void {
@@ -443,33 +530,8 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     },
 
     updatePrompt(projectId: string, loopName: string, prompt: string): boolean {
-      const result = updatePromptStmt.run(prompt, projectId, loopName)
+      const result = updatePromptStmt.run(prompt, projectId, loopName) as unknown as { changes: number }
       return result.changes > 0
-    },
-
-    applyRotation(
-      projectId: string,
-      loopName: string,
-      opts: { sessionId: string; iteration: number; phase?: 'coding' | 'auditing'; auditCount?: number; lastAuditResult?: string | null; resetError?: boolean }
-    ): void {
-      const runTxn = db.transaction(() => {
-        applyRotationStmt.run(
-          opts.sessionId,
-          opts.iteration,
-          opts.phase ?? null,
-          opts.auditCount ?? null,
-          opts.phase ?? null,
-          projectId,
-          loopName
-        )
-        if (opts.lastAuditResult !== undefined) {
-          setLastAuditResultStmt.run(opts.lastAuditResult ?? null, projectId, loopName)
-        }
-        if (opts.resetError) {
-          resetErrorStmt.run(projectId, loopName)
-        }
-      })
-      runTxn()
     },
 
     terminate(
@@ -493,6 +555,30 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     findPartial(projectId: string, name: string): { match: LoopRow | null; candidates: LoopRow[] } {
       const all = this.listByStatus(projectId, ['running', 'completed', 'cancelled', 'errored', 'stalled'])
       return findPartialMatch(name, all, (row: LoopRow) => [row.loopName, row.worktreeBranch ?? undefined])
+    },
+
+    setDecompositionStatus(projectId, loopName, status) {
+      db.prepare(`UPDATE loops SET decomposition_status = ? WHERE project_id = ? AND loop_name = ?`).run(status, projectId, loopName)
+    },
+
+    setDecompositionMode(projectId, loopName, mode) {
+      db.prepare(`UPDATE loops SET decomposition_mode = ? WHERE project_id = ? AND loop_name = ?`).run(mode, projectId, loopName)
+    },
+
+    setDecompositionSessionId(projectId, loopName, sessionId) {
+      db.prepare(`UPDATE loops SET decomposition_session_id = ? WHERE project_id = ? AND loop_name = ?`).run(sessionId, projectId, loopName)
+    },
+
+    setCurrentSectionIndex(projectId, loopName, index) {
+      db.prepare(`UPDATE loops SET current_section_index = ? WHERE project_id = ? AND loop_name = ?`).run(index, projectId, loopName)
+    },
+
+    setTotalSections(projectId, loopName, total) {
+      db.prepare(`UPDATE loops SET total_sections = ? WHERE project_id = ? AND loop_name = ?`).run(total, projectId, loopName)
+    },
+
+    setFinalAuditDone(projectId, loopName, done) {
+      db.prepare(`UPDATE loops SET final_audit_done = ? WHERE project_id = ? AND loop_name = ?`).run(done ? 1 : 0, projectId, loopName)
     },
   }
 }

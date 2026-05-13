@@ -7,34 +7,37 @@ The loop system provides autonomous iterative development with automatic code au
 ```mermaid
 stateDiagram-v2
     [*] --> Coding: loop tool invoked
-    Coding --> Auditing: iteration complete
-    Auditing --> Coding: findings addressed
-    Auditing --> [*]: outstanding findings resolved
-    Coding --> [*]: max iterations reached
-    Coding --> [*]: error limit exceeded
-    Coding --> [*]: stall timeout exceeded
-    Coding --> [*]: review findings block
-    Coding --> [*]: loop cancelled
+    [*] --> Decomposing: sectioned plan
+    Decomposing --> Coding: sections captured
+    Decomposing --> [*]: decomposition failed
+    Coding --> Auditing: coding idle complete
+    Auditing --> Coding: section dirty or audit dirty
+    Auditing --> Auditing: next section
+    Auditing --> FinalAuditing: last section clean
+    Auditing --> [*]: audit clear
+    FinalAuditing --> Coding: final audit dirty
+    FinalAuditing --> [*]: final audit clean
+    Coding --> [*]: max iterations / retry limit / stall timeout / cancellation
+    Auditing --> [*]: max iterations / retry limit / stall timeout / cancellation
 ```
 
 ## Loop States
 
-Each loop has a `LoopState` stored in the KV store:
+Each loop has a `LoopState` backed by the typed `loops` and `loop_large_fields` SQLite tables:
 
 ```typescript
 interface LoopState {
   active: boolean                    // Whether loop is currently running
   sessionId: string                  // Current OpenCode session ID
   loopName: string                   // Unique loop identifier
-  worktreeDir: string                // Worktree path (empty if in-place)
+  worktreeDir: string                // Worktree path
   projectDir?: string                // Project directory path
   worktreeBranch?: string            // Branch name if using worktree
   iteration: number                  // Current iteration count
   maxIterations: number              // Maximum iterations (0 = unlimited)
   startedAt: string                  // ISO timestamp
   prompt?: string                    // Original task prompt
-  phase: 'coding' | 'auditing'       // Current phase
-  audit: boolean                     // Whether auditing is enabled (always true)
+  phase: 'coding' | 'auditing' | 'decomposing' | 'final_auditing'
   lastAuditResult?: string           // Last audit output
   errorCount: number                 // Consecutive error count
   auditCount: number                 // Number of audits completed
@@ -49,6 +52,12 @@ interface LoopState {
   auditorModel?: string              // Model used for auditing
   workspaceId?: string               // OpenCode workspace ID
   hostSessionId?: string             // Host session ID for post-completion redirect
+  decompositionStatus: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+  decompositionMode: 'agent' | 'deterministic'
+  decompositionSessionId: string | null
+  currentSectionIndex: number
+  totalSections: number
+  finalAuditDone: boolean
 }
 ```
 
@@ -101,13 +110,15 @@ Audit findings survive session rotation via the **review store**:
 
 ```typescript
 interface ReviewFinding {
+  projectId: string
   file: string
   line: number
   severity: 'bug' | 'warning'
   description: string
-  scenario: string
-  status: 'open' | 'resolved'
-  branch?: string
+  scenario: string | null
+  loopName: string | null
+  sectionIndex: number | null
+  createdAt: number
 }
 ```
 
@@ -120,51 +131,48 @@ Outstanding `severity: 'bug'` findings block loop completion — the loop termin
 
 ## Worktree Isolation
 
-Loops default to in-place execution. Set `worktree: true` for isolated git worktree mode:
+Loops always run in an isolated git worktree. Sandbox is optional: when Docker is available and `sandbox.mode = 'docker'` is configured, a sandbox container is provisioned automatically; otherwise the loop runs in worktree-only mode.
 
 ```mermaid
 graph TD
-    A[loop tool invoked] --> B{worktree?}
-    B -->|false| C[In-place execution]
-    B -->|true| D[Create worktree]
-    D --> E[Create new branch]
-    E --> F[Start coding session]
-    F --> G[Iterate until completion]
-    G --> H[Loop completes or is cancelled]
-    H --> I[Cleanup worktree]
-    I --> J[Branch preserved]
+    A[loop tool invoked] --> B[Create worktree]
+    B --> C[Create new branch]
+    C --> D[Start coding session]
+    D --> E[Iterate until completion]
+    E --> F[Loop completes or is cancelled]
+    F --> G[Cleanup worktree]
+    G --> H[Branch preserved]
 ```
 
-Benefits of worktree mode:
+Benefits of worktree isolation:
 - Isolation from ongoing development
 - Safe to experiment without affecting main branch
 - Branch preserved for later review/merge
 
 ## Sandbox Integration
 
-When `sandbox.mode` is `"docker"` and `worktree: true`, loops run inside a Docker container:
+Sandbox is optional. When Docker is available and configured, a sandbox container is provisioned automatically; otherwise loops run in worktree-only mode.
 
 1. Container created with worktree mounted at `/workspace`
 2. `bash`, `glob`, `grep` tools redirect into container
 3. `read`/`write`/`edit` operate on host filesystem
 4. Container stopped and removed on loop completion
 
-See [sandbox documentation](../architecture.md#sandbox-system) for details.
+See [sandbox documentation](architecture.md#sandbox-system) for details.
 
 ## Completion Conditions
 
-A loop completes when ALL of these are true:
+A loop completes when the active phase emits a clean audit result:
 
-1. The auditor has run at least once (`auditCount >= 1`)
-2. Zero outstanding `severity: 'bug'` findings remain
-3. All verification commands in the plan pass (if using plan-execute)
+- Non-sectioned loops complete on `audit-clear`.
+- Sectioned loops advance through clean section audits, then complete on `final-audit-clean`.
+- Dirty section or final audit results rotate back to coding so findings can be addressed.
 
 ## Cancellation
 
 Loops can be cancelled via:
 - `loop-cancel` tool
 - `/loop-cancel` slash command
-- CLI: `oc-forge loop cancel <name>`
 
 Cancellation:
 1. Marks loop as inactive
@@ -177,13 +185,14 @@ Cancellation:
 | Error Type | Behavior |
 |------------|----------|
 | Model error | Automatic fallback to default model, retry |
-| 3 consecutive errors | Loop terminates with `terminationReason: 'error'` |
-| Stall timeout | Re-trigger current phase, up to 5 times |
-| 5 stalls | Loop terminates with `terminationReason: 'stall_timeout'` |
+| Error retry limit | Loop terminates with `terminationReason: 'error_max_retries'` |
+| Audit retry limit | Loop terminates with `terminationReason: 'audit_retry_exhausted'` |
+| Final audit retry limit | Loop terminates with `terminationReason: 'final_audit_retry_exhausted'` |
+| Stall timeout | Loop terminates with `terminationReason: 'stall_timeout'` after the configured consecutive stall limit |
 
 ## Tool Restrictions
 
 Inside active loop sessions:
 - `git push` is denied (permission hook)
-- `loop`, `plan-execute` are blocked (tool hooks)
+- `loop` is blocked (tool hooks)
 - `question` is blocked (tool hooks)

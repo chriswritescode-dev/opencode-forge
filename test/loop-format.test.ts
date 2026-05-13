@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test'
 import { formatTokens, formatSessionOutput, formatAuditResult } from '../src/utils/loop-format'
-import type { LoopSessionOutput } from '../src/services/loop'
+import type { LoopSessionOutput } from '../src/loop/session-output'
 
 describe('formatTokens', () => {
   test('numbers less than 1000 returned as string', () => {

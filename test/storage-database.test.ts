@@ -34,7 +34,7 @@ describe('Storage database corruption recovery', () => {
     closeDatabase(db)
 
     // Corrupt the database file
-    const dbPath = join(testDataDir, 'graph.db')
+    const dbPath = join(testDataDir, 'forge.db')
     writeFileSync(dbPath, 'CORRUPTED DATA THAT IS NOT A VALID SQLITE FILE')
 
     // Reopen should recover and recreate
@@ -55,7 +55,7 @@ describe('Storage database corruption recovery', () => {
     const db = initializeDatabase(testDataDir)
     closeDatabase(db)
 
-    const dbPath = join(testDataDir, 'graph.db')
+    const dbPath = join(testDataDir, 'forge.db')
     writeFileSync(dbPath, 'CORRUPTED DATA')
 
     // Recover
@@ -86,7 +86,7 @@ describe('Storage database corruption recovery', () => {
   test('should handle WAL and SHM file cleanup during recovery', () => {
     // Initialize database (creates WAL files)
     const db = initializeDatabase(testDataDir)
-    const dbPath = join(testDataDir, 'graph.db')
+    const dbPath = join(testDataDir, 'forge.db')
     
     // Do some writes to ensure WAL files exist
     db.run('PRAGMA wal_checkpoint(TRUNCATE)')

@@ -1,6 +1,7 @@
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
-import { Database } from 'bun:sqlite'
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
+// Database is resolved via vitest alias to better-sqlite3 at runtime
+import { existsSync, mkdirSync, rmSync, writeFileSync, statSync } from 'fs'
+import { execSync, spawnSync } from 'child_process'
 import { join } from 'path'
 
 // Mock ForgeRpcError for error handling
@@ -10,113 +11,24 @@ class MockForgeRpcError extends Error {
   }
 }
 
-import { createLoopService, generateUniqueName } from '../src/services/loop'
+import { createLoopService } from '../src/loop/service'
+import { generateUniqueName } from '../src/loop/name-uniqueness'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
-import { createGraphStatusRepo } from '../src/storage/repos/graph-status-repo'
-import { resolveGraphCacheDir } from '../src/storage/graph-projects'
-import { handleExecutePlan } from '../src/api/handlers/plan-execute'
-import { openForgeDatabase, resolveDataDir } from '../src/storage/database'
-import { createLoopEventHandler } from '../src/hooks/loop'
+
+import { openForgeDatabase } from '../src/storage/database'
 import type { Logger } from '../src/types'
-import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from '../src/tools/plan-approval'
+import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from '../src/hooks/plan-approval'
 import type { ToolContext } from '../src/tools/types'
 import type { PluginConfig } from '../src/types'
+import { tmpdir } from 'os'
+import { randomUUID } from 'crypto'
 
 const TEST_DIR = '/tmp/opencode-manager-plan-approval-test-' + Date.now()
 
-function createTestDb(): Database {
-  const db = new Database(`${TEST_DIR}-${Math.random().toString(36).slice(2)}.db`)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS loops (
-      project_id           TEXT NOT NULL,
-      loop_name            TEXT NOT NULL,
-      status               TEXT NOT NULL CHECK(status IN ('running','completed','cancelled','errored','stalled')),
-      current_session_id   TEXT NOT NULL,
-      worktree             INTEGER NOT NULL,
-      worktree_dir         TEXT NOT NULL,
-      worktree_branch      TEXT,
-      project_dir          TEXT NOT NULL,
-      max_iterations       INTEGER NOT NULL,
-      iteration            INTEGER NOT NULL DEFAULT 0,
-      audit_count          INTEGER NOT NULL DEFAULT 0,
-      error_count          INTEGER NOT NULL DEFAULT 0,
-      phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing')),
-      execution_model      TEXT,
-      auditor_model        TEXT,
-      model_failed         INTEGER NOT NULL DEFAULT 0,
-      sandbox              INTEGER NOT NULL DEFAULT 0,
-      sandbox_container    TEXT,
-      started_at           INTEGER NOT NULL,
-      completed_at         INTEGER,
-      termination_reason   TEXT,
-      completion_summary   TEXT,
-      workspace_id         TEXT,
-      host_session_id      TEXT,
-      audit_session_id     TEXT,
-      session_directory    TEXT,
-      PRIMARY KEY (project_id, loop_name)
-    )
-  `)
-  db.run(`CREATE UNIQUE INDEX idx_loops_session ON loops(project_id, current_session_id)`)
-  
-  db.run(`
-    CREATE TABLE IF NOT EXISTS loop_large_fields (
-      project_id          TEXT NOT NULL,
-      loop_name           TEXT NOT NULL,
-      prompt              TEXT,
-      last_audit_result   TEXT,
-      PRIMARY KEY (project_id, loop_name),
-      FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
-    )
-  `)
-  
-  db.run(`
-    CREATE TABLE IF NOT EXISTS plans (
-      project_id   TEXT NOT NULL,
-      branch       TEXT NOT NULL DEFAULT '',
-      loop_name    TEXT,
-      session_id   TEXT,
-      content      TEXT NOT NULL,
-      updated_at   INTEGER NOT NULL,
-      CHECK (loop_name IS NOT NULL OR session_id IS NOT NULL),
-      CHECK (NOT (loop_name IS NOT NULL AND session_id IS NOT NULL)),
-      UNIQUE (project_id, loop_name),
-      UNIQUE (project_id, session_id)
-    )
-  `)
-  
-  db.run(`
-    CREATE TABLE IF NOT EXISTS review_findings (
-      project_id   TEXT NOT NULL,
-      branch       TEXT NOT NULL DEFAULT '',
-      file         TEXT NOT NULL,
-      line         INTEGER NOT NULL,
-      severity     TEXT NOT NULL CHECK(severity IN ('bug','warning')),
-      description  TEXT NOT NULL,
-      scenario     TEXT,
-      created_at   INTEGER NOT NULL,
-      PRIMARY KEY (project_id, branch, file, line)
-    )
-  `)
-  db.run(`CREATE INDEX IF NOT EXISTS idx_review_findings_branch ON review_findings(project_id, branch)`)
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS graph_status (
-      project_id   TEXT NOT NULL,
-      branch       TEXT NOT NULL DEFAULT '',
-      cwd          TEXT NOT NULL,
-      state        TEXT NOT NULL,
-      ready        INTEGER NOT NULL DEFAULT 0,
-      stats_json   TEXT,
-      message      TEXT,
-      updated_at   INTEGER NOT NULL,
-      PRIMARY KEY (project_id, cwd)
-    )
-  `)
-  
-  return db
+function createTestDb(): any {
+  return openForgeDatabase(join(tmpdir(), `forge-test-${randomUUID()}.db`))
 }
 
 function createMockLogger(): Logger {
@@ -128,13 +40,13 @@ function createMockLogger(): Logger {
 }
 
 describe('Plan Approval Tool Interception', () => {
-  let db: Database
+  let db: any
   let loopService: ReturnType<typeof createLoopService>
   let plansRepo: ReturnType<typeof createPlansRepo>
   const projectId = 'test-project'
   const sessionID = 'test-session-123'
 
-  const PLAN_APPROVAL_LABELS = ['New session', 'Execute here', 'Loop (worktree)', 'Loop']
+  const PLAN_APPROVAL_LABELS = ['New session', 'Execute here', 'Loop']
 
   beforeEach(() => {
     db = createTestDb()
@@ -193,7 +105,7 @@ describe('Plan Approval Tool Interception', () => {
             output.output = `${output.output}\n\n[Programmatic dispatch - no directive]`
           } else {
             // Custom answer fallback
-            output.output = `${output.output}\n\n<system-reminder>\nThe user provided a custom response instead of selecting a predefined option. Review their answer and respond accordingly. If they want to proceed with execution, use the appropriate tool (plan-execute or loop) based on their intent. If they want to cancel or revise the plan, help them with that instead.\n</system-reminder>`
+            output.output = `${output.output}\n\n<system-reminder>\nThe user provided a custom response instead of selecting a predefined option. Review their answer and respond accordingly. If they want to proceed with execution, ask the question tool again with one of: "New session", "Execute here", or "Loop". If they want to cancel or revise the plan, help them with that instead.\n</system-reminder>`
           }
         }
       }
@@ -204,7 +116,6 @@ describe('Plan Approval Tool Interception', () => {
 
     const LOOP_BLOCKED_TOOLS: Record<string, string> = {
       question: 'The question tool is not available during a loop. Do not ask questions — continue working on the task autonomously.',
-      'plan-execute': 'The plan-execute tool is not available during a loop. Focus on executing the current plan.',
       loop: 'The loop tool is not available during a loop. Focus on executing the current plan.',
     }
 
@@ -221,8 +132,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -232,7 +142,6 @@ describe('Plan Approval Tool Interception', () => {
 
     expect(output.output).toContain('New session')
     expect(output.output).not.toContain('<system-reminder>')
-    expect(output.output).not.toContain('plan-execute')
   })
 
   test('Detects plan approval question and handles "Execute here" with abort', () => {
@@ -242,8 +151,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -256,27 +164,6 @@ describe('Plan Approval Tool Interception', () => {
     expect(output.output).not.toContain('<system-reminder>')
   })
 
-  test('Detects plan approval question and handles "Loop (worktree)" programmatically', () => {
-    const args = {
-      questions: [{
-        question: 'How would you like to proceed?',
-        options: [
-          { label: 'New session', description: 'Create new session' },
-          { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
-        ],
-      }],
-    }
-    const output = { title: '', output: 'Loop (worktree)', metadata: {} }
-
-    simulateToolExecuteAfter('question', args, output)
-
-    expect(output.output).toContain('Loop (worktree)')
-    expect(output.output).not.toContain('<system-reminder>')
-    expect(output.output).not.toContain('memory-loop')
-  })
-
   test('Detects plan approval question and handles "Loop" programmatically', () => {
     const args = {
       questions: [{
@@ -284,8 +171,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -305,8 +191,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -327,8 +212,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -347,8 +231,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -384,7 +267,7 @@ describe('Plan Approval Tool Interception', () => {
     const output = { title: '', output: 'Some result', metadata: {} }
     const originalOutput = output.output
 
-    simulateToolExecuteAfter('graph-status', {}, output)
+    simulateToolExecuteAfter('plan-read', {}, output)
 
     expect(output.output).toBe(originalOutput)
     expect(output.output).not.toContain('<system-reminder>')
@@ -419,15 +302,6 @@ describe('Plan Approval Tool Interception', () => {
     expect(output.output).toBe('test')
   })
 
-  test('Loop blocking works for plan-execute tool', () => {
-    const output = { title: '', output: 'test', metadata: {} }
-
-    simulateToolExecuteAfter('plan-execute', {}, output, true)
-
-    expect(output.title).toBe('Tool blocked')
-    expect(output.output).toContain('plan-execute tool is not available')
-  })
-
   test('Loop blocking works for loop tool', () => {
     const output = { title: '', output: 'test', metadata: {} }
 
@@ -440,7 +314,7 @@ describe('Plan Approval Tool Interception', () => {
   test('Loop blocking does not affect non-blocked tools', () => {
     const output = { title: '', output: 'test', metadata: {} }
 
-    simulateToolExecuteAfter('graph-status', {}, output, true)
+    simulateToolExecuteAfter('plan-read', {}, output, true)
 
     expect(output.title).toBe('')
     expect(output.output).toBe('test')
@@ -449,15 +323,15 @@ describe('Plan Approval Tool Interception', () => {
   test('Loop blocking only applies when loop is active', () => {
     const output = { title: '', output: 'test', metadata: {} }
 
-    simulateToolExecuteAfter('plan-execute', {}, output, false)
+    simulateToolExecuteAfter('loop', {}, output, false)
 
     expect(output.title).toBe('')
     expect(output.output).toBe('test')
   })
 
   test('Matches metadata answer exactly', async () => {
-    const v2AbortSpy = mock<ToolContext['v2']['session']['abort']>(() => Promise.resolve({ data: {} }))
-    const legacyAbortSpy = mock(() => Promise.resolve({ data: {} } as any))
+    const v2AbortSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const legacyAbortSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
     const ctx = {
       loopService: {
         resolveLoopName: () => 'test-loop',
@@ -494,7 +368,6 @@ describe('Plan Approval Tool Interception', () => {
       },
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo: createLoopsRepo(db),
       reviewFindingsRepo: createReviewFindingsRepo(db),
       sandboxManager: null,
@@ -511,8 +384,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -533,7 +405,7 @@ describe('Plan Approval Tool Interception', () => {
   })
 
   test('Matches metadata answer by prefix', async () => {
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     const ctx = {
       loopService: {
         resolveLoopName: () => 'test-loop',
@@ -560,7 +432,6 @@ describe('Plan Approval Tool Interception', () => {
       input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo: createLoopsRepo(db),
       reviewFindingsRepo: createReviewFindingsRepo(db),
       sandboxManager: null,
@@ -577,8 +448,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -599,7 +469,7 @@ describe('Plan Approval Tool Interception', () => {
   })
 
   test('Does not match middle-of-string text', async () => {
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     const ctx = {
       loopService: {
         resolveLoopName: () => 'test-loop',
@@ -626,7 +496,6 @@ describe('Plan Approval Tool Interception', () => {
       input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo: createLoopsRepo(db),
       reviewFindingsRepo: createReviewFindingsRepo(db),
       sandboxManager: null,
@@ -643,8 +512,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -664,7 +532,7 @@ describe('Plan Approval Tool Interception', () => {
   })
 
   test('Falls back to output when metadata answers are missing', async () => {
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     const ctx = {
       loopService: {
         resolveLoopName: () => 'test-loop',
@@ -691,7 +559,6 @@ describe('Plan Approval Tool Interception', () => {
       input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo: createLoopsRepo(db),
       reviewFindingsRepo: createReviewFindingsRepo(db),
       sandboxManager: null,
@@ -708,8 +575,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -731,7 +597,7 @@ describe('Plan Approval Tool Interception', () => {
   })
 
   test('Execute here approval schedules source abort and returns without throwing', async () => {
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     const ctx = {
       loopService: {
         resolveLoopName: () => 'test-loop',
@@ -758,7 +624,6 @@ describe('Plan Approval Tool Interception', () => {
       input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo: createLoopsRepo(db),
       reviewFindingsRepo: createReviewFindingsRepo(db),
       sandboxManager: null,
@@ -774,8 +639,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -797,7 +661,7 @@ describe('Plan Approval Tool Interception', () => {
   })
 
   test('New session approval schedules source abort and returns without throwing', async () => {
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     const ctx = {
       loopService: {
         resolveLoopName: () => 'test-loop',
@@ -824,7 +688,6 @@ describe('Plan Approval Tool Interception', () => {
       input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo: createLoopsRepo(db),
       reviewFindingsRepo: createReviewFindingsRepo(db),
       sandboxManager: null,
@@ -840,8 +703,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -863,7 +725,7 @@ describe('Plan Approval Tool Interception', () => {
   })
 
   test('Loop approval schedules source abort and returns without throwing', async () => {
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
@@ -891,7 +753,6 @@ describe('Plan Approval Tool Interception', () => {
       input: { messages: [], systemPrompt: '', client: { session: { promptAsync: async () => ({ data: {} }) } } as any },
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo,
       reviewFindingsRepo,
       sandboxManager: null,
@@ -907,8 +768,7 @@ describe('Plan Approval Tool Interception', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -929,12 +789,13 @@ describe('Plan Approval Tool Interception', () => {
     expect(abortSpy).toHaveBeenCalledWith({ sessionID, directory: "/test" })
   })
 
-  test('Loop (worktree) approval returns without throwing after scheduling', async () => {
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+  test('dispatches loop.start without a mode field when Loop is selected', async () => {
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
-    
+
+    const uniqueSessionId = `loop-dispatch-${Date.now()}`
     const ctx = {
       loopService,
       logger: createMockLogger(),
@@ -952,58 +813,75 @@ describe('Plan Approval Tool Interception', () => {
       plansRepo,
       config: {} as PluginConfig,
       projectId,
-      directory: '/test',
+      directory: '/test-dispatch',
       dataDir: TEST_DIR,
       cleanup: async () => {},
       input: { messages: [], systemPrompt: '', client: { session: { promptAsync: async () => ({ data: {} }) } } as any },
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo,
       reviewFindingsRepo,
       sandboxManager: null,
     } as unknown as ToolContext
 
-    plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
+    plansRepo.writeForSession(projectId, uniqueSessionId, '# Dispatch Test Plan\n\nUnique plan for dispatch test.')
 
-    const hook = createToolExecuteAfterHook(ctx)
+    const executionModule = await import('../src/services/execution')
+    let capturedCommand: any = null
+    vi.spyOn(executionModule, 'createForgeExecutionService').mockImplementation((deps: any) => ({
+      dispatch: async (_execCtx: any, command: any) => {
+        capturedCommand = command
+        return { ok: true, data: {} }
+      },
+    }))
 
-    const args = {
-      questions: [{
-        question: 'How would you like to proceed?',
-        options: [
-          { label: 'New session', description: 'Create new session' },
-          { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
-        ],
-      }],
+    try {
+      const hook = createToolExecuteAfterHook(ctx)
+
+      const args = {
+        questions: [{
+          question: 'How would you like to proceed?',
+          options: [
+            { label: 'New session', description: 'Create new session' },
+            { label: 'Execute here', description: 'Execute here' },
+            { label: 'Loop', description: 'Loop' },
+          ],
+        }],
+      }
+      const output = {
+        title: 'Asked 1 question',
+        output: 'Loop',
+        metadata: { answers: [['Loop']] },
+      }
+
+      await expect(hook(
+        { tool: 'question', sessionID: uniqueSessionId, callID: 'dispatch-test-call', args },
+        output
+      )).resolves.toBeUndefined()
+
+      // The scheduled dispatch fires synchronously before the first await in the IIFE.
+      // Since our mock service.dispatch resolves immediately, the task completes within one microtask.
+      await new Promise(resolve => setTimeout(resolve, 10))
+
+      expect((output.metadata as any).forgePlanApprovalHandled).toBe(true)
+
+      expect(abortSpy).toHaveBeenCalled()
+
+      expect(capturedCommand).toBeDefined()
+      expect(capturedCommand.type).toBe('loop.start')
+      expect(capturedCommand).not.toHaveProperty('mode')
+    } finally {
+      vi.restoreAllMocks()
     }
-    const output = {
-      title: 'Asked 1 question',
-      output: 'Loop (worktree)',
-      metadata: { answers: [['Loop (worktree)']] },
-    }
-
-    await expect(hook(
-      { tool: 'question', sessionID, callID: 'test-call', args },
-      output
-    )).resolves.toBeUndefined()
-
-    expect(output.output).toBe('Loop (worktree)')
-    expect((output.metadata as any).forgePlanApprovalHandled).toBe(true)
-    
-    expect(abortSpy).toHaveBeenCalledWith({ sessionID, directory: "/test" })
   })
 })
 
 describe('Tool blocking hook', () => {
   const sessionID = 'outside-session'
   const loopSessionID = 'loop-session'
-  const auditSessionID = 'audit-session'
-  const loopName = 'active-loop'
+    const loopName = 'active-loop'
 
-  function createContextForLoopState(state: { active: boolean; sessionId: string; auditSessionId?: string } | null): ToolContext {
+  function createContextForLoopState(state: { active: boolean; sessionId: string;  } | null): ToolContext {
     return {
       loopService: {
         resolveLoopName: () => state ? loopName : null,
@@ -1017,7 +895,8 @@ describe('Tool blocking hook', () => {
     const hook = createToolExecuteBeforeHook(createContextForLoopState({
       active: true,
       sessionId: loopSessionID,
-      auditSessionId: auditSessionID,
+      phase: 'auditing',
+
     }))!
 
     await expect(hook({ tool: 'question', sessionID, callID: 'call-1' }, { args: {} })).resolves.toBeUndefined()
@@ -1027,7 +906,8 @@ describe('Tool blocking hook', () => {
     const hook = createToolExecuteBeforeHook(createContextForLoopState({
       active: true,
       sessionId: loopSessionID,
-      auditSessionId: auditSessionID,
+      phase: 'auditing',
+
     }))!
 
     await expect(hook({ tool: 'question', sessionID: loopSessionID, callID: 'call-1' }, { args: {} })).rejects.toThrow('question tool is not available')
@@ -1037,21 +917,23 @@ describe('Tool blocking hook', () => {
     const hook = createToolExecuteBeforeHook(createContextForLoopState({
       active: true,
       sessionId: loopSessionID,
-      auditSessionId: auditSessionID,
+      phase: 'auditing',
+
     }))!
 
-    await expect(hook({ tool: 'question', sessionID: auditSessionID, callID: 'call-1' }, { args: {} })).rejects.toThrow('question tool is not available')
+    await expect(hook({ tool: 'question', sessionID: loopSessionID, callID: 'call-1' }, { args: {} })).rejects.toThrow('question tool is not available')
   })
 
   test('does not rewrite after-hook output when resolved loop belongs to another session', async () => {
     const hook = createToolExecuteAfterHook(createContextForLoopState({
       active: true,
       sessionId: loopSessionID,
-      auditSessionId: auditSessionID,
+      phase: 'auditing',
+
     }))!
     const output = { title: '', output: 'original output', metadata: {} }
 
-    await hook({ tool: 'plan-execute', sessionID, callID: 'call-1', args: {} }, output)
+    await hook({ tool: 'loop', sessionID, callID: 'call-1', args: {} }, output)
 
     expect(output.title).toBe('')
     expect(output.output).toBe('original output')
@@ -1062,7 +944,7 @@ describe('Execute here bypass', () => {
   const projectId = 'test-project'
   const sessionID = 'test-session-456'
   const testDir = '/test/dir'
-  const openDbs: Database[] = []
+  const openDbs: any[] = []
 
   afterEach(() => {
     for (const db of openDbs) db.close()
@@ -1092,7 +974,6 @@ describe('Execute here bypass', () => {
     openDbs.push(db)
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const graphStatusRepo = createGraphStatusRepo(db)
     const plansRepo = createPlansRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger)
 
@@ -1106,7 +987,6 @@ describe('Execute here bypass', () => {
       plansRepo,
       loopsRepo,
       reviewFindingsRepo,
-      graphStatusRepo,
       v2: mockV2,
       input: { messages: [], systemPrompt: '', client: { session: { promptAsync: async () => ({ data: {} }) } } as any },
       ...overrides,
@@ -1114,7 +994,7 @@ describe('Execute here bypass', () => {
   }
 
   test('Execute here bypasses directive injection and triggers abort', async () => {
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     const ctx = createMockContext({
       v2: {
         session: {
@@ -1138,8 +1018,7 @@ describe('Execute here bypass', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -1161,8 +1040,8 @@ describe('Execute here bypass', () => {
   })
 
   test('session.idle event triggers promptAsync for pending execution', async () => {
-    const v2PromptSpy = mock(() => Promise.resolve({ data: {} }))
-    const legacyPromptSpy = mock(() => Promise.resolve({ data: {} } as any))
+    const v2PromptSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const legacyPromptSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
     const ctx = createMockContext({
       v2: {
         session: {
@@ -1199,8 +1078,7 @@ describe('Execute here bypass', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -1239,7 +1117,7 @@ describe('Execute here bypass', () => {
   })
 
   test('Other approval labels do not inject directives (programmatic dispatch)', async () => {
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     const ctx = createMockContext({
       v2: {
         session: {
@@ -1258,7 +1136,7 @@ describe('Execute here bypass', () => {
 
     const hook = createToolExecuteAfterHook(ctx)
 
-    const labels = ['New session', 'Loop (worktree)', 'Loop']
+    const labels = ['New session', 'Loop']
     for (let i = 0; i < labels.length; i++) {
       const label = labels[i]
       const args = {
@@ -1267,8 +1145,7 @@ describe('Execute here bypass', () => {
           options: [
             { label: 'New session', description: 'Create new session' },
             { label: 'Execute here', description: 'Execute here' },
-            { label: 'Loop (worktree)', description: 'Loop worktree' },
-            { label: 'Loop', description: 'Loop in place' },
+            { label: 'Loop', description: 'Loop' },
           ],
         }],
       }
@@ -1290,7 +1167,7 @@ describe('Execute here bypass', () => {
   })
 
   test('session.idle for non-pending session is a no-op', async () => {
-    const promptSpy = mock(() => Promise.resolve({ data: {} }))
+    const promptSpy = vi.fn(() => Promise.resolve({ data: {} }))
     const ctx = createMockContext({
       v2: {
         session: {
@@ -1328,13 +1205,12 @@ describe('Execute here bypass', () => {
     const originalPlan = '# Test Plan\n\nThis is a test plan.'
     plansRepo.writeForSession(projectId, testSessionID, originalPlan)
     
-    const legacyCreateSpy = mock(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
-    const legacyPromptSpy = mock(() => Promise.resolve({ data: {} } as any))
-    const legacyAbortSpy = mock(() => Promise.resolve({ data: {} } as any))
+    const legacyCreateSpy = vi.fn(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
+    const legacyPromptSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
+    const legacyAbortSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
     
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const graphStatusRepo = createGraphStatusRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
     
     const ctx = {
@@ -1345,7 +1221,6 @@ describe('Execute here bypass', () => {
       plansRepo,
       loopsRepo,
       reviewFindingsRepo,
-      graphStatusRepo,
       loopService,
       v2: {
         session: {
@@ -1379,8 +1254,7 @@ describe('Execute here bypass', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -1429,8 +1303,8 @@ describe('Execute here bypass', () => {
     const originalPlan = '# Execute Here Plan\n\nThis plan should persist after Execute here.'
     plansRepo.writeForSession(projectId, testSessionID, originalPlan)
 
-    const promptSpy = mock(() => Promise.resolve({ data: {} }))
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const promptSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
 
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -1462,8 +1336,7 @@ describe('Execute here bypass', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -1499,10 +1372,10 @@ describe('Execute here bypass', () => {
     const originalPlan = '# Loop Plan\n\nThis plan should persist after Loop setup.'
     plansRepo.writeForSession(projectId, testSessionID, originalPlan)
 
-    const createSpy = mock(() => Promise.resolve({ data: { id: 'loop-session-123' } }))
-    const promptSpy = mock(() => Promise.resolve({ data: {} }))
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
-    const selectSessionSpy = mock(() => Promise.resolve({ data: {} }))
+    const createSpy = vi.fn(() => Promise.resolve({ data: { id: 'loop-session-123' } }))
+    const promptSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const selectSessionSpy = vi.fn(() => Promise.resolve({ data: {} }))
 
     const ctx = {
       projectId,
@@ -1512,7 +1385,7 @@ describe('Execute here bypass', () => {
       plansRepo,
       loopService,
       loopHandler: {
-        startWatchdog: mock(() => {}),
+        startWatchdog: vi.fn(() => {}),
       },
       v2: {
         session: {
@@ -1523,6 +1396,11 @@ describe('Execute here bypass', () => {
         tui: {
           selectSession: selectSessionSpy,
         },
+        experimental: {
+          workspace: {
+            create: vi.fn(async () => ({ data: { id: 'ws-loop-test', directory: `${TEST_DIR}/loop-workspace`, branch: 'opencode/loop' }, error: undefined })),
+          },
+        },
       },
       db,
       dataDir: TEST_DIR,
@@ -1530,7 +1408,6 @@ describe('Execute here bypass', () => {
       input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo,
       reviewFindingsRepo,
       sandboxManager: null,
@@ -1544,8 +1421,7 @@ describe('Execute here bypass', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -1564,14 +1440,7 @@ describe('Execute here bypass', () => {
     expect(abortSpy).toHaveBeenCalledWith({ sessionID: testSessionID, directory: "/test/dir" })
 
     // Wait for dispatch IIFE to complete
-    await new Promise(resolve => setTimeout(resolve, 50))
-
-    // Verify loop session was created without parentID
-    const createArgs = createSpy.mock.calls[0]?.[0]
-    expect(createArgs).toEqual(expect.objectContaining({
-      title: expect.stringContaining('Loop:'),
-    }))
-    expect(createArgs).not.toHaveProperty('parentID')
+    await new Promise(resolve => setTimeout(resolve, 200))
 
     // Verify plan persists in session-scoped repo after loop setup
     const planAfter = plansRepo.getForSession(projectId, testSessionID)
@@ -1599,8 +1468,8 @@ describe('Execute here bypass', () => {
     const originalPlan = '# Failed Loop Plan\n\nThis plan should persist after failed Loop setup.'
     plansRepo.writeForSession(projectId, testSessionID, originalPlan)
 
-    const createSpy = mock(() => Promise.resolve({ data: null, error: 'Failed to create session' }))
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const createSpy = vi.fn(() => Promise.resolve({ data: null, error: 'Failed to create session' }))
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
 
     const ctx = {
       projectId,
@@ -1610,16 +1479,16 @@ describe('Execute here bypass', () => {
       plansRepo,
       loopService,
       loopHandler: {
-        startWatchdog: mock(() => {}),
+        startWatchdog: vi.fn(() => {}),
       },
       v2: {
         session: {
           abort: abortSpy,
-          promptAsync: mock(() => Promise.resolve({ data: {} })),
+          promptAsync: vi.fn(() => Promise.resolve({ data: {} })),
           create: createSpy,
         },
         tui: {
-          selectSession: mock(() => Promise.resolve({ data: {} })),
+          selectSession: vi.fn(() => Promise.resolve({ data: {} })),
         },
       },
       db,
@@ -1628,7 +1497,6 @@ describe('Execute here bypass', () => {
       input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo,
       reviewFindingsRepo,
       sandboxManager: null,
@@ -1642,8 +1510,7 @@ describe('Execute here bypass', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -1653,7 +1520,7 @@ describe('Execute here bypass', () => {
       metadata: { answers: [['Loop']] },
     }
 
-    const tuiPublishSpy = mock(() => Promise.resolve() as any)
+    const tuiPublishSpy = vi.fn(() => Promise.resolve() as any)
     ;(ctx.v2.tui as any).publish = tuiPublishSpy
 
     await expect(hook(
@@ -1664,9 +1531,6 @@ describe('Execute here bypass', () => {
     // Abort is called synchronously (awaited in hook)
     expect(abortSpy).toHaveBeenCalledTimes(1)
 
-    // Verify output is preserved (canonical approval acknowledged)
-    expect(output.output).toBe('Loop')
-    
     // Wait for dispatch IIFE to complete
     await new Promise(resolve => setTimeout(resolve, 50))
     
@@ -1720,450 +1584,12 @@ describe('generateUniqueName for plan approval', () => {
   })
 })
 
-describe('plan execute API loop dispatch', () => {
-  const originalDataHome = process.env.XDG_DATA_HOME
-  const originalConfigHome = process.env.XDG_CONFIG_HOME
-  let testDataDir: string
-  let testConfigDir: string
-  let db: Database
-
-  beforeEach(() => {
-    testDataDir = `${TEST_DIR}-api-${Math.random().toString(36).slice(2)}`
-    testConfigDir = `${TEST_DIR}-api-config-${Math.random().toString(36).slice(2)}`
-    process.env.XDG_DATA_HOME = testDataDir
-    process.env.XDG_CONFIG_HOME = testConfigDir
-    mkdirSync(`${testConfigDir}/opencode`, { recursive: true })
-    writeFileSync(`${testConfigDir}/opencode/forge-config.jsonc`, JSON.stringify({ sandbox: { mode: 'none' } }))
-    mkdirSync(resolveDataDir(), { recursive: true })
-    db = openForgeDatabase(`${resolveDataDir()}/graph.db`)
-  })
-
-  afterEach(() => {
-    db?.close()
-    if (originalDataHome === undefined) {
-      delete process.env.XDG_DATA_HOME
-    } else {
-      process.env.XDG_DATA_HOME = originalDataHome
-    }
-    if (originalConfigHome === undefined) {
-      delete process.env.XDG_CONFIG_HOME
-    } else {
-      process.env.XDG_CONFIG_HOME = originalConfigHome
-    }
-    if (existsSync(testDataDir)) {
-      rmSync(testDataDir, { recursive: true, force: true })
-    }
-    if (existsSync(testConfigDir)) {
-      rmSync(testConfigDir, { recursive: true, force: true })
-    }
-  })
-
-  function createApiDeps(overrides?: Partial<ToolContext>) {
-    const plansRepo = createPlansRepo(db)
-    const loopsRepo = createLoopsRepo(db)
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const graphStatusRepo = createGraphStatusRepo(db)
-    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'api-project', createMockLogger())
-    const promptAsync = mock(() => Promise.resolve({ data: {} }))
-    const sessionCreate = mock(() => Promise.resolve({ data: { id: `session-${Math.random().toString(36).slice(2)}` } }))
-    const sessionAbort = mock(() => Promise.resolve({ data: {} }))
-    const worktreeCreate = mock(async () => {
-      const directory = `${testDataDir}/worktree`
-      mkdirSync(directory, { recursive: true })
-      createGraphStatusRepo(db).write({
-        projectId: 'api-project',
-        cwd: directory,
-        state: 'ready',
-        ready: true,
-        stats: { files: 1, symbols: 1, edges: 0, calls: 0 },
-        message: null,
-      })
-      return { data: { directory, branch: 'opencode/loop-api-plan' }, error: undefined }
-    })
-
-    const ctx = {
-      projectId: 'api-project',
-      directory: '/repo',
-      config: {
-        executionModel: 'provider/default-exec',
-        auditorModel: 'provider/default-auditor',
-      } as PluginConfig,
-      logger: createMockLogger(),
-      db,
-      dataDir: resolveDataDir(),
-      plansRepo,
-      loopsRepo,
-      reviewFindingsRepo,
-      graphStatusRepo,
-      loopService,
-      sandboxManager: null,
-      v2: {
-        session: {
-          create: sessionCreate,
-          promptAsync,
-          abort: sessionAbort,
-        },
-        worktree: {
-          create: worktreeCreate,
-        },
-      } as unknown as ToolContext['v2'],
-      ...overrides,
-    } as ToolContext
-
-    return { ctx, promptAsync, sessionCreate, sessionAbort, worktreeCreate, graphStatusRepo, loopsRepo, plansRepo, reviewFindingsRepo }
-  }
-
-  function apiDeps(ctx: ToolContext) {
-    return { ctx, logger: ctx.logger, projectId: 'api-project', registry: {} as never }
-  }
-
-  test('loop mode launches an in-place loop and persists default auditor model', async () => {
-    const { ctx, sessionCreate } = createApiDeps()
-    const body = { mode: 'loop', title: 'API Plan', plan: '# API Plan' }
-
-    const res = await handleExecutePlan(apiDeps(ctx), {
-      projectId: 'api-project',
-      sessionId: 'host-session',
-    }, body)
-
-    const createArgs = sessionCreate.mock.calls[0]?.[0]
-    expect(createArgs).toEqual(expect.objectContaining({
-      directory: '/repo',
-    }))
-    expect(createArgs).not.toHaveProperty('parentID')
-    
-    const row = db.prepare('SELECT worktree, execution_model, auditor_model, host_session_id FROM loops WHERE project_id = ?').get('api-project') as {
-      worktree: number
-      execution_model: string
-      auditor_model: string
-      host_session_id: string
-    }
-    expect(row.worktree).toBe(0)
-    expect(row.execution_model).toBe('provider/default-exec')
-    expect(row.auditor_model).toBe('provider/default-auditor')
-    expect(row.host_session_id).toBe('host-session')
-  })
-
-  test('loop-worktree mode launches a worktree loop and honors explicit auditor model', async () => {
-    const { ctx, worktreeCreate } = createApiDeps()
-    const body = {
-      mode: 'loop-worktree',
-      title: 'API Worktree Plan',
-      plan: '# API Worktree Plan',
-      executionModel: 'provider/request-exec',
-      auditorModel: 'provider/request-auditor',
-    }
-
-    await handleExecutePlan(apiDeps(ctx), {
-      projectId: 'api-project',
-      sessionId: 'host-session',
-    }, body)
-
-    expect(worktreeCreate).toHaveBeenCalled()
-    const row = db.prepare('SELECT worktree, worktree_dir, execution_model, auditor_model FROM loops WHERE project_id = ?').get('api-project') as {
-      worktree: number
-      worktree_dir: string
-      execution_model: string
-      auditor_model: string
-    }
-    expect(row.worktree).toBe(1)
-    expect(row.worktree_dir).toBe(`${testDataDir}/worktree`)
-    expect(row.execution_model).toBe('provider/request-exec')
-    expect(row.auditor_model).toBe('provider/request-auditor')
-  })
-
-  test('loop-worktree mode selects the created workspace when navigating', async () => {
-    const { ctx } = createApiDeps()
-    const selectSession = mock(() => Promise.resolve({ data: {} }))
-    ;(ctx.v2 as any).tui = { selectSession }
-    ;(ctx.v2 as any).experimental = {
-      workspace: {
-        create: mock(async (params: { id?: string }) => ({ data: { id: 'server-generated-ws-id' }, error: undefined })),
-        sessionRestore: mock(async () => ({ data: { total: 0 }, error: undefined })),
-      },
-    }
-
-    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
-
-    await handleExecutePlan(apiDeps(ctx), {
-      projectId: 'api-project',
-      sessionId: 'host-session',
-    }, body)
-    await new Promise(resolve => setTimeout(resolve, 0))
-
-    expect(selectSession).toHaveBeenCalledWith(expect.objectContaining({
-      sessionID: expect.any(String),
-      workspace: 'server-generated-ws-id',
-    }))
-  })
-
-  test('loop-worktree mode persists sandbox container name', async () => {
-    const sandboxManager = {
-      start: mock(async () => ({ containerName: 'oc-forge-sandbox-api-worktree-plan' })),
-      stop: mock(async () => {}),
-    }
-    const { ctx } = createApiDeps({
-      config: {
-        executionModel: 'provider/default-exec',
-        auditorModel: 'provider/default-auditor',
-        sandbox: { mode: 'docker' },
-      } as PluginConfig,
-      sandboxManager: sandboxManager as unknown as ToolContext['sandboxManager'],
-    })
-    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
-
-    await handleExecutePlan(apiDeps(ctx), {
-      projectId: 'api-project',
-      sessionId: 'host-session',
-    }, body)
-    const row = db.prepare('SELECT sandbox, sandbox_container FROM loops WHERE project_id = ?').get('api-project') as {
-      sandbox: number
-      sandbox_container: string | null
-    }
-    expect(row.sandbox).toBe(1)
-    expect(row.sandbox_container).toBe('oc-forge-sandbox-api-worktree-plan')
-  })
-
-  test('loop-worktree mode persists state before graph readiness polling', async () => {
-    const { ctx, graphStatusRepo, promptAsync } = createApiDeps()
-    const worktreeDir = `${testDataDir}/slow-graph-worktree`
-    mkdirSync(worktreeDir, { recursive: true })
-    ctx.v2.worktree.create = mock(async () => ({
-      data: { directory: worktreeDir, branch: 'opencode/loop-api-worktree-plan' },
-      error: undefined,
-    })) as unknown as ToolContext['v2']['worktree']['create']
-
-    let resolvePrompt!: () => void
-    const promptHold = new Promise<{ data: Record<string, never> }>((resolve) => {
-      resolvePrompt = () => resolve({ data: {} })
-    })
-    ctx.v2.session.promptAsync = mock(() => promptHold) as unknown as ToolContext['v2']['session']['promptAsync']
-
-    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
-
-    const pending = handleExecutePlan(apiDeps(ctx), {
-      projectId: 'api-project',
-      sessionId: 'host-session',
-    }, body)
-
-    await new Promise(resolve => setTimeout(resolve, 50))
-
-    expect(promptAsync).not.toHaveBeenCalled()
-    expect(ctx.v2.session.promptAsync).toHaveBeenCalled()
-    const row = db.prepare('SELECT loop_name, worktree, worktree_dir FROM loops WHERE project_id = ?').get('api-project') as {
-      loop_name: string
-      worktree: number
-      worktree_dir: string
-    } | null
-    expect(row).not.toBeNull()
-    expect(row?.loop_name).toBe('api-worktree-plan')
-    expect(row?.worktree).toBe(1)
-    expect(row?.worktree_dir).toBe(worktreeDir)
-
-    graphStatusRepo.write({
-      projectId: 'api-project',
-      cwd: worktreeDir,
-      state: 'ready',
-      ready: true,
-      stats: { files: 1, symbols: 1, edges: 0, calls: 0 },
-      message: null,
-    })
-    resolvePrompt()
-
-    await pending
-  })
-
-  test('loop-worktree mode rolls back session and loop state when sandbox startup fails', async () => {
-    const sandboxManager = {
-      start: mock(async () => { throw new Error('sandbox failed') }),
-      stop: mock(async () => {}),
-    }
-    const { ctx, sessionAbort } = createApiDeps({
-      config: {
-        executionModel: 'provider/default-exec',
-        auditorModel: 'provider/default-auditor',
-        sandbox: { mode: 'docker' },
-      } as PluginConfig,
-      sandboxManager: sandboxManager as unknown as ToolContext['sandboxManager'],
-    })
-    const repoDir = `${testDataDir}/rollback-repo`
-    const worktreeDir = `${testDataDir}/rollback-worktree`
-    const runGit = (args: string[], cwd: string) => {
-      const result = Bun.spawnSync(['git', ...args], { cwd, stdout: 'ignore', stderr: 'ignore' })
-      expect(result.exitCode).toBe(0)
-    }
-    mkdirSync(repoDir, { recursive: true })
-    runGit(['init'], repoDir)
-    writeFileSync(join(repoDir, 'README.md'), 'test\n')
-    runGit(['add', 'README.md'], repoDir)
-    runGit(['-c', 'user.email=test@example.com', '-c', 'user.name=Test User', 'commit', '-m', 'init'], repoDir)
-    runGit(['worktree', 'add', worktreeDir, '-b', `rollback-${Date.now()}`], repoDir)
-    ctx.v2.worktree.create = mock(async () => ({
-      data: { directory: worktreeDir, branch: 'opencode/loop-api-worktree-plan' },
-      error: undefined,
-    })) as unknown as ToolContext['v2']['worktree']['create']
-    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
-
-    let thrown: unknown
-    try {
-      await handleExecutePlan(apiDeps(ctx), {
-        projectId: 'api-project',
-        sessionId: 'host-session',
-      }, body)
-    } catch (err) {
-      thrown = err
-    }
-
-    expect(thrown).toBeDefined()
-    expect(sessionAbort).toHaveBeenCalled()
-    expect(sandboxManager.stop).toHaveBeenCalledWith('api-worktree-plan')
-    expect(existsSync(worktreeDir)).toBe(false)
-    const row = db.prepare('SELECT loop_name FROM loops WHERE project_id = ?').get('api-project')
-    expect(row).toBeNull()
-  })
-
-  test('loop-worktree mode passes graph status repo for seeded worktree status', async () => {
-    const { ctx, graphStatusRepo } = createApiDeps()
-    const worktreeDir = `${testDataDir}/seeded-worktree`
-    mkdirSync(worktreeDir, { recursive: true })
-    const worktreeCreate = mock(async () => ({
-      data: { directory: worktreeDir, branch: 'opencode/loop-api-worktree-plan' },
-      error: undefined,
-    }))
-    ctx.v2.worktree.create = worktreeCreate as unknown as ToolContext['v2']['worktree']['create']
-
-    const sourceCacheDir = resolveGraphCacheDir('api-project', '/repo', ctx.dataDir)
-    mkdirSync(sourceCacheDir, { recursive: true })
-    const sourceGraphDb = new Database(join(sourceCacheDir, 'graph.db'))
-    sourceGraphDb.run('CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY, path TEXT, mtimeMs INTEGER)')
-    sourceGraphDb.close()
-    writeFileSync(join(sourceCacheDir, 'graph-metadata.json'), JSON.stringify({
-      projectId: 'api-project',
-      cwd: '/repo',
-      createdAt: Date.now() - 1000,
-      lastIndexedAt: Date.now() - 500,
-      indexedFileCount: 0,
-      indexedMaxMtimeMs: 0,
-    }))
-    graphStatusRepo.write({
-      projectId: 'api-project',
-      cwd: '/repo',
-      state: 'ready',
-      ready: true,
-      stats: { files: 0, symbols: 0, edges: 0, calls: 0 },
-      message: null,
-    })
-
-    const body = { mode: 'loop-worktree', title: 'API Worktree Plan', plan: '# API Worktree Plan' }
-
-    await handleExecutePlan(apiDeps(ctx), {
-      projectId: 'api-project',
-      sessionId: 'host-session',
-    }, body)
-    let targetStatus = graphStatusRepo.read('api-project', worktreeDir)
-    for (let i = 0; i < 20 && !targetStatus; i++) {
-      await new Promise(resolve => setTimeout(resolve, 10))
-      targetStatus = graphStatusRepo.read('api-project', worktreeDir)
-    }
-    expect(targetStatus?.state).toBe('ready')
-    expect(targetStatus?.ready).toBe(true)
-  })
-
-  test('loop mode started through plan.execute advances to audit on coding idle', async () => {
-    const { ctx, graphStatusRepo, loopsRepo, plansRepo, reviewFindingsRepo } = createApiDeps()
-    const sessionMessages = mock(() => Promise.resolve({
-      data: [{
-        info: { role: 'assistant', finish: 'stop' },
-        parts: [{ type: 'text', text: 'Implemented plan.' }],
-      }],
-    }))
-    ;(ctx.v2 as any).session.messages = sessionMessages
-
-    const loopServiceForHandler = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'api-project', ctx.logger)
-    const loopHandler = createLoopEventHandler(
-      loopServiceForHandler,
-      {} as never,
-      ctx.v2,
-      ctx.logger,
-      () => ctx.config,
-      undefined,
-      'api-project',
-      ctx.dataDir,
-    )
-    ;(ctx as any).loopHandler = loopHandler
-
-    const res = await handleExecutePlan(apiDeps(ctx), {
-      projectId: 'api-project',
-      sessionId: 'host-session',
-    }, {
-      mode: 'loop',
-      title: 'API Plan',
-      plan: '# API Plan\n\nImplement this.',
-    }) as { sessionId: string; loopName: string }
-
-    await loopHandler.onEvent({
-      event: {
-        type: 'session.status',
-        properties: {
-          sessionID: res.sessionId,
-          directory: '/repo',
-          status: { type: 'idle' },
-        },
-      },
-    })
-
-    const row = db.prepare(
-      'SELECT phase, audit_session_id, current_session_id, worktree FROM loops WHERE project_id = ? AND loop_name = ?',
-    ).get('api-project', res.loopName) as {
-      phase: string
-      audit_session_id: string | null
-      current_session_id: string
-      worktree: number
-    }
-
-    expect(row.worktree).toBe(0)
-    expect(row.current_session_id).toBe(res.sessionId)
-    expect(row.phase).toBe('auditing')
-    expect(row.audit_session_id).toBeDefined()
-    expect(row.audit_session_id).not.toBeNull()
-  })
-
-  test('loop mode is disabled when config.loop.enabled is false', async () => {
-    const { ctx } = createApiDeps({
-      config: {
-        executionModel: 'provider/default-exec',
-        auditorModel: 'provider/default-auditor',
-        loop: { enabled: false },
-      } as PluginConfig,
-    })
-
-    let thrown: unknown
-    try {
-      await handleExecutePlan(apiDeps(ctx), {
-        projectId: 'api-project',
-        sessionId: 'host-session',
-      }, {
-        mode: 'loop',
-        title: 'Disabled Plan',
-        plan: '# Disabled Plan',
-      })
-    } catch (err) {
-      thrown = err
-    }
-
-    expect(thrown).toBeDefined()
-    expect((thrown as Error).message).toContain('disabled')
-
-    const rows = db.prepare('SELECT COUNT(*) as count FROM loops WHERE project_id = ?').get('api-project') as { count: number }
-    expect(rows.count).toBe(0)
-  })
-})
-
 describe('Fire-and-forget dispatch behavior', () => {
   const projectId = 'test-project-fire-forget'
   const sessionID = 'test-session-fire-forget'
   const testDir = '/test/dir'
-  const openDbs: Database[] = []
+  const openDbs: any[] = []
+  let nextTestId = 0
 
   afterEach(() => {
     for (const db of openDbs) db.close()
@@ -2189,18 +1615,18 @@ describe('Fire-and-forget dispatch behavior', () => {
     } as PluginConfig
 
     const mockLogger = createMockLogger()
+    const uid = nextTestId++
 
     const db = createTestDb()
     openDbs.push(db)
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const graphStatusRepo = createGraphStatusRepo(db)
     const plansRepo = createPlansRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger)
 
     return {
       projectId,
-      directory: testDir,
+      directory: `/test/dir/ff-${uid}`,
       config: mockConfig,
       logger: mockLogger,
       db,
@@ -2208,10 +1634,9 @@ describe('Fire-and-forget dispatch behavior', () => {
       plansRepo,
       loopsRepo,
       reviewFindingsRepo,
-      graphStatusRepo,
       v2: mockV2,
       loopHandler: {
-        startWatchdog: mock(() => {}),
+        startWatchdog: vi.fn(() => {}),
       },
       sandboxManager: null,
       dataDir: TEST_DIR,
@@ -2224,13 +1649,14 @@ describe('Fire-and-forget dispatch behavior', () => {
   }
 
   test('New session approval returns before promptAsync resolves', async () => {
+    const sid = 'fire-new-session-' + (++nextTestId)
     let resolvePrompt: () => void
     const pendingPromise = new Promise<any>((resolve) => {
       resolvePrompt = resolve
     })
     
-    const promptSpy = mock(() => pendingPromise)
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const promptSpy = vi.fn(() => pendingPromise)
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     
     const ctx = createMockContext({
       v2: {
@@ -2246,7 +1672,7 @@ describe('Fire-and-forget dispatch behavior', () => {
       } as unknown as ToolContext['v2'],
     })
 
-    ctx.plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
+    ctx.plansRepo.writeForSession(projectId, sid, '# Test Plan\n\nThis is a test plan.')
 
     const hook = createToolExecuteAfterHook(ctx)
 
@@ -2256,8 +1682,7 @@ describe('Fire-and-forget dispatch behavior', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -2269,7 +1694,7 @@ describe('Fire-and-forget dispatch behavior', () => {
 
     // Race hook against short timeout - hook should reject immediately
     const hookPromise = hook(
-      { tool: 'question', sessionID, callID: 'test-call', args },
+      { tool: 'question', sessionID: sid, callID: 'test-call', args },
       output
     )
 
@@ -2304,8 +1729,8 @@ describe('Fire-and-forget dispatch behavior', () => {
       resolvePrompt = resolve
     })
     
-    const promptSpy = mock(() => pendingPromise)
-    const abortSpy = mock(() => Promise.resolve({ data: {} }))
+    const promptSpy = vi.fn(() => pendingPromise)
+    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
     
     const ctx = createMockContext({
       v2: {
@@ -2332,8 +1757,7 @@ describe('Fire-and-forget dispatch behavior', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -2375,9 +1799,9 @@ describe('Fire-and-forget dispatch behavior', () => {
   })
 
   test('Duplicate New session approval schedules one dispatch', async () => {
-    const legacyCreateSpy = mock(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
-    const legacyPromptSpy = mock(() => Promise.resolve({ data: {} } as any))
-    const legacyAbortSpy = mock(() => Promise.resolve({ data: {} } as any))
+    const legacyCreateSpy = vi.fn(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
+    const legacyPromptSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
+    const legacyAbortSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
     
     const ctx = createMockContext({
       v2: {
@@ -2414,8 +1838,7 @@ describe('Fire-and-forget dispatch behavior', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -2453,14 +1876,124 @@ describe('Fire-and-forget dispatch behavior', () => {
     expect((duplicateOutput.metadata as any).forgePlanApprovalDuplicate).toBe(true)
   })
 
+  test('Duplicate New session approval with a different callID schedules one dispatch', async () => {
+    let resolveAbort: () => void
+    const abortPromise = new Promise<{ data: {} }>((resolve) => {
+      resolveAbort = () => resolve({ data: {} })
+    })
+    const legacyCreateSpy = vi.fn(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
+    const legacyPromptSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
+    const legacyAbortSpy = vi.fn(() => abortPromise as any)
+    const v2CreateSpy = vi.fn(() => Promise.resolve({ data: { id: 'new-session-id' } }))
+    const sharedClient = {
+      session: {
+        abort: legacyAbortSpy,
+        promptAsync: legacyPromptSpy,
+        create: legacyCreateSpy,
+      },
+    } as any
+
+    const ctx = createMockContext({
+      v2: {
+        session: {
+          abort: async () => ({ data: {} }),
+          promptAsync: async () => ({ data: {} }),
+          create: v2CreateSpy,
+        },
+        tui: {
+          selectSession: async () => ({ data: {} }),
+          publish: async () => ({ data: {} }),
+        },
+      } as unknown as ToolContext['v2'],
+      input: {
+        messages: [] as any,
+        systemPrompt: '',
+        client: sharedClient,
+      } as any,
+    })
+
+    ctx.plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
+
+    const hook = createToolExecuteAfterHook(ctx)
+
+    const args = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop', description: 'Loop' },
+        ],
+      }],
+    }
+
+    const firstHook = hook(
+      {
+        tool: 'question',
+        sessionID,
+        callID: 'test-call-1',
+        args,
+      },
+      {
+        title: 'Asked 1 question',
+        output: 'New session',
+        metadata: { answers: [['New session']] },
+      }
+    )
+
+    const duplicateOutput = {
+      title: 'Asked 1 question',
+      output: 'New session',
+      metadata: { answers: [['New session']] },
+    }
+
+    const duplicateHook = hook(
+      {
+        tool: 'question',
+        sessionID,
+        callID: 'test-call-2',
+        args,
+      },
+      duplicateOutput
+    )
+
+    resolveAbort!()
+
+    await expect(duplicateHook).resolves.toBeUndefined()
+    await expect(firstHook).resolves.toBeUndefined()
+
+    await new Promise(resolve => setTimeout(resolve, 500))
+
+    expect(v2CreateSpy).toHaveBeenCalledTimes(1)
+    expect(legacyAbortSpy).toHaveBeenCalledTimes(2)
+    expect((duplicateOutput.metadata as any).forgePlanApprovalDuplicate).toBe(true)
+
+    const laterDuplicateOutput = {
+      title: 'Asked 1 question',
+      output: 'New session',
+      metadata: { answers: [['New session']] },
+    }
+
+    await expect(hook(
+      { tool: 'question', sessionID, callID: 'test-call-3', args },
+      laterDuplicateOutput,
+    )).resolves.toBeUndefined()
+
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    expect(v2CreateSpy).toHaveBeenCalledTimes(1)
+    expect(legacyAbortSpy).toHaveBeenCalledTimes(3)
+    expect((laterDuplicateOutput.metadata as any).forgePlanApprovalDuplicate).toBe(true)
+  })
+
   test('Dispatch IIFE survives slow source-session abort', async () => {
     let resolveAbort: () => void
     const abortPromise = new Promise<{ data: {} }>((resolve) => {
       resolveAbort = () => resolve({ data: {} })
     })
-    const legacyCreateSpy = mock(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
-    const legacyPromptSpy = mock(() => Promise.resolve({ data: {} } as any))
-    const legacyAbortSpy = mock(() => abortPromise as any)
+    const legacyCreateSpy = vi.fn(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
+    const legacyPromptSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
+    const legacyAbortSpy = vi.fn(() => abortPromise as any)
 
     const ctx = createMockContext({
       v2: {
@@ -2497,7 +2030,6 @@ describe('Fire-and-forget dispatch behavior', () => {
         options: [
           { label: 'New session', description: '' },
           { label: 'Execute here', description: '' },
-          { label: 'Loop (worktree)', description: '' },
           { label: 'Loop', description: '' },
         ],
       }],
@@ -2524,7 +2056,8 @@ describe('Fire-and-forget dispatch behavior', () => {
   test('Falls back to v2 client when legacy client is unavailable', async () => {
     const db = createTestDb()
     const testPlansRepo = createPlansRepo(db)
-    const v2AbortSpy = mock(() => Promise.resolve({ data: {} }))
+    const v2AbortSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const testSid = 'fire-v2-fallback-' + (++nextTestId)
     const ctx = {
       loopService: {
         resolveLoopName: () => 'test-loop',
@@ -2551,13 +2084,12 @@ describe('Fire-and-forget dispatch behavior', () => {
       input: { messages: [], systemPrompt: '', client: undefined } as any,
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo: createLoopsRepo(db),
       reviewFindingsRepo: createReviewFindingsRepo(db),
       sandboxManager: null,
     } as unknown as ToolContext
 
-    testPlansRepo.writeForSession(projectId, sessionID, '# plan')
+    testPlansRepo.writeForSession(projectId, testSid, '# plan')
 
     const hook = createToolExecuteAfterHook(ctx)
 
@@ -2567,8 +2099,7 @@ describe('Fire-and-forget dispatch behavior', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -2579,7 +2110,7 @@ describe('Fire-and-forget dispatch behavior', () => {
     }
 
     await expect(hook(
-      { tool: 'question', sessionID, callID: 'test-call', args },
+      { tool: 'question', sessionID: testSid, callID: 'test-call', args },
       output
     )).resolves.toBeUndefined()
 
@@ -2590,8 +2121,9 @@ describe('Fire-and-forget dispatch behavior', () => {
   test('Treats v2 abort returning {error,...} as a failure (logs error)', async () => {
     const db = createTestDb()
     const testPlansRepo = createPlansRepo(db)
-    const v2AbortSpy = mock(() => Promise.resolve({ data: undefined, error: 'Unable to connect' }))
+    const v2AbortSpy = vi.fn(() => Promise.resolve({ data: undefined, error: 'Unable to connect' }))
     const errors: unknown[] = []
+    const testSid = 'fire-error-' + (++nextTestId)
     const ctx = {
       loopService: {
         resolveLoopName: () => 'test-loop',
@@ -2622,13 +2154,12 @@ describe('Fire-and-forget dispatch behavior', () => {
       input: { messages: [], systemPrompt: '', client: undefined } as any,
       systemPrompt: '',
       messages: [],
-      graphStatusRepo: createGraphStatusRepo(db),
       loopsRepo: createLoopsRepo(db),
       reviewFindingsRepo: createReviewFindingsRepo(db),
       sandboxManager: null,
     } as unknown as ToolContext
 
-    testPlansRepo.writeForSession(projectId, sessionID, '# plan')
+    testPlansRepo.writeForSession(projectId, testSid, '# plan')
 
     const hook = createToolExecuteAfterHook(ctx)
 
@@ -2638,8 +2169,7 @@ describe('Fire-and-forget dispatch behavior', () => {
         options: [
           { label: 'New session', description: 'Create new session' },
           { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop (worktree)', description: 'Loop worktree' },
-          { label: 'Loop', description: 'Loop in place' },
+          { label: 'Loop', description: 'Loop' },
         ],
       }],
     }
@@ -2650,7 +2180,7 @@ describe('Fire-and-forget dispatch behavior', () => {
     }
 
     await expect(hook(
-      { tool: 'question', sessionID, callID: 'test-call', args },
+      { tool: 'question', sessionID: testSid, callID: 'test-call', args },
       output
     )).resolves.toBeUndefined()
 

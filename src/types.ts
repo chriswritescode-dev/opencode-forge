@@ -46,16 +46,36 @@ export interface LoopConfig {
   stallTimeoutMs?: number
   /** Worktree loop completion logging configuration. */
   worktreeLogging?: WorktreeLoggingConfig
+  /** Maximum consecutive stalls before loop is terminated. 0 = disabled (default: 5). */
+  maxConsecutiveStalls?: number
+}
+
+/**
+ * Resource limits for the sandbox container. Maps directly to `docker run` flags.
+ * Docker Desktop's defaults (often 2GB / 2 CPUs) are too tight for many real projects
+ * — `pnpm install` gets OOM-killed (exit 137) and shell commands run slowly.
+ */
+export interface SandboxResources {
+  /** Memory limit, e.g. '8g', '4096m'. Maps to `--memory`. */
+  memory?: string
+  /** Memory+swap limit, e.g. '12g'. Maps to `--memory-swap`. */
+  memorySwap?: string
+  /** Number of CPUs, e.g. '4', '2.5'. Maps to `--cpus`. */
+  cpus?: string
+  /** Shared memory size, e.g. '512m'. Maps to `--shm-size`. */
+  shmSize?: string
 }
 
 /**
  * Configuration for sandbox execution environment.
  */
 export interface SandboxConfig {
-  /** Sandbox mode - 'off' disables sandboxing, 'docker' enables it. */
-  mode: 'off' | 'docker'
+  /** Sandbox mode. Currently only 'docker' is supported. Reserved for future modes. */
+  mode: 'docker'
   /** Docker image to use for sandboxed execution. */
   image?: string
+  /** Container resource limits. Defaults to memory=8g, cpus=4, shmSize=1g. */
+  resources?: SandboxResources
 }
 
 /**
@@ -88,14 +108,18 @@ export interface TuiConfig {
   showLoops?: boolean
   /** Show version information. */
   showVersion?: boolean
+  /** Auto-save captured plans to disk under <dataDir>/plans/<projectId>/. Default false. */
+  autoSavePlans?: boolean
+  /** TTL in ms for archived plans before pruning. 0 disables pruning. Default: 604800000 (7 days). */
+  planArchiveTtlMs?: number
   /** Keyboard shortcut overrides for Forge commands. */
   keybinds?: {
-    /** View plan dialog. Default: Meta+Shift+P */
+    /** View plan dialog. Default: <leader>v */
     viewPlan?: string
-    /** Execute plan dialog. Default: Meta+Shift+E */
-    executePlan?: string
-    /** Show loops dialog. Default: Meta+Shift+L */
+    /** Show loops dialog. Default: <leader>w */
     showLoops?: string
+    /** Load archived plans dialog. Default: <leader>i */
+    loadPlan?: string
   }
 }
 
@@ -108,17 +132,19 @@ export interface AgentOverrideConfig {
 }
 
 /**
- * Configuration for code graph indexing and queries.
+ * Configuration for plan decomposition into sections.
  */
-export interface GraphConfig {
-  /** Enable graph indexing. Defaults to true. */
+export interface DecomposerConfig {
+  /** Enable decomposition. Defaults to true. */
   enabled?: boolean
-  /** Auto-check existing graph cache on startup and scan only when missing/stale. Defaults to true. */
-  autoScan?: boolean
-  /** Watch filesystem for changes. */
-  watch?: boolean
-  /** Debounce delay in ms for file change events. */
-  debounceMs?: number
+  /** Decomposition mode: 'agent' (LLM) or 'deterministic' (parser). Defaults to 'agent'. */
+  mode?: 'agent' | 'deterministic'
+  /** Model override for the decomposer agent. Ignored in deterministic mode. */
+  model?: string
+  /** Fallback when deterministic parse fails: 'legacy' (skip decomposition) or 'agent' (try agent mode). Defaults to 'legacy'. */
+  onParseFailure?: 'legacy' | 'agent'
+  /** Maximum number of sections. Defaults to 12. */
+  maxSections?: number
 }
 
 /**
@@ -139,8 +165,6 @@ export interface PluginConfig {
   auditorModel?: string
   /** Loop behavior configuration. */
   loop?: LoopConfig
-  /** @deprecated Use `loop` instead */
-  ralph?: LoopConfig
   /** TTL for completed/cancelled/errored/stalled loops before sweep. Default 7 days. */
   completedLoopTtlMs?: number
   /** TUI display configuration. */
@@ -149,6 +173,6 @@ export interface PluginConfig {
   agents?: Record<string, AgentOverrideConfig>
   /** Sandbox execution configuration. */
   sandbox?: SandboxConfig
-  /** Graph indexing configuration. */
-  graph?: GraphConfig
+  /** Decomposer configuration for plan section decomposition. */
+  decomposer?: DecomposerConfig
 }

@@ -7,7 +7,8 @@ export interface ReviewFindingRow {
   severity: 'bug' | 'warning'
   description: string
   scenario: string | null
-  branch: string | null
+  loopName: string | null
+  sectionIndex: number | null
   createdAt: number
 }
 
@@ -16,27 +17,29 @@ export interface WriteFindingResult {
   conflict?: boolean
 }
 
+type DeleteScope = { loopName: string | null; sectionIndex?: number | null }
+
 export interface ReviewFindingsRepo {
-  write(row: Omit<ReviewFindingRow, 'createdAt' | 'scenario'> & { scenario?: string | null }): WriteFindingResult
-  listAll(projectId: string): ReviewFindingRow[]
-  listByBranch(projectId: string, branch: string | null): ReviewFindingRow[]
+  write(row: Omit<ReviewFindingRow, 'createdAt' | 'scenario' | 'sectionIndex'> & { scenario?: string | null; sectionIndex?: number | null }): WriteFindingResult
+  listAll(projectId: string, sectionIndex?: number | null): ReviewFindingRow[]
+  listByLoopName(projectId: string, loopName: string | null, sectionIndex?: number | null): ReviewFindingRow[]
   listByFile(projectId: string, file: string): ReviewFindingRow[]
-  delete(projectId: string, file: string, line: number, branch?: string | null): boolean
+  delete(projectId: string, file: string, line: number, scope?: DeleteScope): boolean
 }
 
 export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
-  function branchToDb(branch: string | null | undefined): string {
-    return branch ?? ''
+  function loopToDb(loopName: string | null | undefined): string {
+    return loopName ?? ''
   }
 
-  function branchFromDb(branch: string): string | null {
-    return branch === '' ? null : branch
+  function loopFromDb(loopName: string): string | null {
+    return loopName === '' ? null : loopName
   }
 
   const stmtWrite = db.prepare(`
-    INSERT INTO review_findings (project_id, branch, file, line, severity, description, scenario, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT (project_id, branch, file, line) DO NOTHING
+    INSERT INTO review_findings (project_id, loop_name, file, line, severity, description, scenario, section_index, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, -1), ?)
+    ON CONFLICT (project_id, loop_name, file, line, section_index) DO NOTHING
     RETURNING 1
   `)
 
@@ -47,22 +50,24 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
     return value
   }
 
+  const SELECT_COLS = 'project_id, file, line, severity, description, scenario, loop_name, section_index, created_at'
+
   const stmtListAll = db.prepare(`
-    SELECT project_id, file, line, severity, description, scenario, branch, created_at
+    SELECT ${SELECT_COLS}
     FROM review_findings
     WHERE project_id = ?
     ORDER BY file, line
   `)
 
-  const stmtListByBranch = db.prepare(`
-    SELECT project_id, file, line, severity, description, scenario, branch, created_at
+  const stmtListByLoopName = db.prepare(`
+    SELECT ${SELECT_COLS}
     FROM review_findings
-    WHERE project_id = ? AND branch = ?
+    WHERE project_id = ? AND loop_name = ?
     ORDER BY file, line
   `)
 
   const stmtListByFile = db.prepare(`
-    SELECT project_id, file, line, severity, description, scenario, branch, created_at
+    SELECT ${SELECT_COLS}
     FROM review_findings
     WHERE project_id = ? AND file = ?
     ORDER BY line
@@ -73,111 +78,118 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
     WHERE project_id = ? AND file = ? AND line = ?
   `)
 
-  const stmtDeleteWithBranch = db.prepare(`
+  const stmtDeleteWithLoopName = db.prepare(`
     DELETE FROM review_findings
-    WHERE project_id = ? AND branch = ? AND file = ? AND line = ?
+    WHERE project_id = ? AND loop_name = ? AND file = ? AND line = ?
   `)
 
-  function write(row: Omit<ReviewFindingRow, 'createdAt' | 'scenario'> & { scenario?: string | null }): WriteFindingResult {
+  const stmtDeleteWithLoopNameAndSection = db.prepare(`
+    DELETE FROM review_findings
+    WHERE project_id = ? AND loop_name = ? AND file = ? AND line = ? AND section_index = ?
+  `)
+
+  function mapRaw(raw: {
+    project_id: string
+    file: string
+    line: number
+    severity: 'bug' | 'warning'
+    description: string
+    scenario: string | null
+    loop_name: string
+    section_index: number | null
+    created_at: number
+  }): ReviewFindingRow {
+    return {
+      projectId: raw.project_id,
+      file: raw.file,
+      line: raw.line,
+      severity: raw.severity,
+      description: raw.description,
+      scenario: raw.scenario,
+      loopName: loopFromDb(raw.loop_name),
+      sectionIndex: raw.section_index === -1 ? null : raw.section_index,
+      createdAt: raw.created_at,
+    }
+  }
+
+  function write(row: Omit<ReviewFindingRow, 'createdAt' | 'scenario' | 'sectionIndex'> & { scenario?: string | null; sectionIndex?: number | null }): WriteFindingResult {
     const result = stmtWrite.run(
       row.projectId,
-      branchToDb(row.branch),
+      loopToDb(row.loopName),
       row.file,
       row.line,
       row.severity,
       row.description,
       toScenario(row.scenario),
+      row.sectionIndex ?? null,
       Date.now()
-    )
+    ) as unknown as { changes: number }
     if (result.changes > 0) {
       return { ok: true }
     }
     return { ok: false, conflict: true }
   }
 
-  function listAll(projectId: string): ReviewFindingRow[] {
+  function listAll(projectId: string, sectionIndex?: number | null): ReviewFindingRow[] {
     const rows = stmtListAll.all(projectId) as Array<{
-      project_id: string
-      file: string
-      line: number
-      severity: 'bug' | 'warning'
-      description: string
-      scenario: string | null
-      branch: string
-      created_at: number
+      project_id: string; file: string; line: number; severity: 'bug' | 'warning';
+      description: string; scenario: string | null; loop_name: string;
+      section_index: number | null; created_at: number
     }>
-    return rows.map(row => ({
-      projectId: row.project_id,
-      file: row.file,
-      line: row.line,
-      severity: row.severity,
-      description: row.description,
-      scenario: row.scenario,
-      branch: branchFromDb(row.branch),
-      createdAt: row.created_at,
-    }))
+    let mapped = rows.map(mapRaw)
+    if (sectionIndex !== undefined) {
+      mapped = mapped.filter(r => r.sectionIndex === sectionIndex)
+    }
+    return mapped
   }
 
-  function listByBranch(projectId: string, branch: string | null): ReviewFindingRow[] {
-    const dbBranch = branchToDb(branch)
-    const rows = stmtListByBranch.all(projectId, dbBranch) as Array<{
-      project_id: string
-      file: string
-      line: number
-      severity: 'bug' | 'warning'
-      description: string
-      scenario: string | null
-      branch: string
-      created_at: number
+  function listByLoopName(projectId: string, loopName: string | null, sectionIndex?: number | null): ReviewFindingRow[] {
+    const dbLoopName = loopToDb(loopName)
+    const rows = stmtListByLoopName.all(projectId, dbLoopName) as Array<{
+      project_id: string; file: string; line: number; severity: 'bug' | 'warning';
+      description: string; scenario: string | null; loop_name: string;
+      section_index: number | null; created_at: number
     }>
-    return rows.map(row => ({
-      projectId: row.project_id,
-      file: row.file,
-      line: row.line,
-      severity: row.severity,
-      description: row.description,
-      scenario: row.scenario,
-      branch: branchFromDb(row.branch),
-      createdAt: row.created_at,
-    }))
+    let mapped = rows.map(mapRaw)
+    if (sectionIndex !== undefined) {
+      mapped = mapped.filter(r => r.sectionIndex === sectionIndex)
+    }
+    return mapped
   }
 
   function listByFile(projectId: string, file: string): ReviewFindingRow[] {
     const rows = stmtListByFile.all(projectId, file) as Array<{
-      project_id: string
-      file: string
-      line: number
-      severity: 'bug' | 'warning'
-      description: string
-      scenario: string | null
-      branch: string
-      created_at: number
+      project_id: string; file: string; line: number; severity: 'bug' | 'warning';
+      description: string; scenario: string | null; loop_name: string;
+      section_index: number | null; created_at: number
     }>
-    return rows.map(row => ({
-      projectId: row.project_id,
-      file: row.file,
-      line: row.line,
-      severity: row.severity,
-      description: row.description,
-      scenario: row.scenario,
-      branch: branchFromDb(row.branch),
-      createdAt: row.created_at,
-    }))
+    return rows.map(mapRaw)
   }
 
-  function deleteFinding(projectId: string, file: string, line: number, branch?: string | null): boolean {
-    if (branch !== undefined) {
-      const result = stmtDeleteWithBranch.run(projectId, branchToDb(branch), file, line)
+  function deleteFinding(projectId: string, file: string, line: number, scope?: DeleteScope): boolean {
+    if (scope?.sectionIndex !== undefined) {
+      if (scope.sectionIndex === null) {
+        const result = db.prepare(`
+          DELETE FROM review_findings
+          WHERE project_id = ? AND loop_name = ? AND file = ? AND line = ? AND section_index = -1
+        `).run(projectId, loopToDb(scope.loopName), file, line) as unknown as { changes: number }
+        return result.changes > 0
+      }
+      const result = stmtDeleteWithLoopNameAndSection.run(projectId, loopToDb(scope.loopName), file, line, scope.sectionIndex) as unknown as { changes: number }
       return result.changes > 0
     }
-    const result = stmtDelete.run(projectId, file, line)
+    if (scope) {
+      const result = stmtDeleteWithLoopName.run(projectId, loopToDb(scope.loopName), file, line) as unknown as { changes: number }
+      return result.changes > 0
+    }
+    const result = stmtDelete.run(projectId, file, line) as unknown as { changes: number }
     return result.changes > 0
   }
 
   return {
     write,
     listAll,
-    listByBranch,
+    listByLoopName,
     listByFile,
     delete: deleteFinding,
   }

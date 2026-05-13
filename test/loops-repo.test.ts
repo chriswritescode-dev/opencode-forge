@@ -32,7 +32,7 @@ describe('LoopsRepo', () => {
         iteration            INTEGER NOT NULL DEFAULT 0,
         audit_count          INTEGER NOT NULL DEFAULT 0,
         error_count          INTEGER NOT NULL DEFAULT 0,
-        phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing')),
+        phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing','decomposing','final_auditing')),
         execution_model      TEXT,
         auditor_model        TEXT,
         model_failed         INTEGER NOT NULL DEFAULT 0,
@@ -45,6 +45,13 @@ describe('LoopsRepo', () => {
         workspace_id         TEXT,
         host_session_id      TEXT,
         audit_session_id     TEXT,
+        decomposition_status TEXT NOT NULL DEFAULT 'pending' CHECK (decomposition_status IN ('pending','running','completed','failed','skipped')),
+        decomposition_mode TEXT NOT NULL DEFAULT 'agent' CHECK (decomposition_mode IN ('agent','deterministic')),
+        decomposition_session_id TEXT,
+        current_section_index INTEGER NOT NULL DEFAULT 0,
+        total_sections INTEGER NOT NULL DEFAULT 0,
+        final_audit_done INTEGER NOT NULL DEFAULT 0,
+        final_audit_attempts INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (project_id, loop_name)
       )
     `)
@@ -79,7 +86,6 @@ describe('LoopsRepo', () => {
     loopName: 'test-loop',
     status: 'running',
     currentSessionId: 'session-1',
-    auditSessionId: null,
     worktree: false,
     worktreeDir: '/tmp/test',
     worktreeBranch: null,
@@ -211,19 +217,6 @@ describe('LoopsRepo', () => {
       // All increments should succeed sequentially
       const final = repo.get(testRow.projectId, testRow.loopName)
       expect(final!.errorCount).toBe(10)
-    })
-
-    test('incrementAudit should atomically increment audit count', () => {
-      repo.insert(testRow, testLarge)
-      
-      const result1 = repo.incrementAudit(testRow.projectId, testRow.loopName)
-      expect(result1).toBe(1)
-      
-      const result2 = repo.incrementAudit(testRow.projectId, testRow.loopName)
-      expect(result2).toBe(2)
-      
-      const final = repo.get(testRow.projectId, testRow.loopName)
-      expect(final!.auditCount).toBe(2)
     })
 
     test('resetError should reset error count and model_failed', () => {
@@ -385,129 +378,42 @@ describe('LoopsRepo', () => {
         currentSessionId: 'session-no-host',
         hostSessionId: null,
       }
-      
+
       repo.insert(rowWithoutHost, testLarge)
-      
+
       const retrieved = repo.get(rowWithoutHost.projectId, rowWithoutHost.loopName)
       expect(retrieved).toBeTruthy()
       expect(retrieved!.hostSessionId).toBeNull()
     })
-
-    test('setHostSessionId should update the column', () => {
-      repo.insert(testRow, testLarge)
-      
-      repo.setHostSessionId(testRow.projectId, testRow.loopName, 'new-host-session')
-      
-      const retrieved = repo.get(testRow.projectId, testRow.loopName)
-      expect(retrieved!.hostSessionId).toBe('new-host-session')
-    })
   })
 
-  describe('setAuditSessionId', () => {
-    test('should persist and is readable via get()', () => {
+  describe('replaceSession', () => {
+    test('should atomically update current_session_id, phase, and iteration', () => {
       const row: LoopRow = {
         ...testRow,
-        loopName: 'loop-with-audit',
-        currentSessionId: 'session-code',
-        auditSessionId: null,
-      }
-      
-      repo.insert(row, testLarge)
-      
-      repo.setAuditSessionId(row.projectId, row.loopName, 'sess_audit_123')
-      
-      const retrieved = repo.get(row.projectId, row.loopName)
-      expect(retrieved!.auditSessionId).toBe('sess_audit_123')
-    })
-
-    test('setAuditSessionId(null) clears the column', () => {
-      const row: LoopRow = {
-        ...testRow,
-        loopName: 'loop-clear-audit',
-        currentSessionId: 'session-code',
-        auditSessionId: 'sess_audit_old',
-      }
-      
-      repo.insert(row, testLarge)
-      
-      repo.setAuditSessionId(row.projectId, row.loopName, null)
-      
-      const retrieved = repo.get(row.projectId, row.loopName)
-      expect(retrieved!.auditSessionId).toBeNull()
-    })
-
-    test('getBySessionId returns the row when queried by audit_session_id', () => {
-      const auditSessionId = 'sess_audit_lookup_test'
-      const row: LoopRow = {
-        ...testRow,
-        loopName: 'loop-lookup-test',
-        currentSessionId: 'session-code-lookup',
-        auditSessionId: auditSessionId,
-      }
-      
-      repo.insert(row, testLarge)
-      
-      const retrieved = repo.getBySessionId(row.projectId, auditSessionId)
-      expect(retrieved).toBeTruthy()
-      expect(retrieved!.loopName).toBe('loop-lookup-test')
-      expect(retrieved!.auditSessionId).toBe(auditSessionId)
-    })
-  })
-
-  describe('applyRotation', () => {
-    test('should clear audit_session_id when transitioning to coding', () => {
-      const row: LoopRow = {
-        ...testRow,
-        loopName: 'loop-rotation-test',
+        loopName: 'loop-replace-test',
         currentSessionId: 'L1',
-        auditSessionId: 'A1',
+        phase: 'coding',
+        iteration: 1,
+        errorCount: 3,
+        modelFailed: true,
+      }
+      
+      repo.insert(row, testLarge)
+      
+      repo.replaceSession(row.projectId, row.loopName, {
+        sessionId: 'L2',
         phase: 'auditing',
-        iteration: 1,
-        auditCount: 0,
-      }
-      
-      repo.insert(row, testLarge)
-      
-      repo.applyRotation(row.projectId, row.loopName, {
-        sessionId: 'L2',
         iteration: 2,
-        phase: 'coding',
-        auditCount: 1,
+        resetError: true,
       })
       
       const retrieved = repo.get(row.projectId, row.loopName)
       expect(retrieved!.currentSessionId).toBe('L2')
+      expect(retrieved!.phase).toBe('auditing')
       expect(retrieved!.iteration).toBe(2)
-      expect(retrieved!.phase).toBe('coding')
-      expect(retrieved!.auditCount).toBe(1)
-      expect(retrieved!.auditSessionId).toBeNull()
-    })
-
-    test('should not clear audit_session_id when phase is undefined', () => {
-      const row: LoopRow = {
-        ...testRow,
-        loopName: 'loop-rotation-preserve',
-        currentSessionId: 'L1',
-        auditSessionId: 'A1',
-        phase: 'coding',
-        iteration: 1,
-        auditCount: 0,
-      }
-      
-      repo.insert(row, testLarge)
-      
-      repo.applyRotation(row.projectId, row.loopName, {
-        sessionId: 'L2',
-        iteration: 2,
-        phase: undefined,
-        auditCount: 1,
-      })
-      
-      const retrieved = repo.get(row.projectId, row.loopName)
-      expect(retrieved!.currentSessionId).toBe('L2')
-      expect(retrieved!.iteration).toBe(2)
-      expect(retrieved!.auditCount).toBe(1)
-      expect(retrieved!.auditSessionId).toBe('A1')
+      expect(retrieved!.errorCount).toBe(0)
+      expect(retrieved!.modelFailed).toBe(false)
     })
   })
 })

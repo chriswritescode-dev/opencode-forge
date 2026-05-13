@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite'
 import { initializeDatabase } from '../src/storage'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
-import { createLoopService } from '../src/services/loop'
+import { createLoopService } from '../src/loop/service'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
 import { createLogger } from '../src/utils/logger'
 

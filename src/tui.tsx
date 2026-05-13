@@ -1,38 +1,32 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from '@opencode-ai/plugin/tui'
-import { createEffect, createMemo, createSignal, onCleanup, Show, For, untrack } from 'solid-js'
+import { createEffect, createMemo, createSignal, Show, untrack } from 'solid-js'
 import { SyntaxStyle, type TextareaRenderable } from '@opentui/core'
 import { writeFileSync } from 'fs'
 import { join } from 'path'
 import { VERSION } from './version'
-import { loadPluginConfig } from './setup'
-import { fetchSessionStats, type SessionStats } from './utils/session-stats'
+import { loadPluginConfig, setTuiAutoSavePlans } from './setup'
 import { slugify } from './utils/logger'
-import { extractPlanTitle } from './utils/plan-execution'
-import { formatGraphStatus } from './utils/tui-graph-status'
-import { shouldPollSidebar, type LoopInfo } from './utils/tui-refresh-helpers'
+import { extractLoopName } from './utils/plan-execution'
 import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
 import { createExecutionContextCache } from './utils/tui-execution-context-cache'
 import type { PluginConfig } from './types'
 import { ExecutePlanPanel } from './tui/execute-plan-panel'
-import { formatDuration, formatTokens, truncate, truncateMiddle } from './utils/format'
 import { connectForgeProject, type ForgeProjectClient } from './utils/tui-client'
+import { savePlanToArchive, listArchivedPlans, readArchivedPlan, resolvePlanArchiveDir, hashPlanContent, DEFAULT_PLAN_ARCHIVE_TTL_MS, type ArchivedPlan } from './utils/plan-archive'
 
 type TuiKeybinds = {
   viewPlan: string
-  executePlan: string
-  showLoops: string
+  loadPlan: string
 }
 
 const DEFAULT_KEYBINDS: TuiKeybinds = {
   viewPlan: '<leader>v',
-  executePlan: '<leader>e',
-  showLoops: '<leader>w',
+  loadPlan: '<leader>i',
 }
 
 type TuiOptions = {
   sidebar: boolean
-  showLoops: boolean
   showVersion: boolean
   keybinds: TuiKeybinds
 }
@@ -86,7 +80,7 @@ function PlanViewerDialog(props: {
   pluginConfig: PluginConfig
   planContent: string
   sessionId: string
-  onRefresh: () => void | Promise<void>
+  onRefresh?: () => void | Promise<void>
   startInExecuteMode?: boolean
   initialExecutionModel?: string
   initialAuditorModel?: string
@@ -117,10 +111,10 @@ function PlanViewerDialog(props: {
 
   const handleExport = () => {
     const planText = content()
-    const title = extractPlanTitle(planText)
-    const slugifiedTitle = slugify(title)
+    const name = extractLoopName(planText)
+    const slugifiedName = slugify(name)
     const directory = props.api.state.path.directory
-    const filename = `${slugifiedTitle}.md`
+    const filename = `${slugifiedName}.md`
     const filepath = join(directory, filename)
 
     try {
@@ -247,211 +241,52 @@ function PlanViewerDialog(props: {
   )
 }
 
-function LoopDetailsDialog(props: { api: TuiPluginApi; client: ForgeProjectClient; loop: LoopInfo; onBack?: () => void; onRefresh?: () => void | Promise<void> }) {
-  const theme = () => props.api.theme.current
-  // eslint-disable-next-line solid/reactivity
-  const [currentLoop, setCurrentLoop] = createSignal<LoopInfo>(props.loop)
-  const [stats, setStats] = createSignal<SessionStats | null>(null)
-  const [loading, setLoading] = createSignal(true)
-
-  // Re-read loop state when dialog opens and on refresh requests
-  // This ensures the dialog shows fresh data, not a stale snapshot
-  const refreshLoopState = async () => {
-    const loopName = currentLoop().name
-    if (loopName) {
-      const freshLoop = await props.client.loops.get(loopName)
-      if (freshLoop) {
-        setCurrentLoop(freshLoop)
-      }
-    }
-  }
-  
-  // Initial refresh on mount - wrap in createEffect for reactivity
-  createEffect(() => {
-    void refreshLoopState()
-  })
-
-  createEffect(() => {
-    const loop = currentLoop()
-    const dir = props.api.state.path.directory
-    if (loop.sessionId && dir) {
-      setLoading(true)
-      fetchSessionStats(props.api, loop.sessionId, dir).then((result) => {
-        setStats(result)
-        setLoading(false)
-      }).catch(() => {
-        setStats(null)
-        setLoading(false)
-      })
-    } else {
-      setLoading(false)
-    }
-  })
-
-  const handleCancel = async () => {
-    props.api.ui.dialog.clear()
-    const cancelled = await props.client.loops.cancel(currentLoop().name)
-    props.api.ui.toast({
-      message: cancelled ? `Cancelled loop: ${currentLoop().name}` : `Loop ${currentLoop().name} is not active`,
-      variant: cancelled ? 'success' : 'info',
-      duration: 3000,
-    })
-    // Refresh sidebar immediately after mutation is issued
-    props.onRefresh?.()
-  }
-
-  const handleRestart = async () => {
-    props.api.ui.dialog.clear()
-    const newSessionId = await props.client.loops.restart(currentLoop().name, currentLoop().active)
-    const label = currentLoop().active ? 'Force restarting' : 'Restarting'
-    props.api.ui.toast({
-      message: newSessionId ? `${label} loop: ${currentLoop().name}` : `Failed to restart loop: ${currentLoop().name}`,
-      variant: newSessionId ? 'success' : 'error',
-      duration: 3000,
-    })
-    // Refresh sidebar immediately after mutation is issued
-    props.onRefresh?.()
-  }
-
-  const statusBadge = () => {
-    const loop = currentLoop()
-    if (loop.active) return { text: loop.phase, color: loop.phase === 'auditing' ? theme().warning : theme().success }
-    if (loop.terminationReason === 'completed') return { text: 'completed', color: theme().success }
-    if (loop.terminationReason === 'cancelled' || loop.terminationReason === 'user_aborted') return { text: 'cancelled', color: theme().textMuted }
-    return { text: 'ended', color: theme().error }
-  }
-
+function LoadPlanDialog(props: {
+  api: TuiPluginApi
+  client: ForgeProjectClient
+  cache: () => ExecutionContextCache | null
+  pluginConfig: PluginConfig
+  sessionId?: string
+  onRefresh?: () => void | Promise<void>
+  plans: ArchivedPlan[]
+}) {
   return (
-    <box flexDirection="column" paddingX={2}>
-      <box flexDirection="column" flexShrink={0}>
-        <box flexDirection="row" gap={1} alignItems="center">
-          <text fg={theme().text}>
-            <b>{currentLoop().name}</b>
-          </text>
-          <text fg={statusBadge().color}>
-            <b>[{statusBadge().text}]</b>
-          </text>
-        </box>
-        <box>
-          <text fg={theme().textMuted}>
-            Iteration {currentLoop().iteration}{currentLoop().maxIterations > 0 ? `/${currentLoop().maxIterations}` : ''}
-          </text>
-        </box>
-      </box>
-
-      <Show when={loading()}>
-        <box paddingTop={1}>
-          <text fg={theme().textMuted}>Loading stats...</text>
-        </box>
-      </Show>
-
-      <Show when={!loading()}>
-        <box flexDirection="column" paddingTop={1} flexShrink={0}>
-          <Show when={stats()} fallback={
-            <box>
-              <text fg={theme().textMuted}>Session stats unavailable</text>
-            </box>
-          }>
-            <box flexDirection="column">
-              <box>
-                <box flexDirection="row">
-                  <text fg={theme().textMuted}>Session: </text>
-                  <text fg={theme().text}>{currentLoop().sessionId.slice(0, 8)}...</text>
-                </box>
-              </box>
-              <box>
-                <box flexDirection="row">
-                  <text fg={theme().textMuted}>Phase: </text>
-                  <text fg={theme().text}>{currentLoop().phase}</text>
-                </box>
-              </box>
-              <Show when={currentLoop().executionModel}>
-                <box>
-                  <box flexDirection="row">
-                    <text fg={theme().textMuted}>Execution model: </text>
-                    <text fg={theme().text}>{currentLoop().executionModel}</text>
-                  </box>
-                </box>
-              </Show>
-              <Show when={currentLoop().auditorModel}>
-                <box>
-                  <box flexDirection="row">
-                    <text fg={theme().textMuted}>Auditor model: </text>
-                    <text fg={theme().text}>{currentLoop().auditorModel}</text>
-                  </box>
-                </box>
-              </Show>
-              <box>
-                <box flexDirection="row">
-                  <text fg={theme().textMuted}>Messages: </text>
-                  <text fg={theme().text}>{stats()!.messages.total} total ({stats()!.messages.assistant} assistant)</text>
-                </box>
-              </box>
-              <box>
-                <box flexDirection="row">
-                  <text fg={theme().textMuted}>Tokens: </text>
-                  <text fg={theme().text}>{formatTokens(stats()!.tokens.input)} in / {formatTokens(stats()!.tokens.output)} out / {formatTokens(stats()!.tokens.reasoning)} reasoning</text>
-                </box>
-              </box>
-              <box>
-                <box flexDirection="row">
-                  <text fg={theme().textMuted}>Cost: </text>
-                  <text fg={theme().text}>${stats()!.cost.toFixed(4)}</text>
-                </box>
-              </box>
-              <Show when={stats()!.fileChanges}>
-                <box>
-                  <box flexDirection="row">
-                    <text fg={theme().textMuted}>Files: </text>
-                    <text fg={theme().text}>{stats()!.fileChanges!.files} changed (+{stats()!.fileChanges!.additions}/-{stats()!.fileChanges!.deletions})</text>
-                  </box>
-                </box>
-              </Show>
-              <Show when={stats()!.timing}>
-                <box>
-                  <box flexDirection="row">
-                    <text fg={theme().textMuted}>Duration: </text>
-                    <text fg={theme().text}>{formatDuration(stats()!.timing!.durationMs, { includeSeconds: true, compact: true })}</text>
-                  </box>
-                </box>
-              </Show>
-            </box>
-          </Show>
-        </box>
-      </Show>
-
-      <Show when={stats()?.lastActivity?.summary}>
-        <box flexDirection="column" paddingTop={1} flexGrow={1} flexShrink={1}>
-          <box flexShrink={0}>
-            <text fg={theme().text}><b>Latest Output</b></text>
-          </box>
-          <scrollbox maxHeight={12} borderStyle="rounded" borderColor={theme().border} paddingX={1}>
-            <text fg={theme().textMuted} wrapMode="word">
-              {truncate(stats()!.lastActivity!.summary, 500)}
-            </text>
-          </scrollbox>
-        </box>
-      </Show>
-
-      <box paddingTop={1} flexShrink={0} flexDirection="row" gap={2} paddingY={2}>
-        <Show when={props.onBack}>
-          <text fg={theme().textMuted} onMouseUp={() => props.onBack!()}>Back</text>
-        </Show>
-        <Show when={currentLoop().sessionId && currentLoop().workspaceId}>
-          <text fg={theme().success} onMouseUp={() => {
-            props.api.route.navigate('session', { sessionID: currentLoop().sessionId })
-          }}>Open session</text>
-        </Show>
-        <Show when={currentLoop().active}>
-          <text fg={theme().warning} onMouseUp={handleRestart}>Force Restart</text>
-          <text fg={theme().error} onMouseUp={handleCancel}>Cancel loop</text>
-        </Show>
-        <Show when={!currentLoop().active && currentLoop().terminationReason !== 'completed'}>
-          <text fg={theme().success} onMouseUp={handleRestart}>Restart</text>
-        </Show>
-        <text fg={theme().textMuted} onMouseUp={() => props.api.ui.dialog.clear()}>Close (esc)</text>
-      </box>
-    </box>
+    <props.api.ui.DialogSelect
+      title="Load plan"
+      options={props.plans.map(p => ({
+        title: p.title,
+        value: p.filepath,
+        description: new Date(p.modifiedAt).toLocaleString(),
+      }))}
+      onSelect={(opt) => {
+        const filepath = opt.value as string
+        let content: string
+        try {
+          content = readArchivedPlan(filepath)
+        } catch (err) {
+          props.api.ui.toast({
+            message: `Failed to read plan: ${(err as Error).message}`,
+            variant: 'error',
+            duration: 4000,
+          })
+          props.api.ui.dialog.clear()
+          return
+        }
+        props.api.ui.dialog.setSize('xlarge')
+        props.api.ui.dialog.replace(() => (
+          <PlanViewerDialog
+            api={props.api}
+            client={props.client}
+            cache={props.cache()}
+            pluginConfig={props.pluginConfig}
+            planContent={content}
+            sessionId={props.sessionId ?? ''}
+            startInExecuteMode={true}
+            onRefresh={props.onRefresh}
+          />
+        ))
+      }}
+    />
   )
 }
 
@@ -464,170 +299,70 @@ function Sidebar(props: {
   sessionId?: string
 }) {
   const [open, setOpen] = createSignal(true)
-  const [loops, setLoops] = createSignal<LoopInfo[]>([])
   const [hasPlan, setHasPlan] = createSignal(false)
-  const [graphStatusFormatted, setGraphStatusFormatted] = createSignal<ReturnType<typeof formatGraphStatus> | null>(null)
-  const [graphStatusRaw, setGraphStatusRaw] = createSignal<Parameters<typeof formatGraphStatus>[0] | null>(null)
+  const [planContent, setPlanContent] = createSignal<string | null>(null)
+  // eslint-disable-next-line solid/reactivity
+  const [autoSavePlans, setAutoSavePlans] = createSignal(props.pluginConfig.tui?.autoSavePlans ?? false)
   const theme = () => props.api.theme.current
-  const directory = createMemo(() => props.api.state.path.directory)
+  const archivedHashes = new Map<string, string>()
 
   const title = createMemo(() => {
     return props.opts.showVersion ? `Forge v${VERSION}` : 'Forge'
   })
 
-
-
-  const dot = (loop: LoopInfo) => {
-    if (!loop.active) {
-      if (loop.terminationReason === 'completed') return theme().success
-      if (loop.terminationReason === 'cancelled' || loop.terminationReason === 'user_aborted') return theme().textMuted
-      return theme().error
-    }
-    if (loop.phase === 'auditing') return theme().warning
-    return theme().success
-  }
-
-  const statusText = (loop: LoopInfo) => {
-    const max = loop.maxIterations > 0 ? `/${loop.maxIterations}` : ''
-    if (loop.active) return `${loop.phase} · iter ${loop.iteration}${max}`
-    if (loop.terminationReason === 'completed') return `completed · ${loop.iteration} iter${loop.iteration !== 1 ? 's' : ''}`
-    return loop.terminationReason?.replace(/_/g, ' ') ?? 'ended'
-  }
-
   /**
-   * Refreshes all sidebar-visible data: loops, plan presence, and graph status.
-   * This is the single source of truth for sidebar state updates.
-   * 
-   * Triggers:
-   * - session.status events
-   * - Loop/plan mutation actions (save, delete, execute, cancel, restart)
-   * - Periodic polling for active worktree loops (5s interval)
-   * - Periodic polling for transient graph states (5s interval)
-   * - Manual onRefresh callbacks from dialogs
-   */
-  const redirectedSessions = new Set<string>()
-
+    * Refreshes sidebar-visible data: plan presence.
+    * This is the single source of truth for sidebar state updates.
+    *
+    * Triggers:
+    * - Initial mount
+    * - props.sessionId change (session navigation)
+    * - Manual onRefresh callbacks from dialogs
+    */
   async function refreshSidebarData() {
-    const states = await props.client.loops.list()
-    const cutoff = Date.now() - 5 * 60 * 1000
-    const visible = states.filter(l => 
-      l.active || (l.completedAt && new Date(l.completedAt).getTime() > cutoff)
-    )
-    visible.sort((a, b) => {
-      if (a.active && !b.active) return -1
-      if (!a.active && b.active) return 1
-      const aTime = a.completedAt ?? a.startedAt ?? ''
-      const bTime = b.completedAt ?? b.startedAt ?? ''
-      return bTime.localeCompare(aTime)
-    })
-    setLoops(visible)
-    
-    // Refresh plan presence for current session
+    // Refresh plan presence and content for current session
     if (props.sessionId) {
       const plan = await props.client.plan.read(props.sessionId)
       setHasPlan(plan !== null)
+      setPlanContent(plan)
     }
-    
-    // Auto-redirect if the currently-viewed session belongs to a loop that just completed
-    if (props.sessionId && !redirectedSessions.has(props.sessionId)) {
-      const ended = states.find(l =>
-        l.sessionId === props.sessionId
-        && !l.active
-        && l.terminationReason === 'completed'
-        && l.worktree
-        && l.hostSessionId,
-      )
-      if (ended) {
-        redirectedSessions.add(props.sessionId)
-        try {
-          props.api.route.navigate('session', { sessionID: ended.hostSessionId! })
-          props.api.ui.toast({
-            message: `Loop "${ended.name}" completed · click Forge sidebar to review`,
-            variant: 'success',
-            duration: 5000,
-          })
-        } catch (err) {
-          console.error('[forge] sidebar: failed to redirect after loop completion', err)
-        }
-      }
-    }
-    
-    // Refresh graph status from KV (scoped to current directory)
-    const status = await props.client.readGraphStatus(directory())
-    setGraphStatusRaw(status)
-    setGraphStatusFormatted(status && status.state !== 'unavailable' ? formatGraphStatus(status) : null)
-  }
-  
 
-  // Event subscriptions - wrapped to handle reactivity properly
-  // eslint-disable-next-line solid/reactivity
-  const unsubStatus = props.api.event.on('session.status', async () => {
-    await refreshSidebarData()
-  })
-  // session.deleted fires when terminateLoop cleans up a completed worktree loop's session,
-  // session.updated fires on status transitions. Both should refresh the sidebar immediately
-  // so completed loops don't keep their stale sessionId/workspaceId in the list.
-  // eslint-disable-next-line solid/reactivity
-  const unsubDeleted = props.api.event.on('session.deleted', async () => {
-    await refreshSidebarData()
-  })
-  // eslint-disable-next-line solid/reactivity
-  const unsubUpdated = props.api.event.on('session.updated', async () => {
-    await refreshSidebarData()
-  })
-
-  let pollTimer: ReturnType<typeof setInterval> | null = null
-
-  function startPolling() {
-    if (pollTimer) return
-    pollTimer = setInterval(() => {
-      void refreshSidebarData()
-    }, 5000)
+    // Refresh workspace list so newly created workspaces appear in session list
+    props.client.workspaces.list().catch(() => {})
   }
 
-  function stopPolling() {
-    if (pollTimer) {
-      clearInterval(pollTimer)
-      pollTimer = null
-    }
-  }
-
+  // Per-session auto-save effect: fires when plan content changes
   createEffect(() => {
+    const sid = props.sessionId
+    const content = planContent()
+    if (!sid || !content || !autoSavePlans() || !props.client.projectId) return
+    const hash = hashPlanContent(content)
+    if (archivedHashes.get(sid) === hash) return
+    archivedHashes.set(sid, hash)
+    // run fs write off the reactive tracker
+    // eslint-disable-next-line solid/reactivity
+    queueMicrotask(() => {
+      try {
+        const ttlMs = props.pluginConfig.tui?.planArchiveTtlMs ?? DEFAULT_PLAN_ARCHIVE_TTL_MS
+        const { deduped } = savePlanToArchive(props.client.projectId, content, new Date(), ttlMs)
+        if (!deduped) {
+          props.api.ui.toast({ message: `Plan archived`, variant: 'success', duration: 3000 })
+        }
+      } catch (err) {
+        archivedHashes.delete(sid)  // allow retry next time content changes
+        props.api.ui.toast({ message: `Plan auto-save failed: ${(err as Error).message}`, variant: 'error', duration: 4000 })
+      }
+    })
+  })
+
+  // Initial mount refresh - also re-runs when sessionId changes (navigation)
+  createEffect(() => {
+    void props.sessionId  // track navigation
     void refreshSidebarData()
   })
 
-  // Re-check after a short delay to catch graph status that wasn't written yet at mount time
-  const initTimer = setTimeout(() => {
-    if (!graphStatusRaw()) {
-      void refreshSidebarData()
-    }
-  }, 2000)
-
-  createEffect(() => {
-    if (shouldPollSidebar(loops(), graphStatusRaw())) {
-      startPolling()
-    } else {
-      stopPolling()
-    }
-  })
-
-  onCleanup(() => {
-    unsubStatus()
-    unsubDeleted()
-    unsubUpdated()
-    stopPolling()
-    clearTimeout(initTimer)
-  })
-
   const hasContent = createMemo(() => {
-    if (hasPlan()) return true
-    if (props.opts.showLoops && loops().length > 0) return true
-    if (graphStatusFormatted()) return true
-    return false
-  })
-  
-  const activeCount = createMemo(() => {
-    return loops().filter(l => l.active).length
+    return hasPlan()
   })
 
   return (
@@ -643,95 +378,70 @@ function Sidebar(props: {
           <Show when={!open() && hasPlan()}>
             <text fg={theme().info}>· plan</text>
           </Show>
-          <Show when={!open() && graphStatusFormatted() && graphStatusFormatted()!.text.includes('ready')}>
-            <text fg={theme().success}>· ready</text>
-          </Show>
-          <Show when={!open() && activeCount() > 0}>
-            <text fg={theme().textMuted}>{`(${activeCount()} active)`}</text>
-          </Show>
           <Show when={!open()}>
             <text fg={theme().textMuted}>(local)</text>
           </Show>
         </box>
         <Show when={open()}>
-          <Show when={hasPlan()}>
-            <box
-              flexDirection="row"
-              gap={1}
-              onMouseUp={async () => {
-                if (!props.sessionId) return
-                const plan = await props.client.plan.read(props.sessionId)
-                if (!plan) {
-                  props.api.ui.toast({ message: 'Plan not found', variant: 'info', duration: 3000 })
-                  return
-                }
-                const refreshSidebar = refreshSidebarData
-                props.api.ui.dialog.setSize("xlarge")
-                props.api.ui.dialog.replace(() => (
-                  <PlanViewerDialog
-                    api={props.api}
-                    client={props.client}
-                    cache={props.cache()}
-                    pluginConfig={props.pluginConfig}
-                    planContent={plan}
-                    sessionId={props.sessionId!}
-                    onRefresh={refreshSidebar}
-                  />
-                ))
-              }}
-            >
-              <text flexShrink={0} fg={theme().info}>📋</text>
-              <text fg={theme().text}>Plan</text>
-            </box>
-          </Show>
-          <Show when={graphStatusFormatted()}>
-            <box
-              flexDirection="row"
-              gap={1}
-            >
-              <text flexShrink={0} fg={theme()[graphStatusFormatted()!.color]}>•</text>
-              <text fg={theme().text} wrapMode="word">
-                {graphStatusFormatted()!.text}
-              </text>
-            </box>
-          </Show>
-          <Show when={props.opts.showLoops && loops().length > 0}>
-            <For each={loops()}>
-              {(loop) => (
-                <box
-                  flexDirection="row"
-                  gap={1}
-                  onMouseUp={() => {
-                    // Completed/terminated loops: always show the details dialog.
-                    // Their session and workspace may have been deleted during cleanup,
-                    // so navigating to loop.sessionId would land on a dead session.
-                    // Workspace-backed active worktree loop: navigate directly to its session.
-                    // Legacy active worktree loop (no workspaceId): open the details dialog.
-                    // Active in-place loop: navigate directly.
-                    if (!loop.active) {
-                      props.api.ui.dialog.setSize("medium")
-                      props.api.ui.dialog.replace(() => (
-                        <LoopDetailsDialog api={props.api} client={props.client} loop={loop} onRefresh={refreshSidebarData} />
-                      ))
-                    } else if (loop.worktree && loop.workspaceId && loop.sessionId) {
-                      props.api.route.navigate('session', { sessionID: loop.sessionId })
-                    } else if (loop.worktree) {
-                      props.api.ui.dialog.setSize("medium")
-                      props.api.ui.dialog.replace(() => (
-                        <LoopDetailsDialog api={props.api} client={props.client} loop={loop} onRefresh={refreshSidebarData} />
-                      ))
-                    } else {
-                      props.api.route.navigate('session', { sessionID: loop.sessionId })
-                    }
-                  }}
-                >
-                  <text flexShrink={0} fg={dot(loop)}>•</text>
-                  <text fg={theme().text} wrapMode="word">{truncateMiddle(loop.name, 25)}</text>
-                  <text fg={theme().textMuted}>{statusText(loop)}</text>
-                </box>
-              )}
-            </For>
-          </Show>
+          <box
+            flexDirection="row"
+            gap={1}
+            onMouseUp={() => {
+              const next = !autoSavePlans()
+              setAutoSavePlans(next)
+              try {
+                setTuiAutoSavePlans(next)
+                props.api.ui.toast({
+                  message: `Auto-save plans: ${next ? 'on' : 'off'}`,
+                  variant: 'success',
+                  duration: 2000,
+                })
+                if (next) void refreshSidebarData()
+              } catch (err) {
+                setAutoSavePlans(!next)
+                props.api.ui.toast({
+                  message: `Failed to persist toggle: ${(err as Error).message}`,
+                  variant: 'error',
+                  duration: 4000,
+                })
+              }
+            }}
+          >
+            <text flexShrink={0} fg={autoSavePlans() ? theme().success : theme().textMuted}>
+              {autoSavePlans() ? '☑' : '☐'}
+            </text>
+            <text fg={theme().text}>Auto-save plans</text>
+          </box>
+          <box
+            flexDirection="row"
+            gap={1}
+            onMouseUp={() => {
+              const plans = listArchivedPlans(props.client.projectId)
+              if (plans.length === 0) {
+                props.api.ui.toast({
+                  message: `No archived plans in ${resolvePlanArchiveDir(props.client.projectId)}`,
+                  variant: 'info',
+                  duration: 4000,
+                })
+                return
+              }
+              props.api.ui.dialog.setSize('large')
+              props.api.ui.dialog.replace(() => (
+                <LoadPlanDialog
+                  api={props.api}
+                  client={props.client}
+                  cache={props.cache}
+                  pluginConfig={props.pluginConfig}
+                  sessionId={props.sessionId}
+                  onRefresh={refreshSidebarData}
+                  plans={plans}
+                />
+              ))
+            }}
+          >
+            <text flexShrink={0} fg={theme().info}>📂</text>
+            <text fg={theme().text}>Load plan</text>
+          </box>
         </Show>
       </box>
     </Show>
@@ -747,7 +457,6 @@ const tui: TuiPlugin = async (api) => {
   const directory = api.state.path.directory
   const opts: TuiOptions = {
     sidebar: tuiConfig?.sidebar ?? true,
-    showLoops: tuiConfig?.showLoops ?? true,
     showVersion: tuiConfig?.showVersion ?? true,
     keybinds: { ...DEFAULT_KEYBINDS, ...tuiConfig?.keybinds },
   }
@@ -832,78 +541,27 @@ const tui: TuiPlugin = async (api) => {
     void startClientConnection()
   })
 
-  api.command.register(() => {
-    return [
-      {
-        title: 'Forge: Show loops',
-        value: 'forge.loops.show',
-        description: 'API loops',
-        category: 'Forge',
-        keybind: opts.keybinds.showLoops,
-        onSelect: async () => {
-          const currentClient = await ensureClient()
-          if (!currentClient) return
+  if (!api.command) return
 
-          const currentStates = await currentClient.loops.list()
-          const worktreeLoops = currentStates.filter(l => l.worktree)
-          const loopOptions = worktreeLoops.map(l => {
-            const status = l.active
-              ? l.phase
-              : l.terminationReason?.replace(/_/g, ' ') ?? 'ended'
-
-            return {
-              title: l.name,
-              value: l.name,
-              description: status,
-            }
-          })
-
-          const showLoopList = () => {
-            api.ui.dialog.setSize("large")
-            api.ui.dialog.replace(() => (
-              <api.ui.DialogSelect
-                title="Loops"
-                options={loopOptions}
-                // eslint-disable-next-line solid/reactivity
-                onSelect={async (opt) => {
-                  const loopName = opt.value as string
-                  const freshLoop = await currentClient.loops.get(loopName)
-                  if (freshLoop) {
-                    api.ui.dialog.setSize("medium")
-                    api.ui.dialog.replace(() => (
-                      <LoopDetailsDialog api={api} client={currentClient} loop={freshLoop} onBack={showLoopList} onRefresh={() => {}} />
-                    ))
-                  } else {
-                    api.ui.dialog.clear()
-                  }
-                }}
-              />
-            ))
-          }
-
-          showLoopList()
-        },
-      },
-    ]
-  })
-
-  api.command.register(() => {
+  function resolveSessionID(): string | null {
     const route = api.route.current
-    if (route.name !== 'session') return []
+    if (route.name !== 'session') return null
+    return (route as { params: { sessionID: string } }).params.sessionID
+  }
 
-    const sessionID = (route as { params: { sessionID: string } }).params.sessionID
-
-    const refreshSidebar = () => {
-      // Trigger sidebar refresh via session status event
-    }
-
-    return [{
+  api.command.register(() => [
+    {
       title: 'Forge: View plan',
       value: 'forge.plan.view',
       description: 'View cached plan for this session',
       category: 'Forge',
       keybind: opts.keybinds.viewPlan,
       onSelect: async () => {
+        const sessionID = resolveSessionID()
+        if (!sessionID) {
+          api.ui.toast({ message: 'Open a session to view its plan', variant: 'info', duration: 3000 })
+          return
+        }
         const currentClient = await ensureClient()
         if (!currentClient) return
 
@@ -922,37 +580,42 @@ const tui: TuiPlugin = async (api) => {
             pluginConfig={pluginConfig}
             planContent={freshPlan}
             sessionId={sessionID}
-            onRefresh={refreshSidebar}
           />
         ))
       },
-    }, {
-      title: 'Forge: Execute plan',
-      value: 'forge.plan.execute',
-      description: 'Execute cached plan',
+    },
+  ])
+
+  api.command.register(() => {
+    return [{
+      title: 'Forge: Load plan',
+      value: 'forge.plan.load',
+      description: 'Load an archived plan',
       category: 'Forge',
-      keybind: opts.keybinds.executePlan,
+      keybind: opts.keybinds.loadPlan,
       onSelect: async () => {
         const currentClient = await ensureClient()
         if (!currentClient) return
 
-        const freshPlan = await currentClient.plan.read(sessionID)
-        if (!freshPlan) {
-          api.ui.toast({ message: 'No plan found for this session', variant: 'info', duration: 3000 })
+        const plans = listArchivedPlans(currentClient.projectId)
+        if (plans.length === 0) {
+          api.ui.toast({
+            message: `No archived plans in ${resolvePlanArchiveDir(currentClient.projectId)}`,
+            variant: 'info',
+            duration: 4000,
+          })
           return
         }
-        const cache = executionContextCache()
-        api.ui.dialog.setSize("xlarge")
+
+        api.ui.dialog.setSize('large')
         api.ui.dialog.replace(() => (
-          <PlanViewerDialog
+          <LoadPlanDialog
             api={api}
             client={currentClient}
-            cache={cache}
+            cache={executionContextCache}
             pluginConfig={pluginConfig}
-            planContent={freshPlan}
-            sessionId={sessionID}
-            onRefresh={refreshSidebar}
-            startInExecuteMode={true}
+            sessionId={undefined}
+            plans={plans}
           />
         ))
       },

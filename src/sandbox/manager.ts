@@ -1,10 +1,17 @@
 import type { DockerService } from './docker'
-import type { Logger } from '../types'
+import type { Logger, SandboxResources } from '../types'
 import { resolve } from 'path'
 import { spawnSync } from 'child_process'
 
 export interface SandboxManagerConfig {
   image: string
+  resources?: SandboxResources
+}
+
+const DEFAULT_RESOURCES: Required<Pick<SandboxResources, 'memory' | 'cpus' | 'shmSize'>> = {
+  memory: '8g',
+  cpus: '4',
+  shmSize: '1g',
 }
 
 export interface ActiveSandbox {
@@ -20,6 +27,7 @@ export interface SandboxManager {
   getActive(worktreeName: string): ActiveSandbox | null
   isActive(worktreeName: string): boolean
   isLive(worktreeName: string): Promise<boolean>
+  isLiveByName(worktreeName: string): Promise<boolean>
   cleanupOrphans(preserveWorktrees?: string[]): Promise<number>
   restore(worktreeName: string, projectDir: string, startedAt: string): Promise<void>
 }
@@ -93,8 +101,14 @@ export function createSandboxManager(
     if (extraMounts.length > 0) {
       logger.log(`Sandbox: mounting git metadata: ${extraMounts.join(', ')}`)
     }
-    logger.log(`Creating sandbox container ${containerName} for ${absoluteProjectDir}`)
-    await docker.createContainer(containerName, absoluteProjectDir, config.image, extraMounts)
+    const resources: SandboxResources = {
+      memory: config.resources?.memory ?? DEFAULT_RESOURCES.memory,
+      cpus: config.resources?.cpus ?? DEFAULT_RESOURCES.cpus,
+      shmSize: config.resources?.shmSize ?? DEFAULT_RESOURCES.shmSize,
+      ...(config.resources?.memorySwap ? { memorySwap: config.resources.memorySwap } : {}),
+    }
+    logger.log(`Creating sandbox container ${containerName} for ${absoluteProjectDir} (memory=${resources.memory} cpus=${resources.cpus} shmSize=${resources.shmSize}${resources.memorySwap ? ` memorySwap=${resources.memorySwap}` : ''})`)
+    await docker.createContainer(containerName, absoluteProjectDir, config.image, extraMounts, resources)
 
     const active: ActiveSandbox = {
       containerName,
@@ -150,8 +164,13 @@ export function createSandboxManager(
     return true
   }
 
+  async function isLiveByName(worktreeName: string): Promise<boolean> {
+    const containerName = docker.containerName(worktreeName)
+    return docker.isRunning(containerName)
+  }
+
   async function cleanupOrphans(preserveWorktrees?: string[]): Promise<number> {
-    const containers = await docker.listContainersByPrefix('oc-forge-sandbox-')
+    const containers = await docker.listContainersByPrefix('forge-')
     let removed = 0
 
     const preserveSet = preserveWorktrees
@@ -204,6 +223,7 @@ export function createSandboxManager(
     getActive,
     isActive,
     isLive,
+    isLiveByName,
     cleanupOrphans,
     restore,
   }

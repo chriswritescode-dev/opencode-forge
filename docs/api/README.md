@@ -9,7 +9,7 @@
 <h1 align="center">OpenCode Forge</h1>
 
 <p align="center">
-  <strong>Loops, plans, sandboxing, and graph tooling for <a href="https://opencode.ai">OpenCode</a> AI agents</strong>
+  <strong>Loops, plans, sandboxing, and code review for <a href="https://opencode.ai">OpenCode</a> AI agents</strong>
 </p>
 
 <p align="center">
@@ -18,34 +18,13 @@
   <a href="https://github.com/chriswritescode-dev/opencode-forge/blob/main/LICENSE"><img src="https://img.shields.io/github/license/chriswritescode-dev/opencode-forge" alt="License" /></a>
 </p>
 
-## Breaking change (v0.3.0)
-
-Forge no longer runs an HTTP control plane. The TUI plugin now communicates with the server plugin over the opencode bus using `tui.command.execute` events. This removes:
-
-- The HTTP server (port 5552) and all HTTP API endpoints
-- `OPENCODE_SERVER_PASSWORD` requirement for forge operations
-- Coordinator handover and slot management
-- `tui.remoteServer.url` configuration
-- `api` configuration section
-
-On upgrade, the `api_registry`, `api_coordinators`, and `api_project_instances` tables are dropped. No user action is required other than updating your plugin configuration to remove the deprecated `api` and `tui.remoteServer` properties.
-
-## Breaking change (v0.2.0)
-
-Forge has replaced its generic key-value store with dedicated typed tables for loops, plans, review findings, graph status, and TUI preferences. On upgrade:
-
-- Existing loops, plans, review findings, graph-status entries, and TUI preferences stored in the old `project_kv` table are dropped.
-- Active loops from the previous version will not be resumed (they are already effectively dead due to the schema change and should be considered cancelled).
-- No user action required other than restarting opencode.
-- The config key `defaultKvTtlMs` has been renamed to `completedLoopTtlMs`. The old name is no longer supported.
-
 ## Quick Start
 
 ```bash
 pnpm add opencode-forge
 ```
 
-Add to your `opencode.json` to enable Forge’s server-side hooks, tools, and agents:
+Add to your `opencode.json` to enable Forge's server-side hooks, tools, and agents:
 
 ```json
 {
@@ -64,13 +43,12 @@ Add to your `opencode.json` to enable Forge’s server-side hooks, tools, and ag
 
 ## What Forge Adds
 
-Forge ships three user-facing surfaces:
+Forge ships two user-facing surfaces:
 
 - **Server plugin** — enabled through OpenCode plugin config in `opencode.json`. The package declares the `server` oc-plugin surface and exports `./server` for the server entrypoint.
 - **TUI plugin** — enabled separately in `tui.json`. The package declares the `tui` oc-plugin surface and exports `./tui` for the terminal UI entrypoint.
-- **CLI** — the `oc-forge` binary manages loops and graph operations from the terminal.
 
-The server plugin provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, graph indexing, and sandbox support. The TUI plugin layers on sidebar, plan, execution, and loop dialogs. The CLI is source-backed by the package binary and the CLI entrypoint.
+The server plugin provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, and sandbox support. The TUI plugin layers on sidebar, plan, execution, and loop dialogs.
 
 ## Screenshots
 
@@ -92,28 +70,26 @@ Loop search dialog:
 
 ## Features
 
-- **Graph Indexing** — conditional graph tools plus auto-scan and watch behavior when graphing is enabled
 - **Plans** — architect produces marked plans that are auto-captured to SQL storage
-- **Execution** — `New session`, `Execute here`, `Loop`, and `Loop (worktree)` launch paths for approved plans
-- **Loops** — iterative coding/auditing with optional worktree isolation and sandbox support
+- **Execution** — `New session`, `Execute here`, and `Loop` launch paths for approved plans
+- **Loops** — iterative coding/auditing with isolated git worktree and optional Docker sandbox
 - **Review Findings** — persistent, branch-aware review findings across loop sessions
 - **TUI** — sidebar, plan viewer/editor, execution dialog, and loop details
-- **CLI** — loop and graph management through `oc-forge`
-- **Sandbox** — Docker worktree loop isolation with bind-mounted project files
+- **Sandbox** — Optional Docker worktree loop isolation with bind-mounted project files
 
 ## Agents
 
-The plugin bundles three agents that integrate with the graph system:
+The plugin bundles three agents:
 
 | Agent | Mode | Description |
 |-------|------|-------------|
-| **code** | primary | Primary coding agent with graph-first code discovery. Uses graph tools to explore code structure before diving into unfamiliar code. |
-| **architect** | primary | Read-only planning agent. Researches the codebase using graph-first discovery, designs implementation plans, and caches them for user approval before execution. |
-| **auditor** | subagent | Read-only code auditor with access to project graph for convention-aware reviews. Invoked via Task tool to review diffs, commits, branches, or PRs against stored conventions and decisions. |
+| **code** | primary | Primary coding agent. |
+| **architect** | primary | Read-only planning agent. Researches the codebase, designs implementation plans, and caches them for user approval before execution. |
+| **auditor** | subagent | Read-only code auditor for convention-aware reviews. Invoked via Task tool to review diffs, commits, branches, or PRs against stored conventions and decisions. |
 
-The auditor agent is a read-only subagent (`temperature: 0.0`) that can read the graph but cannot write, edit, or delete graph entries or execute plans. It is invoked by other agents via the Task tool to review code changes against stored project conventions and decisions.
+The auditor agent is a read-only subagent (`temperature: 0.0`) that cannot write, edit, or delete entries or execute plans. It is invoked by other agents via the Task tool to review code changes against stored project conventions and decisions.
 
-**Tool restrictions:** The auditor cannot use `plan-execute` or `loop` tools to prevent interference with active workflows.
+**Tool restrictions:** The auditor cannot use the `loop` tool to prevent interference with active workflows.
 
 The architect agent operates in read-only mode (`temperature: 0.0`, all edits denied) with message-level enforcement via the `experimental.chat.messages.transform` hook. Final plans are rendered once in the assistant response between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers, then auto-captured into SQL before execution approval. After user approval via the question tool, execution is dispatched programmatically — no additional LLM calls are needed. The user can view and edit the cached plan from the sidebar or command palette before or during execution. 
 
@@ -126,7 +102,6 @@ Session-scoped plan storage backed by SQL for managing implementation plans. Loo
 | Tool | Description |
 |------|-------------|
 | `plan-read` | Retrieve the plan. Supports pagination with offset/limit and pattern search. |
-| `plan-execute` | Create a new Code session and send an approved plan as the first prompt |
 
 ### Review Tools
 
@@ -140,99 +115,15 @@ Review finding storage for persisting audit results across session rotations.
 
 ### Loop Tools
 
-Iterative development loops with automatic auditing. Defaults to current directory execution; set `worktree: true` for isolated git worktree.
+Iterative development loops with automatic auditing. Loops always run in an isolated git worktree; Docker sandbox is used automatically when available.
 
 | Tool | Description |
 |------|-------------|
-| `loop` | Execute a plan using an iterative development loop. Default runs in current directory. Set `worktree` to true for isolated git worktree. |
+| `loop` | Execute a plan using an iterative development loop in an isolated git worktree. Args: `title` required; `plan`, `loopName`, and `hostSessionId` optional. |
 | `loop-cancel` | Cancel an active loop by worktree name |
 | `loop-status` | List all active loops or get detailed status by worktree name. Supports `restart` to resume inactive loops. |
 
-### Graph Tools
-
-Code structure graph with file watching and symbol tracking.
-
-| Tool | Description |
-|------|-------------|
-| `graph-status` | Check graph indexing status or trigger re-scan. Actions: `status`, `scan` |
-| `graph-query` | Query file-level graph information. Actions: `top_files`, `file_deps`, `file_dependents`, `cochanges`, `blast_radius`, `packages`, `file_symbols`, `change_impact` |
-| `graph-symbols` | Query symbol-level graph information. Actions: `find`, `search`, `signature`, `callers`, `callees`, `references` |
-| `graph-analyze` | Analyze code quality. Actions: `unused_exports`, `duplication`, `near_duplicates`, `orphan_files`, `circular_deps` |
-
-### Graph Tool Details
-
-#### graph-status
-Check graph indexing status or trigger re-scan.
-
-```typescript
-graph-status { action: "status" | "scan" }
-```
-
-**Actions:**
-- `status` - Show current graph statistics (files, symbols, edges, calls)
-- `scan` - Trigger a full codebase scan to build/update the graph
-
-#### graph-query
-Query file-level graph information.
-
-```typescript
-graph-query {
-  action: "top_files" | "file_deps" | "file_dependents" | "cochanges" | "blast_radius" | "packages" | "file_symbols" | "change_impact",
-  file?: string,
-  files?: string,
-  limit?: number
-}
-```
-
-**Actions:**
-- `top_files` - Get most important files by PageRank
-- `file_deps` - Get dependencies of a file
-- `file_dependents` - Get files that depend on a given file
-- `cochanges` - Get files that change together with a given file
-- `blast_radius` - Calculate blast radius for a file
-- `packages` - List external packages used
-- `file_symbols` - Get symbols defined in a file
-- `change_impact` - Analyze the impact of changing multiple files simultaneously (use `files` as a comma-separated list of file paths)
-
-#### graph-symbols
-Query symbol-level graph information.
-
-```typescript
-graph-symbols {
-  action: "find" | "search" | "signature" | "callers" | "callees" | "references",
-  name?: string,
-  file?: string,
-  kind?: string,
-  limit?: number
-}
-```
-
-**Actions:**
-- `find` - Find symbols by name
-- `search` - Full-text search symbols
-- `signature` - Get symbol signature
-- `callers` - Find all callers of a symbol
-- `callees` - Find all callees of a symbol
-- `references` - Find all references to a symbol
-
-#### graph-analyze
-Analyze code quality issues.
-
-```typescript
-graph-analyze {
-  action: "unused_exports" | "duplication" | "near_duplicates" | "orphan_files" | "circular_deps",
-  file?: string,
-  limit?: number,
-  threshold?: number
-}
-```
-
-**Actions:**
-- `unused_exports` - Find exported symbols that are never imported
-- `duplication` - Find duplicate code structures
-- `near_duplicates` - Find near-duplicate code patterns (configurable threshold)
-- `orphan_files` - Find files with no dependencies and no dependents
-- `circular_deps` - Find circular dependency chains
+`loop` reads the current session's captured plan when `plan` is omitted. `maxIterations`, execution model, auditor model, decomposition, and sandbox behavior come from configuration or the TUI execution dialog, not direct `loop` tool arguments.
 
 ## Slash Commands
 
@@ -242,94 +133,6 @@ graph-analyze {
 | `/loop` | Start an iterative development loop in a worktree | code |
 | `/loop-status` | Check status of all active loops | code |
 | `/loop-cancel` | Cancel the active loop | code |
-
-## CLI
-
-Manage loops and graph operations using the `oc-forge` CLI. The CLI auto-detects the project ID from git.
-
-```bash
-oc-forge <command> [options]
-```
-
-**Global options** (apply to all commands):
-
-| Flag | Description |
-|------|-------------|
-| `--project, -p <name>` | Project name or SHA (auto-detected from git) |
-| `--dir, -d <path>` | Git repo path for project detection |
-| `--db-path <path>` | Path to forge database |
-| `--help, -h` | Show help |
-
-### Commands
-
-#### upgrade
-
-Check for plugin updates and install the latest version.
-
-```bash
-oc-forge upgrade
-```
-
-#### status
-
-Show loop status for the current project.
-
-```bash
-oc-forge loop status
-oc-forge loop status --project my-project
-```
-
-| Flag | Description |
-|------|-------------|
-| `--project, -p <name>` | Project name or SHA (auto-detected from git) |
-
-#### cancel
-
-Cancel a loop by worktree name.
-
-```bash
-oc-forge loop cancel my-worktree-name
-oc-forge loop cancel --project my-project my-worktree-name
-```
-
-| Flag | Description |
-|------|-------------|
-| `--project, -p <name>` | Project name or SHA (auto-detected from git) |
-
-#### restart
-
-Restart a loop by worktree name.
-
-```bash
-oc-forge loop restart my-worktree-name
-oc-forge loop restart --project my-project my-worktree-name
-```
-
-| Flag | Description |
-|------|-------------|
-| `--project, -p <name>` | Project name or SHA (auto-detected from git) |
-| `--force` | Force restart an active loop without confirmation |
-| `--server <url>` | OpenCode server URL (default: http://localhost:5551) |
-
-#### graph
-
-Check graph status, trigger a scan, list cache entries, remove entries, or clean up old entries.
-
-```bash
-oc-forge graph status
-oc-forge graph scan
-oc-forge graph list
-oc-forge graph remove <target>
-oc-forge graph cleanup --days <n>
-```
-
-| Flag | Description |
-|------|-------------|
-| `--project, -p <name>` | Project name or SHA (auto-detected from git) |
-| `--dir, -d <path>` | Project directory for graph scanning |
-| `--target, -t <id>` | Target for removal (project ID or hash directory) |
-| `--days <n>` | Number of days for cleanup (required for cleanup) |
-| `--yes, -y` | Skip confirmation prompt for removal/cleanup |
 
 ## Configuration
 
@@ -354,7 +157,7 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
 
 ```jsonc
 {
-  // Data directory for plugin storage (graph.db, SQL stores, logs)
+  // Data directory for plugin storage (SQL stores, logs)
   // When empty, resolves to ~/.local/share/opencode/forge (or XDG_DATA_HOME equivalent)
   "dataDir": "",
 
@@ -371,7 +174,7 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
     "maxContextTokens": 0           // Max tokens for context (0 = unlimited)
   },
 
-  // Messages transform hook for graph injection and read-only enforcement
+  // Messages transform hook for read-only enforcement
   "messagesTransform": {
     "enabled": true,               // Enable transform hook
     "debug": false                 // Enable debug logging
@@ -388,26 +191,31 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
     "enabled": true,               // Enable iterative loops
     "defaultMaxIterations": 15,    // Max iterations (0 = unlimited)
     "cleanupWorktree": false,      // Auto-remove worktree on cancel
-    "model": "",                   // Reserved; not actively read. Use executionModel instead.
     "stallTimeoutMs": 60000,       // Stall detection timeout (60s)
+    "maxConsecutiveStalls": 5,     // Consecutive stalls before termination (0 = disabled)
     "worktreeLogging": {           // Worktree loop completion logging
       "enabled": false,            // Enable completion logging
       "directory": ""              // Log directory (defaults to platform data dir)
     }
   },
 
-  // Docker sandbox configuration for isolated loop execution
+  // Sandbox configuration. Sandbox is optional: when Docker is available and configured, a sandbox container is provisioned automatically.
+  // Currently only Docker is supported; additional modes may be added later.
   "sandbox": {
-    "mode": "off",                 // Sandbox mode: "off" or "docker"
-    "image": "oc-forge-sandbox:latest"  // Docker image for sandbox containers
+    "mode": "docker",
+    "image": "oc-forge-sandbox:latest",
+    "resources": {                   // Container resource limits (maps to docker run flags)
+      "memory": "8g",               // Memory limit (--memory)
+      "cpus": "4",                  // CPU limit (--cpus)
+      "shmSize": "1g"              // Shared memory size (--shm-size)
+    }
   },
 
-  // Graph indexing configuration
-  "graph": {
-    "enabled": true,               // Enable graph indexing
-    "autoScan": true,              // Auto-scan on startup
-    "watch": true,                 // Watch for file changes
-    "debounceMs": 100              // Debounce delay for file watches
+  // Plan decomposition settings (optional, defaults to agent-based decomposition)
+  "decomposer": {
+    "enabled": true,                 // Enable plan decomposition
+    "mode": "agent",                // Decomposition mode: "agent" or "deterministic"
+    "maxSections": 12               // Maximum number of sections
   },
 
   // TUI sidebar widget configuration
@@ -415,6 +223,8 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
     "sidebar": true,               // Show Forge sidebar in OpenCode TUI
     "showLoops": true,             // Display loop status in sidebar
     "showVersion": true,           // Show plugin version in sidebar title
+    "autoSavePlans": false,        // Auto-save captured plans to disk under <dataDir>/plans/<projectId>/
+    "planArchiveTtlMs": 604800000, // TTL in ms for archived plans before pruning. 0 disables pruning.
     "keybinds": {                  // Keyboard shortcut overrides
       "viewPlan": "<leader>v",     // View plan dialog
       "executePlan": "<leader>e",  // Execute plan dialog
@@ -438,9 +248,9 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
 ### Options
 
 #### Top-level
-- `dataDir` - Data directory for plugin storage (graph.db, logs). When empty, resolves to `~/.local/share/opencode/forge` (or `XDG_DATA_HOME` equivalent) (default: `""`)
+- `dataDir` - Data directory for plugin storage. When empty, resolves to `~/.local/share/opencode/forge` (or `XDG_DATA_HOME` equivalent) (default: `""`)
 - `completedLoopTtlMs` - TTL for completed/cancelled/errored/stalled loops before sweep (default: `604800000` / 7 days).
-- `executionModel` - Model override for plan execution sessions, format: `provider/model` (e.g. `anthropic/claude-sonnet-4-20250514`). When set, `plan-execute` uses this model for the new Code session. When empty or omitted, OpenCode's default model is used (typically the `model` field from `opencode.json`). **Recommended:** Set this to a fast, cheap model (e.g. Haiku or MiniMax) and use a smart model (e.g. Opus) for the Architect session — planning needs reasoning, execution needs speed. This value is used as a fallback when no per-launch selection is made.
+- `executionModel` - Model override for plan execution sessions, format: `provider/model` (e.g. `anthropic/claude-sonnet-4-20250514`). When set, plan execution (via the architect's approval flow or the TUI Execute panel) uses this model for the new Code session. When empty or omitted, OpenCode's default model is used (typically the `model` field from `opencode.json`). **Recommended:** Set this to a fast, cheap model (e.g. Haiku or MiniMax) and use a smart model (e.g. Opus) for the Architect session — planning needs reasoning, execution needs speed. This value is used as a fallback when no per-launch selection is made.
 - `auditorModel` - Model override for the auditor agent (`provider/model`). When set, overrides the auditor agent's default model. When not set, uses platform default (default: `""`). This value is used as a fallback when no per-launch selection is made.
 - `agents` - Per-agent temperature overrides keyed by display name (e.g., `"code"`, `"architect"`, `"auditor"`). Temperature range: `0.0` - `2.0` (default: `undefined`)
 
@@ -456,35 +266,44 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 - `compaction.maxContextTokens` - Maximum tokens for context during compaction (default: `0` / unlimited)
 
 #### Messages Transform
-- `messagesTransform.enabled` - Enable the messages transform hook that handles graph injection and Architect read-only enforcement (default: `true`)
+- `messagesTransform.enabled` - Enable the messages transform hook that handles Architect read-only enforcement (default: `true`)
 - `messagesTransform.debug` - Enable debug logging for messages transform (default: `false`)
 
 #### Loop
 - `loop.enabled` - Enable iterative development loops (default: `true`)
 - `loop.defaultMaxIterations` - Default max iterations for loops, 0 = unlimited (default: `15`)
 - `loop.cleanupWorktree` - Auto-remove worktree on cancel (default: `false`)
-- `loop.model` — Reserved field in the type; not currently read by the loop system. Use `executionModel` for model overrides.
 - `loop.stallTimeoutMs` - Watchdog stall detection timeout in milliseconds (default: `60000`)
+- `loop.maxConsecutiveStalls` - Number of consecutive stalls before the loop terminates with reason `stall_timeout`. Set to `0` to disable stall-based termination (default: `5`).
 - `loop.worktreeLogging.enabled` - Enable worktree loop completion logging (default: `false`)
 - `loop.worktreeLogging.directory` - Directory for completion logs, defaults to platform data dir (default: `""`)
 
-**Migration note:** As of v0.2.0, auditing runs unconditionally after each coding iteration. The `loop.defaultAudit` option was removed and audit is now always enabled. If you previously had `"defaultAudit": false` in your config, audits will now run on every iteration regardless of that setting.
-
 #### Sandbox
-- `sandbox.mode` - Sandbox mode: `"off"` or `"docker"` (default: `"off"`)
+- `sandbox.mode` - Sandbox mode: `"docker"` (optional; Docker sandbox is provisioned automatically when available)
 - `sandbox.image` - Docker image for sandbox containers (default: `"oc-forge-sandbox:latest"`)
+- `sandbox.resources` - Container resource limits mapped directly to `docker run` flags:
+  - `memory` - Memory limit, e.g., `'8g'`. Maps to `--memory`.
+  - `memorySwap` - Memory+swap limit, e.g., `'12g'`. Maps to `--memory-swap`.
+  - `cpus` - Number of CPUs, e.g., `'4'`, `'2.5'`. Maps to `--cpus`.
+  - `shmSize` - Shared memory size, e.g., `'1g'`. Maps to `--shm-size`.
 
-#### Graph
-- `graph.enabled` - Enable graph indexing (default: `true`). When set to `false`, the graph service does not start, the `graph-status`, `graph-query`, `graph-symbols`, and `graph-analyze` tools are not registered, and agent prompts (architect, code, auditor, explore) fall back to standard `Read`/`Glob`/`Grep` discovery guidance. Plans, reviews, and loops continue to work without the graph.
-- `graph.autoScan` - Auto-check existing graph cache on startup and scan only when missing/stale (default: `true`)
-- `graph.watch` - Watch for file changes (default: `true`)
-- `graph.debounceMs` - Debounce delay for file watch events (default: `100`)
+#### Decomposer
+- `decomposer.enabled` - Enable plan decomposition into sections (default: `true`)
+- `decomposer.mode` - Decomposition mode: `"agent"` (LLM) or `"deterministic"` (parser). Defaults to `"agent"`.
+- `decomposer.model` - Model override for the decomposer agent. Ignored in deterministic mode.
+- `decomposer.onParseFailure` - Fallback when deterministic parse fails: `"legacy"` (skip decomposition) or `"agent"` (try agent mode). Defaults to `"legacy"`.
+- `decomposer.maxSections` - Maximum number of sections per plan (default: `12`).
 
 #### TUI
 - `tui.sidebar` - Show the forge sidebar widget in OpenCode TUI (default: `true`)
 - `tui.showLoops` - Display active loop status in the sidebar (default: `true`)
 - `tui.showVersion` - Show plugin version number in the sidebar title (default: `true`)
-- `tui.keybinds` - Keyboard shortcut overrides for Forge commands (default: `<leader>v`, `<leader>e`, `<leader>w`)
+- `tui.autoSavePlans` - Auto-save captured plans to disk under `<dataDir>/plans/<projectId>/`. Default: `false`.
+- `tui.planArchiveTtlMs` - TTL in ms for archived plans before pruning. 0 disables pruning. Default: `604800000` (7 days).
+- `tui.keybinds.viewPlan` - View plan dialog keybind. Default: `<leader>v`.
+- `tui.keybinds.executePlan` - Execute plan dialog keybind. Default: `<leader>e`.
+- `tui.keybinds.showLoops` - Show loops dialog keybind. Default: `<leader>w`.
+- `tui.keybinds.loadPlan` - Load archived plans dialog keybind. Default: `<leader>i`.
 
 ## TUI Plugin
 
@@ -496,8 +315,7 @@ The sidebar shows all loops for the current project:
 
 - Loop name (truncated to 25 chars with middle ellipsis) with a colored status dot
 - Status text: current phase for active loops, termination reason for completed/cancelled
-- Clicking a **worktree loop** opens the Loop Details dialog
-- Clicking a **non-worktree loop** navigates directly to its session
+- Clicking a worktree loop opens the Loop Details dialog
 - **Plan indicator** — When a plan exists for the current session, a 📋 Plan link appears. Click it to open the Plan Viewer dialog.
 
 ### Plan Viewer
@@ -517,12 +335,11 @@ The Execute tab provides a comprehensive dialog for launching plans with full co
 
 #### Execution Mode Selection
 
-Choose from four execution modes:
+Choose from three execution modes:
 
 1. **New session** — Creates a fresh Code session and sends the plan as the initial prompt
 2. **Execute here** — Takes over the current session immediately with the plan
-3. **Loop (worktree)** — Launches an iterative coding/auditing loop in an isolated git worktree
-4. **Loop** — Launches an iterative coding/auditing loop in the current directory
+3. **Loop** — Launches an iterative coding/auditing loop in an isolated git worktree (Docker sandbox used automatically when available)
 
 #### Model Selection
 
@@ -646,15 +463,13 @@ After the architect presents a summary, the user chooses an execution mode from 
 
 - **New session** — Creates a new Code session and sends the plan as the initial prompt.
 - **Execute here** — The code agent takes over the current session immediately with the plan.
-- **Loop (worktree)** — Creates an isolated git worktree and launches an iterative coding/auditing loop. When `config.sandbox.mode` is `"docker"`, the loop automatically uses Docker sandbox.
-- **Loop** — Runs an iterative coding/auditing loop in the current directory without worktree isolation.
+- **Loop** — Creates an isolated git worktree and launches an iterative coding/auditing loop. Docker sandbox is provisioned automatically when available; otherwise the loop runs in worktree-only mode.
 
 | Mode | When to choose it |
 |------|-------------------|
 | `New session` | Default for normal implementation |
 | `Execute here` | When preserving current context matters |
-| `Loop (worktree)` | Safer autonomous iteration |
-| `Loop` | Autonomous iteration without worktree isolation |
+| `Loop` | Safer autonomous iteration |
 
 The dialog also lets you pick the execution model and auditor model at launch time. Those selections are remembered per project and pre-filled on later launches.
 
@@ -678,7 +493,6 @@ Model selection follows this priority order:
 ### Troubleshooting
 
 - **No plan found** — Ensure the architect output included the forge plan markers, or open the Plan Viewer for the current session.
-- **Graph tools missing** — Check `graph.enabled`; when false, graph tools are not registered.
 - **TUI shows no plan** — The plan is session-scoped; use `Forge: View plan` in the session where the architect produced it.
 - **Need logs** — Set `logging.enabled` to `true`, and optionally `logging.debug` for verbose output.
 
@@ -705,7 +519,7 @@ Audit findings survive session rotation via the **review store**. The auditor st
 
 ### Worktree Isolation
 
-Loops default to current directory execution. Set `worktree: true` to run in an isolated git worktree with its own branch (e.g., `opencode/loop-<slug>`). In worktree mode, changes are auto-committed and the worktree is removed on completion (branch preserved for later merge).
+Loops always run in an isolated git worktree. Sandbox is optional: when Docker is available and `sandbox.mode = 'docker'` is configured, a sandbox container is provisioned automatically; otherwise the loop runs in worktree-only mode. Changes are auto-committed and the worktree is removed on completion (branch preserved for later merge).
 
 ### Auditor Integration
 
@@ -732,19 +546,18 @@ On model errors during execution, automatic fallback to the default model kicks 
 ### Safety
 
 - `git push` is denied inside active loop sessions
-- Tools like `question`, `plan-execute`, and `loop` are blocked to prevent recursive loops and keep execution autonomous
+- Tools like `question` and `loop` are blocked to prevent recursive loops and keep execution autonomous
 
 ### Management
 
 - **Slash commands**: `/loop` to start, `/loop-cancel` to cancel
 - **Tools**: `loop` to start with parameters, `loop-status` for checking progress (with restart capability), `loop-cancel` to cancel
-- **CLI**: `oc-forge loop status` and `oc-forge loop cancel` for loop management
 
 ### Completion and Termination
 
 The loop auto-terminates after `maxIterations` (if set) or after 3 consecutive errors. Outstanding `bug` findings in the review system block termination.
 
-By default, loops run in the current directory. Set `worktree: true` to run in an isolated git worktree instead (enables worktree creation, auto-commit, and cleanup on completion).
+Loops always run in an isolated git worktree. Sandbox is optional: when Docker is available and `sandbox.mode = 'docker'` is configured, a sandbox container is provisioned automatically; otherwise the loop runs in worktree-only mode.
 
 ## Workspace Integration
 
@@ -752,7 +565,7 @@ Worktree loops can optionally register as **OpenCode workspaces**, letting you s
 
 ### When it runs
 
-Workspace integration is **host-gated, not config-gated**. Forge registers a `forge-worktree` workspace adaptor at plugin load time only if the host runtime exposes the experimental workspace API (`experimental_workspace` on the plugin input, `experimental.workspace` on the SDK client).
+Workspace integration is **host-gated, not config-gated**. Forge uses opencode's builtin `worktree` workspace type, which is always available on hosts that expose the experimental workspace API (`experimental_workspace` on the plugin input, `experimental.workspace` on the SDK client).
 
 - **Host exposes the API** → worktree loops become workspace-backed. The worktree directory appears as a switchable workspace in the TUI, and its sessions are bound to that workspace.
 - **Host does not expose the API** → forge skips registration, logs a note, and worktree loops run exactly as before. Everything else (iteration, auditing, sandbox, status, cancel, restart) is unaffected.
@@ -765,8 +578,8 @@ When a worktree loop starts on a supported host, forge:
 
 1. Creates the git worktree (as usual)
 2. Creates a new Code session pointed at the worktree directory
-3. Calls `experimental.workspace.create` with `type: "forge-worktree"` and the loop metadata (`loopName`, `directory`, `branch`) in the `extra` payload
-4. Calls `experimental.workspace.sessionRestore` to bind the session to that workspace
+3. Calls `experimental.workspace.create` with `type: "worktree"` and `branch: null` to create a builtin worktree workspace
+4. Calls `experimental.workspace.warp` to bind the session to that workspace
 5. Persists the workspace ID on the loop record (`loops.workspace_id`) so the TUI can route clicks on a loop into the correct workspace
 
 The adaptor's `create` and `remove` hooks are intentional no-ops — forge's loop system owns worktree lifecycle, not the workspace system. The adaptor only surfaces existing worktrees to the workspace UI.
@@ -813,13 +626,13 @@ The image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, and jq.
 
 ### Usage
 
-Start a sandbox loop via the architect plan approval flow (select "Loop (worktree)") or directly with the `loop` tool:
+Start a sandbox loop via the architect plan approval flow (select "Loop") or directly with the `loop` tool:
 
 ```
-loop with worktree: true
+loop
 ```
 
-Sandbox is automatically enabled when `config.sandbox.mode` is set to `"docker"` and the loop uses `worktree: true`. The loop:
+Sandbox is optional. When Docker is available and configured, a sandbox container is provisioned automatically; otherwise the loop runs in worktree-only mode. The loop:
 1. Creates a git worktree
 2. Starts a Docker container with the worktree directory bind-mounted at `/workspace`
 3. Redirects `bash`, `glob`, and `grep` tool calls into the container
@@ -831,13 +644,13 @@ Sandbox is automatically enabled when `config.sandbox.mode` is set to `"docker"`
 - **Tool redirection** -- `bash`, `glob`, and `grep` route through `docker exec` when a session belongs to a sandbox loop. The `read`/`write`/`edit` tools operate on the host filesystem directly (compatible with host LSP).
 - **Git blocking** -- git commands are explicitly blocked inside the container. All git operations (commit, push, branch management) are handled by the loop system on the host.
 - **Host LSP** -- since files are shared via the bind mount, OpenCode's LSP servers on the host read the same files and provide diagnostics after writes and edits.
-- **Container lifecycle** -- one container per loop, automatically started and stopped. Container name format: `opencode-forge-sandbox-<worktreeName>`.
+- **Container lifecycle** -- one container per loop, automatically started and stopped. Container name format: `forge-<worktreeName>`.
 
 ### Configuration
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `sandbox.mode` | `"off"` | Set to `"docker"` to enable sandbox support |
+| `sandbox.mode` | `"docker"` | Set to `"docker"` to enable sandbox support (optional; Docker used when available) |
 | `sandbox.image` | `"oc-forge-sandbox:latest"` | Docker image to use for sandbox containers |
 
 ### Customizing the Image
@@ -855,28 +668,6 @@ pnpm build      # Compile TypeScript to dist/
 pnpm test       # Run tests
 pnpm typecheck  # Type check without emitting
 ```
-
-## Breaking Changes
-
-### v0.2.0 - Typed Storage Schema
-
-Forge has replaced its generic key-value store (`project_kv` table) with typed SQL-schema tables for loops, plans, review findings, and graph status. This eliminates whole-object read-modify-write concurrency bugs, adds real indexes for branch-scoped and status-scoped queries, and removes the silent 7-day TTL on all persisted data.
-
-**What changed:**
-- `loops` table - stores loop state with atomic updates for counters (error_count, audit_count, iteration)
-- `loop_large_fields` table - stores prompt and last_audit_result (lazy-loaded)
-- `plans` table - supports both session-staged and loop-bound plans with explicit promotion
-- `review_findings` table - write-once per (file, line), existence = open
-- `graph_status` table - graph indexing status with last-write-wins semantics
-
-**Upgrade impact:**
-- Existing `project_kv` data is dropped on upgrade
-- Active loops are preserved via the stale-reconciliation path
-- Completed loops and their plans will not be recoverable
-- No action required from users other than restarting opencode
-
-**Configuration change:**
-- `defaultKvTtlMs` renamed to `completedLoopTtlMs`
 
 ## License
 

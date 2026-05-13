@@ -1,151 +1,247 @@
-import { test, expect } from 'bun:test'
-import { createLoopWorkspace, bindSessionToWorkspace } from '../../src/workspace/forge-worktree'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { bindSessionToWorkspace, createBuiltinWorktreeWorkspace } from '../../src/workspace/forge-worktree'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 
-test('createLoopWorkspace: logger receives success line on happy path', async () => {
-  let capturedArgs: unknown[] = []
-  let capturedCreateParams: unknown = undefined
-  const mockCreate = (params: unknown) => {
-    capturedCreateParams = params
-    return Promise.resolve({ data: { id: 'ws-server-generated' } })
+function createMockLogger() {
+  return {
+    log: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
   }
-  const mockClient = {
-    experimental: {
-      workspace: {
-        create: mockCreate,
-      },
-    },
-  } as unknown as OpencodeClient
+}
 
-  const logger = {
-    log: (...args: unknown[]) => { capturedArgs = args },
-    error: () => {},
-  }
+describe('createBuiltinWorktreeWorkspace', () => {
+  let logger: ReturnType<typeof createMockLogger>
 
-  const result = await createLoopWorkspace(mockClient, {
-    loopName: 'test-loop',
-    directory: '/test/dir',
-    branch: null,
-  }, logger)
-
-  expect(result).toEqual({ workspaceId: 'ws-server-generated' })
-  expect(capturedArgs.length).toBeGreaterThan(0)
-  expect(capturedArgs[0]).toContain('ws-server-generated')
-  expect(capturedArgs[0]).toContain('test-loop')
-  
-  // Assert the create call did NOT include an id field
-  expect(capturedCreateParams).toBeDefined()
-  const paramsObj = capturedCreateParams as Record<string, unknown>
-  expect(paramsObj).toHaveProperty('type')
-  expect(paramsObj).toHaveProperty('branch')
-  expect(paramsObj).toHaveProperty('extra')
-  expect(paramsObj).not.toHaveProperty('id')
-})
-
-test('createLoopWorkspace: logger receives error line when SDK returns error', async () => {
-  let capturedArgs: unknown[] = []
-  const mockCreate = () => Promise.resolve({
-    error: { name: 'BadRequest', data: { message: 'nope' } },
+  beforeEach(() => {
+    logger = createMockLogger()
   })
-  const mockClient = {
-    experimental: {
-      workspace: {
-        create: mockCreate,
+
+  function mockV2Client(overrides?: { syncList?: any; create?: any; syncStart?: any }) {
+    return {
+      ...(overrides?.syncStart !== undefined
+        ? { sync: { start: overrides.syncStart } }
+        : {}),
+      experimental: {
+        workspace: {
+          create: overrides?.create ?? vi.fn().mockResolvedValue({
+            data: { id: 'ws-1', directory: '/tmp/wt-1', branch: 'feature/x' },
+          }),
+          ...(overrides?.syncList !== undefined
+            ? { syncList: overrides.syncList }
+            : {}),
+        },
       },
-    },
-  } as unknown as OpencodeClient
-
-  const logger = {
-    log: () => {},
-    error: (...args: unknown[]) => { capturedArgs = args },
+    } as unknown as OpencodeClient
   }
 
-  const result = await createLoopWorkspace(mockClient, {
-    loopName: 'test-loop',
-    directory: '/test/dir',
-    branch: null,
-  }, logger)
+  describe('createBuiltinWorktreeWorkspace', () => {
+    it('happy path calls syncList exactly once after successful create', async () => {
+      const createMock = vi.fn().mockResolvedValue({
+        data: { id: 'ws-1', directory: '/tmp/wt-1', branch: 'feature/x' },
+      })
+      const syncListMock = vi.fn().mockResolvedValue({ data: [{ id: 'ws-1' }] })
 
-  expect(result).toBeNull()
-  expect(capturedArgs.length).toBeGreaterThan(0)
-  expect(capturedArgs[0]).toContain('workspace.create returned error')
-  expect(capturedArgs[1]).toEqual({ name: 'BadRequest', data: { message: 'nope' } })
-})
+      const client = mockV2Client({ create: createMock, syncList: syncListMock })
 
-test('createLoopWorkspace: logger receives error line when SDK throws', async () => {
-  let capturedArgs: unknown[] = []
-  const mockCreate = () => Promise.reject(new Error('boom'))
-  const mockClient = {
-    experimental: {
-      workspace: {
-        create: mockCreate,
-      },
-    },
-  } as unknown as OpencodeClient
+      const result = await createBuiltinWorktreeWorkspace(
+        client,
+        { loopName: 'foo', directory: '/tmp/project' },
+        logger,
+      )
 
-  const logger = {
-    log: () => {},
-    error: (...args: unknown[]) => { capturedArgs = args },
-  }
+      expect(result).toEqual({ workspaceId: 'ws-1', directory: '/tmp/wt-1', branch: 'feature/x' })
+      expect(syncListMock).toHaveBeenCalledTimes(1)
+      expect(createMock.mock.invocationCallOrder[0]).toBeLessThan(
+        syncListMock.mock.invocationCallOrder[0],
+      )
+    })
 
-  const result = await createLoopWorkspace(mockClient, {
-    loopName: 'test-loop',
-    directory: '/test/dir',
-    branch: null,
-  }, logger)
+    it('syncList failure does not break the create result', async () => {
+      const createMock = vi.fn().mockResolvedValue({
+        data: { id: 'ws-2', directory: '/tmp/wt-2', branch: 'feature/y' },
+      })
+      const syncListMock = vi.fn().mockRejectedValue(new Error('host syncList unavailable'))
 
-  expect(result).toBeNull()
-  expect(capturedArgs.length).toBeGreaterThan(0)
-  expect(capturedArgs[0]).toBe('createLoopWorkspace: workspace.create threw')
-  expect(capturedArgs[1]).toBeInstanceOf(Error)
-  expect((capturedArgs[1] as Error).message).toBe('boom')
-})
+      const client = mockV2Client({ create: createMock, syncList: syncListMock })
 
-test('createLoopWorkspace: logger receives API unavailable log when client lacks experimental.workspace.create', async () => {
-  let capturedArgs: unknown[] = []
-  const mockClient = {
-    experimental: undefined,
-  } as unknown as OpencodeClient
+      const result = await createBuiltinWorktreeWorkspace(
+        client,
+        { loopName: 'bar', directory: '/tmp/project' },
+        logger,
+      )
 
-  const logger = {
-    log: (...args: unknown[]) => { capturedArgs = args },
-    error: () => {},
-  }
+      expect(result).toEqual({ workspaceId: 'ws-2', directory: '/tmp/wt-2', branch: 'feature/y' })
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringContaining('syncList'),
+        expect.anything(),
+      )
+    })
 
-  const result = await createLoopWorkspace(mockClient, {
-    loopName: 'test-loop',
-    directory: '/test/dir',
-    branch: null,
-  }, logger)
+    it('syncList is NOT called when create fails', async () => {
+      const createMock = vi.fn().mockResolvedValue({ error: { message: 'boom' } })
+      const syncListMock = vi.fn()
 
-  expect(result).toBeNull()
-  expect(capturedArgs.length).toBeGreaterThan(0)
-  expect(capturedArgs[0]).toBe('createLoopWorkspace: experimental.workspace API not available on this host')
-})
+      const client = mockV2Client({ create: createMock, syncList: syncListMock })
 
-test('bindSessionToWorkspace: logs SDK error before throwing', async () => {
-  let capturedArgs: unknown[] = []
-  const mockSessionRestore = () => Promise.resolve({
-    error: { name: 'NotFound', data: { message: 'workspace not found' } },
+      const result = await createBuiltinWorktreeWorkspace(
+        client,
+        { loopName: 'baz', directory: '/tmp/project' },
+        logger,
+      )
+
+      expect(result).toBeNull()
+      expect(syncListMock).not.toHaveBeenCalled()
+    })
+
+    it('graceful when syncList is not available on the SDK', async () => {
+      const createMock = vi.fn().mockResolvedValue({
+        data: { id: 'ws-3', directory: '/tmp/wt-3', branch: 'feature/z' },
+      })
+
+      const client = {
+        experimental: {
+          workspace: {
+            create: createMock,
+          },
+        },
+      } as unknown as OpencodeClient
+
+      const result = await createBuiltinWorktreeWorkspace(
+        client,
+        { loopName: 'qux', directory: '/tmp/project' },
+        logger,
+      )
+
+      expect(result).toEqual({ workspaceId: 'ws-3', directory: '/tmp/wt-3', branch: 'feature/z' })
+      expect(logger.log).toHaveBeenCalledWith(
+        expect.stringContaining('syncList'),
+      )
+    })
+
+    it('recovery path calls syncList after successful re-provisioning (regression)', async () => {
+      const createMock = vi.fn().mockResolvedValue({
+        data: { id: 'ws-recovered', directory: '/tmp/wt-recovered', branch: 'fix/recovery' },
+      })
+      const syncListMock = vi.fn().mockResolvedValue({ data: [{ id: 'ws-recovered' }] })
+
+      const client = mockV2Client({ create: createMock, syncList: syncListMock })
+
+      const result = await createBuiltinWorktreeWorkspace(
+        client,
+        { loopName: 'recovery-loop', directory: '/tmp/wt-recovered' },
+        logger,
+      )
+
+      expect(result).toEqual({ workspaceId: 'ws-recovered', directory: '/tmp/wt-recovered', branch: 'fix/recovery' })
+      expect(syncListMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('matches TUI create flow by keeping workspace create and syncList unscoped', async () => {
+      const createMock = vi.fn().mockResolvedValue({
+        data: { id: 'ws-scoped', directory: '/tmp/wt-scoped', branch: 'feature/scoped' },
+      })
+      const syncListMock = vi.fn().mockResolvedValue({ data: undefined })
+
+      const client = mockV2Client({ create: createMock, syncList: syncListMock })
+
+      const result = await createBuiltinWorktreeWorkspace(
+        client,
+        { loopName: 'scoped-loop', directory: '/tmp/project' },
+        logger,
+      )
+
+      expect(result).toEqual({ workspaceId: 'ws-scoped', directory: '/tmp/wt-scoped', branch: 'feature/scoped' })
+      expect(createMock).toHaveBeenCalledWith({ type: 'forge', branch: null, extra: { loopName: 'scoped-loop', projectDirectory: '/tmp/project' } })
+      expect(syncListMock).toHaveBeenCalledWith()
+    })
+
+    it('starts workspace sync after successful create and syncList', async () => {
+      const createMock = vi.fn().mockResolvedValue({
+        data: { id: 'ws-sync', directory: '/tmp/wt-sync', branch: 'feature/sync' },
+      })
+      const syncListMock = vi.fn().mockResolvedValue({ data: undefined })
+      const syncStartMock = vi.fn().mockResolvedValue({ data: true })
+
+      const client = mockV2Client({ create: createMock, syncList: syncListMock, syncStart: syncStartMock })
+
+      const result = await createBuiltinWorktreeWorkspace(
+        client,
+        { loopName: 'sync-loop', directory: '/tmp/project' },
+        logger,
+      )
+
+      expect(result).toEqual({ workspaceId: 'ws-sync', directory: '/tmp/wt-sync', branch: 'feature/sync' })
+      expect(syncStartMock).toHaveBeenCalledTimes(1)
+      expect(syncListMock.mock.invocationCallOrder[0]).toBeLessThan(
+        syncStartMock.mock.invocationCallOrder[0],
+      )
+    })
   })
-  const mockClient = {
-    experimental: {
-      workspace: {
-        sessionRestore: mockSessionRestore,
+})
+
+describe('bindSessionToWorkspace', () => {
+  it('matches Warp dialog by warping without directory scope', async () => {
+    const warpMock = vi.fn().mockResolvedValue({ data: {}, error: null })
+    const client = {
+      experimental: {
+        workspace: {
+          warp: warpMock,
+        },
       },
-    },
-  } as unknown as OpencodeClient
+    } as unknown as OpencodeClient
 
-  const logger = {
-    log: () => {},
-    error: (...args: unknown[]) => { capturedArgs = args },
-  }
+    await bindSessionToWorkspace(client, 'ws-1', 'sess-1', createMockLogger())
 
-  await expect(
-    bindSessionToWorkspace(mockClient, 'ws-123', 'session-456', logger)
-  ).rejects.toThrow('Session restore failed')
+    expect(warpMock).toHaveBeenCalledWith({
+      id: 'ws-1',
+      sessionID: 'sess-1',
+    })
+  })
 
-  expect(capturedArgs.length).toBeGreaterThan(0)
-  expect(capturedArgs[0]).toContain('bindSessionToWorkspace: sessionRestore failed for workspace=ws-123 session=session-456')
-  expect(capturedArgs[1]).toEqual({ name: 'NotFound', data: { message: 'workspace not found' } })
+  it('starts workspace sync after successful warp binding', async () => {
+    const warpMock = vi.fn().mockResolvedValue({ data: {}, error: null })
+    const syncStartMock = vi.fn().mockResolvedValue({ data: true })
+    const client = {
+      sync: {
+        start: syncStartMock,
+      },
+      experimental: {
+        workspace: {
+          warp: warpMock,
+        },
+      },
+    } as unknown as OpencodeClient
+
+    await bindSessionToWorkspace(client, 'ws-1', 'sess-1', createMockLogger())
+
+    expect(syncStartMock).toHaveBeenCalledTimes(1)
+    expect(warpMock.mock.invocationCallOrder[0]).toBeLessThan(
+      syncStartMock.mock.invocationCallOrder[0],
+    )
+  })
+
+  it('checks workspace list and status after successful warp binding', async () => {
+    const warpMock = vi.fn().mockResolvedValue({ data: {}, error: null })
+    const listMock = vi.fn().mockResolvedValue({ data: [{ id: 'ws-1' }] })
+    const statusMock = vi.fn().mockResolvedValue({ data: [{ workspaceID: 'ws-1', status: 'connected' }] })
+    const logger = createMockLogger()
+    const client = {
+      experimental: {
+        workspace: {
+          warp: warpMock,
+          list: listMock,
+          status: statusMock,
+        },
+      },
+    } as unknown as OpencodeClient
+
+    await bindSessionToWorkspace(client, 'ws-1', 'sess-1', logger)
+
+    expect(listMock).toHaveBeenCalledTimes(1)
+    expect(statusMock).toHaveBeenCalledTimes(1)
+    expect(logger.log).toHaveBeenCalledWith(
+      expect.stringContaining('listed=true status=connected'),
+    )
+  })
 })

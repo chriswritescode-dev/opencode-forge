@@ -3,7 +3,7 @@ import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { Logger } from '../types'
 import type { PlanCaptureMessage } from '../utils/plan-capture'
 import type { PluginInput } from '@opencode-ai/plugin'
-import { extractLatestMarkedPlan, extractMarkedPlan } from '../utils/plan-capture'
+import { extractLatestMarkedPlan, extractMarkedPlan, sanitizePlanPaths } from '../utils/plan-capture'
 
 export interface CaptureLatestPlanDeps {
   v2: ToolContext['v2']
@@ -14,16 +14,17 @@ export interface CaptureLatestPlanDeps {
   logger: Logger
 }
 
-export type CaptureLatestPlanResult =
+type CaptureLatestPlanResult =
   | { status: 'captured'; planText: string; messageId?: string }
   | { status: 'already-current'; planText: string; messageId?: string }
   | { status: 'not-found' }
   | { status: 'invalid'; reason: string }
   | { status: 'read-failed'; error: unknown }
 
-export interface CaptureMarkedPlanTextDeps {
+interface CaptureMarkedPlanTextDeps {
   plansRepo: PlansRepo
   projectId: string
+  directory?: string
   logger: Logger
 }
 
@@ -33,15 +34,19 @@ function writeCapturedPlanForSession(
   planText: string,
   messageId?: string
 ): CaptureLatestPlanResult {
+  const sanitized = sanitizePlanPaths(planText, deps.directory)
+  if (sanitized !== planText) {
+    deps.logger.log(`plan-capture: stripped project-dir prefix from plan for session ${sessionID}`)
+  }
   const existing = deps.plansRepo.getForSession(deps.projectId, sessionID)
-  if (existing && existing.content === planText) {
+  if (existing && existing.content === sanitized) {
     deps.logger.log(`plan-capture: plan already current for session ${sessionID}`)
-    return { status: 'already-current', planText, messageId }
+    return { status: 'already-current', planText: sanitized, messageId }
   }
 
-  deps.plansRepo.writeForSession(deps.projectId, sessionID, planText)
+  deps.plansRepo.writeForSession(deps.projectId, sessionID, sanitized)
   deps.logger.log(`plan-capture: captured plan for session ${sessionID} (${messageId ?? 'unknown message'})`)
-  return { status: 'captured', planText, messageId }
+  return { status: 'captured', planText: sanitized, messageId }
 }
 
 export function captureMarkedPlanTextForSession(

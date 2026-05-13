@@ -8,6 +8,27 @@ export function parseModelString(modelStr?: string): { providerID: string; model
   }
 }
 
+export interface DecomposerModelSources {
+  decomposerModel?: string
+  auditorModel?: string
+  executionModel?: string
+}
+
+/**
+ * Resolve the model to pass to the decomposer agent.
+ * Precedence: decomposer.model > auditorModel > executionModel > undefined (opencode default).
+ * Returns undefined when no source is set, signaling "let opencode pick".
+ */
+export function resolveDecomposerModel(
+  sources: DecomposerModelSources,
+): { providerID: string; modelID: string } | undefined {
+  return (
+    parseModelString(sources.decomposerModel) ??
+    parseModelString(sources.auditorModel) ??
+    parseModelString(sources.executionModel)
+  )
+}
+
 export async function retryWithModelFallback<T>(
   callWithModel: () => Promise<{ data?: T; error?: unknown }>,
   callWithoutModel: () => Promise<{ data?: T; error?: unknown }>,

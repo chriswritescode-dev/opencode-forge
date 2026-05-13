@@ -18,7 +18,6 @@
 
 ## Functions
 
-- [cleanupSandboxOrphansAcrossRegistry](functions/cleanupSandboxOrphansAcrossRegistry.md)
 - [createForgePlugin](functions/createForgePlugin.md)
 - [createParentSessionLookup](functions/createParentSessionLookup.md)
 - [createSessionDirectoryLookup](functions/createSessionDirectoryLookup.md)

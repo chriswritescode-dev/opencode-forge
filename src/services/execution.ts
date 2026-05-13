@@ -2,34 +2,33 @@
  * Forge Execution Service - Command Bus Interface
  * 
  * Shared execution service for plan execution and loop lifecycle.
- * Provides a unified interface for internal tools, API/TUI, and CLI.
+ * Provides a unified interface for internal tools, API, and TUI surfaces.
  */
 
 import type { PluginConfig, Logger } from '../types'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import type { PlansRepo } from '../storage/repos/plans-repo'
-import type { ToolContext } from '../tools/types'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
-import type { GraphStatusRepo } from '../storage/repos/graph-status-repo'
-import type { LoopService } from '../services/loop'
 import type { createLoopEventHandler } from '../hooks'
 import type { SandboxManager } from '../sandbox/manager'
 import { extractPlanTitle, extractLoopNames } from '../utils/plan-execution'
-import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
-import { generateUniqueName } from '../services/loop'
-import { resolveCurrentGitBranch } from '../utils/git-branch'
-import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
+import { parseModelString, retryWithModelFallback, resolveDecomposerModel } from '../utils/model-fallback'
+
+import { formatDecomposerSessionTitle, formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
 import { buildLoopPermissionRuleset } from '../constants/loop'
 import { findPartialMatch } from '../utils/partial-match'
 import { isSandboxEnabled } from '../sandbox/context'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
+import { join } from 'path'
 import { existsSync } from 'fs'
+import { decomposeDeterministically } from './deterministic-decomposer'
+import { markPromptSent, clearPromptPending, terminationStatusFor, parseTerminationReasonString } from '../loop'
 
 // ============================================================================
 // Surface Types - Identifies the caller boundary
 // ============================================================================
 
-export type ForgeExecutionSurface = 'tool' | 'approval-hook' | 'api' | 'tui' | 'cli'
+export type ForgeExecutionSurface = 'tool' | 'approval-hook' | 'api' | 'tui'
 
 // ============================================================================
 // Request Context
@@ -51,6 +50,50 @@ export type PlanSource =
   | { kind: 'inline'; planText: string }
   | { kind: 'stored'; sessionId: string }
   | { kind: 'loop-state'; loopName: string }
+
+// ============================================================================
+// Loop Extra / Attach Types
+// ============================================================================
+
+export interface ForgeLoopExtra {
+  loopName: string
+  hostSessionId?: string
+  title?: string
+  executionModel?: string
+  auditorModel?: string
+  decomposerMode?: 'agent' | 'deterministic' | 'disabled'
+  planSource: 'stored' | 'inline'
+  planText?: string
+}
+
+export interface AttachLoopInput {
+  sessionId: string
+  workspaceId?: string
+  worktreeDir: string
+  worktreeBranch?: string
+  loopName: string
+  displayName: string
+  executionName: string
+  hostSessionId?: string
+  executionModel?: string
+  auditorModel?: string
+  maxIterations: number
+  sandboxEnabled: boolean
+  sandboxContainer?: string
+  decomposerMode: 'agent' | 'deterministic' | 'disabled'
+  planText: string
+  selectSession?: boolean
+  selectSessionTiming?: 'after-create' | 'after-prompt'
+  startWatchdog?: boolean
+  abortSourceSessionOnSuccess?: boolean
+  onStarted?: (info: {
+    sessionId: string
+    loopName: string
+    displayName: string
+    worktreeDir?: string
+    workspaceId?: string
+  }) => void
+}
 
 // ============================================================================
 // Loop Selector Types
@@ -92,7 +135,6 @@ export interface StartLoopCommand {
   source: PlanSource
   title?: string
   loopName?: string
-  mode: 'in-place' | 'worktree'
   maxIterations?: number
   executionModel?: string
   auditorModel?: string
@@ -102,6 +144,13 @@ export interface StartLoopCommand {
     selectSessionTiming?: 'after-create' | 'after-prompt'
     startWatchdog?: boolean
     abortSourceSessionOnSuccess?: boolean
+    onStarted?: (info: {
+      sessionId: string
+      loopName: string
+      displayName: string
+      worktreeDir?: string
+      workspaceId?: string
+    }) => void
   }
 }
 
@@ -109,7 +158,6 @@ export interface BuildStartLoopCommandInput {
   source: PlanSource
   title?: string
   loopName?: string
-  mode: 'in-place' | 'worktree'
   maxIterations?: number
   executionModel?: string
   auditorModel?: string
@@ -123,7 +171,6 @@ export function buildStartLoopCommand(input: BuildStartLoopCommandInput): StartL
     source: input.source,
     title: input.title,
     loopName: input.loopName,
-    mode: input.mode,
     maxIterations: input.maxIterations,
     executionModel: input.executionModel,
     auditorModel: input.auditorModel,
@@ -195,7 +242,6 @@ export interface PlanExecutionStartedResult {
 
 export interface LoopStartedResult {
   operation: 'loop.start'
-  mode: 'in-place' | 'worktree'
   sessionId: string
   loopName: string
   displayName: string
@@ -206,6 +252,7 @@ export interface LoopStartedResult {
   hostSessionId?: string
   modelUsed: string | null
   maxIterations: number
+  deduped?: boolean
 }
 
 export interface LoopRestartedResult {
@@ -213,7 +260,6 @@ export interface LoopRestartedResult {
   loopName: string
   sessionId: string
   previousSessionId: string
-  previousTermination?: string
   worktreeDir?: string
   worktreeBranch?: string
   worktree: boolean
@@ -252,6 +298,22 @@ export interface LoopStatusView {
   auditorModel?: string
   workspaceId?: string
   hostSessionId?: string
+  decompositionStatus?: string
+  decompositionMode?: string
+  currentSectionIndex?: number
+  totalSections?: number
+  finalAuditDone?: boolean
+  sections?: Array<{
+    index: number
+    title: string
+    status: string
+    attempts: number
+    startedAt?: number | null
+    completedAt?: number | null
+    summaryDone: string | null
+    summaryDeviations: string | null
+    summaryFollowUps: string | null
+  }>
 }
 
 export interface LoopStatusResult {
@@ -293,13 +355,14 @@ export interface ForgeExecutionServiceDeps {
   logger: Logger | Console
   dataDir: string
   v2: OpencodeClient
-  legacyClient?: ToolContext['input']['client']
+  legacyClient?: import('@opencode-ai/sdk').OpencodeClient
   plansRepo: PlansRepo
   loopsRepo: LoopsRepo
-  graphStatusRepo?: GraphStatusRepo
-  loopService?: LoopService
   loopHandler?: ReturnType<typeof createLoopEventHandler>
+  loop: import('../loop/runtime').Loop
   sandboxManager?: SandboxManager | null
+  sectionPlansRepo?: import('../storage/repos/section-plans-repo').SectionPlansRepo
+  workspaceStatusRegistry: import('../utils/workspace-status-registry').WorkspaceStatusRegistry
 }
 
 // ============================================================================
@@ -353,14 +416,11 @@ async function resolvePlanSource(
     }
     
     case 'loop-state': {
-      // Try loopService first if available
-      if (deps.loopService) {
-        const planText = deps.loopService.getPlanText(source.loopName, ctx.sourceSessionId ?? '')
-        if (planText) {
-          return { ok: true, planText }
-        }
+      const planText = deps.loop.getPlanText(source.loopName, ctx.sourceSessionId ?? '')
+      if (planText) {
+        return { ok: true, planText }
       }
-      
+
       // Fallback to loopsRepo
       const large = deps.loopsRepo.getLarge(ctx.projectId, source.loopName)
       if (large?.prompt) {
@@ -380,7 +440,7 @@ async function resolvePlanSource(
 }
 
 // ============================================================================
-// Fallback Helpers for Legacy Plugin Client
+// Fallback Helpers for Legacy Plugin SDK
 // ============================================================================
 
 interface SessionCreateInput {
@@ -400,6 +460,7 @@ interface SessionPromptInput {
   parts: Array<{ type: 'text'; text: string }>
   agent: string
   model?: { providerID: string; modelID: string }
+  workspace?: string
 }
 
 interface SessionPromptResult {
@@ -411,7 +472,7 @@ async function createSessionWithFallback(
   deps: ForgeExecutionServiceDeps,
   input: SessionCreateInput,
 ): Promise<SessionCreateResult> {
-  // Try v2 client first
+  // Try v2 SDK first
   try {
     const result = await deps.v2.session.create({
       title: input.title,
@@ -426,24 +487,24 @@ async function createSessionWithFallback(
     if (result.error) {
       const errorMsg = result.error instanceof Error ? result.error.message : String(result.error)
       if (errorMsg.includes('Unable to connect')) {
-        deps.logger.log('createSessionWithFallback: v2 client unavailable, falling back to legacy client')
+        deps.logger.log('createSessionWithFallback: v2 SDK unavailable, falling back to legacy SDK')
       } else {
-        deps.logger.error('createSessionWithFallback: v2 client error', result.error)
+        deps.logger.error('createSessionWithFallback: v2 SDK error', result.error)
       }
     }
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err)
     if (errorMsg.includes('Unable to connect')) {
-      deps.logger.log('createSessionWithFallback: v2 client threw connection error, falling back to legacy client')
+      deps.logger.log('createSessionWithFallback: v2 SDK threw connection error, falling back to legacy SDK')
     } else {
-      deps.logger.error('createSessionWithFallback: v2 client threw error', err)
+      deps.logger.error('createSessionWithFallback: v2 SDK threw error', err)
     }
   }
   
-  // Fallback to legacy client
+  // Fallback to legacy SDK
   if (!deps.legacyClient) {
-    deps.logger.error('createSessionWithFallback: no legacy client available')
-    return { error: new Error('No legacy client available') }
+    deps.logger.error('createSessionWithFallback: no legacy SDK available')
+    return { error: new Error('No legacy SDK available') }
   }
   
   try {
@@ -462,9 +523,9 @@ async function createSessionWithFallback(
       return { data: { id: session.id } }
     }
     
-    return { error: new Error('Legacy client returned no session ID') }
+    return { error: new Error('Legacy SDK returned no session ID') }
   } catch (err) {
-    deps.logger.error('createSessionWithFallback: legacy client failed', err)
+    deps.logger.error('createSessionWithFallback: legacy SDK failed', err)
     return { error: err }
   }
 }
@@ -474,7 +535,7 @@ async function promptSessionWithFallback(
   input: SessionPromptInput,
   model?: { providerID: string; modelID: string },
 ): Promise<{ result: SessionPromptResult; usedModel?: typeof model }> {
-  // Try v2 client first
+  // Try v2 SDK first
   try {
     const result = await deps.v2.session.promptAsync({
       sessionID: input.sessionID,
@@ -482,6 +543,7 @@ async function promptSessionWithFallback(
       parts: input.parts,
       agent: input.agent,
       ...(model ? { model } : {}),
+      ...(input.workspace ? { workspace: input.workspace } : {}),
     })
     
     if (!result.error) {
@@ -490,23 +552,23 @@ async function promptSessionWithFallback(
     
     const errorMsg = result.error instanceof Error ? result.error.message : String(result.error)
     if (errorMsg.includes('Unable to connect')) {
-      deps.logger.log('promptSessionWithFallback: v2 client unavailable, falling back to legacy client')
+      deps.logger.log('promptSessionWithFallback: v2 SDK unavailable, falling back to legacy SDK')
     } else {
-      deps.logger.error('promptSessionWithFallback: v2 client error', result.error)
+      deps.logger.error('promptSessionWithFallback: v2 SDK error', result.error)
     }
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err)
     if (errorMsg.includes('Unable to connect')) {
-      deps.logger.log('promptSessionWithFallback: v2 client threw connection error, falling back to legacy client')
+      deps.logger.log('promptSessionWithFallback: v2 SDK threw connection error, falling back to legacy SDK')
     } else {
-      deps.logger.error('promptSessionWithFallback: v2 client threw error', err)
+      deps.logger.error('promptSessionWithFallback: v2 SDK threw error', err)
     }
   }
   
-  // Fallback to legacy client
+  // Fallback to legacy SDK
   if (!deps.legacyClient) {
-    deps.logger.error('promptSessionWithFallback: no legacy client available')
-    return { result: { error: new Error('No legacy client available') }, usedModel: model }
+    deps.logger.error('promptSessionWithFallback: no legacy SDK available')
+    return { result: { error: new Error('No legacy SDK available') }, usedModel: model }
   }
   
   try {
@@ -514,6 +576,7 @@ async function promptSessionWithFallback(
       path: { id: input.sessionID },
       query: {
         directory: input.directory,
+        ...(input.workspace ? { workspace: input.workspace } : {}),
       },
       body: {
         agent: input.agent,
@@ -522,15 +585,15 @@ async function promptSessionWithFallback(
       },
     } as Parameters<typeof deps.legacyClient.session.promptAsync>[0])
     
-    // Legacy client returns { data, request, response }
+    // Legacy SDK returns { data, request, response }
     const legacyData = legacyResult as { data?: unknown }
     if (!legacyData.data) {
-      return { result: { error: new Error('Legacy client returned no data') }, usedModel: model }
+      return { result: { error: new Error('Legacy SDK returned no data') }, usedModel: model }
     }
     
     return { result: { data: legacyData.data }, usedModel: model }
   } catch (err) {
-    deps.logger.error('promptSessionWithFallback: legacy client failed', err)
+    deps.logger.error('promptSessionWithFallback: legacy SDK failed', err)
     return { result: { error: err }, usedModel: model }
   }
 }
@@ -539,64 +602,702 @@ async function selectSessionWithFallback(
   deps: ForgeExecutionServiceDeps,
   selection: { sessionID: string; workspace?: string },
 ): Promise<void> {
-  // Try v2 TUI selectSession first
-  try {
-    if (deps.v2.tui) {
-      await deps.v2.tui.selectSession(selection)
-      return
-    }
-  } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : String(err)
-    if (errorMsg.includes('Unable to connect')) {
-      deps.logger.log('selectSessionWithFallback: v2 TUI unavailable, falling back to publish')
-    } else {
-      deps.logger.error('selectSessionWithFallback: v2 TUI error', err)
+  const maxAttempts = 3
+  const backoffMs = 250
+
+  async function attemptSelectSession(attempt: number): Promise<{ ok: boolean; retryable: boolean }> {
+    try {
+      await deps.v2.tui!.selectSession({
+        sessionID: selection.sessionID,
+        ...(selection.workspace ? { workspace: selection.workspace } : {}),
+      })
+      deps.logger.log(`[warp] select.v2.selectSession ok attempt=${attempt}`)
+      return { ok: true, retryable: false }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err)
+      deps.logger.log(`[warp] select.v2.selectSession failed attempt=${attempt} error="${errorMsg}"`)
+      const retryable = errorMsg.includes('Unable to connect')
+      if (retryable) {
+        deps.logger.log('selectSessionWithFallback: v2 TUI unavailable, will retry then fall back to publish')
+      } else {
+        deps.logger.error('selectSessionWithFallback: v2 TUI error', err)
+      }
+      return { ok: false, retryable }
     }
   }
-  
-  // Fallback to v2 TUI publish with tui.session.select event
+
+  if (deps.v2.tui) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const result = await attemptSelectSession(attempt)
+      if (result.ok) return
+      if (!result.retryable) break
+      if (attempt < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, backoffMs))
+      }
+    }
+  } else {
+    deps.logger.log('[warp] select.v2.selectSession skipped reason=no-v2-tui')
+  }
+
   try {
-    if (deps.v2.tui) {
+    if (!deps.v2.tui) {
+      deps.logger.log('[warp] select.v2.publish skipped reason=no-v2-tui')
+    } else {
       await deps.v2.tui.publish({
         directory: deps.directory,
-        ...(selection.workspace ? { workspace: selection.workspace } : {}),
         body: {
           type: 'tui.session.select',
           properties: {
             sessionID: selection.sessionID,
+            ...(selection.workspace ? { workspace: selection.workspace } : {}),
           },
         },
       })
+      deps.logger.log('[warp] select.v2.publish ok')
       return
     }
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err)
+    deps.logger.log(`[warp] select.v2.publish failed error="${errorMsg}"`)
     if (errorMsg.includes('Unable to connect')) {
-      deps.logger.log('selectSessionWithFallback: v2 TUI publish unavailable, falling back to legacy client')
+      deps.logger.log('selectSessionWithFallback: v2 TUI publish unavailable, falling back to legacy SDK')
     } else {
       deps.logger.error('selectSessionWithFallback: v2 TUI publish error', err)
     }
   }
-  
-  // Fallback to legacy client TUI
+
   if (!deps.legacyClient?.tui) {
+    deps.logger.log('[warp] select.legacy.publish skipped reason=no-legacy-tui')
     deps.logger.error('selectSessionWithFallback: no legacy TUI available')
     return
   }
-  
+
   try {
-    // Fallback to publish with tui.session.select event
     await deps.legacyClient.tui.publish({
-      ...(selection.workspace ? { workspace: selection.workspace } : {}),
       body: {
         type: 'tui.session.select',
         properties: {
           sessionID: selection.sessionID,
+          ...(selection.workspace ? { workspace: selection.workspace } : {}),
         },
       },
     } as unknown as Parameters<typeof deps.legacyClient.tui.publish>[0])
+    deps.logger.log('[warp] select.legacy.publish ok')
   } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err)
+    deps.logger.log(`[warp] select.legacy.publish failed error="${errorMsg}"`)
     deps.logger.error('selectSessionWithFallback: legacy TUI failed', err)
+  }
+}
+
+export interface SelectInitialWorktreeSessionOpts {
+  selectSession: boolean | undefined
+  logger: Logger | Console
+  workspaceStatusRegistry: import('../utils/workspace-status-registry').WorkspaceStatusRegistry
+  selectSessionFn: (selection: { sessionID: string; workspace?: string }) => Promise<void>
+}
+
+export async function selectInitialWorktreeSession(
+  targetSessionId: string,
+  boundWorkspaceId: string | undefined,
+  context: string,
+  opts: SelectInitialWorktreeSessionOpts,
+): Promise<void> {
+  opts.logger.log(`[warp] select.entry context="${context}" targetSessionId=${targetSessionId} workspaceId=${boundWorkspaceId ?? 'none'}`)
+
+  if (!opts.selectSession) {
+    opts.logger.log(`[warp] select.exit context="${context}" reason=no-select-session`)
+    return
+  }
+
+  if (!boundWorkspaceId) {
+    opts.logger.log(`[warp] select.exit context="${context}" reason=no-workspace`)
+    return
+  }
+
+  const totalStart = Date.now()
+
+  try {
+    const connectedResult = await opts.workspaceStatusRegistry.awaitConnected(boundWorkspaceId, {
+      timeoutMs: 5000,
+      logger: opts.logger as Logger,
+    })
+
+    const readyElapsedMs = Date.now() - totalStart
+
+    if (connectedResult.connected) {
+      opts.logger.log(
+        `[warp] select.ready context="${context}" source=${connectedResult.source} elapsedMs=${readyElapsedMs}`,
+      )
+    } else {
+      opts.logger.log(
+        `[warp] select.degraded context="${context}" reason="${connectedResult.reason ?? 'unknown'}" lastStatus="${connectedResult.lastStatus ?? 'none'}" elapsedMs=${readyElapsedMs}`,
+      )
+    }
+
+    const SELECT_TIMEOUT_MS = 2000
+    await Promise.race([
+      opts.selectSessionFn({ sessionID: targetSessionId, workspace: boundWorkspaceId }),
+      new Promise<void>((resolve) => setTimeout(resolve, SELECT_TIMEOUT_MS)),
+    ])
+    const totalMs = Date.now() - totalStart
+    opts.logger.log(`[warp] select.complete context="${context}" totalMs=${totalMs}`)
+  } catch (err) {
+    const totalMs = Date.now() - totalStart
+    opts.logger.error(
+      `[warp] select.failed context="${context}" error="${err instanceof Error ? err.message : String(err)}" totalMs=${totalMs}`,
+    )
+  }
+}
+
+// ============================================================================
+// attachLoopToSession
+// ============================================================================
+
+export async function attachLoopToSession(
+  deps: ForgeExecutionServiceDeps,
+  ctx: ForgeExecutionRequestContext,
+  input: AttachLoopInput,
+): Promise<{ ok: true; loopName: string } | { ok: false; code: 'already_attached' | 'internal_error' | 'prompt_failed'; message: string }> {
+  const {
+    sessionId,
+    workspaceId,
+    worktreeDir,
+    worktreeBranch,
+    loopName,
+    displayName,
+    executionModel,
+    auditorModel,
+    maxIterations,
+    sandboxEnabled,
+    sandboxContainer,
+    decomposerMode,
+    planText,
+    selectSession,
+    selectSessionTiming,
+    startWatchdog,
+    abortSourceSessionOnSuccess,
+    onStarted,
+  } = input
+
+  const decomposerConfig = deps.config.decomposer ?? { enabled: true, mode: 'agent' as const, onParseFailure: 'legacy' as const, maxSections: 12 }
+  const loopModel = parseModelString(executionModel)
+
+  const existing = deps.loopsRepo.get(ctx.projectId, loopName)
+  if (existing) {
+    if (existing.status === 'running') {
+      deps.logger.log(`attachLoopToSession: loop ${loopName} already attached (running), skipping`)
+      return { ok: false, code: 'already_attached', message: `Loop ${loopName} is already attached` }
+    }
+    // Terminal row from a prior run (cancelled/completed/errored/stalled).
+    // Clear it so the new attach can insert fresh state without colliding.
+    deps.logger.log(`attachLoopToSession: clearing terminal loop row ${loopName} (status=${existing.status}) before re-attach`)
+    try {
+      deps.loop.deleteState(loopName)
+    } catch (err) {
+      deps.logger.error(`attachLoopToSession: failed to clear terminal loop row ${loopName}`, err)
+      return { ok: false, code: 'internal_error', message: `Failed to clear stale loop state for ${loopName}` }
+    }
+  }
+
+  try {
+    // Persist loop state
+    const state: import('../loop/state').LoopState = {
+      active: true,
+      sessionId,
+      loopName,
+      worktreeDir: worktreeDir ?? ctx.directory,
+      projectDir: ctx.directory,
+      worktreeBranch,
+      iteration: 1,
+      maxIterations,
+      startedAt: new Date().toISOString(),
+      prompt: planText,
+      phase: 'coding',
+      errorCount: 0,
+      auditCount: 0,
+      worktree: true,
+      sandbox: sandboxEnabled,
+      sandboxContainer: sandboxContainer ?? undefined,
+      executionModel,
+      auditorModel,
+      workspaceId,
+      hostSessionId: input.hostSessionId,
+      decompositionStatus: 'pending',
+      decompositionMode: decomposerMode === 'disabled' ? 'agent' : decomposerMode,
+      decompositionSessionId: null,
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+    }
+
+    deps.loop.setState(loopName, state)
+    deps.loop.registerLoopSession(sessionId, loopName)
+
+    deps.logger.log(`attachLoopToSession: state stored for loop=${loopName}`)
+
+    onStarted?.({
+      sessionId,
+      loopName,
+      displayName,
+      worktreeDir,
+      workspaceId,
+    })
+
+    // === Decomposer logic ===
+
+    // Set decomposition mode
+    deps.loopsRepo.setDecompositionMode(ctx.projectId, loopName, decomposerConfig.mode ?? 'agent')
+
+    if (decomposerMode === 'disabled') {
+      deps.loopsRepo.setDecompositionStatus(ctx.projectId, loopName, 'skipped')
+      deps.loopsRepo.setTotalSections(ctx.projectId, loopName, 0)
+
+      // Wait for sandbox readiness in worktree+sandbox mode (after persistence)
+      if (sandboxEnabled && deps.sandboxManager && deps.dataDir) {
+        const dbPath = join(deps.dataDir, 'forge.db')
+        if (existsSync(dbPath)) {
+          const { waitForSandboxReady } = await import('../utils/sandbox-ready')
+          const waitResult = await waitForSandboxReady({
+            projectId: ctx.projectId,
+            loopName,
+            dbPath,
+            pollMs: 200,
+            timeoutMs: 15_000,
+          })
+
+          if (!waitResult.ready) {
+            deps.logger.error(`attachLoopToSession: sandbox not ready (${waitResult.reason})`)
+            try {
+              const { createDockerService } = await import('../sandbox/docker')
+              const docker = createDockerService(deps.logger as unknown as Console)
+              const cn = docker.containerName(loopName)
+              if (await docker.isRunning(cn)) {
+                await docker.removeContainer(cn)
+              }
+            } catch (cleanupErr) {
+              deps.logger.error('attachLoopToSession: failed to remove sandbox container after timeout', cleanupErr)
+            }
+            deps.loop.deleteState(loopName)
+            return { ok: false, code: 'internal_error', message: `Sandbox not ready: ${waitResult.reason}` }
+          }
+
+          deps.logger.log(`attachLoopToSession: sandbox ready (${waitResult.containerName})`)
+        }
+      }
+
+      // Navigate TUI if requested with early timing
+      if (selectSession && selectSessionTiming === 'after-create') {
+        const selection = workspaceId
+          ? { workspace: workspaceId, sessionID: sessionId }
+          : { sessionID: sessionId }
+
+        selectSessionWithFallback(deps, selection).catch((err: unknown) => {
+          deps.logger.error('attachLoopToSession: failed to navigate TUI (early)', err as Error)
+        })
+      }
+
+      // Send initial prompt with fallback
+      const sessionDir = worktreeDir
+      const promptParts = [{ type: 'text' as const, text: planText }]
+      const workspaceParam = workspaceId ? { workspace: workspaceId } : {}
+
+      let promptResult: { result: SessionPromptResult; usedModel?: typeof loopModel }
+
+      if (loopModel) {
+        promptResult = await retryWithModelFallback(
+          async () => {
+            markPromptSent(loopName, sessionId, deps.logger)
+            const { result } = await promptSessionWithFallback(
+              deps,
+              {
+                sessionID: sessionId,
+                directory: sessionDir,
+                parts: promptParts,
+                agent: 'code',
+                ...workspaceParam,
+              },
+              loopModel,
+            )
+            return result
+          },
+          async () => {
+            markPromptSent(loopName, sessionId, deps.logger)
+            const { result } = await promptSessionWithFallback(
+              deps,
+              {
+                sessionID: sessionId,
+                directory: sessionDir,
+                parts: promptParts,
+                agent: 'code',
+                ...workspaceParam,
+              },
+              undefined,
+            )
+            return result
+          },
+          loopModel,
+          deps.logger as unknown as Console,
+        )
+      } else {
+        markPromptSent(loopName, sessionId, deps.logger)
+        promptResult = await promptSessionWithFallback(
+          deps,
+          {
+            sessionID: sessionId,
+            directory: sessionDir,
+            parts: promptParts,
+            agent: 'code',
+            ...workspaceParam,
+          },
+          loopModel,
+        )
+      }
+
+      if (promptResult.result.error) {
+        clearPromptPending(loopName, deps.logger)
+        deps.logger.error('attachLoopToSession: failed to send prompt', promptResult.result.error)
+        deps.loop.deleteState(loopName)
+        return { ok: false, code: 'prompt_failed', message: 'Loop session created but failed to send prompt' }
+      }
+
+      // Success: start watchdog if requested
+      if (startWatchdog && deps.loopHandler) {
+        deps.loopHandler.startWatchdog(loopName)
+      }
+
+      // Navigate TUI if requested with default/post-prompt timing
+      if (selectSession && selectSessionTiming !== 'after-create') {
+        const selection = workspaceId
+          ? { workspace: workspaceId, sessionID: sessionId }
+          : { sessionID: sessionId }
+
+        selectSessionWithFallback(deps, selection).catch((err: unknown) => {
+          deps.logger.error('attachLoopToSession: failed to navigate TUI', err as Error)
+        })
+      }
+
+      // Abort source session if requested
+      if (abortSourceSessionOnSuccess && ctx.sourceSessionId) {
+        deps.v2.session.abort({ sessionID: ctx.sourceSessionId }).catch((err: unknown) => {
+          deps.logger.error('attachLoopToSession: failed to abort source session', err as Error)
+        })
+      }
+
+      return { ok: true, loopName }
+    }
+
+    if (decomposerMode === 'agent') {
+      // Agent mode: decomposer session was already created; just update metadata and prompt
+      deps.loopsRepo.setDecompositionStatus(ctx.projectId, loopName, 'running')
+
+      deps.loopsRepo.setDecompositionSessionId(ctx.projectId, loopName, sessionId)
+      deps.loopsRepo.setCurrentSessionId(ctx.projectId, loopName, sessionId)
+      deps.loop.registerLoopSession(sessionId, loopName)
+      deps.loop.setPhase(loopName, 'decomposing')
+
+      // Wait for sandbox readiness in worktree+sandbox mode BEFORE prompting
+      if (sandboxEnabled && deps.sandboxManager && deps.dataDir) {
+        const dbPath = join(deps.dataDir, 'forge.db')
+        if (existsSync(dbPath)) {
+          const { waitForSandboxReady } = await import('../utils/sandbox-ready')
+          const waitResult = await waitForSandboxReady({
+            projectId: ctx.projectId,
+            loopName,
+            dbPath,
+            pollMs: 200,
+            timeoutMs: 15_000,
+          })
+          if (!waitResult.ready) {
+            deps.logger.error(`attachLoopToSession: sandbox not ready (${waitResult.reason})`)
+            try {
+              const { createDockerService } = await import('../sandbox/docker')
+              const docker = createDockerService(deps.logger as unknown as Console)
+              const cn = docker.containerName(loopName)
+              if (await docker.isRunning(cn)) {
+                await docker.removeContainer(cn)
+              }
+            } catch (cleanupErr) {
+              deps.logger.error('attachLoopToSession: failed to remove sandbox container after timeout', cleanupErr)
+            }
+            deps.loop.deleteState(loopName)
+            return { ok: false, code: 'internal_error', message: `Sandbox not ready: ${waitResult.reason}` }
+          }
+          deps.logger.log(`attachLoopToSession: sandbox ready (${waitResult.containerName})`)
+        }
+      }
+
+      const decomposerPrompt = deps.loop.buildDecomposerInitialPrompt(state)
+
+      try {
+        markPromptSent(loopName, sessionId, deps.logger)
+        const decomposerResult = await deps.v2.session.promptAsync({
+          sessionID: sessionId,
+          directory: state.worktreeDir,
+          ...(workspaceId ? { workspace: workspaceId } : {}),
+          agent: 'decomposer',
+          parts: [{ type: 'text' as const, text: decomposerPrompt }],
+          ...(() => {
+            const m = resolveDecomposerModel({
+              decomposerModel: decomposerConfig.model,
+              auditorModel,
+              executionModel,
+            })
+            return m ? { model: m } : {}
+          })(),
+        })
+        if ((decomposerResult as { error?: unknown })?.error) {
+          clearPromptPending(loopName, deps.logger)
+          deps.logger.error('attachLoopToSession: decomposer promptAsync returned error', (decomposerResult as { error?: unknown }).error)
+          deps.loop.deleteState(loopName)
+          return { ok: false, code: 'prompt_failed', message: 'Failed to prompt decomposer' }
+        }
+      } catch (err) {
+        clearPromptPending(loopName, deps.logger)
+        deps.logger.error('attachLoopToSession: failed to prompt decomposer', err)
+        deps.loop.deleteState(loopName)
+        return { ok: false, code: 'prompt_failed', message: 'Failed to prompt decomposer' }
+      }
+      // Start watchdog if requested
+      if (startWatchdog && deps.loopHandler) {
+        deps.loopHandler.startWatchdog(loopName)
+      }
+
+      return { ok: true, loopName }
+    }
+
+    if (decomposerMode === 'deterministic') {
+      // Deterministic mode
+      deps.loopsRepo.setDecompositionStatus(ctx.projectId, loopName, 'running')
+
+      const sections = decomposeDeterministically(planText, { maxSections: decomposerConfig.maxSections ?? 12 })
+
+      if (sections.length > 0 && deps.sectionPlansRepo) {
+        deps.sectionPlansRepo.bulkInsert({
+          projectId: ctx.projectId,
+          loopName,
+          sections,
+        })
+
+        deps.loopsRepo.setTotalSections(ctx.projectId, loopName, sections.length)
+        deps.loopsRepo.setCurrentSectionIndex(ctx.projectId, loopName, 0)
+        deps.loopsRepo.setDecompositionStatus(ctx.projectId, loopName, 'completed')
+
+        deps.sectionPlansRepo.setStatus(ctx.projectId, loopName, 0, 'in_progress')
+        deps.sectionPlansRepo.setStartedAt(ctx.projectId, loopName, 0, Date.now())
+
+        const updatedState = {
+          ...state,
+          phase: 'coding' as const,
+          decompositionStatus: 'completed' as const,
+          currentSectionIndex: 0,
+          totalSections: sections.length,
+        }
+
+        const sectionPrompt = deps.loop.buildSectionInitialPrompt(updatedState)
+
+        // Wait for sandbox readiness in worktree+sandbox mode BEFORE prompting
+        if (sandboxEnabled && deps.sandboxManager && deps.dataDir) {
+          const dbPath = join(deps.dataDir, 'forge.db')
+          if (existsSync(dbPath)) {
+            const { waitForSandboxReady } = await import('../utils/sandbox-ready')
+            const waitResult = await waitForSandboxReady({
+              projectId: ctx.projectId,
+              loopName,
+              dbPath,
+              pollMs: 200,
+              timeoutMs: 15_000,
+            })
+            if (!waitResult.ready) {
+              deps.logger.error(`attachLoopToSession: sandbox not ready (${waitResult.reason})`)
+              try {
+                const { createDockerService } = await import('../sandbox/docker')
+                const docker = createDockerService(deps.logger as unknown as Console)
+                const cn = docker.containerName(loopName)
+                if (await docker.isRunning(cn)) {
+                  await docker.removeContainer(cn)
+                }
+              } catch (cleanupErr) {
+                deps.logger.error('attachLoopToSession: failed to remove sandbox container after timeout', cleanupErr)
+              }
+              deps.loop.deleteState(loopName)
+              return { ok: false, code: 'internal_error', message: `Sandbox not ready: ${waitResult.reason}` }
+            }
+            deps.logger.log(`attachLoopToSession: sandbox ready (${waitResult.containerName})`)
+          }
+        }
+
+        // Send section-based prompt via the code session
+        let sectionPromptResult: { result: SessionPromptResult; usedModel?: typeof loopModel }
+        if (loopModel) {
+          sectionPromptResult = await retryWithModelFallback(
+            async () => {
+              markPromptSent(loopName, sessionId, deps.logger)
+              const { result } = await promptSessionWithFallback(deps, {
+                sessionID: sessionId,
+                directory: state.worktreeDir,
+                parts: [{ type: 'text' as const, text: sectionPrompt }],
+                agent: 'code',
+                ...(workspaceId ? { workspace: workspaceId } : {}),
+              }, loopModel)
+              return result
+            },
+            async () => {
+              markPromptSent(loopName, sessionId, deps.logger)
+              const { result } = await promptSessionWithFallback(deps, {
+                sessionID: sessionId,
+                directory: state.worktreeDir,
+                parts: [{ type: 'text' as const, text: sectionPrompt }],
+                agent: 'code',
+                ...(workspaceId ? { workspace: workspaceId } : {}),
+              })
+              return result
+            },
+            loopModel,
+            deps.logger,
+          )
+        } else {
+          markPromptSent(loopName, sessionId, deps.logger)
+          sectionPromptResult = await promptSessionWithFallback(deps, {
+            sessionID: sessionId,
+            directory: state.worktreeDir,
+            parts: [{ type: 'text' as const, text: sectionPrompt }],
+            agent: 'code',
+            ...(workspaceId ? { workspace: workspaceId } : {}),
+          }, loopModel)
+        }
+
+        if (sectionPromptResult.result.error) {
+          clearPromptPending(loopName, deps.logger)
+          deps.logger.error('attachLoopToSession: failed to send section prompt', sectionPromptResult.result.error)
+          deps.loop.deleteState(loopName)
+          return { ok: false, code: 'prompt_failed', message: 'Failed to send section prompt' }
+        }
+      } else {
+        // No sections found: fallback per onParseFailure
+        if (decomposerConfig.onParseFailure === 'agent') {
+          deps.loopsRepo.setDecompositionStatus(ctx.projectId, loopName, 'running')
+
+          deps.loopsRepo.setDecompositionSessionId(ctx.projectId, loopName, sessionId)
+          deps.loopsRepo.setCurrentSessionId(ctx.projectId, loopName, sessionId)
+          deps.loop.registerLoopSession(sessionId, loopName)
+          deps.loop.setPhase(loopName, 'decomposing')
+
+          // Wait for sandbox readiness in worktree+sandbox mode BEFORE prompting
+          if (sandboxEnabled && deps.sandboxManager && deps.dataDir) {
+            const dbPath = join(deps.dataDir, 'forge.db')
+            if (existsSync(dbPath)) {
+              const { waitForSandboxReady } = await import('../utils/sandbox-ready')
+              const waitResult = await waitForSandboxReady({
+                projectId: ctx.projectId,
+                loopName,
+                dbPath,
+                pollMs: 200,
+                timeoutMs: 15_000,
+              })
+              if (!waitResult.ready) {
+                deps.logger.error(`attachLoopToSession: sandbox not ready (${waitResult.reason})`)
+                try {
+                  const { createDockerService } = await import('../sandbox/docker')
+                  const docker = createDockerService(deps.logger as unknown as Console)
+                  const cn = docker.containerName(loopName)
+                  if (await docker.isRunning(cn)) {
+                    await docker.removeContainer(cn)
+                  }
+                } catch (cleanupErr) {
+                  deps.logger.error('attachLoopToSession: failed to remove sandbox container after timeout', cleanupErr)
+                }
+                deps.loop.deleteState(loopName)
+                return { ok: false, code: 'internal_error', message: `Sandbox not ready: ${waitResult.reason}` }
+              }
+              deps.logger.log(`attachLoopToSession: sandbox ready (${waitResult.containerName})`)
+            }
+          }
+
+          const decomposerPrompt = deps.loop.buildDecomposerInitialPrompt(state)
+
+          try {
+            markPromptSent(loopName, sessionId, deps.logger)
+            const decomposerResult = await deps.v2.session.promptAsync({
+              sessionID: sessionId,
+              directory: state.worktreeDir,
+              ...(workspaceId ? { workspace: workspaceId } : {}),
+              agent: 'decomposer',
+              parts: [{ type: 'text' as const, text: decomposerPrompt }],
+              ...(() => {
+                const m = resolveDecomposerModel({
+                  decomposerModel: decomposerConfig.model,
+                  auditorModel,
+                  executionModel,
+                })
+                return m ? { model: m } : {}
+              })(),
+            })
+            if ((decomposerResult as { error?: unknown })?.error) {
+              clearPromptPending(loopName, deps.logger)
+              deps.logger.error('attachLoopToSession: decomposer promptAsync returned error', (decomposerResult as { error?: unknown }).error)
+              deps.loop.deleteState(loopName)
+              return { ok: false, code: 'prompt_failed', message: 'Failed to prompt decomposer' }
+            }
+          } catch (err) {
+            clearPromptPending(loopName, deps.logger)
+            deps.logger.error('attachLoopToSession: failed to prompt decomposer', err)
+            deps.loop.deleteState(loopName)
+            return { ok: false, code: 'prompt_failed', message: 'Failed to prompt decomposer' }
+          }
+        } else {
+          deps.loopsRepo.setDecompositionStatus(ctx.projectId, loopName, 'skipped')
+          deps.loopsRepo.setTotalSections(ctx.projectId, loopName, 0)
+
+          // Legacy fallback: prompt the code session with the plan text
+          const legacyPrompt = planText ?? ''
+          try {
+            markPromptSent(loopName, sessionId, deps.logger)
+            const legacyResult = await promptSessionWithFallback(deps, {
+              sessionID: sessionId,
+              directory: state.worktreeDir,
+              parts: [{ type: 'text' as const, text: legacyPrompt }],
+              agent: 'code',
+              ...(workspaceId ? { workspace: workspaceId } : {}),
+            }, loopModel)
+            if ((legacyResult.result as { error?: unknown })?.error) {
+              clearPromptPending(loopName, deps.logger)
+              deps.logger.error('attachLoopToSession: legacy fallback promptAsync returned error', (legacyResult.result as { error?: unknown }).error)
+              deps.loop.deleteState(loopName)
+              return { ok: false, code: 'prompt_failed', message: 'Failed to send legacy fallback prompt' }
+            }
+          } catch (err) {
+            clearPromptPending(loopName, deps.logger)
+            deps.logger.error('attachLoopToSession: failed to send legacy fallback prompt', err)
+            deps.loop.deleteState(loopName)
+            return { ok: false, code: 'prompt_failed', message: 'Failed to send legacy fallback prompt' }
+          }
+        }
+      }
+
+      // Start watchdog if requested
+      if (startWatchdog && deps.loopHandler) {
+        deps.loopHandler.startWatchdog(loopName)
+      }
+
+      return { ok: true, loopName }
+    }
+
+    return { ok: true, loopName }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    const isAlreadyExists = msg.includes('already exists') || msg.includes('UNIQUE constraint failed')
+    deps.logger.error('attachLoopToSession: unexpected error', err)
+    if (!isAlreadyExists) {
+      deps.loop.deleteState(loopName)
+    } else {
+      deps.logger.log(`attachLoopToSession: preserving existing loop ${loopName} despite collision`)
+    }
+    return {
+      ok: false,
+      code: isAlreadyExists ? 'already_attached' : 'internal_error',
+      message: isAlreadyExists ? `Loop ${loopName} already attached` : 'Failed to attach loop to session',
+    }
   }
 }
 
@@ -606,6 +1307,13 @@ async function selectSessionWithFallback(
 
 export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): ForgeExecutionService {
   
+  const inFlightLoopStarts = new Map<string, Promise<ForgeExecutionResponse<LoopStartedResult>>>()
+  function hashPlanForDedupe(text: string): string {
+    let h = 5381
+    for (let i = 0; i < text.length; i += 1) h = ((h << 5) + h) ^ text.charCodeAt(i)
+    return (h >>> 0).toString(36)
+  }
+
   async function handlePlanNewSession(
     ctx: ForgeExecutionRequestContext,
     command: ExecutePlanNewSessionCommand,
@@ -717,8 +1425,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const executionModel = command.executionModel ?? deps.config.executionModel
     const parsedModel = parseModelString(executionModel)
     
-    // Build in-place prompt
-    const inPlacePrompt = `The architect agent has created an implementation plan in this conversation above. You are now the code agent taking over this session. Your job is to execute the plan — edit files, run commands, create tests, and implement every phase. Do NOT just describe or summarize the changes. Actually make them.\n\nPlan reference: ${planText}`
+    // Build execute-here prompt
+    const executeHerePrompt = `The architect agent has created an implementation plan in this conversation above. You are now the code agent taking over this session. Your job is to execute the plan — edit files, run commands, create tests, and implement every phase. Do NOT just describe or summarize the changes. Actually make them.\n\nPlan reference: ${planText}`
     
     // Prompt code agent in target session with fallback
     const { result: promptResult, usedModel: actualModel } = await promptSessionWithFallback(
@@ -726,15 +1434,15 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       {
         sessionID: command.targetSessionId,
         directory: ctx.directory,
-        parts: [{ type: 'text' as const, text: inPlacePrompt }],
+        parts: [{ type: 'text' as const, text: executeHerePrompt }],
         agent: 'code',
       },
       parsedModel,
     )
     
     if (promptResult.error) {
-      deps.logger.error('handlePlanHere: in-place execution failed', promptResult.error)
-      return fail('prompt_failed', 502, 'Failed to execute in-place')
+      deps.logger.error('handlePlanHere: execute-here execution failed', promptResult.error)
+      return fail('prompt_failed', 502, 'Failed to execute here')
     }
     
     const modelUsed = actualModel
@@ -764,27 +1472,32 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     if (!planResult.ok) return { ok: false, error: planResult.error }
     
     const planText = planResult.planText
-    const title = command.title ?? extractPlanTitle(planText)
-    const sessionTitle = formatLoopSessionTitle(title)
     
-    // Extract loop names
+    // Extract loop names first so the session title can prefer the explicit Loop Name
     const { displayName, executionName } = extractLoopNames(planText)
+    const title = command.title ?? displayName
+    const sessionTitle = formatLoopSessionTitle(title, { iteration: 1, currentSectionIndex: 0, totalSections: 0 })
     
     // Generate unique loop name
-    let uniqueLoopName: string
-    if (deps.loopService) {
-      uniqueLoopName = deps.loopService.generateUniqueLoopName(command.loopName ?? executionName)
-    } else {
-      // Fallback to loopsRepo-based uniqueness
-      const existingNames = deps.loopsRepo.listByStatus(ctx.projectId, ['running', 'completed', 'cancelled', 'errored', 'stalled'])
-        .map(row => row.loopName)
-      uniqueLoopName = generateUniqueName(command.loopName ?? executionName, existingNames)
+    const uniqueLoopName = deps.loop.generateUniqueLoopName(command.loopName ?? executionName)
+
+    // In-flight dedupe: suppress concurrent starts for the same source
+    const dedupeKey = `${ctx.projectId}::${command.hostSessionId ?? ctx.sourceSessionId ?? ''}::${hashPlanForDedupe(planText)}`
+    const existing = inFlightLoopStarts.get(dedupeKey)
+    if (existing) {
+      deps.logger.log(`handleStartLoop: dedupe — concurrent start suppressed for key=${dedupeKey}`)
+      const prior = await existing
+      if (prior.ok) {
+        return { ok: true, data: { ...prior.data, deduped: true } }
+      }
+      return prior
     }
-    
+
+    // Wrapped inner async to store/clean up in-flight promise
+    async function doStart(): Promise<ForgeExecutionResponse<LoopStartedResult>> {
     // Resolve models
     const resolvedExecutionModel = command.executionModel ?? deps.config.executionModel
     const resolvedAuditorModel = command.auditorModel ?? deps.config.auditorModel
-    const loopModel = parseModelString(resolvedExecutionModel)
     
     // Resolve max iterations
     const maxIterations = command.maxIterations ?? deps.config.loop?.defaultMaxIterations ?? 0
@@ -797,7 +1510,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     let sandboxStarted = false
     let sandboxStartAttempted = false
     let sandboxContainer: string | null = null
-    let sandboxEnabledForLoop = false
+    let sandboxEnabledForLoop: boolean
     let loopStatePersisted = false
 
     const rollbackLoopStart = async (): Promise<void> => {
@@ -805,11 +1518,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         await deps.v2.session.abort({ sessionID: createdSessionId }).catch(() => {})
       }
       if (loopStatePersisted) {
-        if (deps.loopService) {
-          deps.loopService.deleteState(uniqueLoopName)
-        } else {
-          deps.loopsRepo.delete(ctx.projectId, uniqueLoopName)
-        }
+        deps.loop.deleteState(uniqueLoopName)
         loopStatePersisted = false
       }
       if ((sandboxStarted || sandboxStartAttempted) && deps.sandboxManager) {
@@ -817,12 +1526,16 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         sandboxStarted = false
         sandboxContainer = null
       }
+      if (createdWorkspaceId) {
+        const workspaceApi = deps.v2.experimental?.workspace
+        if (workspaceApi?.remove) {
+          await workspaceApi.remove({ id: createdWorkspaceId }).catch(() => {})
+        }
+      }
       if (hostWorktreeDir) {
         const { cleanupLoopWorktree } = await import('../utils/worktree-cleanup')
         await cleanupLoopWorktree({
           worktreeDir: hostWorktreeDir,
-          projectId: ctx.projectId,
-          dataDir: deps.dataDir,
           logPrefix: 'handleStartLoop',
           logger: deps.logger,
         })
@@ -831,92 +1544,122 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     
     try {
       let sessionId: string
-      let workspaceId: string | undefined
-      
+      let initialBoundWorkspaceId: string | undefined
+
+      const doSelectInitialWorktreeSession = async (
+        targetSessionId: string,
+        boundWorkspaceId: string | undefined,
+        context: string,
+      ): Promise<void> => {
+        await selectInitialWorktreeSession(targetSessionId, boundWorkspaceId, context, {
+          selectSession: command.lifecycle?.selectSession,
+          logger: deps.logger,
+          workspaceStatusRegistry: deps.workspaceStatusRegistry,
+          selectSessionFn: (sel) => selectSessionWithFallback(deps, sel),
+        })
+      }
+
       // Compute host session ID for metadata persistence only (not session parenting)
       const hostSessionId = command.hostSessionId ?? ctx.sourceSessionId
       
-      if (command.mode === 'worktree') {
-        // Create worktree
-        const worktreeResult = await deps.v2.worktree.create({
-          worktreeCreateInput: { name: uniqueLoopName },
-        })
-        
-        if (worktreeResult.error || !worktreeResult.data) {
-          deps.logger.error('handleStartLoop: failed to create worktree', worktreeResult.error)
-          return fail('internal_error', 500, 'Failed to create worktree')
-        }
-        
-        hostWorktreeDir = worktreeResult.data.directory!
-        worktreeBranch = worktreeResult.data.branch ?? undefined
-        
-        void (async () => {
-          try {
-            const { seedWorktreeGraphScope } = await import('../utils/worktree-graph-seed')
-            const seedResult = await seedWorktreeGraphScope({
-              projectId: ctx.projectId,
-              sourceCwd: ctx.directory,
-              targetCwd: hostWorktreeDir!,
-              dataDir: deps.dataDir,
-              graphStatusRepo: deps.graphStatusRepo,
-              logger: deps.logger,
-            })
-            deps.logger.log(`handleStartLoop: graph seed ${seedResult.seeded ? 'reused' : 'skipped'} (${seedResult.reason})`)
-          } catch (err) {
-            const reason = err instanceof Error ? err.message : String(err)
-            deps.logger.log(`handleStartLoop: graph seed error (non-fatal): ${reason}`)
-          }
-        })()
-        
-        // Create workspace
-        const { createLoopWorkspace } = await import('../workspace/forge-worktree')
-        const workspace = await createLoopWorkspace(deps.v2, {
-          loopName: uniqueLoopName,
+      // Determine decomposer mode early so we don't create an unused code session in agent mode
+      const decomposerConfig = deps.config.decomposer ?? { enabled: true, mode: 'agent' as const, onParseFailure: 'legacy' as const, maxSections: 12 }
+      const isAgentDecomposer = decomposerConfig.enabled !== false && decomposerConfig.mode === 'agent'
+
+      if (!deps.sandboxManager) {
+        deps.logger.log('handleStartLoop: sandbox manager not initialized; running in worktree-only mode')
+      }
+
+      // Create builtin worktree workspace (single call — no separate worktree.create)
+      const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
+      const ws = await createBuiltinWorktreeWorkspace(deps.v2, {
+        loopName: uniqueLoopName,
+        directory: ctx.directory,
+      }, deps.logger, deps.workspaceStatusRegistry)
+      if (!ws) {
+        deps.logger.error('handleStartLoop: failed to create builtin worktree workspace')
+        return fail('internal_error', 500, 'Failed to create worktree workspace')
+      }
+      hostWorktreeDir = ws.directory
+      worktreeBranch = ws.branch
+      const workspaceId = ws.workspaceId
+      createdWorkspaceId = ws.workspaceId
+
+      // Build permissions
+      const sandboxEnabled = isSandboxEnabled(deps.config, deps.sandboxManager)
+      sandboxEnabledForLoop = sandboxEnabled
+
+      const permissionRuleset = buildLoopPermissionRuleset()
+
+      // Create session (code session or decomposer session based on decomposer mode)
+      if (isAgentDecomposer) {
+        const createResult = await createLoopSessionWithWorkspace({
+          v2: deps.v2,
+          title: formatDecomposerSessionTitle(uniqueLoopName),
           directory: hostWorktreeDir!,
-          branch: worktreeBranch,
-        }, deps.logger)
-        
-        if (workspace) {
-          deps.logger.log(`handleStartLoop: workspace ${workspace.workspaceId} created for ${uniqueLoopName}`)
-          workspaceId = workspace.workspaceId
-        }
-        
-        // Build permissions
-        const sandboxEnabled = isSandboxEnabled(deps.config, deps.sandboxManager)
-        sandboxEnabledForLoop = sandboxEnabled
-        
-        const permissionRuleset = buildLoopPermissionRuleset({
-          isWorktree: true,
-          isSandbox: sandboxEnabled,
+          permission: permissionRuleset,
+          workspaceId,
+          loopName: uniqueLoopName,
+          logPrefix: 'handleStartLoop:decomposer',
+          logger: deps.logger,
+          legacyClient: deps.legacyClient,
+          workspaceStatusRegistry: deps.workspaceStatusRegistry,
         })
-        
-        // Create session
+        if (!createResult) {
+          deps.logger.error('handleStartLoop: failed to create decomposer session')
+          await rollbackLoopStart()
+          return fail('internal_error', 500, 'Failed to create decomposer session')
+        }
+        sessionId = createResult.sessionId
+        createdSessionId = sessionId
+        initialBoundWorkspaceId = createResult.boundWorkspaceId
+        if (createResult.bindFailed) {
+          deps.logger.log(
+            `handleStartLoop: workspace ${workspaceId} created but initial decomposer bind failed; will retry on next session`,
+          )
+        }
+        // Navigate the TUI to the worktree session immediately so the user sees the new
+        // session before the slow sandbox + provisioning + prompt path runs.
+        await doSelectInitialWorktreeSession(sessionId, initialBoundWorkspaceId, 'after session create (decomposer)')
+      } else {
         const createResult = await createLoopSessionWithWorkspace({
           v2: deps.v2,
           title: sessionTitle,
           directory: hostWorktreeDir!,
           permission: permissionRuleset,
           workspaceId,
+          loopName: uniqueLoopName,
           logPrefix: 'handleStartLoop',
           logger: deps.logger,
+          workspaceStatusRegistry: deps.workspaceStatusRegistry,
         })
-        
+
         if (!createResult) {
           deps.logger.error('handleStartLoop: failed to create session')
           await rollbackLoopStart()
           return fail('internal_error', 500, 'Failed to create loop session')
         }
-        
+
         sessionId = createResult.sessionId
         createdSessionId = sessionId
-        createdWorkspaceId = createResult.boundWorkspaceId
-        
+        initialBoundWorkspaceId = createResult.boundWorkspaceId
+
         if (createResult.bindFailed) {
-          deps.logger.log('handleStartLoop: continuing without workspace backing')
+          deps.logger.log(`handleStartLoop: workspace ${workspaceId} created but initial bind failed; will retry on next session`)
         }
-        
-        // Start sandbox if enabled
-        if (sandboxEnabled && deps.sandboxManager) {
+        // Navigate the TUI to the worktree session immediately so the user sees the new
+        // session before the slow sandbox + provisioning + prompt path runs.
+        await doSelectInitialWorktreeSession(sessionId, initialBoundWorkspaceId, 'after session create')
+      }
+
+      // Start sandbox if enabled
+      if (sandboxEnabled && deps.sandboxManager) {
+        const existingSandbox = deps.sandboxManager.getActive(uniqueLoopName)
+        if (existingSandbox) {
+          sandboxStarted = true
+          sandboxContainer = existingSandbox.containerName
+          deps.logger.log(`handleStartLoop: sandbox container ${existingSandbox.containerName} already provisioned by forge workspace adapter`)
+        } else {
           try {
             sandboxStartAttempted = true
             const result = await deps.sandboxManager.start(uniqueLoopName, hostWorktreeDir!)
@@ -924,270 +1667,121 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             sandboxContainer = result.containerName
             deps.logger.log(`handleStartLoop: sandbox container ${result.containerName} started`)
           } catch (err) {
-            deps.logger.error('handleStartLoop: failed to start sandbox', err)
+            deps.logger.error('handleStartLoop: failed to start sandbox; rolling back loop start', err)
             await rollbackLoopStart()
             return fail('internal_error', 500, 'Failed to start sandbox')
           }
         }
-        
-      } else {
-        // In-place mode
-        worktreeBranch = resolveCurrentGitBranch(ctx.directory)
-        const permissionRuleset = buildLoopPermissionRuleset({
-          isWorktree: false,
-        })
-        
-        const createResult = await createSessionWithFallback(deps, {
-          title: sessionTitle,
-          directory: ctx.directory,
-          permission: permissionRuleset,
-        })
-        
-        if (!createResult.data) {
-          deps.logger.error('handleStartLoop: failed to create session', createResult.error)
-          return fail('internal_error', 500, 'Failed to create loop session')
-        }
-        
-        sessionId = createResult.data.id
-        createdSessionId = sessionId
       }
       
-      // Persist loop state
-      const state: import('../services/loop').LoopState = {
-        active: true,
-        sessionId,
-        loopName: uniqueLoopName,
-        worktreeDir: hostWorktreeDir ?? ctx.directory,
-        projectDir: ctx.directory,
+      // Pre-determine effective decomposition mode
+      const effectiveMode = (() => {
+        if (decomposerConfig.enabled === false) return 'disabled' as const
+        if (isAgentDecomposer) return 'agent' as const
+        return 'deterministic' as const
+      })()
+
+      let effectiveSessionId = sessionId
+
+      // For deterministic mode, check if we need to fall back to agent
+      let needsFallback = false
+      if (effectiveMode === 'deterministic') {
+        const testSections = decomposeDeterministically(planText, { maxSections: decomposerConfig.maxSections ?? 12 })
+        if (testSections.length === 0 && deps.sectionPlansRepo && decomposerConfig.onParseFailure === 'agent') {
+          needsFallback = true
+        }
+      }
+
+      // Handle deterministic fallback: create new decomposer session BEFORE calling attachLoopToSession
+      if (needsFallback) {
+        // Abort original code session
+        await deps.v2.session.abort({ sessionID: sessionId }).catch(() => {})
+        createdSessionId = null
+        
+        let decomposerSessionId: string
+        let fallbackBoundWorkspaceId: string | undefined
+        if (createdWorkspaceId) {
+          const fallbackPermission = buildLoopPermissionRuleset()
+          const createResult = await createLoopSessionWithWorkspace({
+            v2: deps.v2,
+            title: formatDecomposerSessionTitle(uniqueLoopName),
+            directory: hostWorktreeDir!,
+            permission: fallbackPermission,
+            workspaceId: createdWorkspaceId,
+            loopName: uniqueLoopName,
+            logPrefix: 'handleStartLoop:decomposer-fallback',
+            logger: deps.logger,
+            legacyClient: deps.legacyClient,
+            workspaceStatusRegistry: deps.workspaceStatusRegistry,
+          })
+          if (!createResult) {
+            deps.logger.error('handleStartLoop: failed to create decomposer session for fallback')
+            await rollbackLoopStart()
+            return fail('internal_error', 500, 'Failed to create decomposer session')
+          }
+          decomposerSessionId = createResult.sessionId
+          fallbackBoundWorkspaceId = createResult.boundWorkspaceId
+          if (createResult.bindFailed) {
+            deps.logger.log(
+              `handleStartLoop: workspace ${createdWorkspaceId} created but salvage decomposer bind failed`,
+            )
+          }
+        } else {
+          const decomposerSessionResult = await createSessionWithFallback(deps, {
+            title: formatDecomposerSessionTitle(uniqueLoopName),
+            directory: hostWorktreeDir!,
+          })
+          if (!decomposerSessionResult.data) {
+            deps.logger.error('handleStartLoop: failed to create decomposer session for fallback')
+            await rollbackLoopStart()
+            return fail('internal_error', 500, 'Failed to create decomposer session')
+          }
+          decomposerSessionId = decomposerSessionResult.data.id
+        }
+        effectiveSessionId = decomposerSessionId
+        createdSessionId = decomposerSessionId
+        
+        // Navigate TUI to new decomposer session
+        doSelectInitialWorktreeSession(decomposerSessionId, fallbackBoundWorkspaceId, 'after fallback decomposer start')
+      }
+
+      // Call attachLoopToSession with the final state
+      const attachResult = await attachLoopToSession(deps, ctx, {
+        sessionId: effectiveSessionId,
+        workspaceId: createdWorkspaceId,
+        worktreeDir: hostWorktreeDir!,
         worktreeBranch,
-        iteration: 1,
-        maxIterations,
-        startedAt: new Date().toISOString(),
-        prompt: planText,
-        phase: 'coding',
-        errorCount: 0,
-        auditCount: 0,
-        worktree: command.mode === 'worktree',
-        sandbox: sandboxEnabledForLoop,
-        sandboxContainer: sandboxContainer ?? undefined,
+        loopName: uniqueLoopName,
+        displayName,
+        executionName,
+        hostSessionId,
         executionModel: resolvedExecutionModel,
         auditorModel: resolvedAuditorModel,
-        workspaceId: createdWorkspaceId,
-        hostSessionId,
-      }
-      
-      if (deps.loopService) {
-        deps.loopService.setState(uniqueLoopName, state)
-        loopStatePersisted = true
-        deps.loopService.registerLoopSession(sessionId, uniqueLoopName)
-      } else {
-        // CLI adapter: use loopsRepo directly
-        const row: import('../storage/repos/loops-repo').LoopRow = {
-          projectId: ctx.projectId,
-          loopName: uniqueLoopName,
-          status: 'running',
-          currentSessionId: sessionId,
-          auditSessionId: null,
-          worktree: command.mode === 'worktree',
-          worktreeDir: hostWorktreeDir ?? ctx.directory,
-          worktreeBranch: worktreeBranch ?? null,
-          projectDir: ctx.directory,
-          maxIterations,
-          iteration: 1,
-          auditCount: 0,
-          errorCount: 0,
-          phase: 'coding',
-          executionModel: resolvedExecutionModel ?? null,
-          auditorModel: resolvedAuditorModel ?? null,
-          modelFailed: false,
-          sandbox: sandboxEnabledForLoop,
-          sandboxContainer,
-          startedAt: Date.now(),
-          completedAt: null,
-          terminationReason: null,
-          completionSummary: null,
-          workspaceId: createdWorkspaceId ?? null,
-          hostSessionId: hostSessionId ?? null,
-        }
-        
-        const large: import('../storage/repos/loops-repo').LoopLargeFields = {
-          prompt: planText,
-          lastAuditResult: null,
-        }
-        
-        const inserted = deps.loopsRepo.insert(row, large)
-        if (!inserted) {
-          deps.logger.error('handleStartLoop: failed to persist loop state')
-          await rollbackLoopStart()
-          return fail('internal_error', 500, 'Failed to persist loop state')
-        }
-        loopStatePersisted = true
-      }
-      
-      deps.logger.log(`handleStartLoop: state stored for loop=${uniqueLoopName}`)
-      
-      // Wait for sandbox readiness in worktree+sandbox mode (after persistence)
-      if (command.mode === 'worktree' && sandboxEnabledForLoop && deps.sandboxManager && deps.dataDir) {
-        const dbPath = join(deps.dataDir, 'graph.db')
-        if (existsSync(dbPath)) {
-          const { waitForSandboxReady } = await import('../utils/sandbox-ready')
-          const waitResult = await waitForSandboxReady({
-            projectId: ctx.projectId,
-            loopName: uniqueLoopName,
-            dbPath,
-            pollMs: 200,
-            timeoutMs: 15_000,
-          })
-          
-          if (!waitResult.ready) {
-            deps.logger.error(`handleStartLoop: sandbox not ready (${waitResult.reason})`)
-            // Best-effort: stop reconciled container
-            try {
-              const { createDockerService } = await import('../sandbox/docker')
-              const docker = createDockerService(deps.logger as unknown as Console)
-              const cn = docker.containerName(uniqueLoopName)
-              if (await docker.isRunning(cn)) {
-                await docker.removeContainer(cn)
-              }
-            } catch (cleanupErr) {
-              deps.logger.error('handleStartLoop: failed to remove sandbox container after timeout', cleanupErr)
-            }
-            await rollbackLoopStart()
-            return fail('internal_error', 503, `Sandbox not ready: ${waitResult.reason}`)
-          }
-          
-          deps.logger.log(`handleStartLoop: sandbox ready (${waitResult.containerName})`)
-        }
-      }
-      
-      // Navigate TUI if requested with early timing
-      if (command.lifecycle?.selectSession && command.lifecycle.selectSessionTiming === 'after-create') {
-        const selection = createdWorkspaceId
-          ? { workspace: createdWorkspaceId, sessionID: sessionId }
-          : { sessionID: sessionId }
-        
-        selectSessionWithFallback(deps, selection).catch((err: unknown) => {
-          deps.logger.error('handleStartLoop: failed to navigate TUI (early)', err as Error)
-        })
-      }
-      
-      // Send initial prompt with fallback
-      const sessionDir = state.worktreeDir
-      const promptParts = [{ type: 'text' as const, text: planText }]
-      
-      // For worktree mode with a configured model, use retryWithModelFallback
-      let promptResult: { result: SessionPromptResult; usedModel?: typeof loopModel }
-      let actualModel: typeof loopModel | null = null
-      
-      if (command.mode === 'worktree' && loopModel) {
-        const retryResult = await retryWithModelFallback(
-          async () => {
-            const { result } = await promptSessionWithFallback(
-              deps,
-              {
-                sessionID: sessionId,
-                directory: sessionDir,
-                parts: promptParts,
-                agent: 'code',
-              },
-              loopModel,
-            )
-            return result
-          },
-          async () => {
-            const { result } = await promptSessionWithFallback(
-              deps,
-              {
-                sessionID: sessionId,
-                directory: sessionDir,
-                parts: promptParts,
-                agent: 'code',
-              },
-              undefined,
-            )
-            return result
-          },
-          loopModel,
-          deps.logger as unknown as Console,
-        )
-        promptResult = retryResult
-        actualModel = retryResult.usedModel ?? null
-      } else {
-        promptResult = await promptSessionWithFallback(
-          deps,
-          {
-            sessionID: sessionId,
-            directory: sessionDir,
-            parts: promptParts,
-            agent: 'code',
-          },
-          loopModel,
-        )
-        actualModel = promptResult.usedModel ?? null
-      }
-      
-      if (promptResult.result.error) {
-        deps.logger.error('handleStartLoop: failed to send prompt', promptResult.result.error)
+        maxIterations,
+        sandboxEnabled: sandboxEnabledForLoop,
+        sandboxContainer: sandboxContainer ?? undefined,
+        decomposerMode: needsFallback ? 'agent' : effectiveMode,
+        planText,
+        selectSession: command.lifecycle?.selectSession,
+        selectSessionTiming: command.lifecycle?.selectSessionTiming,
+        startWatchdog: command.lifecycle?.startWatchdog,
+        abortSourceSessionOnSuccess: command.lifecycle?.abortSourceSessionOnSuccess,
+        onStarted: command.lifecycle?.onStarted,
+      })
+
+      if (!attachResult.ok) {
         await rollbackLoopStart()
-        
-        return fail('prompt_failed', 502, 'Loop session created but failed to send prompt')
+        return fail(attachResult.code as ForgeExecutionError['code'], 503, attachResult.message)
       }
-      
-      if (hostWorktreeDir) {
-        void (async () => {
-          try {
-            const { waitForGraphReady } = await import('../utils/tui-graph-status')
-            const waitResult = await waitForGraphReady(ctx.projectId, {
-              cwd: hostWorktreeDir,
-              dbPathOverride: deps.dataDir ? join(deps.dataDir, 'graph.db') : undefined,
-              pollMs: 100,
-              timeoutMs: 5000,
-            })
-            
-            if (waitResult === 'timeout') {
-              deps.logger.log(`handleStartLoop: graph readiness timeout for worktree ${hostWorktreeDir}`)
-            } else if (waitResult === null) {
-              deps.logger.log(`handleStartLoop: graph status unavailable for worktree ${hostWorktreeDir}`)
-            } else {
-              deps.logger.log(`handleStartLoop: graph ready (${waitResult.state}) for worktree ${hostWorktreeDir}`)
-            }
-          } catch (err) {
-            deps.logger.log(`handleStartLoop: graph wait error (non-fatal)`, err)
-          }
-        })()
-      }
-      
-      // Success: start watchdog if requested
-      if (command.lifecycle?.startWatchdog && deps.loopHandler) {
-        deps.loopHandler.startWatchdog(uniqueLoopName)
-      }
-      
-      // Navigate TUI if requested with default/post-prompt timing
-      if (command.lifecycle?.selectSession && command.lifecycle.selectSessionTiming !== 'after-create') {
-        const selection = createdWorkspaceId
-          ? { workspace: createdWorkspaceId, sessionID: sessionId }
-          : { sessionID: sessionId }
-        
-        selectSessionWithFallback(deps, selection).catch((err: unknown) => {
-          deps.logger.error('handleStartLoop: failed to navigate TUI', err as Error)
-        })
-      }
-      
-      // Abort source session if requested
-      if (command.lifecycle?.abortSourceSessionOnSuccess && ctx.sourceSessionId) {
-        deps.v2.session.abort({ sessionID: ctx.sourceSessionId }).catch((err: unknown) => {
-          deps.logger.error('handleStartLoop: failed to abort source session', err as Error)
-        })
-      }
-      
-      const modelUsed = actualModel && 'providerID' in actualModel
-        ? `${actualModel.providerID}/${actualModel.modelID}`
+
+      const parsedExec = parseModelString(resolvedExecutionModel)
+      const modelUsed = parsedExec
+        ? `${parsedExec.providerID}/${parsedExec.modelID}`
         : null
-      
+
       return ok({
         operation: 'loop.start',
-        mode: command.mode,
-        sessionId,
+        sessionId: effectiveSessionId,
         loopName: uniqueLoopName,
         displayName,
         executionName,
@@ -1205,29 +1799,30 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       
       return fail('internal_error', 500, 'Failed to start loop')
     }
+
+    }
+
+    const promise = doStart()
+    inFlightLoopStarts.set(dedupeKey, promise)
+    try {
+      return await promise
+    } finally {
+      inFlightLoopStarts.delete(dedupeKey)
+    }
   }
   
   async function handleLoopStatus(
-    ctx: ForgeExecutionRequestContext,
+    _ctx: ForgeExecutionRequestContext,
     command: GetLoopStatusCommand,
   ): Promise<ForgeExecutionResponse<LoopStatusResult>> {
-    let states: import('../services/loop').LoopState[]
+    let states: import('../loop/state').LoopState[]
     
-    if (deps.loopService) {
-      if (command.selector?.kind === 'only-active') {
-        states = deps.loopService.listActive()
-      } else {
-        const active = deps.loopService.listActive()
-        const recent = deps.loopService.listRecent()
-        states = [...active, ...recent]
-      }
+    if (command.selector?.kind === 'only-active') {
+      states = deps.loop.listActive()
     } else {
-      // CLI adapter: read from DB
-      const rows = deps.loopsRepo.listByStatus(ctx.projectId, ['running', 'completed', 'cancelled', 'errored', 'stalled'])
-      states = rows.map(row => {
-        const large = deps.loopsRepo.getLarge(ctx.projectId, row.loopName)
-        return rowToLoopState(row, large, deps)
-      })
+      const active = deps.loop.listActive()
+      const recent = deps.loop.listRecent()
+      states = [...active, ...recent]
     }
     
     // Apply selector filtering
@@ -1259,36 +1854,61 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       states = states.slice(0, limit)
     }
     
-    const statusFromState = (state: import('../services/loop').LoopState): LoopStatusView['status'] => {
+    const statusFromState = (state: import('../loop/state').LoopState): LoopStatusView['status'] => {
       if (state.active) return 'running'
-      if (state.terminationReason === 'completed') return 'completed'
-      if (state.terminationReason === 'cancelled' || state.terminationReason === 'user_aborted' || state.terminationReason === 'shutdown') return 'cancelled'
-      if (state.terminationReason === 'max_iterations' || state.terminationReason === 'stall_timeout') return 'stalled'
-      if (state.terminationReason) return 'errored'
+      if (state.terminationReason) return terminationStatusFor(parseTerminationReasonString(state.terminationReason))
       return 'completed'
     }
 
     // Convert to status views
-    const loops: LoopStatusView[] = states.map(state => ({
-      loopName: state.loopName,
-      displayName: state.loopName, // Could extract from plan if needed
-      status: statusFromState(state),
-      phase: state.phase,
-      iteration: state.iteration,
-      maxIterations: state.maxIterations,
-      sessionId: state.sessionId,
-      active: state.active,
-      startedAt: state.startedAt,
-      completedAt: state.completedAt,
-      terminationReason: state.terminationReason,
-      worktree: !!state.worktree,
-      worktreeDir: state.worktreeDir,
-      worktreeBranch: state.worktreeBranch,
-      executionModel: state.executionModel,
-      auditorModel: state.auditorModel,
-      workspaceId: state.workspaceId,
-      hostSessionId: state.hostSessionId,
-    }))
+    const loops: LoopStatusView[] = states.map(state => {
+      const cap200 = (s: string | null | undefined): string | null =>
+        s ? (s.length > 200 ? s.slice(0, 200) : s) : null
+      const sectionViews = state.totalSections > 0 
+        ? Array.from({ length: state.totalSections }, (_, i) => {
+            const section = deps.loop.getSectionPlan(state, i)
+            const digest = deps.loop.getCompletedSectionDigest(state)
+            const summary = digest?.find(s => s.index === i)
+            return {
+              index: i,
+              title: section?.title ?? `Section ${i + 1}`,
+              status: section?.status ?? 'pending',
+              attempts: section?.attempts ?? 0,
+              startedAt: section?.startedAt,
+              completedAt: section?.completedAt,
+              summaryDone: cap200(summary?.summaryDone),
+              summaryDeviations: cap200(summary?.summaryDeviations),
+              summaryFollowUps: cap200(summary?.summaryFollowUps),
+            }
+          })
+        : undefined
+      return {
+        loopName: state.loopName,
+        displayName: state.loopName, // Could extract from plan if needed
+        status: statusFromState(state),
+        phase: state.phase,
+        iteration: state.iteration,
+        maxIterations: state.maxIterations,
+        sessionId: state.sessionId,
+        active: state.active,
+        startedAt: state.startedAt,
+        completedAt: state.completedAt,
+        terminationReason: state.terminationReason,
+        worktree: !!state.worktree,
+        worktreeDir: state.worktreeDir,
+        worktreeBranch: state.worktreeBranch,
+        executionModel: state.executionModel,
+        auditorModel: state.auditorModel,
+        workspaceId: state.workspaceId,
+        hostSessionId: state.hostSessionId,
+        decompositionStatus: state.decompositionStatus,
+        decompositionMode: state.decompositionMode,
+        currentSectionIndex: state.currentSectionIndex,
+        totalSections: state.totalSections,
+        finalAuditDone: state.finalAuditDone,
+        sections: sectionViews,
+      }
+    })
     
     const active = loops.filter(l => l.active)
     const recent = loops.filter(l => !l.active)
@@ -1302,18 +1922,18 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
   }
   
   async function handleLoopCancel(
-    ctx: ForgeExecutionRequestContext,
+    _ctx: ForgeExecutionRequestContext,
     command: CancelLoopCommand,
   ): Promise<ForgeExecutionResponse<LoopCancelledResult>> {
-    if (!deps.loopService || !deps.loopHandler) {
-      return fail('internal_error', 500, 'Loop service not available')
+    if (!deps.loopHandler) {
+      return fail('internal_error', 500, 'Loop handler not available')
     }
 
-    let state: import('../services/loop').LoopState
+    let state: import('../loop/state').LoopState
 
     // Resolve loop by selector
     if (!command.selector || command.selector.kind === 'only-active') {
-      const active = deps.loopService.listActive()
+      const active = deps.loop.listActive()
       if (active.length === 0) return fail('not_found', 404, 'No active loops.')
       if (active.length !== 1) {
         return fail('conflict', 409, 'Multiple active loops. Specify a name.', undefined, active.map(s => s.loopName))
@@ -1321,12 +1941,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       state = active[0]
     } else {
       const name = command.selector.name
-      const { match, candidates } = deps.loopService.findMatchByName(name)
+      const { match, candidates } = deps.loop.findMatchByName(name)
       if (!match) {
         if (candidates.length > 0) {
           return fail('conflict', 409, `Multiple loops match "${name}". Be more specific.`, undefined, candidates.map(s => s.loopName))
         }
-        const recent = deps.loopService.listRecent()
+        const recent = deps.loop.listRecent()
         const foundRecent = recent.find(s => s.loopName === name || (s.worktreeBranch && s.worktreeBranch.toLowerCase().includes(name.toLowerCase())))
         if (foundRecent) {
           return fail('conflict', 409, `Loop "${foundRecent.loopName}" has already completed.`)
@@ -1348,8 +1968,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       const { cleanupLoopWorktree } = await import('../utils/worktree-cleanup')
       const result = await cleanupLoopWorktree({
         worktreeDir: state.worktreeDir,
-        projectId: ctx.projectId,
-        dataDir: deps.dataDir,
         logPrefix: 'loop-cancel',
         logger: deps.logger,
       })
@@ -1369,11 +1987,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
   }
   
   async function handleLoopRestart(
-    _ctx: ForgeExecutionRequestContext,
+    ctx: ForgeExecutionRequestContext,
     command: RestartLoopCommand,
   ): Promise<ForgeExecutionResponse<LoopRestartedResult>> {
-    if (!deps.loopService || !deps.loopHandler) {
-      return fail('internal_error', 500, 'Loop service not available')
+    if (!deps.loopHandler) {
+      return fail('internal_error', 500, 'Loop handler not available')
     }
 
     if (command.selector.kind === 'only-active') {
@@ -1381,8 +1999,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     }
 
     const name = command.selector.name
-    const active = deps.loopService.listActive()
-    const recent = deps.loopService.listRecent()
+    const active = deps.loop.listActive()
+    const recent = deps.loop.listRecent()
     const allStates = [...active, ...recent]
     const { match: stoppedState, candidates } = findPartialMatch(name, allStates, s => [s.loopName, s.worktreeBranch])
     if (!stoppedState && candidates.length > 0) {
@@ -1394,7 +2012,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     if (stoppedState.active && !command.force) {
       return fail('conflict', 409, `Loop "${stoppedState.loopName}" is currently active. Use force=true to force-restart a stuck loop.`)
     }
-    if (stoppedState.terminationReason === 'completed') {
+    if (stoppedState.terminationReason && parseTerminationReasonString(stoppedState.terminationReason).kind === 'completed') {
       return fail('conflict', 409, `Loop "${stoppedState.loopName}" completed successfully and cannot be restarted.`)
     }
     if (stoppedState.worktree && stoppedState.worktreeDir) {
@@ -1407,23 +2025,21 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     deps.logger.log(
       `handleRestartLoop: [perm-diag] worktree=${String(stoppedState.worktree)} sandbox=${String(restartSandbox)}`
     )
-    const permissionRuleset = buildLoopPermissionRuleset({ isWorktree: !!stoppedState.worktree, isSandbox: restartSandbox })
-    const previousTermination = stoppedState.terminationReason
+    const permissionRuleset = buildLoopPermissionRuleset()
     const previousState = { ...stoppedState }
-    let restartedState: import('../services/loop').LoopState | null = null
     let bindFailed = false
+    const previousSessionId = stoppedState.sessionId
 
     type RestartOutcome =
-      | { ok: true; newSessionId: string; previousSessionId: string; sandbox: boolean; bindFailed: boolean }
+      | { ok: true; newSessionId: string; previousSessionId: string; sandbox: boolean; bindFailed: boolean; decomposerSessionId?: string }
       | { ok: false; error: string }
 
     const outcome = await deps.loopHandler.runExclusive<RestartOutcome>(stoppedState.loopName, async () => {
       if (stoppedState.active) {
-        const latestState = deps.loopService!.getActiveState(stoppedState.loopName)
+        const latestState = deps.loop.getActiveState(stoppedState.loopName)
         if (latestState?.active) {
           try { await deps.v2.session.abort({ sessionID: latestState.sessionId }) } catch {}
           deps.loopHandler!.clearLoopTimers(stoppedState.loopName)
-          deps.loopService!.unregisterLoopSession(latestState.sessionId)
           // Sync stoppedState with latest persisted values
           Object.assign(stoppedState, {
             sessionId: latestState.sessionId,
@@ -1442,35 +2058,14 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
       }
 
-      const previousSessionId = stoppedState.sessionId
+      // Determine if decomposition needs to be re-entered before creating sessions
+      const needsDecomposerRestart =
+        stoppedState.decompositionStatus === 'pending' ||
+        stoppedState.decompositionStatus === 'running' ||
+        stoppedState.decompositionStatus === 'failed'
 
-      if (stoppedState.auditSessionId) {
-        try {
-          await deps.v2.session.delete({ sessionID: stoppedState.auditSessionId, directory: stoppedState.worktreeDir })
-          deps.logger.log(`Loop restart: deleted stale audit session ${stoppedState.auditSessionId}`)
-        } catch (err) {
-          deps.logger.error(`Loop restart: failed to delete stale audit session ${stoppedState.auditSessionId}`, err)
-        }
-        deps.loopService!.setAuditSessionId(stoppedState.loopName, null)
-      }
-
-      const createResult = await createLoopSessionWithWorkspace({
-        v2: deps.v2,
-        title: formatLoopSessionTitle(stoppedState.loopName),
-        directory: stoppedState.worktreeDir,
-        permission: permissionRuleset,
-        workspaceId: stoppedState.workspaceId,
-        logPrefix: 'loop-restart',
-        logger: deps.logger,
-      })
-
-      if (!createResult) return { ok: false, error: 'Failed to create new session for restart.' }
-
-      const newSessionId = createResult.sessionId
-      if (createResult.bindFailed) {
-        stoppedState.workspaceId = undefined
-        bindFailed = true
-      }
+      let newSessionId: string | undefined
+      let decomposerSessionId: string | undefined
 
       if (restartSandbox && deps.sandboxManager) {
         try {
@@ -1482,9 +2077,186 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
       }
 
-      const newState: import('../services/loop').LoopState = {
+      if (needsDecomposerRestart) {
+        if (stoppedState.decompositionMode === 'deterministic') {
+          // Deterministic mode: re-run deterministic parsing/fallback instead of creating an agent decomposer
+          deps.logger.log(`loop-restart: re-entering deterministic decomposition (status=${stoppedState.decompositionStatus})`)
+          
+          const createResult = await createLoopSessionWithWorkspace({
+            v2: deps.v2,
+            title: formatLoopSessionTitle(stoppedState.loopName, {
+              iteration: stoppedState.iteration ?? 0,
+              currentSectionIndex: stoppedState.currentSectionIndex ?? 0,
+              totalSections: stoppedState.totalSections ?? 0,
+            }),
+            directory: stoppedState.worktreeDir,
+            permission: permissionRuleset,
+            workspaceId: stoppedState.workspaceId,
+            loopName: stoppedState.loopName,
+            logPrefix: 'loop-restart',
+            logger: deps.logger,
+            workspaceStatusRegistry: deps.workspaceStatusRegistry,
+          })
+          
+          if (!createResult) return { ok: false, error: 'Failed to create new session for restart.' }
+          
+          newSessionId = createResult.sessionId
+          if (createResult.bindFailed) {
+            stoppedState.workspaceId = undefined
+            bindFailed = true
+          }
+          
+          const decomposerConfig = deps.config.decomposer ?? { enabled: true, mode: 'agent' as const, onParseFailure: 'legacy' as const, maxSections: 12 }
+          const planText = stoppedState.prompt ?? ''
+          const sections = decomposeDeterministically(planText, { maxSections: decomposerConfig.maxSections ?? 12 })
+          
+          if (sections.length > 0 && deps.sectionPlansRepo) {
+            deps.sectionPlansRepo.bulkInsert({
+              projectId: ctx.projectId,
+              loopName: stoppedState.loopName,
+              sections,
+            })
+            
+            deps.loopsRepo.setTotalSections(ctx.projectId, stoppedState.loopName, sections.length)
+            deps.loopsRepo.setCurrentSectionIndex(ctx.projectId, stoppedState.loopName, 0)
+            deps.loopsRepo.setDecompositionStatus(ctx.projectId, stoppedState.loopName, 'completed')
+            
+            deps.sectionPlansRepo.setStatus(ctx.projectId, stoppedState.loopName, 0, 'in_progress')
+            deps.sectionPlansRepo.setStartedAt(ctx.projectId, stoppedState.loopName, 0, Date.now())
+            
+            deps.loop.registerLoopSession(newSessionId, stoppedState.loopName)
+            deps.loopsRepo.setDecompositionSessionId(ctx.projectId, stoppedState.loopName, newSessionId)
+            deps.loopsRepo.setCurrentSessionId(ctx.projectId, stoppedState.loopName, newSessionId)
+            
+            // Update in-memory state so downstream prompt logic sees correct values
+            stoppedState.decompositionStatus = 'completed'
+            stoppedState.currentSectionIndex = 0
+            stoppedState.totalSections = sections.length
+            
+            // Prompt will be sent later using section prompt
+          } else {
+            // No sections: fallback per onParseFailure
+            if (decomposerConfig.onParseFailure === 'agent') {
+              let didBindFail = false
+              if (stoppedState.worktree && stoppedState.workspaceId) {
+                const restartPermission = buildLoopPermissionRuleset()
+                const createResult = await createLoopSessionWithWorkspace({
+                  v2: deps.v2,
+                   title: formatDecomposerSessionTitle(stoppedState.loopName),
+                  directory: stoppedState.worktreeDir,
+                  permission: restartPermission,
+                  workspaceId: stoppedState.workspaceId,
+                  loopName: stoppedState.loopName,
+                  logPrefix: 'loop-restart:decomposer-fallback',
+                  logger: deps.logger,
+                  workspaceStatusRegistry: deps.workspaceStatusRegistry,
+                })
+                if (!createResult) return { ok: false, error: 'Failed to create decomposer session for fallback.' }
+                decomposerSessionId = createResult.sessionId
+                if (createResult.bindFailed) {
+                  stoppedState.workspaceId = undefined
+                  didBindFail = true
+                }
+              } else {
+                const decomposerResult = await createSessionWithFallback(deps, {
+                   title: formatDecomposerSessionTitle(stoppedState.loopName),
+                  directory: stoppedState.worktreeDir,
+                })
+                if (!decomposerResult.data) {
+                  return { ok: false, error: 'Failed to create decomposer session for fallback.' }
+                }
+                decomposerSessionId = decomposerResult.data.id
+              }
+              deps.loop.registerLoopSession(decomposerSessionId, stoppedState.loopName)
+              deps.loopsRepo.setDecompositionStatus(ctx.projectId, stoppedState.loopName, 'running')
+              deps.loopsRepo.setDecompositionSessionId(ctx.projectId, stoppedState.loopName, decomposerSessionId)
+              deps.loopsRepo.setCurrentSessionId(ctx.projectId, stoppedState.loopName, decomposerSessionId)
+              if (didBindFail) bindFailed = true
+            } else {
+              deps.loopsRepo.setDecompositionStatus(ctx.projectId, stoppedState.loopName, 'skipped')
+              deps.loopsRepo.setTotalSections(ctx.projectId, stoppedState.loopName, 0)
+
+              // Update in-memory state so downstream prompt logic sees correct values
+              stoppedState.decompositionStatus = 'skipped'
+              stoppedState.totalSections = 0
+            }
+          }
+        } else {
+          // Agent mode: re-create decomposer session
+          deps.logger.log(`loop-restart: re-entering decomposition (status=${stoppedState.decompositionStatus})`)
+          
+          if (stoppedState.worktree && stoppedState.workspaceId) {
+            const restartPermission = buildLoopPermissionRuleset()
+            const createResult = await createLoopSessionWithWorkspace({
+              v2: deps.v2,
+              title: formatDecomposerSessionTitle(stoppedState.loopName),
+              directory: stoppedState.worktreeDir,
+              permission: restartPermission,
+              workspaceId: stoppedState.workspaceId,
+              loopName: stoppedState.loopName,
+              logPrefix: 'loop-restart:decomposer',
+              logger: deps.logger,
+              workspaceStatusRegistry: deps.workspaceStatusRegistry,
+            })
+            if (!createResult) {
+              deps.logger.error('loop-restart: failed to create decomposer session')
+              return { ok: false, error: 'Failed to create decomposer session for restart.' }
+            }
+            decomposerSessionId = createResult.sessionId
+            if (createResult.bindFailed) {
+              stoppedState.workspaceId = undefined
+              bindFailed = true
+            }
+          } else {
+            const decomposerResult = await createSessionWithFallback(deps, {
+              title: formatDecomposerSessionTitle(stoppedState.loopName),
+              directory: stoppedState.worktreeDir,
+            })
+            if (!decomposerResult.data) {
+              deps.logger.error('loop-restart: failed to create decomposer session')
+              return { ok: false, error: 'Failed to create decomposer session for restart.' }
+            }
+            decomposerSessionId = decomposerResult.data.id
+          }
+          deps.loop.registerLoopSession(decomposerSessionId, stoppedState.loopName)
+          deps.loopsRepo.setDecompositionStatus(ctx.projectId, stoppedState.loopName, 'running')
+          deps.loopsRepo.setDecompositionSessionId(ctx.projectId, stoppedState.loopName, decomposerSessionId)
+          deps.loopsRepo.setCurrentSessionId(ctx.projectId, stoppedState.loopName, decomposerSessionId)
+        }
+      } else {
+        const createResult = await createLoopSessionWithWorkspace({
+          v2: deps.v2,
+          title: formatLoopSessionTitle(stoppedState.loopName, {
+            iteration: stoppedState.iteration ?? 0,
+            currentSectionIndex: stoppedState.currentSectionIndex ?? 0,
+            totalSections: stoppedState.totalSections ?? 0,
+          }),
+          directory: stoppedState.worktreeDir,
+          permission: permissionRuleset,
+          workspaceId: stoppedState.workspaceId,
+          loopName: stoppedState.loopName,
+          logPrefix: 'loop-restart',
+          logger: deps.logger,
+          workspaceStatusRegistry: deps.workspaceStatusRegistry,
+        })
+
+        if (!createResult) return { ok: false, error: 'Failed to create new session for restart.' }
+
+        newSessionId = createResult.sessionId
+        if (createResult.bindFailed) {
+          stoppedState.workspaceId = undefined
+          bindFailed = true
+        }
+      }
+
+      // Recompute effective decomposer restart flag after deterministic handling
+      const effectiveNeedsDecomposerRestart = needsDecomposerRestart && stoppedState.decompositionStatus !== 'completed'
+      const restartPhase = effectiveNeedsDecomposerRestart ? 'decomposing' as const : stoppedState.phase === 'final_auditing' ? 'final_auditing' as const : 'coding' as const
+      const effectiveSessionId = decomposerSessionId || newSessionId!
+
+      const newState: import('../loop/state').LoopState = {
         active: true,
-        sessionId: newSessionId,
+        sessionId: effectiveSessionId,
         loopName: stoppedState.loopName,
         worktreeDir: stoppedState.worktreeDir,
         projectDir: stoppedState.projectDir || stoppedState.worktreeDir,
@@ -1493,7 +2265,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         maxIterations: stoppedState.maxIterations,
         startedAt: new Date().toISOString(),
         prompt: stoppedState.prompt,
-        phase: 'coding',
+        phase: restartPhase,
         errorCount: 0,
         auditCount: 0,
         worktree: stoppedState.worktree,
@@ -1503,9 +2275,115 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         auditorModel: stoppedState.auditorModel,
         workspaceId: stoppedState.workspaceId,
         hostSessionId: stoppedState.hostSessionId,
+        decompositionStatus: effectiveNeedsDecomposerRestart ? 'running' as const : stoppedState.decompositionStatus,
+        decompositionMode: stoppedState.decompositionMode,
+        decompositionSessionId: decomposerSessionId || stoppedState.decompositionSessionId,
+        currentSectionIndex: stoppedState.currentSectionIndex,
+        totalSections: stoppedState.totalSections,
+        finalAuditDone: stoppedState.finalAuditDone,
       }
-      restartedState = newState
-      return { ok: true, newSessionId, previousSessionId, sandbox: restartSandbox, bindFailed }
+      // Build appropriate prompt based on persisted decomposition state
+      let promptText: string
+      const promptNeedsDecomposer =
+        stoppedState.decompositionStatus === 'pending' ||
+        stoppedState.decompositionStatus === 'running' ||
+        stoppedState.decompositionStatus === 'failed'
+
+      if (promptNeedsDecomposer) {
+        // Re-enter decomposition: prompt the decomposer session
+        promptText = deps.loop.buildDecomposerInitialPrompt(stoppedState)
+      } else if (stoppedState.totalSections > 0 && stoppedState.decompositionStatus === 'completed') {
+        // Use persisted section state to build the correct section prompt
+        if (stoppedState.phase === 'final_auditing') {
+          promptText = deps.loop.buildFinalAuditPrompt(stoppedState)
+        } else {
+          promptText = deps.loop.buildSectionInitialPrompt(stoppedState)
+        }
+      } else {
+        // Legacy non-sectioned prompt
+        promptText = stoppedState.prompt ?? ''
+      }
+
+      const loopModel = promptNeedsDecomposer
+        ? resolveDecomposerModel({
+            decomposerModel: deps.config.decomposer?.model,
+            auditorModel: stoppedState.auditorModel ?? deps.config.auditorModel,
+            executionModel: stoppedState.executionModel ?? deps.config.executionModel,
+          })
+        : parseModelString(stoppedState.executionModel) ?? parseModelString(deps.config.executionModel)
+      const workspaceParam = stoppedState.workspaceId ? { workspace: stoppedState.workspaceId } : {}
+
+      const promptAgent = promptNeedsDecomposer ? 'decomposer' : stoppedState.phase === 'final_auditing' ? 'auditor-loop' : 'code'
+
+      deps.loopsRepo.restart(ctx.projectId, stoppedState.loopName, {
+        sessionId: newState.sessionId,
+        phase: newState.phase,
+        iteration: newState.iteration,
+        auditCount: newState.auditCount,
+        sandbox: newState.sandbox ?? false,
+        sandboxContainer: newState.sandboxContainer ?? null,
+        workspaceId: newState.workspaceId ?? null,
+        decompositionStatus: newState.decompositionStatus,
+        decompositionSessionId: newState.decompositionSessionId ?? null,
+        currentSectionIndex: newState.currentSectionIndex,
+        totalSections: newState.totalSections,
+        finalAuditDone: newState.finalAuditDone,
+        startedAt: new Date(newState.startedAt).getTime(),
+      })
+
+      deps.loop.registerLoopSession(effectiveSessionId, stoppedState.loopName)
+
+      const { result: promptResult } = await retryWithModelFallback(
+        () => {
+          markPromptSent(stoppedState.loopName, effectiveSessionId, deps.logger)
+          return deps.v2.session.promptAsync({
+            sessionID: effectiveSessionId,
+            directory: stoppedState.worktreeDir,
+            parts: [{ type: 'text' as const, text: promptText }],
+            agent: promptAgent,
+            model: loopModel!,
+            ...workspaceParam,
+          })
+        },
+        () => {
+          markPromptSent(stoppedState.loopName, effectiveSessionId, deps.logger)
+          return deps.v2.session.promptAsync({
+            sessionID: effectiveSessionId,
+            directory: stoppedState.worktreeDir,
+            parts: [{ type: 'text' as const, text: promptText }],
+            agent: promptAgent,
+            ...workspaceParam,
+          })
+        },
+        loopModel,
+        deps.logger,
+      )
+
+      if (promptResult.error) {
+        clearPromptPending(stoppedState.loopName, deps.logger)
+        deps.logger.error('loop-restart: failed to send prompt', promptResult.error)
+        // Save section plans before deleteState (which cascades to section_plans)
+        const savedPlans = deps.sectionPlansRepo?.list(ctx.projectId, stoppedState.loopName) ?? []
+        deps.loop.deleteState(stoppedState.loopName)
+        try {
+          deps.loop.setState(previousState.loopName, previousState)
+          if (previousState.active) deps.loop.registerLoopSession(previousState.sessionId, previousState.loopName)
+          // Restore section plans after setState
+          if (savedPlans.length > 0) {
+            deps.sectionPlansRepo?.restoreAll(savedPlans)
+          }
+        } catch (restoreErr) {
+          deps.logger.error('loop-restart: failed to restore previous loop state', restoreErr)
+        }
+        if (restartSandbox && deps.sandboxManager) {
+          await deps.sandboxManager.stop(stoppedState.loopName).catch(() => {})
+        }
+        return { ok: false, error: 'Restart failed: could not send prompt to new session.' }
+      }
+
+      deps.loopHandler!.startWatchdog(stoppedState.loopName)
+
+      return { ok: true, newSessionId: effectiveSessionId, previousSessionId, sandbox: restartSandbox, bindFailed, decomposerSessionId }
     })
 
     if (!outcome.ok) return fail('internal_error', 500, outcome.error)
@@ -1520,56 +2398,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       })
     }
 
-    const promptText = stoppedState.prompt ?? ''
-    const loopModel = parseModelString(stoppedState.executionModel) ?? parseModelString(deps.config.executionModel)
-    const workspaceParam = stoppedState.workspaceId ? { workspace: stoppedState.workspaceId } : {}
-
-    const { result: promptResult } = await retryWithModelFallback(
-      () => deps.v2.session.promptAsync({
-        sessionID: outcome.newSessionId,
-        directory: stoppedState.worktreeDir,
-        parts: [{ type: 'text' as const, text: promptText }],
-        agent: 'code',
-        model: loopModel!,
-        ...workspaceParam,
-      }),
-      () => deps.v2.session.promptAsync({
-        sessionID: outcome.newSessionId,
-        directory: stoppedState.worktreeDir,
-        parts: [{ type: 'text' as const, text: promptText }],
-        agent: 'code',
-        ...workspaceParam,
-      }),
-      loopModel,
-      deps.logger,
-    )
-
-    if (promptResult.error) {
-      deps.logger.error('loop-restart: failed to send prompt', promptResult.error)
-      deps.loopService.deleteState(stoppedState.loopName)
-      try {
-        deps.loopService.setState(previousState.loopName, previousState)
-        if (previousState.active) deps.loopService.registerLoopSession(previousState.sessionId, previousState.loopName)
-      } catch (restoreErr) {
-        deps.logger.error('loop-restart: failed to restore previous loop state', restoreErr)
-      }
-      if (restartSandbox && deps.sandboxManager) {
-        await deps.sandboxManager.stop(stoppedState.loopName).catch(() => {})
-      }
-      return fail('internal_error', 500, 'Restart failed: could not send prompt to new session.')
-    }
-
-    deps.loopService.deleteState(stoppedState.loopName)
-    deps.loopService.setState(stoppedState.loopName, restartedState!)
-    deps.loopService.registerLoopSession(outcome.newSessionId, stoppedState.loopName)
-    deps.loopHandler.startWatchdog(stoppedState.loopName)
-
     return ok({
       operation: 'loop.restart',
       loopName: stoppedState.loopName,
       sessionId: outcome.newSessionId,
       previousSessionId: outcome.previousSessionId,
-      previousTermination,
       worktreeDir: stoppedState.worktreeDir,
       worktreeBranch: stoppedState.worktreeBranch,
       worktree: !!stoppedState.worktree,
@@ -1609,40 +2442,3 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 // ============================================================================
 // Internal Helpers
 // ============================================================================
-
-import { join } from 'path'
-
-function rowToLoopState(
-  row: import('../storage/repos/loops-repo').LoopRow,
-  large: import('../storage/repos/loops-repo').LoopLargeFields | null,
-  _deps: ForgeExecutionServiceDeps,
-): import('../services/loop').LoopState {
-  return {
-    active: row.status === 'running',
-    sessionId: row.currentSessionId,
-    auditSessionId: row.auditSessionId ?? undefined,
-    loopName: row.loopName,
-    worktreeDir: row.worktreeDir,
-    projectDir: row.projectDir,
-    worktreeBranch: row.worktreeBranch ?? undefined,
-    iteration: row.iteration,
-    maxIterations: row.maxIterations,
-    startedAt: new Date(row.startedAt).toISOString(),
-    prompt: large?.prompt ?? undefined,
-    phase: row.phase,
-    lastAuditResult: large?.lastAuditResult ?? undefined,
-    errorCount: row.errorCount,
-    auditCount: row.auditCount,
-    terminationReason: row.terminationReason ?? undefined,
-    completedAt: row.completedAt ? new Date(row.completedAt).toISOString() : undefined,
-    worktree: row.worktree,
-    modelFailed: row.modelFailed,
-    sandbox: row.sandbox,
-    sandboxContainer: row.sandboxContainer ?? undefined,
-    completionSummary: row.completionSummary ?? undefined,
-    executionModel: row.executionModel ?? undefined,
-    auditorModel: row.auditorModel ?? undefined,
-    workspaceId: row.workspaceId ?? undefined,
-    hostSessionId: row.hostSessionId ?? undefined,
-  }
-}

@@ -16,9 +16,7 @@ const FORGE_PRAGMAS = [
 export function resolveDataDir(): string {
   const defaultBase = join(homedir(), platform() === 'win32' ? 'AppData' : '.local', 'share')
   const xdgDataHome = process.env['XDG_DATA_HOME'] || defaultBase
-  const forgeDir = join(xdgDataHome, 'opencode', 'forge')
-  const legacyGraphDir = join(xdgDataHome, 'opencode', 'graph')
-  return existsSync(legacyGraphDir) && !existsSync(forgeDir) ? legacyGraphDir : forgeDir
+  return join(xdgDataHome, 'opencode', 'forge')
 }
 
 export function resolveLogPath(): string {
@@ -38,6 +36,7 @@ function runMigrations(db: Database): void {
     const existing = db.prepare('SELECT id FROM migrations WHERE id = ?').get(migration.id)
     if (!existing) {
       try {
+        db.run('PRAGMA foreign_keys=OFF')
         db.run('BEGIN')
         migration.apply(db)
         db.prepare('INSERT INTO migrations (id, description, applied_at) VALUES (?, ?, ?)').run(
@@ -46,8 +45,10 @@ function runMigrations(db: Database): void {
           Date.now()
         )
         db.run('COMMIT')
+        db.run('PRAGMA foreign_keys=ON')
       } catch (err) {
         db.run('ROLLBACK')
+        db.run('PRAGMA foreign_keys=ON')
         throw err
       }
     }
@@ -90,7 +91,7 @@ export function initializeDatabase(dataDir: string, options?: ForgeDatabaseOptio
     mkdirSync(dataDir, { recursive: true })
   }
 
-  const dbPath = `${dataDir}/graph.db`
+  const dbPath = `${dataDir}/forge.db`
   const key = cacheKey(dbPath, options)
   const cached = dbCache.get(key)
   if (cached) {

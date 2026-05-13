@@ -1,115 +1,100 @@
 # OpenCode Forge Architecture
 
-This document provides a high-level overview of the opencode-forge plugin architecture.
+This document provides a high-level overview of the opencode-forge plugin architecture, including its module layout, hook system, storage layer, and initialization flow.
+
+See also: [Loop System](loop-system.md), [Modules](modules.md), [API Reference](api/README.md).
 
 ## Plugin Architecture
 
-OpenCode Forge is a dual-plugin: it exports both a server plugin (`src/index.ts`) and a TUI plugin (`src/tui.tsx`).
+OpenCode Forge is a dual-plugin: it exports both a server plugin (`src/index.ts`) and a TUI plugin (`src/tui.tsx`). The package declares both surfaces via the `oc-plugin` field in `package.json`.
+
+```json
+{
+  "oc-plugin": ["server", "tui"]
+}
+```
+
+| Export Path | Source File | Role |
+|---|---|---|
+| `.` / `./server` | `src/index.ts` | Server-side plugin: hooks, tools, agents, config |
+| `./tui` | `src/tui.tsx` | TUI plugin: sidebar, plan viewer, execution panel |
 
 ### Server Plugin (`src/index.ts`)
 
 The server plugin is the core of the plugin. It:
 
-1. Initializes services (KV, Loop, Graph, Sandbox)
+1. Initializes services (database, loop runtime, sandbox manager)
 2. Registers tools for OpenCode to use
 3. Registers hooks for session management and event handling
-4. Manages the lifecycle of loops, graph indexing, and sandbox containers
+4. Manages the lifecycle of loops and sandbox containers
 
 Key exports:
 - `createForgePlugin(config: PluginConfig): Plugin` - Factory function
-- `PluginConfig` - Configuration type
+- `createParentSessionLookup(options)` - Resolves parent sessions across worktrees
+- `createSessionDirectoryLookup(options)` - Resolves session directory across worktrees
+- `PluginConfig`, `CompactionConfig` - Configuration types
 - `VERSION` - Plugin version
 
 ### Multi-client / multi-project
 
 Each `opencode attach --dir <worktree>` invokes `createForgePlugin` once for that project, even when clients share the same `opencode serve` process.
 
-- The API listener is process-shared and reference-counted (`src/api/server.ts`): one `Bun.serve` instance per host/port is reused by all attached projects.
-- Active projects are tracked in a process-level registry (`src/api/project-registry.ts`), and API dispatch resolves the request to the correct project `ToolContext` by `:projectId`.
 - Storage remains project-keyed (SQLite rows include `projectId`), so no schema changes are required for multi-project isolation.
-- Sandbox orphan cleanup is registry-aware: preserve loop names are unioned across all registered projects before container cleanup.
+- Sandbox orphan cleanup is aware of all active worktrees before container cleanup.
 
 ### TUI Plugin (`src/tui.tsx`)
 
 The TUI plugin provides a sidebar widget that displays:
 
 - Active and recent loops
-- Plan viewer with inline editing
+- Plan viewer with inline editing (view/edit/execute/export tabs)
+- Execution dialog with mode and model selection
 - Loop details dialog with session statistics
-- Command palette integration
+- Command palette integration (`Forge: Show loops`, `Forge: View plan`, `Forge: Execute plan`)
+- Model selection dialog with recent model tracking
 
-The TUI plugin reads loop state from the KV store and renders it reactively.
+The TUI communicates with the server via RPC over the opencode bus using `tui.command.execute` events.
 
-## Graph System
+## Module Layout
 
-The graph system provides code structure indexing and querying capabilities.
+The codebase is organized into these module groups under `src/`:
 
-### Components
+| Module | Purpose | Key Files |
+|--------|---------|-----------|
+| `agents/` | AI agent definitions (code, architect, auditor, decomposer) | `index.ts`, `code.ts`, `architect.ts`, `auditor.ts`, `decomposer.ts` |
+| `hooks/` | Plugin event/lifecycle hooks (session, plan capture, sandbox, watchdog) | `index.ts`, `session.ts`, `loop.ts`, `plan-capture.ts`, `watchdog.ts`, `sandbox-tools.ts` |
+| `loop/` | Core loop state machine and runtime | `runtime.ts`, `service.ts`, `state.ts`, `transitions.ts`, `prompts.ts` |
+| `services/` | Higher-level orchestration services | `execution.ts`, `session-loop-resolver.ts`, `reconcile-loops.ts`, `deterministic-decomposer.ts` |
+| `sandbox/` | Docker sandbox management | `docker.ts`, `manager.ts`, `context.ts`, `reconcile.ts` |
+| `storage/` | SQLite persistence layer (repos + migrations) | `database.ts`, `repos/*.ts`, `migrations/*.sql` |
+| `tools/` | Plugin tools callable by AI agents | `loop.ts`, `review.ts`, `plan-kv.ts`, `section-read.ts` |
+| `workspace/` | Git worktree / workspace management | `forge-adapter.ts`, `forge-worktree.ts`, `pending-teardown.ts` |
+| `utils/` | Shared utility modules (~25 files) | `logger.ts`, `lru-cache.ts`, `model-fallback.ts`, etc. |
+| `tui/` | TUI-specific components | `execute-plan-panel.tsx` |
 
-- **Tree-sitter Indexer** (`graph/tree-sitter.ts`) - Parses code and extracts symbols using tree-sitter
-- **Graph Worker** (`graph/worker.ts`) - Web worker for offloading indexing work
-- **Graph Service** (`graph/service.ts`) - Main interface for graph operations
-- **Graph Client** (`graph/client.ts`) - RPC client for communicating with the worker
-- **SQLite Storage** (`graph/database.ts`) - Persists indexed data
-
-### Flow
-
-1. On startup with `graph.autoScan` enabled, `GraphService.ensureStartupIndex()` performs a freshness check
-2. If the graph cache is missing, stale, or unhealthy, a full scan is triggered; otherwise the existing cache is reused
-3. The service batches files and sends them to the worker
-4. The worker uses tree-sitter to parse files and extract:
-   - Symbols (functions, classes, interfaces, etc.)
-   - Imports and exports
-   - Call relationships between symbols
-5. Results are stored in a SQLite database per project
-6. The filesystem watcher monitors for changes and triggers re-indexing
-7. PageRank and other derived metrics are computed after initial scan
-
-### Query Tools
-
-Agents access the graph through these tools:
-- `graph-status` - Check indexing status or trigger scan
-- `graph-query` - File-level queries (dependencies, dependents, co-changes)
-- `graph-symbols` - Symbol-level queries (find, search, callers, callees)
-- `graph-analyze` - Code quality analysis (unused exports, duplication)
-
-See [graph-system.md](graph-system.md) for detailed documentation.
+All external consumers import through barrel files (`index.ts`) where available. See [Modules](modules.md) for full details.
 
 ## Loop System
 
 The loop system provides autonomous iterative development with automatic auditing.
 
-### Components
-
-- **LoopService** (`services/loop.ts`) - State management for loops
-- **LoopEventHandler** (`hooks/loop.ts`) - Event handling and session rotation
-- **ReviewStore** (`tools/review.ts`) - Persistent audit findings
-
-### Loop Lifecycle
-
-1. User initiates a loop via the `loop` tool or slash command
-2. A `LoopState` is created and persisted to KV store
-3. Coding phase: Code agent works on the task
-4. Audit phase (if enabled): Auditor agent reviews changes
-5. Session rotation: Fresh session created with continuation prompt
-6. Repeat until max iterations reached, error threshold exceeded, review findings block, or loop cancelled
-
 See [loop-system.md](loop-system.md) for detailed documentation.
 
-### State Management
+### Components
 
-Loop state is stored in the KV store with keys:
-- `loop:{name}` - Loop state object
-- `loop-session:{sessionId}` - Session to loop name mapping
-- `review-finding:{id}` - Audit findings scoped to branch
-
-### Session Rotation
-
-Each iteration runs in a fresh session to keep context small. The original task prompt and audit findings are re-injected into the new session as a continuation prompt.
+- **Loop Runtime** (`src/loop/runtime.ts`) - Factory for creating Loop instances (`createLoop()` returns a `Loop` interface with ~50 methods)
+- **Loop Service** (`src/loop/service.ts`) - State management for loops (DB-backed via SQLite)
+- **State Machine** (`src/loop/state.ts`) - Discriminated union `LoopState` with 4 phases: `coding`, `auditing`, `decomposing`, `final_auditing`
+- **Transition Table** (`src/loop/transitions.ts`) - Pure `nextTransition()` function for phase transitions
+- **Termination** (`src/loop/termination.ts`) - Termination reason mapping and status checks
+- **Prompts** (`src/loop/prompts.ts`) - Prompt builders for each loop phase (continuation, audit, section, decomposer)
+- **Idle Gate** (`src/loop/idle-gate.ts`) - Session busy detection and timeout tracking
+- **Section Summary** (`src/loop/section-summary.ts`) - Parse audit output markers
+- **LoopEventHandler** (`src/hooks/loop.ts`) - Event handling, session rotation, watchdog integration
 
 ## Sandbox System
 
-The sandbox system provides isolated Docker container execution for loops.
+Sandbox is optional. When Docker is available and `sandbox.mode = 'docker'` is configured, a sandbox container is provisioned automatically; otherwise loops run in worktree-only mode.
 
 ### Components
 
@@ -134,46 +119,64 @@ The sandbox uses OpenCode's tool hook system to intercept and redirect tool call
 
 ## Hook System
 
-OpenCode Forge integrates with OpenCode through several hook points.
+OpenCode Forge integrates with OpenCode through several hook points. The plugin returns a standard `Hooks` object.
 
-### Session Hooks
+### Session Hooks (`src/hooks/session.ts`)
 
 - `chat.message` - Inject memory into context, handle session events
-- `experimental.session.compacting` - Custom compaction behavior
-- `experimental.chat.messages.transform` - Architect read-only enforcement
+- `experimental.session.compacting` - Custom compaction behavior for session continuity
 
-### Tool Hooks
+### Message Transform Hooks (`src/hooks/session.ts`)
 
-- `tool.execute.before` - Sandbox tool redirection, logging
-- `tool.execute.after` - Sandbox cleanup, graph update triggers
+- `experimental.chat.messages.transform` - Architect read-only enforcement (enforces `temperature: 0.0`, blocks edit/write tools)
+
+### Tool Execution Hooks
+
+- `tool.execute.before` - Sandbox tool redirection, logging (`src/hooks/sandbox-tools.ts`)
+- `tool.execute.after` - Sandbox cleanup and output capture (`src/hooks/sandbox-tools.ts`)
 
 ### Permission Hooks
 
-- `permission.ask` - Auto-allow/deny based on patterns (e.g., deny `git push`)
+- `permission.ask` - Auto-allow/deny based on patterns (e.g., deny `git push` inside loop sessions)
+- Loop permission rulesets defined in `src/constants/loop.ts`
 
 ### Event Hooks
 
-- `event` - Handle server lifecycle events (server.instance.disposed)
+- `event` - Handle server lifecycle events (e.g., `server.instance.disposed`)
+- Plan approval events via `createPlanApprovalEventHook`
+- Plan capture from streaming messages via `createPlanCaptureEventHook`
+
+### Additional Hooks
+
+- **Plan Capture** (`src/hooks/plan-capture.ts`) - Extracts `<!-- forge-plan:start -->...end-->` markers from streaming assistant messages
+- **Section Capture** (`src/hooks/section-capture.ts`) - Captures decomposed sections from streaming assistant responses
+- **Forge Session Attach** (`src/hooks/forge-session-attach.ts`) - Automatically attaches loops when new sessions are created
+- **Watchdog** (`src/hooks/watchdog.ts`) - Stall detection and recovery for loops
 
 ## Storage Architecture
 
-### KV Store
+OpenCode Forge uses `bun:sqlite` for all data persistence. The storage layer is organized into:
 
-The KV store (`services/kv.ts`) provides key-value persistence with TTL support:
+### Database (`src/storage/database.ts`)
 
-- Key format: `projectId:key`
-- Supports TTL for automatic expiration
-- Used for loop state, plans, review findings
+- `initializeDatabase(dataDir, options)` - Creates SQLite DB in the data directory
+- `closeDatabase()` - Closes database connections on shutdown
+- `resolveDataDir()` - Resolves platform-appropriate data directory (`~/.local/share/opencode/forge`)
+- Migrations are sequential SQL files (numbered 100-126) tracked in a `migrations` table
 
-### Graph Database
+### Repository Pattern
 
-The graph database (`graph/database.ts`) uses SQLite for code graph storage:
+All data access goes through typed repository interfaces created via factory functions:
 
-- File records with metadata and pagerank
-- Symbol records with locations and signatures
-- Import/export relationships
-- Call graph edges
-- Co-change patterns
+| Repository | Purpose | Key Types |
+|---|---|---|
+| `LoopsRepo` | CRUD for loop rows | `LoopRow`, `LoopLargeFields` |
+| `PlansRepo` | CRUD for plans | `PlanRow`, `PlansRepo` |
+| `ReviewFindingsRepo` | CRUD for review findings | `ReviewFindingRow`, `ReviewFindingsRepo` |
+| `SectionPlansRepo` | CRUD for section-based plans | `SectionPlanRow`, `SectionPlansRepo` |
+| `TuiPrefsRepo` | TUI preferences persistence | `TuiPrefsRepo` |
+
+Each repository is project-scoped via `projectId` parameter.
 
 ### Configuration
 
@@ -181,13 +184,20 @@ Plugin configuration is stored at `~/.config/opencode/forge-config.jsonc` (JSONC
 
 ## Service Initialization Order
 
-1. Logger - Always first
-2. Database - Initialize storage
-3. KV Service - Enable state persistence
-4. Loop Service - Restore previous loops
-5. Sandbox Manager - If enabled
-6. Graph Service - If enabled
-7. Tools and Hooks - Final registration
+The plugin follows this initialization sequence within `createForgePlugin()`:
+
+1. **Logger** - Always first (`createLogger()`)
+2. **v2 Client** - Create OpenCode v2 SDK client for API calls
+3. **Sandbox Manager** - Docker container management (optional, fails gracefully)
+4. **Pending Teardown Registry** - Track worktree teardown contexts
+5. **Workspace Status Registry** - Track workspace connected/disconnected state
+6. **Workspace Adapter** - Register forge workspace adapter if experimental workspace API available
+7. **Database** - Initialize SQLite storage (`initializeDatabase()`)
+8. **Repositories** - Create typed repos (loops, plans, reviewFindings, sectionPlans)
+9. **Loop Event Handler** - Connect loop runtime to events and state management
+10. **Stale Loop Reconciliation** - Reconcile loops from previous session (cancel stalled, preserve active sandboxes, restart candidates)
+11. **Tools and Agents** - Register all tools (`createTools()`) and agents (`buildAgents()`)
+12. **Hooks** - Final registration of all hook points
 
 ## Cleanup
 
@@ -196,5 +206,33 @@ On plugin shutdown (`server.instance.disposed` event):
 1. Stop all active sandbox containers
 2. Terminate all active loops
 3. Clear retry timeouts
-4. Close graph service (stops watcher, closes database)
-5. Close database connections
+4. Close database connections
+
+## Data Flow
+
+```mermaid
+graph TD
+    TUI["TUI Plugin (tui.tsx)"] --> RPC["RPC Bus"]
+    RPC --> Server["Server Plugin (index.ts)"]
+
+    subgraph Server
+        Hooks["Hook System"] --> LoopHandler["Loop Event Handler"]
+        Hooks --> SessionHooks["Session Hooks"]
+        Hooks --> ToolHooks["Tool Execution Hooks"]
+
+        LoopHandler --> LoopRuntime["Loop Runtime"]
+        LoopRuntime --> LoopService["Loop Service"]
+        LoopService --> SQLite["SQLite Storage"]
+
+        Tools["Tool Registry"] --> LoopTools["Loop Tools"]
+        Tools --> ReviewTools["Review Tools"]
+        Tools --> PlanTools["Plan Tools"]
+    end
+
+    LoopRuntime --> SandboxManager["Sandbox Manager"]
+    SandboxManager --> Docker["Docker Container"]
+
+    SQLite --> LoopsRepo["Loops Repo"]
+    SQLite --> PlansRepo["Plans Repo"]
+    SQLite --> ReviewRepo["Review Findings Repo"]
+```

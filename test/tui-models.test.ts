@@ -3,8 +3,6 @@ import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 import {
   fetchAvailableModels,
   flattenProviders,
-  buildModelOptions,
-  resolveModelSelectedIndex,
   buildDialogSelectOptions,
   getModelDisplayLabel,
   sortModelsByPriority,
@@ -313,120 +311,6 @@ describe('flattenProviders', () => {
   test('returns empty array for empty providers', () => {
     const result = flattenProviders([])
     expect(result).toHaveLength(0)
-  })
-})
-
-describe('buildModelOptions', () => {
-  test('builds options with Use default as first entry', () => {
-    const models: ModelInfo[] = [
-      {
-        id: 'claude',
-        name: 'Claude',
-        providerID: 'anthropic',
-        providerName: 'Anthropic',
-        fullName: 'anthropic/claude',
-      },
-    ]
-
-    const result = buildModelOptions(models)
-
-    expect(result).toHaveLength(2)
-    expect(result[0].name).toBe('Use default')
-    expect(result[0].value).toBe('')
-    expect(result[1].name).toBe('Claude')
-    expect(result[1].value).toBe('anthropic/claude')
-  })
-
-  test('includes provider name and capabilities in description', () => {
-    const models: ModelInfo[] = [
-      {
-        id: 'model-with-reasoning',
-        name: 'Model With Reasoning',
-        providerID: 'test',
-        providerName: 'Test Provider',
-        fullName: 'test/model-with-reasoning',
-        capabilities: {
-          reasoning: true,
-          toolcall: true,
-          temperature: false,
-          attachment: false,
-        },
-      },
-      {
-        id: 'model-without-reasoning',
-        name: 'Model Without Reasoning',
-        providerID: 'test',
-        providerName: 'Test Provider',
-        fullName: 'test/model-without-reasoning',
-        capabilities: {
-          reasoning: false,
-          toolcall: false,
-          temperature: true,
-          attachment: false,
-        },
-      },
-    ]
-
-    const result = buildModelOptions(models)
-
-    expect(result[1].description).toContain('Test Provider')
-    expect(result[1].description).toContain('Reasoning')
-    expect(result[1].description).toContain('Tools')
-    expect(result[2].description).not.toContain('Reasoning')
-    expect(result[2].description).toContain('No tools')
-  })
-
-  test('returns only Use default when no models', () => {
-    const result = buildModelOptions([])
-    expect(result).toHaveLength(1)
-    expect(result[0].name).toBe('Use default')
-    expect(result[0].value).toBe('')
-  })
-})
-
-describe('resolveModelSelectedIndex', () => {
-  test('returns 0 when selectedValue is undefined', () => {
-    const options = [
-      { value: '' },
-      { value: 'anthropic/claude' },
-      { value: 'openai/gpt-4' },
-    ]
-
-    const result = resolveModelSelectedIndex(options, undefined)
-    expect(result).toBe(0)
-  })
-
-  test('returns 0 when selectedValue is empty string', () => {
-    const options = [
-      { value: '' },
-      { value: 'anthropic/claude' },
-      { value: 'openai/gpt-4' },
-    ]
-
-    const result = resolveModelSelectedIndex(options, '')
-    expect(result).toBe(0)
-  })
-
-  test('returns correct index when value is found', () => {
-    const options = [
-      { value: '' },
-      { value: 'anthropic/claude' },
-      { value: 'openai/gpt-4' },
-    ]
-
-    const result = resolveModelSelectedIndex(options, 'openai/gpt-4')
-    expect(result).toBe(2)
-  })
-
-  test('returns 0 when value is not found (fallback to Use default)', () => {
-    const options = [
-      { value: '' },
-      { value: 'anthropic/claude' },
-      { value: 'openai/gpt-4' },
-    ]
-
-    const result = resolveModelSelectedIndex(options, 'nonexistent/model')
-    expect(result).toBe(0)
   })
 })
 

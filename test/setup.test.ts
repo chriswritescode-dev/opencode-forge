@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { loadPluginConfig, resolveConfigPath } from '../src/setup'
+import { loadPluginConfig, resolveConfigPath, setTuiAutoSavePlans } from '../src/setup'
 import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
@@ -59,23 +59,6 @@ describe('loadPluginConfig', () => {
 
     const config = loadPluginConfig()
     expect(config.logging).toBeDefined()
-  })
-
-  test('loads config with graph settings', () => {
-    const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
-    mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
-
-    const graphConfig = {
-      graph: {
-        enabled: true,
-        watch: true,
-      },
-    }
-
-    writeFileSync(configPath, JSON.stringify(graphConfig))
-
-    const config = loadPluginConfig()
-    expect(config.graph?.enabled).toBe(true)
   })
 
   test('loads config with sandbox settings', () => {
@@ -183,7 +166,6 @@ describe('bundled sample config', () => {
     expect(parsed.auditorModel).toBeDefined()
     expect(parsed.loop).toBeDefined()
     expect(parsed.sandbox).toBeDefined()
-    expect(parsed.graph).toBeDefined()
     expect(parsed.tui).toBeDefined()
     expect(parsed.completedLoopTtlMs).toBeDefined()
   })
@@ -286,5 +268,85 @@ describe('bundled sample config', () => {
     expect(config.loop?.worktreeLogging).toBeDefined()
     expect(config.loop?.worktreeLogging?.enabled).toBe(true)
     expect(config.loop?.worktreeLogging?.directory).toBe('/tmp/loop-logs')
+  })
+
+  test('persists tui.autoSavePlans via setTuiAutoSavePlans', () => {
+    process.env['XDG_CONFIG_HOME'] = testConfigDir
+
+    // Enable auto-save
+    setTuiAutoSavePlans(true)
+    const enabledConfig = loadPluginConfig()
+    expect(enabledConfig.tui?.autoSavePlans).toBe(true)
+
+    // Disable auto-save
+    setTuiAutoSavePlans(false)
+    const disabledConfig = loadPluginConfig()
+    expect(disabledConfig.tui?.autoSavePlans).toBe(false)
+  })
+
+  test('preserves comments when updating config', () => {
+    process.env['XDG_CONFIG_HOME'] = testConfigDir
+    const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
+    mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
+
+    // Write config with inline and block comments
+    const configWithComments = `{
+  // This is an inline comment
+  "logging": {
+    "enabled": false,
+    "debug": true /* block comment */
+  }
+}`
+    writeFileSync(configPath, configWithComments, 'utf-8')
+
+    // Toggle auto-save
+    setTuiAutoSavePlans(true)
+
+    // Re-read raw file and assert comments are preserved
+    const rawContent = readFileSync(configPath, 'utf-8')
+    expect(rawContent).toContain('// This is an inline comment')
+    expect(rawContent).toContain('/* block comment */')
+    expect(rawContent).toContain('"autoSavePlans": true')
+  })
+
+  test('preserves URL values in strings when updating config', () => {
+    process.env['XDG_CONFIG_HOME'] = testConfigDir
+    const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
+    mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
+
+    // Write config with a URL value
+    const configWithUrl = `{
+  "logging": {
+    "enabled": false
+  },
+  "customUrl": "https://example.com/api/v1"
+}`
+    writeFileSync(configPath, configWithUrl, 'utf-8')
+
+    // Toggle auto-save
+    setTuiAutoSavePlans(false)
+
+    // Re-read raw file and assert URL string is unchanged
+    const rawContent = readFileSync(configPath, 'utf-8')
+    expect(rawContent).toContain('https://example.com/api/v1')
+    expect(rawContent).toContain('"autoSavePlans": false')
+  })
+
+  test('handles inline-object values when updating config', () => {
+    process.env['XDG_CONFIG_HOME'] = testConfigDir
+    const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
+    mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
+
+    // Write config with inline object (single line)
+    const configInlineObject = `{"tui": { "showLoops": true, "autoSavePlans": false }}`
+    writeFileSync(configPath, configInlineObject, 'utf-8')
+
+    // Toggle auto-save to true
+    setTuiAutoSavePlans(true)
+
+    // Re-read and assert valid JSONC with autoSavePlans=true
+    const config = loadPluginConfig()
+    expect(config.tui?.autoSavePlans).toBe(true)
+    expect(config.tui?.showLoops).toBe(true)
   })
 })

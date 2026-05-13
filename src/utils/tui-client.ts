@@ -1,21 +1,16 @@
 import type { ExecutionPreferences } from './tui-execution-preferences'
-import type { LoopInfo } from './tui-refresh-helpers'
-import type { GraphStatusPayload } from './graph-status-store'
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 import { appendFileSync, mkdirSync } from 'fs'
 import { dirname } from 'path'
 import { resolveLogPath } from '../storage'
-import { readPlan, readPlanForAnyProject } from './tui-plan-store'
+import { readPlan, readPlanForAnyProject, writePlan, deletePlan } from './tui-plan-store'
 import { fetchAvailableModels } from './tui-models'
 import { readExecutionPreferences, writeExecutionPreferences } from './tui-execution-preferences'
 import { parseModelString } from './model-fallback'
-import {
-  encodeRequest,
-  decodeReply,
-  newRid,
-} from '../api/bus-protocol'
+import { listConnectedWorkspaces, type WorkspaceListApi } from './workspace-listing'
+import { type ForgeLoopExtra } from '../services/execution'
 
-export type ApiExecutionMode = 'new-session' | 'execute-here' | 'loop' | 'loop-worktree'
+export type ApiExecutionMode = 'new-session' | 'execute-here' | 'loop'
 
 export interface ExecutionContext {
   preferences: ExecutionPreferences | null
@@ -34,15 +29,6 @@ export interface ExecutePlanRequest {
   executionModel?: string
   auditorModel?: string
   targetSessionId?: string
-}
-
-export interface StartLoopRequest {
-  plan: string
-  title: string
-  worktree: boolean
-  executionModel?: string
-  auditorModel?: string
-  hostSessionId?: string
 }
 
 export interface ForgeProjectClient {
@@ -66,24 +52,14 @@ export interface ForgeProjectClient {
     ): Promise<{ sessionId?: string; loopName?: string; worktreeDir?: string; workspaceId?: string } | null>
   }
 
-  loops: {
-    list(): Promise<LoopInfo[]>
-    get(loopName: string): Promise<LoopInfo | null>
-    cancel(loopName: string): Promise<boolean>
-    restart(loopName: string, force: boolean): Promise<string | null>
-    start(req: StartLoopRequest): Promise<{ sessionId: string; loopName: string; worktreeDir?: string; workspaceId?: string } | null>
+  workspaces: {
+    list(): Promise<Array<{ id: string; name: string; type: string; branch?: string; directory?: string; timeUsed?: number }>>
+    status(): Promise<Record<string, string>>
   }
 
   /** Single round-trip pair: read preferences and list models. */
   loadExecutionContext(): Promise<ExecutionContext>
-
-  readGraphStatus(cwd: string): Promise<GraphStatusPayload | null>
 }
-
-const DIRECTORY_RESOLUTION_ATTEMPTS = 3
-const DIRECTORY_RESOLUTION_RETRY_MS = 100
-const DISCOVERY_RPC_TIMEOUT_MS = 1000
-const RPC_TIMEOUT_MS = 5000
 
 function tuiDebug(message: string): void {
   try {
@@ -94,186 +70,107 @@ function tuiDebug(message: string): void {
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+export interface AwaitWorkspaceConnectedResult {
+  connected: boolean
+  source: 'cached' | 'polled' | 'timeout' | 'error'
+  elapsedMs: number
+  lastStatus?: string
 }
 
-function mapRemoteLoop(input: Record<string, unknown>): LoopInfo {
-  return {
-    name: String(input.loopName ?? input.name ?? ''),
-    phase: String(input.phase ?? input.status ?? ''),
-    iteration: Number(input.iteration ?? 0),
-    maxIterations: Number(input.maxIterations ?? 0),
-    sessionId: String(input.sessionId ?? ''),
-    active: Boolean(input.active ?? input.status === 'running'),
-    startedAt: input.startedAt as string | undefined,
-    completedAt: input.completedAt as string | undefined,
-    terminationReason: input.terminationReason as string | undefined,
-    worktreeBranch: input.worktreeBranch as string | undefined,
-    worktree: input.worktree as boolean | undefined,
-    worktreeDir: input.worktreeDir as string | undefined,
-    executionModel: input.executionModel as string | undefined,
-    auditorModel: input.auditorModel as string | undefined,
-    workspaceId: input.workspaceId as string | undefined,
-    hostSessionId: input.hostSessionId as string | undefined,
+/**
+ * Polls `experimental.workspace.status` until the target workspace reports
+ * `connected`, or until the timeout elapses. Mirrors the awaitConnected
+ * gating pattern from `src/services/execution.ts:721` so that
+ * `tui.selectSession` does not fire before the user's TUI has adopted the
+ * workspace (which causes the call to silently no-op).
+ */
+export async function awaitWorkspaceConnected(
+  api: TuiPluginApi,
+  workspaceId: string,
+  timeoutMs = 5000,
+  pollIntervalMs = 100,
+): Promise<AwaitWorkspaceConnectedResult> {
+  const start = Date.now()
+  let lastStatus: string | undefined
+  try {
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const result = await api.client.experimental.workspace.status()
+        const entries = ((result as { data?: unknown } | undefined)?.data ?? []) as Array<{ workspaceID: string; status: string }>
+        const entry = entries.find((e) => e.workspaceID === workspaceId)
+        if (entry) {
+          lastStatus = entry.status
+          if (entry.status === 'connected') {
+            const elapsedMs = Date.now() - start
+            const source: AwaitWorkspaceConnectedResult['source'] = elapsedMs <= pollIntervalMs ? 'cached' : 'polled'
+            tuiDebug(`awaitWorkspaceConnected: workspace=${workspaceId} connected elapsedMs=${elapsedMs} source=${source}`)
+            return { connected: true, source, elapsedMs, lastStatus }
+          }
+        }
+      } catch (err) {
+        tuiDebug(`awaitWorkspaceConnected: status() failed workspace=${workspaceId} error=${(err as Error).message}`)
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs))
+    }
+    const elapsedMs = Date.now() - start
+    tuiDebug(`awaitWorkspaceConnected: workspace=${workspaceId} timeout after ${elapsedMs}ms lastStatus=${lastStatus ?? 'unknown'}`)
+    return { connected: false, source: 'timeout', elapsedMs, lastStatus }
+  } catch (err) {
+    tuiDebug(`awaitWorkspaceConnected: unexpected error workspace=${workspaceId} error=${(err as Error).message}`)
+    return { connected: false, source: 'error', elapsedMs: Date.now() - start, lastStatus }
   }
 }
 
-interface PendingRpc {
-  resolve: (data: unknown) => void
-  reject: (err: Error) => void
-  timer: ReturnType<typeof setTimeout>
+function deriveLoopNameFromTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .substring(0, 60)
+}
+
+export async function selectTuiSession(api: TuiPluginApi, sessionId: string, workspaceId?: string): Promise<void> {
+  try {
+    api.route.navigate('session', { sessionID: sessionId })
+    tuiDebug(`selectTuiSession: route.navigate session=${sessionId} workspace=${workspaceId ?? 'none'}`)
+    return
+  } catch (err) {
+    tuiDebug(`selectTuiSession: route.navigate failed session=${sessionId} error=${(err as Error).message}`)
+  }
+
+  try {
+    await api.client.tui.selectSession({
+      sessionID: sessionId,
+      ...(workspaceId ? { workspace: workspaceId } : {}),
+    })
+    tuiDebug(`selectTuiSession: sdk.selectSession session=${sessionId} workspace=${workspaceId ?? 'none'}`)
+  } catch (err) {
+    tuiDebug(`selectTuiSession: sdk.selectSession failed session=${sessionId} error=${(err as Error).message}`)
+  }
 }
 
 export async function connectForgeProject(
   api: TuiPluginApi,
   directory?: string,
 ): Promise<ForgeProjectClient | null> {
-  const pending = new Map<string, PendingRpc>()
   tuiDebug(`connect start directory=${directory ?? 'none'}`)
 
-  api.event.on('tui.command.execute', (event) => {
-    const command = event.properties?.command as string | undefined
-    if (!command) {
-      tuiDebug('event received without command')
-      return
-    }
+  let projectId: string | null = null
 
-    const reply = decodeReply(command)
-    if (!reply) {
-      if (command.startsWith('forge.')) tuiDebug(`event decode skipped command=${command.slice(0, 48)}`)
-      return
-    }
-
-    const pendingRpc = pending.get(reply.rid)
-    if (!pendingRpc) {
-      tuiDebug(`reply received without pending rid=${reply.rid} status=${reply.status}`)
-      return
-    }
-
-    tuiDebug(`reply matched rid=${reply.rid} status=${reply.status}`)
-
-    clearTimeout(pendingRpc.timer)
-    pending.delete(reply.rid)
-
-    if (reply.status === 'ok') {
-      pendingRpc.resolve(reply.data)
-    } else {
-      // For plan.read, errors should resolve to null (swallowed)
-      // This is handled at the call site
-      pendingRpc.reject(new Error(reply.message))
-    }
-  })
-
-  async function discoverProjectIdByDirectory(): Promise<string | null> {
-    let projectId: string | null = null
-
-    for (let attempt = 0; attempt < DIRECTORY_RESOLUTION_ATTEMPTS; attempt += 1) {
-      try {
-        const rid = newRid()
-        tuiDebug(`discovery publish attempt=${attempt + 1} rid=${rid} directory=${directory ?? 'none'}`)
-        const result = await new Promise<{ projects: Array<{ id: string; directory?: string | null }> }>((resolve, reject) => {
-          const timer = setTimeout(() => {
-            pending.delete(rid)
-            tuiDebug(`discovery timeout rid=${rid}`)
-            reject(new Error('forge rpc timeout'))
-          }, DISCOVERY_RPC_TIMEOUT_MS)
-
-          pending.set(rid, { resolve: resolve as (data: unknown) => void, reject, timer })
-
-          api.client.tui.publish({
-            directory,
-            body: {
-              type: 'tui.command.execute',
-              properties: {
-                command: encodeRequest({
-                  verb: 'projects.list',
-                  rid,
-                  directory,
-                  projectId: '',
-                  params: {},
-                  body: directory ? { directory } : {},
-                }),
-              },
-            },
-          }).catch((err) => {
-            clearTimeout(timer)
-            pending.delete(rid)
-            tuiDebug(`discovery publish failed rid=${rid} error=${err instanceof Error ? err.message : String(err)}`)
-            reject(err)
-          })
-        })
-
-        tuiDebug(`discovery result rid=${rid} count=${result.projects.length}`)
-
-        if (directory) {
-          const matched = result.projects.find((p) => p.directory === directory)
-          if (matched) {
-            projectId = matched.id
-            break
-          }
-        } else {
-          projectId = result.projects[0]?.id ?? null
-          if (projectId) break
-        }
-      } catch (err) {
-        tuiDebug(`discovery attempt failed attempt=${attempt + 1} error=${err instanceof Error ? err.message : String(err)}`)
-      }
-
-      if (attempt < DIRECTORY_RESOLUTION_ATTEMPTS - 1) {
-        await sleep(DIRECTORY_RESOLUTION_RETRY_MS)
-      }
-    }
-
-    if (!projectId) {
-      return null
-    }
-
-    return projectId
+  try {
+    const projectsRes = await api.client.project.list()
+    const projects = (projectsRes?.data ?? []) as Array<{ id: string; worktree: string }>
+    const matched = directory ? projects.find((p) => p.worktree === directory) : projects[0]
+    projectId = matched?.id ?? null
+  } catch {
+    projectId = null
   }
 
-  async function rpc<T>(
-    verb: string,
-    params: Record<string, string>,
-    body?: unknown,
-    timeoutMs = RPC_TIMEOUT_MS,
-  ): Promise<T> {
-    const rid = newRid()
-
-    return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        pending.delete(rid)
-        reject(new Error('forge rpc timeout'))
-      }, timeoutMs)
-
-      pending.set(rid, { resolve: resolve as (data: unknown) => void, reject, timer })
-
-      api.client.tui.publish({
-        directory,
-        body: {
-          type: 'tui.command.execute',
-          properties: {
-            command: encodeRequest({
-              verb,
-              rid,
-              directory,
-              projectId: projectId ?? undefined,
-              params,
-              body,
-            }),
-          },
-        },
-      }).catch((err) => {
-        clearTimeout(timer)
-        pending.delete(rid)
-        reject(err)
-      })
-    })
-  }
-
-  const projectId = await discoverProjectIdByDirectory()
   if (!projectId) {
     tuiDebug(`discovery failed; continuing with cwd routing directory=${directory ?? 'none'}`)
+  } else {
+    tuiDebug(`discovery success projectId=${projectId}`)
   }
 
   const plan: ForgeProjectClient['plan'] = {
@@ -284,34 +181,27 @@ export async function connectForgeProject(
         return localPlan
       }
 
-      try {
-        const data = await rpc<{ content: string }>(
-          'plan.read.session',
-          { sessionId },
-          undefined,
-        )
-        return data.content
-      } catch {
-        const fallbackPlan = readPlanForAnyProject(sessionId)
-        if (fallbackPlan) {
-          tuiDebug(`plan.read any-project fallback hit session=${sessionId}`)
-          return fallbackPlan
-        }
-        tuiDebug(`plan.read miss session=${sessionId} projectId=${projectId || 'none'}`)
-        return null
+      const fallbackPlan = readPlanForAnyProject(sessionId)
+      if (fallbackPlan) {
+        tuiDebug(`plan.read any-project fallback hit session=${sessionId}`)
+        return fallbackPlan
       }
+      tuiDebug(`plan.read miss session=${sessionId} projectId=${projectId || 'none'}`)
+      return null
     },
     async write(sessionId, content) {
+      if (!projectId) return false
       try {
-        await rpc('plan.write.session', { sessionId }, { content })
+        writePlan(projectId, sessionId, content)
         return true
       } catch {
         return false
       }
     },
     async delete(sessionId) {
+      if (!projectId) return false
       try {
-        await rpc('plan.delete.session', { sessionId }, undefined)
+        deletePlan(projectId, sessionId)
         return true
       } catch {
         return false
@@ -372,31 +262,65 @@ export async function connectForgeProject(
         return { sessionId: newSessionId }
       }
 
-      if (req.mode === 'loop' || req.mode === 'loop-worktree') {
-        let result: { sessionId?: string; loopName?: string; worktreeDir?: string; workspaceId?: string } | null
+      if (req.mode === 'loop') {
+        const loopName = deriveLoopNameFromTitle(req.title)
+        const hasHostSession = !!sessionId
+        if (!hasHostSession) {
+          tuiDebug(`plan.execute(loop): no hostSessionId; using inline plan source for loop=${loopName}`)
+        }
+        const forgeLoop: ForgeLoopExtra = hasHostSession
+          ? {
+            loopName,
+            hostSessionId: sessionId,
+            title: req.title,
+            executionModel: req.executionModel,
+            auditorModel: req.auditorModel,
+            planSource: 'stored',
+          }
+          : {
+            loopName,
+            title: req.title,
+            executionModel: req.executionModel,
+            auditorModel: req.auditorModel,
+            planSource: 'inline',
+            planText: req.plan,
+          }
         try {
-          result = await rpc(
-            'plan.execute',
-            { sessionId },
-            {
-              mode: req.mode,
-              title: req.title,
-              plan: req.plan,
-              executionModel: req.executionModel,
-              auditorModel: req.auditorModel,
-              targetSessionId: req.targetSessionId,
-            },
-            60_000, // longer timeout for loop start (worktree + sandbox)
-          )
+          const wsRes = await api.client.experimental.workspace.create({
+            type: 'forge',
+            branch: null,
+            extra: { loopName, projectDirectory: directory, forgeLoop },
+          })
+          if (wsRes.error || !wsRes.data) return null
+          const workspace = wsRes.data
+
+          await api.client.experimental.workspace.syncList().catch(() => undefined)
+
+          const sesRes = await api.client.session.create({
+            workspaceID: workspace.id,
+            title: req.title.length > 60 ? `${req.title.substring(0, 57)}...` : req.title,
+            directory: workspace.directory ?? undefined,
+          })
+          if (sesRes.error || !sesRes.data) return null
+          const session = sesRes.data
+
+          const connected = await awaitWorkspaceConnected(api, workspace.id, 5000, 100)
+          tuiDebug(`plan.execute(loop): workspace ${workspace.id} connected=${connected.connected} source=${connected.source} elapsedMs=${connected.elapsedMs} lastStatus=${connected.lastStatus ?? 'unknown'}`)
+
+          await selectTuiSession(api, session.id, workspace.id)
+
+          await api.client.experimental.workspace.syncList().catch(() => undefined)
+
+          if (projectId) writeExecutionPreferences(projectId, prefs)
+
+          return {
+            sessionId: session.id,
+            loopName,
+            worktreeDir: workspace.directory ?? undefined,
+            workspaceId: workspace.id,
+          }
         } catch {
           return null
-        }
-        if (projectId) writeExecutionPreferences(projectId, prefs)
-        return {
-          sessionId: result?.sessionId,
-          loopName: result?.loopName,
-          worktreeDir: result?.worktreeDir,
-          workspaceId: result?.workspaceId,
         }
       }
 
@@ -404,75 +328,21 @@ export async function connectForgeProject(
     },
   }
 
-  const loops: ForgeProjectClient['loops'] = {
+  const workspaces: ForgeProjectClient['workspaces'] = {
     async list() {
       try {
-        const data = await rpc<{ loops?: unknown[]; active?: unknown[]; recent?: unknown[] }>(
-          'loops.list',
-          {},
-          undefined,
-        )
-        const arr = data.loops ?? [...(data.active ?? []), ...(data.recent ?? [])]
-        return arr.map((l) => mapRemoteLoop(l as Record<string, unknown>))
+        return await listConnectedWorkspaces(api.client.experimental?.workspace as WorkspaceListApi | undefined)
       } catch {
         return []
       }
     },
-    async get(loopName) {
+    async status() {
       try {
-        const data = await rpc<Record<string, unknown>>(
-          'loops.get',
-          { loopName },
-          undefined,
-        )
-        return mapRemoteLoop(data)
+        const data = await api.client.experimental.workspace.status()
+        const entries = (data.data ?? []) as Array<{ workspaceID: string; status: string }>
+        return Object.fromEntries(entries.map((s) => [s.workspaceID, s.status]))
       } catch {
-        return null
-      }
-    },
-    async cancel(loopName) {
-      try {
-        await rpc('loops.cancel', { loopName }, undefined)
-        return true
-      } catch {
-        return false
-      }
-    },
-    async restart(loopName, force) {
-      try {
-        const data = await rpc<{ sessionId?: string }>(
-          'loops.restart',
-          { loopName },
-          { force },
-        )
-        return data.sessionId ?? null
-      } catch {
-        return null
-      }
-    },
-    async start(req) {
-      try {
-        const data = await rpc<{ sessionId: string; loopName: string; worktreeDir?: string; workspaceId?: string }>(
-          'loops.start',
-          {},
-          {
-            plan: req.plan,
-            title: req.title,
-            worktree: req.worktree,
-            executionModel: req.executionModel,
-            auditorModel: req.auditorModel,
-            hostSessionId: req.hostSessionId,
-          },
-          60_000,
-        )
-        return {
-          sessionId: data.sessionId,
-          loopName: data.loopName,
-          worktreeDir: data.worktreeDir,
-          workspaceId: data.workspaceId,
-        }
-      } catch {
-        return null
+        return {}
       }
     },
   }
@@ -480,25 +350,13 @@ export async function connectForgeProject(
   return {
     projectId: projectId ?? '',
     plan,
-    loops,
+    workspaces,
     async loadExecutionContext() {
       const [prefsResult, modelsResult] = await Promise.all([
         Promise.resolve(projectId ? readExecutionPreferences(projectId) : null),
         fetchAvailableModels(api),
       ])
       return { preferences: prefsResult, models: modelsResult }
-    },
-    async readGraphStatus(cwd) {
-      try {
-        const data = await rpc<{ status: GraphStatusPayload | null }>(
-          'graph.status',
-          projectId ? { projectId } : {},
-          cwd ? { cwd } : {},
-        )
-        return data.status
-      } catch {
-        return null
-      }
     },
   }
 }

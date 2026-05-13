@@ -1,8 +1,5 @@
 import type { Logger, CompactionConfig } from '../types'
 import type { PluginInput } from '@opencode-ai/plugin'
-import {
-  buildCustomCompactionPrompt,
-} from './compaction-utils'
 
 export interface SessionHooks {
   onMessage: (input: unknown, output: unknown) => Promise<void>
@@ -49,6 +46,35 @@ const DEFAULT_COMPACTION_CONFIG: CompactionConfig = {
   maxContextTokens: 4000,
 }
 
+const COMPACTION_PROMPT: string = `You are generating a continuation context for a coding session. Your summary will be the ONLY context after compaction.
+Preserve everything needed for seamless continuation.
+
+## CRITICAL - Preserve These Verbatim
+1. The current task/objective (quote the user's original request exactly)
+2. ALL file paths being actively worked on (with what's being done)
+3. Key decisions made and their rationale
+4. Any corrections or gotchas discovered during the session
+5. Todo list state (what's done, in progress, pending)
+
+## Structure Your Summary As:
+
+### Active Task
+[Verbatim objective + what was happening when compaction fired]
+
+### Key Context
+[Decisions, constraints, user preferences, corrections]
+
+### Active Files
+[filepath -> what's being done to it]
+
+### Next Steps
+[What should happen immediately after compaction]
+
+## Rules
+- Use specific file paths.
+- State what tools returned, not just that they were called
+- Prefer completeness over brevity - this is the agent's entire working memory`
+
 export function createSessionHooks(
   projectId: string,
   logger: Logger,
@@ -89,7 +115,7 @@ export function createSessionHooks(
       logger.log(`Compacting hook fired for project ${projectId}, session ${sessionId}`)
 
       if (compactionConfig.customPrompt) {
-        output.prompt = buildCustomCompactionPrompt()
+        output.prompt = COMPACTION_PROMPT
         logger.log(`Compacting: set custom compaction prompt`)
       }
     },

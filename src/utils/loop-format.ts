@@ -1,5 +1,5 @@
 import { formatTokens, truncate } from './format'
-import type { LoopSessionOutput } from '../services/loop'
+import type { LoopSessionOutput } from '../loop'
 
 export { formatTokens } from './format'
 

@@ -1,12 +1,12 @@
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
 import { createSessionHooks } from '../src/hooks/session'
 import { createLoopEventHandler } from '../src/hooks/loop'
-import { createLoopService } from '../src/services/loop'
+import { createLoopService } from '../src/loop/service'
 import { Database } from 'bun:sqlite'
 import type { Logger } from '../src/types'
 import type { PluginInput } from '@opencode-ai/plugin'
 
-const TEST_PROJECT_ID = 'test-project-id'
+const TEST_PROJECT_ID = 'test-proj-id'
 
 const mockLogger: Logger = {
   log: () => {},
@@ -42,7 +42,7 @@ const mockPluginInput: PluginInput = {
 
 
 describe('SessionHooks', () => {
-  test('Session compacting hook runs without errors in graph-first mode', async () => {
+  test('Session compacting hook runs without errors', async () => {
     const hooks = createSessionHooks(TEST_PROJECT_ID, mockLogger, mockPluginInput)
 
     const input = { sessionID: 'test-session' }
@@ -50,7 +50,6 @@ describe('SessionHooks', () => {
 
     await hooks.onCompacting(input, output)
 
-    // In graph-first mode, no memory sections are injected
     expect(output.context.length).toBe(0)
   })
 

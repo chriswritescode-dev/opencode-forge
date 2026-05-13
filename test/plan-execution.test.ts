@@ -1,20 +1,18 @@
-import { describe, test, expect } from 'bun:test'
+import { describe, test, expect } from 'vitest'
 import {
   extractPlanTitle,
   extractLoopName,
   extractLoopNames,
   sanitizeLoopName,
   PLAN_EXECUTION_LABELS,
-  matchExecutionLabel,
 } from '../src/utils/plan-execution'
 
 describe('Plan Execution Utilities', () => {
   describe('PLAN_EXECUTION_LABELS', () => {
-    test('Contains all four canonical execution labels', () => {
-      expect(PLAN_EXECUTION_LABELS).toHaveLength(4)
+    test('Contains all three canonical execution labels', () => {
+      expect(PLAN_EXECUTION_LABELS).toHaveLength(3)
       expect(PLAN_EXECUTION_LABELS).toContain('New session')
       expect(PLAN_EXECUTION_LABELS).toContain('Execute here')
-      expect(PLAN_EXECUTION_LABELS).toContain('Loop (worktree)')
       expect(PLAN_EXECUTION_LABELS).toContain('Loop')
     })
 
@@ -22,8 +20,7 @@ describe('Plan Execution Utilities', () => {
       // These are the exact labels that must match between TUI and plan-approval
       expect(PLAN_EXECUTION_LABELS[0]).toBe('New session')
       expect(PLAN_EXECUTION_LABELS[1]).toBe('Execute here')
-      expect(PLAN_EXECUTION_LABELS[2]).toBe('Loop (worktree)')
-      expect(PLAN_EXECUTION_LABELS[3]).toBe('Loop')
+      expect(PLAN_EXECUTION_LABELS[2]).toBe('Loop')
     })
   })
 
@@ -54,37 +51,25 @@ describe('Plan Execution Utilities', () => {
       const plan = '#   Title with spaces   \n\nContent'
       expect(extractPlanTitle(plan)).toBe('Title with spaces')
     })
-  })
 
-  describe('matchExecutionLabel', () => {
-    test('Matches exact canonical labels', () => {
-      expect(matchExecutionLabel('New session')).toBe('New session')
-      expect(matchExecutionLabel('Execute here')).toBe('Execute here')
-      expect(matchExecutionLabel('Loop (worktree)')).toBe('Loop (worktree)')
-      expect(matchExecutionLabel('Loop')).toBe('Loop')
+    test('Prioritizes loop name from heading-style field', () => {
+      const plan = '# Plan\n\n## Loop Name\n\nworkspace-sync-fix\n\n## Phases\n\nContent'
+      expect(extractPlanTitle(plan)).toBe('workspace-sync-fix')
     })
 
-    test('Matches case-insensitively', () => {
-      expect(matchExecutionLabel('new session')).toBe('New session')
-      expect(matchExecutionLabel('EXECUTE HERE')).toBe('Execute here')
-      expect(matchExecutionLabel('LOOP (WORKTREE)')).toBe('Loop (worktree)')
-      expect(matchExecutionLabel('loop')).toBe('Loop')
+    test('Prioritizes loop name from inline heading field', () => {
+      const plan = '# Plan\n\n## Loop Name: workspace-sync-fix\n\n## Phases\n\nContent'
+      expect(extractPlanTitle(plan)).toBe('workspace-sync-fix')
     })
 
-    test('Matches partial labels that start with canonical label', () => {
-      expect(matchExecutionLabel('New session (custom)')).toBe('New session')
-      expect(matchExecutionLabel('Loop (worktree) variant')).toBe('Loop (worktree)')
+    test('Skips structural heading prefixes like Phase and Plan', () => {
+      const plan = '# Plan\n\n## Phase 1: Extract feature\n\n## Plan: Fix bug\n\n## Actual Title\n\nContent'
+      expect(extractPlanTitle(plan)).toBe('Actual Title')
     })
 
-    test('Returns null for non-matching labels', () => {
-      expect(matchExecutionLabel('Custom mode')).toBeNull()
-      expect(matchExecutionLabel('Execute there')).toBeNull()
-      expect(matchExecutionLabel('')).toBeNull()
-    })
-
-    test('Does not match partial text in middle', () => {
-      // Should not match "I want to loop" as "Loop"
-      expect(matchExecutionLabel('I want to loop')).toBeNull()
+    test('Skips Loop Name heading with inline value', () => {
+      const plan = '# Plan\n\n## Loop Name: auth-refactor\n\n## Phase 1: Setup\n\nContent'
+      expect(extractPlanTitle(plan)).toBe('auth-refactor')
     })
   })
 

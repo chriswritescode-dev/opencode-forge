@@ -3,7 +3,7 @@ import type { ToolContext } from './types'
 
 import { slugify } from '../utils/logger'
 import { formatSessionOutput, formatAuditResult } from '../utils/loop-format'
-import { fetchSessionOutput, MAX_RETRIES, type LoopSessionOutput } from '../services/loop'
+import { fetchSessionOutput, type LoopSessionOutput, MAX_RETRIES } from '../loop'
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
 import { captureLatestPlanForSession } from '../services/plan-capture'
@@ -12,7 +12,7 @@ import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session
 const z = tool.schema
 
 export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
-  const { v2, loopService, loopHandler, config, logger } = ctx
+  const { v2, loopHandler, config, logger } = ctx
 
   function makeService(sourceSessionId?: string) {
     const execCtx: ForgeExecutionRequestContext = {
@@ -31,26 +31,28 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
       legacyClient: ctx.input?.client,
       plansRepo: ctx.plansRepo,
       loopsRepo: ctx.loopsRepo,
-      graphStatusRepo: ctx.graphStatusRepo,
-      loopService: ctx.loopService,
       loopHandler: ctx.loopHandler,
+      loop: ctx.loop,
       sandboxManager: ctx.sandboxManager,
+      sectionPlansRepo: ctx.sectionPlansRepo,
+      workspaceStatusRegistry: ctx.workspaceStatusRegistry,
     })
     return { service, execCtx }
   }
 
+   
+
   return {
     loop: tool({
-      description: 'Execute a plan using an iterative development loop. Default runs in current directory. Set worktree to true for isolated git worktree.',
+      description: 'Execute a plan using an iterative development loop in an isolated git worktree (sandboxed).',
       args: {
         plan: z.string().optional().describe('The full implementation plan. If omitted, reads from the session plan store.'),
         title: z.string().describe('Short title for the session (shown in session list)'),
-        worktree: z.boolean().optional().default(false).describe('Run in isolated git worktree instead of current directory'),
         loopName: z.string().optional().describe('Name for the loop (max 25 chars, auto-incremented if collision exists)'),
         hostSessionId: z.string().optional().describe('Host session ID for post-completion redirect'),
       },
       execute: async (args, context) => {
-        logger.log(`loop: creating ${args.worktree ? 'worktree' : 'in-place'} loop for plan="${args.title}"`)
+        logger.log(`loop: creating loop for plan="${args.title}"`)
 
         let source: PlanSource
         if (!args.plan) {
@@ -90,7 +92,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           source,
           title: sessionTitle,
           loopName,
-          mode: args.worktree ? 'worktree' : 'in-place',
           maxIterations: config.loop?.defaultMaxIterations ?? 0,
           executionModel,
           auditorModel,
@@ -110,22 +111,16 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         // Format success message to match existing output
         const maxInfo = result.data.maxIterations > 0 ? result.data.maxIterations.toString() : 'unlimited'
         const modelInfo = result.data.modelUsed ?? 'default'
-        const modeInfo = result.data.mode === 'worktree' ? '' : ' (in-place mode)'
-
         const lines: string[] = [
-          `Memory loop activated!${modeInfo}`,
+          'Memory loop activated!',
           '',
           `Session: ${result.data.sessionId}`,
           `Title: ${formatLoopSessionTitle(sessionTitle)}`,
         ]
 
-        if (result.data.mode === 'worktree') {
-          lines.push(`Loop name: ${result.data.loopName}`)
-          lines.push(`Worktree: ${result.data.worktreeDir}`)
-          lines.push(`Branch: ${result.data.worktreeBranch ?? 'unknown'}`)
-        } else {
-          lines.push(`Directory: ${ctx.directory}`)
-        }
+        lines.push(`Loop name: ${result.data.loopName}`)
+        lines.push(`Worktree: ${result.data.worktreeDir}`)
+        lines.push(`Branch: ${result.data.worktreeBranch ?? 'unknown'}`)
 
         lines.push(
           `Model: ${modelInfo}`,
@@ -157,9 +152,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           return result.error.message
         }
         const d = result.data
-        const modeInfo = !d.worktree ? ' (in-place)' : ''
         const branchInfo = d.worktreeBranch ? `\nBranch: ${d.worktreeBranch}` : ''
-        return `Cancelled loop "${d.loopName}"${modeInfo} (was at iteration ${d.iteration}).\nDirectory: ${d.worktreeDir}${branchInfo}`
+        return `Cancelled loop "${d.loopName}" (was at iteration ${d.iteration}).\nDirectory: ${d.worktreeDir}${branchInfo}`
       },
     }),
 
@@ -171,7 +165,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         force: z.boolean().optional().default(false).describe('Force restart an active/stuck loop'),
       },
       execute: async (args) => {
-        const active = loopService.listActive()
+        const active = ctx.loop.listActive()
 
         if (args.restart) {
           if (!args.name) {
@@ -190,20 +184,18 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             return result.error.message
           }
           const d = result.data
-          const modeInfo = !d.worktree ? ' (in-place)' : ''
           const branchInfo = d.worktreeBranch ? `\nBranch: ${d.worktreeBranch}` : ''
           return [
-            `Restarted loop "${d.loopName}"${modeInfo}`,
+            `Restarted loop "${d.loopName}"`,
             '',
             `New session: ${d.sessionId}`,
             `Continuing from iteration: ${d.iteration}`,
-            `Previous termination: ${d.previousTermination ?? 'unknown'}`,
             `Directory: ${d.worktreeDir}${branchInfo}`,
           ].join('\n')
         }
 
         if (!args.name) {
-          const recent = loopService.listRecent()
+          const recent = ctx.loop.listRecent()
 
           if (active.length === 0) {
             if (recent.length === 0) return 'No loops found.'
@@ -237,12 +229,16 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           active.forEach((s, i) => {
             const duration = formatDuration(computeElapsedSeconds(s.startedAt))
             const iterInfo = s.maxIterations && s.maxIterations > 0 ? `${s.iteration} / ${s.maxIterations}` : `${s.iteration} (unlimited)`
-            const sessionStatus = statuses[s.sessionId]?.type ?? 'unavailable'
-            const modeIndicator = !s.worktree ? ' (in-place)' : ''
+            // Check if any session registered to this loop is busy (main + child/subagent sessions)
+            const isBusy = Object.entries(statuses).some(([sid, v]) =>
+              ctx.loop.resolveLoopName(sid) === s.loopName && v.type === 'busy',
+            )
+            const sessionStatus = isBusy ? 'busy' : (statuses[s.sessionId]?.type ?? 'unavailable')
             const stallInfo = loopHandler.getStallInfo(s.loopName!)
             const stallCount = stallInfo?.consecutiveStalls ?? 0
-            const stallSuffix = stallCount > 0 ? ` | Stalls: ${stallCount}` : ''
-            lines.push(`${i + 1}. ${s.loopName}${modeIndicator}`)
+            const stallReason = stallInfo?.lastReason ? ` (${stallInfo.lastReason})` : ''
+            const stallSuffix = stallCount > 0 ? ` | Stalls: ${stallCount}${stallReason}` : ''
+            lines.push(`${i + 1}. ${s.loopName}`)
             lines.push(`   Phase: ${s.phase} | Iteration: ${iterInfo} | Duration: ${duration} | Status: ${sessionStatus}${stallSuffix}`)
             lines.push('')
           })
@@ -267,7 +263,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           return lines.join('\n')
         }
 
-        const { match: state, candidates } = loopService.findMatchByName(args.name)
+        const { match: state, candidates } = ctx.loop.findMatchByName(args.name)
         if (!state) {
           if (candidates.length > 0) {
             return `Multiple loops match "${args.name}":\n${candidates.map((s) => `- ${s.loopName}`).join('\n')}\n\nBe more specific.`
@@ -275,7 +271,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           return `No loop found for loop "${args.name}".`
         }
 
-        if (!state.active) {
+          if (!state.active) {
           const maxInfo = state.maxIterations && state.maxIterations > 0 ? `${state.iteration} / ${state.maxIterations}` : `${state.iteration} (unlimited)`
           const durationStr = formatDuration(computeElapsedSeconds(state.startedAt, state.completedAt))
 
@@ -284,12 +280,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             '',
             `Name: ${state.loopName}`,
             `Session: ${state.sessionId}`,
+            `Worktree: ${state.worktreeDir}`,
           ]
-          if (!state.worktree) {
-            statusLines.push(`Mode: in-place | Directory: ${state.worktreeDir}`)
-          } else {
-            statusLines.push(`Worktree: ${state.worktreeDir}`)
-          }
           statusLines.push(
             `Iteration: ${maxInfo}`,
             `Duration: ${durationStr}`,
@@ -328,11 +320,19 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         try {
           const statusResult = await v2.session.status({ directory: state.worktreeDir })
           const statuses = statusResult.data as Record<string, { type: string; attempt?: number; message?: string; next?: number }> | undefined
-          const status = statuses?.[state.sessionId]
-          if (status) {
-            sessionStatus = status.type === 'retry'
-              ? `retry (attempt ${status.attempt}, next in ${Math.round(((status.next ?? 0) - Date.now()) / 1000)}s)`
-              : status.type
+          // Check if any session registered to this loop is busy (main + child/subagent sessions)
+          const isBusy = Object.entries(statuses ?? {}).some(([sid, s]) =>
+            ctx.loop.resolveLoopName(sid) === state.loopName && s.type === 'busy',
+          )
+          if (isBusy) {
+            sessionStatus = 'busy'
+          } else {
+            const status = statuses?.[state.sessionId]
+            if (status) {
+              sessionStatus = status.type === 'retry'
+                ? `retry (attempt ${status.attempt}, next in ${Math.round(((status.next ?? 0) - Date.now()) / 1000)}s)`
+                : status.type
+            }
           }
         } catch {
           sessionStatus = 'unavailable'
@@ -345,18 +345,17 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           ? Math.round((Date.now() - stallInfo.lastActivityTime) / 1000)
           : null
         const stallCount = stallInfo?.consecutiveStalls ?? 0
+        const stallReason = stallInfo?.lastReason
+        const stallStatus = stallInfo?.lastStatus
+        const stallError = stallInfo?.lastError
 
         const statusLines: string[] = [
           'Loop Status',
           '',
           `Name: ${state.loopName}`,
           `Session: ${state.sessionId}`,
+          `Worktree: ${state.worktreeDir}`,
         ]
-        if (!state.worktree) {
-          statusLines.push(`Mode: in-place | Directory: ${state.worktreeDir}`)
-        } else {
-          statusLines.push(`Worktree: ${state.worktreeDir}`)
-        }
         statusLines.push(
           `Status: ${sessionStatus}`,
           `Phase: ${state.phase}`,
@@ -393,6 +392,9 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           `Model: ${state.executionModel ?? config.executionModel ?? 'default'}`,
           `Auditor model: ${state.auditorModel ?? config.auditorModel ?? state.executionModel ?? config.executionModel ?? 'default'}`,
           ...(stallCount > 0 ? [`Stalls: ${stallCount}`] : []),
+          ...(stallReason ? [`Last stall reason: ${stallReason}`] : []),
+          ...(stallStatus ? [`Last stall status: ${stallStatus}`] : []),
+          ...(stallError ? [`Last stall error: ${stallError}`] : []),
           ...(secondsSinceActivity !== null ? [`Last activity: ${secondsSinceActivity}s ago`] : []),
           '',
           `Prompt: ${promptPreview}`,
@@ -401,5 +403,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         return statusLines.join('\n')
       },
     }),
+
   }
 }

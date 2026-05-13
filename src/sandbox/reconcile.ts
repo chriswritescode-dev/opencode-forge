@@ -7,12 +7,12 @@
  */
 
 import type { SandboxManager } from './manager'
-import type { LoopService } from '../services/loop'
+import type { Loop } from '../loop'
 import type { Logger } from '../types'
 
 export interface ReconcileSandboxesDeps {
   sandboxManager: SandboxManager
-  loopService: LoopService
+  loop: Loop
   logger: Logger
 }
 
@@ -34,7 +34,7 @@ const inFlightByDeps = new WeakMap<ReconcileSandboxesDeps, boolean>()
  * @returns Promise that resolves when reconciliation is complete
  */
 export async function reconcileSandboxes(deps: ReconcileSandboxesDeps): Promise<void> {
-  const { sandboxManager, loopService, logger } = deps
+  const { sandboxManager, loop, logger } = deps
 
   if (inFlightByDeps.get(deps)) {
     // Another reconciliation is already in progress for this deps, return early
@@ -44,13 +44,11 @@ export async function reconcileSandboxes(deps: ReconcileSandboxesDeps): Promise<
   inFlightByDeps.set(deps, true)
 
   try {
-    const activeLoops = loopService.listActive()
+    const activeLoops = loop.listActive()
 
     for (const state of activeLoops) {
       // Only process loops with sandbox enabled, worktree mode, and a worktree directory.
-      // In-place (non-worktree) loops never use a sandbox container even if sandbox=true
-      // is persisted in state, so skip them to avoid starting unused containers.
-      if (state.sandbox !== true || state.worktree !== true || !state.worktreeDir || !state.loopName) {
+      if (state.sandbox !== true || !state.worktreeDir || !state.loopName) {
         continue
       }
 
@@ -68,7 +66,7 @@ export async function reconcileSandboxes(deps: ReconcileSandboxesDeps): Promise<
             // Container is verified running - ensure persisted name matches
             const active = sandboxManager.getActive(loopName)
             if (active && state.sandboxContainer !== active.containerName) {
-              loopService.setSandboxContainer(loopName, active.containerName)
+              loop.setSandboxContainer(loopName, active.containerName)
               const action = state.sandboxContainer ? 'corrected' : 'backfilled'
               logger.log(`Sandbox reconcile: ${action} container name for ${loopName}`)
             }
@@ -85,7 +83,7 @@ export async function reconcileSandboxes(deps: ReconcileSandboxesDeps): Promise<
 
         // Case 3: No container name - start fresh
         const result = await sandboxManager.start(loopName, state.worktreeDir, state.startedAt)
-        loopService.setSandboxContainer(loopName, result.containerName)
+        loop.setSandboxContainer(loopName, result.containerName)
         logger.log(`Sandbox reconcile: started container for ${loopName}`)
       } catch (err) {
         // Log error but continue processing other loops

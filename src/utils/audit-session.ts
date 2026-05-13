@@ -4,10 +4,12 @@ import { createLoopSessionWithWorkspace } from './loop-session'
 import { buildAuditSessionPermissionRuleset } from '../constants/loop'
 import { formatAuditSessionTitle } from './session-titles'
 
-export interface RunAuditSessionInput {
+interface RunAuditSessionInput {
   v2: OpencodeClient
   loopName: string
   iteration: number
+  currentSectionIndex: number
+  totalSections: number
   worktreeDir: string
   workspaceId?: string
   isSandbox: boolean
@@ -16,22 +18,28 @@ export interface RunAuditSessionInput {
   logger: Logger | Console
 }
 
-export interface RunAuditSessionResult {
+interface RunAuditSessionResult {
   auditSessionId: string
   boundWorkspaceId?: string
   bindFailed: boolean
+  bindError?: unknown
 }
 
 export async function createAuditSession(
   input: RunAuditSessionInput,
 ): Promise<RunAuditSessionResult | null> {
-  const permission = buildAuditSessionPermissionRuleset({ isSandbox: input.isSandbox })
+  const permission = buildAuditSessionPermissionRuleset()
   const created = await createLoopSessionWithWorkspace({
     v2: input.v2,
-    title: formatAuditSessionTitle(input.loopName, input.iteration),
+    title: formatAuditSessionTitle(input.loopName, {
+      iteration: input.iteration,
+      currentSectionIndex: input.currentSectionIndex,
+      totalSections: input.totalSections,
+    }),
     directory: input.worktreeDir,
     permission,
     workspaceId: input.workspaceId,
+    loopName: input.loopName,
     logPrefix: `loop ${input.loopName} audit`,
     logger: input.logger,
   })
@@ -40,6 +48,7 @@ export async function createAuditSession(
     auditSessionId: created.sessionId,
     boundWorkspaceId: created.boundWorkspaceId,
     bindFailed: created.bindFailed,
+    bindError: created.bindError,
   }
 }
 
@@ -66,15 +75,4 @@ export async function promptAuditSession(
   return { ok: true }
 }
 
-export async function deleteAuditSession(
-  v2: OpencodeClient,
-  sessionId: string,
-  worktreeDir: string,
-  logger: Logger | Console,
-): Promise<void> {
-  try {
-    await v2.session.delete({ sessionID: sessionId, directory: worktreeDir })
-  } catch (err) {
-    logger.error(`audit session delete failed for ${sessionId}`, err)
-  }
-}
+

@@ -55,7 +55,7 @@ describe('Execution Preferences', () => {
   test('writeExecutionPreferences stores prefs in KV', () => {
     const projectId = 'test-project'
     const prefs: ExecutionPreferences = {
-      mode: 'Loop (worktree)',
+      mode: 'Loop',
       executionModel: 'anthropic/claude-3-5-sonnet',
       auditorModel: 'anthropic/claude-3-opus',
     }
@@ -70,7 +70,7 @@ describe('Execution Preferences', () => {
   test('writeExecutionPreferences returns false when DB does not exist', () => {
     const projectId = 'test-project'
     const prefs: ExecutionPreferences = {
-      mode: 'Loop (worktree)',
+      mode: 'Loop',
       executionModel: 'anthropic/claude-3-5-sonnet',
       auditorModel: 'anthropic/claude-3-opus',
     }
@@ -106,7 +106,7 @@ describe('Execution Preferences', () => {
     }
 
     const result = resolveExecutionDialogDefaults(config, null)
-    expect(result.mode).toBe('Loop (worktree)')
+    expect(result.mode).toBe('Loop')
     expect(result.executionModel).toBe('anthropic/claude-3-haiku')
     expect(result.auditorModel).toBe('anthropic/claude-3-opus')
   })
@@ -127,7 +127,7 @@ describe('Execution Preferences', () => {
     const config: PluginConfig = {} as PluginConfig
 
     const result = resolveExecutionDialogDefaults(config, null)
-    expect(result.mode).toBe('Loop (worktree)')
+    expect(result.mode).toBe('Loop')
     expect(result.executionModel).toBe('')
     expect(result.auditorModel).toBe('')
   })
@@ -144,6 +144,70 @@ describe('Execution Preferences', () => {
     const result = readExecutionPreferences(projectId, TEST_DB_PATH)
 
     expect(result).toEqual(prefs)
+  })
+
+  test('readExecutionPreferences normalizes legacy Loop (worktree) to Loop', () => {
+    const projectId = 'legacy-normalization-test'
+
+    const db = new Database(TEST_DB_PATH)
+    db.run('PRAGMA busy_timeout=5000')
+    const repo = createTuiPrefsRepo(db)
+    repo.set(projectId, 'tui:plan-execution-preferences', { mode: 'Loop (worktree)', executionModel: 'some/model' }, 7 * 24 * 60 * 60 * 1000)
+    db.close()
+
+    const result = readExecutionPreferences(projectId, TEST_DB_PATH)
+    expect(result?.mode).toBe('Loop')
+    expect(result?.executionModel).toBe('some/model')
+  })
+
+  test('readExecutionPreferences normalizes legacy loop-worktree to Loop', () => {
+    const projectId = 'legacy-api-slug-test'
+
+    const db = new Database(TEST_DB_PATH)
+    db.run('PRAGMA busy_timeout=5000')
+    const repo = createTuiPrefsRepo(db)
+    repo.set(projectId, 'tui:plan-execution-preferences', { mode: 'loop-worktree', executionModel: 'some/model' }, 7 * 24 * 60 * 60 * 1000)
+    db.close()
+
+    const result = readExecutionPreferences(projectId, TEST_DB_PATH)
+    expect(result?.mode).toBe('Loop')
+    expect(result?.executionModel).toBe('some/model')
+  })
+
+  test('resolveExecutionDialogDefaults normalizes legacy Loop (worktree) to Loop', () => {
+    const config: PluginConfig = {
+      executionModel: 'anthropic/claude-3-haiku',
+      loop: { model: 'anthropic/claude-3-sonnet' },
+      auditorModel: 'anthropic/claude-3-opus',
+    }
+    const storedPrefs = {
+      mode: 'Loop (worktree)',
+      executionModel: 'anthropic/claude-3-5-sonnet',
+      auditorModel: 'anthropic/claude-3-opus',
+    } as unknown as ExecutionPreferences
+
+    const result = resolveExecutionDialogDefaults(config, storedPrefs)
+    expect(result.mode).toBe('Loop')
+    expect(result.executionModel).toBe('anthropic/claude-3-5-sonnet')
+    expect(result.auditorModel).toBe('anthropic/claude-3-opus')
+  })
+
+  test('resolveExecutionDialogDefaults normalizes legacy loop-worktree to Loop', () => {
+    const config: PluginConfig = {
+      executionModel: 'anthropic/claude-3-haiku',
+      loop: { model: 'anthropic/claude-3-sonnet' },
+      auditorModel: 'anthropic/claude-3-opus',
+    }
+    const storedPrefs = {
+      mode: 'loop-worktree',
+      executionModel: 'anthropic/claude-3-5-sonnet',
+      auditorModel: 'anthropic/claude-3-opus',
+    } as unknown as ExecutionPreferences
+
+    const result = resolveExecutionDialogDefaults(config, storedPrefs)
+    expect(result.mode).toBe('Loop')
+    expect(result.executionModel).toBe('anthropic/claude-3-5-sonnet')
+    expect(result.auditorModel).toBe('anthropic/claude-3-opus')
   })
 
   test('writeExecutionPreferences does not mutate other preference keys', () => {

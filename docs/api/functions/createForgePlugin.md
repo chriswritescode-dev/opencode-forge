@@ -10,7 +10,7 @@
 
 Defined in: [index.ts:191](https://github.com/chriswritescode-dev/opencode-forge/blob/d13f4095482848cf49abc4527575a6abdb330424/src/index.ts#L191)
 
-Creates an OpenCode plugin instance with loop management, graph indexing, and sandboxing.
+Creates an OpenCode plugin instance with loop management, plan storage, and sandboxing.
 
 ## Parameters
 
@@ -18,7 +18,7 @@ Creates an OpenCode plugin instance with loop management, graph indexing, and sa
 
 [`PluginConfig`](../interfaces/PluginConfig.md)
 
-Plugin configuration including loop, graph, sandbox, and logging settings
+Plugin configuration including loop, sandbox, and logging settings
 
 ## Returns
 

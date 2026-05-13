@@ -1,6 +1,6 @@
 {
   "name": "opencode-forge",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "oc-plugin": [
     "server",
@@ -27,21 +27,18 @@
     "forge-config.jsonc",
     "scripts",
     "README.md",
-    "src/command/template"
+    "src/command/template",
+    "skills"
   ],
-  "bin": {
-    "oc-forge": "./dist/cli/index.js"
-  },
   "repository": {
     "type": "git",
     "url": "https://github.com/chriswritescode-dev/opencode-forge.git"
   },
   "author": "Chris Scott",
-  "description": "OpenCode Forge - autonomous dev loops, plan storage, code graph indexing, and sandboxing for OpenCode",
+  "description": "OpenCode Forge - autonomous dev loops, plan storage, and sandboxing for OpenCode",
   "image": "https://raw.githubusercontent.com/chriswritescode-dev/opencode-forge/main/opengraph-image.png",
   "keywords": [
     "opencode",
-    "graph",
     "iterative-loops",
     "ai-agent",
     "plugin",
@@ -50,10 +47,10 @@
   "license": "MIT",
   "homepage": "https://github.com/chriswritescode-dev/opencode-forge",
   "dependencies": {
-    "@opencode-ai/plugin": "^1.14.30",
-    "@opencode-ai/sdk": "^1.14.30",
-    "tree-sitter-wasms": "0.1.13",
-    "web-tree-sitter": "0.25.10"
+    "@opencode-ai/plugin": "^1.14.47",
+    "@opencode-ai/sdk": "^1.14.47",
+    "jsonc-parser": "^3.3.1",
+    "zod": "^3.25.76"
   },
   "peerDependencies": {
     "@opentui/core": ">=0.1.105",
@@ -68,17 +65,19 @@
     }
   },
   "devDependencies": {
+    "@esbuild/linux-arm64": "^0.21.5",
     "@eslint/js": "^10.0.1",
     "@opentui/core": "0.1.105",
+    "@opentui/keymap": "^0.2.6",
     "@opentui/solid": "0.1.105",
+    "@rollup/rollup-linux-arm64-gnu": "^4.60.3",
     "@types/node": "^25.6.0",
     "@typescript-eslint/eslint-plugin": "^8.58.0",
     "@typescript-eslint/parser": "^8.58.0",
+    "better-sqlite3": "^12.9.0",
     "bun-types": "latest",
     "eslint": "^10.2.0",
-    "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-solid": "^0.14.5",
-    "prettier": "^3.8.1",
     "solid-js": "^1.9.12",
     "typedoc": "^0.28.19",
     "typedoc-plugin-markdown": "^4.11.0",
@@ -90,10 +89,17 @@
     "build": "bun scripts/build.ts",
     "lint": "eslint .",
     "prepublishOnly": "pnpm build",
-    "test": "bun test --max-concurrency=1",
+    "test": "vitest run",
+    "test:bun": "bun test --max-concurrency=1",
     "typecheck": "tsc --noEmit",
-    "cli": "bun src/cli/index.ts",
     "docs:api": "typedoc",
     "docs": "pnpm docs:api"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild",
+      "msgpackr-extract"
+    ]
   }
 }

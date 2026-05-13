@@ -99,7 +99,7 @@ export function createPlansRepo(db: Database): PlansRepo {
   }
 
   function promote(projectId: string, sessionId: string, loopName: string): boolean {
-    const result = stmtPromote.run(loopName, projectId, sessionId)
+    const result = stmtPromote.run(loopName, projectId, sessionId) as unknown as { changes: number }
     return result.changes > 0
   }
 

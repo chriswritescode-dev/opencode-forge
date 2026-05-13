@@ -4,7 +4,8 @@ import type { ToolContext } from './types'
 const z = tool.schema
 
 export function createPlanTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
-  const { plansRepo, loopsRepo, projectId, logger, loopService } = ctx
+  const { plansRepo, loopsRepo, projectId, logger } = ctx
+  const loop = ctx.loop
 
   return {
     'plan-read': tool({
@@ -20,7 +21,7 @@ export function createPlanTools(ctx: ToolContext): Record<string, ReturnType<typ
         if (args.loop_name) {
           content = loopsRepo.getLarge(projectId, args.loop_name)?.prompt ?? plansRepo.getForLoop(projectId, args.loop_name)?.content
         } else {
-          const resolvedLoopName = loopService.resolveLoopName(context.sessionID)
+          const resolvedLoopName = loop.resolveLoopName(context.sessionID)
           if (resolvedLoopName) {
             content = loopsRepo.getLarge(projectId, resolvedLoopName)?.prompt ?? plansRepo.getForLoop(projectId, resolvedLoopName)?.content
           } else {

@@ -72,16 +72,6 @@ Model to use for code execution.
 
 ***
 
-### graph?
-
-> `optional` **graph?**: `GraphConfig`
-
-Defined in: [types.ts:153](https://github.com/chriswritescode-dev/opencode-forge/blob/d13f4095482848cf49abc4527575a6abdb330424/src/types.ts#L153)
-
-Graph indexing configuration.
-
-***
-
 ### logging?
 
 > `optional` **logging?**: `LoggingConfig`
@@ -109,18 +99,6 @@ Loop behavior configuration.
 Defined in: [types.ts:135](https://github.com/chriswritescode-dev/opencode-forge/blob/d13f4095482848cf49abc4527575a6abdb330424/src/types.ts#L135)
 
 Message transformation for architect agent.
-
-***
-
-### ~~ralph?~~
-
-> `optional` **ralph?**: `LoopConfig`
-
-Defined in: [types.ts:143](https://github.com/chriswritescode-dev/opencode-forge/blob/d13f4095482848cf49abc4527575a6abdb330424/src/types.ts#L143)
-
-#### Deprecated
-
-Use `loop` instead
 
 ***
 

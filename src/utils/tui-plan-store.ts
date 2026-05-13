@@ -18,7 +18,7 @@ import { createLoopsRepo } from '../storage/repos/loops-repo'
  * Exported for testing purposes.
  */
 function getDbPath(): string {
-  return join(resolveDataDir(), 'graph.db')
+  return join(resolveDataDir(), 'forge.db')
 }
 
 /**
@@ -98,6 +98,38 @@ export function readPlanForAnyProject(sessionID: string, dbPathOverride?: string
     return null
   } catch {
     return null
+  } finally {
+    try { db?.close() } catch {}
+  }
+}
+
+export function writePlan(projectId: string, sessionID: string, content: string): void {
+  const dbPath = getDbPath()
+  if (!existsSync(dbPath)) return
+
+  let db: Database | null = null
+  try {
+    db = new Database(dbPath)
+    const plansRepo = createPlansRepo(db)
+    plansRepo.writeForSession(projectId, sessionID, content)
+  } catch {
+    // swallow - plan write is best-effort
+  } finally {
+    try { db?.close() } catch {}
+  }
+}
+
+export function deletePlan(projectId: string, sessionID: string): void {
+  const dbPath = getDbPath()
+  if (!existsSync(dbPath)) return
+
+  let db: Database | null = null
+  try {
+    db = new Database(dbPath)
+    const plansRepo = createPlansRepo(db)
+    plansRepo.deleteForSession(projectId, sessionID)
+  } catch {
+    // swallow - plan delete is best-effort
   } finally {
     try { db?.close() } catch {}
   }

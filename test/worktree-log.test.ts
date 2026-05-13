@@ -11,7 +11,7 @@ import {
   formatWorktreeCompletionEntry,
 } from '../src/services/worktree-log'
 import { buildLoopPermissionRuleset } from '../src/constants/loop'
-import type { LoopSessionOutput } from '../src/services/loop'
+import type { LoopSessionOutput } from '../src/loop/session-output'
 
 const TEST_DIR = '/tmp/opencode-worktree-log-test-' + Date.now()
 
@@ -427,21 +427,14 @@ describe('appendWorktreeLogEntry', () => {
 
 describe('buildLoopPermissionRuleset integration', () => {
   test('always denies loop-cancel and loop-status for worktree loops', () => {
-    const ruleset = buildLoopPermissionRuleset({ isWorktree: true })
-
-    expect(ruleset).toContainEqual({ permission: 'loop-cancel', pattern: '*', action: 'deny' })
-    expect(ruleset).toContainEqual({ permission: 'loop-status', pattern: '*', action: 'deny' })
-  })
-
-  test('always denies loop-cancel and loop-status for in-place loops', () => {
-    const ruleset = buildLoopPermissionRuleset({ isWorktree: false })
+    const ruleset = buildLoopPermissionRuleset()
 
     expect(ruleset).toContainEqual({ permission: 'loop-cancel', pattern: '*', action: 'deny' })
     expect(ruleset).toContainEqual({ permission: 'loop-status', pattern: '*', action: 'deny' })
   })
 
   test('DENIES auditor review tools at session level (auditor now runs in separate session)', () => {
-    const ruleset = buildLoopPermissionRuleset({ isWorktree: true, isSandbox: false })
+    const ruleset = buildLoopPermissionRuleset()
 
     // These tools are now denied at session level because auditor runs in its own session
     expect(ruleset.some(r => r.permission === 'review-write' && r.action === 'deny')).toBe(true)

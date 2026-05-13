@@ -2,7 +2,7 @@ import type { Hooks } from '@opencode-ai/plugin'
 import type { Logger } from '../types'
 import type { SandboxContext } from '../sandbox/context'
 import { toContainerPath, rewriteOutput } from '../sandbox/path'
-import { executeSandboxGlob, executeSandboxGrep } from '../tools/sandbox-fs'
+import { executeSandboxGlob, executeSandboxGrep } from '../sandbox/exec-fs'
 
 interface SandboxToolHookDeps {
   resolveSandboxForSession: (sessionID: string) => Promise<SandboxContext | null>

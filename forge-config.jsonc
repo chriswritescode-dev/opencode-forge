@@ -1,5 +1,5 @@
 {
-  // Data directory for plugin storage (graph.db, KV store, logs)
+  // Data directory for plugin storage (forge.db, logs)
   // When empty, resolves to ~/.local/share/opencode/forge (or XDG_DATA_HOME equivalent)
   "dataDir": "",
 
@@ -16,7 +16,7 @@
     "maxContextTokens": 0
   },
 
-  // Messages transform hook for graph injection and read-only enforcement
+  // Messages transform hook for read-only enforcement
   "messagesTransform": {
     "enabled": true,
     "debug": false
@@ -35,6 +35,7 @@
     "cleanupWorktree": false,
     "model": "",
     "stallTimeoutMs": 60000,
+    "maxConsecutiveStalls": 5,  // 0 = disabled; default 5
     // Worktree loop completion logging (off by default)
     "worktreeLogging": {
       "enabled": false,
@@ -42,28 +43,22 @@
     }
   },
 
-  // Docker sandbox configuration for isolated loop execution
+  // Sandbox configuration. Sandbox is optional; when Docker is unavailable, loops run in worktree-only mode.
+  // Currently only Docker is supported; additional modes may be added later.
   "sandbox": {
-    "mode": "off",
+    "mode": "docker",
     "image": "oc-forge-sandbox:latest"
-  },
-
-  // Graph indexing configuration.
-  // Set "enabled": false to turn off the code graph entirely. Plans, reviews,
-  // and loops continue to work; agent prompts and the explore agent fall back
-  // to standard Read/Glob/Grep guidance and the graph-* tools are not exposed.
-  "graph": {
-    "enabled": true,
-    "autoScan": true,
-    "watch": true,
-    "debounceMs": 100
   },
 
   // TUI sidebar widget configuration
   "tui": {
     "sidebar": true,
     "showLoops": true,
-    "showVersion": true
+    "showVersion": true,
+    // Auto-save captured plans to <dataDir>/plans/<projectId>/. Toggleable from sidebar.
+    "autoSavePlans": false,
+    // TTL in ms for archived plans before pruning. 0 disables pruning. Default: 604800000 (7 days)
+    "planArchiveTtlMs": 604800000
   },
 
   // TTL in ms for completed/cancelled loops before cleanup. Default: 604800000 (7 days)
@@ -76,4 +71,12 @@
   //   "auditor": { "temperature": 0.0 },
   //   "code": { "temperature": 0.7 }
   // }
+
+  // Decomposer configuration for plan section decomposition
+  "decomposer": {
+    "enabled": true,
+    "mode": "agent",
+    "onParseFailure": "legacy",
+    "maxSections": 12
+  }
 }

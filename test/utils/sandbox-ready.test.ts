@@ -188,7 +188,7 @@ describe('waitForSandboxReady', () => {
     insertLoopRow('test-loop', {
       sandbox: true,
       worktree: true,
-      sandboxContainer: 'oc-forge-sandbox-test-loop',
+      sandboxContainer: 'forge-test-loop',
     })
 
     const result = await waitForSandboxReady({
@@ -199,7 +199,7 @@ describe('waitForSandboxReady', () => {
       timeoutMs: 500,
     })
 
-    expect(result).toEqual({ ready: true, containerName: 'oc-forge-sandbox-test-loop' })
+    expect(result).toEqual({ ready: true, containerName: 'forge-test-loop' })
   })
 
   it('eventual ready - returns when container name is set after delay', async () => {
@@ -216,7 +216,7 @@ describe('waitForSandboxReady', () => {
         insertLoopRow('test-loop', {
           sandbox: true,
           worktree: true,
-          sandboxContainer: 'oc-forge-sandbox-test-loop',
+          sandboxContainer: 'forge-test-loop',
         })
       }
     }, 100)
@@ -229,7 +229,7 @@ describe('waitForSandboxReady', () => {
       timeoutMs: 2000,
     })
 
-    expect(result).toEqual({ ready: true, containerName: 'oc-forge-sandbox-test-loop' })
+    expect(result).toEqual({ ready: true, containerName: 'forge-test-loop' })
   })
 
   it('timeout - returns timeout when container name never appears', async () => {

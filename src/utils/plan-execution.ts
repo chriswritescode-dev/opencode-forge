@@ -12,7 +12,6 @@
 export const PLAN_EXECUTION_LABELS = [
   'New session',
   'Execute here',
-  'Loop (worktree)',
   'Loop',
 ] as const
 
@@ -26,6 +25,8 @@ const STRUCTURAL_PLAN_HEADINGS = new Set([
   'objective',
   'loop name',
   'phases',
+  'phase',
+  'plan',
   'verification',
   'decisions',
   'conventions',
@@ -39,6 +40,12 @@ const STRUCTURAL_PLAN_HEADINGS = new Set([
  * Truncates to 60 characters with ellipsis if needed.
  */
 export function extractPlanTitle(planContent: string): string {
+  // Priority 1: Extract loop name if present (most meaningful title)
+  const loopNameFromHeading = extractLoopNameFromHeading(planContent)
+  if (loopNameFromHeading) {
+    return loopNameFromHeading.length > 60 ? `${loopNameFromHeading.substring(0, 57)}...` : loopNameFromHeading
+  }
+
   const headings: Array<{ text: string; line: number }> = []
   const lines = planContent.split('\n')
   
@@ -49,19 +56,13 @@ export function extractPlanTitle(planContent: string): string {
     }
   }
   
-  // Find first non-structural heading
+  // Find first non-structural heading (skip structural prefixes)
   for (const heading of headings) {
     const normalized = heading.text.toLowerCase()
-    if (!STRUCTURAL_PLAN_HEADINGS.has(normalized)) {
-      const title = heading.text
-      return title.length > 60 ? `${title.substring(0, 57)}...` : title
-    }
-  }
-  
-  // If all headings are structural, try explicit Loop Name field
-  const loopNameFromHeading = extractLoopNameFromHeading(planContent)
-  if (loopNameFromHeading) {
-    return loopNameFromHeading.length > 60 ? `${loopNameFromHeading.substring(0, 57)}...` : loopNameFromHeading
+    if (STRUCTURAL_PLAN_HEADINGS.has(normalized)) continue
+    if (isStructuralHeadingPrefix(normalized)) continue
+    const title = heading.text
+    return title.length > 60 ? `${title.substring(0, 57)}...` : title
   }
   
   // Try first sentence/line under Objective
@@ -81,6 +82,14 @@ export function extractPlanTitle(planContent: string): string {
   }
   
   return 'Implementation Plan'
+}
+
+/**
+ * Checks if a heading text starts with a structural heading prefix.
+ * Handles headings like "Phase 1: ...", "Plan: ...", "Loop Name: ..."
+ */
+function isStructuralHeadingPrefix(normalized: string): boolean {
+  return Array.from(STRUCTURAL_PLAN_HEADINGS).some(prefix => normalized.startsWith(prefix))
 }
 
 /**
@@ -185,23 +194,3 @@ export function sanitizeLoopName(name: string): string {
     .substring(0, 60) || 'loop'
 }
 
-/**
- * Normalizes a mode string to lowercase for comparison.
- */
-function normalizeModeLabel(label: string): string {
-  return label.toLowerCase()
-}
-
-/**
- * Checks if a given label matches one of the canonical execution labels.
- * Returns the matched canonical label or null if no match.
- */
-export function matchExecutionLabel(input: string): PlanExecutionLabel | null {
-  const normalized = normalizeModeLabel(input)
-  for (const label of PLAN_EXECUTION_LABELS) {
-    if (normalized === label.toLowerCase() || normalized.startsWith(label.toLowerCase())) {
-      return label
-    }
-  }
-  return null
-}

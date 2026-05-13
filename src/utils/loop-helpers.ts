@@ -1,5 +1,5 @@
 import type { PluginConfig, Logger } from '../types'
-import type { LoopService, LoopState } from '../services/loop'
+import type { LoopService, LoopState } from '../loop'
 import { parseModelString } from './model-fallback'
 
 type ModelRef = { providerID: string; modelID: string }

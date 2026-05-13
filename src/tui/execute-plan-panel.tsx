@@ -1,12 +1,13 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
-import { createEffect, createSignal, onCleanup } from 'solid-js'
-import { PLAN_EXECUTION_LABELS, matchExecutionLabel, type PlanExecutionLabel } from '../utils/plan-execution'
+import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
+import { PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
 import { extractPlanTitle } from '../utils/plan-execution'
 import { buildDialogSelectOptions, flattenProviders, getModelDisplayLabel, sortModelsByPriority, type ModelInfo } from '../utils/tui-models'
 import { resolveExecutionDialogDefaults } from '../utils/tui-execution-preferences'
-import type { ForgeProjectClient } from '../utils/tui-client'
+import { selectTuiSession, type ForgeProjectClient } from '../utils/tui-client'
 import type { ExecutionContextCache, ExecutionContextSnapshot } from '../utils/tui-execution-context-cache'
+import { withBusyGuard } from '../utils/busy-guard'
 import type { PluginConfig } from '../types'
 
 export function ExecutePlanPanel(props: {
@@ -19,7 +20,7 @@ export function ExecutePlanPanel(props: {
   initialExecutionModel?: string
   initialAuditorModel?: string
   onBack: () => void
-  onExecuted: () => void | Promise<void>
+  onExecuted?: () => void | Promise<void>
   onModelSelected: (args: {
     target: 'execution' | 'auditor'
     selectedModel: string
@@ -27,13 +28,15 @@ export function ExecutePlanPanel(props: {
     auditorModel: string
   }) => void
 }) {
+  const cache = untrack(() => props.cache)
+  const pluginConfig = untrack(() => props.pluginConfig)
   const theme = () => props.api.theme.current
 
   const openCodeDefaultModel = () => props.api.state.config?.model ?? ''
 
-  const initialSnapshot = props.cache?.snapshot() ?? null
+  const initialSnapshot = cache?.snapshot() ?? null
   const initialDefaults = initialSnapshot?.defaults
-    ?? resolveExecutionDialogDefaults(props.pluginConfig, initialSnapshot?.preferences ?? null)
+    ?? resolveExecutionDialogDefaults(pluginConfig, initialSnapshot?.preferences ?? null)
 
   const hasInitialOverrides = () => props.initialExecutionModel !== undefined || props.initialAuditorModel !== undefined
 
@@ -47,6 +50,7 @@ export function ExecutePlanPanel(props: {
   const [recents, setRecents] = createSignal<string[]>(initialSnapshot?.recents ?? [])
   const [modelsError, setModelsError] = createSignal<string | undefined>(initialSnapshot?.modelsError)
   const [modelsLoaded, setModelsLoaded] = createSignal(!!initialSnapshot)
+  const [busy, setBusy] = createSignal(false)
 
   const applyDefaults = (defaults: { executionModel: string; auditorModel: string }) => {
     if (!hasInitialOverrides() && !props.initialExecutionModel && !executionModel()) {
@@ -68,7 +72,7 @@ export function ExecutePlanPanel(props: {
   const loadInline = async () => {
     try {
       const ctx = await props.client.loadExecutionContext()
-      const inlineDefaults = resolveExecutionDialogDefaults(props.pluginConfig, ctx.preferences)
+      const inlineDefaults = resolveExecutionDialogDefaults(pluginConfig, ctx.preferences)
       if (ctx.models.error) {
         setModelsError(ctx.models.error)
         applyDefaults(inlineDefaults)
@@ -93,14 +97,14 @@ export function ExecutePlanPanel(props: {
   }
 
   createEffect(() => {
-    if (props.cache) {
-      const unsub = props.cache.onChange((snap) => applySnapshot(snap))
+    if (cache) {
+      const unsub = cache.onChange((snap) => untrack(() => applySnapshot(snap)))
       onCleanup(unsub)
-      const existing = props.cache.snapshot()
+      const existing = cache.snapshot()
       if (existing) {
         applySnapshot(existing)
       } else {
-        void props.cache.ensureLoaded().catch(() => { void loadInline() })
+        void cache.ensureLoaded().catch(() => { void untrack(() => loadInline()) })
       }
     } else {
       void loadInline()
@@ -147,28 +151,27 @@ export function ExecutePlanPanel(props: {
         return 'Create a new session and send the plan to the code agent'
       case 'Execute here':
         return 'Execute the plan in the current session using the code agent'
-      case 'Loop (worktree)':
-        return 'Execute using iterative development loop in an isolated git worktree'
       case 'Loop':
-        return 'Execute using iterative development loop in the current directory'
+        return 'Execute using iterative development loop in an isolated git worktree (Docker sandbox used automatically when available)'
       default:
         return ''
     }
   }
 
-  const handleExecuteMode = async (mode: string, execModel?: string, auditModel?: string) => {
+  async function runExecuteMode(mode: string, execModel?: string, auditModel?: string): Promise<void> {
     const planText = props.planContent
     const title = extractPlanTitle(planText)
 
-    const matchedLabel = matchExecutionLabel(mode)
+    const normalizedMode = mode.toLowerCase()
+    const matchedLabel = PLAN_EXECUTION_LABELS.find(
+      label => normalizedMode === label.toLowerCase() || normalizedMode.startsWith(label.toLowerCase())
+    ) ?? null
 
     const apiMode: import('../utils/tui-client').ApiExecutionMode = matchedLabel === 'Execute here'
       ? 'execute-here'
       : matchedLabel === 'Loop'
         ? 'loop'
-        : matchedLabel === 'Loop (worktree)'
-          ? 'loop-worktree'
-          : 'new-session'
+        : 'new-session'
 
     props.api.ui.dialog.clear()
     props.api.ui.toast({ message: 'Executing plan...', variant: 'info', duration: 3000 })
@@ -190,19 +193,23 @@ export function ExecutePlanPanel(props: {
       return
     }
 
-    props.cache?.recordRecent(execModel || '')
-    props.cache?.recordRecent(auditModel || '')
+    cache?.recordRecent(execModel || '')
+    cache?.recordRecent(auditModel || '')
 
     props.api.ui.toast({ message: result.loopName ? `Loop started: ${result.loopName}` : 'Plan execution started', variant: 'success', duration: 3000 })
-    await props.onExecuted()
-    if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop-worktree' || apiMode === 'loop')) {
-      try {
-        await props.api.client.tui.selectSession({ sessionID: result.sessionId })
-      } catch {
-        try { props.api.route.navigate('session', { sessionID: result.sessionId }) } catch {}
-      }
+    await props.onExecuted?.()
+    props.client.workspaces.list().catch(() => {})
+    if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop')) {
+      await selectTuiSession(props.api, result.sessionId, result.workspaceId)
     }
   }
+
+  // eslint-disable-next-line solid/reactivity
+  const handleExecuteMode = withBusyGuard(runExecuteMode, {
+    isBusy: busy,
+    setBusy,
+    onBusy: () => props.api.ui.toast({ message: 'Plan execution already starting...', variant: 'info', duration: 2000 }),
+  })
 
   return (
     <box flexDirection="column" paddingBottom={1} gap={1} minHeight={20} maxHeight="75%">

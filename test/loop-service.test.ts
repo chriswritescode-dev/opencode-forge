@@ -6,12 +6,12 @@ import { tmpdir } from 'os'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
-import { createLoopService } from '../src/services/loop'
+import { createLoop } from '../src/loop/runtime'
 import type { Logger } from '../src/types'
 
-describe('LoopService', () => {
+describe('Loop', () => {
   let db: Database
-  let loopService: ReturnType<typeof createLoopService>
+  let loop: ReturnType<typeof createLoop>
   let tempDir: string
   const projectId = 'test-project'
 
@@ -55,6 +55,13 @@ describe('LoopService', () => {
         workspace_id         TEXT,
         host_session_id      TEXT,
         audit_session_id     TEXT,
+        decomposition_status TEXT NOT NULL DEFAULT 'pending' CHECK (decomposition_status IN ('pending','running','completed','failed','skipped')),
+        decomposition_mode TEXT NOT NULL DEFAULT 'agent' CHECK (decomposition_mode IN ('agent','deterministic')),
+        decomposition_session_id TEXT,
+        current_section_index INTEGER NOT NULL DEFAULT 0,
+        total_sections INTEGER NOT NULL DEFAULT 0,
+        final_audit_done INTEGER NOT NULL DEFAULT 0,
+        final_audit_attempts INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (project_id, loop_name)
       )
     `)
@@ -73,7 +80,6 @@ describe('LoopService', () => {
     db.run(`
       CREATE TABLE plans (
         project_id   TEXT NOT NULL,
-      branch       TEXT NOT NULL DEFAULT '',
         loop_name    TEXT,
         session_id   TEXT,
         content      TEXT NOT NULL,
@@ -88,14 +94,15 @@ describe('LoopService', () => {
     db.run(`
       CREATE TABLE review_findings (
         project_id TEXT NOT NULL,
+        loop_name TEXT NOT NULL DEFAULT '',
         file TEXT NOT NULL,
         line INTEGER NOT NULL,
         severity TEXT NOT NULL,
         description TEXT NOT NULL,
         scenario TEXT,
-        branch TEXT,
         created_at INTEGER NOT NULL,
-        PRIMARY KEY (project_id, branch, file, line)
+        section_index INTEGER,
+        PRIMARY KEY (project_id, loop_name, file, line, section_index)
       )
     `)
 
@@ -103,7 +110,16 @@ describe('LoopService', () => {
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
 
-    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger)
+    loop = createLoop({
+      loopsRepo,
+      plansRepo,
+      reviewFindingsRepo,
+      projectId,
+      logger: mockLogger,
+      client: {} as any,
+      v2Client: {} as any,
+      getConfig: () => ({} as any),
+    })
   })
 
   afterEach(() => {
@@ -125,10 +141,10 @@ describe('LoopService', () => {
         severity: 'warning',
         description: 'Test warning',
         scenario: 'test',
-        branch: 'b1',
+        loopName: 'b1',
       })
 
-      expect(loopService.hasOutstandingFindings('b1')).toBe(true)
+      expect(loop.hasOutstandingFindings('b1')).toBe(true)
     })
 
     test('returns false when only warning findings exist and severity=bug filter is applied', () => {
@@ -140,11 +156,11 @@ describe('LoopService', () => {
         severity: 'warning',
         description: 'Test warning',
         scenario: 'test',
-        branch: 'b1',
+        loopName: 'b1',
       })
 
-      expect(loopService.hasOutstandingFindings('b1', 'bug')).toBe(false)
-      expect(loopService.hasOutstandingFindings('b1', 'warning')).toBe(true)
+      expect(loop.hasOutstandingFindings('b1', 'bug')).toBe(false)
+      expect(loop.hasOutstandingFindings('b1', 'warning')).toBe(true)
     })
 
     test('returns true when bug findings exist with severity=bug filter', () => {
@@ -156,7 +172,7 @@ describe('LoopService', () => {
         severity: 'bug',
         description: 'Test bug',
         scenario: 'test',
-        branch: 'b2',
+        loopName: 'b2',
       })
       reviewFindingsRepo.write({
         projectId,
@@ -165,11 +181,11 @@ describe('LoopService', () => {
         severity: 'warning',
         description: 'Test warning',
         scenario: 'test',
-        branch: 'b2',
+        loopName: 'b2',
       })
 
-      expect(loopService.hasOutstandingFindings('b2', 'bug')).toBe(true)
-      const bugFindings = loopService.getOutstandingFindings('b2', 'bug')
+      expect(loop.hasOutstandingFindings('b2', 'bug')).toBe(true)
+      const bugFindings = loop.getOutstandingFindings('b2', 'bug')
       expect(bugFindings.length).toBe(1)
       expect(bugFindings[0].severity).toBe('bug')
     })
@@ -185,7 +201,7 @@ describe('LoopService', () => {
         severity: 'bug',
         description: 'Test bug',
         scenario: 'test',
-        branch: 'b2',
+        loopName: 'b2',
       })
       reviewFindingsRepo.write({
         projectId,
@@ -194,13 +210,13 @@ describe('LoopService', () => {
         severity: 'warning',
         description: 'Test warning',
         scenario: 'test',
-        branch: 'b2',
+        loopName: 'b2',
       })
 
-      const allFindings = loopService.getOutstandingFindings('b2')
+      const allFindings = loop.getOutstandingFindings('b2')
       expect(allFindings.length).toBe(2)
 
-      const warningFindings = loopService.getOutstandingFindings('b2', 'warning')
+      const warningFindings = loop.getOutstandingFindings('b2', 'warning')
       expect(warningFindings.length).toBe(1)
       expect(warningFindings[0].severity).toBe('warning')
     })
@@ -223,7 +239,7 @@ describe('LoopService', () => {
         auditCount: 0,
       }
 
-      const prompt = loopService.buildAuditPrompt(state as any)
+      const prompt = loop.buildAuditPrompt(state as any)
 
       expect(prompt).toContain('Plan completeness check:')
       expect(prompt).toContain('severity: "bug"')
@@ -234,7 +250,7 @@ describe('LoopService', () => {
 
   describe('getMinAudits removal', () => {
     test('getMinAudits is not exposed on the service', () => {
-      expect((loopService as any).getMinAudits).toBeUndefined()
+      expect((loop as any).getMinAudits).toBeUndefined()
     })
   })
 
@@ -248,7 +264,7 @@ describe('LoopService', () => {
         severity: 'bug',
         description: 'Test bug',
         scenario: 'test',
-        branch: 'test-branch',
+        loopName: 'test-loop',
       })
 
       const state = {
@@ -267,10 +283,33 @@ describe('LoopService', () => {
         auditCount: 0,
       }
 
-      const prompt = loopService.buildContinuationPrompt(state as any)
+      const prompt = loop.buildContinuationPrompt(state as any)
 
       expect(prompt).toContain('Outstanding Review Findings')
       expect(prompt).toContain('test.ts:1')
+    })
+
+    test('does not echo the original plan/prompt back into continuation', () => {
+      const state = {
+        active: true,
+        sessionId: 'test-session',
+        loopName: 'test-loop',
+        worktreeDir: '/tmp/test',
+        worktreeBranch: 'no-findings-branch',
+        iteration: 2,
+        maxIterations: 10,
+        startedAt: new Date().toISOString(),
+        prompt: 'ORIGINAL_PLAN_BODY_SHOULD_NOT_APPEAR',
+        phase: 'coding' as const,
+        errorCount: 0,
+        auditCount: 1,
+      }
+
+      const prompt = loop.buildContinuationPrompt(state as any, 'audit findings text')
+
+      expect(prompt).not.toContain('ORIGINAL_PLAN_BODY_SHOULD_NOT_APPEAR')
+      expect(prompt).toContain('audit findings text')
+      expect(prompt).toContain('Loop iteration 2')
     })
   })
 })
