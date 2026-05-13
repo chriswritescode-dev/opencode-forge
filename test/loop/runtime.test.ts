@@ -408,7 +408,7 @@ describe('Loop Runtime', () => {
   })
 
   describe('decomposing transition to coding', () => {
-    test('in-place loops select the new code session before prompting', async () => {
+    test('in-place loops create the new code session without selecting it', async () => {
       const { loop, clientState } = createRuntime()
       const state = makeState({
         phase: 'decomposing',
@@ -435,13 +435,13 @@ describe('Loop Runtime', () => {
         },
       })
 
-      expect(clientState.selectCalls).toEqual([{ sessionID: 'sess' }])
+      expect(clientState.selectCalls).toHaveLength(0)
       expect(clientState.createCalls[0].permission).toBeUndefined()
       expect(clientState.promptCalls[0]).toEqual({ sessionID: 'sess', agent: 'code' })
       expect(loopService.getActiveState(state.loopName)!.decompositionSessionId).toBeNull()
     })
 
-    test('worktree loops select the bound code session after transitioning', async () => {
+    test('worktree loops create the bound code session after transitioning', async () => {
       vi.useFakeTimers()
       try {
         const { loop, clientState } = createRuntime()
@@ -471,7 +471,7 @@ describe('Loop Runtime', () => {
           },
         })
 
-        expect(clientState.selectCalls).toEqual([{ sessionID: 'sess', workspace: 'ws-1' }])
+        expect(clientState.selectCalls).toHaveLength(0)
         expect(loopService.getActiveState(state.loopName)!.decompositionSessionId).toBeNull()
 
         expect(clientState.deleteCalls).toHaveLength(0)

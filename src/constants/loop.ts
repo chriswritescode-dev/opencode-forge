@@ -5,24 +5,19 @@ type PermissionRule = { permission: string; pattern: string; action: 'allow' | '
  *
  * All loops use worktree isolation with a blanket allow-all, plus
  * explicit deny rules for review tools, plan tools, and loop-management tools.
- * Sandbox loops allow external_directory access; non-sandbox loops deny it.
- *
- * @param options.isSandbox - Defaults to false (non-sandbox). Sandbox provides container isolation.
+ * External directory access is always denied to prevent unauthorized file system traversal.
  */
-export function buildLoopPermissionRuleset(
-  options?: { isSandbox?: boolean },
-): PermissionRule[] {
-  const isSandbox = options?.isSandbox ?? false
+export function buildLoopPermissionRuleset(): PermissionRule[] {
   const rules: PermissionRule[] = []
 
   // Blanket allow-all for worktree loops (isolated environment).
   rules.push({ permission: '*', pattern: '*', action: 'allow' })
 
-  // External directory access: explicit rule to avoid prompting.
+  // External directory access: always denied to prevent unauthorized file system traversal.
   rules.push({
     permission: 'external_directory',
     pattern: '*',
-    action: isSandbox ? 'allow' : 'deny',
+    action: 'deny',
   })
 
   // Code agent forbidden tools. Placed after *:allow so findLast picks them up.
@@ -51,15 +46,12 @@ export function buildLoopPermissionRuleset(
  * glob, codesearch, webfetch, websearch, list, task) and review
  * tools (review-write, review-delete), but denies all code mutation tools.
  *
- * - isSandbox: controls external_directory access (same as coding sessions)
+ * External directory access is always denied to prevent unauthorized file system traversal.
  */
-export function buildAuditSessionPermissionRuleset(
-  options?: { isSandbox?: boolean },
-): PermissionRule[] {
-  const isSandbox = options?.isSandbox ?? false
+export function buildAuditSessionPermissionRuleset(): PermissionRule[] {
   const rules: PermissionRule[] = [
     { permission: '*', pattern: '*', action: 'allow' },
-    { permission: 'external_directory', pattern: '*', action: isSandbox ? 'allow' : 'deny' },
+    { permission: 'external_directory', pattern: '*', action: 'deny' },
     // Audit sessions must not mutate code.
     { permission: 'edit',        pattern: '*', action: 'deny' },
     { permission: 'write',       pattern: '*', action: 'deny' },

@@ -2,11 +2,11 @@ import { describe, test, expect } from 'bun:test'
 import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../src/constants/loop'
 
 describe('buildLoopPermissionRuleset', () => {
-  test('worktree + sandbox ruleset: allow-all first, external_directory allowed, code-agent denies, then operational denies last', () => {
-    const rules = buildLoopPermissionRuleset({ isSandbox: true })
+  test('worktree + sandbox ruleset: allow-all first, external_directory denied, code-agent denies, then operational denies last', () => {
+    const rules = buildLoopPermissionRuleset()
     expect(rules).toEqual([
       { permission: '*',                  pattern: '*',          action: 'allow' },
-      { permission: 'external_directory', pattern: '*',          action: 'allow' },
+      { permission: 'external_directory', pattern: '*',          action: 'deny' },
       { permission: 'review-write',       pattern: '*',          action: 'deny' },
       { permission: 'review-delete',      pattern: '*',          action: 'deny' },
       { permission: 'plan_exit',          pattern: '*',          action: 'deny' },
@@ -18,7 +18,7 @@ describe('buildLoopPermissionRuleset', () => {
   })
 
   test('worktree + non-sandbox ruleset: allow-all first, external_directory denied, code-agent denies, then operational denies last', () => {
-    const rules = buildLoopPermissionRuleset({ isSandbox: false })
+    const rules = buildLoopPermissionRuleset()
     expect(rules).toEqual([
       { permission: '*',                  pattern: '*',          action: 'allow' },
       { permission: 'external_directory', pattern: '*',          action: 'deny' },
@@ -35,7 +35,7 @@ describe('buildLoopPermissionRuleset', () => {
   test('EMITS session-level denies for code-agent tool exclusions (auditor now runs in separate session)', () => {
     const required = ['review-write', 'review-delete', 'loop']
     for (const isSandbox of [true, false]) {
-      const rules = buildLoopPermissionRuleset({ isSandbox })
+      const rules = buildLoopPermissionRuleset()
       for (const tool of required) {
         expect(rules.find((r) => r.permission === tool && r.action === 'deny')).toBeDefined()
       }
@@ -44,10 +44,10 @@ describe('buildLoopPermissionRuleset', () => {
 })
 
 describe('buildAuditSessionPermissionRuleset', () => {
-  test('sandbox audit session ruleset: allow-all, external_directory allowed, mutation denies', () => {
-    const rules = buildAuditSessionPermissionRuleset({ isSandbox: true })
+  test('sandbox audit session ruleset: allow-all, external_directory denied, mutation denies', () => {
+    const rules = buildAuditSessionPermissionRuleset()
     expect(rules[0]).toEqual({ permission: '*', pattern: '*', action: 'allow' })
-    expect(rules[1]).toEqual({ permission: 'external_directory', pattern: '*', action: 'allow' })
+    expect(rules[1]).toEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
     
     // Mutation denies
     expect(rules.some(r => r.permission === 'edit' && r.pattern === '*' && r.action === 'deny')).toBe(true)
@@ -71,7 +71,7 @@ describe('buildAuditSessionPermissionRuleset', () => {
   })
 
   test('non-sandbox audit session ruleset: allow-all, external_directory denied, mutation denies', () => {
-    const rules = buildAuditSessionPermissionRuleset({ isSandbox: false })
+    const rules = buildAuditSessionPermissionRuleset()
     expect(rules[0]).toEqual({ permission: '*', pattern: '*', action: 'allow' })
     expect(rules[1]).toEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
     

@@ -17,11 +17,11 @@ describe('buildLoopPermissionRuleset', () => {
     ])
   })
 
-  it('isSandbox: true: rules[0] is *:*:allow; rules[1] is external_directory:*:allow; length 9', () => {
-    const rules = buildLoopPermissionRuleset({ isSandbox: true })
+  it('isSandbox: true: rules[0] is *:*:allow; rules[1] is external_directory:*:deny; length 9', () => {
+    const rules = buildLoopPermissionRuleset()
     expect(rules).toEqual([
       { permission: '*', pattern: '*', action: 'allow' },
-      { permission: 'external_directory', pattern: '*', action: 'allow' },
+      { permission: 'external_directory', pattern: '*', action: 'deny' },
       { permission: 'review-write', pattern: '*', action: 'deny' },
       { permission: 'review-delete', pattern: '*', action: 'deny' },
       { permission: 'plan_exit', pattern: '*', action: 'deny' },
@@ -52,13 +52,13 @@ describe('buildAuditSessionPermissionRuleset', () => {
     expect(rules[0]).toEqual({ permission: '*', pattern: '*', action: 'allow' })
   })
 
-  it('isSandbox: true: external_directory is allow', () => {
-    const rules = buildAuditSessionPermissionRuleset({ isSandbox: true })
-    expect(rules[1]).toEqual({ permission: 'external_directory', pattern: '*', action: 'allow' })
+  it('isSandbox: true: external_directory is deny', () => {
+    const rules = buildAuditSessionPermissionRuleset()
+    expect(rules[1]).toEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
   })
 
   it('isSandbox: false: external_directory is deny', () => {
-    const rules = buildAuditSessionPermissionRuleset({ isSandbox: false })
+    const rules = buildAuditSessionPermissionRuleset()
     expect(rules[1]).toEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
   })
 })

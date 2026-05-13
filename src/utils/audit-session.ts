@@ -28,7 +28,7 @@ interface RunAuditSessionResult {
 export async function createAuditSession(
   input: RunAuditSessionInput,
 ): Promise<RunAuditSessionResult | null> {
-  const permission = buildAuditSessionPermissionRuleset({ isSandbox: input.isSandbox })
+  const permission = buildAuditSessionPermissionRuleset()
   const created = await createLoopSessionWithWorkspace({
     v2: input.v2,
     title: formatAuditSessionTitle(input.loopName, {

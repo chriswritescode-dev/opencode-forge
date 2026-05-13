@@ -899,6 +899,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       if (!deps.sandboxManager) {
         deps.logger.log('handleStartLoop: sandbox manager not initialized; running in worktree-only mode')
       }
+
+      // Worktree mode requires a sandbox manager.
+      if (command.mode === 'worktree' && !deps.sandboxManager) {
+        return fail('disabled', 400, 'Sandbox required: worktree mode needs a sandbox manager')
+      }
       
       // Create builtin worktree workspace (single call — no separate worktree.create)
       const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
@@ -919,9 +924,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       const sandboxEnabled = isSandboxEnabled(deps.config, deps.sandboxManager)
       sandboxEnabledForLoop = sandboxEnabled
 
-      const permissionRuleset = buildLoopPermissionRuleset({
-        isSandbox: sandboxEnabled,
-      })
+      const permissionRuleset = buildLoopPermissionRuleset()
 
       // Create session (code session or decomposer session based on decomposer mode)
       if (isAgentDecomposer) {
@@ -1267,9 +1270,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             let decomposerSessionId: string
             let fallbackBoundWorkspaceId: string | undefined
             if (createdWorkspaceId) {
-              const fallbackPermission = buildLoopPermissionRuleset({
-                isSandbox: sandboxEnabledForLoop,
-              })
+              const fallbackPermission = buildLoopPermissionRuleset()
               const createResult = await createLoopSessionWithWorkspace({
                 v2: deps.v2,
                 title: formatDecomposerSessionTitle(uniqueLoopName),
@@ -1787,7 +1788,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     deps.logger.log(
       `handleRestartLoop: [perm-diag] worktree=${String(stoppedState.worktree)} sandbox=${String(restartSandbox)}`
     )
-    const permissionRuleset = buildLoopPermissionRuleset({ isSandbox: restartSandbox })
+    const permissionRuleset = buildLoopPermissionRuleset()
     const previousState = { ...stoppedState }
     let restartedState: import('../loop/state').LoopState | null = null
     let bindFailed = false
@@ -1900,9 +1901,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             if (decomposerConfig.onParseFailure === 'agent') {
               let didBindFail = false
               if (stoppedState.worktree && stoppedState.workspaceId) {
-                const restartPermission = buildLoopPermissionRuleset({
-                  isSandbox: restartSandbox,
-                })
+                const restartPermission = buildLoopPermissionRuleset()
                 const createResult = await createLoopSessionWithWorkspace({
                   v2: deps.v2,
                    title: formatDecomposerSessionTitle(stoppedState.loopName),
@@ -1947,9 +1946,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           deps.logger.log(`loop-restart: re-entering decomposition (status=${stoppedState.decompositionStatus})`)
           
           if (stoppedState.worktree && stoppedState.workspaceId) {
-            const restartPermission = buildLoopPermissionRuleset({
-              isSandbox: restartSandbox,
-            })
+            const restartPermission = buildLoopPermissionRuleset()
             const createResult = await createLoopSessionWithWorkspace({
               v2: deps.v2,
               title: formatDecomposerSessionTitle(stoppedState.loopName),
