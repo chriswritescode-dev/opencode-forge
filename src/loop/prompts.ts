@@ -19,6 +19,17 @@ export interface PromptContext {
   getCompletedSectionDigest(state: LoopState): SectionDigestEntry[]
 }
 
+function buildSandboxContextNote(state: LoopState): string {
+  if (!state.sandbox) return ''
+  return [
+    '',
+    '---',
+    '[Sandbox] This loop runs inside a container. Some paths, OS-specific commands, or tools may differ from your host system.',
+    'Focus on what the code does, not whether local tooling matches — this saves time and avoids false positives.',
+    '',
+  ].join('\n')
+}
+
 function formatSectionsSummary(digest: SectionDigestEntry[]): string {
   return digest.map(s => {
     let parts = `## Section ${s.index + 1}: ${s.title}`
@@ -53,7 +64,7 @@ export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, au
     prompt += `\n\n---\n⚠️ Outstanding Review Findings (${String(outstandingFindings.length)})\n\nThese review findings are blocking loop completion. Fix these issues so they pass the next audit review.\n\n${findingKeys}`
   }
 
-  return prompt
+  return prompt + buildSandboxContextNote(state)
 }
 
 export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
@@ -90,12 +101,12 @@ export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
     '- Outstanding `bug` findings block loop termination. The loop cannot complete while any `bug` finding remains.',
     '',
     'This is an automated loop — do not direct the agent to "create a plan" or "present for approval." Just report findings directly.',
-  ].join('\n')
+  ].join('\n') + buildSandboxContextNote(state)
 }
 
 export function buildDecomposerInitialPrompt(ctx: PromptContext, state: LoopState): string {
   const planText = ctx.getPlanTextForState(state) ?? 'Plan not found in plan store.'
-  return `[Decomposing master plan into section plans]\n\n${planText}`
+  return `[Decomposing master plan into section plans]\n\n${planText}` + buildSandboxContextNote(state)
 }
 
 export function buildSectionInitialPrompt(ctx: PromptContext, state: LoopState): string {
@@ -115,7 +126,7 @@ export function buildSectionInitialPrompt(ctx: PromptContext, state: LoopState):
 
   header += `\n\n## Section plan\n${section.content}`
 
-  return header
+  return header + buildSandboxContextNote(state)
 }
 
 export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): string {
@@ -135,7 +146,7 @@ export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): s
 
   header += `\n\n---\nAudit instructions:\n- Use review-read to see findings for this section.\n- Delete resolved findings.\n- Write severity: bug findings for unmet acceptance criteria or failed verification (defaults to current section_index).\n- When the section is clear, end your response with:\n${SECTION_SUMMARY_START_MARKER}\n### Done\n- bullets describing what was implemented\n### Deviations\n- bullets describing places implementation differs from this section plan, with reasons (or "none")\n### Follow-ups\n- bullets noting items deferred to later sections (or "none")\n${SECTION_SUMMARY_END_MARKER}`
 
-  return header
+  return header + buildSandboxContextNote(state)
 }
 
 export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopState, auditText: string): string {
@@ -163,7 +174,7 @@ export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopSt
     header += `\n\n---\n## Outstanding findings\n${findingKeys}`
   }
 
-  return header
+  return header + buildSandboxContextNote(state)
 }
 
 export function buildFinalAuditPrompt(ctx: PromptContext, state: LoopState): string {
@@ -179,5 +190,5 @@ export function buildFinalAuditPrompt(ctx: PromptContext, state: LoopState): str
 
   header += `\n\n---\nFinal audit instructions:\n- Verify the master plan's top-level Verification commands and acceptance criteria.\n- Use the per-section ### Deviations entries to interpret discrepancies. If a discrepancy is explained by a deviation, accept it unless it materially breaks the master plan's top-level Verification.\n- Write findings with sectionIndex pointing to the section you believe contains the bug. Use crossSection: true only when the bug spans multiple sections.\n- The loop terminates automatically when there are no outstanding bug-severity findings. Do not write findings unless they describe real, blocking issues.`
 
-  return header
+  return header + buildSandboxContextNote(state)
 }
