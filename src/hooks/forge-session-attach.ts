@@ -31,10 +31,16 @@ export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
     if (!ws) {
       await new Promise<void>((r) => setTimeout(r, 100))
       ws = await findWorkspaceById(deps, workspaceId)
-      if (!ws) return
+      if (!ws) {
+        deps.logger.log(`[forge-session-attach] skip session=${sessionId}: workspace ${workspaceId} not found via experimental.workspace.list (may be cross-project; check plugin directory)`)
+        return
+      }
     }
 
-    if (ws.type !== 'forge') return
+    if (ws.type !== 'forge') {
+      deps.logger.log(`[forge-session-attach] skip session=${sessionId} workspace=${workspaceId} reason=non-forge-type type=${ws.type}`)
+      return
+    }
 
     const cfg = (ws.extra ?? {}).forgeLoop as {
       loopName?: string
@@ -49,12 +55,32 @@ export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
       sandboxEnabled?: boolean
     } | undefined
 
-    if (!cfg || !cfg.loopName) return
+    if (!cfg || !cfg.loopName) {
+      const extraKeys = ws.extra ? Object.keys(ws.extra) : []
+      deps.logger.log(`[forge-session-attach] skip session=${sessionId} workspace=${workspaceId} reason=no-forgeLoop-config extraKeys=[${extraKeys.join(',')}]`)
+      return
+    }
+
+    const existing = deps.execDeps.loopsRepo.get(deps.projectId, cfg.loopName)
+    if (existing && existing.status === 'running') {
+      // Live loop with this name; skip to avoid double-attach.
+      deps.logger.log(`[forge-session-attach] skip session=${sessionId} loop=${cfg.loopName} reason=already-running`)
+      return
+    }
+    if (existing) {
+      deps.logger.log(`[forge-session-attach] session=${sessionId} loop=${cfg.loopName} existing-row-status=${existing.status} (will re-attach)`)
+    } else {
+      deps.logger.log(`[forge-session-attach] session=${sessionId} loop=${cfg.loopName} no existing row, proceeding`)
+    }
+
+    const resolvedHostSessionId = cfg.hostSessionId && cfg.hostSessionId.length > 0
+      ? cfg.hostSessionId
+      : sessionId
 
     const planSource: PlanSource =
       cfg.planSource === 'inline' && cfg.planText
         ? { kind: 'inline', planText: cfg.planText }
-        : { kind: 'stored', sessionId: cfg.hostSessionId ?? sessionId }
+        : { kind: 'stored', sessionId: resolvedHostSessionId }
 
     let planText: string
     if (planSource.kind === 'inline') {
@@ -62,14 +88,21 @@ export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
     } else {
       const row = deps.execDeps.plansRepo.getForSession(deps.projectId, planSource.sessionId)
       if (!row) {
-        deps.logger.error(`[forge-session-attach] plan not found for session=${planSource.sessionId}`)
+        deps.logger.error(`[forge-session-attach] plan not found for session=${planSource.sessionId} loop=${cfg.loopName} workspace=${workspaceId}`)
+        await failAndCleanup(
+          deps,
+          workspaceId,
+          ws.directory ?? deps.directory,
+          cfg.loopName,
+          'No stored plan found for this loop. Re-run "Execute → Loop" from a session that has a captured plan.',
+        )
         return
       }
       planText = row.content
     }
 
     try {
-      await attachLoopToSession(
+      const result = await attachLoopToSession(
         deps.execDeps,
         { surface: 'tui', projectId: deps.projectId, directory: ws.directory ?? deps.directory },
         {
@@ -79,7 +112,7 @@ export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
           loopName: cfg.loopName,
           displayName: cfg.title ?? cfg.loopName,
           executionName: cfg.loopName,
-          hostSessionId: cfg.hostSessionId,
+          hostSessionId: resolvedHostSessionId,
           executionModel: cfg.executionModel,
           auditorModel: cfg.auditorModel,
           maxIterations: cfg.maxIterations ?? 50,
@@ -91,9 +124,82 @@ export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
           startWatchdog: true,
         },
       )
+      if (!result.ok && result.code !== 'already_attached') {
+        await failAndCleanup(
+          deps,
+          workspaceId,
+          ws.directory ?? deps.directory,
+          cfg.loopName,
+          `Failed to start loop: ${result.message}`,
+        )
+      }
     } catch (err) {
       deps.logger.error('[forge-session-attach] attachLoopToSession threw', err)
+      await failAndCleanup(
+        deps,
+        workspaceId,
+        ws.directory ?? deps.directory,
+        cfg.loopName,
+        'Failed to start loop (unexpected error). Check forge logs.',
+      )
     }
+  }
+}
+
+async function failAndCleanup(
+  deps: ForgeSessionAttachHookDeps,
+  workspaceId: string,
+  directory: string,
+  loopName: string,
+  message: string,
+): Promise<void> {
+  publishAttachFailureToast(deps, directory, loopName, message)
+  await removeOrphanWorkspace(deps, workspaceId, loopName)
+}
+
+function publishAttachFailureToast(
+  deps: ForgeSessionAttachHookDeps,
+  directory: string,
+  loopName: string,
+  message: string,
+): void {
+  const tui = deps.v2.tui
+  if (!tui || typeof tui.publish !== 'function') return
+  tui.publish({
+    directory,
+    body: {
+      type: 'tui.toast.show',
+      properties: {
+        title: `Forge loop "${loopName}"`,
+        message,
+        variant: 'error',
+        duration: 6000,
+      },
+    },
+  }).catch((err) => {
+    deps.logger.error('[forge-session-attach] failed to publish toast', err)
+  })
+}
+
+async function removeOrphanWorkspace(
+  deps: ForgeSessionAttachHookDeps,
+  workspaceId: string,
+  loopName: string,
+): Promise<void> {
+  const workspaceApi = deps.v2.experimental?.workspace
+  if (!workspaceApi || typeof workspaceApi.remove !== 'function') {
+    deps.logger.error(`[forge-session-attach] cannot remove orphan workspace ${workspaceId} for loop ${loopName}: experimental.workspace.remove unavailable`)
+    return
+  }
+  try {
+    const result = await workspaceApi.remove({ id: workspaceId })
+    if ('error' in result && result.error) {
+      deps.logger.error(`[forge-session-attach] failed to remove orphan workspace ${workspaceId} for loop ${loopName}`, result.error)
+      return
+    }
+    deps.logger.log(`[forge-session-attach] removed orphan workspace ${workspaceId} for loop ${loopName}`)
+  } catch (err) {
+    deps.logger.error(`[forge-session-attach] threw removing orphan workspace ${workspaceId} for loop ${loopName}`, err)
   }
 }
 

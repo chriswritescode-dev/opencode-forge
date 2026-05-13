@@ -23,6 +23,7 @@ import { createSessionLoopResolver } from './services/session-loop-resolver'
 import { createPlanCaptureEventHook } from './hooks/plan-capture'
 import { createSectionCaptureHook } from './hooks/section-capture'
 import { createForgeSessionAttachHook } from './hooks/forge-session-attach'
+import { reconcileForgeWorkspaceLoops } from './services/reconcile-loops'
 
 export interface CreateParentSessionLookupOptions {
   v2: ReturnType<typeof createV2Client>
@@ -420,27 +421,41 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     }
 
     // Create forge-session-attach hook for triggering attachLoopToSession on session.created events
+    const forgeAttachExecDeps = {
+      projectId,
+      directory,
+      config,
+      logger,
+      dataDir,
+      v2,
+      legacyClient: client,
+      plansRepo,
+      loopsRepo,
+      loopHandler,
+      loop: loopHandler.loop,
+      sandboxManager,
+      sectionPlansRepo,
+      workspaceStatusRegistry,
+    }
     const forgeSessionAttachHook = createForgeSessionAttachHook({
       v2,
-      execDeps: {
-        projectId,
-        directory,
-        config,
-        logger,
-        dataDir,
-        v2,
-        legacyClient: client,
-        plansRepo,
-        loopsRepo,
-        loopHandler,
-        loop: loopHandler.loop,
-        sandboxManager,
-        sectionPlansRepo,
-        workspaceStatusRegistry,
-      },
+      execDeps: forgeAttachExecDeps,
       projectId,
       directory,
       logger,
+    })
+
+    // Reconcile existing forge workspaces whose session.created events were missed
+    // (e.g. plugin reload, TUI restart in a worktree directory). Runs async so we
+    // don't block plugin init.
+    void reconcileForgeWorkspaceLoops({
+      v2,
+      execDeps: forgeAttachExecDeps,
+      projectId,
+      directory,
+      logger,
+    }).catch((err) => {
+      logger.error('reconcileForgeWorkspaceLoops: top-level failure', err)
     })
 
     const tools = createTools(ctx)

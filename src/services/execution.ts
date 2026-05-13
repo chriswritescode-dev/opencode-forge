@@ -758,7 +758,7 @@ export async function attachLoopToSession(
   deps: ForgeExecutionServiceDeps,
   ctx: ForgeExecutionRequestContext,
   input: AttachLoopInput,
-): Promise<{ ok: true; loopName: string } | { ok: false; code: string; message: string }> {
+): Promise<{ ok: true; loopName: string } | { ok: false; code: 'already_attached' | 'internal_error' | 'prompt_failed'; message: string }> {
   const {
     sessionId,
     workspaceId,
@@ -782,6 +782,23 @@ export async function attachLoopToSession(
 
   const decomposerConfig = deps.config.decomposer ?? { enabled: true, mode: 'agent' as const, onParseFailure: 'legacy' as const, maxSections: 12 }
   const loopModel = parseModelString(executionModel)
+
+  const existing = deps.loopsRepo.get(ctx.projectId, loopName)
+  if (existing) {
+    if (existing.status === 'running') {
+      deps.logger.log(`attachLoopToSession: loop ${loopName} already attached (running), skipping`)
+      return { ok: false, code: 'already_attached', message: `Loop ${loopName} is already attached` }
+    }
+    // Terminal row from a prior run (cancelled/completed/errored/stalled).
+    // Clear it so the new attach can insert fresh state without colliding.
+    deps.logger.log(`attachLoopToSession: clearing terminal loop row ${loopName} (status=${existing.status}) before re-attach`)
+    try {
+      deps.loop.deleteState(loopName)
+    } catch (err) {
+      deps.logger.error(`attachLoopToSession: failed to clear terminal loop row ${loopName}`, err)
+      return { ok: false, code: 'internal_error', message: `Failed to clear stale loop state for ${loopName}` }
+    }
+  }
 
   try {
     // Persist loop state
@@ -1268,9 +1285,19 @@ export async function attachLoopToSession(
 
     return { ok: true, loopName }
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    const isAlreadyExists = msg.includes('already exists') || msg.includes('UNIQUE constraint failed')
     deps.logger.error('attachLoopToSession: unexpected error', err)
-    deps.loop.deleteState(loopName)
-    return { ok: false, code: 'internal_error', message: 'Failed to attach loop to session' }
+    if (!isAlreadyExists) {
+      deps.loop.deleteState(loopName)
+    } else {
+      deps.logger.log(`attachLoopToSession: preserving existing loop ${loopName} despite collision`)
+    }
+    return {
+      ok: false,
+      code: isAlreadyExists ? 'already_attached' : 'internal_error',
+      message: isAlreadyExists ? `Loop ${loopName} already attached` : 'Failed to attach loop to session',
+    }
   }
 }
 

@@ -374,4 +374,159 @@ describe('attachLoopToSession', () => {
     const state = (deps.loop as any).getActiveState('fail-loop')
     expect(state).toBeNull()
   })
+
+  test('attachLoopToSession does NOT call loop.deleteState when setState throws because loop already exists', async () => {
+    const { deps } = buildDeps()
+
+    const deleteStateSpy = vi.spyOn(deps.loop, 'deleteState')
+    ;(deps.loop as any).setState = vi.fn().mockImplementation(() => {
+      throw new Error('setState: loop "my-feature" already exists')
+    })
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        sessionId: 'sess_dup',
+        workspaceId: 'ws_dup',
+        worktreeDir: '/tmp/wt/dup',
+        loopName: 'my-feature',
+        displayName: 'My Feature',
+        executionName: 'my-feature',
+        maxIterations: 50,
+        sandboxEnabled: false,
+        decomposerMode: 'disabled',
+        planText: '# Plan\n\nAlready exists.',
+        selectSession: false,
+        selectSessionTiming: 'after-prompt',
+        startWatchdog: false,
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.code).toBe('already_attached')
+    }
+
+    expect(deleteStateSpy).not.toHaveBeenCalled()
+  })
+
+  test('attachLoopToSession clears terminal loop row before re-attaching (cancelled)', async () => {
+    const { deps, loopsRepo, loopService } = buildDeps()
+
+    // Pre-seed a terminal loop row.
+    const baseState = {
+      active: false,
+      sessionId: 'sess_old',
+      loopName: 'reusable-loop',
+      worktreeDir: '/tmp/wt/old',
+      projectDir: '/tmp/test',
+      iteration: 5,
+      maxIterations: 50,
+      startedAt: new Date(Date.now() - 100000).toISOString(),
+      phase: 'coding' as const,
+      worktree: true,
+      auditCount: 0,
+      errorCount: 0,
+      decompositionStatus: 'completed' as const,
+      decompositionMode: 'agent' as const,
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+      sandbox: false,
+    }
+    loopService.setState('reusable-loop', baseState as any)
+    loopService.setStatus('reusable-loop', 'cancelled')
+
+    const existingBefore = loopsRepo.get(PROJECT_ID, 'reusable-loop')
+    expect(existingBefore?.status).toBe('cancelled')
+
+    const deleteStateSpy = vi.spyOn(deps.loop, 'deleteState')
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        sessionId: 'sess_new',
+        workspaceId: 'ws_new',
+        worktreeDir: '/tmp/wt/new',
+        loopName: 'reusable-loop',
+        displayName: 'Reusable Loop',
+        executionName: 'reusable-loop',
+        maxIterations: 50,
+        sandboxEnabled: false,
+        decomposerMode: 'disabled',
+        planText: '# Plan\n\nRevive me.',
+        selectSession: false,
+        selectSessionTiming: 'after-prompt',
+        startWatchdog: false,
+      },
+    )
+
+    expect(deleteStateSpy).toHaveBeenCalledWith('reusable-loop')
+    expect(result.ok).toBe(true)
+    // Re-inserted with the new session.
+    const after = loopsRepo.get(PROJECT_ID, 'reusable-loop')
+    expect(after?.currentSessionId).toBe('sess_new')
+    expect(after?.status).toBe('running')
+  })
+
+  test('attachLoopToSession returns already_attached when existing row is running', async () => {
+    const { deps, loopService } = buildDeps()
+
+    loopService.setState('live-loop', {
+      active: true,
+      sessionId: 'sess_existing',
+      loopName: 'live-loop',
+      worktreeDir: '/tmp/wt/live',
+      projectDir: '/tmp/test',
+      iteration: 1,
+      maxIterations: 50,
+      startedAt: new Date().toISOString(),
+      phase: 'coding',
+      worktree: true,
+      auditCount: 0,
+      errorCount: 0,
+      decompositionStatus: 'completed',
+      decompositionMode: 'agent',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+      sandbox: false,
+    } as any)
+
+    const deleteStateSpy = vi.spyOn(deps.loop, 'deleteState')
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        sessionId: 'sess_duplicate',
+        workspaceId: 'ws_x',
+        worktreeDir: '/tmp/wt/live',
+        loopName: 'live-loop',
+        displayName: 'Live Loop',
+        executionName: 'live-loop',
+        maxIterations: 50,
+        sandboxEnabled: false,
+        decomposerMode: 'disabled',
+        planText: '# Plan',
+        selectSession: false,
+        selectSessionTiming: 'after-prompt',
+        startWatchdog: false,
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.code).toBe('already_attached')
+    }
+    expect(deleteStateSpy).not.toHaveBeenCalled()
+  })
 })

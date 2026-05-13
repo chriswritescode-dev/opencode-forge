@@ -70,6 +70,57 @@ function tuiDebug(message: string): void {
   }
 }
 
+export interface AwaitWorkspaceConnectedResult {
+  connected: boolean
+  source: 'cached' | 'polled' | 'timeout' | 'error'
+  elapsedMs: number
+  lastStatus?: string
+}
+
+/**
+ * Polls `experimental.workspace.status` until the target workspace reports
+ * `connected`, or until the timeout elapses. Mirrors the awaitConnected
+ * gating pattern from `src/services/execution.ts:721` so that
+ * `tui.selectSession` does not fire before the user's TUI has adopted the
+ * workspace (which causes the call to silently no-op).
+ */
+export async function awaitWorkspaceConnected(
+  api: TuiPluginApi,
+  workspaceId: string,
+  timeoutMs = 5000,
+  pollIntervalMs = 100,
+): Promise<AwaitWorkspaceConnectedResult> {
+  const start = Date.now()
+  let lastStatus: string | undefined
+  try {
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const result = await api.client.experimental.workspace.status()
+        const entries = ((result as { data?: unknown } | undefined)?.data ?? []) as Array<{ workspaceID: string; status: string }>
+        const entry = entries.find((e) => e.workspaceID === workspaceId)
+        if (entry) {
+          lastStatus = entry.status
+          if (entry.status === 'connected') {
+            const elapsedMs = Date.now() - start
+            const source: AwaitWorkspaceConnectedResult['source'] = elapsedMs <= pollIntervalMs ? 'cached' : 'polled'
+            tuiDebug(`awaitWorkspaceConnected: workspace=${workspaceId} connected elapsedMs=${elapsedMs} source=${source}`)
+            return { connected: true, source, elapsedMs, lastStatus }
+          }
+        }
+      } catch (err) {
+        tuiDebug(`awaitWorkspaceConnected: status() failed workspace=${workspaceId} error=${(err as Error).message}`)
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs))
+    }
+    const elapsedMs = Date.now() - start
+    tuiDebug(`awaitWorkspaceConnected: workspace=${workspaceId} timeout after ${elapsedMs}ms lastStatus=${lastStatus ?? 'unknown'}`)
+    return { connected: false, source: 'timeout', elapsedMs, lastStatus }
+  } catch (err) {
+    tuiDebug(`awaitWorkspaceConnected: unexpected error workspace=${workspaceId} error=${(err as Error).message}`)
+    return { connected: false, source: 'error', elapsedMs: Date.now() - start, lastStatus }
+  }
+}
+
 function deriveLoopNameFromTitle(title: string): string {
   return title
     .toLowerCase()
@@ -81,12 +132,21 @@ function deriveLoopNameFromTitle(title: string): string {
 
 export async function selectTuiSession(api: TuiPluginApi, sessionId: string, workspaceId?: string): Promise<void> {
   try {
+    api.route.navigate('session', { sessionID: sessionId })
+    tuiDebug(`selectTuiSession: route.navigate session=${sessionId} workspace=${workspaceId ?? 'none'}`)
+    return
+  } catch (err) {
+    tuiDebug(`selectTuiSession: route.navigate failed session=${sessionId} error=${(err as Error).message}`)
+  }
+
+  try {
     await api.client.tui.selectSession({
       sessionID: sessionId,
       ...(workspaceId ? { workspace: workspaceId } : {}),
     })
-  } catch {
-    try { api.route.navigate('session', { sessionID: sessionId }) } catch {}
+    tuiDebug(`selectTuiSession: sdk.selectSession session=${sessionId} workspace=${workspaceId ?? 'none'}`)
+  } catch (err) {
+    tuiDebug(`selectTuiSession: sdk.selectSession failed session=${sessionId} error=${(err as Error).message}`)
   }
 }
 
@@ -204,14 +264,27 @@ export async function connectForgeProject(
 
       if (req.mode === 'loop') {
         const loopName = deriveLoopNameFromTitle(req.title)
-        const forgeLoop: ForgeLoopExtra = {
-          loopName,
-          hostSessionId: sessionId,
-          title: req.title,
-          executionModel: req.executionModel,
-          auditorModel: req.auditorModel,
-          planSource: 'stored',
+        const hasHostSession = !!sessionId
+        if (!hasHostSession) {
+          tuiDebug(`plan.execute(loop): no hostSessionId; using inline plan source for loop=${loopName}`)
         }
+        const forgeLoop: ForgeLoopExtra = hasHostSession
+          ? {
+            loopName,
+            hostSessionId: sessionId,
+            title: req.title,
+            executionModel: req.executionModel,
+            auditorModel: req.auditorModel,
+            planSource: 'stored',
+          }
+          : {
+            loopName,
+            title: req.title,
+            executionModel: req.executionModel,
+            auditorModel: req.auditorModel,
+            planSource: 'inline',
+            planText: req.plan,
+          }
         try {
           const wsRes = await api.client.experimental.workspace.create({
             type: 'forge',
@@ -224,14 +297,17 @@ export async function connectForgeProject(
           await api.client.experimental.workspace.syncList().catch(() => undefined)
 
           const sesRes = await api.client.session.create({
-            workspace: workspace.id,
+            workspaceID: workspace.id,
             title: req.title.length > 60 ? `${req.title.substring(0, 57)}...` : req.title,
             directory: workspace.directory ?? undefined,
           })
           if (sesRes.error || !sesRes.data) return null
           const session = sesRes.data
 
-          await api.client.tui.selectSession({ sessionID: session.id, workspace: workspace.id }).catch(() => undefined)
+          const connected = await awaitWorkspaceConnected(api, workspace.id, 5000, 100)
+          tuiDebug(`plan.execute(loop): workspace ${workspace.id} connected=${connected.connected} source=${connected.source} elapsedMs=${connected.elapsedMs} lastStatus=${connected.lastStatus ?? 'unknown'}`)
+
+          await selectTuiSession(api, session.id, workspace.id)
 
           await api.client.experimental.workspace.syncList().catch(() => undefined)
 

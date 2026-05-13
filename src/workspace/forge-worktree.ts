@@ -12,8 +12,45 @@
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import type { WorkspaceStatusRegistry } from '../utils/workspace-status-registry'
 
+export interface ForgeWorkspaceEntry {
+  id: string
+  name?: string
+  type?: string
+  branch?: string | null
+  directory?: string | null
+  extra?: Record<string, unknown> | null
+}
+
+/**
+ * Look up an existing forge workspace by loop name. Returns the first match
+ * whose `type === 'forge'` and `name === loopName`. Used to avoid creating
+ * duplicate workspaces when the same loop is restarted.
+ */
+export async function findExistingForgeWorkspace(
+  client: OpencodeClient,
+  loopName: string,
+  logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void },
+): Promise<ForgeWorkspaceEntry | null> {
+  const workspaceApi = client.experimental?.workspace
+  if (!workspaceApi || typeof workspaceApi.list !== 'function') return null
+  try {
+    const result = await workspaceApi.list()
+    const entries = ((result as { data?: unknown[] } | undefined)?.data ?? []) as ForgeWorkspaceEntry[]
+    const match = entries.find((entry) => entry.type === 'forge' && entry.name === loopName) ?? null
+    if (match) {
+      (logger ?? console).log?.(`findExistingForgeWorkspace: found existing workspace ${match.id} for loop ${loopName}`)
+    }
+    return match
+  } catch (err) {
+    (logger ?? console).error('findExistingForgeWorkspace: workspace.list threw', err)
+    return null
+  }
+}
+
 /**
  * Creates a Forge workspace via opencode's experimental workspace API with the `forge` adapter.
+ * If a forge workspace with the same `loopName` already exists, it is reused instead of
+ * creating a new one (prevents duplicate workspace accumulation across retries).
  *
  * Uses `experimental.workspace.create({ type: 'forge', branch: null })` so the
  * workspace appears as fully connected (green dot) in the TUI.
@@ -40,6 +77,16 @@ export async function createBuiltinWorktreeWorkspace(
   if (!options.directory) {
     (logger ?? console).error('createBuiltinWorktreeWorkspace: options.directory is required')
     return null
+  }
+  // Reuse existing workspace if one already exists for this loop.
+  const existing = await findExistingForgeWorkspace(client, options.loopName, logger)
+  if (existing && existing.id && existing.directory) {
+    (logger ?? console).log?.(`createBuiltinWorktreeWorkspace: reusing existing workspace ${existing.id} for loop ${options.loopName}`)
+    return {
+      workspaceId: existing.id,
+      directory: existing.directory,
+      branch: existing.branch ?? '',
+    }
   }
   try {
     const _wsStart = Date.now()
