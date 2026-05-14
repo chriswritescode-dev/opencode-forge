@@ -727,4 +727,219 @@ describe('createForgeSessionAttachHook', () => {
     )
     expect(loggerErrorSpy).not.toHaveBeenCalled()
   })
+
+  test('passes sessionInfo.directory to experimental.workspace.list', async () => {
+    const forgeWorkspaceWithForgeLoop = {
+      id: 'ws_forge_dir',
+      type: 'forge',
+      directory: '/tmp/cross-proj',
+      extra: {
+        loopName: 'cross-loop',
+        projectDirectory: '/tmp/cross-proj',
+        forgeLoop: {
+          loopName: 'cross-loop',
+          hostSessionId: 'host_sess',
+          title: 'Cross Project Loop',
+          planSource: 'inline',
+          planText: '# Plan\n\nCross-project.',
+        },
+      },
+    }
+    const workspaceList = vi.fn().mockResolvedValue({ data: [forgeWorkspaceWithForgeLoop] })
+    const deps = buildHookDeps({ workspaceList })
+
+    const handler = createForgeSessionAttachHook(deps as any)
+
+    await handler({
+      event: {
+        type: 'session.created',
+        properties: {
+          info: { id: 'new_sess', workspaceID: 'ws_forge_dir', directory: '/tmp/cross-proj', projectID: 'proj_other' },
+        },
+      },
+    })
+
+    expect(workspaceList).toHaveBeenCalledWith({ directory: '/tmp/cross-proj' })
+    expect(mockAttachLoop).toHaveBeenCalled()
+  })
+
+  test('omits directory parameter when sessionInfo.directory is missing', async () => {
+    const forgeWorkspaceWithForgeLoop = {
+      id: 'ws_forge_nodir',
+      type: 'forge',
+      directory: '/tmp/same-proj',
+      extra: {
+        loopName: 'nodir-loop',
+        projectDirectory: '/tmp/same-proj',
+        forgeLoop: {
+          loopName: 'nodir-loop',
+          hostSessionId: 'host_sess',
+          title: 'No Dir Loop',
+          planSource: 'inline',
+          planText: '# Plan\n\nNo dir.',
+        },
+      },
+    }
+    const workspaceList = vi.fn().mockResolvedValue({ data: [forgeWorkspaceWithForgeLoop] })
+    const deps = buildHookDeps({ workspaceList })
+
+    const handler = createForgeSessionAttachHook(deps as any)
+
+    await handler({
+      event: {
+        type: 'session.created',
+        properties: {
+          info: { id: 'new_sess_no_dir', workspaceID: 'ws_forge_nodir' },
+        },
+      },
+    })
+
+    expect(workspaceList).toHaveBeenCalledWith(undefined)
+    expect(mockAttachLoop).toHaveBeenCalled()
+  })
+
+  test('uses sessionInfo.projectID for loopsRepo.get and attachLoopToSession ctx', async () => {
+    const loopsRepoGet = vi.fn().mockReturnValue(null)
+    const plansRepoGetForSession = vi.fn().mockReturnValue({ content: 'plan text' })
+    const workspaceList = vi.fn().mockResolvedValue({
+      data: [
+        {
+          id: 'ws_forge_pid',
+          type: 'forge',
+          directory: '/tmp/wt/pid',
+          extra: {
+            loopName: 'demo',
+            projectDirectory: '/tmp/wt/pid',
+            forgeLoop: {
+              loopName: 'demo',
+              hostSessionId: 'host_sess',
+              title: 'Demo Loop',
+              planSource: 'stored',
+            },
+          },
+        },
+      ],
+    })
+    const deps = buildHookDeps({
+      loopsRepoGet,
+      plansRepoGetForSession,
+      workspaceList,
+    })
+    deps.projectId = 'plugin_proj'
+
+    const handler = createForgeSessionAttachHook(deps as any)
+
+    await handler({
+      event: {
+        type: 'session.created',
+        properties: {
+          info: { id: 'new_sess', workspaceID: 'ws_forge_pid', directory: '/tmp/wt/pid', projectID: 'session_proj' },
+        },
+      },
+    })
+
+    expect(loopsRepoGet).toHaveBeenCalledWith('session_proj', 'demo')
+    expect(plansRepoGetForSession).toHaveBeenCalledWith('session_proj', 'host_sess')
+    expect(mockAttachLoop).toHaveBeenCalledTimes(1)
+    const [, ctx] = mockAttachLoop.mock.calls[0]
+    expect(ctx.projectId).toBe('session_proj')
+  })
+
+  test('falls back to deps.projectId when sessionInfo.projectID is missing', async () => {
+    const loopsRepoGet = vi.fn().mockReturnValue(null)
+    const plansRepoGetForSession = vi.fn().mockReturnValue({ content: 'plan text' })
+    const workspaceList = vi.fn().mockResolvedValue({
+      data: [
+        {
+          id: 'ws_forge_fb',
+          type: 'forge',
+          directory: '/tmp/wt/fb',
+          extra: {
+            loopName: 'fallback-loop',
+            projectDirectory: '/tmp/wt/fb',
+            forgeLoop: {
+              loopName: 'fallback-loop',
+              hostSessionId: 'host_sess',
+              title: 'Fallback Loop',
+              planSource: 'stored',
+            },
+          },
+        },
+      ],
+    })
+    const deps = buildHookDeps({
+      loopsRepoGet,
+      plansRepoGetForSession,
+      workspaceList,
+    })
+    deps.projectId = 'plugin_proj'
+
+    const handler = createForgeSessionAttachHook(deps as any)
+
+    await handler({
+      event: {
+        type: 'session.created',
+        properties: {
+          info: { id: 'new_sess_fb', workspaceID: 'ws_forge_fb', directory: '/tmp/wt/fb' },
+        },
+      },
+    })
+
+    expect(loopsRepoGet).toHaveBeenCalledWith('plugin_proj', 'fallback-loop')
+    expect(plansRepoGetForSession).toHaveBeenCalledWith('plugin_proj', 'host_sess')
+    expect(mockAttachLoop).toHaveBeenCalledTimes(1)
+    const [, ctx] = mockAttachLoop.mock.calls[0]
+    expect(ctx.projectId).toBe('plugin_proj')
+  })
+
+  test('publishes a tui.toast when workspace is unfindable after retry', async () => {
+    const workspaceList = vi.fn().mockResolvedValue({ data: [] })
+    const tuiPublish = vi.fn().mockResolvedValue({ data: {} })
+    const deps = buildHookDeps({ workspaceList, tuiPublish })
+
+    const handler = createForgeSessionAttachHook(deps as any)
+
+    await handler({
+      event: {
+        type: 'session.created',
+        properties: {
+          info: { id: 'new_sess', workspaceID: 'ws_missing', directory: '/tmp/cross-proj' },
+        },
+      },
+    })
+
+    expect(tuiPublish).toHaveBeenCalledTimes(1)
+    expect(tuiPublish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        directory: '/tmp/cross-proj',
+        body: expect.objectContaining({
+          type: 'tui.toast.show',
+          properties: expect.objectContaining({
+            variant: 'error',
+          }),
+        }),
+      }),
+    )
+    expect(mockAttachLoop).not.toHaveBeenCalled()
+  })
+
+  test('does not publish a toast when sessionInfo.directory is missing', async () => {
+    const workspaceList = vi.fn().mockResolvedValue({ data: [] })
+    const tuiPublish = vi.fn().mockResolvedValue({ data: {} })
+    const deps = buildHookDeps({ workspaceList, tuiPublish })
+
+    const handler = createForgeSessionAttachHook(deps as any)
+
+    await handler({
+      event: {
+        type: 'session.created',
+        properties: {
+          info: { id: 'new_sess_no_dir', workspaceID: 'ws_missing' },
+        },
+      },
+    })
+
+    expect(tuiPublish).not.toHaveBeenCalled()
+    expect(mockAttachLoop).not.toHaveBeenCalled()
+  })
 })
