@@ -436,6 +436,45 @@ The architect is read-only and must output exactly one final plan between `<!-- 
 
 The user can view the cached plan at any time from the **sidebar** (Load plan button) or the **command palette** (`Forge: View plan`). The plan viewer renders full GitHub-flavored markdown and supports inline editing — the user can modify the plan directly before approving.
 
+### Plan Storage & Extraction
+
+Plans are captured automatically from the architect's response messages and persisted through two complementary mechanisms:
+
+#### SQL Storage (primary)
+
+Plans live in an SQLite database at `<dataDir>/forge.db`. Two tables store plan content:
+
+| Table | Purpose |
+|-------|---------|
+| `plans` | Session-scoped or loop-scoped plans. Each row holds the full plan text, scoped to either a `session_id` or a `loop_name` — never both. |
+| `section_plans` | Decomposed sections of a plan for loop execution. Tracks per-section status (`pending`, `in_progress`, `completed`, `failed`), attempt counts, and summary fields. |
+| `loop_large_fields` | Stores the full prompt/plan text associated with a loop execution, keeping large text out of the main `loops` table. |
+
+#### Filesystem Archive (auto-save only)
+
+When `tui.autoSavePlans` is enabled in the config, plans are also saved as markdown files on disk:
+
+```
+<dataDir>/plans/<projectId>/<sha256-hex>.md
+```
+
+Filenames are derived from the SHA-256 hash of the plan content. Archived plans are pruned after 7 days by default (configurable via `tui.planArchiveTtlMs`). This archive is read-only — it serves the Load Plan dialog but is not used during active execution.
+
+#### How Plans Are Extracted
+
+Plans are extracted from conversation messages in two stages:
+
+1. **Marker detection** — Forge scans assistant messages line-by-line looking for the `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` HTML comment markers. It validates that exactly one start/end pair exists, with non-empty content between them.
+
+2. **Message scanning** — Messages are scanned newest-first. For each message, all text parts are concatenated and marker extraction is attempted. The first valid plan found is returned.
+
+Two capture paths keep the plan store up-to-date:
+
+- **Real-time streaming capture** — Triggered on every `message.part.updated` event. The plan text is extracted, paths are sanitized (absolute host paths stripped, made repo-relative), and written to the DB if changed.
+- **Session-idle snapshot capture** — When a session goes idle, the last 20 messages are fetched and scanned for a valid plan. This acts as a fallback to ensure the plan is captured even if streaming missed it.
+
+When reading a plan (e.g., via `plan-read` tool or TUI), Forge resolves it in priority order: `loop_large_fields.prompt` → `plans.getForLoop()` → `plans.getForSession()`.
+
 ### Execution
 
 After the architect presents a summary, the user chooses an execution mode from the execution dialog:

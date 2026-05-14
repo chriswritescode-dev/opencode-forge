@@ -24,10 +24,8 @@ import { extractSections } from '../utils/section-capture'
 import { decomposeDeterministically } from '../services/deterministic-decomposer'
 import { markPromptSent, clearPromptPending, sessionsAwaitingBusy, isAwaitingBusy, isAwaitingBusyExpired } from './idle-gate'
 import {
-  markPromptInFlight,
   clearPromptInFlight,
-  assertNoPromptInFlight,
-  ConcurrentPromptError,
+  withInFlightGuard,
 } from './in-flight-guard'
 import type { TerminationReason } from './termination'
 import { terminationStatusFor, terminationReasonToString } from './termination'
@@ -189,43 +187,37 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       const sendWithModel = async () => {
         const freshState = loopService.getActiveState(loopName)
         if (!freshState?.active) throw new Error('loop_cancelled')
-        try {
-          assertNoPromptInFlight(loopName, sessionId, 'auditor-loop', logger)
-        } catch (err) {
-          if (err instanceof ConcurrentPromptError) return { error: err }
-          throw err
-        }
-        markPromptInFlight(loopName, sessionId, 'auditor-loop')
         markPromptSent(loopName, sessionId, logger)
-        const result = await promptAuditSessionWithFallback({
-          sessionId,
-          worktreeDir: freshState.worktreeDir,
-          workspaceId: freshState.workspaceId,
-          prompt: promptText,
-          auditorModel,
-        })
-        clearPromptInFlight(loopName)
+        const guarded = await withInFlightGuard(
+          { loopName, sessionId, agent: 'auditor-loop', logger },
+          () => promptAuditSessionWithFallback({
+            sessionId,
+            worktreeDir: freshState.worktreeDir,
+            workspaceId: freshState.workspaceId,
+            prompt: promptText,
+            auditorModel,
+          }),
+        )
+        if (!guarded.ok) return { error: guarded.error }
+        const result = guarded.value
         return result.ok ? { data: true } : { error: result.error }
       }
 
       const sendWithoutModel = async () => {
         const freshState = loopService.getActiveState(loopName)
         if (!freshState?.active) throw new Error('loop_cancelled')
-        try {
-          assertNoPromptInFlight(loopName, sessionId, 'auditor-loop', logger)
-        } catch (err) {
-          if (err instanceof ConcurrentPromptError) return { error: err }
-          throw err
-        }
-        markPromptInFlight(loopName, sessionId, 'auditor-loop')
         markPromptSent(loopName, sessionId, logger)
-        const result = await promptAuditSessionWithFallback({
-          sessionId,
-          worktreeDir: freshState.worktreeDir,
-          workspaceId: freshState.workspaceId,
-          prompt: promptText,
-        })
-        clearPromptInFlight(loopName)
+        const guarded = await withInFlightGuard(
+          { loopName, sessionId, agent: 'auditor-loop', logger },
+          () => promptAuditSessionWithFallback({
+            sessionId,
+            worktreeDir: freshState.worktreeDir,
+            workspaceId: freshState.workspaceId,
+            prompt: promptText,
+          }),
+        )
+        if (!guarded.ok) return { error: guarded.error }
+        const result = guarded.value
         return result.ok ? { data: true } : { error: result.error }
       }
 
@@ -242,42 +234,38 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const sendWithModel = async () => {
       const freshState = loopService.getActiveState(loopName)
       if (!freshState?.active) throw new Error('loop_cancelled')
-      try {
-        assertNoPromptInFlight(loopName, sessionId, 'code', logger)
-      } catch (err) {
-        if (err instanceof ConcurrentPromptError) return { error: err }
-        throw err
-      }
-      markPromptInFlight(loopName, sessionId, 'code')
       markPromptSent(loopName, sessionId, logger)
-      return v2Client.session.promptAsync({
-        sessionID: sessionId,
-        directory: freshState.worktreeDir,
-        ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
-        agent: 'code',
-        parts: [{ type: 'text' as const, text: promptText }],
-        model: effectiveModel,
-      })
+      const guarded = await withInFlightGuard(
+        { loopName, sessionId, agent: 'code', logger },
+        () => v2Client.session.promptAsync({
+          sessionID: sessionId,
+          directory: freshState.worktreeDir,
+          ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
+          agent: 'code',
+          parts: [{ type: 'text' as const, text: promptText }],
+          model: effectiveModel,
+        }),
+      )
+      if (!guarded.ok) return { error: guarded.error }
+      return guarded.value
     }
 
     const sendWithoutModel = async () => {
       const freshState = loopService.getActiveState(loopName)
       if (!freshState?.active) throw new Error('loop_cancelled')
-      try {
-        assertNoPromptInFlight(loopName, sessionId, 'code', logger)
-      } catch (err) {
-        if (err instanceof ConcurrentPromptError) return { error: err }
-        throw err
-      }
-      markPromptInFlight(loopName, sessionId, 'code')
       markPromptSent(loopName, sessionId, logger)
-      return v2Client.session.promptAsync({
-        sessionID: sessionId,
-        directory: freshState.worktreeDir,
-        ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
-        agent: 'code',
-        parts: [{ type: 'text' as const, text: promptText }],
-      })
+      const guarded = await withInFlightGuard(
+        { loopName, sessionId, agent: 'code', logger },
+        () => v2Client.session.promptAsync({
+          sessionID: sessionId,
+          directory: freshState.worktreeDir,
+          ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
+          agent: 'code',
+          parts: [{ type: 'text' as const, text: promptText }],
+        }),
+      )
+      if (!guarded.ok) return { error: guarded.error }
+      return guarded.value
     }
 
     const { result, usedModel } = await retryWithModelFallback(sendWithModel, sendWithoutModel, effectiveModel, logger)
@@ -604,11 +592,21 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     assistantErrorDetected: boolean,
     errorContext: string,
   ): Promise<void> {
+    const previousSessionId = currentState.sessionId
     let activeSessionId = currentState.sessionId
     try {
       activeSessionId = await rotateSession(loopName, currentState)
     } catch (err) {
       logger.error(`Loop: session rotation failed, continuing with existing session`, err)
+    }
+
+    if (activeSessionId !== previousSessionId) {
+      scheduleSessionDelete({
+        loopName,
+        sessionId: previousSessionId,
+        directory: currentState.worktreeDir,
+        context: `after audit rotation (${errorContext})`,
+      })
     }
 
     loopService.replaceSession(loopName, {
@@ -641,23 +639,22 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       const retryFn = async () => {
         const freshState = loopService.getActiveState(loopName)
         if (!freshState?.active) throw new Error('loop_cancelled')
-        try {
-          assertNoPromptInFlight(loopName, activeSessionId, 'code', logger)
-        } catch (err) {
-          if (err instanceof ConcurrentPromptError) { await handlePromptError(loopName, currentState, `retry failed ${errorContext}`, err); return }
-          throw err
+        const guarded = await withInFlightGuard(
+          { loopName, sessionId: activeSessionId, agent: 'code', logger },
+          () => v2Client.session.promptAsync({
+            sessionID: activeSessionId,
+            directory: freshState.worktreeDir,
+            ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
+            agent: 'code',
+            parts: [{ type: 'text' as const, text: continuationPrompt }],
+          }),
+        )
+        if (!guarded.ok) {
+          await handlePromptError(loopName, currentState, `retry failed ${errorContext}`, guarded.error)
+          return
         }
-        markPromptInFlight(loopName, activeSessionId, 'code')
-        const result = await v2Client.session.promptAsync({
-          sessionID: activeSessionId,
-          directory: freshState.worktreeDir,
-          ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
-          agent: 'code',
-          parts: [{ type: 'text' as const, text: continuationPrompt }],
-        })
-        clearPromptInFlight(loopName)
-        if (result.error) {
-          await handlePromptError(loopName, currentState, `retry failed ${errorContext}`, result.error)
+        if (guarded.value.error) {
+          await handlePromptError(loopName, currentState, `retry failed ${errorContext}`, guarded.value.error)
           return
         }
       }
@@ -674,7 +671,17 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   async function rotateToCodingAfterAuditFailure(loopName: string, state: LoopState, reason: string): Promise<void> {
+    const previousSessionId = state.sessionId
     const newSessionId = await rotateSession(loopName, state)
+
+    if (newSessionId !== previousSessionId) {
+      scheduleSessionDelete({
+        loopName,
+        sessionId: previousSessionId,
+        directory: state.worktreeDir,
+        context: `after audit failure (${reason})`,
+      })
+    }
 
     loopService.replaceSession(loopName, {
       newSessionId,
@@ -747,22 +754,21 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         const retryFn = async () => {
           const fresh = loopService.getActiveState(loopName)
           if (!fresh?.active || fresh.phase !== 'coding' || fresh.sessionId !== codeSessionId) throw new Error('loop_cancelled')
-          try {
-            assertNoPromptInFlight(loopName, codeSessionId, 'code', logger)
-          } catch (err) {
-            if (err instanceof ConcurrentPromptError) { await handlePromptError(loopName, state, 'failed to recover code launch', err); return }
-            throw err
+          const guarded = await withInFlightGuard(
+            { loopName, sessionId: codeSessionId, agent: 'code', logger },
+            () => v2Client.session.promptAsync({
+              sessionID: codeSessionId,
+              directory: fresh.worktreeDir,
+              ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
+              agent: 'code',
+              parts: [{ type: 'text' as const, text: recoveryPrompt }],
+            }),
+          )
+          if (!guarded.ok) {
+            await handlePromptError(loopName, state, 'failed to recover code launch', guarded.error)
+            return
           }
-          markPromptInFlight(loopName, codeSessionId, 'code')
-          const result = await v2Client.session.promptAsync({
-            sessionID: codeSessionId,
-            directory: fresh.worktreeDir,
-            ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
-            agent: 'code',
-            parts: [{ type: 'text' as const, text: recoveryPrompt }],
-          })
-          clearPromptInFlight(loopName)
-          if (result.error) throw result.error
+          if (guarded.value.error) throw guarded.value.error
         }
         await handlePromptError(loopName, freshState ?? state, 'failed to recover code launch', promptResultError, retryFn)
       }
@@ -1331,21 +1337,20 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       const retryFn = async () => {
         const fresh = loopService.getActiveState(loopName)
         if (!fresh?.active) throw new Error('loop_cancelled')
-        try {
-          assertNoPromptInFlight(loopName, created.auditSessionId, 'auditor-loop', logger)
-        } catch (err) {
-          if (err instanceof ConcurrentPromptError) { await handlePromptError(loopName, currentState ?? _state, 'failed to send audit prompt', err); return }
-          throw err
+        const guarded = await withInFlightGuard(
+          { loopName, sessionId: created.auditSessionId, agent: 'auditor-loop', logger },
+          () => promptAuditSessionWithFallback({
+            sessionId: created.auditSessionId,
+            worktreeDir: fresh.worktreeDir,
+            workspaceId: fresh.workspaceId,
+            prompt: loopService.buildAuditPrompt(fresh),
+          }),
+        )
+        if (!guarded.ok) {
+          await handlePromptError(loopName, currentState ?? _state, 'failed to send audit prompt', guarded.error)
+          return
         }
-        markPromptInFlight(loopName, created.auditSessionId, 'auditor-loop')
-        const retry = await promptAuditSessionWithFallback({
-          sessionId: created.auditSessionId,
-          worktreeDir: fresh.worktreeDir,
-          workspaceId: fresh.workspaceId,
-          prompt: loopService.buildAuditPrompt(fresh),
-        })
-        clearPromptInFlight(loopName)
-        if (!retry.ok) throw retry.error
+        if (!guarded.value.ok) throw guarded.value.error
       }
       await handlePromptError(loopName, { ...currentState, phase: 'auditing' }, 'failed to send audit prompt', auditPromptErr, retryFn)
       return
@@ -1718,28 +1723,34 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
       const decomposerPrompt = loopService.buildDecomposerInitialPrompt(freshState)
       try {
-        assertNoPromptInFlight(loopName, decomposerSessionId, 'decomposer', logger)
-        markPromptInFlight(loopName, decomposerSessionId, 'decomposer')
         markPromptSent(loopName, decomposerSessionId, logger)
-        await v2Client.session.promptAsync({
-          sessionID: decomposerSessionId,
-          directory: freshState.worktreeDir,
-          ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
-          agent: 'decomposer',
-          parts: [{ type: 'text' as const, text: decomposerPrompt }],
-          ...(() => {
-            const cfg = getConfig()
-            const m = resolveDecomposerModel({
-              decomposerModel: cfg.decomposer?.model,
-              auditorModel: freshState.auditorModel ?? cfg.auditorModel,
-              executionModel: freshState.executionModel ?? cfg.executionModel,
-            })
-            return m ? { model: m } : {}
-          })(),
-        })
+        const guarded = await withInFlightGuard(
+          { loopName, sessionId: decomposerSessionId, agent: 'decomposer', logger },
+          () => v2Client.session.promptAsync({
+            sessionID: decomposerSessionId,
+            directory: freshState.worktreeDir,
+            ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
+            agent: 'decomposer',
+            parts: [{ type: 'text' as const, text: decomposerPrompt }],
+            ...(() => {
+              const cfg = getConfig()
+              const m = resolveDecomposerModel({
+                decomposerModel: cfg.decomposer?.model,
+                auditorModel: freshState.auditorModel ?? cfg.auditorModel,
+                executionModel: freshState.executionModel ?? cfg.executionModel,
+              })
+              return m ? { model: m } : {}
+            })(),
+          }),
+        )
+        if (!guarded.ok) {
+          clearPromptPending(loopName, logger)
+          logger.error(`Loop: failed to re-prompt decomposer for ${loopName}`, guarded.error)
+          await terminateLoop(loopName, freshState, { kind: 'decomposer_prompt_failed' })
+          return
+        }
       } catch (err) {
         clearPromptPending(loopName, logger)
-        clearPromptInFlight(loopName)
         logger.error(`Loop: failed to re-prompt decomposer for ${loopName}`, err)
         await terminateLoop(loopName, freshState, { kind: 'decomposer_prompt_failed' })
         return
@@ -1845,12 +1856,22 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       const synthState = { ...currentState, phase: 'coding' as const, currentSectionIndex: offendingIdx }
       const continuationPrompt = loopService.buildSectionContinuationPrompt(synthState, auditText || '')
 
+      const previousFinalAuditSessionId = currentState.sessionId
       let newCodeSessionId: string
       try {
         newCodeSessionId = await rotateSession(loopName, currentState)
       } catch (err) {
         logger.error(`Loop: session rotation failed during final audit rewind, aborting rewind`, err)
         return
+      }
+
+      if (newCodeSessionId !== previousFinalAuditSessionId) {
+        scheduleSessionDelete({
+          loopName,
+          sessionId: previousFinalAuditSessionId,
+          directory: currentState.worktreeDir,
+          context: 'after final audit rewind',
+        })
       }
 
       loopService.setCurrentSectionIndex(loopName, offendingIdx)

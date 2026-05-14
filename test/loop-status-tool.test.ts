@@ -10,6 +10,7 @@ import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-r
 import { createLoopTools } from '../src/tools/loop'
 import { createLogger } from '../src/utils/logger'
 import { createLoopEventHandler } from '../src/hooks/loop'
+import { __resetInFlightGuard } from '../src/loop/in-flight-guard'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
@@ -182,6 +183,7 @@ describe('loop-status tool restart path', () => {
   const hostSessionId = 'host-session-456'
 
   beforeEach(() => {
+    __resetInFlightGuard()
     const result = createTestDb()
     db = result.db
     dbPath = result.path

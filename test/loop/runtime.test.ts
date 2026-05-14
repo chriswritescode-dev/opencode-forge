@@ -731,9 +731,10 @@ describe('stall handling terminates with stall timeout when configured cap is re
         },
       })
 
-      // Before Phase 4: sendPromptWithFallback never calls mark/clearInFlight → pre-set guard persists → FAILS
-      // After Phase 4: mark + clear around promptAsync call → guard cleared
-      expect(getPromptInFlight('test-loop')).toBeUndefined()
+      // After Phase 3: withInFlightGuard does NOT clear on success.
+      // Only the busy handler clears the in-flight entry.
+      // Since the status here is 'idle' (not 'busy'), the entry persists.
+      expect(getPromptInFlight('test-loop')).toBeDefined()
     })
   })
 

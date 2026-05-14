@@ -56,6 +56,31 @@ export function assertNoPromptInFlight(
   throw new ConcurrentPromptError(loopName, prior.sessionId, prior.agent, attemptedSessionId, attemptedAgent)
 }
 
+export type InFlightResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: ConcurrentPromptError }
+
+export async function withInFlightGuard<T>(
+  args: { loopName: string; sessionId: string; agent: PromptAgent; logger: Logger },
+  body: () => Promise<T>,
+): Promise<InFlightResult<T>> {
+  const { loopName, sessionId, agent, logger } = args
+  try {
+    assertNoPromptInFlight(loopName, sessionId, agent, logger)
+  } catch (err) {
+    if (err instanceof ConcurrentPromptError) return { ok: false, error: err }
+    throw err
+  }
+  markPromptInFlight(loopName, sessionId, agent)
+  try {
+    const value = await body()
+    return { ok: true, value }
+  } catch (err) {
+    clearPromptInFlight(loopName)
+    throw err
+  }
+}
+
 // Test-only: clear all state.
 export function __resetInFlightGuard(): void {
   inFlight.clear()

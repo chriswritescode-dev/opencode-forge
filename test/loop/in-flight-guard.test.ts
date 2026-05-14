@@ -4,10 +4,12 @@ import {
   clearPromptInFlight,
   assertNoPromptInFlight,
   getPromptInFlight,
+  withInFlightGuard,
   ConcurrentPromptError,
   __resetInFlightGuard,
 } from '../../src/loop/in-flight-guard'
 import type { Logger } from '../../src/types'
+import type { PromptAgent } from '../../src/loop/in-flight-guard'
 
 function createMockLogger(): { logger: Logger; errorCalls: unknown[][] } {
   const errorCalls: unknown[][] = []
@@ -75,5 +77,83 @@ describe('in-flight guard', () => {
     expect(msg).toContain('loop=loopC')
     expect(msg).toContain('prior=decomposer: sess-5')
     expect(msg).toContain('attempted=code: sess-6')
+  })
+})
+
+describe('withInFlightGuard', () => {
+  const loopName = 'L'
+  const sessionId = 'S'
+  const agent: PromptAgent = 'code'
+
+  let logger: Logger
+
+  beforeEach(() => {
+    __resetInFlightGuard()
+    logger = createMockLogger().logger
+  })
+
+  test('marks entry before invoking body and body sees it populated', async () => {
+    const result = await withInFlightGuard(
+      { loopName, sessionId, agent, logger },
+      async () => {
+        const entry = getPromptInFlight(loopName)
+        return entry
+      },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('expected ok')
+    expect(result.value).toBeDefined()
+    expect(result.value!.sessionId).toBe(sessionId)
+    expect(result.value!.agent).toBe(agent)
+  })
+
+  test('does NOT clear entry on success (busy handler clears)', async () => {
+    await withInFlightGuard(
+      { loopName, sessionId, agent, logger },
+      async () => ({ answer: 42 }),
+    )
+    expect(getPromptInFlight(loopName)).toBeDefined()
+    expect(getPromptInFlight(loopName)!.sessionId).toBe(sessionId)
+  })
+
+  test('clears entry on thrown error from body', async () => {
+    try {
+      await withInFlightGuard(
+        { loopName, sessionId, agent, logger },
+        async () => { throw new Error('boom') },
+      )
+      expect.fail('should have thrown')
+    } catch (err) {
+      expect((err as Error).message).toBe('boom')
+    }
+    expect(getPromptInFlight(loopName)).toBeUndefined()
+  })
+
+  test('returns { ok: false, error: ConcurrentPromptError } when prior entry exists for different session', async () => {
+    markPromptInFlight(loopName, 'other-session', 'auditor-loop')
+
+    const bodyFn = async () => { throw new Error('should not run') }
+    const out = await withInFlightGuard(
+      { loopName, sessionId, agent, logger },
+      bodyFn,
+    )
+
+    expect(out.ok).toBe(false)
+    if (out.ok) throw new Error('expected ok:false')
+    expect(out.error).toBeInstanceOf(ConcurrentPromptError)
+
+    const priorEntry = getPromptInFlight(loopName)!
+    expect(priorEntry.sessionId).toBe('other-session')
+    expect(priorEntry.agent).toBe('auditor-loop')
+  })
+
+  test('returns { ok: true, value } when body returns a value', async () => {
+    const out = await withInFlightGuard(
+      { loopName, sessionId, agent, logger },
+      async () => ({ error: undefined as unknown }),
+    )
+    expect(out.ok).toBe(true)
+    if (!out.ok) throw new Error('expected ok:true')
+    expect(out.value).toEqual({ error: undefined })
   })
 })
