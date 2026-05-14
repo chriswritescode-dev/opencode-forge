@@ -25,14 +25,28 @@ export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
     const sessionInfo = eventInput.event.properties?.info as Record<string, unknown> | undefined
     const sessionId = sessionInfo?.id as string | undefined
     const workspaceId = sessionInfo?.workspaceID as string | undefined
+    const sessionDirectory = sessionInfo?.directory as string | undefined
+    const sessionProjectId = (sessionInfo?.projectID as string | undefined) ?? deps.projectId
     if (!sessionId || !workspaceId) return
 
-    let ws = await findWorkspaceById(deps, workspaceId)
+    let ws = await findWorkspaceById(deps, workspaceId, sessionDirectory)
     if (!ws) {
       await new Promise<void>((r) => setTimeout(r, 100))
-      ws = await findWorkspaceById(deps, workspaceId)
+      ws = await findWorkspaceById(deps, workspaceId, sessionDirectory)
       if (!ws) {
-        deps.logger.log(`[forge-session-attach] skip session=${sessionId}: workspace ${workspaceId} not found via experimental.workspace.list (may be cross-project; check plugin directory)`)
+        deps.logger.log(
+          `[forge-session-attach] skip session=${sessionId}: workspace ${workspaceId} not found ` +
+          `via experimental.workspace.list directory=${sessionDirectory ?? '(none)'} ` +
+          `(cross-project or sync lag)`,
+        )
+        if (sessionDirectory) {
+          publishAttachFailureToast(
+            deps,
+            sessionDirectory,
+            `Forge loop (workspace ${workspaceId})`,
+            'Workspace not visible from this plugin instance - open the TUI in the loop\'s project, or run the reconciler.',
+          )
+        }
         return
       }
     }
@@ -61,16 +75,16 @@ export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
       return
     }
 
-    const existing = deps.execDeps.loopsRepo.get(deps.projectId, cfg.loopName)
+    const existing = deps.execDeps.loopsRepo.get(sessionProjectId, cfg.loopName)
     if (existing && existing.status === 'running') {
       // Live loop with this name; skip to avoid double-attach.
       deps.logger.log(`[forge-session-attach] skip session=${sessionId} loop=${cfg.loopName} reason=already-running`)
       return
     }
     if (existing) {
-      deps.logger.log(`[forge-session-attach] session=${sessionId} loop=${cfg.loopName} existing-row-status=${existing.status} (will re-attach)`)
+      deps.logger.log(`[forge-session-attach] session=${sessionId} loop=${cfg.loopName} projectId=${sessionProjectId} existing-row-status=${existing.status} (will re-attach)`)
     } else {
-      deps.logger.log(`[forge-session-attach] session=${sessionId} loop=${cfg.loopName} no existing row, proceeding`)
+      deps.logger.log(`[forge-session-attach] session=${sessionId} loop=${cfg.loopName} projectId=${sessionProjectId} no existing row, proceeding`)
     }
 
     const resolvedHostSessionId = cfg.hostSessionId && cfg.hostSessionId.length > 0
@@ -86,7 +100,7 @@ export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
     if (planSource.kind === 'inline') {
       planText = planSource.planText
     } else {
-      const row = deps.execDeps.plansRepo.getForSession(deps.projectId, planSource.sessionId)
+      const row = deps.execDeps.plansRepo.getForSession(sessionProjectId, planSource.sessionId)
       if (!row) {
         deps.logger.error(`[forge-session-attach] plan not found for session=${planSource.sessionId} loop=${cfg.loopName} workspace=${workspaceId}`)
         await failAndCleanup(
@@ -104,7 +118,7 @@ export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
     try {
       const result = await attachLoopToSession(
         deps.execDeps,
-        { surface: 'tui', projectId: deps.projectId, directory: ws.directory ?? deps.directory },
+        { surface: 'tui', projectId: sessionProjectId, directory: ws.directory ?? deps.directory },
         {
           sessionId,
           workspaceId,
@@ -153,14 +167,14 @@ async function failAndCleanup(
   loopName: string,
   message: string,
 ): Promise<void> {
-  publishAttachFailureToast(deps, directory, loopName, message)
+  publishAttachFailureToast(deps, directory, `Forge loop "${loopName}"`, message)
   await removeOrphanWorkspace(deps, workspaceId, loopName)
 }
 
 function publishAttachFailureToast(
   deps: ForgeSessionAttachHookDeps,
   directory: string,
-  loopName: string,
+  title: string,
   message: string,
 ): void {
   const tui = deps.v2.tui
@@ -169,12 +183,7 @@ function publishAttachFailureToast(
     directory,
     body: {
       type: 'tui.toast.show',
-      properties: {
-        title: `Forge loop "${loopName}"`,
-        message,
-        variant: 'error',
-        duration: 6000,
-      },
+      properties: { title, message, variant: 'error', duration: 6000 },
     },
   }).catch((err) => {
     deps.logger.error('[forge-session-attach] failed to publish toast', err)
@@ -206,9 +215,12 @@ async function removeOrphanWorkspace(
 async function findWorkspaceById(
   deps: ForgeSessionAttachHookDeps,
   workspaceId: string,
+  directory?: string,
 ): Promise<WorkspaceEntry | null> {
   try {
-    const result = await deps.v2.experimental.workspace.list()
+    const result = await deps.v2.experimental.workspace.list(
+      directory ? { directory } : undefined,
+    )
     const entries = (result.data ?? []) as WorkspaceEntry[]
     return entries.find((e) => e.id === workspaceId) ?? null
   } catch {

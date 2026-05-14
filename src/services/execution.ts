@@ -15,7 +15,7 @@ import { extractPlanTitle, extractLoopNames } from '../utils/plan-execution'
 import { parseModelString, retryWithModelFallback, resolveDecomposerModel } from '../utils/model-fallback'
 
 import { formatDecomposerSessionTitle, formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
-import { buildLoopPermissionRuleset } from '../constants/loop'
+import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../constants/loop'
 import { findPartialMatch } from '../utils/partial-match'
 import { isSandboxEnabled } from '../sandbox/context'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
@@ -23,6 +23,13 @@ import { join } from 'path'
 import { existsSync } from 'fs'
 import { decomposeDeterministically } from './deterministic-decomposer'
 import { markPromptSent, clearPromptPending, terminationStatusFor, parseTerminationReasonString } from '../loop'
+import {
+  assertNoPromptInFlight,
+  markPromptInFlight,
+  clearPromptInFlight,
+  ConcurrentPromptError,
+  type PromptAgent,
+} from '../loop/in-flight-guard'
 
 // ============================================================================
 // Surface Types - Identifies the caller boundary
@@ -362,6 +369,7 @@ export interface ForgeExecutionServiceDeps {
   loop: import('../loop/runtime').Loop
   sandboxManager?: SandboxManager | null
   sectionPlansRepo?: import('../storage/repos/section-plans-repo').SectionPlansRepo
+  reviewFindingsRepo?: import('../storage/repos/review-findings-repo').ReviewFindingsRepo
   workspaceStatusRegistry: import('../utils/workspace-status-registry').WorkspaceStatusRegistry
 }
 
@@ -800,6 +808,20 @@ export async function attachLoopToSession(
     }
   }
 
+  // Defensive purge of orphaned per-loop rows (section_plans cascade may not have fired
+  // historically; plans/review_findings have no FK). Idempotent.
+  try {
+    const removedSections = deps.sectionPlansRepo?.deleteAll(ctx.projectId, loopName) ?? 0
+    deps.plansRepo.deleteForLoop(ctx.projectId, loopName)
+    deps.reviewFindingsRepo?.deleteByLoopName(ctx.projectId, loopName)
+    if (removedSections > 0) {
+      deps.logger.log(`attachLoopToSession: purged ${removedSections} orphaned section_plans rows for ${loopName}`)
+    }
+  } catch (err) {
+    deps.logger.error(`attachLoopToSession: failed to purge orphaned per-loop rows for ${loopName}`, err)
+    // Non-fatal — proceed.
+  }
+
   try {
     // Persist loop state
     const state: import('../loop/state').LoopState = {
@@ -1030,6 +1052,8 @@ export async function attachLoopToSession(
       const decomposerPrompt = deps.loop.buildDecomposerInitialPrompt(state)
 
       try {
+        assertNoPromptInFlight(loopName, sessionId, 'decomposer', deps.logger)
+        markPromptInFlight(loopName, sessionId, 'decomposer')
         markPromptSent(loopName, sessionId, deps.logger)
         const decomposerResult = await deps.v2.session.promptAsync({
           sessionID: sessionId,
@@ -1048,16 +1072,23 @@ export async function attachLoopToSession(
         })
         if ((decomposerResult as { error?: unknown })?.error) {
           clearPromptPending(loopName, deps.logger)
+          clearPromptInFlight(loopName)
           deps.logger.error('attachLoopToSession: decomposer promptAsync returned error', (decomposerResult as { error?: unknown }).error)
           deps.loop.deleteState(loopName)
           return { ok: false, code: 'prompt_failed', message: 'Failed to prompt decomposer' }
         }
       } catch (err) {
         clearPromptPending(loopName, deps.logger)
+        clearPromptInFlight(loopName)
+        if (err instanceof ConcurrentPromptError) {
+          deps.loop.deleteState(loopName)
+          return { ok: false, code: 'prompt_failed', message: err.message }
+        }
         deps.logger.error('attachLoopToSession: failed to prompt decomposer', err)
         deps.loop.deleteState(loopName)
         return { ok: false, code: 'prompt_failed', message: 'Failed to prompt decomposer' }
       }
+      clearPromptInFlight(loopName)
       // Start watchdog if requested
       if (startWatchdog && deps.loopHandler) {
         deps.loopHandler.startWatchdog(loopName)
@@ -1217,6 +1248,8 @@ export async function attachLoopToSession(
           const decomposerPrompt = deps.loop.buildDecomposerInitialPrompt(state)
 
           try {
+            assertNoPromptInFlight(loopName, sessionId, 'decomposer', deps.logger)
+            markPromptInFlight(loopName, sessionId, 'decomposer')
             markPromptSent(loopName, sessionId, deps.logger)
             const decomposerResult = await deps.v2.session.promptAsync({
               sessionID: sessionId,
@@ -1235,12 +1268,18 @@ export async function attachLoopToSession(
             })
             if ((decomposerResult as { error?: unknown })?.error) {
               clearPromptPending(loopName, deps.logger)
+              clearPromptInFlight(loopName)
               deps.logger.error('attachLoopToSession: decomposer promptAsync returned error', (decomposerResult as { error?: unknown }).error)
               deps.loop.deleteState(loopName)
               return { ok: false, code: 'prompt_failed', message: 'Failed to prompt decomposer' }
             }
           } catch (err) {
             clearPromptPending(loopName, deps.logger)
+            clearPromptInFlight(loopName)
+            if (err instanceof ConcurrentPromptError) {
+              deps.loop.deleteState(loopName)
+              return { ok: false, code: 'prompt_failed', message: err.message }
+            }
             deps.logger.error('attachLoopToSession: failed to prompt decomposer', err)
             deps.loop.deleteState(loopName)
             return { ok: false, code: 'prompt_failed', message: 'Failed to prompt decomposer' }
@@ -1274,6 +1313,8 @@ export async function attachLoopToSession(
           }
         }
       }
+
+      clearPromptInFlight(loopName)
 
       // Start watchdog if requested
       if (startWatchdog && deps.loopHandler) {
@@ -1730,6 +1771,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           const decomposerSessionResult = await createSessionWithFallback(deps, {
             title: formatDecomposerSessionTitle(uniqueLoopName),
             directory: hostWorktreeDir!,
+            permission: buildLoopPermissionRuleset(),
           })
           if (!decomposerSessionResult.data) {
             deps.logger.error('handleStartLoop: failed to create decomposer session for fallback')
@@ -2015,6 +2057,17 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     if (stoppedState.terminationReason && parseTerminationReasonString(stoppedState.terminationReason).kind === 'completed') {
       return fail('conflict', 409, `Loop "${stoppedState.loopName}" completed successfully and cannot be restarted.`)
     }
+    if (
+      stoppedState.terminationReason &&
+      parseTerminationReasonString(stoppedState.terminationReason).kind === 'final_audit_retry_exhausted' &&
+      !command.force
+    ) {
+      return fail(
+        'conflict',
+        409,
+        `Loop "${stoppedState.loopName}" terminated during final audit retry exhaustion. Use force=true to restart.`,
+      )
+    }
     if (stoppedState.worktree && stoppedState.worktreeDir) {
       if (!existsSync(stoppedState.worktreeDir)) {
         return fail('conflict', 409, `Cannot restart "${stoppedState.loopName}": worktree directory no longer exists at ${stoppedState.worktreeDir}.`)
@@ -2161,6 +2214,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
                 const decomposerResult = await createSessionWithFallback(deps, {
                    title: formatDecomposerSessionTitle(stoppedState.loopName),
                   directory: stoppedState.worktreeDir,
+                  permission: buildLoopPermissionRuleset(),
                 })
                 if (!decomposerResult.data) {
                   return { ok: false, error: 'Failed to create decomposer session for fallback.' }
@@ -2211,6 +2265,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             const decomposerResult = await createSessionWithFallback(deps, {
               title: formatDecomposerSessionTitle(stoppedState.loopName),
               directory: stoppedState.worktreeDir,
+              permission: buildLoopPermissionRuleset(),
             })
             if (!decomposerResult.data) {
               deps.logger.error('loop-restart: failed to create decomposer session')
@@ -2232,7 +2287,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             totalSections: stoppedState.totalSections ?? 0,
           }),
           directory: stoppedState.worktreeDir,
-          permission: permissionRuleset,
+          permission: stoppedState.phase === 'final_auditing' ? buildAuditSessionPermissionRuleset() : permissionRuleset,
           workspaceId: stoppedState.workspaceId,
           loopName: stoppedState.loopName,
           logPrefix: 'loop-restart',
@@ -2310,7 +2365,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             auditorModel: stoppedState.auditorModel ?? deps.config.auditorModel,
             executionModel: stoppedState.executionModel ?? deps.config.executionModel,
           })
-        : parseModelString(stoppedState.executionModel) ?? parseModelString(deps.config.executionModel)
+        : stoppedState.phase === 'final_auditing'
+          ? parseModelString(stoppedState.auditorModel ?? deps.config.auditorModel)
+          : parseModelString(stoppedState.executionModel) ?? parseModelString(deps.config.executionModel)
       const workspaceParam = stoppedState.workspaceId ? { workspace: stoppedState.workspaceId } : {}
 
       const promptAgent = promptNeedsDecomposer ? 'decomposer' : stoppedState.phase === 'final_auditing' ? 'auditor-loop' : 'code'
@@ -2335,6 +2392,13 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       const { result: promptResult } = await retryWithModelFallback(
         () => {
+          try {
+            assertNoPromptInFlight(stoppedState.loopName, effectiveSessionId, promptAgent as PromptAgent, deps.logger)
+          } catch (err) {
+            if (err instanceof ConcurrentPromptError) return Promise.resolve({ error: err })
+            throw err
+          }
+          markPromptInFlight(stoppedState.loopName, effectiveSessionId, promptAgent as PromptAgent)
           markPromptSent(stoppedState.loopName, effectiveSessionId, deps.logger)
           return deps.v2.session.promptAsync({
             sessionID: effectiveSessionId,
@@ -2346,6 +2410,13 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           })
         },
         () => {
+          try {
+            assertNoPromptInFlight(stoppedState.loopName, effectiveSessionId, promptAgent as PromptAgent, deps.logger)
+          } catch (err) {
+            if (err instanceof ConcurrentPromptError) return Promise.resolve({ error: err })
+            throw err
+          }
+          markPromptInFlight(stoppedState.loopName, effectiveSessionId, promptAgent as PromptAgent)
           markPromptSent(stoppedState.loopName, effectiveSessionId, deps.logger)
           return deps.v2.session.promptAsync({
             sessionID: effectiveSessionId,
@@ -2361,6 +2432,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       if (promptResult.error) {
         clearPromptPending(stoppedState.loopName, deps.logger)
+        clearPromptInFlight(stoppedState.loopName)
         deps.logger.error('loop-restart: failed to send prompt', promptResult.error)
         // Save section plans before deleteState (which cascades to section_plans)
         const savedPlans = deps.sectionPlansRepo?.list(ctx.projectId, stoppedState.loopName) ?? []
@@ -2381,6 +2453,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         return { ok: false, error: 'Restart failed: could not send prompt to new session.' }
       }
 
+      clearPromptInFlight(stoppedState.loopName)
       deps.loopHandler!.startWatchdog(stoppedState.loopName)
 
       return { ok: true, newSessionId: effectiveSessionId, previousSessionId, sandbox: restartSandbox, bindFailed, decomposerSessionId }

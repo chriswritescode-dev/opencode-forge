@@ -301,6 +301,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         loop: loopHandler.loop,
         sandboxManager,
         sectionPlansRepo,
+        reviewFindingsRepo,
         workspaceStatusRegistry,
       })
 
@@ -435,6 +436,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       loop: loopHandler.loop,
       sandboxManager,
       sectionPlansRepo,
+      reviewFindingsRepo,
       workspaceStatusRegistry,
     }
     const forgeSessionAttachHook = createForgeSessionAttachHook({

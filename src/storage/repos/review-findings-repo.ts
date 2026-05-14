@@ -25,6 +25,7 @@ export interface ReviewFindingsRepo {
   listByLoopName(projectId: string, loopName: string | null, sectionIndex?: number | null): ReviewFindingRow[]
   listByFile(projectId: string, file: string): ReviewFindingRow[]
   delete(projectId: string, file: string, line: number, scope?: DeleteScope): boolean
+  deleteByLoopName(projectId: string, loopName: string): number
 }
 
 export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
@@ -86,6 +87,11 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
   const stmtDeleteWithLoopNameAndSection = db.prepare(`
     DELETE FROM review_findings
     WHERE project_id = ? AND loop_name = ? AND file = ? AND line = ? AND section_index = ?
+  `)
+
+  const stmtDeleteByLoopName = db.prepare(`
+    DELETE FROM review_findings
+    WHERE project_id = ? AND loop_name = ?
   `)
 
   function mapRaw(raw: {
@@ -186,11 +192,17 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
     return result.changes > 0
   }
 
+  function deleteByLoopName(projectId: string, loopName: string): number {
+    const result = stmtDeleteByLoopName.run(projectId, loopName) as unknown as { changes: number }
+    return result.changes
+  }
+
   return {
     write,
     listAll,
     listByLoopName,
     listByFile,
     delete: deleteFinding,
+    deleteByLoopName,
   }
 }
