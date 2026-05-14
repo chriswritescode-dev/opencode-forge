@@ -7,6 +7,7 @@ describe('buildLoopPermissionRuleset', () => {
     expect(rules).toEqual([
       { permission: '*', pattern: '*', action: 'allow' },
       { permission: 'external_directory', pattern: '*', action: 'deny' },
+      { permission: 'external_directory', pattern: '/tmp', action: 'allow' },
       { permission: 'review-write', pattern: '*', action: 'deny' },
       { permission: 'review-delete', pattern: '*', action: 'deny' },
       { permission: 'plan_exit', pattern: '*', action: 'deny' },
@@ -17,11 +18,12 @@ describe('buildLoopPermissionRuleset', () => {
     ])
   })
 
-  it('isSandbox: true: rules[0] is *:*:allow; rules[1] is external_directory:*:deny; length 9', () => {
+  it('isSandbox: true: rules[0] is *:*:allow; rules[1] is external_directory:*:deny; length 10', () => {
     const rules = buildLoopPermissionRuleset()
     expect(rules).toEqual([
       { permission: '*', pattern: '*', action: 'allow' },
       { permission: 'external_directory', pattern: '*', action: 'deny' },
+      { permission: 'external_directory', pattern: '/tmp', action: 'allow' },
       { permission: 'review-write', pattern: '*', action: 'deny' },
       { permission: 'review-delete', pattern: '*', action: 'deny' },
       { permission: 'plan_exit', pattern: '*', action: 'deny' },

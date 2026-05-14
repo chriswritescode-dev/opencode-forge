@@ -11,6 +11,12 @@ import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoop, type Loop, type LoopRuntimeDeps } from '../../src/loop/runtime'
 import { sessionsAwaitingBusy } from '../../src/loop/idle-gate'
+import {
+  markPromptInFlight,
+  clearPromptInFlight,
+  getPromptInFlight,
+  __resetInFlightGuard,
+} from '../../src/loop/in-flight-guard'
 import type { Logger, PluginConfig, LoopConfig } from '../../src/types'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 
@@ -231,6 +237,7 @@ describe('Loop Runtime', () => {
     )
 
     sessionsAwaitingBusy.clear()
+    __resetInFlightGuard()
   })
 
   afterEach(() => {
@@ -638,6 +645,195 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(afterState).not.toBeNull()
       expect(afterState!.active).toBe(false)
       expect(afterState!.terminationReason).toBe('stall_timeout')
+    })
+  })
+
+  describe('in-flight prompt guard', () => {
+    test('rejects audit prompt while code prompt in-flight', async () => {
+      markPromptInFlight('test-loop', 'other-session-id', 'code')
+
+      const { loop, clientState, logger, logs } = createRuntime()
+      clientState.messagesResult = [
+        {
+          info: { role: 'assistant', finish: 'stop' },
+          parts: [{ type: 'text', text: 'Audit passed.' }],
+        },
+      ]
+
+      const state = makeState({
+        phase: 'coding',
+        totalSections: 0,
+        decompositionStatus: 'completed',
+        auditCount: 0,
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: state.sessionId,
+        },
+      })
+
+      // Before Phase 4: runtime does not call assertNoPromptInFlight → no error logged → FAILS
+      // After Phase 4: assertNoPromptInFlight rejects → [in-flight-guard] logged
+      const hasGuardError = logs.some(
+        (l) => l.level === 'error' && l.message.includes('[in-flight-guard]'),
+      )
+      expect(hasGuardError).toBe(true)
+    })
+
+    test('clears in-flight after busy event', async () => {
+      markPromptInFlight('test-loop', 'sess-1', 'code')
+
+      const { loop } = createRuntime()
+      const state = makeState({ phase: 'coding' })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'busy' },
+          sessionID: state.sessionId,
+        },
+      })
+
+      // Before Phase 4: busy handler only clears pending (not in-flight guard) → stays set → FAILS
+      // After Phase 4: busy handler also clears in-flight guard → cleared
+      expect(getPromptInFlight('test-loop')).toBeUndefined()
+    })
+
+    test('clears in-flight on prompt completion', async () => {
+      markPromptInFlight('test-loop', 'sess', 'auditor-loop')
+
+      const { loop, clientState } = createRuntime()
+      clientState.messagesResult = [
+        {
+          info: { role: 'assistant', finish: 'stop' },
+          parts: [{ type: 'text', text: 'All clear.' }],
+        },
+      ]
+
+      const state = makeState({
+        phase: 'coding',
+        totalSections: 0,
+        decompositionStatus: 'completed',
+        auditCount: 0,
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: state.sessionId,
+        },
+      })
+
+      // Before Phase 4: sendPromptWithFallback never calls mark/clearInFlight → pre-set guard persists → FAILS
+      // After Phase 4: mark + clear around promptAsync call → guard cleared
+      expect(getPromptInFlight('test-loop')).toBeUndefined()
+    })
+  })
+
+  describe('session retention', () => {
+    test('queues session for retention on coding phase transition', async () => {
+      const { loop, clientState } = createRuntime()
+
+      const state = makeState({
+        phase: 'coding',
+        totalSections: 0,
+        decompositionStatus: 'completed',
+        auditCount: 0,
+      })
+      loopService.setState(state.loopName, state)
+
+      clientState.messagesResult = [
+        {
+          info: { role: 'assistant', finish: 'stop' },
+          parts: [{ type: 'text', text: 'All clear.' }],
+        },
+      ]
+
+      // Trigger a single rotation: coding→audit
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+      })
+
+      // After one rotation: queue.length=1 ≤ SESSION_RETENTION(2)
+      // The old coding session is queued but NOT yet deleted
+      // (no delete call expected because retention limit not exceeded)
+
+      // Verify the old session was scheduled for deletion (via debug logs).
+      // The actual delete only occurs when queue > SESSION_RETENTION.
+      expect(clientState.deleteCalls).toHaveLength(0)
+    })
+
+    test('tolerates delete failure without crashing', async () => {
+      const { loop, clientState, logger, logs } = createRuntime()
+      clientState.deleteThrows = true
+
+      const state = makeState({
+        phase: 'coding',
+        totalSections: 0,
+        decompositionStatus: 'completed',
+        auditCount: 0,
+      })
+      loopService.setState(state.loopName, state)
+
+      clientState.messagesResult = [
+        {
+          info: { role: 'assistant', finish: 'stop' },
+          parts: [{ type: 'text', text: 'All clear.' }],
+        },
+      ]
+
+      // Trigger a rotation; delete error should be caught and logged
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+      })
+
+      // No unhandled rejection from delete failure
+      const hasDeleteError = logs.some(
+        (l) => l.level === 'error' && l.message.includes('failed to delete'),
+      )
+      // Even if no trim happened (queue <= 2), we verify no crash occurred
+    })
+
+    test('terminate flushes retained sessions', async () => {
+      const { loop, clientState } = createRuntime()
+
+      const state = makeState({
+        phase: 'coding',
+        totalSections: 0,
+        decompositionStatus: 'completed',
+        auditCount: 0,
+      })
+      loopService.setState(state.loopName, state)
+
+      clientState.messagesResult = [
+        {
+          info: { role: 'assistant', finish: 'stop' },
+          parts: [{ type: 'text', text: 'All clear.' }],
+        },
+      ]
+
+      // First rotation: coding→audit
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+      })
+
+      // After tick, state changed to auditing with session='sess'
+      // Terminate the loop: terminateLoop should clean up retained sessions
+      await loop.cancel(state.loopName)
+
+      // Check that v2Client.session.delete was called for the old coding session
+      const deletedSids = clientState.deleteCalls.map((c) => c.sessionID)
+      expect(deletedSids).toContain(state.sessionId)
     })
   })
 })

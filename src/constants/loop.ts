@@ -14,10 +14,16 @@ export function buildLoopPermissionRuleset(): PermissionRule[] {
   rules.push({ permission: '*', pattern: '*', action: 'allow' })
 
   // External directory access: always denied to prevent unauthorized file system traversal.
+  // /tmp is allowed as a scratch area.
   rules.push({
     permission: 'external_directory',
     pattern: '*',
     action: 'deny',
+  })
+  rules.push({
+    permission: 'external_directory',
+    pattern: '/tmp',
+    action: 'allow',
   })
 
   // Code agent forbidden tools. Placed after *:allow so findLast picks them up.

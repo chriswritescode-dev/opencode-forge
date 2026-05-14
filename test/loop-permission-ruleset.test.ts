@@ -7,6 +7,7 @@ describe('buildLoopPermissionRuleset', () => {
     expect(rules).toEqual([
       { permission: '*',                  pattern: '*',          action: 'allow' },
       { permission: 'external_directory', pattern: '*',          action: 'deny' },
+      { permission: 'external_directory', pattern: '/tmp',       action: 'allow' },
       { permission: 'review-write',       pattern: '*',          action: 'deny' },
       { permission: 'review-delete',      pattern: '*',          action: 'deny' },
       { permission: 'plan_exit',          pattern: '*',          action: 'deny' },
@@ -17,11 +18,12 @@ describe('buildLoopPermissionRuleset', () => {
     ])
   })
 
-  test('worktree + non-sandbox ruleset: allow-all first, external_directory denied, code-agent denies, then operational denies last', () => {
+  test('worktree + non-sandbox ruleset: allow-all first, external_directory denied, /tmp allowed, code-agent denies, then operational denies last', () => {
     const rules = buildLoopPermissionRuleset()
     expect(rules).toEqual([
       { permission: '*',                  pattern: '*',          action: 'allow' },
       { permission: 'external_directory', pattern: '*',          action: 'deny' },
+      { permission: 'external_directory', pattern: '/tmp',       action: 'allow' },
       { permission: 'review-write',       pattern: '*',          action: 'deny' },
       { permission: 'review-delete',      pattern: '*',          action: 'deny' },
       { permission: 'plan_exit',          pattern: '*',          action: 'deny' },
