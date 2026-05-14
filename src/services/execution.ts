@@ -362,6 +362,7 @@ export interface ForgeExecutionServiceDeps {
   loop: import('../loop/runtime').Loop
   sandboxManager?: SandboxManager | null
   sectionPlansRepo?: import('../storage/repos/section-plans-repo').SectionPlansRepo
+  reviewFindingsRepo?: import('../storage/repos/review-findings-repo').ReviewFindingsRepo
   workspaceStatusRegistry: import('../utils/workspace-status-registry').WorkspaceStatusRegistry
 }
 
@@ -798,6 +799,20 @@ export async function attachLoopToSession(
       deps.logger.error(`attachLoopToSession: failed to clear terminal loop row ${loopName}`, err)
       return { ok: false, code: 'internal_error', message: `Failed to clear stale loop state for ${loopName}` }
     }
+  }
+
+  // Defensive purge of orphaned per-loop rows (section_plans cascade may not have fired
+  // historically; plans/review_findings have no FK). Idempotent.
+  try {
+    const removedSections = deps.sectionPlansRepo?.deleteAll(ctx.projectId, loopName) ?? 0
+    deps.plansRepo.deleteForLoop(ctx.projectId, loopName)
+    deps.reviewFindingsRepo?.deleteByLoopName(ctx.projectId, loopName)
+    if (removedSections > 0) {
+      deps.logger.log(`attachLoopToSession: purged ${removedSections} orphaned section_plans rows for ${loopName}`)
+    }
+  } catch (err) {
+    deps.logger.error(`attachLoopToSession: failed to purge orphaned per-loop rows for ${loopName}`, err)
+    // Non-fatal — proceed.
   }
 
   try {

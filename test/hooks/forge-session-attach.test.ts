@@ -942,4 +942,48 @@ describe('createForgeSessionAttachHook', () => {
     expect(tuiPublish).not.toHaveBeenCalled()
     expect(mockAttachLoop).not.toHaveBeenCalled()
   })
+
+  test('attach hook prefers inline planText over stored plan when both are available', async () => {
+    const plansRepoGetForSession = vi.fn().mockReturnValue({ content: 'STALE_PRIOR_PLAN_TEXT' })
+    const deps = buildHookDeps({
+      workspaceList: vi.fn().mockResolvedValue({
+        data: [
+          {
+            id: 'ws_inline_vs_stored',
+            type: 'forge',
+            directory: '/tmp/wt/inline-vs-stored',
+            extra: {
+              loopName: 'my-plan',
+              projectDirectory: '/tmp/wt/inline-vs-stored',
+              forgeLoop: {
+                loopName: 'my-plan',
+                hostSessionId: 'ses_host',
+                title: 'My Plan',
+                planSource: 'inline',
+                planText: 'FRESH_PLAN_TEXT',
+              },
+            },
+          },
+        ],
+      }),
+      plansRepoGetForSession,
+    })
+
+    const handler = createForgeSessionAttachHook(deps as any)
+
+    await handler({
+      event: {
+        type: 'session.created',
+        properties: {
+          info: { id: 'new_sess', workspaceID: 'ws_inline_vs_stored' },
+        },
+      },
+    })
+
+    expect(mockAttachLoop).toHaveBeenCalledTimes(1)
+    const [, , input] = mockAttachLoop.mock.calls[0]
+    expect(input.planText).toBe('FRESH_PLAN_TEXT')
+
+    expect(plansRepoGetForSession).not.toHaveBeenCalled()
+  })
 })

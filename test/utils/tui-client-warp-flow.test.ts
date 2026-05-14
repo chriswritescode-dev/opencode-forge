@@ -146,7 +146,8 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
       title: 'My Cool Feature',
       executionModel: 'prov/exec',
       auditorModel: 'prov/aud',
-      planSource: 'stored',
+      planSource: 'inline',
+      planText: '# Plan\n\nImplement feature X.',
     })
 
     // Verify session.create was called with correct params

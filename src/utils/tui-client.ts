@@ -264,27 +264,16 @@ export async function connectForgeProject(
 
       if (req.mode === 'loop') {
         const loopName = deriveLoopNameFromTitle(req.title)
-        const hasHostSession = !!sessionId
-        if (!hasHostSession) {
-          tuiDebug(`plan.execute(loop): no hostSessionId; using inline plan source for loop=${loopName}`)
+        tuiDebug(`plan.execute(loop): inline plan (planText.length=${req.plan.length}) hostSession=${sessionId ?? 'none'} loop=${loopName}`)
+        const forgeLoop: ForgeLoopExtra = {
+          loopName,
+          hostSessionId: sessionId || undefined,
+          title: req.title,
+          executionModel: req.executionModel,
+          auditorModel: req.auditorModel,
+          planSource: 'inline',
+          planText: req.plan,
         }
-        const forgeLoop: ForgeLoopExtra = hasHostSession
-          ? {
-            loopName,
-            hostSessionId: sessionId,
-            title: req.title,
-            executionModel: req.executionModel,
-            auditorModel: req.auditorModel,
-            planSource: 'stored',
-          }
-          : {
-            loopName,
-            title: req.title,
-            executionModel: req.executionModel,
-            auditorModel: req.auditorModel,
-            planSource: 'inline',
-            planText: req.plan,
-          }
         try {
           const wsRes = await api.client.experimental.workspace.create({
             type: 'forge',

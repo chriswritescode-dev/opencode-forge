@@ -53,6 +53,8 @@ export default defineConfig({
       'test/services/reconcile-loops.test.ts',
       'test/hooks/forge-session-attach.test.ts',
       'test/utils/tui-client-warp-flow.test.ts',
+      'test/utils/tui-client-loop-inline-plan.test.ts',
+      'test/services/execution-attach-cleanup.test.ts',
       'test/tui/execute-plan-panel-busy.test.ts',
       'test/hooks/plan-approval-dedupe.test.ts',
       'test/hooks/plan-approval-worktree-timing.test.ts',

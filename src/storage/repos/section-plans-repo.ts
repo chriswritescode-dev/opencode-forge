@@ -32,6 +32,7 @@ export interface SectionPlansRepo {
   setCompletedAt(projectId: string, loopName: string, index: number, ms: number): void
   updateContent(projectId: string, loopName: string, sections: ParsedSection[]): { updated: number }
   count(projectId: string, loopName: string): number
+  deleteAll(projectId: string, loopName: string): number
   restoreAll(rows: SectionPlanRow[]): void
 }
 
@@ -111,6 +112,8 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
   const stmtCount = db.prepare(`
     SELECT COUNT(*) as count FROM section_plans WHERE project_id = ? AND loop_name = ?
   `)
+
+  const stmtDeleteAll = db.prepare('DELETE FROM section_plans WHERE project_id = ? AND loop_name = ?')
 
   function mapRow(row: Record<string, unknown>): SectionPlanRow {
     return {
@@ -204,6 +207,11 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
     count(projectId, loopName) {
       const result = stmtCount.get(projectId, loopName) as { count: number }
       return result.count
+    },
+
+    deleteAll(projectId, loopName) {
+      const result = stmtDeleteAll.run(projectId, loopName) as unknown as { changes: number }
+      return result.changes
     },
 
     restoreAll(rows: SectionPlanRow[]): void {
