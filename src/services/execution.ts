@@ -15,7 +15,7 @@ import { extractPlanTitle, extractLoopNames } from '../utils/plan-execution'
 import { parseModelString, retryWithModelFallback, resolveDecomposerModel } from '../utils/model-fallback'
 
 import { formatDecomposerSessionTitle, formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
-import { buildLoopPermissionRuleset } from '../constants/loop'
+import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../constants/loop'
 import { findPartialMatch } from '../utils/partial-match'
 import { isSandboxEnabled } from '../sandbox/context'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
@@ -1771,6 +1771,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           const decomposerSessionResult = await createSessionWithFallback(deps, {
             title: formatDecomposerSessionTitle(uniqueLoopName),
             directory: hostWorktreeDir!,
+            permission: buildLoopPermissionRuleset(),
           })
           if (!decomposerSessionResult.data) {
             deps.logger.error('handleStartLoop: failed to create decomposer session for fallback')
@@ -2056,6 +2057,17 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     if (stoppedState.terminationReason && parseTerminationReasonString(stoppedState.terminationReason).kind === 'completed') {
       return fail('conflict', 409, `Loop "${stoppedState.loopName}" completed successfully and cannot be restarted.`)
     }
+    if (
+      stoppedState.terminationReason &&
+      parseTerminationReasonString(stoppedState.terminationReason).kind === 'final_audit_retry_exhausted' &&
+      !command.force
+    ) {
+      return fail(
+        'conflict',
+        409,
+        `Loop "${stoppedState.loopName}" terminated during final audit retry exhaustion. Use force=true to restart.`,
+      )
+    }
     if (stoppedState.worktree && stoppedState.worktreeDir) {
       if (!existsSync(stoppedState.worktreeDir)) {
         return fail('conflict', 409, `Cannot restart "${stoppedState.loopName}": worktree directory no longer exists at ${stoppedState.worktreeDir}.`)
@@ -2202,6 +2214,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
                 const decomposerResult = await createSessionWithFallback(deps, {
                    title: formatDecomposerSessionTitle(stoppedState.loopName),
                   directory: stoppedState.worktreeDir,
+                  permission: buildLoopPermissionRuleset(),
                 })
                 if (!decomposerResult.data) {
                   return { ok: false, error: 'Failed to create decomposer session for fallback.' }
@@ -2252,6 +2265,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             const decomposerResult = await createSessionWithFallback(deps, {
               title: formatDecomposerSessionTitle(stoppedState.loopName),
               directory: stoppedState.worktreeDir,
+              permission: buildLoopPermissionRuleset(),
             })
             if (!decomposerResult.data) {
               deps.logger.error('loop-restart: failed to create decomposer session')
@@ -2273,7 +2287,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             totalSections: stoppedState.totalSections ?? 0,
           }),
           directory: stoppedState.worktreeDir,
-          permission: permissionRuleset,
+          permission: stoppedState.phase === 'final_auditing' ? buildAuditSessionPermissionRuleset() : permissionRuleset,
           workspaceId: stoppedState.workspaceId,
           loopName: stoppedState.loopName,
           logPrefix: 'loop-restart',
@@ -2351,7 +2365,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             auditorModel: stoppedState.auditorModel ?? deps.config.auditorModel,
             executionModel: stoppedState.executionModel ?? deps.config.executionModel,
           })
-        : parseModelString(stoppedState.executionModel) ?? parseModelString(deps.config.executionModel)
+        : stoppedState.phase === 'final_auditing'
+          ? parseModelString(stoppedState.auditorModel ?? deps.config.auditorModel)
+          : parseModelString(stoppedState.executionModel) ?? parseModelString(deps.config.executionModel)
       const workspaceParam = stoppedState.workspaceId ? { workspace: stoppedState.workspaceId } : {}
 
       const promptAgent = promptNeedsDecomposer ? 'decomposer' : stoppedState.phase === 'final_auditing' ? 'auditor-loop' : 'code'

@@ -67,6 +67,8 @@ export default defineConfig({
       'test/utils/tui-execution-context-cache.test.ts',
       'test/utils/tui-client-await-workspace-connected.test.ts',
       'test/utils/tui-client-select-session.test.ts',
+      'test/loop-permission-ruleset.test.ts',
+      'test/loop-runtime-audit-permissions.test.ts',
     ],
     globals: true,
   },

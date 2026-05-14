@@ -14,7 +14,7 @@ import { retryWithModelFallback, resolveDecomposerModel } from '../utils/model-f
 import { resolveLoopModel, resolveLoopAuditorModel } from '../utils/loop-helpers'
 import type { createSandboxManager } from '../sandbox/manager'
 // worktree-completion imports moved to hooks/loop.ts (termination side-effects)
-import { buildLoopPermissionRuleset } from '../constants/loop'
+import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../constants/loop'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
 // worktree-cleanup imports moved to hooks/loop.ts (termination side-effects)
 import { createAuditSession, promptAuditSession } from '../utils/audit-session'
@@ -1028,6 +1028,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             currentSectionIndex: input.currentSectionIndex,
             totalSections: input.totalSections,
           }),
+          permission: buildAuditSessionPermissionRuleset(),
           ...(input.workspaceId ? { workspaceID: input.workspaceId } : {}),
         },
         query: {

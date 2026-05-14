@@ -1,5 +1,8 @@
-import { describe, test, expect } from 'bun:test'
+import { describe, test, expect, mock } from 'bun:test'
 import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../src/constants/loop'
+import { createAuditSession } from '../src/utils/audit-session'
+import { createLoopSessionWithWorkspace } from '../src/utils/loop-session'
+import type { Logger } from '../src/types'
 
 describe('buildLoopPermissionRuleset', () => {
   test('worktree + sandbox ruleset: allow-all first, external_directory denied, code-agent denies, then operational denies last', () => {
@@ -18,30 +21,30 @@ describe('buildLoopPermissionRuleset', () => {
     ])
   })
 
-  test('worktree + non-sandbox ruleset: allow-all first, external_directory denied, /tmp allowed, code-agent denies, then operational denies last', () => {
-    const rules = buildLoopPermissionRuleset()
-    expect(rules).toEqual([
-      { permission: '*',                  pattern: '*',          action: 'allow' },
-      { permission: 'external_directory', pattern: '*',          action: 'deny' },
-      { permission: 'external_directory', pattern: '/tmp',       action: 'allow' },
-      { permission: 'review-write',       pattern: '*',          action: 'deny' },
-      { permission: 'review-delete',      pattern: '*',          action: 'deny' },
-      { permission: 'plan_exit',          pattern: '*',          action: 'deny' },
-      { permission: 'loop',               pattern: '*',          action: 'deny' },
-      { permission: 'bash',               pattern: 'git push *', action: 'deny' },
-      { permission: 'loop-cancel',        pattern: '*',          action: 'deny' },
-      { permission: 'loop-status',        pattern: '*',          action: 'deny' },
-    ])
-  })
-
   test('EMITS session-level denies for code-agent tool exclusions (auditor now runs in separate session)', () => {
     const required = ['review-write', 'review-delete', 'loop']
-    for (const isSandbox of [true, false]) {
-      const rules = buildLoopPermissionRuleset()
-      for (const tool of required) {
-        expect(rules.find((r) => r.permission === tool && r.action === 'deny')).toBeDefined()
-      }
+    const rules = buildLoopPermissionRuleset()
+    for (const tool of required) {
+      expect(rules.find((r) => r.permission === tool && r.action === 'deny')).toBeDefined()
     }
+  })
+
+  test('contains external_directory:*:deny rule', () => {
+    const rules = buildLoopPermissionRuleset()
+    expect(rules).toContainEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
+  })
+
+  test('external_directory:*:deny appears before external_directory:/tmp:allow', () => {
+    const rules = buildLoopPermissionRuleset()
+    const denyIdx = rules.findIndex(
+      (r) => r.permission === 'external_directory' && r.pattern === '*' && r.action === 'deny',
+    )
+    const allowIdx = rules.findIndex(
+      (r) => r.permission === 'external_directory' && r.pattern === '/tmp' && r.action === 'allow',
+    )
+    expect(denyIdx).toBeGreaterThanOrEqual(0)
+    expect(allowIdx).toBeGreaterThanOrEqual(0)
+    expect(denyIdx).toBeLessThan(allowIdx)
   })
 })
 
@@ -85,5 +88,98 @@ describe('buildAuditSessionPermissionRuleset', () => {
     expect(rules.some(r => r.permission === 'bash' && r.pattern === 'git commit *' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'bash' && r.pattern === 'git push *' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'loop' && r.pattern === '*' && r.action === 'deny')).toBe(true)
+  })
+
+  test('contains external_directory:*:deny rule', () => {
+    const rules = buildAuditSessionPermissionRuleset()
+    expect(rules).toContainEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
+  })
+
+  test('external_directory:*:deny appears before any /tmp allow rule if present', () => {
+    const rules = buildAuditSessionPermissionRuleset()
+    const denyIdx = rules.findIndex(
+      (r) => r.permission === 'external_directory' && r.pattern === '*' && r.action === 'deny',
+    )
+    const allowIdx = rules.findIndex(
+      (r) => r.permission === 'external_directory' && r.pattern === '/tmp' && r.action === 'allow',
+    )
+    expect(denyIdx).toBeGreaterThanOrEqual(0)
+    // If a /tmp allow rule exists, deny must come first; otherwise deny is sufficient
+    if (allowIdx >= 0) {
+      expect(denyIdx).toBeLessThan(allowIdx)
+    }
+  })
+})
+
+describe('createAuditSession passes audit permission rules into session creation', () => {
+  test('session.create receives permission equal to buildAuditSessionPermissionRuleset()', async () => {
+    const expectedPermission = buildAuditSessionPermissionRuleset()
+    const mockCreate = mock(async (params: any) => ({ data: { id: 'audit-session' }, error: null }))
+    const mockGet = mock(async () => ({ data: { permission: expectedPermission }, error: null }))
+    const mockV2 = {
+      session: {
+        create: mockCreate,
+        get: mockGet,
+      },
+    } as any
+
+    const logger = { log: mock(), error: mock() } as unknown as Logger
+
+    await createAuditSession({
+      v2: mockV2,
+      loopName: 'permission-loop',
+      iteration: 1,
+      currentSectionIndex: 0,
+      totalSections: 1,
+      worktreeDir: '/tmp/permission-loop',
+      isSandbox: false,
+      prompt: 'audit',
+      logger,
+    })
+
+    expect(mockCreate).toHaveBeenCalled()
+    const callArgs = (mockCreate as any).mock.calls[0][0]
+    expect(callArgs.directory).toBe('/tmp/permission-loop')
+    expect(callArgs.permission).toEqual(expectedPermission)
+    expect(callArgs.permission).toContainEqual({
+      permission: 'external_directory',
+      pattern: '*',
+      action: 'deny',
+    })
+  })
+})
+
+describe('createLoopSessionWithWorkspace passes loop permission rules into session creation', () => {
+  test('session.create receives permission exactly equal to buildLoopPermissionRuleset()', async () => {
+    const expectedPermission = buildLoopPermissionRuleset()
+    const mockCreate = mock(async (params: any) => ({ data: { id: 'loop-session' }, error: null }))
+    const mockGet = mock(async () => ({ data: {} }))
+    const mockV2 = {
+      session: {
+        create: mockCreate,
+        get: mockGet,
+      },
+    } as any
+
+    const logger = { log: mock(), error: mock() } as unknown as Logger
+
+    await createLoopSessionWithWorkspace({
+      v2: mockV2,
+      title: 'test loop session',
+      directory: '/tmp/permission-loop',
+      permission: expectedPermission,
+      logPrefix: 'test',
+      logger,
+    })
+
+    expect(mockCreate).toHaveBeenCalled()
+    const callArgs = (mockCreate as any).mock.calls[0][0]
+    expect(callArgs.permission).toEqual(expectedPermission)
+    expect(callArgs.directory).toBe('/tmp/permission-loop')
+    expect(callArgs.permission).toContainEqual({
+      permission: 'external_directory',
+      pattern: '*',
+      action: 'deny',
+    })
   })
 })

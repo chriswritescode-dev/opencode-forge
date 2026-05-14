@@ -10,6 +10,7 @@ import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-r
 import { createLoopTools } from '../src/tools/loop'
 import { createLogger } from '../src/utils/logger'
 import { createLoopEventHandler } from '../src/hooks/loop'
+import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../src/constants/loop'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
@@ -483,5 +484,332 @@ describe('loop-status tool restart path', () => {
     expect(createCalls.length).toBeGreaterThan(0)
     const createArgs = createCalls[0][0]
     expect(createArgs).not.toHaveProperty('parentID')
+  })
+
+  test('force-restart agent decomposer without workspace includes permission ruleset', async () => {
+    const mockApi = createMockTuiApi()
+    const v2Client = mockApi.client as unknown as OpencodeClient
+    const logger = createLogger({ enabled: false, file: '' })
+
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+
+    const oldSessionId = 'old-session-decomposer-agent-noworkspace'
+    const worktreeDir = `${TEST_DIR}/worktree-decomposer-agent`
+    mkdirSync(worktreeDir, { recursive: true })
+
+    loopService.setState(loopName, {
+      active: false,
+      sessionId: oldSessionId,
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-decomposer-agent',
+      iteration: 2,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt for agent decomposer restart without workspace',
+      phase: 'coding',
+      errorCount: 0,
+      auditCount: 0,
+      worktree: true,
+      sandbox: false,
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      workspaceId: undefined,
+      hostSessionId,
+      decompositionStatus: 'failed',
+      decompositionMode: 'agent',
+      decompositionSessionId: null,
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+      terminationReason: 'decomposition_failed',
+      completedAt: new Date().toISOString(),
+    } as LoopState)
+
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const tools = createLoopTools({
+      v2: v2Client,
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+    } as any)
+
+    await tools['loop-status'].execute({
+      name: loopName,
+      restart: true,
+      force: true,
+    }, { sessionID: 'test-session' } as any)
+
+    const createCalls = ((v2Client.session.create as any)).mock.calls
+    expect(createCalls.length).toBeGreaterThan(0)
+
+    // Find the session.create call that has permission property
+    const callWithPermission = createCalls.find((call: any[]) =>
+      call[0]?.permission !== undefined
+    )
+    expect(callWithPermission).toBeDefined()
+    expect(callWithPermission![0].permission).toEqual(buildLoopPermissionRuleset())
+  })
+
+  test('force-restart deterministic-to-agent fallback without workspace includes permission ruleset', async () => {
+    const mockApi = createMockTuiApi()
+    const v2Client = mockApi.client as unknown as OpencodeClient
+    const logger = createLogger({ enabled: false, file: '' })
+
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+
+    const oldSessionId = 'old-session-deterministic-fallback-noworkspace'
+    const worktreeDir = `${TEST_DIR}/worktree-deterministic-fallback`
+    mkdirSync(worktreeDir, { recursive: true })
+
+    // Seed inactive loop with deterministic decomposition that failed
+    loopService.setState(loopName, {
+      active: false,
+      sessionId: oldSessionId,
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-deterministic-fallback',
+      iteration: 2,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      // Empty plan text so deterministic parser yields no sections
+      prompt: '',
+      phase: 'coding',
+      errorCount: 0,
+      auditCount: 0,
+      worktree: true,
+      sandbox: false,
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      workspaceId: undefined,
+      hostSessionId,
+      decompositionStatus: 'failed',
+      decompositionMode: 'deterministic',
+      decompositionSessionId: null,
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+      terminationReason: 'decomposition_failed',
+      completedAt: new Date().toISOString(),
+    } as LoopState)
+
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const tools = createLoopTools({
+      v2: v2Client,
+      directory: TEST_DIR,
+      config: { decomposer: { enabled: true, mode: 'deterministic', onParseFailure: 'agent', maxSections: 12 } },
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+    } as any)
+
+    await tools['loop-status'].execute({
+      name: loopName,
+      restart: true,
+      force: true,
+    }, { sessionID: 'test-session' } as any)
+
+    const createCalls = ((v2Client.session.create as any)).mock.calls
+    expect(createCalls.length).toBeGreaterThan(0)
+
+    // Find the fallback decomposer session.create call (has decomposer- title prefix)
+    const decomposerCall = createCalls.find((call: any[]) =>
+      typeof call[0]?.title === 'string' && call[0].title.startsWith('decomposer-')
+    )
+    expect(decomposerCall).toBeDefined()
+    expect(decomposerCall![0]).toHaveProperty('permission')
+    expect(decomposerCall![0].permission).toEqual(buildLoopPermissionRuleset())
+  })
+
+  test('non-force restart of final_audit_retry_exhausted returns conflict', async () => {
+    const mockApi = createMockTuiApi()
+    const v2Client = mockApi.client as unknown as OpencodeClient
+    const logger = createLogger({ enabled: false, file: '' })
+
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+
+    const oldSessionId = 'old-session-final-audit-exhausted'
+    const worktreeDir = `${TEST_DIR}/worktree-final-audit-exhausted`
+    mkdirSync(worktreeDir, { recursive: true })
+
+    loopService.setState(loopName, {
+      active: false,
+      sessionId: oldSessionId,
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-final-audit-exhausted',
+      iteration: 2,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt',
+      phase: 'final_auditing',
+      errorCount: 0,
+      auditCount: 1,
+      worktree: true,
+      sandbox: false,
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      workspaceId,
+      hostSessionId,
+      decompositionStatus: 'completed',
+      decompositionMode: 'deterministic',
+      decompositionSessionId: null,
+      currentSectionIndex: 1,
+      totalSections: 2,
+      finalAuditDone: false,
+      terminationReason: 'final_audit_retry_exhausted',
+      completedAt: new Date().toISOString(),
+    } as LoopState)
+
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const tools = createLoopTools({
+      v2: v2Client,
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+    } as any)
+
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+      restart: true,
+      force: false,
+    }, { sessionID: 'test-session' } as any)
+
+    expect(result).toContain('terminated during final audit retry exhaustion')
+    expect(result).toContain('Use force=true to restart')
+
+    // No new session.create should have been called
+    const createCalls = ((v2Client.session.create as any)).mock.calls
+    expect(createCalls.length).toBe(0)
+
+    // Loop should remain inactive
+    const state = loopService.getActiveState(loopName)
+    expect(state).toBeNull()
+  })
+
+  test('forced restart of final_audit_retry_exhausted resumes at final_auditing', async () => {
+    const mockApi = createMockTuiApi()
+    const v2Client = mockApi.client as unknown as OpencodeClient
+    const logger = createLogger({ enabled: false, file: '' })
+
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+
+    const oldSessionId = 'old-session-final-audit-force'
+    const worktreeDir = `${TEST_DIR}/worktree-final-audit-force`
+    mkdirSync(worktreeDir, { recursive: true })
+
+    loopService.setState(loopName, {
+      active: false,
+      sessionId: oldSessionId,
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-final-audit-force',
+      iteration: 2,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt for forced final audit restart',
+      phase: 'final_auditing',
+      errorCount: 0,
+      auditCount: 1,
+      worktree: true,
+      sandbox: false,
+      executionModel: 'provider/execution-model',
+      auditorModel: 'provider/auditor-model',
+      workspaceId,
+      hostSessionId,
+      decompositionStatus: 'completed',
+      decompositionMode: 'deterministic',
+      decompositionSessionId: null,
+      currentSectionIndex: 1,
+      totalSections: 2,
+      finalAuditDone: false,
+      terminationReason: 'final_audit_retry_exhausted',
+      completedAt: new Date().toISOString(),
+    } as LoopState)
+
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const tools = createLoopTools({
+      v2: v2Client,
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+    } as any)
+
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+      restart: true,
+      force: true,
+    }, { sessionID: 'test-session' } as any)
+
+    expect(result).toContain('Restarted loop')
+
+    // Verify persisted state
+    const newState = loopService.getActiveState(loopName)
+    expect(newState).toBeDefined()
+    expect(newState?.active).toBe(true)
+    expect(newState?.phase).toBe('final_auditing')
+    expect(newState?.terminationReason).toBeFalsy()
+    expect(newState?.completedAt).toBeFalsy()
+    expect(newState?.currentSectionIndex).toBe(1)
+    expect(newState?.totalSections).toBe(2)
+    expect(newState?.finalAuditDone).toBe(false)
+
+    // Verify promptAsync was called with auditor-loop agent using auditor model
+    const promptCalls = ((v2Client.session.promptAsync as any)).mock.calls
+    expect(promptCalls.length).toBeGreaterThan(0)
+    const lastPromptCall = promptCalls[promptCalls.length - 1][0]
+    expect(lastPromptCall.agent).toBe('auditor-loop')
+    expect(lastPromptCall.model).toEqual({ providerID: 'provider', modelID: 'auditor-model' })
+
+    // Verify session creation uses audit permissions, not loop permissions
+    const createCalls = ((v2Client.session.create as any)).mock.calls
+    expect(createCalls.length).toBeGreaterThan(0)
+    const callWithPermission = createCalls.find((call: any[]) =>
+      call[0]?.permission !== undefined
+    )
+    expect(callWithPermission).toBeDefined()
+    expect(callWithPermission![0].permission).toEqual(buildAuditSessionPermissionRuleset())
   })
 })
