@@ -78,7 +78,7 @@ describe('in-flight guard', () => {
   })
 
   test('logger.error is called exactly once with correct details before throwing', () => {
-    markPromptInFlight('loopC', 'sess-5', 'decomposer')
+    markPromptInFlight('loopC', 'sess-5', 'auditor-loop')
     const { logger, errorCalls } = createMockLogger()
 
     try {
@@ -92,7 +92,7 @@ describe('in-flight guard', () => {
     const msg = errorCalls[0][0] as string
     expect(msg).toContain('[in-flight-guard]')
     expect(msg).toContain('loop=loopC')
-    expect(msg).toContain('prior=decomposer: sess-5')
+    expect(msg).toContain('prior=auditor-loop: sess-5')
     expect(msg).toContain('attempted=code: sess-6')
   })
 
@@ -179,7 +179,7 @@ describe('withInFlightGuard', () => {
   test('clears in-flight when fn throws', async () => {
     const { logger } = createMockLogger()
     await expect(
-      withInFlightGuard('loopD', 'sess-3', 'decomposer', logger, async () => {
+      withInFlightGuard('loopD', 'sess-3', 'auditor-loop', logger, async () => {
         throw new Error('boom')
       })
     ).rejects.toThrow('boom')

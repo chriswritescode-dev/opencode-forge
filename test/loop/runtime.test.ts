@@ -130,9 +130,6 @@ CREATE TABLE loops (
   workspace_id         TEXT,
   host_session_id      TEXT,
   audit_session_id     TEXT,
-  decomposition_status TEXT NOT NULL DEFAULT 'pending' CHECK (decomposition_status IN ('pending','running','completed','failed','skipped')),
-  decomposition_mode   TEXT NOT NULL DEFAULT 'agent' CHECK (decomposition_mode IN ('agent','deterministic')),
-  decomposition_session_id TEXT,
   current_section_index INTEGER NOT NULL DEFAULT 0,
   total_sections       INTEGER NOT NULL DEFAULT 0,
   final_audit_done     INTEGER NOT NULL DEFAULT 0,
@@ -269,9 +266,6 @@ describe('Loop Runtime', () => {
       sandbox: false,
       executionModel: 'test/model',
       auditorModel: 'test/auditor',
-      decompositionStatus: 'completed',
-      decompositionMode: 'deterministic',
-      decompositionSessionId: null,
       currentSectionIndex: 0,
       totalSections: 0,
       finalAuditDone: false,
@@ -329,7 +323,7 @@ describe('Loop Runtime', () => {
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-        decompositionStatus: 'completed',
+
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
@@ -355,7 +349,7 @@ describe('Loop Runtime', () => {
       const state = makeState({
         phase: 'auditing',
         totalSections: 0,
-        decompositionStatus: 'completed',
+
         auditCount: 0,
         iteration: 1,
         maxIterations: 3,
@@ -383,102 +377,6 @@ describe('Loop Runtime', () => {
       expect(afterState).not.toBeNull()
       expect(afterState!.active).toBe(false)
       expect(afterState!.terminationReason).toBe('completed')
-    })
-  })
-
-  describe('abort during decomposing terminates user aborted', () => {
-    test('aborting a decomposer session terminates the loop with user_aborted', async () => {
-      const { loop } = createRuntime()
-      const state = makeState({
-        phase: 'decomposing',
-        decompositionStatus: 'running',
-        decompositionSessionId: 'decomp-sess-1',
-        sessionId: 'decomp-sess-1',
-        totalSections: 0,
-      })
-      loopService.setState(state.loopName, state)
-
-      await loop.tick({
-        type: 'session.error',
-        properties: {
-          sessionID: 'decomp-sess-1',
-          error: { name: 'MessageAbortedError' },
-        },
-      })
-
-      const terminatedState = loopService.getAnyState(state.loopName)
-      expect(terminatedState).not.toBeNull()
-      expect(terminatedState!.active).toBe(false)
-      expect(terminatedState!.terminationReason).toBe('user_aborted')
-    })
-  })
-
-  describe('decomposing transition to coding', () => {
-    test('loops without workspace binding create the new code session without selecting it', async () => {
-      const { loop, clientState } = createRuntime()
-      const state = makeState({
-        phase: 'decomposing',
-        sessionId: 'decomp-sess-1',
-        decompositionSessionId: 'decomp-sess-1',
-        decompositionStatus: 'completed',
-        decompositionMode: 'agent',
-        totalSections: 1,
-        worktree: false,
-        worktreeDir: tempDir,
-      })
-      loopService.setState(state.loopName, state)
-      sectionPlansRepo.bulkInsert({
-        projectId: PROJECT_ID,
-        loopName: state.loopName,
-        sections: [{ index: 0, title: 'Setup', content: '## Setup\nDo the work' }],
-      })
-
-      await loop.tick({
-        type: 'session.status',
-        properties: {
-          status: { type: 'idle' },
-          sessionID: 'decomp-sess-1',
-        },
-      })
-
-      expect(clientState.selectCalls).toHaveLength(0)
-      expect(clientState.createCalls[0].permission).toBeUndefined()
-      expect(clientState.promptCalls[0]).toEqual({ sessionID: 'sess', agent: 'code' })
-      expect(loopService.getActiveState(state.loopName)!.decompositionSessionId).toBeNull()
-    })
-
-    test('worktree loops create the bound code session after transitioning', async () => {
-      const { loop, clientState } = createRuntime()
-      const state = makeState({
-        phase: 'decomposing',
-        sessionId: 'decomp-sess-1',
-        decompositionSessionId: 'decomp-sess-1',
-        decompositionStatus: 'completed',
-        decompositionMode: 'agent',
-        totalSections: 1,
-        worktree: true,
-        worktreeDir: tempDir,
-        workspaceId: 'ws-1',
-      })
-      loopService.setState(state.loopName, state)
-      sectionPlansRepo.bulkInsert({
-        projectId: PROJECT_ID,
-        loopName: state.loopName,
-        sections: [{ index: 0, title: 'Setup', content: '## Setup\nDo the work' }],
-      })
-
-      await loop.tick({
-        type: 'session.status',
-        properties: {
-          status: { type: 'idle' },
-          sessionID: 'decomp-sess-1',
-        },
-      })
-
-      expect(clientState.selectCalls).toHaveLength(0)
-      expect(loopService.getActiveState(state.loopName)!.decompositionSessionId).toBeNull()
-
-      expect(clientState.deleteCalls).toHaveLength(0)
     })
   })
 
@@ -535,7 +433,6 @@ describe('runtime re-provisioning updates state.workspaceId', () => {
     const state = makeState({
       phase: 'coding',
       totalSections: 0,
-      decompositionStatus: 'completed',
       auditCount: 0,
       worktree: true,
       workspaceId: undefined,
@@ -619,7 +516,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-        decompositionStatus: 'completed',
+
       })
       loopService.setState(state.loopName, state)
 
@@ -657,7 +554,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-        decompositionStatus: 'completed',
+
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
@@ -695,7 +592,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-        decompositionStatus: 'completed',
+
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
@@ -795,7 +692,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-        decompositionStatus: 'completed',
+
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
@@ -823,7 +720,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-        decompositionStatus: 'completed',
+
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
@@ -837,43 +734,6 @@ describe('stall handling terminates with stall timeout when configured cap is re
       })
 
       expect(getPromptInFlight('test-loop')).toBeUndefined()
-    })
-
-    test('rejects decomposer retry while code prompt in-flight, preserves prior guard', async () => {
-      markPromptInFlight('test-loop', 'other-session-id', 'code')
-
-      const { loop, clientState, logs } = createRuntime()
-
-      const state = makeState({
-        phase: 'decomposing',
-        decompositionStatus: 'failed',
-        errorCount: 0,
-        totalSections: 1,
-        decompositionSessionId: 'decomp-sess-1',
-        sessionId: 'decomp-sess-1',
-      })
-      loopService.setState(state.loopName, state)
-
-      await loop.tick({
-        type: 'session.status',
-        properties: {
-          status: { type: 'idle' },
-          sessionID: 'decomp-sess-1',
-        },
-      })
-
-      const hasGuardError = logs.some(
-        (l) => l.level === 'error' && l.message.includes('[in-flight-guard]'),
-      )
-      expect(hasGuardError).toBe(true)
-
-      const prior = getPromptInFlight('test-loop')
-      expect(prior).toBeDefined()
-      expect(prior!.sessionId).toBe('other-session-id')
-      expect(prior!.agent).toBe('code')
-
-      const decomposerPrompts = clientState.promptCalls.filter((c) => c.agent === 'decomposer')
-      expect(decomposerPrompts).toHaveLength(0)
     })
 
     test('handlePromptError short-circuits on ConcurrentPromptError, preserving loop active state', async () => {
@@ -890,7 +750,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-        decompositionStatus: 'completed',
+
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
@@ -921,7 +781,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-        decompositionStatus: 'completed',
+
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
@@ -955,7 +815,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-        decompositionStatus: 'completed',
+
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
@@ -986,7 +846,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-        decompositionStatus: 'completed',
+
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)

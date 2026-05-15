@@ -61,7 +61,7 @@ The codebase is organized into these module groups under `src/`:
 
 | Module | Purpose | Key Files |
 |--------|---------|-----------|
-| `agents/` | AI agent definitions (code, architect, auditor, decomposer) | `index.ts`, `code.ts`, `architect.ts`, `auditor.ts`, `decomposer.ts` |
+| `agents/` | AI agent definitions (code, architect, auditor) | `index.ts`, `code.ts`, `architect.ts`, `auditor.ts` |
 | `hooks/` | Plugin event/lifecycle hooks (session, plan capture, sandbox, watchdog) | `index.ts`, `session.ts`, `loop.ts`, `plan-capture.ts`, `watchdog.ts`, `sandbox-tools.ts` |
 | `loop/` | Core loop state machine and runtime | `runtime.ts`, `service.ts`, `state.ts`, `transitions.ts`, `prompts.ts` |
 | `services/` | Higher-level orchestration services | `execution.ts`, `session-loop-resolver.ts`, `reconcile-loops.ts`, `deterministic-decomposer.ts` |
@@ -84,10 +84,10 @@ See [loop-system.md](loop-system.md) for detailed documentation.
 
 - **Loop Runtime** (`src/loop/runtime.ts`) - Factory for creating Loop instances (`createLoop()` returns a `Loop` interface with ~50 methods)
 - **Loop Service** (`src/loop/service.ts`) - State management for loops (DB-backed via SQLite)
-- **State Machine** (`src/loop/state.ts`) - Discriminated union `LoopState` with 4 phases: `coding`, `auditing`, `decomposing`, `final_auditing`
+- **State Machine** (`src/loop/state.ts`) - Discriminated union `LoopState` with 3 phases: `coding`, `auditing`, `final_auditing`
 - **Transition Table** (`src/loop/transitions.ts`) - Pure `nextTransition()` function for phase transitions
 - **Termination** (`src/loop/termination.ts`) - Termination reason mapping and status checks
-- **Prompts** (`src/loop/prompts.ts`) - Prompt builders for each loop phase (continuation, audit, section, decomposer)
+- **Prompts** (`src/loop/prompts.ts`) - Prompt builders for each loop phase (continuation, audit, section)
 - **Idle Gate** (`src/loop/idle-gate.ts`) - Session busy detection and timeout tracking
 - **Section Summary** (`src/loop/section-summary.ts`) - Parse audit output markers
 - **LoopEventHandler** (`src/hooks/loop.ts`) - Event handling, session rotation, watchdog integration
@@ -149,7 +149,6 @@ OpenCode Forge integrates with OpenCode through several hook points. The plugin 
 ### Additional Hooks
 
 - **Plan Capture** (`src/hooks/plan-capture.ts`) - Extracts `<!-- forge-plan:start -->...end-->` markers from streaming assistant messages
-- **Section Capture** (`src/hooks/section-capture.ts`) - Captures decomposed sections from streaming assistant responses
 - **Forge Session Attach** (`src/hooks/forge-session-attach.ts`) - Automatically attaches loops when new sessions are created
 - **Watchdog** (`src/hooks/watchdog.ts`) - Stall detection and recovery for loops
 

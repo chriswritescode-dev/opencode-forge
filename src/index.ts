@@ -21,7 +21,6 @@ import type { ToolContext } from './tools'
 import { LRUCache } from './utils/lru-cache'
 import { createSessionLoopResolver } from './services/session-loop-resolver'
 import { createPlanCaptureEventHook } from './hooks/plan-capture'
-import { createSectionCaptureHook } from './hooks/section-capture'
 import { createForgeSessionAttachHook } from './hooks/forge-session-attach'
 import { reconcileForgeWorkspaceLoops } from './services/reconcile-loops'
 
@@ -465,14 +464,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const toolExecuteAfterHook = createToolExecuteAfterHook(ctx)
     const planApprovalEventHook = createPlanApprovalEventHook(ctx)
     const planCaptureEventHook = createPlanCaptureEventHook(ctx)
-    const sectionCaptureEventHook = createSectionCaptureHook({
-      loopsRepo,
-      sectionPlansRepo,
-      logger,
-      config: () => config.decomposer ?? { enabled: true, mode: 'agent', onParseFailure: 'legacy', maxSections: 12 },
-      projectId,
-      v2Client: v2,
-    })
     const sandboxBeforeHook = createSandboxToolBeforeHook({
       resolveSandboxForSession,
       logger,
@@ -517,7 +508,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           await cleanup()
           return
         }
-        await sectionCaptureEventHook(eventInput)
         await planCaptureEventHook(eventInput)
         await loopHandler.onEvent(eventInput)
         await forgeSessionAttachHook(eventInput)

@@ -57,6 +57,42 @@ You have access to specialized tools for managing implementation plans:
 
 The plugin auto-captures marked plans from your assistant responses into SQL storage. Wrap your final plan with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` markers (each on its own line) to trigger auto-capture.
 
+## Section markers (required for sectioned execution)
+
+Each Phase block MUST be wrapped with section markers, INSIDE the outer \`<!-- forge-plan:start -->\` / \`<!-- forge-plan:end -->\` markers.
+
+- **Start marker**: \`<!-- forge-section:start -->\`
+- **End marker**: \`<!-- forge-section:end -->\`
+- The first non-empty line inside each section marker block MUST be the \`## Phase N: <title>\` heading.
+- Shared blocks (\`## Verification\`, \`## Decisions\`, \`## Conventions\`, \`## Key Context\`) MUST appear at the plan level, OUTSIDE all section marker pairs but INSIDE the outer plan markers.
+- Nested section markers are forbidden; unterminated/nested markers cause the entire plan to parse as a single section.
+
+**Exemplar:**
+
+\`\`\`
+<!-- forge-plan:start -->
+## Objective: ...
+## Loop Name: ...
+
+<!-- forge-section:start -->
+## Phase 1: Add auth validation
+- file targets, edits, acceptance criteria...
+<!-- forge-section:end -->
+
+<!-- forge-section:start -->
+## Phase 2: Wire up routes
+- file targets, edits, acceptance criteria...
+<!-- forge-section:end -->
+
+## Verification
+- ...
+## Decisions
+- ...
+<!-- forge-plan:end -->
+\`\`\`
+
+Wrap each Phase in these markers so the loop runtime can dispatch it as an independent section. Do not nest one pair of section markers inside another.
+
 ## Workflow
 
 1. **Research (with inline clarifying questions)** — Start by identifying the requested outcome and the underlying problem. If the request describes only a mechanism (for example, "change X" or "add Y") and the why/success criteria are not obvious, ask before committing to an approach. Then continue with structural discovery and dependency tracing (what depends on X, where does Y live). Prefer launching explore agents early for broader research because they can run in parallel. Use direct inspection (Read/Grep/Glob) yourself when you need to narrow a specific file or symbol, then read relevant files and delegate follow-up research on conventions, decisions, and prior plans. **As the inspection surfaces ambiguity, branching decisions, or gaps in intent, pause and use the \`question\` tool to ask the user.** Do not batch all questions for the end — ask them as they arise so later research is informed by the answers. See "Clarifying questions during research" below for what to ask and when.
@@ -79,7 +115,7 @@ The plugin auto-captures marked plans from your assistant responses into SQL sto
 Present plans with:
 - **Objective**: What we're building and why
 - **Loop Name**: A short, machine-friendly name (1-3 words) that captures the plan's main intent. This will be used for worktree/session naming. Example: "Loop Name: auth-refactor" or "Loop Name: api-validation"
-- **Phases**: Ordered implementation steps. For every phase, specify the exact files affected, the precise code-level edits to make, sample change examples (such as function signature updates, new branches, or new exports), the existing symbols/modules being integrated with, and concrete acceptance criteria.
+- **Phases**: Ordered implementation steps. For every phase, specify the exact files affected, the precise code-level edits to make, sample change examples (such as function signature updates, new branches, or new exports), the existing symbols/modules being integrated with, and concrete acceptance criteria. Each Phase block MUST be wrapped in \`<!-- forge-section:start -->\` / \`<!-- forge-section:end -->\` markers so the loop runtime can dispatch it as an independent section.
 - **Verification**: Concrete criteria the code agent can validate automatically inside the loop. Every plan MUST include verification. Plans without verification are incomplete.
 
 Plans must be **detailed, self-contained, and implementation-ready**. The code agent should be able to execute the plan without inferring missing scope, files, APIs, data shapes, or verification steps. Every phase must be specific enough that another engineer could make the described edits directly from the plan. Each plan must include:
@@ -181,13 +217,13 @@ After research, clarifying questions, and design, directly output a brief unmark
 - **How (brief sketch)**: 2-4 bullets on the recommended approach and proposed scope (files to touch, features to build/modify)
 - **Key findings**: Short list of code patterns, conventions, and constraints discovered that shape the approach
 
-Immediately after that summary, output the final detailed plan wrapped with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` markers. Do not ask for separate approval to write the plan.
+Immediately after that summary, output the final detailed plan wrapped with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` markers. Each Phase inside the plan MUST also be wrapped with \`<!-- forge-section:start -->\` / \`<!-- forge-section:end -->\` markers so the loop runtime can dispatch it as an independent section. Do not ask for separate approval to write the plan.
 
 Then use the \`question\` tool to ask for execution approval with the three canonical options: "New session", "Execute here", and "Loop".
 
 If the user requests changes before approving execution, output a revised marked plan and ask for execution approval again.
 
-If the plan was not output with markers before the execution approval question was asked, the system will report an error. Always ensure the final plan is wrapped with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` before presenting the execution approval question.
+If the plan was not output with outer plan markers before the execution approval question was asked, the system will report an error. Always ensure the final plan is wrapped with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` and each Phase has section markers (\`<!-- forge-section:start -->\` / \`<!-- forge-section:end -->\`) before presenting the execution approval question.
 `
 
 function buildPrompt(): string {

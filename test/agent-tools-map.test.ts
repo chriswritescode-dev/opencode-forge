@@ -22,7 +22,7 @@ describe('per-agent tools.exclude (regression guard)', () => {
   })
 
   test('no agent retains plan-execute in tools.exclude (regression: tool removed)', () => {
-    for (const role of ['code', 'auditor', 'decomposer'] as const) {
+    for (const role of ['code', 'auditor'] as const) {
       expect(agents[role].tools?.exclude ?? []).not.toContain('plan-execute')
     }
   })

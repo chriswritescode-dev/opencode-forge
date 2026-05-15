@@ -49,10 +49,3 @@ export function formatPlanSessionTitle(title: string): string {
 export function formatAuditSessionTitle(loopName: string, ctx: LoopTitleContext): string {
   return truncateSessionTitle(`audit: ${loopName}${buildSuffix(ctx)}`)
 }
-
-/**
- * Formats a decomposer session title (runs pre-section, pre-iteration).
- */
-export function formatDecomposerSessionTitle(loopName: string): string {
-  return truncateSessionTitle(`decomposer-${loopName}`)
-}

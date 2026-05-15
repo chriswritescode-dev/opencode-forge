@@ -8,7 +8,6 @@ import type { LoopState } from './state'
 import {
   buildContinuationPrompt as _buildContinuationPrompt,
   buildAuditPrompt as _buildAuditPrompt,
-  buildDecomposerInitialPrompt as _buildDecomposerInitialPrompt,
   buildSectionInitialPrompt as _buildSectionInitialPrompt,
   buildSectionAuditPrompt as _buildSectionAuditPrompt,
   buildSectionContinuationPrompt as _buildSectionContinuationPrompt,
@@ -70,7 +69,6 @@ export interface LoopService {
   getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[]
   parseSectionSummary(text: string): { done: string | null; deviations: string | null; followUps: string | null } | null
 
-  buildDecomposerInitialPrompt(state: LoopState): string
   buildSectionInitialPrompt(state: LoopState): string
   buildSectionAuditPrompt(state: LoopState): string
   buildSectionContinuationPrompt(state: LoopState, auditText: string): string
@@ -81,8 +79,6 @@ export interface LoopService {
   setCurrentSectionIndex(loopName: string, index: number): void
   setFinalAuditDone(loopName: string, done: boolean): void
   startSection(loopName: string, index: number): void
-  setDecompositionStatus(loopName: string, status: LoopState['decompositionStatus']): void
-  setDecompositionSessionId(loopName: string, sessionId: string | null): void
   bulkInsertSections(loopName: string, sections: { index: number; title: string; content: string }[]): void
   setTotalSections(loopName: string, total: number): void
 }
@@ -113,9 +109,6 @@ export function rowToLoopState(row: LoopRow, large: LoopLargeFields | null): Loo
     auditorModel: row.auditorModel ?? undefined,
     workspaceId: row.workspaceId ?? undefined,
     hostSessionId: row.hostSessionId ?? undefined,
-    decompositionStatus: row.decompositionStatus,
-    decompositionMode: row.decompositionMode,
-    decompositionSessionId: row.decompositionSessionId,
     currentSectionIndex: row.currentSectionIndex,
     totalSections: row.totalSections,
     finalAuditDone: row.finalAuditDone === 1,
@@ -161,9 +154,6 @@ export function createLoopService(
       completionSummary: state.completionSummary ?? null,
       workspaceId: state.workspaceId ?? null,
       hostSessionId: state.hostSessionId ?? null,
-      decompositionStatus: state.decompositionStatus,
-      decompositionMode: state.decompositionMode,
-      decompositionSessionId: state.decompositionSessionId,
       currentSectionIndex: state.currentSectionIndex,
       totalSections: state.totalSections,
       finalAuditDone: state.finalAuditDone ? 1 : 0,
@@ -527,10 +517,6 @@ export function createLoopService(
     return _parseSectionSummary(text)
   }
 
-  function buildDecomposerInitialPrompt(state: LoopState): string {
-    return _buildDecomposerInitialPrompt(_promptCtx, state)
-  }
-
   function buildSectionInitialPrompt(state: LoopState): string {
     return _buildSectionInitialPrompt(_promptCtx, state)
   }
@@ -582,14 +568,6 @@ export function createLoopService(
     sectionPlansRepo.setStartedAt(projectId, loopName, index, Date.now())
   }
 
-  function setDecompositionStatus(loopName: string, status: LoopState['decompositionStatus']): void {
-    loopsRepo.setDecompositionStatus(projectId, loopName, status)
-  }
-
-  function setDecompositionSessionId(loopName: string, sessionId: string | null): void {
-    loopsRepo.setDecompositionSessionId(projectId, loopName, sessionId)
-  }
-
   function bulkInsertSections(loopName: string, sections: { index: number; title: string; content: string }[]): void {
     if (!sectionPlansRepo) return
     sectionPlansRepo.bulkInsert({ projectId, loopName, sections })
@@ -638,7 +616,6 @@ export function createLoopService(
     getCompletedSectionDigest,
     parseSectionSummary,
 
-    buildDecomposerInitialPrompt,
     buildSectionInitialPrompt,
     buildSectionAuditPrompt,
     buildSectionContinuationPrompt,
@@ -649,8 +626,6 @@ export function createLoopService(
     setCurrentSectionIndex,
     setFinalAuditDone,
     startSection,
-    setDecompositionStatus,
-    setDecompositionSessionId,
     bulkInsertSections,
     setTotalSections,
   }

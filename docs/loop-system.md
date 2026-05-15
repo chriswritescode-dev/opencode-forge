@@ -7,9 +7,6 @@ The loop system provides autonomous iterative development with automatic code au
 ```mermaid
 stateDiagram-v2
     [*] --> Coding: loop tool invoked
-    [*] --> Decomposing: sectioned plan
-    Decomposing --> Coding: sections captured
-    Decomposing --> [*]: decomposition failed
     Coding --> Auditing: coding idle complete
     Auditing --> Coding: section dirty or audit dirty
     Auditing --> Auditing: next section
@@ -37,7 +34,7 @@ interface LoopState {
   maxIterations: number              // Maximum iterations (0 = unlimited)
   startedAt: string                  // ISO timestamp
   prompt?: string                    // Original task prompt
-  phase: 'coding' | 'auditing' | 'decomposing' | 'final_auditing'
+  phase: 'coding' | 'auditing' | 'final_auditing'
   lastAuditResult?: string           // Last audit output
   errorCount: number                 // Consecutive error count
   auditCount: number                 // Number of audits completed
@@ -52,9 +49,6 @@ interface LoopState {
   auditorModel?: string              // Model used for auditing
   workspaceId?: string               // OpenCode workspace ID
   hostSessionId?: string             // Host session ID for post-completion redirect
-  decompositionStatus: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
-  decompositionMode: 'agent' | 'deterministic'
-  decompositionSessionId: string | null
   currentSectionIndex: number
   totalSections: number
   finalAuditDone: boolean

@@ -1,6 +1,6 @@
 import type { Logger } from '../types'
 
-export type PromptAgent = 'code' | 'auditor-loop' | 'decomposer'
+export type PromptAgent = 'code' | 'auditor-loop'
 
 export class ConcurrentPromptError extends Error {
   readonly code = 'concurrent_prompt'

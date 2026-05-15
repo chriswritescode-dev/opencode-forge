@@ -275,5 +275,12 @@ export const migrations: Migration[] = [
       db.run(loadSql('128_add_loops_project_name_unique_index.sql'))
     },
   },
+  {
+    id: '129',
+    description: 'Remove decomposer columns and decomposing phase',
+    apply: (db: Database) => {
+      db.run(loadSql('129_remove_decomposer.sql'))
+    },
+  },
 
 ]

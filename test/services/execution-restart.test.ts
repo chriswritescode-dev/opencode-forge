@@ -63,9 +63,6 @@ describe('handleLoopRestart from stall_timeout', () => {
         workspace_id         TEXT,
         host_session_id      TEXT,
         audit_session_id     TEXT,
-        decomposition_status TEXT NOT NULL DEFAULT 'pending' CHECK (decomposition_status IN ('pending','running','completed','failed','skipped')),
-        decomposition_mode TEXT NOT NULL DEFAULT 'agent' CHECK (decomposition_mode IN ('agent','deterministic')),
-        decomposition_session_id TEXT,
         current_section_index INTEGER NOT NULL DEFAULT 0,
         total_sections INTEGER NOT NULL DEFAULT 0,
         final_audit_done INTEGER NOT NULL DEFAULT 0,
@@ -156,8 +153,6 @@ describe('handleLoopRestart from stall_timeout', () => {
   function insertLoop(overrides: Partial<{
     loopName: string
     phase: string
-    decompositionStatus: string
-    decompositionMode: string
     currentSectionIndex: number
     totalSections: number
     iteration: number
@@ -170,8 +165,6 @@ describe('handleLoopRestart from stall_timeout', () => {
     const defaults = {
       loopName: 'test-loop',
       phase: 'coding',
-      decompositionStatus: 'completed',
-      decompositionMode: 'deterministic',
       currentSectionIndex: 0,
       totalSections: 0,
       iteration: 1,
@@ -207,9 +200,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       completionSummary: null,
       workspaceId: opts.workspaceId,
       hostSessionId: null,
-      decompositionStatus: opts.decompositionStatus as any,
-      decompositionMode: opts.decompositionMode as any,
-      decompositionSessionId: null,
       currentSectionIndex: opts.currentSectionIndex,
       totalSections: opts.totalSections,
       finalAuditDone: 0,
@@ -224,7 +214,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       currentSectionIndex: 2,
       iteration: 4,
       totalSections: 5,
-      decompositionStatus: 'completed',
       phase: 'coding',
     })
 
@@ -256,7 +245,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: noopFn,
-      buildDecomposerInitialPrompt: () => 'decompose prompt',
       buildSectionInitialPrompt: buildSectionInitialPromptSpy,
       buildFinalAuditPrompt: buildFinalAuditPromptSpy,
       generateUniqueLoopName: () => 'stall-loop',
@@ -341,7 +329,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       currentSectionIndex: 1,
       iteration: 7,
       totalSections: 3,
-      decompositionStatus: 'completed',
       phase: 'coding',
     })
 
@@ -368,7 +355,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: noopFn,
-      buildDecomposerInitialPrompt: () => 'decompose prompt',
       buildSectionInitialPrompt: () => 'section prompt',
       buildFinalAuditPrompt: () => 'audit prompt',
       generateUniqueLoopName: () => 'iter-loop',
@@ -445,7 +431,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       currentSectionIndex: 5,
       iteration: 6,
       totalSections: 5,
-      decompositionStatus: 'completed',
       phase: 'final_auditing',
     })
 
@@ -477,7 +462,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: noopFn,
-      buildDecomposerInitialPrompt: () => 'decompose prompt',
       buildSectionInitialPrompt: buildSectionInitialPromptSpy,
       buildFinalAuditPrompt: buildFinalAuditPromptSpy,
       generateUniqueLoopName: () => 'final-audit-loop',
@@ -545,114 +529,10 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect(buildSectionInitialPromptSpy).not.toHaveBeenCalled()
   })
 
-  test('restart worktree agent decomposer warps new session to workspace', async () => {
-    insertLoop({
-      loopName: 'wt-agent-loop',
-      status: 'stalled',
-      terminationReason: 'stall_timeout',
-      decompositionStatus: 'running',
-      decompositionMode: 'agent',
-      worktree: true,
-      workspaceId: 'wrk_1',
-    })
-
-    const noopFn = () => {}
-
-    const warpCalls: Array<Record<string, unknown>> = []
-    const promptAsyncCalls: Array<Record<string, unknown>> = []
-
-    const mockV2Client = {
-      session: {
-        create: async () => ({ data: { id: 'new-sess-wt' } }),
-        get: async () => ({ data: {} }),
-        promptAsync: async (args: Record<string, unknown>) => {
-          promptAsyncCalls.push(args)
-          return {}
-        },
-        abort: async () => ({}),
-        delete: async () => ({}),
-        messages: async () => ({ data: [] }),
-        status: async () => ({ data: {} }),
-      },
-      experimental: {
-        workspace: {
-          list: async () => ({ data: [] }),
-          remove: async () => ({}),
-          warp: async (args: Record<string, unknown>) => {
-            warpCalls.push(args)
-            return { data: {} }
-          },
-        },
-        session: { list: async () => ({ data: [] }) },
-      },
-      tui: { publish: async () => ({}), selectSession: async () => ({}) },
-      worktree: { create: async () => ({ data: { directory: '/tmp/wt', branch: 'main' } }) },
-    }
-
-    const mockLoopService: Partial<LoopService> = {
-      listActive: () => loopService.listActive(),
-      listRecent: () => loopService.listRecent(),
-      getActiveState: (name) => loopService.getActiveState(name),
-      getAnyState: (name) => loopService.getAnyState(name),
-      registerLoopSession: noopFn,
-      setState: (name, state) => loopService.setState(name, state),
-      deleteState: (name) => loopService.deleteState(name),
-      setPhase: noopFn,
-      buildDecomposerInitialPrompt: () => 'decompose prompt',
-      buildSectionInitialPrompt: () => 'section prompt',
-      buildFinalAuditPrompt: () => 'audit prompt',
-      generateUniqueLoopName: () => 'wt-agent-loop',
-    }
-
-    const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-      startWatchdog: noopFn,
-      clearLoopTimers: noopFn,
-    }
-
-    const { createForgeExecutionService } = await import('../../src/services/execution')
-
-    const service = createForgeExecutionService({
-      projectId: PROJECT_ID,
-      directory: '/tmp/test',
-      config: {
-        loop: { enabled: true },
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-        decomposer: { enabled: true, mode: 'agent' },
-      },
-      logger: mockLogger,
-      dataDir: '/tmp',
-      v2: mockV2Client as any,
-      plansRepo,
-      loopsRepo,
-      loop: mockLoopService as any,
-      loopHandler: mockLoopHandler as any,
-      sectionPlansRepo,
-    })
-
-    const result = await service.dispatch(
-      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
-      {
-        type: 'loop.restart' as const,
-        selector: { kind: 'exact' as const, name: 'wt-agent-loop' },
-      },
-    )
-
-    expect(result.ok).toBe(true)
-
-    expect(warpCalls.length).toBe(1)
-    expect(warpCalls[0]).toEqual({ id: 'wrk_1', sessionID: 'new-sess-wt' })
-
-    expect(promptAsyncCalls.length).toBeGreaterThan(0)
-    expect(promptAsyncCalls[0].agent).toBe('decomposer')
-  })
-
   test('restart commits new current_session_id BEFORE runExclusive releases (no stale-event race)', async () => {
     insertLoop({
       loopName: 'race-loop',
       phase: 'auditing',
-      decompositionStatus: 'completed',
       totalSections: 0,
       iteration: 1,
       status: 'stalled',
@@ -688,7 +568,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: (name, phase) => loopService.setPhase(name, phase),
-      buildDecomposerInitialPrompt: () => 'decompose prompt',
       buildSectionInitialPrompt: () => 'section prompt',
       buildFinalAuditPrompt: () => 'audit prompt',
       generateUniqueLoopName: () => 'race-loop',
@@ -753,7 +632,6 @@ describe('handleLoopRestart from stall_timeout', () => {
     insertLoop({
       loopName: 'audit-restart-loop',
       phase: 'auditing',
-      decompositionStatus: 'completed',
       totalSections: 0,
       iteration: 2,
       status: 'running',
@@ -819,7 +697,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: (name, phase) => loopService.setPhase(name, phase),
-      buildDecomposerInitialPrompt: () => 'decompose prompt',
       buildSectionInitialPrompt: () => 'section prompt',
       buildFinalAuditPrompt: () => 'audit prompt',
       generateUniqueLoopName: () => 'audit-restart-loop',

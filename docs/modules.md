@@ -73,14 +73,13 @@ Defines roles and system prompts for each AI agent used in the forge pipeline.
 | `code.ts` | Code execution agent |
 | `architect.ts` | Read-only planning/design agent |
 | `auditor.ts` | Code review agent + auditor-loop variant |
-| `decomposer.ts` | Plan decomposition agent |
 
 ### Public API
 
 ```typescript
 buildAgents(): Record<AgentRole, AgentDefinition>
 
-type AgentRole = 'code' | 'architect' | 'auditor' | 'auditor-loop' | 'decomposer'
+type AgentRole = 'code' | 'architect' | 'auditor' | 'auditor-loop'
 ```
 
 Source: [src/agents/index.ts](../src/agents/index.ts)
@@ -102,7 +101,7 @@ Translates OpenCode host events into loop actions and manages lifecycle side-eff
 | `watchdog.ts` | Stall detection and recovery |
 | `plan-approval.ts` | Plan approval dedup/event gating |
 | `plan-capture.ts` | Plan capture from streaming assistant messages |
-| `section-capture.ts` | Section decomposition capture from streaming messages |
+| `section-capture.ts` | Section extraction from streaming messages |
 | `forge-session-attach.ts` | Auto-attach loops to new sessions |
 | `sandbox-tools.ts` | Sandbox tool before/after hooks |
 
@@ -118,7 +117,6 @@ createPlanApprovalEventHook()             // Plan approval event hook
 
 Additional hooks available via direct imports:
 - `createSandboxToolBeforeHook()` / `createSandboxToolAfterHook()` — sandbox tool redirection
-- `createSectionCaptureHook()` — section capture from streaming responses
 - `createForgeSessionAttachHook()` — auto-attach loops on session creation
 - `createPlanCaptureEventHook()` — plan marker extraction from streaming messages
 
@@ -128,7 +126,7 @@ Source: [src/hooks/index.ts](../src/hooks/index.ts)
 
 ## `loop/` — Core Loop State Machine
 
-The heart of Forge. Implements autonomous iterative development with phases: `coding → auditing → decomposing → coding → final_auditing`.
+The heart of Forge. Implements autonomous iterative development with phases: `coding → auditing → final_auditing`.
 
 ### Files
 
@@ -149,12 +147,11 @@ The heart of Forge. Implements autonomous iterative development with phases: `co
 ### Key Types
 
 ```typescript
-type Phase = 'coding' | 'auditing' | 'decomposing' | 'final_auditing'
+type Phase = 'coding' | 'auditing' | 'final_auditing'
 
 type LoopState =
   | CodingState
   | AuditingState
-  | DecomposingState
   | FinalAuditingState
 
 type TerminationReason =
@@ -166,18 +163,11 @@ type TerminationReason =
   | { kind: 'stall_timeout' }
   | { kind: 'missing_worktree_dir' }
   | { kind: 'session_creation_failed' }
-  | { kind: 'decomposition_failed' }
-  | { kind: 'decomposer_prompt_failed' }
   | { kind: 'audit_retry_exhausted' }
   | { kind: 'final_audit_retry_exhausted' }
   | { kind: 'coding_no_assistant' }
   | { kind: 'worktree_failed'; message: string }
-  | { kind: 'decomposer_error'; message: string }
   | { kind: 'error_max_retries'; message: string }
-
-interface Loop {
-  // ~50 methods covering tick/start/cancel/restart/state-management/prompt-building/section-management
-}
 ```
 
 ### Public API
@@ -197,7 +187,6 @@ nextTransition(state, event): Transition
 // Prompts
 buildContinuationPrompt(state, auditFindings?): string
 buildAuditPrompt(state): string
-buildDecomposerInitialPrompt(state): string
 buildSectionInitialPrompt(state, sectionIndex?): string
 buildSectionAuditPrompt(state, sectionIndex?): string
 buildSectionContinuationPrompt(state, sectionIndex?): string
@@ -492,7 +481,7 @@ All data access goes through typed repo interfaces:
 ### State Machine Pattern
 
 The loop follows a strict phase-based state machine:
-- States: `coding`, `auditing`, `decomposing`, `final_auditing`
+- States: `coding`, `auditing`, `final_auditing`
 - Transitions managed by `nextTransition()` in `transitions.ts`
 - Each phase has dedicated prompt builders and session rotation logic
 - State changes are persisted to SQLite after every mutation

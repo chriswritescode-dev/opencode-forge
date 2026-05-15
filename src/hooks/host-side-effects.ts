@@ -199,12 +199,9 @@ function resolveReasonLabel(reason: TerminationReason): string {
     case 'stall_timeout':
       return 'stalled'
     case 'error_max_retries':
-    case 'decomposer_error':
     case 'worktree_failed':
       return 'errored'
     case 'session_creation_failed':
-    case 'decomposition_failed':
-    case 'decomposer_prompt_failed':
     case 'audit_retry_exhausted':
     case 'final_audit_retry_exhausted':
     case 'coding_no_assistant':

@@ -14,7 +14,7 @@ export interface LoopRow {
   iteration: number
   auditCount: number
   errorCount: number
-  phase: 'coding' | 'auditing' | 'decomposing' | 'final_auditing'
+  phase: 'coding' | 'auditing' | 'final_auditing'
   executionModel: string | null
   auditorModel: string | null
   modelFailed: boolean
@@ -26,9 +26,6 @@ export interface LoopRow {
   completionSummary: string | null
   workspaceId: string | null
   hostSessionId: string | null
-  decompositionStatus: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
-  decompositionMode: 'agent' | 'deterministic'
-  decompositionSessionId: string | null
   currentSectionIndex: number
   totalSections: number
   finalAuditDone: number
@@ -74,8 +71,6 @@ export interface LoopsRepo {
       sandbox: boolean
       sandboxContainer: string | null
       workspaceId: string | null
-      decompositionStatus: LoopRow['decompositionStatus']
-      decompositionSessionId: string | null
       currentSectionIndex: number
       totalSections: number
       finalAuditDone: boolean
@@ -94,9 +89,6 @@ export interface LoopsRepo {
   ): void
   delete(projectId: string, loopName: string): void
   findPartial(projectId: string, name: string): { match: LoopRow | null; candidates: LoopRow[] }
-  setDecompositionStatus(projectId: string, loopName: string, status: LoopRow['decompositionStatus']): void
-  setDecompositionMode(projectId: string, loopName: string, mode: LoopRow['decompositionMode']): void
-  setDecompositionSessionId(projectId: string, loopName: string, sessionId: string | null): void
   setCurrentSectionIndex(projectId: string, loopName: string, index: number): void
   setTotalSections(projectId: string, loopName: string, total: number): void
   setFinalAuditDone(projectId: string, loopName: string, done: boolean): void
@@ -128,9 +120,6 @@ function mapRow(row: LoopRowRaw): LoopRow {
     completionSummary: row.completion_summary,
     workspaceId: row.workspace_id,
     hostSessionId: row.host_session_id,
-    decompositionStatus: row.decomposition_status as LoopRow['decompositionStatus'],
-    decompositionMode: row.decomposition_mode as LoopRow['decompositionMode'],
-    decompositionSessionId: row.decomposition_session_id,
     currentSectionIndex: row.current_section_index,
     totalSections: row.total_sections,
     finalAuditDone: row.final_audit_done,
@@ -162,9 +151,6 @@ interface LoopRowRaw {
   completion_summary: string | null
   workspace_id: string | null
   host_session_id: string | null
-  decomposition_status: string
-  decomposition_mode: string
-  decomposition_session_id: string | null
   current_section_index: number
   total_sections: number
   final_audit_done: number
@@ -178,9 +164,8 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       error_count, phase, execution_model, auditor_model,
       model_failed, sandbox, sandbox_container, started_at, completed_at,
       termination_reason, completion_summary, workspace_id, host_session_id,
-      decomposition_status, decomposition_mode, decomposition_session_id,
       current_section_index, total_sections, final_audit_done
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   const upsertLargeStmt = db.prepare(`
@@ -196,7 +181,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
            error_count, phase, execution_model, auditor_model,
            model_failed, sandbox, sandbox_container, started_at, completed_at,
            termination_reason, completion_summary, workspace_id, host_session_id,
-           decomposition_status, decomposition_mode, decomposition_session_id,
            current_section_index, total_sections, final_audit_done
     FROM loops
     WHERE project_id = ? AND loop_name = ?
@@ -214,7 +198,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
            error_count, phase, execution_model, auditor_model,
            model_failed, sandbox, sandbox_container, started_at, completed_at,
            termination_reason, completion_summary, workspace_id, host_session_id,
-           decomposition_status, decomposition_mode, decomposition_session_id,
            current_section_index, total_sections, final_audit_done
     FROM loops
     WHERE project_id = ? AND current_session_id = ?
@@ -226,7 +209,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
            error_count, phase, execution_model, auditor_model,
            model_failed, sandbox, sandbox_container, started_at, completed_at,
            termination_reason, completion_summary, workspace_id, host_session_id,
-           decomposition_status, decomposition_mode, decomposition_session_id,
            current_section_index, total_sections, final_audit_done
     FROM loops
     WHERE project_id = ? AND status IN
@@ -323,8 +305,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       completed_at = NULL,
       termination_reason = NULL,
       completion_summary = NULL,
-      decomposition_status = ?,
-      decomposition_session_id = ?,
       current_section_index = ?,
       total_sections = ?,
       final_audit_done = ?
@@ -375,9 +355,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
         row.completionSummary,
         row.workspaceId,
         row.hostSessionId,
-        row.decompositionStatus ?? 'pending',
-        row.decompositionMode ?? 'agent',
-        row.decompositionSessionId ?? null,
         row.currentSectionIndex ?? 0,
         row.totalSections ?? 0,
         row.finalAuditDone ?? 0,
@@ -505,8 +482,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
         opts.sandboxContainer,
         opts.workspaceId,
         opts.startedAt,
-        opts.decompositionStatus,
-        opts.decompositionSessionId,
         opts.currentSectionIndex,
         opts.totalSections,
         opts.finalAuditDone ? 1 : 0,
@@ -540,18 +515,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     findPartial(projectId: string, name: string): { match: LoopRow | null; candidates: LoopRow[] } {
       const all = this.listByStatus(projectId, ['running', 'completed', 'cancelled', 'errored', 'stalled'])
       return findPartialMatch(name, all, (row: LoopRow) => [row.loopName, row.worktreeBranch ?? undefined])
-    },
-
-    setDecompositionStatus(projectId, loopName, status) {
-      db.prepare(`UPDATE loops SET decomposition_status = ? WHERE project_id = ? AND loop_name = ?`).run(status, projectId, loopName)
-    },
-
-    setDecompositionMode(projectId, loopName, mode) {
-      db.prepare(`UPDATE loops SET decomposition_mode = ? WHERE project_id = ? AND loop_name = ?`).run(mode, projectId, loopName)
-    },
-
-    setDecompositionSessionId(projectId, loopName, sessionId) {
-      db.prepare(`UPDATE loops SET decomposition_session_id = ? WHERE project_id = ? AND loop_name = ?`).run(sessionId, projectId, loopName)
     },
 
     setCurrentSectionIndex(projectId, loopName, index) {

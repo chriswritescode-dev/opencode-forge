@@ -72,7 +72,6 @@ describe('createForgeSessionAttachHook', () => {
                 title: 'My Feature',
                 executionModel: 'prov/exec',
                 auditorModel: 'prov/aud',
-                decomposerMode: 'agent',
                 planSource: 'stored',
                 maxIterations: 50,
                 sandboxEnabled: false,
@@ -104,7 +103,6 @@ describe('createForgeSessionAttachHook', () => {
     expect(input.loopName).toBe('my-feature')
     expect(input.displayName).toBe('My Feature')
     expect(input.planText).toBe('# Plan\n\nDo stuff.')
-    expect(input.decomposerMode).toBe('agent')
     expect(input.selectSession).toBe(true)
     expect(input.startWatchdog).toBe(true)
 
@@ -566,7 +564,6 @@ describe('createForgeSessionAttachHook', () => {
                 title: 'My Feature',
                 executionModel: 'prov/exec',
                 auditorModel: 'prov/aud',
-                decomposerMode: 'agent',
                 planSource: 'stored',
                 maxIterations: 50,
                 sandboxEnabled: false,
@@ -674,7 +671,6 @@ describe('createForgeSessionAttachHook', () => {
                 title: 'My Feature',
                 executionModel: 'prov/exec',
                 auditorModel: 'prov/aud',
-                decomposerMode: 'agent',
                 planSource: 'stored',
                 maxIterations: 50,
                 sandboxEnabled: false,
@@ -700,7 +696,7 @@ describe('createForgeSessionAttachHook', () => {
       event: {
         type: 'session.created',
         properties: {
-          info: { id: 'ses_decomposer', workspaceID: 'ws_forge' },
+          info: { id: 'ses_initial', workspaceID: 'ws_forge' },
         },
       },
     })
@@ -718,7 +714,7 @@ describe('createForgeSessionAttachHook', () => {
     expect(mockAttachLoop).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ surface: 'tui' }),
-      expect.objectContaining({ sessionId: 'ses_decomposer' }),
+      expect.objectContaining({ sessionId: 'ses_initial' }),
     )
     expect(loggerErrorSpy).not.toHaveBeenCalled()
   })

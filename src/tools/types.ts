@@ -44,7 +44,7 @@ export interface ToolContext {
   reviewFindingsRepo: ReviewFindingsRepo
   /** Loops repo for loop storage. */
   loopsRepo: LoopsRepo
-  /** Section plans repo for decomposition storage. */
+  /** Section plans repo for section-scoped plan storage. */
   sectionPlansRepo: SectionPlansRepo
   /** Workspace status registry for tracking workspace readiness. */
   workspaceStatusRegistry: import('../utils/workspace-status-registry').WorkspaceStatusRegistry

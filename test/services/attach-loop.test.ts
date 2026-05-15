@@ -40,9 +40,6 @@ CREATE TABLE loops (
   workspace_id         TEXT,
   host_session_id      TEXT,
   audit_session_id     TEXT,
-  decomposition_status TEXT NOT NULL DEFAULT 'pending' CHECK (decomposition_status IN ('pending','running','completed','failed','skipped')),
-  decomposition_mode   TEXT NOT NULL DEFAULT 'agent' CHECK (decomposition_mode IN ('agent','deterministic')),
-  decomposition_session_id TEXT,
   current_section_index INTEGER NOT NULL DEFAULT 0,
   total_sections       INTEGER NOT NULL DEFAULT 0,
   final_audit_done     INTEGER NOT NULL DEFAULT 0,
@@ -218,7 +215,6 @@ describe('attachLoopToSession', () => {
         auditorModel: 'prov/aud',
         maxIterations: 50,
         sandboxEnabled: false,
-        decomposerMode: 'disabled',
         planText: '# Test Plan\n\nDo something.',
         selectSession: true,
         selectSessionTiming: 'after-prompt',
@@ -237,10 +233,6 @@ describe('attachLoopToSession', () => {
     expect(state!.phase).toBe('coding')
     expect(state!.maxIterations).toBe(50)
 
-    // Verify decomposition status was set to skipped
-    const row = loopsRepo.getLarge(PROJECT_ID, 'my-loop')
-    expect(row).not.toBeNull()
-
     // Verify code-agent prompt was sent
     expect(promptAsyncMock).toHaveBeenCalledTimes(1)
     const promptCallArgs = promptAsyncMock.mock.calls[0][0]
@@ -249,52 +241,6 @@ describe('attachLoopToSession', () => {
 
     // Verify watchdog was started
     expect(deps.loopHandler!.startWatchdog).toHaveBeenCalledWith('my-loop')
-  })
-
-  test('agent mode sends decomposer prompt with correct agent', async () => {
-    const { deps, loopsRepo, promptAsyncMock } = buildDeps()
-
-    const { attachLoopToSession } = await import('../../src/services/execution')
-
-    const result = await attachLoopToSession(
-      deps as any,
-      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
-      {
-        sessionId: 'sess_agent',
-        workspaceId: 'ws_test',
-        worktreeDir: '/tmp/wt/xyz',
-        loopName: 'agent-loop',
-        displayName: 'Agent Loop',
-        executionName: 'agent-loop',
-        maxIterations: 30,
-        sandboxEnabled: false,
-        decomposerMode: 'agent',
-        planText: '# Agent Plan\n\nSection 1.\n## Section 2.',
-        selectSession: true,
-        selectSessionTiming: 'after-prompt',
-        startWatchdog: true,
-      },
-    )
-
-    expect(result.ok).toBe(true)
-
-    // Verify decomposition status was set to running
-    const row = loopsRepo.getLarge(PROJECT_ID, 'agent-loop')
-    expect(row).not.toBeNull()
-
-    // Verify decomposer agent was prompted
-    expect(promptAsyncMock).toHaveBeenCalledTimes(1)
-    const promptCallArgs = promptAsyncMock.mock.calls[0][0]
-    expect(promptCallArgs.agent).toBe('decomposer')
-    expect(promptCallArgs.sessionID).toBe('sess_agent')
-
-    // Verify phase was set to decomposing
-    const state = (deps.loop as any).getActiveState('agent-loop')
-    expect(state).not.toBeNull()
-    expect(state!.phase).toBe('decomposing')
-
-    // Verify watchdog was started
-    expect(deps.loopHandler!.startWatchdog).toHaveBeenCalledWith('agent-loop')
   })
 
   test('onStarted callback is invoked after state persistence', async () => {
@@ -316,7 +262,6 @@ describe('attachLoopToSession', () => {
         executionName: 'cb-loop',
         maxIterations: 25,
         sandboxEnabled: false,
-        decomposerMode: 'disabled',
         planText: '# CB Plan\n\nDo things.',
         selectSession: false,
         selectSessionTiming: 'after-prompt',
@@ -356,7 +301,6 @@ describe('attachLoopToSession', () => {
         executionName: 'fail-loop',
         maxIterations: 10,
         sandboxEnabled: false,
-        decomposerMode: 'disabled',
         planText: '# Fail Plan\n\nWill fail.',
         selectSession: false,
         selectSessionTiming: 'after-prompt',
@@ -396,7 +340,6 @@ describe('attachLoopToSession', () => {
         executionName: 'my-feature',
         maxIterations: 50,
         sandboxEnabled: false,
-        decomposerMode: 'disabled',
         planText: '# Plan\n\nAlready exists.',
         selectSession: false,
         selectSessionTiming: 'after-prompt',
@@ -429,8 +372,6 @@ describe('attachLoopToSession', () => {
       worktree: true,
       auditCount: 0,
       errorCount: 0,
-      decompositionStatus: 'completed' as const,
-      decompositionMode: 'agent' as const,
       currentSectionIndex: 0,
       totalSections: 0,
       finalAuditDone: false,
@@ -458,7 +399,6 @@ describe('attachLoopToSession', () => {
         executionName: 'reusable-loop',
         maxIterations: 50,
         sandboxEnabled: false,
-        decomposerMode: 'disabled',
         planText: '# Plan\n\nRevive me.',
         selectSession: false,
         selectSessionTiming: 'after-prompt',
@@ -490,8 +430,6 @@ describe('attachLoopToSession', () => {
       worktree: true,
       auditCount: 0,
       errorCount: 0,
-      decompositionStatus: 'completed',
-      decompositionMode: 'agent',
       currentSectionIndex: 0,
       totalSections: 0,
       finalAuditDone: false,
@@ -514,7 +452,6 @@ describe('attachLoopToSession', () => {
         executionName: 'live-loop',
         maxIterations: 50,
         sandboxEnabled: false,
-        decomposerMode: 'disabled',
         planText: '# Plan',
         selectSession: false,
         selectSessionTiming: 'after-prompt',
@@ -527,5 +464,166 @@ describe('attachLoopToSession', () => {
       expect(result.code).toBe('already_attached')
     }
     expect(deleteStateSpy).not.toHaveBeenCalled()
+  })
+
+  test('attach extracts sections via forge-section markers', async () => {
+    const { deps, loopService, promptAsyncMock } = buildDeps()
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+
+    const planText = [
+      '<!-- forge-section:start -->',
+      '## Setup',
+      'Install dependencies.',
+      '<!-- forge-section:end -->',
+      '<!-- forge-section:start -->',
+      '## Build',
+      'Compile project.',
+      '<!-- forge-section:end -->',
+    ].join('\n')
+
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        sessionId: 'sess_sections',
+        workspaceId: 'ws_sections',
+        worktreeDir: '/tmp/wt/sections',
+        loopName: 'sections-loop',
+        displayName: 'Sections Loop',
+        executionName: 'sections-loop',
+        maxIterations: 10,
+        sandboxEnabled: false,
+        planText,
+        selectSession: false,
+        selectSessionTiming: 'after-prompt',
+        startWatchdog: false,
+      },
+    )
+
+    expect(result.ok).toBe(true)
+
+    const state = (deps.loop as any).getActiveState('sections-loop')
+    expect(state).not.toBeNull()
+    expect(state!.phase).toBe('coding')
+    expect(state!.currentSectionIndex).toBe(0)
+    expect(state!.totalSections).toBe(2)
+
+    expect(promptAsyncMock).toHaveBeenCalledTimes(1)
+    const promptCallArgs = promptAsyncMock.mock.calls[0][0]
+    expect(promptCallArgs.agent).toBe('code')
+  })
+
+  test('attach falls back to decomposeDeterministically when no markers', async () => {
+    const { deps, loopService, promptAsyncMock } = buildDeps()
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+
+    const planText = '# Plan\n\n## Phase 1: Setup\nInstall deps.\n\n## Phase 2: Build\nCompile.'
+
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        sessionId: 'sess_phase',
+        workspaceId: 'ws_phase',
+        worktreeDir: '/tmp/wt/phase',
+        loopName: 'phase-loop',
+        displayName: 'Phase Loop',
+        executionName: 'phase-loop',
+        maxIterations: 10,
+        sandboxEnabled: false,
+        planText,
+        selectSession: false,
+        selectSessionTiming: 'after-prompt',
+        startWatchdog: false,
+      },
+    )
+
+    expect(result.ok).toBe(true)
+
+    const state = (deps.loop as any).getActiveState('phase-loop')
+    expect(state).not.toBeNull()
+    expect(state!.phase).toBe('coding')
+    expect(state!.currentSectionIndex).toBe(0)
+    expect(state!.totalSections).toBe(2)
+
+    expect(promptAsyncMock).toHaveBeenCalledTimes(1)
+    const promptCallArgs = promptAsyncMock.mock.calls[0][0]
+    expect(promptCallArgs.agent).toBe('code')
+  })
+
+  test('attach falls back to single raw-plan dispatch when no markers and no phase headings', async () => {
+    const { deps, loopService, promptAsyncMock } = buildDeps()
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+
+    const planText = '# Simple Plan\n\nDo some stuff without phases.'
+
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        sessionId: 'sess_raw',
+        workspaceId: 'ws_raw',
+        worktreeDir: '/tmp/wt/raw',
+        loopName: 'raw-loop',
+        displayName: 'Raw Loop',
+        executionName: 'raw-loop',
+        maxIterations: 10,
+        sandboxEnabled: false,
+        planText,
+        selectSession: false,
+        selectSessionTiming: 'after-prompt',
+        startWatchdog: false,
+      },
+    )
+
+    expect(result.ok).toBe(true)
+
+    const state = (deps.loop as any).getActiveState('raw-loop')
+    expect(state).not.toBeNull()
+    expect(state!.totalSections).toBe(0)
+
+    expect(promptAsyncMock).toHaveBeenCalledTimes(1)
+    const promptCallArgs = promptAsyncMock.mock.calls[0][0]
+    expect(promptCallArgs.agent).toBe('code')
+    expect(promptCallArgs.parts[0].text).toContain(planText)
+  })
+
+  test('attach no longer creates a decomposer session', async () => {
+    const { deps, loopService, promptAsyncMock } = buildDeps()
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        sessionId: 'sess_nodecomp',
+        workspaceId: 'ws_nodecomp',
+        worktreeDir: '/tmp/wt/nodecomp',
+        loopName: 'nodecomp-loop',
+        displayName: 'No Decomposer Loop',
+        executionName: 'nodecomp-loop',
+        maxIterations: 10,
+        sandboxEnabled: false,
+        planText: '# Plan\n\nSimple plan.',
+        selectSession: false,
+        selectSessionTiming: 'after-prompt',
+        startWatchdog: true,
+      },
+    )
+
+    expect(result.ok).toBe(true)
+
+    expect(promptAsyncMock).toHaveBeenCalledTimes(1)
+    const promptCallArgs = promptAsyncMock.mock.calls[0][0]
+    expect(promptCallArgs.agent).toBe('code')
+    expect(promptCallArgs.sessionID).toBe('sess_nodecomp')
+
+    const state = (deps.loop as any).getActiveState('nodecomp-loop')
+    expect(state).not.toBeNull()
+    expect(state!.phase).toBe('coding')
   })
 })

@@ -7,6 +7,9 @@ export interface ParsedSection {
   content: string
 }
 
+// Re-export decomposeDeterministically for consumers (avoids direct dependency on deterministic-decomposer)
+export { decomposeDeterministically } from '../services/deterministic-decomposer'
+
 function deriveTitle(innerLines: string[], fallbackIndex: number): string {
   for (const line of innerLines) {
     const trimmed = line.trim()

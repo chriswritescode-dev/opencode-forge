@@ -63,7 +63,6 @@ export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
       title?: string
       executionModel?: string
       auditorModel?: string
-      decomposerMode?: 'agent' | 'deterministic' | 'disabled'
       planSource?: 'stored' | 'inline'
       planText?: string
       maxIterations?: number
@@ -133,7 +132,6 @@ export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
           auditorModel: cfg.auditorModel,
           maxIterations: cfg.maxIterations ?? 50,
           sandboxEnabled: cfg.sandboxEnabled ?? false,
-          decomposerMode: cfg.decomposerMode ?? 'agent',
           planText,
           selectSession: true,
           selectSessionTiming: 'after-prompt',

@@ -17,9 +17,6 @@ export type TransitionEvent =
   | { type: 'audit-dirty' }
   | { type: 'final-audit-clean' }
   | { type: 'final-audit-dirty' }
-  | { type: 'decomposer-complete'; sectionCount: number }
-  | { type: 'decomposer-empty' }
-  | { type: 'decomposition-failed' }
   | { type: 'iteration-cap' }
   | { type: 'user-abort' }
   | { type: 'shutdown' }
@@ -27,12 +24,10 @@ export type TransitionEvent =
   | { type: 'error-max-retries'; context?: string }
   | { type: 'missing-worktree-dir' }
   | { type: 'worktree-failed'; message: string }
-  | { type: 'decomposer-error'; message: string }
   | { type: 'session-creation-failed' }
   | { type: 'audit-retry-exhausted' }
   | { type: 'final-audit-retry-exhausted' }
   | { type: 'coding-no-assistant' }
-  | { type: 'decomposer-prompt-failed' }
 
 /**
  * Pure transition table that mirrors the existing phase-handler behavior.
@@ -47,9 +42,6 @@ export function nextTransition(state: LoopState, event: TransitionEvent): Transi
 
     case 'auditing':
       return handleAuditingEvent(event)
-
-    case 'decomposing':
-      return handleDecomposingEvent(event)
 
     case 'final_auditing':
       return handleFinalAuditEvent(event)
@@ -76,8 +68,6 @@ function handleCodingEvent(event: TransitionEvent): Transition {
       return { kind: 'terminate', reason: { kind: 'stall_timeout' } }
     case 'worktree-failed':
       return { kind: 'terminate', reason: { kind: 'worktree_failed', message: event.message } }
-    case 'decomposer-error':
-      return { kind: 'terminate', reason: { kind: 'decomposer_error', message: event.message } }
     case 'error-max-retries':
       return { kind: 'terminate', reason: { kind: 'error_max_retries', message: event.context ?? '' } }
     default:
@@ -112,42 +102,6 @@ function handleAuditingEvent(event: TransitionEvent): Transition {
       return { kind: 'terminate', reason: { kind: 'audit_retry_exhausted' } }
     case 'worktree-failed':
       return { kind: 'terminate', reason: { kind: 'worktree_failed', message: event.message } }
-    case 'decomposer-error':
-      return { kind: 'terminate', reason: { kind: 'decomposer_error', message: event.message } }
-    case 'error-max-retries':
-      return { kind: 'terminate', reason: { kind: 'error_max_retries', message: event.context ?? '' } }
-    default:
-      return { kind: 'noop' }
-  }
-}
-
-function handleDecomposingEvent(event: TransitionEvent): Transition {
-  switch (event.type) {
-    case 'decomposer-complete':
-      if (event.sectionCount > 0) {
-        return { kind: 'rotate' }
-      }
-      return { kind: 'terminate', reason: { kind: 'decomposition_failed' } }
-    case 'decomposer-empty':
-      return { kind: 'terminate', reason: { kind: 'decomposition_failed' } }
-    case 'decomposition-failed':
-      return { kind: 'terminate', reason: { kind: 'decomposition_failed' } }
-    case 'missing-worktree-dir':
-      return { kind: 'terminate', reason: { kind: 'missing_worktree_dir' } }
-    case 'session-creation-failed':
-      return { kind: 'terminate', reason: { kind: 'session_creation_failed' } }
-    case 'decomposer-prompt-failed':
-      return { kind: 'terminate', reason: { kind: 'decomposer_prompt_failed' } }
-    case 'user-abort':
-      return { kind: 'terminate', reason: { kind: 'user_aborted' } }
-    case 'shutdown':
-      return { kind: 'terminate', reason: { kind: 'shutdown' } }
-    case 'stall-timeout':
-      return { kind: 'terminate', reason: { kind: 'stall_timeout' } }
-    case 'worktree-failed':
-      return { kind: 'terminate', reason: { kind: 'worktree_failed', message: event.message } }
-    case 'decomposer-error':
-      return { kind: 'terminate', reason: { kind: 'decomposer_error', message: event.message } }
     case 'error-max-retries':
       return { kind: 'terminate', reason: { kind: 'error_max_retries', message: event.context ?? '' } }
     default:
@@ -175,8 +129,6 @@ function handleFinalAuditEvent(event: TransitionEvent): Transition {
       return { kind: 'terminate', reason: { kind: 'missing_worktree_dir' } }
     case 'worktree-failed':
       return { kind: 'terminate', reason: { kind: 'worktree_failed', message: event.message } }
-    case 'decomposer-error':
-      return { kind: 'terminate', reason: { kind: 'decomposer_error', message: event.message } }
     case 'error-max-retries':
       return { kind: 'terminate', reason: { kind: 'error_max_retries', message: event.context ?? '' } }
     default:

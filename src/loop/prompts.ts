@@ -104,11 +104,6 @@ export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
   ].join('\n') + buildSandboxContextNote(state)
 }
 
-export function buildDecomposerInitialPrompt(ctx: PromptContext, state: LoopState): string {
-  const planText = ctx.getPlanTextForState(state) ?? 'Plan not found in plan store.'
-  return `[Decomposing master plan into section plans]\n\n${planText}` + buildSandboxContextNote(state)
-}
-
 export function buildSectionInitialPrompt(ctx: PromptContext, state: LoopState): string {
   const idx = state.currentSectionIndex
   const total = state.totalSections

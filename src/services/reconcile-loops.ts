@@ -30,7 +30,6 @@ interface ForgeLoopConfig {
   title?: string
   executionModel?: string
   auditorModel?: string
-  decomposerMode?: 'agent' | 'deterministic' | 'disabled'
   planSource?: 'stored' | 'inline'
   planText?: string
   maxIterations?: number
@@ -154,7 +153,6 @@ async function runReconcile(deps: ReconcileDeps): Promise<void> {
           auditorModel: cfg.auditorModel,
           maxIterations: cfg.maxIterations ?? 50,
           sandboxEnabled: cfg.sandboxEnabled ?? false,
-          decomposerMode: cfg.decomposerMode ?? 'agent',
           planText,
           selectSession: false,
           selectSessionTiming: 'after-prompt',

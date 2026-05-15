@@ -122,7 +122,7 @@ Iterative development loops with automatic auditing. Loops always run in an isol
 | `loop-cancel` | Cancel an active loop by worktree name |
 | `loop-status` | List all active loops or get detailed status by worktree name. Supports `restart` to resume inactive loops. |
 
-`loop` reads the current session's captured plan when `plan` is omitted. `maxIterations`, execution model, auditor model, decomposition, and sandbox behavior come from configuration or the TUI execution dialog, not direct `loop` tool arguments.
+`loop` reads the current session's captured plan when `plan` is omitted. `maxIterations`, execution model, auditor model, and sandbox behavior come from configuration or the TUI execution dialog, not direct `loop` tool arguments.
 
 ## Slash Commands
 
@@ -198,22 +198,10 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
     }
   },
 
-  // Docker sandbox configuration for isolated loop execution (optional; provisioned automatically when available)
+  // Sandbox configuration (optional; provisioned automatically when available)
   "sandbox": {
-    "mode": "docker",                // Sandbox mode: "docker"
-    "image": "oc-forge-sandbox:latest", // Docker image for sandbox containers
-    "resources": {                   // Container resource limits (maps to docker run flags)
-      "memory": "8g",               // Memory limit (--memory)
-      "cpus": "4",                  // CPU limit (--cpus)
-      "shmSize": "1g"              // Shared memory size (--shm-size)
-    }
-  },
-
-  // Plan decomposition settings (optional, defaults to agent-based decomposition)
-  "decomposer": {
-    "enabled": true,                 // Enable plan decomposition
-    "mode": "agent",                // Decomposition mode: "agent" or "deterministic"
-    "maxSections": 12               // Maximum number of sections
+    "mode": "docker",
+    "image": "oc-forge-sandbox:latest"
   },
 
   // TUI sidebar widget configuration
@@ -282,13 +270,6 @@ When enabled, logs are written to the specified file with timestamps. The log fi
   - `memorySwap` - Memory+swap limit, e.g., `'12g'`. Maps to `--memory-swap`.
   - `cpus` - Number of CPUs, e.g., `'4'`, `'2.5'`. Maps to `--cpus`.
   - `shmSize` - Shared memory size, e.g., `'1g'`. Maps to `--shm-size`.
-
-#### Decomposer
-- `decomposer.enabled` - Enable plan decomposition into sections (default: `true`)
-- `decomposer.mode` - Decomposition mode: `"agent"` (LLM) or `"deterministic"` (parser). Defaults to `"agent"`.
-- `decomposer.model` - Model override for the decomposer agent. Ignored in deterministic mode.
-- `decomposer.onParseFailure` - Fallback when deterministic parse fails: `"legacy"` (skip decomposition) or `"agent"` (try agent mode). Defaults to `"legacy"`.
-- `decomposer.maxSections` - Maximum number of sections per plan (default: `12`).
 
 #### TUI
 - `tui.sidebar` - Show the forge sidebar widget in OpenCode TUI (default: `true`)
@@ -656,7 +637,7 @@ pnpm typecheck  # Type check without emitting
 
 ## Loop Flow
 
-The diagram below shows the overall flow of the Forge loop system — from plan decomposition through iterative coding/auditing phases with section advancement and session rotation.
+The diagram below shows the overall flow of the Forge loop system — from plan capture through iterative coding/auditing phases with section advancement and session rotation.
 
 ![Loop Flow](diagrams/loop-flow.jpg)
 
