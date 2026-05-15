@@ -75,7 +75,7 @@ describe('boot sandbox preserve integration', () => {
 
     const sandboxRow = createSandboxLoopRow()
     mockLoopsRepo.listByStatus = mock(() => [sandboxRow])
-    mockLoopsRepo.getLarge = mock(() => ({ prompt: 'test prompt', lastAuditResult: null }))
+    mockLoopsRepo.getLarge = mock(() => ({ lastAuditResult: null }))
     mockLoopsRepo.get = mock((projectId: string, loopName: string) => {
       if (loopName === 'alpha') return sandboxRow
       return null
@@ -146,7 +146,7 @@ describe('boot sandbox preserve integration', () => {
 
     let loopRow = createSandboxLoopRow()
     mockLoopsRepo.listByStatus = mock(() => (loopRow.status === 'running' ? [loopRow] : []))
-    mockLoopsRepo.getLarge = mock(() => ({ prompt: 'test prompt', lastAuditResult: null }))
+    mockLoopsRepo.getLarge = mock(() => ({ lastAuditResult: null }))
     mockLoopsRepo.get = mock((projectId: string, loopName: string) => {
       if (loopName === 'alpha') return loopRow
       return null
@@ -212,7 +212,7 @@ describe('boot sandbox preserve integration', () => {
     // but the container reference is stale and needs to be restarted
     let loopRow = createSandboxLoopRow()
     mockLoopsRepo.listByStatus = mock(() => (loopRow.status === 'running' ? [loopRow] : []))
-    mockLoopsRepo.getLarge = mock(() => ({ prompt: 'test prompt', lastAuditResult: null }))
+    mockLoopsRepo.getLarge = mock(() => ({ lastAuditResult: null }))
     mockLoopsRepo.get = mock((projectId: string, loopName: string) => {
       if (loopName === 'alpha') return loopRow
       return null
@@ -287,7 +287,7 @@ describe('boot sandbox preserve integration', () => {
       }
       return []
     })
-    mockLoopsRepo.getLarge = mock(() => ({ prompt: 'test prompt', lastAuditResult: null }))
+    mockLoopsRepo.getLarge = mock(() => ({ lastAuditResult: null }))
     mockLoopsRepo.get = mock((projectId: string, loopName: string) => {
       if (loopName === 'alpha') return alphaRow
       if (loopName === 'beta') return betaRow

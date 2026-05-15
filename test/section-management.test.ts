@@ -77,7 +77,7 @@ describe('LoopService section management', () => {
       currentSectionIndex: 0,
       totalSections: 2,
       finalAuditDone: 0,
-    }, { prompt: 'test plan', lastAuditResult: null })
+    }, { lastAuditResult: null })
   }
 
   function insertSections(loopName: string, count: number) {
@@ -216,7 +216,7 @@ describe('LoopService section management', () => {
         currentSectionIndex: 0,
         totalSections: 0,
         finalAuditDone: 0,
-      }, { prompt: 'test plan', lastAuditResult: null })
+      }, { lastAuditResult: null })
 
       const state = loopService.getActiveState('no-sections')!
       const prompt = loopService.buildAuditPrompt(state)
@@ -421,7 +421,7 @@ describe('section-read tool contract', () => {
       currentSectionIndex: 0,
       totalSections: 2,
       finalAuditDone: 0,
-    }, { prompt: null, lastAuditResult: null })
+    }, { lastAuditResult: null })
 
     sectionPlansRepo.bulkInsert({
       projectId: 'proj',

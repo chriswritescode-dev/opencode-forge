@@ -427,12 +427,6 @@ async function resolvePlanSource(
         return { ok: true, planText }
       }
 
-      // Fallback to loopsRepo
-      const large = deps.loopsRepo.getLarge(ctx.projectId, source.loopName)
-      if (large?.prompt) {
-        return { ok: true, planText: large.prompt }
-      }
-      
       return {
         ok: false,
         error: {

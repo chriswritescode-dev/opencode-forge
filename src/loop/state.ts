@@ -67,7 +67,6 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
     iteration: row.iteration,
     maxIterations: row.maxIterations,
     startedAt: new Date(row.startedAt).toISOString(),
-    prompt: large?.prompt ?? undefined,
     lastAuditResult: large?.lastAuditResult ?? undefined,
     errorCount: row.errorCount,
     auditCount: row.auditCount,

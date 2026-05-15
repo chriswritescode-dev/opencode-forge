@@ -65,7 +65,6 @@ const LOOP_LARGE_FIELDS = `
 CREATE TABLE loop_large_fields (
   project_id          TEXT NOT NULL,
   loop_name           TEXT NOT NULL,
-  prompt              TEXT,
   last_audit_result   TEXT,
   PRIMARY KEY (project_id, loop_name),
   FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
@@ -193,7 +192,7 @@ describe('execution in-flight guard', () => {
         currentSectionIndex: 0,
         totalSections: 5,
         finalAuditDone: 0,
-      }, { prompt: 'test plan text', lastAuditResult: null })
+      }, { lastAuditResult: null })
 
       sectionPlansRepo.bulkInsert({
         projectId: PROJECT_ID,
@@ -310,7 +309,7 @@ describe('execution in-flight guard', () => {
         currentSectionIndex: 2,
         totalSections: 5,
         finalAuditDone: 0,
-      }, { prompt: 'plan text', lastAuditResult: null })
+      }, { lastAuditResult: null })
 
       sectionPlansRepo.bulkInsert({
         projectId: PROJECT_ID,
@@ -421,7 +420,7 @@ describe('execution in-flight guard', () => {
         currentSectionIndex: 1,
         totalSections: 4,
         finalAuditDone: 0,
-      }, { prompt: 'plan text', lastAuditResult: null })
+      }, { lastAuditResult: null })
 
       sectionPlansRepo.bulkInsert({
         projectId: PROJECT_ID,

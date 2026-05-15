@@ -9,6 +9,7 @@ export interface ForgeSessionAttachHookDeps {
   projectId: string
   directory: string
   logger: Logger
+  attachLoopToSession?: typeof attachLoopToSession
 }
 
 interface WorkspaceEntry {
@@ -116,7 +117,8 @@ export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
     }
 
     try {
-      const result = await attachLoopToSession(
+      const loopFn = deps.attachLoopToSession ?? attachLoopToSession
+      const result = await loopFn(
         deps.execDeps,
         { surface: 'tui', projectId: sessionProjectId, directory: ws.directory ?? deps.directory },
         {

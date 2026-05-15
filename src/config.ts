@@ -17,7 +17,12 @@ Use the input to determine what to review:
 - If the user provided plan text, treat it as the plan and inspect the current working tree implementation.
 - Otherwise, call \`plan-read\` with no arguments to load the current session plan.
 
-If no plan is found or the implementation target is unclear, ask the user which loop name or plan to review. Do not use loop management tools.
+If no plan is found using the above rules:
+- Call \`plan-read\` with \`recent: true\` to list recent project plans.
+- If the user's words include a feature name, branch clue, or domain term, call \`plan-read\` with \`recent: true\` and \`pattern\` using that term.
+- If multiple plausible plans exist, ask the user to choose.
+
+Do not use loop management tools.
 
 ## Step 2: Gather Implementation Evidence
 
@@ -68,7 +73,7 @@ const PLUGIN_COMMANDS: Record<string, { template: string; description: string; a
     template: PROMPT_REVIEW,
   },
   'review-plan': {
-    description: 'Review the current implementation plan before execution.',
+    description: 'Review a completed implementation against its original plan.',
     agent: 'auditor',
     subtask: true,
     template: PROMPT_REVIEW_PLAN,

@@ -21,6 +21,7 @@ interface ReconcileDeps {
   projectId: string
   directory: string
   logger: Logger
+  attachLoopToSession?: typeof attachLoopToSession
 }
 
 interface ForgeLoopConfig {
@@ -137,7 +138,8 @@ async function runReconcile(deps: ReconcileDeps): Promise<void> {
     const resolvedHostSessionId = cfg.hostSessionId && cfg.hostSessionId.length > 0 ? cfg.hostSessionId : session.id
 
     try {
-      const result = await attachLoopToSession(
+      const loopFn = deps.attachLoopToSession ?? attachLoopToSession
+      const result = await loopFn(
         deps.execDeps,
         { surface: 'tui', projectId: deps.projectId, directory: ws.directory ?? deps.directory },
         {

@@ -77,7 +77,6 @@ describe('Loop Section Advancement', () => {
       CREATE TABLE loop_large_fields (
         project_id          TEXT NOT NULL,
         loop_name           TEXT NOT NULL,
-        prompt              TEXT,
         last_audit_result   TEXT,
         PRIMARY KEY (project_id, loop_name),
         FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
@@ -173,8 +172,8 @@ describe('Loop Section Advancement', () => {
       Object.values(values)
     )
     db.run(
-      `INSERT INTO loop_large_fields (project_id, loop_name, prompt, last_audit_result) VALUES (?, ?, ?, ?)`,
-      [values.project_id, values.loop_name, null, null]
+      `INSERT INTO loop_large_fields (project_id, loop_name, last_audit_result) VALUES (?, ?, ?)`,
+      [values.project_id, values.loop_name, null]
     )
   }
 
@@ -732,7 +731,6 @@ describe('Event-handler level section advancement and final audit', () => {
       CREATE TABLE loop_large_fields (
         project_id          TEXT NOT NULL,
         loop_name           TEXT NOT NULL,
-        prompt              TEXT,
         last_audit_result   TEXT,
         PRIMARY KEY (project_id, loop_name),
         FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
@@ -828,8 +826,8 @@ describe('Event-handler level section advancement and final audit', () => {
       Object.values(values)
     )
     db.run(
-      `INSERT INTO loop_large_fields (project_id, loop_name, prompt, last_audit_result) VALUES (?, ?, ?, ?)`,
-      [values.project_id, values.loop_name, null, null]
+      `INSERT INTO loop_large_fields (project_id, loop_name, last_audit_result) VALUES (?, ?, ?)`,
+      [values.project_id, values.loop_name, null]
     )
   }
 

@@ -192,7 +192,6 @@ describe('Transcript Salvage', () => {
         CREATE TABLE loop_large_fields (
           project_id          TEXT NOT NULL,
           loop_name           TEXT NOT NULL,
-          prompt              TEXT,
           last_audit_result   TEXT,
           PRIMARY KEY (project_id, loop_name),
           FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
@@ -322,7 +321,7 @@ describe('Transcript Salvage', () => {
         currentSectionIndex: opts.currentSectionIndex,
         totalSections: opts.totalSections,
         finalAuditDone: 0,
-      }, { prompt: 'plan text', lastAuditResult: null })
+      }, { lastAuditResult: null })
     }
 
     test('when totalSections > 0, salvage is skipped because guard requires totalSections === 0', () => {
@@ -416,7 +415,6 @@ describe('Transcript Salvage', () => {
         CREATE TABLE loop_large_fields (
           project_id          TEXT NOT NULL,
           loop_name           TEXT NOT NULL,
-          prompt              TEXT,
           last_audit_result   TEXT,
           PRIMARY KEY (project_id, loop_name),
           FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
@@ -609,7 +607,7 @@ describe('Transcript Salvage', () => {
         currentSectionIndex: 0,
         totalSections: 0,
         finalAuditDone: 0,
-      }, { prompt: 'plan text', lastAuditResult: null })
+      }, { lastAuditResult: null })
 
       const transcript = [
         '## Section 0: Setup',
@@ -694,7 +692,7 @@ describe('Transcript Salvage', () => {
         currentSectionIndex: 0,
         totalSections: 0,
         finalAuditDone: 0,
-      }, { prompt: 'plan text', lastAuditResult: null })
+      }, { lastAuditResult: null })
 
       const transcript = [
         '<!-- forge-section:start -->',
@@ -784,7 +782,7 @@ describe('Transcript Salvage', () => {
         currentSectionIndex: 0,
         totalSections: 0,
         finalAuditDone: 0,
-      }, { prompt: 'plan text', lastAuditResult: null })
+      }, { lastAuditResult: null })
 
       const transcript = 'Just plain text, no sections or headings at all'
 
@@ -855,7 +853,7 @@ describe('Transcript Salvage', () => {
         currentSectionIndex: 0,
         totalSections: 2,
         finalAuditDone: 0,
-      }, { prompt: 'plan text', lastAuditResult: null })
+      }, { lastAuditResult: null })
 
       loopService.bulkInsertSections('idempotent-loop', [
         { index: 0, title: 'Section A', content: 'Content A' },

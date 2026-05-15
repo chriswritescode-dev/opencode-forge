@@ -63,8 +63,8 @@ test('sweepExpiredLoops cascades to loop_large_fields and plans', () => {
   `, [now, eightDaysAgo])
 
   db.run(`
-    INSERT INTO loop_large_fields (project_id, loop_name, prompt, last_audit_result)
-    VALUES ('proj1', 'loop-to-delete', 'test prompt', 'test audit result')
+    INSERT INTO loop_large_fields (project_id, loop_name, last_audit_result)
+    VALUES ('proj1', 'loop-to-delete', 'test audit result')
   `)
 
   db.run(`

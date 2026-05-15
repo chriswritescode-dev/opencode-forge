@@ -1,5 +1,5 @@
-import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import Database from 'better-sqlite3'
+import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -145,7 +145,6 @@ const LOOP_LARGE_FIELDS_SCHEMA = `
 CREATE TABLE loop_large_fields (
   project_id          TEXT NOT NULL,
   loop_name           TEXT NOT NULL,
-  prompt              TEXT,
   last_audit_result   TEXT,
   PRIMARY KEY (project_id, loop_name),
   FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
@@ -449,42 +448,37 @@ describe('Loop Runtime', () => {
     })
 
     test('worktree loops create the bound code session after transitioning', async () => {
-      vi.useFakeTimers()
-      try {
-        const { loop, clientState } = createRuntime()
-        const state = makeState({
-          phase: 'decomposing',
-          sessionId: 'decomp-sess-1',
-          decompositionSessionId: 'decomp-sess-1',
-          decompositionStatus: 'completed',
-          decompositionMode: 'agent',
-          totalSections: 1,
-          worktree: true,
-          worktreeDir: tempDir,
-          workspaceId: 'ws-1',
-        })
-        loopService.setState(state.loopName, state)
-        sectionPlansRepo.bulkInsert({
-          projectId: PROJECT_ID,
-          loopName: state.loopName,
-          sections: [{ index: 0, title: 'Setup', content: '## Setup\nDo the work' }],
-        })
+      const { loop, clientState } = createRuntime()
+      const state = makeState({
+        phase: 'decomposing',
+        sessionId: 'decomp-sess-1',
+        decompositionSessionId: 'decomp-sess-1',
+        decompositionStatus: 'completed',
+        decompositionMode: 'agent',
+        totalSections: 1,
+        worktree: true,
+        worktreeDir: tempDir,
+        workspaceId: 'ws-1',
+      })
+      loopService.setState(state.loopName, state)
+      sectionPlansRepo.bulkInsert({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        sections: [{ index: 0, title: 'Setup', content: '## Setup\nDo the work' }],
+      })
 
-        await loop.tick({
-          type: 'session.status',
-          properties: {
-            status: { type: 'idle' },
-            sessionID: 'decomp-sess-1',
-          },
-        })
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: 'decomp-sess-1',
+        },
+      })
 
-        expect(clientState.selectCalls).toHaveLength(0)
-        expect(loopService.getActiveState(state.loopName)!.decompositionSessionId).toBeNull()
+      expect(clientState.selectCalls).toHaveLength(0)
+      expect(loopService.getActiveState(state.loopName)!.decompositionSessionId).toBeNull()
 
-        expect(clientState.deleteCalls).toHaveLength(0)
-      } finally {
-        vi.useRealTimers()
-      }
+      expect(clientState.deleteCalls).toHaveLength(0)
     })
   })
 
@@ -506,10 +500,10 @@ describe('runtime re-provisioning updates state.workspaceId', () => {
       ],
     }
 
-    const wsCreateMock = vi.fn().mockResolvedValue({
+    const wsCreateMock = mock(async () => ({
       data: { id: 'ws_new', directory: '/tmp/wt/new', branch: 'opencode/new' },
-    })
-    const warpMock = vi.fn().mockResolvedValue({ error: null })
+    }))
+    const warpMock = mock(async () => ({ error: null }))
 
     const v2Client = {
       ...createMockV2Client(clientState),

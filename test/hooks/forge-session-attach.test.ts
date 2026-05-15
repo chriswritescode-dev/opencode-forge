@@ -1,12 +1,6 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest'
 
-const { mockAttachLoop } = vi.hoisted(() => ({
-  mockAttachLoop: vi.fn().mockResolvedValue({ ok: true, loopName: 'test-loop' }),
-}))
-
-vi.mock('../../src/services/execution', () => ({
-  attachLoopToSession: (...args: unknown[]) => mockAttachLoop(...args),
-}))
+const mockAttachLoop = vi.fn().mockResolvedValue({ ok: true, loopName: 'test-loop' })
 
 import { createForgeSessionAttachHook } from '../../src/hooks/forge-session-attach'
 
@@ -56,6 +50,7 @@ describe('createForgeSessionAttachHook', () => {
         error: loggerErrorSpy,
         debug: () => {},
       },
+      attachLoopToSession: (...args: unknown[]) => mockAttachLoop(...args),
     }
   }
 

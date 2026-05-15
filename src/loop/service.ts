@@ -98,7 +98,6 @@ export function rowToLoopState(row: LoopRow, large: LoopLargeFields | null): Loo
     iteration: row.iteration,
     maxIterations: row.maxIterations,
     startedAt: new Date(row.startedAt).toISOString(),
-    prompt: large?.prompt ?? undefined,
     phase: row.phase,
     lastAuditResult: large?.lastAuditResult ?? undefined,
     errorCount: row.errorCount,
@@ -171,11 +170,20 @@ export function createLoopService(
     }
   }
 
+  function hydratePlanFromPlans(state: LoopState): LoopState {
+    const planRow = plansRepo.getForLoopOrSession?.(projectId, state.loopName, state.sessionId) ?? null
+    if (planRow) {
+      state.prompt = planRow.content
+    }
+    return state
+  }
+
   function getAnyState(name: string): LoopState | null {
     const row = loopsRepo.get(projectId, name)
     if (!row) return null
     const large = loopsRepo.getLarge(projectId, name)
-    return rowToLoopState(row, large)
+    const state = rowToLoopState(row, large)
+    return hydratePlanFromPlans(state)
   }
 
   function getActiveState(name: string): LoopState | null {
@@ -192,12 +200,14 @@ export function createLoopService(
     }
     const row = stateToRow(state)
     const large: LoopLargeFields = {
-      prompt: state.prompt ?? null,
       lastAuditResult: state.lastAuditResult ?? null,
     }
     const ok = loopsRepo.insert(row, large)
     if (!ok) {
       throw new Error(`setState: loop "${name}" already exists`)
+    }
+    if (state.prompt) {
+      plansRepo.writeForLoop(projectId, name, state.prompt)
     }
     notifyLoopChange('insert', name, { projectDir: state.projectDir, worktreeDir: state.worktreeDir })
   }
@@ -205,6 +215,7 @@ export function createLoopService(
   function deleteState(name: string): void {
     const state = getAnyState(name)
     loopsRepo.delete(projectId, name)
+    plansRepo.deleteForLoop(projectId, name)
     notifyLoopChange('delete', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
@@ -244,14 +255,10 @@ export function createLoopService(
   }
 
   function getPlanTextForState(state: LoopState): string | null {
-    const fromExecution = loopsRepo.getLarge(projectId, state.loopName)?.prompt
-    if (fromExecution) return fromExecution
     return plansRepo.getForLoopOrSession(projectId, state.loopName, state.sessionId)?.content ?? null
   }
 
   function getPlanText(loopName: string, sessionId: string): string | null {
-    const fromExecution = loopsRepo.getLarge(projectId, loopName)?.prompt
-    if (fromExecution) return fromExecution
     return plansRepo.getForLoopOrSession(projectId, loopName, sessionId)?.content ?? null
   }
 
@@ -279,7 +286,7 @@ export function createLoopService(
     const rows = loopsRepo.listByStatus(projectId, ['running'])
     return rows.map((row) => {
       const large = loopsRepo.getLarge(projectId, row.loopName)
-      return rowToLoopState(row, large)
+      return hydratePlanFromPlans(rowToLoopState(row, large))
     })
   }
 
@@ -287,7 +294,7 @@ export function createLoopService(
     const rows = loopsRepo.listByStatus(projectId, ['completed', 'cancelled', 'errored', 'stalled'])
     return rows.map((row) => {
       const large = loopsRepo.getLarge(projectId, row.loopName)
-      return rowToLoopState(row, large)
+      return hydratePlanFromPlans(rowToLoopState(row, large))
     })
   }
 
@@ -296,13 +303,13 @@ export function createLoopService(
     const mapResult = (row: LoopRow | null): LoopState | null => {
       if (!row) return null
       const large = loopsRepo.getLarge(projectId, row.loopName)
-      return rowToLoopState(row, large)
+      return hydratePlanFromPlans(rowToLoopState(row, large))
     }
     return {
       match: mapResult(result.match),
       candidates: result.candidates.map((row) => {
         const large = loopsRepo.getLarge(projectId, row.loopName)
-        return rowToLoopState(row, large)
+        return hydratePlanFromPlans(rowToLoopState(row, large))
       }),
     }
   }

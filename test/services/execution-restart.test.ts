@@ -78,7 +78,6 @@ describe('handleLoopRestart from stall_timeout', () => {
       CREATE TABLE loop_large_fields (
         project_id          TEXT NOT NULL,
         loop_name           TEXT NOT NULL,
-        prompt              TEXT,
         last_audit_result   TEXT,
         PRIMARY KEY (project_id, loop_name),
         FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
@@ -214,7 +213,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       currentSectionIndex: opts.currentSectionIndex,
       totalSections: opts.totalSections,
       finalAuditDone: 0,
-    }, { prompt: 'test plan text', lastAuditResult: null })
+    }, { lastAuditResult: null })
   }
 
   test('restart from stall_timeout resumes at persisted section/iteration with coding phase', async () => {

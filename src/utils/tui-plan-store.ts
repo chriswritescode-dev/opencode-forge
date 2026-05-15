@@ -2,8 +2,8 @@
  * TUI plan store helper for resolving plan keys with loop-session awareness.
  *
  * This module provides plan reading with session → loop resolution.
- * Reads prefer loop_large_fields.prompt (execution store), then fall back to
- * the plans table.
+ * Reads prefer the plans table for loop-scoped plans, then falls back to
+ * session-scoped plan content.
  */
 
 import { Database } from 'bun:sqlite'
@@ -52,15 +52,10 @@ export function readPlan(projectId: string, sessionID: string, dbPathOverride?: 
   try {
     db = new Database(dbPath, { readonly: true })
     const plansRepo = createPlansRepo(db)
-    const loopsRepo = createLoopsRepo(db)
     
     // Try loop-bound plan first (if session maps to a loop)
     const loopName = resolveLoopNameForSession(db, projectId, sessionID)
     if (loopName) {
-      // Check loop_large_fields.prompt first (execution store), then plans table
-      const fromExecution = loopsRepo.getLarge(projectId, loopName)?.prompt
-      if (fromExecution) return fromExecution
-      
       const planRow = plansRepo.getForLoop(projectId, loopName)
       if (planRow) return planRow.content
     }
@@ -83,6 +78,23 @@ export function readPlanForAnyProject(sessionID: string, dbPathOverride?: string
   let db: Database | null = null
   try {
     db = new Database(dbPath, { readonly: true })
+    const plansRepo = createPlansRepo(db)
+
+    // Check if any project's loop has this session as its current_session_id.
+    // Loop-scoped plans are stored with loop_name (no session_id).
+    const loopRows = db.prepare(`
+      SELECT project_id, loop_name
+      FROM loops
+      WHERE current_session_id = ?
+      ORDER BY started_at DESC
+    `).all(sessionID) as Array<{ project_id: string; loop_name: string }>
+
+    for (const row of loopRows) {
+      const planRow = plansRepo.getForLoop(row.project_id, row.loop_name)
+      if (planRow?.content) return planRow.content
+    }
+
+    // Fall back to session-scoped plans.
     const rows = db.prepare(`
       SELECT project_id
       FROM plans

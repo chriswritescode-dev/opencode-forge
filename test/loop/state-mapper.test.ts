@@ -140,18 +140,16 @@ describe('loopRowToState', () => {
     expect(stateNull.completedAt).toBeUndefined()
   })
 
-  it('handles large field for prompt and lastAuditResult', () => {
+  it('handles large field for lastAuditResult', () => {
     const row = makeRow()
-    const large = { prompt: 'test prompt', lastAuditResult: 'all good' }
+    const large = { lastAuditResult: 'all good' }
     const state = loopRowToState(row, large)
-    expect(state.prompt).toBe('test prompt')
     expect(state.lastAuditResult).toBe('all good')
   })
 
   it('defaults large fields to undefined when not provided', () => {
     const row = makeRow()
     const state = loopRowToState(row)
-    expect(state.prompt).toBeUndefined()
     expect(state.lastAuditResult).toBeUndefined()
   })
 

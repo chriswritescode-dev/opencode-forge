@@ -82,7 +82,6 @@ describe('Execution decomposer integration', () => {
       CREATE TABLE loop_large_fields (
         project_id          TEXT NOT NULL,
         loop_name           TEXT NOT NULL,
-        prompt              TEXT,
         last_audit_result   TEXT,
         PRIMARY KEY (project_id, loop_name),
         FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
@@ -208,7 +207,7 @@ describe('Execution decomposer integration', () => {
       currentSectionIndex: opts.currentSectionIndex,
       totalSections: opts.totalSections,
       finalAuditDone: 0,
-    }, { prompt: 'plan text', lastAuditResult: null })
+    }, { lastAuditResult: null })
   }
 
   function buildPlanWithPhases(count: number): string {

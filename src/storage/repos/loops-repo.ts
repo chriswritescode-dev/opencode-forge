@@ -35,7 +35,6 @@ export interface LoopRow {
 }
 
 export interface LoopLargeFields {
-  prompt: string | null
   lastAuditResult: string | null
 }
 
@@ -59,7 +58,6 @@ export interface LoopsRepo {
   setSandboxContainer(projectId: string, loopName: string, containerName: string | null): void
   setPhaseAndResetError(projectId: string, loopName: string, phase: LoopRow['phase']): void
   setStatus(projectId: string, loopName: string, status: LoopRow['status']): void
-  updatePrompt(projectId: string, loopName: string, prompt: string): boolean
   replaceSession(
     projectId: string,
     loopName: string,
@@ -186,10 +184,9 @@ export function createLoopsRepo(db: Database): LoopsRepo {
   `)
 
   const upsertLargeStmt = db.prepare(`
-    INSERT INTO loop_large_fields (project_id, loop_name, prompt, last_audit_result)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO loop_large_fields (project_id, loop_name, last_audit_result)
+    VALUES (?, ?, ?)
     ON CONFLICT (project_id, loop_name) DO UPDATE SET
-      prompt = excluded.prompt,
       last_audit_result = excluded.last_audit_result
   `)
 
@@ -206,7 +203,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
   `)
 
   const getLargeStmt = db.prepare(`
-    SELECT prompt, last_audit_result
+    SELECT last_audit_result
     FROM loop_large_fields
     WHERE project_id = ? AND loop_name = ?
   `)
@@ -293,12 +290,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
 
   const setStatusStmt = db.prepare(`
     UPDATE loops SET status = ?
-    WHERE project_id = ? AND loop_name = ?
-  `)
-
-  const updatePromptStmt = db.prepare(`
-    UPDATE loop_large_fields
-    SET prompt = ?
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -394,7 +385,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       if (result.changes === 0) {
         return false
       }
-      upsertLargeStmt.run(row.projectId, row.loopName, large.prompt, large.lastAuditResult)
+      upsertLargeStmt.run(row.projectId, row.loopName, large.lastAuditResult)
       return true
     },
 
@@ -404,10 +395,9 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     },
 
     getLarge(projectId: string, loopName: string): LoopLargeFields | null {
-      const row = getLargeStmt.get(projectId, loopName) as { prompt: string | null; last_audit_result: string | null } | null
+      const row = getLargeStmt.get(projectId, loopName) as { last_audit_result: string | null } | null
       if (!row) return null
       return {
-        prompt: row.prompt,
         lastAuditResult: row.last_audit_result,
       }
     },
@@ -527,11 +517,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
 
     setStatus(projectId: string, loopName: string, status: LoopRow['status']): void {
       setStatusStmt.run(status, projectId, loopName)
-    },
-
-    updatePrompt(projectId: string, loopName: string, prompt: string): boolean {
-      const result = updatePromptStmt.run(prompt, projectId, loopName) as unknown as { changes: number }
-      return result.changes > 0
     },
 
     terminate(

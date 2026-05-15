@@ -97,7 +97,7 @@ describe('Phase 11: Loop decomposition and advancement', () => {
       currentSectionIndex: opts.currentSectionIndex,
       totalSections: opts.totalSections,
       finalAuditDone: opts.finalAuditDone,
-    }, { prompt: null, lastAuditResult: null })
+    }, { lastAuditResult: null })
   }
 
   describe('Deterministic decomposer', () => {

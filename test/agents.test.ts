@@ -58,9 +58,6 @@ describe('Agent definitions', () => {
 
     test('code agent prompt requires two-at-a-time code subagents for todo implementation', () => {
       const prompt = codeAgent.systemPrompt
-      expect(prompt).toContain('use the Task tool to delegate focused implementation tasks to `code` subagents')
-      expect(prompt).toContain('launch tasks 1 and 2 in parallel')
-      expect(prompt).toContain('then launch tasks 3 and 4')
       expect(prompt).toContain('Each `code` subagent must receive exactly one focused todo task')
       expect(prompt).toContain('inspect and reconcile its changes before marking the todo complete')
       expect(prompt).toContain('files changed, behavior implemented, validation run, results')

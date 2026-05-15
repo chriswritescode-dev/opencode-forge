@@ -5,7 +5,7 @@ export { createLoopsRepo } from './repos/loops-repo'
 export type { LoopRow, LoopLargeFields, LoopsRepo } from './repos/loops-repo'
 
 export { createPlansRepo } from './repos/plans-repo'
-export type { PlanRow, PlansRepo } from './repos/plans-repo'
+export type { PlanRow, PlansRepo, ListRecentPlansOptions } from './repos/plans-repo'
 
 export { createReviewFindingsRepo } from './repos/review-findings-repo'
 export type { ReviewFindingRow, ReviewFindingsRepo, WriteFindingResult } from './repos/review-findings-repo'

@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest'
-import Database from 'better-sqlite3'
+import { Database } from 'bun:sqlite'
 import { mkdtempSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -73,7 +73,6 @@ const LOOP_LARGE_FIELDS_SCHEMA = `
 CREATE TABLE loop_large_fields (
   project_id          TEXT NOT NULL,
   loop_name           TEXT NOT NULL,
-  prompt              TEXT,
   last_audit_result   TEXT,
   PRIMARY KEY (project_id, loop_name),
   FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
@@ -297,6 +296,16 @@ describe('handleStartLoop builtin worktree workspace', () => {
     expect(state!.workspaceId).toBe('ws_test')
     expect(state!.worktreeDir).toBe('/tmp/wt/abc')
     expect(state!.worktreeBranch).toBe('opencode/abc')
+
+    // Assert: plan persisted through plans table (loop-scoped)
+    const loopPlanRow = plansRepo.getForLoop(PROJECT_ID, result.data.loopName)
+    expect(loopPlanRow).not.toBeNull()
+    expect(loopPlanRow!.content).toBe('# Test Plan\n\nThis is a test plan.')
+
+    // Assert: loop_large_fields has no prompt column (removed in migration 127)
+    const largeFields = loopsRepo.getLarge(PROJECT_ID, result.data.loopName)
+    expect(largeFields).not.toBeNull()
+    expect(largeFields).not.toHaveProperty('prompt')
   })
 
   test('worktree loop succeeds without sandbox manager (worktree-only mode)', async () => {

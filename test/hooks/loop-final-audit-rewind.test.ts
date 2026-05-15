@@ -407,8 +407,8 @@ describe('Event-handler level final audit and retry cap', () => {
       Object.values(values),
     )
     db.run(
-      `INSERT INTO loop_large_fields (project_id, loop_name, prompt, last_audit_result) VALUES (?, ?, ?, ?)`,
-      [values.project_id, values.loop_name, null, null],
+      `INSERT INTO loop_large_fields (project_id, loop_name, last_audit_result) VALUES (?, ?, ?)`,
+      [values.project_id, values.loop_name, null],
     )
   }
 

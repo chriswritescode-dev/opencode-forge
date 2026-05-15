@@ -60,7 +60,6 @@ describe('LoopsRepo', () => {
       CREATE TABLE loop_large_fields (
         project_id          TEXT NOT NULL,
         loop_name           TEXT NOT NULL,
-        prompt              TEXT,
         last_audit_result   TEXT,
         PRIMARY KEY (project_id, loop_name),
         FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
@@ -110,7 +109,6 @@ describe('LoopsRepo', () => {
   }
 
   const testLarge: LoopLargeFields = {
-    prompt: 'Test prompt',
     lastAuditResult: null,
   }
 
@@ -126,7 +124,7 @@ describe('LoopsRepo', () => {
       
       const large = repo.getLarge(testRow.projectId, testRow.loopName)
       expect(large).toBeTruthy()
-      expect(large!.prompt).toBe('Test prompt')
+      expect(large!.lastAuditResult).toBeNull()
     })
 
     test('should error on second insert (conflict)', () => {
@@ -138,7 +136,7 @@ describe('LoopsRepo', () => {
         errorCount: 3,
       }
       expect(() => {
-        repo.insert(updated, { prompt: 'Updated prompt', lastAuditResult: null })
+        repo.insert(updated, { lastAuditResult: null })
       }).toThrow() // Insert throws due to conflict
       
       // Original row is unchanged

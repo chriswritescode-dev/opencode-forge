@@ -55,7 +55,6 @@ const LOOP_LARGE_FIELDS_SCHEMA = `
 CREATE TABLE loop_large_fields (
   project_id          TEXT NOT NULL,
   loop_name           TEXT NOT NULL,
-  prompt              TEXT,
   last_audit_result   TEXT,
   PRIMARY KEY (project_id, loop_name),
   FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
@@ -266,7 +265,10 @@ describe('attachLoopToSession', () => {
     // Today: no purge logic exists, so the orphaned rows remain.
     // After Phase 6: these should pass once defensive purge is added.
     expect(sectionPlansRepo.count(PROJECT_ID, LOOP_NAME)).toBe(0)
-    expect(plansRepo.getForLoop(PROJECT_ID, LOOP_NAME)).toBeNull()
+    // Plan row is rewritten by setState from the new plan text ('NEW_PLAN')
+    const planAfterAttach = plansRepo.getForLoop(PROJECT_ID, LOOP_NAME)
+    expect(planAfterAttach).not.toBeNull()
+    expect(planAfterAttach!.content).toBe('NEW_PLAN')
     expect(reviewFindingsRepo.listByLoopName(PROJECT_ID, LOOP_NAME)).toEqual([])
   })
 })
