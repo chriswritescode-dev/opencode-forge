@@ -268,5 +268,12 @@ export const migrations: Migration[] = [
       db.run(loadSql('127_consolidate_loop_plan_storage.sql'))
     },
   },
+  {
+    id: '128',
+    description: 'Add unique index on loops(project_id, loop_name) for FK compliance with section_plans',
+    apply: (db: Database) => {
+      db.run(loadSql('128_add_loops_project_name_unique_index.sql'))
+    },
+  },
 
 ]
