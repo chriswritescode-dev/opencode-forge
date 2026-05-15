@@ -24,9 +24,7 @@ import { existsSync } from 'fs'
 import { decomposeDeterministically } from './deterministic-decomposer'
 import { markPromptSent, clearPromptPending, terminationStatusFor, parseTerminationReasonString } from '../loop'
 import {
-  assertNoPromptInFlight,
-  markPromptInFlight,
-  clearPromptInFlightIfMatches,
+  withInFlightGuard,
   ConcurrentPromptError,
   type PromptAgent,
 } from '../loop/in-flight-guard'
@@ -1052,27 +1050,26 @@ export async function attachLoopToSession(
       const decomposerPrompt = deps.loop.buildDecomposerInitialPrompt(state)
 
       try {
-        assertNoPromptInFlight(loopName, sessionId, 'decomposer', deps.logger)
-        markPromptInFlight(loopName, sessionId, 'decomposer')
-        markPromptSent(loopName, sessionId, deps.logger)
-        const decomposerResult = await deps.v2.session.promptAsync({
-          sessionID: sessionId,
-          directory: state.worktreeDir,
-          ...(workspaceId ? { workspace: workspaceId } : {}),
-          agent: 'decomposer',
-          parts: [{ type: 'text' as const, text: decomposerPrompt }],
-          ...(() => {
-            const m = resolveDecomposerModel({
-              decomposerModel: decomposerConfig.model,
-              auditorModel,
-              executionModel,
-            })
-            return m ? { model: m } : {}
-          })(),
+        const decomposerResult = await withInFlightGuard(loopName, sessionId, 'decomposer', deps.logger, async () => {
+          markPromptSent(loopName, sessionId, deps.logger)
+          return await deps.v2.session.promptAsync({
+            sessionID: sessionId,
+            directory: state.worktreeDir,
+            ...(workspaceId ? { workspace: workspaceId } : {}),
+            agent: 'decomposer',
+            parts: [{ type: 'text' as const, text: decomposerPrompt }],
+            ...(() => {
+              const m = resolveDecomposerModel({
+                decomposerModel: decomposerConfig.model,
+                auditorModel,
+                executionModel,
+              })
+              return m ? { model: m } : {}
+            })(),
+          })
         })
         if ((decomposerResult as { error?: unknown })?.error) {
           clearPromptPending(loopName, deps.logger)
-          clearPromptInFlightIfMatches(loopName, sessionId, 'decomposer')
           deps.logger.error('attachLoopToSession: decomposer promptAsync returned error', (decomposerResult as { error?: unknown }).error)
           deps.loop.deleteState(loopName)
           return { ok: false, code: 'prompt_failed', message: 'Failed to prompt decomposer' }
@@ -1083,12 +1080,10 @@ export async function attachLoopToSession(
           return { ok: false, code: 'prompt_failed', message: err.message }
         }
         clearPromptPending(loopName, deps.logger)
-        clearPromptInFlightIfMatches(loopName, sessionId, 'decomposer')
         deps.logger.error('attachLoopToSession: failed to prompt decomposer', err)
         deps.loop.deleteState(loopName)
         return { ok: false, code: 'prompt_failed', message: 'Failed to prompt decomposer' }
       }
-      clearPromptInFlightIfMatches(loopName, sessionId, 'decomposer')
       // Start watchdog if requested
       if (startWatchdog && deps.loopHandler) {
         deps.loopHandler.startWatchdog(loopName)
@@ -1248,27 +1243,26 @@ export async function attachLoopToSession(
           const decomposerPrompt = deps.loop.buildDecomposerInitialPrompt(state)
 
           try {
-            assertNoPromptInFlight(loopName, sessionId, 'decomposer', deps.logger)
-            markPromptInFlight(loopName, sessionId, 'decomposer')
-            markPromptSent(loopName, sessionId, deps.logger)
-            const decomposerResult = await deps.v2.session.promptAsync({
-              sessionID: sessionId,
-              directory: state.worktreeDir,
-              ...(workspaceId ? { workspace: workspaceId } : {}),
-              agent: 'decomposer',
-              parts: [{ type: 'text' as const, text: decomposerPrompt }],
-              ...(() => {
-                const m = resolveDecomposerModel({
-                  decomposerModel: decomposerConfig.model,
-                  auditorModel,
-                  executionModel,
-                })
-                return m ? { model: m } : {}
-              })(),
+            const decomposerResult = await withInFlightGuard(loopName, sessionId, 'decomposer', deps.logger, async () => {
+              markPromptSent(loopName, sessionId, deps.logger)
+              return await deps.v2.session.promptAsync({
+                sessionID: sessionId,
+                directory: state.worktreeDir,
+                ...(workspaceId ? { workspace: workspaceId } : {}),
+                agent: 'decomposer',
+                parts: [{ type: 'text' as const, text: decomposerPrompt }],
+                ...(() => {
+                  const m = resolveDecomposerModel({
+                    decomposerModel: decomposerConfig.model,
+                    auditorModel,
+                    executionModel,
+                  })
+                  return m ? { model: m } : {}
+                })(),
+              })
             })
             if ((decomposerResult as { error?: unknown })?.error) {
               clearPromptPending(loopName, deps.logger)
-              clearPromptInFlightIfMatches(loopName, sessionId, 'decomposer')
               deps.logger.error('attachLoopToSession: decomposer promptAsync returned error', (decomposerResult as { error?: unknown }).error)
               deps.loop.deleteState(loopName)
               return { ok: false, code: 'prompt_failed', message: 'Failed to prompt decomposer' }
@@ -1279,7 +1273,6 @@ export async function attachLoopToSession(
               return { ok: false, code: 'prompt_failed', message: err.message }
             }
             clearPromptPending(loopName, deps.logger)
-            clearPromptInFlightIfMatches(loopName, sessionId, 'decomposer')
             deps.logger.error('attachLoopToSession: failed to prompt decomposer', err)
             deps.loop.deleteState(loopName)
             return { ok: false, code: 'prompt_failed', message: 'Failed to prompt decomposer' }
@@ -1313,8 +1306,6 @@ export async function attachLoopToSession(
           }
         }
       }
-
-      clearPromptInFlightIfMatches(loopName, sessionId, 'decomposer')
 
       // Start watchdog if requested
       if (startWatchdog && deps.loopHandler) {
@@ -2392,24 +2383,26 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       const sendRestartPrompt = async (model?: { providerID: string; modelID: string }) => {
         try {
-          assertNoPromptInFlight(stoppedState.loopName, effectiveSessionId, promptAgent as PromptAgent, deps.logger)
+          return await withInFlightGuard(
+            stoppedState.loopName,
+            effectiveSessionId,
+            promptAgent as PromptAgent,
+            deps.logger,
+            async () => {
+              markPromptSent(stoppedState.loopName, effectiveSessionId, deps.logger)
+              return await deps.v2.session.promptAsync({
+                sessionID: effectiveSessionId,
+                directory: stoppedState.worktreeDir,
+                parts: [{ type: 'text' as const, text: promptText }],
+                agent: promptAgent,
+                ...(model ? { model } : {}),
+                ...workspaceParam,
+              })
+            },
+          )
         } catch (err) {
           if (err instanceof ConcurrentPromptError) return { error: err }
           throw err
-        }
-        markPromptInFlight(stoppedState.loopName, effectiveSessionId, promptAgent as PromptAgent)
-        markPromptSent(stoppedState.loopName, effectiveSessionId, deps.logger)
-        try {
-          return await deps.v2.session.promptAsync({
-            sessionID: effectiveSessionId,
-            directory: stoppedState.worktreeDir,
-            parts: [{ type: 'text' as const, text: promptText }],
-            agent: promptAgent,
-            ...(model ? { model } : {}),
-            ...workspaceParam,
-          })
-        } finally {
-          clearPromptInFlightIfMatches(stoppedState.loopName, effectiveSessionId, promptAgent as PromptAgent)
         }
       }
 

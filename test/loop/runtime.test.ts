@@ -729,10 +729,10 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('clears in-flight after busy event', async () => {
-      markPromptInFlight('test-loop', 'sess-1', 'code')
+      const state = makeState({ phase: 'coding' })
+      markPromptInFlight('test-loop', state.sessionId, 'code')
 
       const { loop } = createRuntime()
-      const state = makeState({ phase: 'coding' })
       loopService.setState(state.loopName, state)
 
       await loop.tick({
@@ -744,6 +744,28 @@ describe('stall handling terminates with stall timeout when configured cap is re
       })
 
       expect(getPromptInFlight('test-loop')).toBeUndefined()
+    })
+
+    test('busy event from non-owning session does not clear in-flight', async () => {
+      markPromptInFlight('test-loop', 'sess-owner', 'auditor-loop')
+
+      const { loop } = createRuntime()
+      const state = makeState({ phase: 'coding' })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession('sess-old', 'test-loop')
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'busy' },
+          sessionID: 'sess-old',
+        },
+      })
+
+      const entry = getPromptInFlight('test-loop')
+      expect(entry).toBeDefined()
+      expect(entry!.sessionId).toBe('sess-owner')
+      expect(entry!.agent).toBe('auditor-loop')
     })
 
     test('clears in-flight when promptAsync throws a transient error', async () => {

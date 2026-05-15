@@ -36,6 +36,16 @@ export function clearPromptInFlight(loopName: string): void {
   inFlight.delete(loopName)
 }
 
+export function clearPromptInFlightBySession(loopName: string, sessionId: string): boolean {
+  const entry = inFlight.get(loopName)
+  if (!entry) return false
+  if (entry.sessionId === sessionId) {
+    inFlight.delete(loopName)
+    return true
+  }
+  return false
+}
+
 export function clearPromptInFlightIfMatches(
   loopName: string,
   sessionId: string,
@@ -67,6 +77,22 @@ export function assertNoPromptInFlight(
     `prior=${prior.agent}: ${prior.sessionId} attempted=${attemptedAgent}: ${attemptedSessionId}`,
   )
   throw new ConcurrentPromptError(loopName, prior.sessionId, prior.agent, attemptedSessionId, attemptedAgent)
+}
+
+export async function withInFlightGuard<T>(
+  loopName: string,
+  sessionId: string,
+  agent: PromptAgent,
+  logger: Logger,
+  fn: () => Promise<T>,
+): Promise<T> {
+  assertNoPromptInFlight(loopName, sessionId, agent, logger)
+  markPromptInFlight(loopName, sessionId, agent)
+  try {
+    return await fn()
+  } finally {
+    clearPromptInFlightIfMatches(loopName, sessionId, agent)
+  }
 }
 
 // Test-only: clear all state.
