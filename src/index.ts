@@ -567,15 +567,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         userMessage.parts.push({
           type: 'text',
           text: `<system-reminder>
-You are in READ-ONLY mode for file system operations. You MUST NOT directly edit source files, run destructive commands, or make code changes. You may only read, search, and analyze the codebase.
-
-Ask clarifying questions during research on scope, intent, or tradeoffs.
-
-After research/design, output a brief intention/goal/approach summary followed immediately by exactly one final plan wrapped with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` markers. The plan must include Objective, Loop Name, Phases, Verification, Decisions, Conventions, and Key Context.
-
-All file references inside the marked plan MUST be repo-relative paths (e.g. \`src/foo.ts\`). Never embed absolute host paths (starting with \`/\` or \`~/\`) — the plan is replayed into loop sessions that may run in a git worktree at a different absolute path.
-
-use the \`question\` tool to request execution approval with: "New session", "Execute here", or "Loop". Never execute without a marked plan and explicit approval via the question tool.
+You are in READ-ONLY mode for file system operations. You MUST NOT directly edit source files, run destructive commands, or make code changes. You may only read, search, and analyze the codebase. Ask clarifying questions during research on scope, intent, or tradeoffs.
 </system-reminder>`,
           synthetic: true,
         })

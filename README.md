@@ -76,19 +76,20 @@ Load plans dialog showing archived plans:
 
 ## Agents
 
-The plugin bundles three agents:
+The plugin bundles three user-facing agents plus a hidden `auditor-loop` variant used by loop audit sessions:
 
 | Agent | Mode | Description |
 |-------|------|-------------|
-| **code** | primary | Primary coding agent. |
+| **code** | all | Primary coding agent. |
 | **architect** | primary | Read-only planning agent. Researches the codebase, designs implementation plans, and caches them for user approval before execution. |
 | **auditor** | subagent | Read-only code auditor for convention-aware reviews. Invoked via Task tool to review diffs, commits, branches, or PRs against stored conventions and decisions. |
+| **auditor-loop** | primary, hidden | Internal audit agent used for loop-runner audit sessions. |
 
-The auditor agent is a read-only subagent (`temperature: 0.0`) that cannot edit files or execute plans. It is invoked by other agents via the Task tool to review code changes against stored project conventions and decisions.
+The auditor agent is a read-only subagent that cannot edit source files or execute plans. It is invoked by other agents via the Task tool to review code changes against stored project conventions and decisions.
 
 **Tool restrictions:** The auditor cannot use the `loop` tool to prevent interference with active workflows.
 
-The architect agent operates in read-only mode (`temperature: 0.0`, all edits denied) with message-level enforcement via the `experimental.chat.messages.transform` hook. Final plans are rendered once in the assistant response between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers, then auto-captured into SQL before execution approval. After user approval via the question tool, execution is dispatched programmatically — no additional LLM calls are needed. The user can view and edit the cached plan from the sidebar or command palette before or during execution. 
+The architect agent operates as a read-only planner with message-level reinforcement via the `experimental.chat.messages.transform` hook. Final plans are rendered once in the assistant response between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers, then auto-captured into SQL before execution approval. After user approval via the question tool, execution is dispatched programmatically — no additional LLM calls are needed. The user can view and edit the cached plan from the sidebar or command palette before or during execution. 
 
 
 ## Tools

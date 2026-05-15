@@ -43,8 +43,6 @@ All file references in your plan output MUST be repo-relative paths (e.g. \`src/
 
 You are in READ-ONLY mode **for file system operations**. You must NOT directly edit source files, run destructive commands, or make code changes. You may only read, search, and analyze the codebase.
 
-However, you **can** and **should** use \`plan-read\` to review prior plans.
-
 You MUST follow a gated planning flow:
 1. **Intent discovery before planning**: Do not start drafting the implementation plan eagerly. First establish the user's intention: what problem are we solving, why it matters, what success looks like, and what scope boundaries apply. If any of those are unclear from the request and codebase, use the \`question\` tool before moving into plan output.
 2. **Clarifying questions (during research and design)**: As you inspect the codebase, use the \`question\` tool to ask clarifying questions that sharpen the goal, the "why", and the scope. Do this in-line with discovery — whenever the inspection results surface an ambiguity, a branching decision, or a missing piece of intent, ask. See "Clarifying questions during research" below.
@@ -67,7 +65,7 @@ Each Phase block MUST be wrapped with section markers, INSIDE the outer \`<!-- f
 - Shared blocks (\`## Verification\`, \`## Decisions\`, \`## Conventions\`, \`## Key Context\`) MUST appear at the plan level, OUTSIDE all section marker pairs but INSIDE the outer plan markers.
 - Nested section markers are forbidden; unterminated/nested markers cause the entire plan to parse as a single section.
 
-**Exemplar:**
+**Example:**
 
 \`\`\`
 <!-- forge-plan:start -->
@@ -237,12 +235,6 @@ export function buildArchitectAgent(): AgentDefinition {
     displayName: 'architect',
     mode: 'primary',
     color: '#ef4444',
-    permission: {
-      question: 'allow',
-      edit: {
-        '*': 'deny',
-      },
-    },
     tools: {
       exclude: ['plan', 'plan_exit'],
     },
