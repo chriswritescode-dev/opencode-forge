@@ -26,7 +26,7 @@ import { markPromptSent, clearPromptPending, terminationStatusFor, parseTerminat
 import {
   assertNoPromptInFlight,
   markPromptInFlight,
-  clearPromptInFlight,
+  clearPromptInFlightIfMatches,
   ConcurrentPromptError,
   type PromptAgent,
 } from '../loop/in-flight-guard'
@@ -1072,23 +1072,23 @@ export async function attachLoopToSession(
         })
         if ((decomposerResult as { error?: unknown })?.error) {
           clearPromptPending(loopName, deps.logger)
-          clearPromptInFlight(loopName)
+          clearPromptInFlightIfMatches(loopName, sessionId, 'decomposer')
           deps.logger.error('attachLoopToSession: decomposer promptAsync returned error', (decomposerResult as { error?: unknown }).error)
           deps.loop.deleteState(loopName)
           return { ok: false, code: 'prompt_failed', message: 'Failed to prompt decomposer' }
         }
       } catch (err) {
-        clearPromptPending(loopName, deps.logger)
-        clearPromptInFlight(loopName)
         if (err instanceof ConcurrentPromptError) {
           deps.loop.deleteState(loopName)
           return { ok: false, code: 'prompt_failed', message: err.message }
         }
+        clearPromptPending(loopName, deps.logger)
+        clearPromptInFlightIfMatches(loopName, sessionId, 'decomposer')
         deps.logger.error('attachLoopToSession: failed to prompt decomposer', err)
         deps.loop.deleteState(loopName)
         return { ok: false, code: 'prompt_failed', message: 'Failed to prompt decomposer' }
       }
-      clearPromptInFlight(loopName)
+      clearPromptInFlightIfMatches(loopName, sessionId, 'decomposer')
       // Start watchdog if requested
       if (startWatchdog && deps.loopHandler) {
         deps.loopHandler.startWatchdog(loopName)
@@ -1268,18 +1268,18 @@ export async function attachLoopToSession(
             })
             if ((decomposerResult as { error?: unknown })?.error) {
               clearPromptPending(loopName, deps.logger)
-              clearPromptInFlight(loopName)
+              clearPromptInFlightIfMatches(loopName, sessionId, 'decomposer')
               deps.logger.error('attachLoopToSession: decomposer promptAsync returned error', (decomposerResult as { error?: unknown }).error)
               deps.loop.deleteState(loopName)
               return { ok: false, code: 'prompt_failed', message: 'Failed to prompt decomposer' }
             }
           } catch (err) {
-            clearPromptPending(loopName, deps.logger)
-            clearPromptInFlight(loopName)
             if (err instanceof ConcurrentPromptError) {
               deps.loop.deleteState(loopName)
               return { ok: false, code: 'prompt_failed', message: err.message }
             }
+            clearPromptPending(loopName, deps.logger)
+            clearPromptInFlightIfMatches(loopName, sessionId, 'decomposer')
             deps.logger.error('attachLoopToSession: failed to prompt decomposer', err)
             deps.loop.deleteState(loopName)
             return { ok: false, code: 'prompt_failed', message: 'Failed to prompt decomposer' }
@@ -1314,7 +1314,7 @@ export async function attachLoopToSession(
         }
       }
 
-      clearPromptInFlight(loopName)
+      clearPromptInFlightIfMatches(loopName, sessionId, 'decomposer')
 
       // Start watchdog if requested
       if (startWatchdog && deps.loopHandler) {
@@ -2390,49 +2390,41 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       deps.loop.registerLoopSession(effectiveSessionId, stoppedState.loopName)
 
+      const sendRestartPrompt = async (model?: { providerID: string; modelID: string }) => {
+        try {
+          assertNoPromptInFlight(stoppedState.loopName, effectiveSessionId, promptAgent as PromptAgent, deps.logger)
+        } catch (err) {
+          if (err instanceof ConcurrentPromptError) return { error: err }
+          throw err
+        }
+        markPromptInFlight(stoppedState.loopName, effectiveSessionId, promptAgent as PromptAgent)
+        markPromptSent(stoppedState.loopName, effectiveSessionId, deps.logger)
+        try {
+          return await deps.v2.session.promptAsync({
+            sessionID: effectiveSessionId,
+            directory: stoppedState.worktreeDir,
+            parts: [{ type: 'text' as const, text: promptText }],
+            agent: promptAgent,
+            ...(model ? { model } : {}),
+            ...workspaceParam,
+          })
+        } finally {
+          clearPromptInFlightIfMatches(stoppedState.loopName, effectiveSessionId, promptAgent as PromptAgent)
+        }
+      }
+
       const { result: promptResult } = await retryWithModelFallback(
-        () => {
-          try {
-            assertNoPromptInFlight(stoppedState.loopName, effectiveSessionId, promptAgent as PromptAgent, deps.logger)
-          } catch (err) {
-            if (err instanceof ConcurrentPromptError) return Promise.resolve({ error: err })
-            throw err
-          }
-          markPromptInFlight(stoppedState.loopName, effectiveSessionId, promptAgent as PromptAgent)
-          markPromptSent(stoppedState.loopName, effectiveSessionId, deps.logger)
-          return deps.v2.session.promptAsync({
-            sessionID: effectiveSessionId,
-            directory: stoppedState.worktreeDir,
-            parts: [{ type: 'text' as const, text: promptText }],
-            agent: promptAgent,
-            model: loopModel!,
-            ...workspaceParam,
-          })
-        },
-        () => {
-          try {
-            assertNoPromptInFlight(stoppedState.loopName, effectiveSessionId, promptAgent as PromptAgent, deps.logger)
-          } catch (err) {
-            if (err instanceof ConcurrentPromptError) return Promise.resolve({ error: err })
-            throw err
-          }
-          markPromptInFlight(stoppedState.loopName, effectiveSessionId, promptAgent as PromptAgent)
-          markPromptSent(stoppedState.loopName, effectiveSessionId, deps.logger)
-          return deps.v2.session.promptAsync({
-            sessionID: effectiveSessionId,
-            directory: stoppedState.worktreeDir,
-            parts: [{ type: 'text' as const, text: promptText }],
-            agent: promptAgent,
-            ...workspaceParam,
-          })
-        },
+        () => sendRestartPrompt(loopModel!),
+        () => sendRestartPrompt(),
         loopModel,
         deps.logger,
       )
 
       if (promptResult.error) {
-        clearPromptPending(stoppedState.loopName, deps.logger)
-        clearPromptInFlight(stoppedState.loopName)
+        const isConcurrent = promptResult.error instanceof ConcurrentPromptError
+        if (!isConcurrent) {
+          clearPromptPending(stoppedState.loopName, deps.logger)
+        }
         deps.logger.error('loop-restart: failed to send prompt', promptResult.error)
         // Save section plans before deleteState (which cascades to section_plans)
         const savedPlans = deps.sectionPlansRepo?.list(ctx.projectId, stoppedState.loopName) ?? []
@@ -2453,7 +2445,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         return { ok: false, error: 'Restart failed: could not send prompt to new session.' }
       }
 
-      clearPromptInFlight(stoppedState.loopName)
       deps.loopHandler!.startWatchdog(stoppedState.loopName)
 
       return { ok: true, newSessionId: effectiveSessionId, previousSessionId, sandbox: restartSandbox, bindFailed, decomposerSessionId }

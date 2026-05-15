@@ -47,6 +47,14 @@ export async function retryWithModelFallback<T>(
       return { result, usedModel: model }
     }
     lastError = result.error
+    if (
+      typeof result.error === 'object' &&
+      result.error !== null &&
+      'code' in result.error &&
+      (result.error as { code?: unknown }).code === 'concurrent_prompt'
+    ) {
+      return { result: { data: result.data, error: result.error }, usedModel: model }
+    }
     if (attempt < maxRetries) {
       logger.log(`model attempt ${attempt}/${maxRetries} failed, retrying`)
     } else {

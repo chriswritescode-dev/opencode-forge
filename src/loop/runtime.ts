@@ -26,6 +26,7 @@ import { markPromptSent, clearPromptPending, sessionsAwaitingBusy, isAwaitingBus
 import {
   markPromptInFlight,
   clearPromptInFlight,
+  clearPromptInFlightIfMatches,
   assertNoPromptInFlight,
   ConcurrentPromptError,
 } from './in-flight-guard'
@@ -186,7 +187,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (agent === 'auditor-loop') {
       const auditorModel = input.model != null ? input.model : undefined
 
-      const sendWithModel = async () => {
+      const sendFn = async (model?: { providerID: string; modelID: string }) => {
         const freshState = loopService.getActiveState(loopName)
         if (!freshState?.active) throw new Error('loop_cancelled')
         try {
@@ -196,50 +197,34 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           throw err
         }
         markPromptInFlight(loopName, sessionId, 'auditor-loop')
-        markPromptSent(loopName, sessionId, logger)
-        const result = await promptAuditSessionWithFallback({
-          sessionId,
-          worktreeDir: freshState.worktreeDir,
-          workspaceId: freshState.workspaceId,
-          prompt: promptText,
-          auditorModel,
-        })
-        clearPromptInFlight(loopName)
-        return result.ok ? { data: true } : { error: result.error }
-      }
-
-      const sendWithoutModel = async () => {
-        const freshState = loopService.getActiveState(loopName)
-        if (!freshState?.active) throw new Error('loop_cancelled')
         try {
-          assertNoPromptInFlight(loopName, sessionId, 'auditor-loop', logger)
-        } catch (err) {
-          if (err instanceof ConcurrentPromptError) return { error: err }
-          throw err
+          markPromptSent(loopName, sessionId, logger)
+          const result = await promptAuditSessionWithFallback({
+            sessionId,
+            worktreeDir: freshState.worktreeDir,
+            workspaceId: freshState.workspaceId,
+            prompt: promptText,
+            ...(model ? { auditorModel: model } : {}),
+          })
+          return result.ok ? { data: true } : { error: result.error }
+        } finally {
+          clearPromptInFlightIfMatches(loopName, sessionId, 'auditor-loop')
         }
-        markPromptInFlight(loopName, sessionId, 'auditor-loop')
-        markPromptSent(loopName, sessionId, logger)
-        const result = await promptAuditSessionWithFallback({
-          sessionId,
-          worktreeDir: freshState.worktreeDir,
-          workspaceId: freshState.workspaceId,
-          prompt: promptText,
-        })
-        clearPromptInFlight(loopName)
-        return result.ok ? { data: true } : { error: result.error }
       }
 
-      const { result, usedModel } = await retryWithModelFallback(sendWithModel, sendWithoutModel, auditorModel, logger)
+      const { result, usedModel } = await retryWithModelFallback(() => sendFn(auditorModel), () => sendFn(undefined), auditorModel, logger)
       if (result.error) {
+        if (result.error instanceof ConcurrentPromptError) {
+          return { error: result.error, usedModel }
+        }
         clearPromptPending(loopName, logger)
-        clearPromptInFlight(loopName)
       }
       return { error: result.error, usedModel }
     }
 
     const effectiveModel = input.model != null ? input.model : resolveLoopModel(getConfig(), loopService, loopName)
 
-    const sendWithModel = async () => {
+    const sendFn = async (model?: { providerID: string; modelID: string }) => {
       const freshState = loopService.getActiveState(loopName)
       if (!freshState?.active) throw new Error('loop_cancelled')
       try {
@@ -249,41 +234,28 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         throw err
       }
       markPromptInFlight(loopName, sessionId, 'code')
-      markPromptSent(loopName, sessionId, logger)
-      return v2Client.session.promptAsync({
-        sessionID: sessionId,
-        directory: freshState.worktreeDir,
-        ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
-        agent: 'code',
-        parts: [{ type: 'text' as const, text: promptText }],
-        model: effectiveModel,
-      })
-    }
-
-    const sendWithoutModel = async () => {
-      const freshState = loopService.getActiveState(loopName)
-      if (!freshState?.active) throw new Error('loop_cancelled')
       try {
-        assertNoPromptInFlight(loopName, sessionId, 'code', logger)
-      } catch (err) {
-        if (err instanceof ConcurrentPromptError) return { error: err }
-        throw err
+        markPromptSent(loopName, sessionId, logger)
+        const result = await v2Client.session.promptAsync({
+          sessionID: sessionId,
+          directory: freshState.worktreeDir,
+          ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
+          agent: 'code',
+          parts: [{ type: 'text' as const, text: promptText }],
+          ...(model ? { model } : {}),
+        })
+        return result
+      } finally {
+        clearPromptInFlightIfMatches(loopName, sessionId, 'code')
       }
-      markPromptInFlight(loopName, sessionId, 'code')
-      markPromptSent(loopName, sessionId, logger)
-      return v2Client.session.promptAsync({
-        sessionID: sessionId,
-        directory: freshState.worktreeDir,
-        ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
-        agent: 'code',
-        parts: [{ type: 'text' as const, text: promptText }],
-      })
     }
 
-    const { result, usedModel } = await retryWithModelFallback(sendWithModel, sendWithoutModel, effectiveModel, logger)
+    const { result, usedModel } = await retryWithModelFallback(() => sendFn(effectiveModel), () => sendFn(undefined), effectiveModel, logger)
     if (result.error) {
+      if (result.error instanceof ConcurrentPromptError) {
+        return { error: result.error, usedModel }
+      }
       clearPromptPending(loopName, logger)
-      clearPromptInFlight(loopName)
     }
     return { error: result.error, usedModel }
   }
@@ -644,21 +616,24 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         try {
           assertNoPromptInFlight(loopName, activeSessionId, 'code', logger)
         } catch (err) {
-          if (err instanceof ConcurrentPromptError) { await handlePromptError(loopName, currentState, `retry failed ${errorContext}`, err); return }
+          if (err instanceof ConcurrentPromptError) { logger.log(`Loop: ${errorContext} — retry rejected as concurrent prompt (prior guard active), skipping`); return }
           throw err
         }
         markPromptInFlight(loopName, activeSessionId, 'code')
-        const result = await v2Client.session.promptAsync({
-          sessionID: activeSessionId,
-          directory: freshState.worktreeDir,
-          ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
-          agent: 'code',
-          parts: [{ type: 'text' as const, text: continuationPrompt }],
-        })
-        clearPromptInFlight(loopName)
-        if (result.error) {
-          await handlePromptError(loopName, currentState, `retry failed ${errorContext}`, result.error)
-          return
+        try {
+          const result = await v2Client.session.promptAsync({
+            sessionID: activeSessionId,
+            directory: freshState.worktreeDir,
+            ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
+            agent: 'code',
+            parts: [{ type: 'text' as const, text: continuationPrompt }],
+          })
+          if (result.error) {
+            await handlePromptError(loopName, currentState, `retry failed ${errorContext}`, result.error)
+            return
+          }
+        } finally {
+          clearPromptInFlightIfMatches(loopName, activeSessionId, 'code')
         }
       }
       await handlePromptError(loopName, currentState, `failed to send continuation prompt ${errorContext}`, promptResultError, retryFn)
@@ -750,19 +725,22 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           try {
             assertNoPromptInFlight(loopName, codeSessionId, 'code', logger)
           } catch (err) {
-            if (err instanceof ConcurrentPromptError) { await handlePromptError(loopName, state, 'failed to recover code launch', err); return }
+            if (err instanceof ConcurrentPromptError) { logger.log('Loop: failed to recover code launch — retry rejected as concurrent prompt (prior guard active), skipping'); return }
             throw err
           }
           markPromptInFlight(loopName, codeSessionId, 'code')
-          const result = await v2Client.session.promptAsync({
-            sessionID: codeSessionId,
-            directory: fresh.worktreeDir,
-            ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
-            agent: 'code',
-            parts: [{ type: 'text' as const, text: recoveryPrompt }],
-          })
-          clearPromptInFlight(loopName)
-          if (result.error) throw result.error
+          try {
+            const result = await v2Client.session.promptAsync({
+              sessionID: codeSessionId,
+              directory: fresh.worktreeDir,
+              ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
+              agent: 'code',
+              parts: [{ type: 'text' as const, text: recoveryPrompt }],
+            })
+            if (result.error) throw result.error
+          } finally {
+            clearPromptInFlightIfMatches(loopName, codeSessionId, 'code')
+          }
         }
         await handlePromptError(loopName, freshState ?? state, 'failed to recover code launch', promptResultError, retryFn)
       }
@@ -953,6 +931,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   async function handlePromptError(loopName: string, _state: LoopState, context: string, err: unknown, retryFn?: () => Promise<void>): Promise<void> {
+    if (err instanceof ConcurrentPromptError) {
+      logger.log(`Loop: ${context} — rejected as concurrent prompt (prior guard active), skipping retry/termination`)
+      return
+    }
+
     const currentState = loopService.getActiveState(loopName)
     if (!currentState?.active) {
       logger.log(`Loop: loop ${loopName} already terminated, ignoring error: ${context}`)
@@ -1332,21 +1315,24 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       const retryFn = async () => {
         const fresh = loopService.getActiveState(loopName)
         if (!fresh?.active) throw new Error('loop_cancelled')
-        try {
-          assertNoPromptInFlight(loopName, created.auditSessionId, 'auditor-loop', logger)
-        } catch (err) {
-          if (err instanceof ConcurrentPromptError) { await handlePromptError(loopName, currentState ?? _state, 'failed to send audit prompt', err); return }
-          throw err
-        }
+          try {
+            assertNoPromptInFlight(loopName, created.auditSessionId, 'auditor-loop', logger)
+          } catch (err) {
+            if (err instanceof ConcurrentPromptError) { logger.log('Loop: failed to send audit prompt — retry rejected as concurrent prompt (prior guard active), skipping'); return }
+            throw err
+          }
         markPromptInFlight(loopName, created.auditSessionId, 'auditor-loop')
-        const retry = await promptAuditSessionWithFallback({
-          sessionId: created.auditSessionId,
-          worktreeDir: fresh.worktreeDir,
-          workspaceId: fresh.workspaceId,
-          prompt: loopService.buildAuditPrompt(fresh),
-        })
-        clearPromptInFlight(loopName)
-        if (!retry.ok) throw retry.error
+        try {
+          const retry = await promptAuditSessionWithFallback({
+            sessionId: created.auditSessionId,
+            worktreeDir: fresh.worktreeDir,
+            workspaceId: fresh.workspaceId,
+            prompt: loopService.buildAuditPrompt(fresh),
+          })
+          if (!retry.ok) throw retry.error
+        } finally {
+          clearPromptInFlightIfMatches(loopName, created.auditSessionId, 'auditor-loop')
+        }
       }
       await handlePromptError(loopName, { ...currentState, phase: 'auditing' }, 'failed to send audit prompt', auditPromptErr, retryFn)
       return
@@ -1721,26 +1707,33 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       try {
         assertNoPromptInFlight(loopName, decomposerSessionId, 'decomposer', logger)
         markPromptInFlight(loopName, decomposerSessionId, 'decomposer')
-        markPromptSent(loopName, decomposerSessionId, logger)
-        await v2Client.session.promptAsync({
-          sessionID: decomposerSessionId,
-          directory: freshState.worktreeDir,
-          ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
-          agent: 'decomposer',
-          parts: [{ type: 'text' as const, text: decomposerPrompt }],
-          ...(() => {
-            const cfg = getConfig()
-            const m = resolveDecomposerModel({
-              decomposerModel: cfg.decomposer?.model,
-              auditorModel: freshState.auditorModel ?? cfg.auditorModel,
-              executionModel: freshState.executionModel ?? cfg.executionModel,
-            })
-            return m ? { model: m } : {}
-          })(),
-        })
+        try {
+          markPromptSent(loopName, decomposerSessionId, logger)
+          await v2Client.session.promptAsync({
+            sessionID: decomposerSessionId,
+            directory: freshState.worktreeDir,
+            ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
+            agent: 'decomposer',
+            parts: [{ type: 'text' as const, text: decomposerPrompt }],
+            ...(() => {
+              const cfg = getConfig()
+              const m = resolveDecomposerModel({
+                decomposerModel: cfg.decomposer?.model,
+                auditorModel: freshState.auditorModel ?? cfg.auditorModel,
+                executionModel: freshState.executionModel ?? cfg.executionModel,
+              })
+              return m ? { model: m } : {}
+            })(),
+          })
+        } finally {
+          clearPromptInFlightIfMatches(loopName, decomposerSessionId, 'decomposer')
+        }
       } catch (err) {
+        if (err instanceof ConcurrentPromptError) {
+          logger.error(`Loop: decomposer retry rejected by in-flight guard for ${loopName}: ${err.message}`)
+          return
+        }
         clearPromptPending(loopName, logger)
-        clearPromptInFlight(loopName)
         logger.error(`Loop: failed to re-prompt decomposer for ${loopName}`, err)
         await terminateLoop(loopName, freshState, { kind: 'decomposer_prompt_failed' })
         return

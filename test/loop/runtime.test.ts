@@ -676,12 +676,56 @@ describe('stall handling terminates with stall timeout when configured cap is re
         },
       })
 
-      // Before Phase 4: runtime does not call assertNoPromptInFlight → no error logged → FAILS
-      // After Phase 4: assertNoPromptInFlight rejects → [in-flight-guard] logged
       const hasGuardError = logs.some(
         (l) => l.level === 'error' && l.message.includes('[in-flight-guard]'),
       )
       expect(hasGuardError).toBe(true)
+
+      const prior = getPromptInFlight('test-loop')
+      expect(prior).toBeDefined()
+      expect(prior!.sessionId).toBe('other-session-id')
+      expect(prior!.agent).toBe('code')
+    })
+
+    test('rejects duplicate auditor prompt for same audit session', async () => {
+      markPromptInFlight('test-loop', 'sess', 'auditor-loop')
+
+      const { loop, clientState, logs } = createRuntime()
+      clientState.messagesResult = [
+        {
+          info: { role: 'assistant', finish: 'stop' },
+          parts: [{ type: 'text', text: 'Implementation complete.' }],
+        },
+      ]
+
+      const state = makeState({
+        phase: 'coding',
+        totalSections: 0,
+        decompositionStatus: 'completed',
+        auditCount: 0,
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: state.sessionId,
+        },
+      })
+
+      const hasGuardError = logs.some(
+        (l) => l.level === 'error' && l.message.includes('[in-flight-guard]'),
+      )
+      expect(hasGuardError).toBe(true)
+
+      const auditorPrompts = clientState.promptCalls.filter((c) => c.agent === 'auditor-loop')
+      expect(auditorPrompts).toHaveLength(0)
+
+      const prior = getPromptInFlight('test-loop')
+      expect(prior).toBeDefined()
+      expect(prior!.sessionId).toBe('sess')
+      expect(prior!.agent).toBe('auditor-loop')
     })
 
     test('clears in-flight after busy event', async () => {
@@ -699,14 +743,59 @@ describe('stall handling terminates with stall timeout when configured cap is re
         },
       })
 
-      // Before Phase 4: busy handler only clears pending (not in-flight guard) → stays set → FAILS
-      // After Phase 4: busy handler also clears in-flight guard → cleared
+      expect(getPromptInFlight('test-loop')).toBeUndefined()
+    })
+
+    test('clears in-flight when promptAsync throws a transient error', async () => {
+      const clientState: MockClientState = {
+        deleteCalls: [],
+        createCalls: [],
+        publishCalls: [],
+        selectCalls: [],
+        deleteThrows: false,
+        abortCalls: [],
+        promptCalls: [],
+        messagesResult: [
+          {
+            info: { role: 'assistant', finish: 'stop' },
+            parts: [{ type: 'text', text: 'Implementation complete.' }],
+          },
+        ],
+      }
+
+      const v2Client = createMockV2Client(clientState)
+      const origPromptAsync = v2Client.session.promptAsync
+      let promptCallCount = 0
+      ;(v2Client as any).session.promptAsync = async (params: any) => {
+        promptCallCount++
+        if (params?.agent === 'code' && params?.sessionID === 'loop-session-id') {
+          throw new Error('transient transport error')
+        }
+        return origPromptAsync(params)
+      }
+
+      const { loop, logs } = createRuntime({ v2Client })
+
+      const state = makeState({
+        phase: 'coding',
+        totalSections: 0,
+        decompositionStatus: 'completed',
+        auditCount: 0,
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: state.sessionId,
+        },
+      })
+
       expect(getPromptInFlight('test-loop')).toBeUndefined()
     })
 
     test('clears in-flight on prompt completion', async () => {
-      markPromptInFlight('test-loop', 'sess', 'auditor-loop')
-
       const { loop, clientState } = createRuntime()
       clientState.messagesResult = [
         {
@@ -731,9 +820,81 @@ describe('stall handling terminates with stall timeout when configured cap is re
         },
       })
 
-      // Before Phase 4: sendPromptWithFallback never calls mark/clearInFlight → pre-set guard persists → FAILS
-      // After Phase 4: mark + clear around promptAsync call → guard cleared
       expect(getPromptInFlight('test-loop')).toBeUndefined()
+    })
+
+    test('rejects decomposer retry while code prompt in-flight, preserves prior guard', async () => {
+      markPromptInFlight('test-loop', 'other-session-id', 'code')
+
+      const { loop, clientState, logs } = createRuntime()
+
+      const state = makeState({
+        phase: 'decomposing',
+        decompositionStatus: 'failed',
+        errorCount: 0,
+        totalSections: 1,
+        decompositionSessionId: 'decomp-sess-1',
+        sessionId: 'decomp-sess-1',
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: 'decomp-sess-1',
+        },
+      })
+
+      const hasGuardError = logs.some(
+        (l) => l.level === 'error' && l.message.includes('[in-flight-guard]'),
+      )
+      expect(hasGuardError).toBe(true)
+
+      const prior = getPromptInFlight('test-loop')
+      expect(prior).toBeDefined()
+      expect(prior!.sessionId).toBe('other-session-id')
+      expect(prior!.agent).toBe('code')
+
+      const decomposerPrompts = clientState.promptCalls.filter((c) => c.agent === 'decomposer')
+      expect(decomposerPrompts).toHaveLength(0)
+    })
+
+    test('handlePromptError short-circuits on ConcurrentPromptError, preserving loop active state', async () => {
+      markPromptInFlight('test-loop', 'other-session-id', 'code')
+
+      const { loop, clientState, logs } = createRuntime()
+      clientState.messagesResult = [
+        {
+          info: { role: 'assistant', finish: 'stop' },
+          parts: [{ type: 'text', text: 'Audit passed.' }],
+        },
+      ]
+
+      const state = makeState({
+        phase: 'coding',
+        totalSections: 0,
+        decompositionStatus: 'completed',
+        auditCount: 0,
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: state.sessionId,
+        },
+      })
+
+      const afterState = loop.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+
+      const prior = getPromptInFlight('test-loop')
+      expect(prior).toBeDefined()
+      expect(prior!.sessionId).toBe('other-session-id')
+      expect(prior!.agent).toBe('code')
     })
   })
 

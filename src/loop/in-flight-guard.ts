@@ -36,6 +36,20 @@ export function clearPromptInFlight(loopName: string): void {
   inFlight.delete(loopName)
 }
 
+export function clearPromptInFlightIfMatches(
+  loopName: string,
+  sessionId: string,
+  agent: PromptAgent,
+): boolean {
+  const entry = inFlight.get(loopName)
+  if (!entry) return false
+  if (entry.sessionId === sessionId && entry.agent === agent) {
+    inFlight.delete(loopName)
+    return true
+  }
+  return false
+}
+
 export function getPromptInFlight(loopName: string): InFlightEntry | undefined {
   return inFlight.get(loopName)
 }
@@ -48,7 +62,6 @@ export function assertNoPromptInFlight(
 ): void {
   const prior = inFlight.get(loopName)
   if (!prior) return
-  if (prior.sessionId === attemptedSessionId && prior.agent === attemptedAgent) return
   logger.error(
     `[in-flight-guard] concurrent prompt rejected loop=${loopName} ` +
     `prior=${prior.agent}: ${prior.sessionId} attempted=${attemptedAgent}: ${attemptedSessionId}`,
