@@ -24,6 +24,7 @@ import type { ToolContext } from '../src/tools/types'
 import type { PluginConfig } from '../src/types'
 import { tmpdir } from 'os'
 import { randomUUID } from 'crypto'
+import { PLAN_END_MARKER, PLAN_START_MARKER } from '../src/utils/marked-plan-parser'
 
 const TEST_DIR = '/tmp/opencode-manager-plan-approval-test-' + Date.now()
 
@@ -47,6 +48,17 @@ describe('Plan Approval Tool Interception', () => {
   const sessionID = 'test-session-123'
 
   const PLAN_APPROVAL_LABELS = ['New session', 'Execute here', 'Loop']
+
+  const approvalArgs = {
+    questions: [{
+      question: 'How would you like to proceed?',
+      options: [
+        { label: 'New session', description: 'Create new session' },
+        { label: 'Execute here', description: 'Execute here' },
+        { label: 'Loop', description: 'Loop' },
+      ],
+    }],
+  }
 
   beforeEach(() => {
     db = createTestDb()
@@ -126,38 +138,18 @@ describe('Plan Approval Tool Interception', () => {
   }
 
   test('Detects plan approval question and handles "New session" programmatically', () => {
-    const args = {
-      questions: [{
-        question: 'How would you like to proceed?',
-        options: [
-          { label: 'New session', description: 'Create new session' },
-          { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop', description: 'Loop' },
-        ],
-      }],
-    }
     const output = { title: '', output: 'New session', metadata: {} }
 
-    simulateToolExecuteAfter('question', args, output)
+    simulateToolExecuteAfter('question', approvalArgs, output)
 
     expect(output.output).toContain('New session')
     expect(output.output).not.toContain('<system-reminder>')
   })
 
   test('Detects plan approval question and handles "Execute here" with abort', () => {
-    const args = {
-      questions: [{
-        question: 'How would you like to proceed?',
-        options: [
-          { label: 'New session', description: 'Create new session' },
-          { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop', description: 'Loop' },
-        ],
-      }],
-    }
     const output = { title: '', output: 'Execute here', metadata: {} }
 
-    simulateToolExecuteAfter('question', args, output)
+    simulateToolExecuteAfter('question', approvalArgs, output)
 
     expect(output.output).toContain('Execute here')
     expect(output.output).toContain('Switching to code agent')
@@ -165,23 +157,73 @@ describe('Plan Approval Tool Interception', () => {
   })
 
   test('Detects plan approval question and handles "Loop" programmatically', () => {
-    const args = {
-      questions: [{
-        question: 'How would you like to proceed?',
-        options: [
-          { label: 'New session', description: 'Create new session' },
-          { label: 'Execute here', description: 'Execute here' },
-          { label: 'Loop', description: 'Loop' },
-        ],
-      }],
-    }
     const output = { title: '', output: 'Loop', metadata: {} }
 
-    simulateToolExecuteAfter('question', args, output)
+    simulateToolExecuteAfter('question', approvalArgs, output)
 
     expect(output.output).toContain('Loop')
     expect(output.output).not.toContain('<system-reminder>')
     expect(output.output).not.toContain('memory-loop')
+  })
+
+  test('blocks plan approval question when latest assistant plan is missing end marker', async () => {
+    const hook = createToolExecuteBeforeHook({
+      loopService: {
+        resolveLoopName: () => null,
+        getActiveState: () => null,
+      },
+      v2: {
+        session: {
+          messages: async () => ({
+            data: [{
+              info: { role: 'assistant', id: 'msg-unterminated' },
+              parts: [{ type: 'text', text: `${PLAN_START_MARKER}\n# Plan without an end marker` }],
+            }],
+          }),
+        },
+      },
+      input: { client: { session: { messages: async () => ({ data: [] }) } } },
+      plansRepo,
+      projectId,
+      directory: TEST_DIR,
+      logger: createMockLogger(),
+    } as unknown as ToolContext)!
+
+    await expect(hook(
+      { tool: 'question', sessionID, callID: 'call-missing-end' },
+      { args: approvalArgs }
+    )).rejects.toThrow(/Forge plan capture failed[\s\S]*Assistant feedback[\s\S]*must contain both `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers[\s\S]*output just `<!-- forge-plan:end -->`[\s\S]*call the question tool again/)
+  })
+
+  test('captures latest valid plan before showing approval question when event capture was missed', async () => {
+    const hook = createToolExecuteBeforeHook({
+      loopService: {
+        resolveLoopName: () => null,
+        getActiveState: () => null,
+      },
+      v2: {
+        session: {
+          messages: async () => ({
+            data: [{
+              info: { role: 'assistant', id: 'msg-valid' },
+              parts: [{ type: 'text', text: `${PLAN_START_MARKER}\n# Valid Plan\n${PLAN_END_MARKER}` }],
+            }],
+          }),
+        },
+      },
+      input: { client: { session: { messages: async () => ({ data: [] }) } } },
+      plansRepo,
+      projectId,
+      directory: TEST_DIR,
+      logger: createMockLogger(),
+    } as unknown as ToolContext)!
+
+    await expect(hook(
+      { tool: 'question', sessionID, callID: 'call-valid-plan' },
+      { args: approvalArgs }
+    )).resolves.toBeUndefined()
+
+    expect(plansRepo.getForSession(projectId, sessionID)?.content).toBe('# Valid Plan')
   })
 
   test('Injects directive for unknown answer', () => {

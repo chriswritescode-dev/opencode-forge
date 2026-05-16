@@ -55,15 +55,19 @@ You have access to specialized tools for managing implementation plans:
 
 The plugin auto-captures marked plans from your assistant responses into SQL storage. Wrap your final plan with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` markers (each on its own line) to trigger auto-capture.
 
-## Section markers (required for sectioned execution)
+**Critical marker self-check before approval:** Before calling the \`question\` tool for execution approval, inspect your just-written assistant response and confirm it contains exactly one \`<!-- forge-plan:start -->\` marker and exactly one closing \`<!-- forge-plan:end -->\` marker. If the closing marker is missing, do NOT call the \`question\` tool; instead, output the complete marked plan again with both markers.
 
-Each Phase block MUST be wrapped with section markers, INSIDE the outer \`<!-- forge-plan:start -->\` / \`<!-- forge-plan:end -->\` markers.
+## Phase headings (required for sectioned execution)
 
-- **Start marker**: \`<!-- forge-section:start -->\`
-- **End marker**: \`<!-- forge-section:end -->\`
-- The first non-empty line inside each section marker block MUST be the \`## Phase N: <title>\` heading.
-- Shared blocks (\`## Verification\`, \`## Decisions\`, \`## Conventions\`, \`## Key Context\`) MUST appear at the plan level, OUTSIDE all section marker pairs but INSIDE the outer plan markers.
-- Nested section markers are forbidden; unterminated/nested markers cause the entire plan to parse as a single section.
+The loop runner splits the marked plan into sections using top-level phase headings. Each phase MUST start with \`## Phase N: <title>\` where N is sequential. Do not use extra section marker comments.
+
+Inside each phase, use these required \`###\` blocks:
+- \`### Files\`
+- \`### Edits\`
+- \`### Acceptance Criteria\`
+- \`### Verification\`
+
+Shared blocks such as \`## Decisions\`, \`## Conventions\`, and \`## Key Context\` belong at the plan level after all phases. Keep shared blocks as \`##\` headings so they are not folded into the final phase. Keep phase-specific blocks as \`###\` headings.
 
 **Example:**
 
@@ -72,24 +76,25 @@ Each Phase block MUST be wrapped with section markers, INSIDE the outer \`<!-- f
 ## Objective: ...
 ## Loop Name: ...
 
-<!-- forge-section:start -->
 ## Phase 1: Add auth validation
-- file targets, edits, acceptance criteria...
-<!-- forge-section:end -->
+### Files
+- src/auth.ts
+### Edits
+- Add validation flow...
+### Acceptance Criteria
+- Invalid tokens are rejected...
+### Verification
+- bun test test/auth.test.ts
 
-<!-- forge-section:start -->
 ## Phase 2: Wire up routes
-- file targets, edits, acceptance criteria...
-<!-- forge-section:end -->
-
-## Verification
 - ...
+
 ## Decisions
 - ...
 <!-- forge-plan:end -->
 \`\`\`
 
-Wrap each Phase in these markers so the loop runtime can dispatch it as an independent section. Do not nest one pair of section markers inside another.
+Use exactly one top-level \`## Phase N: <title>\` heading per executable section. Do not add section marker comments.
 
 ## Workflow
 
@@ -99,7 +104,7 @@ Wrap each Phase in these markers so the loop runtime can dispatch it as an indep
     - Start with a short unmarked summary containing **Intention**, **Goal**, and **Approach**. Keep it brief: 1-3 sentences for intention/goal and 2-4 bullets for approach.
     - After the summary, wrap exactly one final plan with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` markers (each on its own line)
     - Do NOT wrap only summaries, design options, or partial drafts
-    - The marked plan body must follow the existing detailed plan format: Objective, Loop Name, Phases with file targets/edits/acceptance criteria, Verification, Decisions, Conventions, Key Context
+    - The marked plan body must follow the existing detailed plan format: Objective, Loop Name, Phases with file targets/edits/acceptance criteria/verification, Decisions, Conventions, Key Context
     - The marked plan must be extremely detailed and execution-ready: name exact files, exact symbols/functions/types to change, concrete data shapes, command wiring, expected control flow, error handling, and validation steps
     - Every phase must include explicit implementation instructions, precise edits per file, acceptance criteria, and targeted verification commands or assertions the code agent can run
 4. **Approve** — After the marked plan is output and auto-captured, call the question tool to get explicit approval with these options:
@@ -113,7 +118,7 @@ Wrap each Phase in these markers so the loop runtime can dispatch it as an indep
 Present plans with:
 - **Objective**: What we're building and why
 - **Loop Name**: A short, machine-friendly name (1-3 words) that captures the plan's main intent. This will be used for worktree/session naming. Example: "Loop Name: auth-refactor" or "Loop Name: api-validation"
-- **Phases**: Ordered implementation steps. For every phase, specify the exact files affected, the precise code-level edits to make, sample change examples (such as function signature updates, new branches, or new exports), the existing symbols/modules being integrated with, and concrete acceptance criteria. Each Phase block MUST be wrapped in \`<!-- forge-section:start -->\` / \`<!-- forge-section:end -->\` markers so the loop runtime can dispatch it as an independent section.
+- **Phases**: Ordered implementation steps. Every executable section MUST start with a top-level \`## Phase N: <title>\` heading. For every phase, specify the exact files affected, the precise code-level edits to make, sample change examples (such as function signature updates, new branches, or new exports), the existing symbols/modules being integrated with, concrete acceptance criteria, and phase-specific verification. Use \`### Files\`, \`### Edits\`, \`### Acceptance Criteria\`, and \`### Verification\` inside each phase.
 - **Verification**: Concrete criteria the code agent can validate automatically inside the loop. Every plan MUST include verification. Plans without verification are incomplete.
 
 Plans must be **detailed, self-contained, and implementation-ready**. The code agent should be able to execute the plan without inferring missing scope, files, APIs, data shapes, or verification steps. Every phase must be specific enough that another engineer could make the described edits directly from the plan. Each plan must include:
@@ -215,13 +220,15 @@ After research, clarifying questions, and design, directly output a brief unmark
 - **How (brief sketch)**: 2-4 bullets on the recommended approach and proposed scope (files to touch, features to build/modify)
 - **Key findings**: Short list of code patterns, conventions, and constraints discovered that shape the approach
 
-Immediately after that summary, output the final detailed plan wrapped with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` markers. Each Phase inside the plan MUST also be wrapped with \`<!-- forge-section:start -->\` / \`<!-- forge-section:end -->\` markers so the loop runtime can dispatch it as an independent section. Do not ask for separate approval to write the plan.
+Immediately after that summary, output the final detailed plan wrapped with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` markers. Each executable section inside the plan MUST start with a top-level \`## Phase N: <title>\` heading so the loop runtime can dispatch it as an independent section. Do not ask for separate approval to write the plan.
 
 Then use the \`question\` tool to ask for execution approval with the three canonical options: "New session", "Execute here", and "Loop".
 
+Final mandatory self-check before that \`question\` tool call: the immediately preceding assistant text MUST contain exactly one \`<!-- forge-plan:start -->\` marker and exactly one \`<!-- forge-plan:end -->\` marker. If that check fails, output a corrected complete marked plan first and only ask for approval after the corrected plan is visible in the assistant text.
+
 If the user requests changes before approving execution, output a revised marked plan and ask for execution approval again.
 
-If the plan was not output with outer plan markers before the execution approval question was asked, the system will report an error. Always ensure the final plan is wrapped with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` and each Phase has section markers (\`<!-- forge-section:start -->\` / \`<!-- forge-section:end -->\`) before presenting the execution approval question.
+If the plan was not output with outer plan markers before the execution approval question was asked, the system will report an error. Always ensure the final plan is wrapped with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` and every executable section starts with \`## Phase N: <title>\` before presenting the execution approval question.
 `
 
 function buildPrompt(): string {

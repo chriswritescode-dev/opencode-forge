@@ -1,5 +1,6 @@
 import type { ToolContext } from '../tools/types'
 import { captureLatestPlanForSession, captureMarkedPlanTextForSession } from '../services/plan-capture'
+import { PLAN_END_MARKER, PLAN_START_MARKER } from '../utils/marked-plan-parser'
 
 export function createPlanCaptureEventHook(ctx: ToolContext) {
   const { v2, input: { client }, logger, plansRepo, projectId, directory } = ctx
@@ -9,6 +10,7 @@ export function createPlanCaptureEventHook(ctx: ToolContext) {
       const sessionID = eventInput.event.properties?.sessionID as string | undefined
       const part = eventInput.event.properties?.part as { type?: string; text?: string; messageID?: string } | undefined
       if (!sessionID || part?.type !== 'text' || !part.text) return
+      if (!part.text.includes(PLAN_START_MARKER) || !part.text.includes(PLAN_END_MARKER)) return
 
       const result = captureMarkedPlanTextForSession(
         { plansRepo, projectId, directory, logger },
