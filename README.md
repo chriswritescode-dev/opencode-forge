@@ -640,7 +640,7 @@ pnpm typecheck  # Type check without emitting
 
 The diagram below shows the overall flow of the Forge loop system — from plan capture through iterative coding/auditing phases with section advancement and session rotation.
 
-![Loop Flow](diagrams/loop-flow.jpg)
+![Loop Flow](diagrams/loop-flow.webp)
 
 ## License
 

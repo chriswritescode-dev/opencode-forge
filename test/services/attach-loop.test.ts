@@ -466,20 +466,20 @@ describe('attachLoopToSession', () => {
     expect(deleteStateSpy).not.toHaveBeenCalled()
   })
 
-  test('attach extracts sections via forge-section markers', async () => {
+  test('attach extracts sections via phase headings', async () => {
     const { deps, loopService, promptAsyncMock } = buildDeps()
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
     const planText = [
-      '<!-- forge-section:start -->',
-      '## Setup',
+      '## Phase 1: Setup',
+      '### Files',
+      '- package.json',
       'Install dependencies.',
-      '<!-- forge-section:end -->',
-      '<!-- forge-section:start -->',
-      '## Build',
+      '## Phase 2: Build',
+      '### Files',
+      '- src/index.ts',
       'Compile project.',
-      '<!-- forge-section:end -->',
     ].join('\n')
 
     const result = await attachLoopToSession(
@@ -514,12 +514,22 @@ describe('attachLoopToSession', () => {
     expect(promptCallArgs.agent).toBe('code')
   })
 
-  test('attach falls back to decomposeDeterministically when no markers', async () => {
+  test('attach ignores legacy section markers around phase headings', async () => {
     const { deps, loopService, promptAsyncMock } = buildDeps()
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
-    const planText = '# Plan\n\n## Phase 1: Setup\nInstall deps.\n\n## Phase 2: Build\nCompile.'
+    const planText = [
+      '# Plan',
+      '<!-- forge-section:start -->',
+      '## Phase 1: Setup',
+      'Install deps.',
+      '<!-- forge-section:end -->',
+      '<!-- forge-section:start -->',
+      '## Phase 2: Build',
+      'Compile.',
+      '<!-- forge-section:end -->',
+    ].join('\n')
 
     const result = await attachLoopToSession(
       deps as any,

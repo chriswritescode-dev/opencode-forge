@@ -47,6 +47,63 @@ describe('decomposeDeterministically', () => {
     expect(result[2].index).toBe(2)
   })
 
+  test('extracts markerless phases with required per-phase blocks', () => {
+    const plan = [
+      '<!-- forge-plan:start -->',
+      '## Objective',
+      'Make the planner simpler',
+      '## Phase 1: Prompt update',
+      '### Files',
+      '- src/agents/architect.ts',
+      '### Edits',
+      '- Use heading-based phases',
+      '### Acceptance Criteria',
+      '- Prompt contains no section marker requirement',
+      '### Verification',
+      '- bun test test/agents.test.ts',
+      '## Phase 2: Runtime split',
+      '### Files',
+      '- src/services/deterministic-decomposer.ts',
+      '### Edits',
+      '- Split on phase headings',
+      '### Acceptance Criteria',
+      '- Two sections are extracted',
+      '### Verification',
+      '- bun test test/deterministic-decomposer.test.ts',
+      '## Decisions',
+      '- Keep outer plan markers only',
+      '<!-- forge-plan:end -->',
+    ].join('\n')
+
+    const result = decomposeDeterministically(plan)
+
+    expect(result).toHaveLength(2)
+    expect(result[0].title).toBe('Prompt update')
+    expect(result[0].content).toContain('### Files')
+    expect(result[0].content).toContain('### Verification')
+    expect(result[0].content).not.toContain('## Decisions')
+    expect(result[1].title).toBe('Runtime split')
+  })
+
+  test('ignores legacy section markers when splitting by headings', () => {
+    const plan = [
+      '<!-- forge-section:start -->',
+      '## Phase 1: First',
+      'content 1',
+      '<!-- forge-section:end -->',
+      '<!-- forge-section:start -->',
+      '## Phase 2: Second',
+      'content 2',
+      '<!-- forge-section:end -->',
+    ].join('\n')
+
+    const result = decomposeDeterministically(plan)
+
+    expect(result).toHaveLength(2)
+    expect(result[0].content).not.toContain('forge-section')
+    expect(result[1].content).not.toContain('forge-section')
+  })
+
   test('respects maxSections limit', () => {
     const plan = [
       '## Phase 1: First',

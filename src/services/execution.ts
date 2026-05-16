@@ -21,7 +21,7 @@ import { isSandboxEnabled } from '../sandbox/context'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
 import { join } from 'path'
 import { existsSync } from 'fs'
-import { extractSections, decomposeDeterministically } from '../utils/section-capture'
+import { decomposeDeterministically } from './deterministic-decomposer'
 import { markPromptSent, clearPromptPending, terminationStatusFor, parseTerminationReasonString } from '../loop'
 import {
   withInFlightGuard,
@@ -852,11 +852,7 @@ export async function attachLoopToSession(
     // === Section extraction ===
 
     const maxSections = 12
-    const markerSections = extractSections(planText, { maxSections })
-    let sections = markerSections
-    if (sections.length === 0) {
-      sections = decomposeDeterministically(planText, { maxSections })
-    }
+    const sections = decomposeDeterministically(planText, { maxSections })
     let promptText: string
     if (sections.length > 0 && deps.sectionPlansRepo) {
       deps.sectionPlansRepo.bulkInsert({ projectId: ctx.projectId, loopName, sections })
@@ -1724,11 +1720,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // Unified section extraction on restart — preserve existing progress if sections exist
       const maxSections = 12
       const planText = stoppedState.prompt ?? ''
-      const markerSections = extractSections(planText, { maxSections })
-      let sections = markerSections
-      if (sections.length === 0) {
-        sections = decomposeDeterministically(planText, { maxSections })
-      }
+      const sections = decomposeDeterministically(planText, { maxSections })
       if (sections.length > 0 && deps.sectionPlansRepo && !stoppedState.totalSections) {
         // New sections being extracted (first-time or fresh)
         deps.sectionPlansRepo.bulkInsert({

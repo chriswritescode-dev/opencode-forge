@@ -19,7 +19,7 @@ export type PlanExecutionLabel = typeof PLAN_EXECUTION_LABELS[number]
 
 /**
  * Structural plan headings that should not be used as titles.
- * These are section markers, not actual plan titles.
+ * These are plan scaffolding headings, not actual plan titles.
  */
 const STRUCTURAL_PLAN_HEADINGS = new Set([
   'objective',
@@ -193,4 +193,3 @@ export function sanitizeLoopName(name: string): string {
     .replace(/^-+|-+$/g, '')
     .substring(0, 60) || 'loop'
 }
-

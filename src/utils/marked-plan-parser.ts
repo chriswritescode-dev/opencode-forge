@@ -10,9 +10,22 @@ export type MarkedPlanExtraction =
   | { ok: true; planText: string }
   | { ok: false; reason: 'missing' | 'multiple' | 'unterminated' | 'empty' }
 
-export interface ExtractedPlanResult {
-  planText: string
-  messageId?: string
+export type LatestMarkedPlanInspection =
+  | { status: 'found'; planText: string; messageId?: string }
+  | { status: 'invalid'; reason: Exclude<MarkedPlanExtraction, { ok: true }>['reason']; messageId?: string }
+  | { status: 'missing' }
+
+function countPlanMarkers(text: string): { startCount: number; endCount: number } {
+  let startCount = 0
+  let endCount = 0
+
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim()
+    if (line === PLAN_START_MARKER) startCount++
+    if (line === PLAN_END_MARKER) endCount++
+  }
+
+  return { startCount, endCount }
 }
 
 export function extractMarkedPlan(text: string): MarkedPlanExtraction {
@@ -97,7 +110,10 @@ export function messageText(message: PlanCaptureMessage): string {
   return textParts.join('\n')
 }
 
-export function extractLatestMarkedPlan(messages: PlanCaptureMessage[]): ExtractedPlanResult | null {
+export function inspectLatestMarkedPlan(messages: PlanCaptureMessage[]): LatestMarkedPlanInspection {
+  const repaired = inspectLatestPlanCompletedByLaterEndMarker(messages)
+  if (repaired) return repaired
+
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]
     
@@ -110,15 +126,64 @@ export function extractLatestMarkedPlan(messages: PlanCaptureMessage[]): Extract
     
     if (extraction.ok) {
       return {
+        status: 'found',
         planText: extraction.planText,
         messageId: message.info.id,
       }
     }
     
     if (!extraction.ok && extraction.reason !== 'missing') {
-      return null
+      return {
+        status: 'invalid',
+        reason: extraction.reason,
+        messageId: message.info.id,
+      }
     }
   }
   
+  return { status: 'missing' }
+}
+
+function inspectLatestPlanCompletedByLaterEndMarker(messages: PlanCaptureMessage[]): LatestMarkedPlanInspection | null {
+  let latestEndOnly: { text: string; messageId?: string } | undefined
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (message.info.role !== 'assistant') continue
+
+    const text = messageText(message)
+    const counts = countPlanMarkers(text)
+
+    if (!latestEndOnly) {
+      if (counts.startCount === 0 && counts.endCount === 1) {
+        latestEndOnly = { text, messageId: message.info.id }
+        continue
+      }
+      if (counts.startCount === 0 && counts.endCount === 0) continue
+      return null
+    }
+
+    if (counts.startCount === 0 && counts.endCount === 0) continue
+
+    if (counts.startCount === 1 && counts.endCount === 0) {
+      const extraction = extractMarkedPlan(`${text}\n${latestEndOnly.text}`)
+      if (extraction.ok) {
+        return {
+          status: 'found',
+          planText: extraction.planText,
+          messageId: latestEndOnly.messageId ?? message.info.id,
+        }
+      }
+
+      return {
+        status: 'invalid',
+        reason: extraction.reason,
+        messageId: latestEndOnly.messageId ?? message.info.id,
+      }
+    }
+
+    return null
+  }
+
   return null
 }

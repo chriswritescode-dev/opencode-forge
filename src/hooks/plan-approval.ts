@@ -3,6 +3,7 @@ import type { Hooks } from '@opencode-ai/plugin'
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
 import { extractPlanTitle, extractLoopNames, PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext } from '../services/execution'
+import { captureLatestPlanForSession } from '../services/plan-capture'
 
 function publishPlanApprovalToast(
   ctx: ToolContext,
@@ -135,23 +136,66 @@ function resolveCurrentSessionPlan(ctx: ToolContext, sessionID: string): { conte
   }
 }
 
+function isPlanApprovalQuestionArgs(args: unknown): boolean {
+  const questionArgs = args as { questions?: Array<{ options?: Array<{ label?: string }> }> } | undefined
+  const options = questionArgs?.questions?.[0]?.options
+  if (!options) return false
+  const labels = options.map((o) => (o.label ?? '').toLowerCase())
+  const hasExecuteHere = labels.some((l) => l === 'execute here' || l.startsWith('execute here'))
+  return hasExecuteHere || PLAN_EXECUTION_LABELS.every((l) => labels.includes(l.toLowerCase()))
+}
+
+function formatMissingPlanFeedback(reason?: string): string {
+  const prefix = 'Forge plan capture failed. Assistant feedback: do not ask the user. '
+
+  if (reason === 'unterminated') {
+    return `${prefix}A plan must contain both \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` markers, each on its own line. If only the end marker is missing, output just \`<!-- forge-plan:end -->\`, then call the question tool again. Otherwise output one complete marked plan, then call the question tool again.`
+  }
+
+  if (reason) {
+    return `${prefix}The marked implementation plan is invalid (${reason}). Output one complete plan wrapped with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\`, then call the question tool again.`
+  }
+
+  return `${prefix}No captured implementation plan exists for this session. Output one complete plan wrapped with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\`, then call the question tool again.`
+}
+
 export function createToolExecuteBeforeHook(ctx: ToolContext): Hooks['tool.execute.before'] {
   const loop = ctx.loop ?? (ctx as ToolContext & { loopService: ToolContext['loop'] }).loopService
   const { logger } = ctx
 
   return async (
     input: { tool: string; sessionID: string; callID: string },
-    _output: { args: unknown }
+    output: { args: unknown }
   ) => {
     const loopName = loop.resolveLoopName(input.sessionID)
     const state = loopName ? loop.getActiveState(loopName) : null
-    if (!state?.active || !isActiveLoopToolSession(state, input.sessionID)) return
+    if (state?.active && isActiveLoopToolSession(state, input.sessionID)) {
+      if (!(input.tool in LOOP_BLOCKED_TOOLS)) return
 
-    if (!(input.tool in LOOP_BLOCKED_TOOLS)) return
+      logger.log(`Loop: blocking ${input.tool} tool before execution in ${state.phase} phase for session ${input.sessionID}`)
 
-    logger.log(`Loop: blocking ${input.tool} tool before execution in ${state.phase} phase for session ${input.sessionID}`)
+      throw new Error(LOOP_BLOCKED_TOOLS[input.tool]!)
+    }
 
-    throw new Error(LOOP_BLOCKED_TOOLS[input.tool]!)
+    if (input.tool !== 'question' || !isPlanApprovalQuestionArgs(output.args)) return
+
+    if (ctx.plansRepo.getForSession(ctx.projectId, input.sessionID)) return
+
+    const captureDeps = {
+      v2: ctx.v2,
+      client: ctx.input.client,
+      plansRepo: ctx.plansRepo,
+      projectId: ctx.projectId,
+      directory: ctx.directory,
+      logger: ctx.logger,
+    }
+    const capture = await captureLatestPlanForSession(captureDeps, input.sessionID)
+    if (capture.status === 'captured' || capture.status === 'already-current') return
+    if (capture.status === 'read-failed') return
+
+    const reason = capture.status === 'invalid' ? capture.reason : undefined
+    logger.log(`Plan approval: blocking approval question because no captured plan exists for ${input.sessionID}${reason ? ` (${reason})` : ''}`)
+    throw new Error(formatMissingPlanFeedback(reason))
   }
 }
 
@@ -163,14 +207,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
     input: { tool: string; sessionID: string; callID: string; args: unknown },
     output: { title: string; output: string; metadata: unknown }
   ) => {
-    if (input.tool === 'question') {
-      const args = input.args as { questions?: Array<{ options?: Array<{ label: string }> }> } | undefined
-      const options = args?.questions?.[0]?.options
-      if (options) {
-        const labels = options.map((o) => o.label.toLowerCase())
-        const hasExecuteHere = labels.some((l) => l === 'execute here' || l.startsWith('execute here'))
-        const isPlanApproval = hasExecuteHere || PLAN_EXECUTION_LABELS.every((l) => labels.includes(l))
-        if (isPlanApproval) {
+    if (input.tool === 'question' && isPlanApprovalQuestionArgs(input.args)) {
           const metadata = output.metadata as { answers?: string[][] } | undefined
           const answer = metadata?.answers?.[0]?.[0]?.trim() ?? output.output.trim()
           const answerLower = answer.toLowerCase()
@@ -335,11 +372,8 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
             return
           }
           
-          // Custom answer fallback
-              output.output = `${output.output}\n\n<system-reminder>\nThe user provided a custom response instead of selecting a predefined option. Review their answer and respond accordingly. If they want to proceed with execution, ask the question tool again with one of: "New session", "Execute here", or "Loop". If they want to cancel or revise the plan, help them with that instead.\n</system-reminder>`
+          output.output = `${output.output}\n\n<system-reminder>\nThe user provided a custom response instead of selecting a predefined option. Review their answer and respond accordingly. If they want to proceed with execution, ask the question tool again with one of: "New session", "Execute here", or "Loop". If they want to cancel or revise the plan, help them with that instead.\n</system-reminder>`
           logger.log(`Plan approval: detected custom answer`)
-        }
-      }
       return
     }
 

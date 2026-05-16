@@ -2,11 +2,11 @@ import { describe, test, expect } from 'bun:test'
 import {
   extractMarkedPlan,
   messageText,
-  extractLatestMarkedPlan,
+  inspectLatestMarkedPlan,
   PLAN_START_MARKER,
   PLAN_END_MARKER,
   type PlanCaptureMessage,
-} from '../src/utils/plan-capture'
+} from '../src/utils/marked-plan-parser'
 import { captureMarkedPlanTextForSession, captureLatestPlanForSession } from '../src/services/plan-capture'
 import { createPlanCaptureEventHook } from '../src/hooks/plan-capture'
 
@@ -187,7 +187,7 @@ describe('messageText', () => {
   })
 })
 
-describe('extractLatestMarkedPlan', () => {
+describe('inspectLatestMarkedPlan', () => {
   test('finds the newest assistant message with a valid plan', () => {
     const messages: PlanCaptureMessage[] = [
       {
@@ -204,9 +204,9 @@ describe('extractLatestMarkedPlan', () => {
       },
     ]
 
-    const result = extractLatestMarkedPlan(messages)
-    expect(result).not.toBeNull()
-    if (result) {
+    const result = inspectLatestMarkedPlan(messages)
+    expect(result.status).toBe('found')
+    if (result.status === 'found') {
       expect(result.planText).toBe('New Plan')
       expect(result.messageId).toBe('msg-3')
     }
@@ -224,9 +224,9 @@ describe('extractLatestMarkedPlan', () => {
       },
     ]
 
-    const result = extractLatestMarkedPlan(messages)
-    expect(result).not.toBeNull()
-    if (result) {
+    const result = inspectLatestMarkedPlan(messages)
+    expect(result.status).toBe('found')
+    if (result.status === 'found') {
       expect(result.planText).toBe('Old')
     }
   })
@@ -243,8 +243,31 @@ describe('extractLatestMarkedPlan', () => {
       },
     ]
 
-    const result = extractLatestMarkedPlan(messages)
-    expect(result).toBeNull()
+    const result = inspectLatestMarkedPlan(messages)
+    expect(result.status).toBe('invalid')
+  })
+
+  test('repairs newest assistant plan when a later assistant message adds only the end marker', () => {
+    const messages: PlanCaptureMessage[] = [
+      {
+        info: { role: 'assistant', id: 'msg-1' },
+        parts: [{ type: 'text', text: `${PLAN_START_MARKER}\n## Phase 1: Build\n### Files\n- src/index.ts` }],
+      },
+      {
+        info: { role: 'assistant', id: 'msg-2' },
+        parts: [{ type: 'text', text: PLAN_END_MARKER }],
+      },
+    ]
+
+    const result = inspectLatestMarkedPlan(messages)
+    expect(result.status).toBe('found')
+    if (result.status === 'found') {
+      expect(result.planText).toContain('## Phase 1: Build')
+      expect(result.planText).toContain('### Files')
+      expect(result.planText).not.toContain(PLAN_START_MARKER)
+      expect(result.planText).not.toContain(PLAN_END_MARKER)
+      expect(result.messageId).toBe('msg-2')
+    }
   })
 
   test('returns null when no assistant messages have plans', () => {
@@ -255,14 +278,14 @@ describe('extractLatestMarkedPlan', () => {
       },
     ]
 
-    const result = extractLatestMarkedPlan(messages)
-    expect(result).toBeNull()
+    const result = inspectLatestMarkedPlan(messages)
+    expect(result.status).toBe('missing')
   })
 
   test('returns null when messages array is empty', () => {
     const messages: PlanCaptureMessage[] = []
-    const result = extractLatestMarkedPlan(messages)
-    expect(result).toBeNull()
+    const result = inspectLatestMarkedPlan(messages)
+    expect(result.status).toBe('missing')
   })
 })
 

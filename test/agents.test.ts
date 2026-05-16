@@ -109,7 +109,7 @@ describe('Agent definitions', () => {
 
     test('auditor-loop prompt includes LOOP_ADDENDUM and FINAL_AUDIT_ADDENDUM content', () => {
       const prompt = auditorLoopAgent.systemPrompt
-      expect(prompt).toContain('forge-section')
+      expect(prompt).toContain('## Phase N: <title>')
       expect(prompt).toContain('section-summary:start')
       expect(prompt).toContain('### Done')
       expect(prompt).toContain('### Deviations')
@@ -119,18 +119,29 @@ describe('Agent definitions', () => {
   })
 
   describe('architect prompt', () => {
-    test('architect.systemPrompt instructs section marker wrapping', () => {
+    test('architect.systemPrompt instructs heading-based phase splitting', () => {
       const prompt = architectAgent.systemPrompt
-      expect(prompt).toContain('<!-- forge-section:start -->')
-      expect(prompt).toContain('<!-- forge-section:end -->')
-      expect(prompt.toLowerCase()).toContain('wrap each phase')
-      expect(prompt.toLowerCase()).toContain('inside the outer plan markers')
+      expect(prompt).toContain('## Phase N: <title>')
+      expect(prompt).toContain('### Files')
+      expect(prompt).toContain('### Edits')
+      expect(prompt).toContain('### Acceptance Criteria')
+      expect(prompt).toContain('### Verification')
+      expect(prompt).not.toContain('<!-- forge-section:start -->')
+      expect(prompt).not.toContain('<!-- forge-section:end -->')
     })
 
-    test('architect.systemPrompt forbids nested forge-section markers', () => {
+    test('architect.systemPrompt avoids section marker instructions', () => {
       const prompt = architectAgent.systemPrompt
-      expect(prompt).toContain('nested')
-      expect(prompt).toContain('forge-section')
+      expect(prompt).toContain('Do not add section marker comments')
+      expect(prompt).not.toContain('forge-section')
+    })
+
+    test('architect.systemPrompt requires marker self-check before approval question', () => {
+      const prompt = architectAgent.systemPrompt
+      expect(prompt).toContain('Critical marker self-check before approval')
+      expect(prompt).toContain('exactly one `<!-- forge-plan:start -->` marker')
+      expect(prompt).toContain('exactly one `<!-- forge-plan:end -->` marker')
+      expect(prompt).toContain('do NOT call the `question` tool')
     })
   })
 

@@ -3,16 +3,18 @@ import type { ParsedSection } from '../utils/section-capture'
 export function decomposeDeterministically(planText: string, opts?: { maxSections?: number }): ParsedSection[] {
   const maxSections = opts?.maxSections ?? 12
   const text = planText.replace(/<!--\s*forge-plan:start\s*-->\s*\n?/, '').replace(/\n?\s*<!--\s*forge-plan:end\s*-->/, '')
-  const lines = text.split('\n')
+  const lines = text
+    .split('\n')
+    .filter(line => !/^<!--\s*forge-section:(?:start|end)\s*-->$/.test(line.trim()))
 
   const sections: ParsedSection[] = []
   const phaseRegex = /^##\s+(?:Phase|Section)\s+(\d+):\s*(.+)$/
-  const phaseIndices: { lineIdx: number; phaseNum: number; title: string }[] = []
+  const phaseIndices: { lineIdx: number; title: string }[] = []
 
   for (let i = 0; i < lines.length; i++) {
     const m = lines[i].match(phaseRegex)
     if (m) {
-      phaseIndices.push({ lineIdx: i, phaseNum: parseInt(m[1], 10), title: m[2].trim() })
+      phaseIndices.push({ lineIdx: i, title: m[2].trim() })
     }
   }
 

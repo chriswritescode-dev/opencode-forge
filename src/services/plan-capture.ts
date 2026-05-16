@@ -1,9 +1,9 @@
 import type { ToolContext } from '../tools/types'
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { Logger } from '../types'
-import type { PlanCaptureMessage } from '../utils/plan-capture'
+import type { PlanCaptureMessage } from '../utils/marked-plan-parser'
 import type { PluginInput } from '@opencode-ai/plugin'
-import { extractLatestMarkedPlan, extractMarkedPlan, sanitizePlanPaths } from '../utils/plan-capture'
+import { extractMarkedPlan, inspectLatestMarkedPlan, sanitizePlanPaths } from '../utils/marked-plan-parser'
 
 export interface CaptureLatestPlanDeps {
   v2: ToolContext['v2']
@@ -19,6 +19,11 @@ type CaptureLatestPlanResult =
   | { status: 'already-current'; planText: string; messageId?: string }
   | { status: 'not-found' }
   | { status: 'invalid'; reason: string }
+  | { status: 'read-failed'; error: unknown }
+
+type ReadRecentMessagesResult =
+  | { status: 'found'; messages: PlanCaptureMessage[] }
+  | { status: 'missing' }
   | { status: 'read-failed'; error: unknown }
 
 interface CaptureMarkedPlanTextDeps {
@@ -68,48 +73,63 @@ export function captureMarkedPlanTextForSession(
   return writeCapturedPlanForSession(deps, sessionID, extraction.planText, messageId)
 }
 
-export async function captureLatestPlanForSession(
-  deps: CaptureLatestPlanDeps,
+async function readRecentMessages(
+  deps: Pick<CaptureLatestPlanDeps, 'v2' | 'client' | 'directory' | 'logger'>,
   sessionID: string
-): Promise<CaptureLatestPlanResult> {
+): Promise<ReadRecentMessagesResult> {
   try {
-    let messagesResult = await deps.v2.session.messages({
+    const messagesResult = await deps.v2.session.messages({
       sessionID,
       directory: deps.directory,
       limit: 20,
     })
 
-    if (messagesResult.error || !messagesResult.data || messagesResult.data.length === 0) {
-      try {
-        deps.logger.log(`plan-capture: v2 messages empty/error, falling back to legacy client for ${sessionID}`)
-        const legacyResult = await deps.client.session.messages({
-          path: { id: sessionID },
-          query: { directory: deps.directory, limit: 20 },
-        })
-        if (!legacyResult.error && legacyResult.data) {
-          messagesResult = legacyResult as typeof messagesResult
-        }
-      } catch (fallbackErr) {
-        deps.logger.error(`plan-capture: legacy client messages fallback failed for ${sessionID}`, fallbackErr as Error)
+    if (!messagesResult.error && messagesResult.data && messagesResult.data.length > 0) {
+      return { status: 'found', messages: messagesResult.data as unknown as PlanCaptureMessage[] }
+    }
+
+    try {
+      deps.logger.log(`plan-capture: v2 messages empty/error, falling back to legacy client for ${sessionID}`)
+      const legacyResult = await deps.client.session.messages({
+        path: { id: sessionID },
+        query: { directory: deps.directory, limit: 20 },
+      })
+      if (!legacyResult.error && legacyResult.data && legacyResult.data.length > 0) {
+        return { status: 'found', messages: legacyResult.data as unknown as PlanCaptureMessage[] }
       }
+    } catch (fallbackErr) {
+      deps.logger.error(`plan-capture: legacy client messages fallback failed for ${sessionID}`, fallbackErr as Error)
     }
 
-    if (!messagesResult.data || messagesResult.data.length === 0) {
-      deps.logger.log(`plan-capture: no messages found for session ${sessionID}`)
-      return { status: 'not-found' }
-    }
-
-    const messages = messagesResult.data as unknown as PlanCaptureMessage[]
-    const extraction = extractLatestMarkedPlan(messages)
-
-    if (!extraction) {
-      deps.logger.log(`plan-capture: no valid marked plan found in session ${sessionID}`)
-      return { status: 'not-found' }
-    }
-
-    return writeCapturedPlanForSession(deps, sessionID, extraction.planText, extraction.messageId)
+    return { status: 'missing' }
   } catch (error) {
-    deps.logger.error(`plan-capture: failed to read messages for session ${sessionID}`, error as Error)
+    deps.logger.error(`plan-capture: failed to read messages for ${sessionID}`, error as Error)
     return { status: 'read-failed', error }
   }
+}
+
+export async function captureLatestPlanForSession(
+  deps: CaptureLatestPlanDeps,
+  sessionID: string
+): Promise<CaptureLatestPlanResult> {
+  const read = await readRecentMessages(deps, sessionID)
+  if (read.status === 'read-failed') return read
+  if (read.status === 'missing') {
+    deps.logger.log(`plan-capture: no messages found for session ${sessionID}`)
+    return { status: 'not-found' }
+  }
+
+  const inspection = inspectLatestMarkedPlan(read.messages)
+
+  if (inspection.status === 'found') {
+    return writeCapturedPlanForSession(deps, sessionID, inspection.planText, inspection.messageId)
+  }
+
+  if (inspection.status === 'invalid') {
+    deps.logger.log(`plan-capture: invalid marked plan in session ${sessionID}: ${inspection.reason}`)
+    return { status: 'invalid', reason: inspection.reason }
+  }
+
+  deps.logger.log(`plan-capture: no valid marked plan found in session ${sessionID}`)
+  return { status: 'not-found' }
 }
