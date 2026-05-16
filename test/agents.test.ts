@@ -19,6 +19,11 @@ describe('Agent definitions', () => {
       expect(architectAgent.tools?.exclude).toContain('plan_exit')
     })
 
+    test('architect agent allows question tool', () => {
+      expect(architectAgent.permission).toBeDefined()
+      expect((architectAgent.permission as Record<string, string>)?.question).toBe('allow')
+    })
+
     test('code agent has stable metadata', () => {
       expect(codeAgent.role).toBe('code')
       expect(codeAgent.id).toBe('opencode-code')

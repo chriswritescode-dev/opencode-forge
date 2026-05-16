@@ -235,6 +235,9 @@ export function buildArchitectAgent(): AgentDefinition {
     displayName: 'architect',
     mode: 'primary',
     color: '#ef4444',
+    permission: {
+      question: 'allow',
+    },
     tools: {
       exclude: ['plan', 'plan_exit'],
     },

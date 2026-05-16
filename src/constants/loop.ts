@@ -13,17 +13,14 @@ export function buildLoopPermissionRuleset(): PermissionRule[] {
   // Blanket allow-all for worktree loops (isolated environment).
   rules.push({ permission: '*', pattern: '*', action: 'allow' })
 
-  // External directory access: always denied to prevent unauthorized file system traversal.
-  // /tmp is allowed as a scratch area.
+  // External directory access: always denied. Bash runs inside the sandbox
+  // while read/write run on the host, so any shared path (including /tmp)
+  // would resolve to different filesystems and create false-positive escape
+  // hatches. Worktree-only access keeps host and sandbox views consistent.
   rules.push({
     permission: 'external_directory',
     pattern: '*',
     action: 'deny',
-  })
-  rules.push({
-    permission: 'external_directory',
-    pattern: '/tmp',
-    action: 'allow',
   })
 
   // Code agent forbidden tools. Placed after *:allow so findLast picks them up.

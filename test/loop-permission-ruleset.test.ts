@@ -10,7 +10,6 @@ describe('buildLoopPermissionRuleset', () => {
     expect(rules).toEqual([
       { permission: '*',                  pattern: '*',          action: 'allow' },
       { permission: 'external_directory', pattern: '*',          action: 'deny' },
-      { permission: 'external_directory', pattern: '/tmp',       action: 'allow' },
       { permission: 'review-write',       pattern: '*',          action: 'deny' },
       { permission: 'review-delete',      pattern: '*',          action: 'deny' },
       { permission: 'plan_exit',          pattern: '*',          action: 'deny' },
@@ -34,17 +33,12 @@ describe('buildLoopPermissionRuleset', () => {
     expect(rules).toContainEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
   })
 
-  test('external_directory:*:deny appears before external_directory:/tmp:allow', () => {
+  test('does not contain any external_directory allow rule (host/sandbox path mismatch makes /tmp unsafe)', () => {
     const rules = buildLoopPermissionRuleset()
-    const denyIdx = rules.findIndex(
-      (r) => r.permission === 'external_directory' && r.pattern === '*' && r.action === 'deny',
+    const externalAllow = rules.find(
+      (r) => r.permission === 'external_directory' && r.action === 'allow',
     )
-    const allowIdx = rules.findIndex(
-      (r) => r.permission === 'external_directory' && r.pattern === '/tmp' && r.action === 'allow',
-    )
-    expect(denyIdx).toBeGreaterThanOrEqual(0)
-    expect(allowIdx).toBeGreaterThanOrEqual(0)
-    expect(denyIdx).toBeLessThan(allowIdx)
+    expect(externalAllow).toBeUndefined()
   })
 })
 
