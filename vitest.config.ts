@@ -50,6 +50,7 @@ export default defineConfig({
       'test/services/attach-loop.test.ts',
       'test/services/reconcile-loops.test.ts',
       'test/hooks/forge-session-attach.test.ts',
+      'test/hooks/host-side-effects-unwarp.test.ts',
       'test/utils/tui-client-warp-flow.test.ts',
       'test/utils/tui-client-loop-inline-plan.test.ts',
       'test/services/execution-attach-cleanup.test.ts',
