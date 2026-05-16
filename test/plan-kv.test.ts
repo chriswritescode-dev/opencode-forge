@@ -2,8 +2,6 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import type { Database } from 'bun:sqlite'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
-import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
-import { createLoopService } from '../src/loop/service'
 import { createPlanTools } from '../src/tools/plan-kv'
 import { openForgeDatabase } from '../src/storage/database'
 import { tmpdir } from 'os'
@@ -27,21 +25,22 @@ describe('plan-read', () => {
   let db: Database
   let plansRepo: ReturnType<typeof createPlansRepo>
   let loopsRepo: ReturnType<typeof createLoopsRepo>
-  let loopService: ReturnType<typeof createLoopService>
   let tools: ReturnType<typeof createPlanTools>
 
   beforeEach(() => {
     db = createTestDb()
     loopsRepo = createLoopsRepo(db)
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
+
     plansRepo = createPlansRepo(db)
-    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
     tools = createPlanTools({
       plansRepo,
       loopsRepo,
       projectId: 'test-project',
       logger: mockLogger,
-      loopService,
+      loopService: {} as any,
+      loop: {
+        resolveLoopName: () => null,
+      },
       directory: TEST_DIR,
       sessionID: 'test-session',
       config: {} as any,
@@ -142,31 +141,8 @@ describe('plan-read', () => {
   })
 
   test('reads plan by explicit loop name', async () => {
-    // Write to loop_large_fields (primary storage for loops)
-    // First create the loop row, then update the prompt
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const testLoopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
-    const state = {
-      active: true,
-      sessionId: 'explicit-loop-session',
-      loopName: 'explicit-loop',
-      worktreeDir: '/tmp/test',
-      projectDir: '/tmp/test',
-      worktreeBranch: 'test-branch',
-      iteration: 1,
-      maxIterations: 5,
-      startedAt: new Date().toISOString(),
-      prompt: '# Explicit Loop Plan\n\n## Phase 1\n- Read by loop name',
-      phase: 'coding' as const,
-
-      errorCount: 0,
-      auditCount: 0,
-      worktree: true,
-      sandbox: false,
-      executionModel: undefined,
-      auditorModel: undefined,
-    }
-    testLoopService.setState('explicit-loop', state)
+    // Write plan content directly via plans repo (no loop_large_fields.prompt dependency)
+    plansRepo.writeForLoop('test-project', 'explicit-loop', '# Explicit Loop Plan\n\n## Phase 1\n- Read by loop name')
 
     const result = await tools['plan-read'].execute(
       { loop_name: 'explicit-loop' },
@@ -176,30 +152,41 @@ describe('plan-read', () => {
     expect(result).toContain('# Explicit Loop Plan')
     expect(result).toContain('Read by loop name')
   })
+
+  test('reads plan by explicit session_id', async () => {
+    plansRepo.writeForSession('test-project', 'target-session', '# Session Plan\n\nRead by session_id')
+
+    const result = await tools['plan-read'].execute(
+      { session_id: 'target-session' },
+      { sessionID: 'other-session', directory: TEST_DIR } as any
+    )
+
+    expect(result).toContain('# Session Plan')
+    expect(result).toContain('Read by session_id')
+  })
 })
 
 describe('plan-read with loop session', () => {
   let db: Database
   let plansRepo: ReturnType<typeof createPlansRepo>
   let loopsRepo: ReturnType<typeof createLoopsRepo>
-  let loopService: ReturnType<typeof createLoopService>
   let tools: ReturnType<typeof createPlanTools>
 
   beforeEach(() => {
     db = createTestDb()
     loopsRepo = createLoopsRepo(db)
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
+
     plansRepo = createPlansRepo(db)
-    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'test-project', mockLogger)
     tools = createPlanTools({
       plansRepo,
       loopsRepo,
       projectId: 'test-project',
       logger: mockLogger,
-      loopService: {
+      loopService: {} as any,
+      loop: {
         resolveLoopName: (sessionID: string) =>
           sessionID === 'loop-session-123' ? 'my-loop' : null,
-      } as any,
+      },
       directory: TEST_DIR,
       sessionID: 'test-session',
       config: {} as any,
@@ -214,9 +201,6 @@ describe('plan-read with loop session', () => {
   })
 
   test('resolves plan key to worktree name for loop sessions', async () => {
-    // Write to loop_large_fields instead of plans table
-    loopsRepo.updatePrompt('test-project', 'my-loop', '# Loop Plan\n\n## Phase 1\n- Do the thing')
-
     const result = await tools['plan-read'].execute(
       {},
       { sessionID: 'loop-session-123', directory: TEST_DIR } as any
@@ -235,5 +219,104 @@ describe('plan-read with loop session', () => {
     )
 
     expect(result).toContain('# Regular Plan')
+  })
+})
+
+describe('plan-read with recent plans', () => {
+  let db: Database
+  let plansRepo: ReturnType<typeof createPlansRepo>
+  let loopsRepo: ReturnType<typeof createLoopsRepo>
+  let tools: ReturnType<typeof createPlanTools>
+
+  beforeEach(() => {
+    db = createTestDb()
+    loopsRepo = createLoopsRepo(db)
+
+    plansRepo = createPlansRepo(db)
+    tools = createPlanTools({
+      plansRepo,
+      loopsRepo,
+      projectId: 'test-project',
+      logger: mockLogger,
+      loopService: {} as any,
+      loop: {
+        resolveLoopName: () => null,
+      },
+      directory: TEST_DIR,
+      sessionID: 'test-session',
+      config: {} as any,
+      sandboxManager: {} as any,
+    } as any)
+
+    // Seed project plans for recent listing
+    plansRepo.writeForSession('test-project', 'session-a', '# Session Plan A\n## Auth\n- login flow')
+    plansRepo.writeForLoop('test-project', 'loop-a', '# Loop Plan B\n## Dashboard\n- Build widget')
+    plansRepo.writeForSession('other-project', 'session-b', '# Other Project\nNot in our scope')
+  })
+
+  afterEach(() => {
+    db.close()
+  })
+
+  test('lists recent project plans', async () => {
+    const result = await tools['plan-read'].execute(
+      { recent: true },
+      { sessionID: 'test-session', directory: TEST_DIR } as any
+    )
+
+    expect(result).toContain('Recent plans for project')
+    expect(result).toContain('test-project')
+    expect(result).toContain('session: session-a')
+    expect(result).toContain('loop: loop-a')
+    expect(result).toContain('# Session Plan A')
+    expect(result).toContain('# Loop Plan B')
+    expect(result).not.toContain('Other Project')
+  })
+
+  test('lists recent project plans respects limit', async () => {
+    const result = await tools['plan-read'].execute(
+      { recent: true, limit: 1 },
+      { sessionID: 'test-session', directory: TEST_DIR } as any
+    )
+
+    expect(result).toContain('Recent plans for project')
+    expect(result).toContain('(1 found)')
+  })
+
+  test('searches recent project plans with pattern', async () => {
+    const result = await tools['plan-read'].execute(
+      { recent: true, pattern: 'auth|login', limit: 10 },
+      { sessionID: 'test-session', directory: TEST_DIR } as any
+    )
+
+    expect(result).toContain('Found')
+    expect(result).toContain('match(es)')
+    expect(result).toContain('session: session-a')
+    expect(result).toContain('- login flow')
+    expect(result).not.toContain('loop-a')
+    expect(result).not.toContain('Dashboard')
+  })
+
+  test('returns invalid regex for recent search', async () => {
+    const result = await tools['plan-read'].execute(
+      { recent: true, pattern: '[bad' },
+      { sessionID: 'test-session', directory: TEST_DIR } as any
+    )
+
+    expect(result).toContain('Invalid regex pattern')
+  })
+
+  test('searches recent plans when pattern matches only the title (line 1)', async () => {
+    const result = await tools['plan-read'].execute(
+      { recent: true, pattern: 'Session Plan A' },
+      { sessionID: 'test-session', directory: TEST_DIR } as any
+    )
+
+    expect(result).toContain('Found')
+    expect(result).toContain('match(es)')
+    expect(result).toContain('session: session-a')
+    expect(result).toContain('Line 1:')
+    expect(result).toContain('# Session Plan A')
+    expect(result).not.toContain('loop-a')
   })
 })

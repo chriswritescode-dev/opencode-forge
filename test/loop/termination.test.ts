@@ -38,14 +38,6 @@ describe('terminationStatusFor', () => {
     expect(terminationStatusFor({ kind: 'session_creation_failed' })).toBe('errored')
   })
 
-  it('maps decomposition_failed to errored', () => {
-    expect(terminationStatusFor({ kind: 'decomposition_failed' })).toBe('errored')
-  })
-
-  it('maps decomposer_prompt_failed to errored', () => {
-    expect(terminationStatusFor({ kind: 'decomposer_prompt_failed' })).toBe('errored')
-  })
-
   it('maps audit_retry_exhausted to errored', () => {
     expect(terminationStatusFor({ kind: 'audit_retry_exhausted' })).toBe('errored')
   })
@@ -60,10 +52,6 @@ describe('terminationStatusFor', () => {
 
   it('maps worktree_failed with message to errored', () => {
     expect(terminationStatusFor({ kind: 'worktree_failed', message: 'branch deleted' })).toBe('errored')
-  })
-
-  it('maps decomposer_error with message to errored', () => {
-    expect(terminationStatusFor({ kind: 'decomposer_error', message: 'parse failed' })).toBe('errored')
   })
 
   it('maps error_max_retries with message to errored', () => {
@@ -101,11 +89,6 @@ describe('terminationReasonToString', () => {
     expect(terminationReasonToString(reason)).toBe('worktree_failed: branch not found')
   })
 
-  it('stringifies decomposer_error with message', () => {
-    const reason: TerminationReason = { kind: 'decomposer_error', message: 'invalid JSON' }
-    expect(terminationReasonToString(reason)).toBe('decomposer_error: invalid JSON')
-  })
-
   it('stringifies error_max_retries with message', () => {
     const reason: TerminationReason = { kind: 'error_max_retries', message: 'assistant error: timeout' }
     expect(terminationReasonToString(reason)).toBe('error_max_retries: assistant error: timeout')
@@ -117,14 +100,6 @@ describe('terminationReasonToString', () => {
 
   it('preserves session_creation_failed string exactly', () => {
     expect(terminationReasonToString({ kind: 'session_creation_failed' })).toBe('session_creation_failed')
-  })
-
-  it('preserves decomposition_failed string exactly', () => {
-    expect(terminationReasonToString({ kind: 'decomposition_failed' })).toBe('decomposition_failed')
-  })
-
-  it('preserves decomposer_prompt_failed string exactly', () => {
-    expect(terminationReasonToString({ kind: 'decomposer_prompt_failed' })).toBe('decomposer_prompt_failed')
   })
 
   it('preserves audit_retry_exhausted string exactly', () => {

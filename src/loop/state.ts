@@ -1,8 +1,5 @@
 import type { LoopRow, LoopLargeFields } from '../storage/repos/loops-repo'
 
-export type DecompositionStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
-export type DecompositionMode = 'agent' | 'deterministic'
-
 interface LoopStateBase {
   active: boolean
   sessionId: string
@@ -28,9 +25,6 @@ interface LoopStateBase {
   auditorModel?: string
   workspaceId?: string
   hostSessionId?: string
-  decompositionStatus: DecompositionStatus
-  decompositionMode: DecompositionMode
-  decompositionSessionId: string | null
   currentSectionIndex: number
   totalSections: number
   finalAuditDone: boolean
@@ -44,15 +38,11 @@ export interface AuditingState extends LoopStateBase {
   phase: 'auditing'
 }
 
-export interface DecomposingState extends LoopStateBase {
-  phase: 'decomposing'
-}
-
 export interface FinalAuditingState extends LoopStateBase {
   phase: 'final_auditing'
 }
 
-export type LoopState = CodingState | AuditingState | DecomposingState | FinalAuditingState
+export type LoopState = CodingState | AuditingState | FinalAuditingState
 
 export type Phase = LoopState['phase']
 
@@ -67,7 +57,6 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
     iteration: row.iteration,
     maxIterations: row.maxIterations,
     startedAt: new Date(row.startedAt).toISOString(),
-    prompt: large?.prompt ?? undefined,
     lastAuditResult: large?.lastAuditResult ?? undefined,
     errorCount: row.errorCount,
     auditCount: row.auditCount,
@@ -82,9 +71,6 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
     auditorModel: row.auditorModel ?? undefined,
     workspaceId: row.workspaceId ?? undefined,
     hostSessionId: row.hostSessionId ?? undefined,
-    decompositionStatus: row.decompositionStatus,
-    decompositionMode: row.decompositionMode,
-    decompositionSessionId: row.decompositionSessionId,
     currentSectionIndex: row.currentSectionIndex,
     totalSections: row.totalSections,
     finalAuditDone: row.finalAuditDone === 1,
@@ -95,8 +81,6 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
       return { ...base, phase: 'coding' } satisfies CodingState
     case 'auditing':
       return { ...base, phase: 'auditing' } satisfies AuditingState
-    case 'decomposing':
-      return { ...base, phase: 'decomposing' } satisfies DecomposingState
     case 'final_auditing':
       return { ...base, phase: 'final_auditing' } satisfies FinalAuditingState
   }
@@ -128,9 +112,6 @@ export function loopStateToRow(state: LoopState, projectId: string): Omit<LoopRo
     completionSummary: state.completionSummary ?? null,
     workspaceId: state.workspaceId ?? null,
     hostSessionId: state.hostSessionId ?? null,
-    decompositionStatus: state.decompositionStatus,
-    decompositionMode: state.decompositionMode,
-    decompositionSessionId: state.decompositionSessionId,
     currentSectionIndex: state.currentSectionIndex,
     totalSections: state.totalSections,
     finalAuditDone: state.finalAuditDone ? 1 : 0,

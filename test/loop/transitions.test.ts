@@ -13,9 +13,7 @@ function makeState(overrides: Partial<LoopState> & { phase: LoopState['phase'] }
     startedAt: new Date().toISOString(),
     errorCount: 0,
     auditCount: 0,
-    decompositionStatus: 'pending',
-    decompositionMode: 'agent',
-    decompositionSessionId: null,
+
     currentSectionIndex: 0,
     totalSections: 0,
     finalAuditDone: false,
@@ -77,12 +75,6 @@ describe('nextTransition', () => {
       const state = makeState({ phase: 'coding' })
       const transition = nextTransition(state, { type: 'worktree-failed', message: 'branch deleted' })
       expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'worktree_failed', message: 'branch deleted' } })
-    })
-
-    it('terminates with decomposer_error and message', () => {
-      const state = makeState({ phase: 'coding' })
-      const transition = nextTransition(state, { type: 'decomposer-error', message: 'parse failed' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'decomposer_error', message: 'parse failed' } })
     })
 
     it('terminates with error_max_retries', () => {
@@ -234,79 +226,7 @@ describe('nextTransition', () => {
     })
   })
 
-  describe('decomposing phase', () => {
-    it('rotates to coding when decomposer-complete has sections > 0', () => {
-      const state = makeState({ phase: 'decomposing' })
-      const transition = nextTransition(state, { type: 'decomposer-complete', sectionCount: 3 })
-      expect(transition).toEqual({ kind: 'rotate' })
-    })
 
-    it('terminates with decomposition_failed when decomposer-complete has sections === 0', () => {
-      const state = makeState({ phase: 'decomposing' })
-      const transition = nextTransition(state, { type: 'decomposer-complete', sectionCount: 0 })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'decomposition_failed' } })
-    })
-
-    it('terminates with decomposition_failed on decomposer-empty', () => {
-      const state = makeState({ phase: 'decomposing' })
-      const transition = nextTransition(state, { type: 'decomposer-empty' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'decomposition_failed' } })
-    })
-
-    it('terminates with decomposition_failed on decomposition-failed', () => {
-      const state = makeState({ phase: 'decomposing' })
-      const transition = nextTransition(state, { type: 'decomposition-failed' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'decomposition_failed' } })
-    })
-
-    it('terminates with missing_worktree_dir', () => {
-      const state = makeState({ phase: 'decomposing' })
-      const transition = nextTransition(state, { type: 'missing-worktree-dir' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'missing_worktree_dir' } })
-    })
-
-    it('terminates with session_creation_failed', () => {
-      const state = makeState({ phase: 'decomposing' })
-      const transition = nextTransition(state, { type: 'session-creation-failed' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'session_creation_failed' } })
-    })
-
-    it('terminates with decomposer_prompt_failed', () => {
-      const state = makeState({ phase: 'decomposing' })
-      const transition = nextTransition(state, { type: 'decomposer-prompt-failed' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'decomposer_prompt_failed' } })
-    })
-
-    it('terminates with user_aborted on user-abort', () => {
-      const state = makeState({ phase: 'decomposing' })
-      const transition = nextTransition(state, { type: 'user-abort' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'user_aborted' } })
-    })
-
-    it('terminates with shutdown', () => {
-      const state = makeState({ phase: 'decomposing' })
-      const transition = nextTransition(state, { type: 'shutdown' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'shutdown' } })
-    })
-
-    it('terminates with stall_timeout', () => {
-      const state = makeState({ phase: 'decomposing' })
-      const transition = nextTransition(state, { type: 'stall-timeout' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'stall_timeout' } })
-    })
-
-    it('terminates with worktree_failed and message', () => {
-      const state = makeState({ phase: 'decomposing' })
-      const transition = nextTransition(state, { type: 'worktree-failed', message: 'branch gone' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'worktree_failed', message: 'branch gone' } })
-    })
-
-    it('terminates with decomposer_error and message', () => {
-      const state = makeState({ phase: 'decomposing' })
-      const transition = nextTransition(state, { type: 'decomposer-error', message: 'parse error' })
-      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'decomposer_error', message: 'parse error' } })
-    })
-  })
 
   describe('unhandled events in each phase', () => {
     it('returns noop for unhandled events in coding phase', () => {
@@ -321,12 +241,6 @@ describe('nextTransition', () => {
       expect(transition).toEqual({ kind: 'noop' })
     })
 
-    it('returns noop for unhandled events in decomposing phase', () => {
-      const state = makeState({ phase: 'decomposing' })
-      const transition = nextTransition(state, { type: 'nonexistent-event' as any })
-      expect(transition).toEqual({ kind: 'noop' })
-    })
-
     it('returns noop for unhandled events in final_auditing phase', () => {
       const state = makeState({ phase: 'final_auditing' })
       const transition = nextTransition(state, { type: 'nonexistent-event' as any })
@@ -335,7 +249,7 @@ describe('nextTransition', () => {
   })
 
   describe('cross-phase error events', () => {
-    const phases = ['coding', 'auditing', 'decomposing', 'final_auditing'] as const
+    const phases = ['coding', 'auditing', 'final_auditing'] as const
 
     phases.forEach(phase => {
       it(`handles worktree-failed in ${phase} phase`, () => {

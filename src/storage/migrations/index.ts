@@ -246,5 +246,41 @@ export const migrations: Migration[] = [
       db.run(loadSql('125_add_section_index_to_review_findings_pk.sql'))
     },
   },
+  {
+    id: '126',
+    description: 'Drop final_audit_attempts column from loops table',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      if (!cols.some((c) => c.name === 'final_audit_attempts')) return
+      db.run(loadSql('126_drop_final_audit_attempts_from_loops.sql'))
+    },
+  },
+  {
+    id: '127',
+    description: 'Consolidate loop plan storage: backfill prompt into plans, remove prompt column from loop_large_fields',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(loop_large_fields)').all() as Array<{ name: string }>
+      if (!cols.some((c) => c.name === 'prompt')) {
+        // prompt already removed, just ensure index exists
+        db.run("CREATE INDEX IF NOT EXISTS idx_plans_project_updated_at ON plans(project_id, updated_at DESC)")
+        return
+      }
+      db.run(loadSql('127_consolidate_loop_plan_storage.sql'))
+    },
+  },
+  {
+    id: '128',
+    description: 'Add unique index on loops(project_id, loop_name) for FK compliance with section_plans',
+    apply: (db: Database) => {
+      db.run(loadSql('128_add_loops_project_name_unique_index.sql'))
+    },
+  },
+  {
+    id: '129',
+    description: 'Remove decomposer columns and decomposing phase',
+    apply: (db: Database) => {
+      db.run(loadSql('129_remove_decomposer.sql'))
+    },
+  },
 
 ]

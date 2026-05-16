@@ -83,8 +83,6 @@ export interface ModelSortOptions {
     summaryDeviations: string | null
     summaryFollowUps: string | null
   }>
-  decompositionStatus?: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
-  decompositionMode?: 'agent' | 'deterministic'
   finalAuditDone?: boolean
 }
 

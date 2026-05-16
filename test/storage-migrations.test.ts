@@ -43,6 +43,7 @@ test('migrations are recorded exactly once', () => {
   expect(ids).toContain('103')
   expect(ids).toContain('105')
   expect(ids).toContain('106')
+  expect(ids).toContain('129')
 
   const uniqueIds = new Set(ids)
   expect(uniqueIds.size).toBe(migrations.length)
@@ -213,4 +214,373 @@ test('migration 125 normalizes NULL section_index to -1 sentinel', () => {
   }
 
   db.close()
+})
+
+test('migrates loop_large_fields prompt into plans and removes prompt column', () => {
+  const dbPath = createTempDb()
+
+  const db = new Database(dbPath)
+  db.run(`
+    CREATE TABLE migrations (
+      id TEXT PRIMARY KEY,
+      description TEXT NOT NULL,
+      applied_at INTEGER NOT NULL
+    );
+    INSERT INTO migrations (id, description, applied_at) VALUES
+      ('100', 'Create loops table', 1),
+      ('101', 'Create loop_large_fields table', 1),
+      ('102', 'Create plans table', 1),
+      ('103', 'Create review_findings table', 1),
+      ('105', 'Create tui_preferences table', 1),
+      ('106', 'Drop project_kv table', 1),
+      ('107', 'Add workspace_id column', 1),
+      ('108', 'Add host_session_id column', 1),
+      ('110', 'Drop completion_signal', 1),
+      ('111', 'Make scenario nullable', 1),
+      ('112', 'Drop audit column', 1),
+      ('113', 'Add audit_session_id', 1),
+      ('114', 'Ensure scenario nullable', 1),
+      ('115', 'Create api_registry', 1),
+      ('116', 'Drop api_registry', 1),
+      ('117', 'Branch scope review findings', 1),
+      ('118', 'Drop audit_session_id', 1),
+      ('119', 'Loop scope review findings', 1),
+      ('120', 'Loop only review findings', 1),
+      ('121', 'Create section_plans', 1),
+      ('122', 'Add decomposition state', 1),
+      ('123', 'Add section_index', 1),
+      ('124', 'Extend phase CHECK', 1),
+      ('125', 'Rebuild review_findings PK', 1);
+
+    CREATE TABLE loops (
+      project_id           TEXT NOT NULL,
+      loop_name            TEXT NOT NULL,
+      status               TEXT NOT NULL CHECK(status IN ('running','completed','cancelled','errored','stalled')),
+      current_session_id   TEXT NOT NULL,
+      worktree             INTEGER NOT NULL,
+      worktree_dir         TEXT NOT NULL,
+      worktree_branch      TEXT,
+      project_dir          TEXT NOT NULL,
+      max_iterations       INTEGER NOT NULL,
+      iteration            INTEGER NOT NULL DEFAULT 0,
+      audit_count          INTEGER NOT NULL DEFAULT 0,
+      error_count          INTEGER NOT NULL DEFAULT 0,
+      phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing','decomposing','final_auditing')),
+      execution_model      TEXT,
+      auditor_model        TEXT,
+      model_failed         INTEGER NOT NULL DEFAULT 0,
+      sandbox              INTEGER NOT NULL DEFAULT 0,
+      sandbox_container    TEXT,
+      started_at           INTEGER NOT NULL,
+      completed_at         INTEGER,
+      termination_reason   TEXT,
+      completion_summary   TEXT,
+      workspace_id         TEXT,
+      host_session_id      TEXT,
+      decomposition_status TEXT NOT NULL DEFAULT 'pending',
+      decomposition_mode   TEXT NOT NULL DEFAULT 'agent',
+      decomposition_session_id TEXT,
+      current_section_index INTEGER NOT NULL DEFAULT 0,
+      total_sections       INTEGER NOT NULL DEFAULT 0,
+      final_audit_done     INTEGER NOT NULL DEFAULT 0,
+      final_audit_attempts INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (project_id, loop_name)
+    );
+
+    CREATE TABLE loop_large_fields (
+      project_id          TEXT NOT NULL,
+      loop_name           TEXT NOT NULL,
+      prompt              TEXT,
+      last_audit_result   TEXT,
+      PRIMARY KEY (project_id, loop_name),
+      FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
+    );
+
+    CREATE TABLE plans (
+      project_id   TEXT NOT NULL,
+      loop_name    TEXT,
+      session_id   TEXT,
+      content      TEXT NOT NULL,
+      updated_at   INTEGER NOT NULL,
+      CHECK (loop_name IS NOT NULL OR session_id IS NOT NULL),
+      CHECK (NOT (loop_name IS NOT NULL AND session_id IS NOT NULL)),
+      UNIQUE (project_id, loop_name),
+      UNIQUE (project_id, session_id)
+    );
+
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('project-a', 'loop-a', 'running', 'session-1', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1);
+
+    INSERT INTO loop_large_fields (project_id, loop_name, prompt, last_audit_result)
+    VALUES ('project-a', 'loop-a', '# Prompt wins', 'audit text');
+
+    INSERT INTO plans (project_id, loop_name, content, updated_at)
+    VALUES ('project-a', 'loop-a', '# Old fallback', 1);
+  `)
+  db.close()
+
+  const migrated = openForgeDatabase(dbPath)
+
+  const plan = migrated.prepare(
+    "SELECT content FROM plans WHERE project_id = 'project-a' AND loop_name = 'loop-a'"
+  ).get() as { content: string } | undefined
+
+  expect(plan).toBeDefined()
+  expect(plan!.content).toBe('# Prompt wins')
+
+  const lcols = migrated.prepare('PRAGMA table_info(loop_large_fields)').all()
+  expect(lcols.some((col) => (col as { name: string }).name === 'prompt')).toBe(false)
+
+  const llf = migrated.prepare(
+    "SELECT last_audit_result FROM loop_large_fields WHERE project_id = 'project-a' AND loop_name = 'loop-a'"
+  ).get() as { last_audit_result: string }
+  expect(llf.last_audit_result).toBe('audit text')
+
+  migrated.close()
+})
+
+test('migration 127 is idempotent on re-opened databases', () => {
+  const dbPath = createTempDb()
+
+  const db = new Database(dbPath)
+  db.run(`
+    CREATE TABLE migrations (
+      id TEXT PRIMARY KEY,
+      description TEXT NOT NULL,
+      applied_at INTEGER NOT NULL
+    );
+    INSERT INTO migrations (id, description, applied_at) VALUES
+      ('100', 'Create loops table', 1),
+      ('101', 'Create loop_large_fields table', 1),
+      ('102', 'Create plans table', 1),
+      ('103', 'Create review_findings table', 1),
+      ('105', 'Create tui_preferences table', 1),
+      ('106', 'Drop project_kv table', 1),
+      ('107', 'Add workspace_id column', 1),
+      ('108', 'Add host_session_id column', 1),
+      ('110', 'Drop completion_signal', 1),
+      ('111', 'Make scenario nullable', 1),
+      ('112', 'Drop audit column', 1),
+      ('113', 'Add audit_session_id', 1),
+      ('114', 'Ensure scenario nullable', 1),
+      ('115', 'Create api_registry', 1),
+      ('116', 'Drop api_registry', 1),
+      ('117', 'Branch scope review findings', 1),
+      ('118', 'Drop audit_session_id', 1),
+      ('119', 'Loop scope review findings', 1),
+      ('120', 'Loop only review findings', 1),
+      ('121', 'Create section_plans', 1),
+      ('122', 'Add decomposition state', 1),
+      ('123', 'Add section_index', 1),
+      ('124', 'Extend phase CHECK', 1),
+      ('125', 'Rebuild review_findings PK', 1);
+
+    CREATE TABLE loops (
+      project_id           TEXT NOT NULL,
+      loop_name            TEXT NOT NULL,
+      status               TEXT NOT NULL CHECK(status IN ('running','completed','cancelled','errored','stalled')),
+      current_session_id   TEXT NOT NULL,
+      worktree             INTEGER NOT NULL,
+      worktree_dir         TEXT NOT NULL,
+      worktree_branch      TEXT,
+      project_dir          TEXT NOT NULL,
+      max_iterations       INTEGER NOT NULL,
+      iteration            INTEGER NOT NULL DEFAULT 0,
+      audit_count          INTEGER NOT NULL DEFAULT 0,
+      error_count          INTEGER NOT NULL DEFAULT 0,
+      phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing','decomposing','final_auditing')),
+      execution_model      TEXT,
+      auditor_model        TEXT,
+      model_failed         INTEGER NOT NULL DEFAULT 0,
+      sandbox              INTEGER NOT NULL DEFAULT 0,
+      sandbox_container    TEXT,
+      started_at           INTEGER NOT NULL,
+      completed_at         INTEGER,
+      termination_reason   TEXT,
+      completion_summary   TEXT,
+      workspace_id         TEXT,
+      host_session_id      TEXT,
+      decomposition_status TEXT NOT NULL DEFAULT 'pending',
+      decomposition_mode   TEXT NOT NULL DEFAULT 'agent',
+      decomposition_session_id TEXT,
+      current_section_index INTEGER NOT NULL DEFAULT 0,
+      total_sections       INTEGER NOT NULL DEFAULT 0,
+      final_audit_done     INTEGER NOT NULL DEFAULT 0,
+      final_audit_attempts INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (project_id, loop_name)
+    );
+
+    CREATE TABLE loop_large_fields (
+      project_id          TEXT NOT NULL,
+      loop_name           TEXT NOT NULL,
+      prompt              TEXT,
+      last_audit_result   TEXT,
+      PRIMARY KEY (project_id, loop_name),
+      FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
+    );
+
+    CREATE TABLE plans (
+      project_id   TEXT NOT NULL,
+      loop_name    TEXT,
+      session_id   TEXT,
+      content      TEXT NOT NULL,
+      updated_at   INTEGER NOT NULL,
+      CHECK (loop_name IS NOT NULL OR session_id IS NOT NULL),
+      CHECK (NOT (loop_name IS NOT NULL AND session_id IS NOT NULL)),
+      UNIQUE (project_id, loop_name),
+      UNIQUE (project_id, session_id)
+    );
+
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('project-a', 'loop-a', 'running', 'session-1', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1);
+
+    INSERT INTO loop_large_fields (project_id, loop_name, prompt, last_audit_result)
+    VALUES ('project-a', 'loop-a', '# Prompt wins', 'audit text');
+
+    INSERT INTO plans (project_id, loop_name, content, updated_at)
+    VALUES ('project-a', 'loop-a', '# Old fallback', 1);
+  `)
+  db.close()
+
+  const db1 = openForgeDatabase(dbPath)
+  db1.close()
+
+  const db2 = openForgeDatabase(dbPath)
+
+  const plans = db2.prepare("SELECT COUNT(*) as count FROM plans WHERE project_id = 'project-a' AND loop_name = 'loop-a'").get() as { count: number }
+  expect(plans.count).toBe(1)
+
+  const cols = db2.prepare('PRAGMA table_info(loop_large_fields)').all()
+  expect(cols.some((col) => (col as { name: string }).name === 'prompt')).toBe(false)
+
+  db2.close()
+})
+
+test('migration 129 narrows phase CHECK and drops decomposition columns', () => {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  db.run(`
+    CREATE TABLE migrations (
+      id TEXT PRIMARY KEY,
+      description TEXT NOT NULL,
+      applied_at INTEGER NOT NULL
+    );
+    INSERT INTO migrations (id, description, applied_at) VALUES
+      ('100', 'Create loops table', 1),
+      ('101', 'Create loop_large_fields table', 1),
+      ('102', 'Create plans table', 1),
+      ('103', 'Create review_findings table', 1),
+      ('105', 'Create tui_preferences table', 1),
+      ('106', 'Drop project_kv table', 1),
+      ('107', 'Add workspace_id column', 1),
+      ('108', 'Add host_session_id column', 1),
+      ('110', 'Drop completion_signal', 1),
+      ('111', 'Make scenario nullable', 1),
+      ('112', 'Drop audit column', 1),
+      ('113', 'Add audit_session_id', 1),
+      ('114', 'Ensure scenario nullable', 1),
+      ('115', 'Create api_registry', 1),
+      ('116', 'Drop api_registry', 1),
+      ('117', 'Branch scope review findings', 1),
+      ('118', 'Drop audit_session_id', 1),
+      ('119', 'Loop scope review findings', 1),
+      ('120', 'Loop only review findings', 1),
+      ('121', 'Create section_plans', 1),
+      ('122', 'Add decomposition state', 1),
+      ('123', 'Add section_index', 1),
+      ('124', 'Extend phase CHECK', 1),
+      ('125', 'Rebuild review_findings PK', 1),
+      ('126', 'Drop final_audit_attempts', 1),
+      ('127', 'Consolidate plan storage', 1),
+      ('128', 'Add unique index on loops(project_id, loop_name)', 1);
+
+    CREATE TABLE loops (
+      project_id           TEXT NOT NULL,
+      loop_name            TEXT NOT NULL,
+      status               TEXT NOT NULL CHECK(status IN ('running','completed','cancelled','errored','stalled')),
+      current_session_id   TEXT NOT NULL,
+      worktree             INTEGER NOT NULL,
+      worktree_dir         TEXT NOT NULL,
+      worktree_branch      TEXT,
+      project_dir          TEXT NOT NULL,
+      max_iterations       INTEGER NOT NULL,
+      iteration            INTEGER NOT NULL DEFAULT 0,
+      audit_count          INTEGER NOT NULL DEFAULT 0,
+      error_count          INTEGER NOT NULL DEFAULT 0,
+      phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing','decomposing','final_auditing')),
+      execution_model      TEXT,
+      auditor_model        TEXT,
+      model_failed         INTEGER NOT NULL DEFAULT 0,
+      sandbox              INTEGER NOT NULL DEFAULT 0,
+      sandbox_container    TEXT,
+      started_at           INTEGER NOT NULL,
+      completed_at         INTEGER,
+      termination_reason   TEXT,
+      completion_summary   TEXT,
+      workspace_id         TEXT,
+      host_session_id      TEXT,
+      decomposition_status TEXT NOT NULL DEFAULT 'pending',
+      decomposition_mode   TEXT NOT NULL DEFAULT 'agent',
+      decomposition_session_id TEXT,
+      current_section_index INTEGER NOT NULL DEFAULT 0,
+      total_sections       INTEGER NOT NULL DEFAULT 0,
+      final_audit_done     INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (project_id, loop_name)
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_loops_project_name ON loops(project_id, loop_name);
+
+    CREATE TABLE loop_large_fields (
+      project_id          TEXT NOT NULL,
+      loop_name           TEXT NOT NULL,
+      last_audit_result   TEXT,
+      PRIMARY KEY (project_id, loop_name),
+      FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
+    );
+
+    CREATE TABLE plans (
+      project_id   TEXT NOT NULL,
+      loop_name    TEXT,
+      session_id   TEXT,
+      content      TEXT NOT NULL,
+      updated_at   INTEGER NOT NULL,
+      CHECK (loop_name IS NOT NULL OR session_id IS NOT NULL),
+      CHECK (NOT (loop_name IS NOT NULL AND session_id IS NOT NULL)),
+      UNIQUE (project_id, loop_name),
+      UNIQUE (project_id, session_id)
+    );
+
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('project-a', 'loop-coding', 'running', 'session-1', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1);
+
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('project-a', 'loop-decomp', 'running', 'session-2', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'decomposing', 1);
+  `)
+  db.close()
+
+  const migrated = openForgeDatabase(dbPath)
+
+  // decomposing row should be deleted
+  const decompRow = migrated.prepare("SELECT * FROM loops WHERE phase = 'decomposing'").get()
+  expect(decompRow).toBeNull()
+
+  // coding row should remain
+  const codingRow = migrated.prepare("SELECT * FROM loops WHERE project_id = 'project-a' AND loop_name = 'loop-coding'").get()
+  expect(codingRow).toBeDefined()
+
+  // decomposition columns should no longer exist
+  const cols = migrated.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+  expect(cols.some((c) => c.name === 'decomposition_status')).toBe(false)
+  expect(cols.some((c) => c.name === 'decomposition_mode')).toBe(false)
+  expect(cols.some((c) => c.name === 'decomposition_session_id')).toBe(false)
+
+  // inserting a row with phase='decomposing' should throw
+  expect(() => {
+    migrated.prepare(`
+      INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+      VALUES ('project-b', 'loop-new', 'running', 'session-3', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'decomposing', 1)
+    `).run()
+  }).toThrow()
+
+  migrated.close()
 })

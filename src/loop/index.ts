@@ -1,5 +1,5 @@
 export type { LoopState } from './state'
-export type { CodingState, AuditingState, DecomposingState, FinalAuditingState } from './state'
+export type { CodingState, AuditingState, FinalAuditingState } from './state'
 export type { Phase } from './state'
 export type { TerminationStatus } from './termination'
 
@@ -24,7 +24,6 @@ export type { Transition, TransitionEvent } from './transitions'
 export {
   buildContinuationPrompt,
   buildAuditPrompt,
-  buildDecomposerInitialPrompt,
   buildSectionInitialPrompt,
   buildSectionAuditPrompt,
   buildSectionContinuationPrompt,

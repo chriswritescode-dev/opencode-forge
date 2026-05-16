@@ -2,7 +2,6 @@ import { describe, test, expect } from 'bun:test'
 import { architectAgent, buildArchitectAgent } from '../src/agents/architect'
 import { codeAgent, buildCodeAgent } from '../src/agents/code'
 import { auditorAgent, auditorLoopAgent, buildAuditorAgent, buildAuditorLoopAgent } from '../src/agents/auditor'
-import { decomposerAgent, buildDecomposerAgent } from '../src/agents/decomposer'
 import { buildAgents } from '../src/agents'
 
 describe('Agent definitions', () => {
@@ -58,9 +57,6 @@ describe('Agent definitions', () => {
 
     test('code agent prompt requires two-at-a-time code subagents for todo implementation', () => {
       const prompt = codeAgent.systemPrompt
-      expect(prompt).toContain('use the Task tool to delegate focused implementation tasks to `code` subagents')
-      expect(prompt).toContain('launch tasks 1 and 2 in parallel')
-      expect(prompt).toContain('then launch tasks 3 and 4')
       expect(prompt).toContain('Each `code` subagent must receive exactly one focused todo task')
       expect(prompt).toContain('inspect and reconcile its changes before marking the todo complete')
       expect(prompt).toContain('files changed, behavior implemented, validation run, results')
@@ -113,48 +109,19 @@ describe('Agent definitions', () => {
     })
   })
 
-  describe('decomposer agent', () => {
-    test('decomposer agent has stable metadata and primary mode', () => {
-      expect(decomposerAgent.role).toBe('decomposer')
-      expect(decomposerAgent.id).toBe('opencode-decomposer')
-      expect(decomposerAgent.displayName).toBe('decomposer')
-      expect(decomposerAgent.mode).toBe('primary')
-      expect(decomposerAgent.hidden).toBe(true)
-    })
-
-    test('decomposer agent has expected tool exclusions', () => {
-      expect(decomposerAgent.tools?.exclude).toBeDefined()
-      expect(decomposerAgent.tools?.exclude).toContain('apply_patch')
-      expect(decomposerAgent.tools?.exclude).toContain('edit')
-      expect(decomposerAgent.tools?.exclude).toContain('write')
-      expect(decomposerAgent.tools?.exclude).toContain('multiedit')
-      expect(decomposerAgent.tools?.exclude).toContain('plan')
-      expect(decomposerAgent.tools?.exclude).toContain('plan_exit')
-      expect(decomposerAgent.tools?.exclude).toContain('loop')
-      expect(decomposerAgent.tools?.exclude).toContain('loop-cancel')
-      expect(decomposerAgent.tools?.exclude).toContain('loop-status')
-      expect(decomposerAgent.tools?.exclude).toContain('review-write')
-      expect(decomposerAgent.tools?.exclude).toContain('review-delete')
-    })
-
-    test('no agent excludes the removed plan-execute tool', () => {
-      expect(auditorAgent.tools?.exclude ?? []).not.toContain('plan-execute')
-      expect(codeAgent.tools?.exclude ?? []).not.toContain('plan-execute')
-      expect(decomposerAgent.tools?.exclude ?? []).not.toContain('plan-execute')
-    })
-
-    test('decomposer agent prompt contains section marker instructions', () => {
-      const prompt = decomposerAgent.systemPrompt
+  describe('architect prompt', () => {
+    test('architect.systemPrompt instructs section marker wrapping', () => {
+      const prompt = architectAgent.systemPrompt
       expect(prompt).toContain('<!-- forge-section:start -->')
       expect(prompt).toContain('<!-- forge-section:end -->')
-      expect(prompt).toContain('Section Plan')
-      expect(prompt).toContain('Acceptance Criteria')
+      expect(prompt.toLowerCase()).toContain('wrap each phase')
+      expect(prompt.toLowerCase()).toContain('inside the outer plan markers')
     })
 
-    test('decomposer agent prompt does not contain old attribute marker format', () => {
-      const prompt = decomposerAgent.systemPrompt
-      expect(prompt).not.toMatch(/index=\d+\s+title="/)
-      expect(prompt).not.toContain('index=')
+    test('architect.systemPrompt forbids nested forge-section markers', () => {
+      const prompt = architectAgent.systemPrompt
+      expect(prompt).toContain('nested')
+      expect(prompt).toContain('forge-section')
     })
   })
 

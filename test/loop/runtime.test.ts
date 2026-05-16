@@ -1,5 +1,5 @@
-import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import Database from 'better-sqlite3'
+import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -130,9 +130,6 @@ CREATE TABLE loops (
   workspace_id         TEXT,
   host_session_id      TEXT,
   audit_session_id     TEXT,
-  decomposition_status TEXT NOT NULL DEFAULT 'pending' CHECK (decomposition_status IN ('pending','running','completed','failed','skipped')),
-  decomposition_mode   TEXT NOT NULL DEFAULT 'agent' CHECK (decomposition_mode IN ('agent','deterministic')),
-  decomposition_session_id TEXT,
   current_section_index INTEGER NOT NULL DEFAULT 0,
   total_sections       INTEGER NOT NULL DEFAULT 0,
   final_audit_done     INTEGER NOT NULL DEFAULT 0,
@@ -145,7 +142,6 @@ const LOOP_LARGE_FIELDS_SCHEMA = `
 CREATE TABLE loop_large_fields (
   project_id          TEXT NOT NULL,
   loop_name           TEXT NOT NULL,
-  prompt              TEXT,
   last_audit_result   TEXT,
   PRIMARY KEY (project_id, loop_name),
   FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
@@ -270,9 +266,6 @@ describe('Loop Runtime', () => {
       sandbox: false,
       executionModel: 'test/model',
       auditorModel: 'test/auditor',
-      decompositionStatus: 'completed',
-      decompositionMode: 'deterministic',
-      decompositionSessionId: null,
       currentSectionIndex: 0,
       totalSections: 0,
       finalAuditDone: false,
@@ -330,7 +323,7 @@ describe('Loop Runtime', () => {
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-        decompositionStatus: 'completed',
+
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
@@ -356,7 +349,7 @@ describe('Loop Runtime', () => {
       const state = makeState({
         phase: 'auditing',
         totalSections: 0,
-        decompositionStatus: 'completed',
+
         auditCount: 0,
         iteration: 1,
         maxIterations: 3,
@@ -387,107 +380,6 @@ describe('Loop Runtime', () => {
     })
   })
 
-  describe('abort during decomposing terminates user aborted', () => {
-    test('aborting a decomposer session terminates the loop with user_aborted', async () => {
-      const { loop } = createRuntime()
-      const state = makeState({
-        phase: 'decomposing',
-        decompositionStatus: 'running',
-        decompositionSessionId: 'decomp-sess-1',
-        sessionId: 'decomp-sess-1',
-        totalSections: 0,
-      })
-      loopService.setState(state.loopName, state)
-
-      await loop.tick({
-        type: 'session.error',
-        properties: {
-          sessionID: 'decomp-sess-1',
-          error: { name: 'MessageAbortedError' },
-        },
-      })
-
-      const terminatedState = loopService.getAnyState(state.loopName)
-      expect(terminatedState).not.toBeNull()
-      expect(terminatedState!.active).toBe(false)
-      expect(terminatedState!.terminationReason).toBe('user_aborted')
-    })
-  })
-
-  describe('decomposing transition to coding', () => {
-    test('loops without workspace binding create the new code session without selecting it', async () => {
-      const { loop, clientState } = createRuntime()
-      const state = makeState({
-        phase: 'decomposing',
-        sessionId: 'decomp-sess-1',
-        decompositionSessionId: 'decomp-sess-1',
-        decompositionStatus: 'completed',
-        decompositionMode: 'agent',
-        totalSections: 1,
-        worktree: false,
-        worktreeDir: tempDir,
-      })
-      loopService.setState(state.loopName, state)
-      sectionPlansRepo.bulkInsert({
-        projectId: PROJECT_ID,
-        loopName: state.loopName,
-        sections: [{ index: 0, title: 'Setup', content: '## Setup\nDo the work' }],
-      })
-
-      await loop.tick({
-        type: 'session.status',
-        properties: {
-          status: { type: 'idle' },
-          sessionID: 'decomp-sess-1',
-        },
-      })
-
-      expect(clientState.selectCalls).toHaveLength(0)
-      expect(clientState.createCalls[0].permission).toBeUndefined()
-      expect(clientState.promptCalls[0]).toEqual({ sessionID: 'sess', agent: 'code' })
-      expect(loopService.getActiveState(state.loopName)!.decompositionSessionId).toBeNull()
-    })
-
-    test('worktree loops create the bound code session after transitioning', async () => {
-      vi.useFakeTimers()
-      try {
-        const { loop, clientState } = createRuntime()
-        const state = makeState({
-          phase: 'decomposing',
-          sessionId: 'decomp-sess-1',
-          decompositionSessionId: 'decomp-sess-1',
-          decompositionStatus: 'completed',
-          decompositionMode: 'agent',
-          totalSections: 1,
-          worktree: true,
-          worktreeDir: tempDir,
-          workspaceId: 'ws-1',
-        })
-        loopService.setState(state.loopName, state)
-        sectionPlansRepo.bulkInsert({
-          projectId: PROJECT_ID,
-          loopName: state.loopName,
-          sections: [{ index: 0, title: 'Setup', content: '## Setup\nDo the work' }],
-        })
-
-        await loop.tick({
-          type: 'session.status',
-          properties: {
-            status: { type: 'idle' },
-            sessionID: 'decomp-sess-1',
-          },
-        })
-
-        expect(clientState.selectCalls).toHaveLength(0)
-        expect(loopService.getActiveState(state.loopName)!.decompositionSessionId).toBeNull()
-
-        expect(clientState.deleteCalls).toHaveLength(0)
-      } finally {
-        vi.useRealTimers()
-      }
-    })
-  })
-
 describe('runtime re-provisioning updates state.workspaceId', () => {
   test('ensureWorkspaceForLoop provisions workspace and sets workspaceId', async () => {
     const clientState: MockClientState = {
@@ -506,10 +398,10 @@ describe('runtime re-provisioning updates state.workspaceId', () => {
       ],
     }
 
-    const wsCreateMock = vi.fn().mockResolvedValue({
+    const wsCreateMock = mock(async () => ({
       data: { id: 'ws_new', directory: '/tmp/wt/new', branch: 'opencode/new' },
-    })
-    const warpMock = vi.fn().mockResolvedValue({ error: null })
+    }))
+    const warpMock = mock(async () => ({ error: null }))
 
     const v2Client = {
       ...createMockV2Client(clientState),
@@ -541,7 +433,6 @@ describe('runtime re-provisioning updates state.workspaceId', () => {
     const state = makeState({
       phase: 'coding',
       totalSections: 0,
-      decompositionStatus: 'completed',
       auditCount: 0,
       worktree: true,
       workspaceId: undefined,
@@ -625,7 +516,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-        decompositionStatus: 'completed',
+
       })
       loopService.setState(state.loopName, state)
 
@@ -663,7 +554,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-        decompositionStatus: 'completed',
+
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
@@ -676,19 +567,63 @@ describe('stall handling terminates with stall timeout when configured cap is re
         },
       })
 
-      // Before Phase 4: runtime does not call assertNoPromptInFlight → no error logged → FAILS
-      // After Phase 4: assertNoPromptInFlight rejects → [in-flight-guard] logged
       const hasGuardError = logs.some(
         (l) => l.level === 'error' && l.message.includes('[in-flight-guard]'),
       )
       expect(hasGuardError).toBe(true)
+
+      const prior = getPromptInFlight('test-loop')
+      expect(prior).toBeDefined()
+      expect(prior!.sessionId).toBe('other-session-id')
+      expect(prior!.agent).toBe('code')
+    })
+
+    test('rejects duplicate auditor prompt for same audit session', async () => {
+      markPromptInFlight('test-loop', 'sess', 'auditor-loop')
+
+      const { loop, clientState, logs } = createRuntime()
+      clientState.messagesResult = [
+        {
+          info: { role: 'assistant', finish: 'stop' },
+          parts: [{ type: 'text', text: 'Implementation complete.' }],
+        },
+      ]
+
+      const state = makeState({
+        phase: 'coding',
+        totalSections: 0,
+
+        auditCount: 0,
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: state.sessionId,
+        },
+      })
+
+      const hasGuardError = logs.some(
+        (l) => l.level === 'error' && l.message.includes('[in-flight-guard]'),
+      )
+      expect(hasGuardError).toBe(true)
+
+      const auditorPrompts = clientState.promptCalls.filter((c) => c.agent === 'auditor-loop')
+      expect(auditorPrompts).toHaveLength(0)
+
+      const prior = getPromptInFlight('test-loop')
+      expect(prior).toBeDefined()
+      expect(prior!.sessionId).toBe('sess')
+      expect(prior!.agent).toBe('auditor-loop')
     })
 
     test('clears in-flight after busy event', async () => {
-      markPromptInFlight('test-loop', 'sess-1', 'code')
+      const state = makeState({ phase: 'coding' })
+      markPromptInFlight('test-loop', state.sessionId, 'code')
 
       const { loop } = createRuntime()
-      const state = makeState({ phase: 'coding' })
       loopService.setState(state.loopName, state)
 
       await loop.tick({
@@ -699,14 +634,81 @@ describe('stall handling terminates with stall timeout when configured cap is re
         },
       })
 
-      // Before Phase 4: busy handler only clears pending (not in-flight guard) → stays set → FAILS
-      // After Phase 4: busy handler also clears in-flight guard → cleared
+      expect(getPromptInFlight('test-loop')).toBeUndefined()
+    })
+
+    test('busy event from non-owning session does not clear in-flight', async () => {
+      markPromptInFlight('test-loop', 'sess-owner', 'auditor-loop')
+
+      const { loop } = createRuntime()
+      const state = makeState({ phase: 'coding' })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession('sess-old', 'test-loop')
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'busy' },
+          sessionID: 'sess-old',
+        },
+      })
+
+      const entry = getPromptInFlight('test-loop')
+      expect(entry).toBeDefined()
+      expect(entry!.sessionId).toBe('sess-owner')
+      expect(entry!.agent).toBe('auditor-loop')
+    })
+
+    test('clears in-flight when promptAsync throws a transient error', async () => {
+      const clientState: MockClientState = {
+        deleteCalls: [],
+        createCalls: [],
+        publishCalls: [],
+        selectCalls: [],
+        deleteThrows: false,
+        abortCalls: [],
+        promptCalls: [],
+        messagesResult: [
+          {
+            info: { role: 'assistant', finish: 'stop' },
+            parts: [{ type: 'text', text: 'Implementation complete.' }],
+          },
+        ],
+      }
+
+      const v2Client = createMockV2Client(clientState)
+      const origPromptAsync = v2Client.session.promptAsync
+      let promptCallCount = 0
+      ;(v2Client as any).session.promptAsync = async (params: any) => {
+        promptCallCount++
+        if (params?.agent === 'code' && params?.sessionID === 'loop-session-id') {
+          throw new Error('transient transport error')
+        }
+        return origPromptAsync(params)
+      }
+
+      const { loop, logs } = createRuntime({ v2Client })
+
+      const state = makeState({
+        phase: 'coding',
+        totalSections: 0,
+
+        auditCount: 0,
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: state.sessionId,
+        },
+      })
+
       expect(getPromptInFlight('test-loop')).toBeUndefined()
     })
 
     test('clears in-flight on prompt completion', async () => {
-      markPromptInFlight('test-loop', 'sess', 'auditor-loop')
-
       const { loop, clientState } = createRuntime()
       clientState.messagesResult = [
         {
@@ -718,7 +720,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-        decompositionStatus: 'completed',
+
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
@@ -731,9 +733,44 @@ describe('stall handling terminates with stall timeout when configured cap is re
         },
       })
 
-      // Before Phase 4: sendPromptWithFallback never calls mark/clearInFlight → pre-set guard persists → FAILS
-      // After Phase 4: mark + clear around promptAsync call → guard cleared
       expect(getPromptInFlight('test-loop')).toBeUndefined()
+    })
+
+    test('handlePromptError short-circuits on ConcurrentPromptError, preserving loop active state', async () => {
+      markPromptInFlight('test-loop', 'other-session-id', 'code')
+
+      const { loop, clientState, logs } = createRuntime()
+      clientState.messagesResult = [
+        {
+          info: { role: 'assistant', finish: 'stop' },
+          parts: [{ type: 'text', text: 'Audit passed.' }],
+        },
+      ]
+
+      const state = makeState({
+        phase: 'coding',
+        totalSections: 0,
+
+        auditCount: 0,
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: state.sessionId,
+        },
+      })
+
+      const afterState = loop.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+
+      const prior = getPromptInFlight('test-loop')
+      expect(prior).toBeDefined()
+      expect(prior!.sessionId).toBe('other-session-id')
+      expect(prior!.agent).toBe('code')
     })
   })
 
@@ -744,7 +781,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-        decompositionStatus: 'completed',
+
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
@@ -778,7 +815,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-        decompositionStatus: 'completed',
+
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
@@ -809,7 +846,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-        decompositionStatus: 'completed',
+
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)

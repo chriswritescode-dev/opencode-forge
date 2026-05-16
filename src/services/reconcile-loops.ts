@@ -21,6 +21,7 @@ interface ReconcileDeps {
   projectId: string
   directory: string
   logger: Logger
+  attachLoopToSession?: typeof attachLoopToSession
 }
 
 interface ForgeLoopConfig {
@@ -29,7 +30,6 @@ interface ForgeLoopConfig {
   title?: string
   executionModel?: string
   auditorModel?: string
-  decomposerMode?: 'agent' | 'deterministic' | 'disabled'
   planSource?: 'stored' | 'inline'
   planText?: string
   maxIterations?: number
@@ -137,7 +137,8 @@ async function runReconcile(deps: ReconcileDeps): Promise<void> {
     const resolvedHostSessionId = cfg.hostSessionId && cfg.hostSessionId.length > 0 ? cfg.hostSessionId : session.id
 
     try {
-      const result = await attachLoopToSession(
+      const loopFn = deps.attachLoopToSession ?? attachLoopToSession
+      const result = await loopFn(
         deps.execDeps,
         { surface: 'tui', projectId: deps.projectId, directory: ws.directory ?? deps.directory },
         {
@@ -152,7 +153,6 @@ async function runReconcile(deps: ReconcileDeps): Promise<void> {
           auditorModel: cfg.auditorModel,
           maxIterations: cfg.maxIterations ?? 50,
           sandboxEnabled: cfg.sandboxEnabled ?? false,
-          decomposerMode: cfg.decomposerMode ?? 'agent',
           planText,
           selectSession: false,
           selectSessionTiming: 'after-prompt',

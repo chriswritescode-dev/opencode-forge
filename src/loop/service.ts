@@ -8,7 +8,6 @@ import type { LoopState } from './state'
 import {
   buildContinuationPrompt as _buildContinuationPrompt,
   buildAuditPrompt as _buildAuditPrompt,
-  buildDecomposerInitialPrompt as _buildDecomposerInitialPrompt,
   buildSectionInitialPrompt as _buildSectionInitialPrompt,
   buildSectionAuditPrompt as _buildSectionAuditPrompt,
   buildSectionContinuationPrompt as _buildSectionContinuationPrompt,
@@ -70,7 +69,6 @@ export interface LoopService {
   getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[]
   parseSectionSummary(text: string): { done: string | null; deviations: string | null; followUps: string | null } | null
 
-  buildDecomposerInitialPrompt(state: LoopState): string
   buildSectionInitialPrompt(state: LoopState): string
   buildSectionAuditPrompt(state: LoopState): string
   buildSectionContinuationPrompt(state: LoopState, auditText: string): string
@@ -81,8 +79,6 @@ export interface LoopService {
   setCurrentSectionIndex(loopName: string, index: number): void
   setFinalAuditDone(loopName: string, done: boolean): void
   startSection(loopName: string, index: number): void
-  setDecompositionStatus(loopName: string, status: LoopState['decompositionStatus']): void
-  setDecompositionSessionId(loopName: string, sessionId: string | null): void
   bulkInsertSections(loopName: string, sections: { index: number; title: string; content: string }[]): void
   setTotalSections(loopName: string, total: number): void
 }
@@ -98,7 +94,6 @@ export function rowToLoopState(row: LoopRow, large: LoopLargeFields | null): Loo
     iteration: row.iteration,
     maxIterations: row.maxIterations,
     startedAt: new Date(row.startedAt).toISOString(),
-    prompt: large?.prompt ?? undefined,
     phase: row.phase,
     lastAuditResult: large?.lastAuditResult ?? undefined,
     errorCount: row.errorCount,
@@ -114,9 +109,6 @@ export function rowToLoopState(row: LoopRow, large: LoopLargeFields | null): Loo
     auditorModel: row.auditorModel ?? undefined,
     workspaceId: row.workspaceId ?? undefined,
     hostSessionId: row.hostSessionId ?? undefined,
-    decompositionStatus: row.decompositionStatus,
-    decompositionMode: row.decompositionMode,
-    decompositionSessionId: row.decompositionSessionId,
     currentSectionIndex: row.currentSectionIndex,
     totalSections: row.totalSections,
     finalAuditDone: row.finalAuditDone === 1,
@@ -162,20 +154,26 @@ export function createLoopService(
       completionSummary: state.completionSummary ?? null,
       workspaceId: state.workspaceId ?? null,
       hostSessionId: state.hostSessionId ?? null,
-      decompositionStatus: state.decompositionStatus,
-      decompositionMode: state.decompositionMode,
-      decompositionSessionId: state.decompositionSessionId,
       currentSectionIndex: state.currentSectionIndex,
       totalSections: state.totalSections,
       finalAuditDone: state.finalAuditDone ? 1 : 0,
     }
   }
 
+  function hydratePlanFromPlans(state: LoopState): LoopState {
+    const planRow = plansRepo.getForLoopOrSession?.(projectId, state.loopName, state.sessionId) ?? null
+    if (planRow) {
+      state.prompt = planRow.content
+    }
+    return state
+  }
+
   function getAnyState(name: string): LoopState | null {
     const row = loopsRepo.get(projectId, name)
     if (!row) return null
     const large = loopsRepo.getLarge(projectId, name)
-    return rowToLoopState(row, large)
+    const state = rowToLoopState(row, large)
+    return hydratePlanFromPlans(state)
   }
 
   function getActiveState(name: string): LoopState | null {
@@ -192,12 +190,14 @@ export function createLoopService(
     }
     const row = stateToRow(state)
     const large: LoopLargeFields = {
-      prompt: state.prompt ?? null,
       lastAuditResult: state.lastAuditResult ?? null,
     }
     const ok = loopsRepo.insert(row, large)
     if (!ok) {
       throw new Error(`setState: loop "${name}" already exists`)
+    }
+    if (state.prompt) {
+      plansRepo.writeForLoop(projectId, name, state.prompt)
     }
     notifyLoopChange('insert', name, { projectDir: state.projectDir, worktreeDir: state.worktreeDir })
   }
@@ -205,6 +205,7 @@ export function createLoopService(
   function deleteState(name: string): void {
     const state = getAnyState(name)
     loopsRepo.delete(projectId, name)
+    plansRepo.deleteForLoop(projectId, name)
     notifyLoopChange('delete', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
@@ -244,14 +245,10 @@ export function createLoopService(
   }
 
   function getPlanTextForState(state: LoopState): string | null {
-    const fromExecution = loopsRepo.getLarge(projectId, state.loopName)?.prompt
-    if (fromExecution) return fromExecution
     return plansRepo.getForLoopOrSession(projectId, state.loopName, state.sessionId)?.content ?? null
   }
 
   function getPlanText(loopName: string, sessionId: string): string | null {
-    const fromExecution = loopsRepo.getLarge(projectId, loopName)?.prompt
-    if (fromExecution) return fromExecution
     return plansRepo.getForLoopOrSession(projectId, loopName, sessionId)?.content ?? null
   }
 
@@ -279,7 +276,7 @@ export function createLoopService(
     const rows = loopsRepo.listByStatus(projectId, ['running'])
     return rows.map((row) => {
       const large = loopsRepo.getLarge(projectId, row.loopName)
-      return rowToLoopState(row, large)
+      return hydratePlanFromPlans(rowToLoopState(row, large))
     })
   }
 
@@ -287,7 +284,7 @@ export function createLoopService(
     const rows = loopsRepo.listByStatus(projectId, ['completed', 'cancelled', 'errored', 'stalled'])
     return rows.map((row) => {
       const large = loopsRepo.getLarge(projectId, row.loopName)
-      return rowToLoopState(row, large)
+      return hydratePlanFromPlans(rowToLoopState(row, large))
     })
   }
 
@@ -296,13 +293,13 @@ export function createLoopService(
     const mapResult = (row: LoopRow | null): LoopState | null => {
       if (!row) return null
       const large = loopsRepo.getLarge(projectId, row.loopName)
-      return rowToLoopState(row, large)
+      return hydratePlanFromPlans(rowToLoopState(row, large))
     }
     return {
       match: mapResult(result.match),
       candidates: result.candidates.map((row) => {
         const large = loopsRepo.getLarge(projectId, row.loopName)
-        return rowToLoopState(row, large)
+        return hydratePlanFromPlans(rowToLoopState(row, large))
       }),
     }
   }
@@ -520,10 +517,6 @@ export function createLoopService(
     return _parseSectionSummary(text)
   }
 
-  function buildDecomposerInitialPrompt(state: LoopState): string {
-    return _buildDecomposerInitialPrompt(_promptCtx, state)
-  }
-
   function buildSectionInitialPrompt(state: LoopState): string {
     return _buildSectionInitialPrompt(_promptCtx, state)
   }
@@ -575,14 +568,6 @@ export function createLoopService(
     sectionPlansRepo.setStartedAt(projectId, loopName, index, Date.now())
   }
 
-  function setDecompositionStatus(loopName: string, status: LoopState['decompositionStatus']): void {
-    loopsRepo.setDecompositionStatus(projectId, loopName, status)
-  }
-
-  function setDecompositionSessionId(loopName: string, sessionId: string | null): void {
-    loopsRepo.setDecompositionSessionId(projectId, loopName, sessionId)
-  }
-
   function bulkInsertSections(loopName: string, sections: { index: number; title: string; content: string }[]): void {
     if (!sectionPlansRepo) return
     sectionPlansRepo.bulkInsert({ projectId, loopName, sections })
@@ -631,7 +616,6 @@ export function createLoopService(
     getCompletedSectionDigest,
     parseSectionSummary,
 
-    buildDecomposerInitialPrompt,
     buildSectionInitialPrompt,
     buildSectionAuditPrompt,
     buildSectionContinuationPrompt,
@@ -642,8 +626,6 @@ export function createLoopService(
     setCurrentSectionIndex,
     setFinalAuditDone,
     startSection,
-    setDecompositionStatus,
-    setDecompositionSessionId,
     bulkInsertSections,
     setTotalSections,
   }

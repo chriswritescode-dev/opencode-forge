@@ -62,8 +62,6 @@ describe('Loop final audit rewind behavior', () => {
       error_count: 0,
       phase: 'coding',
       started_at: Date.now(),
-      decomposition_status: 'completed',
-      decomposition_mode: 'deterministic',
       current_section_index: 0,
       total_sections: 3,
       final_audit_done: 0,
@@ -395,8 +393,6 @@ describe('Event-handler level final audit and retry cap', () => {
       error_count: 0,
       phase: 'coding',
       started_at: Date.now(),
-      decomposition_status: 'completed',
-      decomposition_mode: 'deterministic',
       current_section_index: 0,
       total_sections: 3,
       final_audit_done: 0,
@@ -407,8 +403,8 @@ describe('Event-handler level final audit and retry cap', () => {
       Object.values(values),
     )
     db.run(
-      `INSERT INTO loop_large_fields (project_id, loop_name, prompt, last_audit_result) VALUES (?, ?, ?, ?)`,
-      [values.project_id, values.loop_name, null, null],
+      `INSERT INTO loop_large_fields (project_id, loop_name, last_audit_result) VALUES (?, ?, ?)`,
+      [values.project_id, values.loop_name, null],
     )
   }
 

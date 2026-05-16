@@ -40,9 +40,6 @@ CREATE TABLE loops (
   workspace_id         TEXT,
   host_session_id      TEXT,
   audit_session_id     TEXT,
-  decomposition_status TEXT NOT NULL DEFAULT 'pending' CHECK (decomposition_status IN ('pending','running','completed','failed','skipped')),
-  decomposition_mode   TEXT NOT NULL DEFAULT 'agent' CHECK (decomposition_mode IN ('agent','deterministic')),
-  decomposition_session_id TEXT,
   current_section_index INTEGER NOT NULL DEFAULT 0,
   total_sections       INTEGER NOT NULL DEFAULT 0,
   final_audit_done     INTEGER NOT NULL DEFAULT 0,
@@ -55,7 +52,6 @@ const LOOP_LARGE_FIELDS_SCHEMA = `
 CREATE TABLE loop_large_fields (
   project_id          TEXT NOT NULL,
   loop_name           TEXT NOT NULL,
-  prompt              TEXT,
   last_audit_result   TEXT,
   PRIMARY KEY (project_id, loop_name),
   FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
@@ -159,7 +155,6 @@ describe('attachLoopToSession', () => {
         loop: { enabled: true },
         executionModel: 'prov/exec',
         auditorModel: 'prov/aud',
-        decomposer: { enabled: true, mode: 'agent' as const, onParseFailure: 'legacy' as const, maxSections: 12 },
       },
       logger: { log: () => {}, error: () => {}, debug: () => {} } as Logger,
       dataDir: '/tmp',
@@ -251,7 +246,6 @@ describe('attachLoopToSession', () => {
         executionName: LOOP_NAME,
         maxIterations: 50,
         sandboxEnabled: false,
-        decomposerMode: 'disabled',
         planText: 'NEW_PLAN',
         selectSession: false,
         selectSessionTiming: 'after-prompt',
@@ -266,7 +260,10 @@ describe('attachLoopToSession', () => {
     // Today: no purge logic exists, so the orphaned rows remain.
     // After Phase 6: these should pass once defensive purge is added.
     expect(sectionPlansRepo.count(PROJECT_ID, LOOP_NAME)).toBe(0)
-    expect(plansRepo.getForLoop(PROJECT_ID, LOOP_NAME)).toBeNull()
+    // Plan row is rewritten by setState from the new plan text ('NEW_PLAN')
+    const planAfterAttach = plansRepo.getForLoop(PROJECT_ID, LOOP_NAME)
+    expect(planAfterAttach).not.toBeNull()
+    expect(planAfterAttach!.content).toBe('NEW_PLAN')
     expect(reviewFindingsRepo.listByLoopName(PROJECT_ID, LOOP_NAME)).toEqual([])
   })
 })

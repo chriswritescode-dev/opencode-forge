@@ -5,7 +5,6 @@ import {
   type LoopState,
   type CodingState,
   type AuditingState,
-  type DecomposingState,
   type FinalAuditingState,
 } from '../../src/loop/state'
 import type { LoopRow } from '../../src/storage/repos/loops-repo'
@@ -36,9 +35,6 @@ function makeRow(overrides: Partial<LoopRow> = {}): LoopRow {
     completionSummary: null,
     workspaceId: null,
     hostSessionId: null,
-    decompositionStatus: 'pending',
-    decompositionMode: 'agent',
-    decompositionSessionId: null,
     currentSectionIndex: 0,
     totalSections: 0,
     finalAuditDone: 0,
@@ -62,14 +58,6 @@ describe('loopRowToState', () => {
     expect(state.phase).toBe('auditing')
     const auditing = state as AuditingState
     expect(auditing.phase).toBe('auditing')
-  })
-
-  it('narrows decomposing phase to DecomposingState', () => {
-    const row = makeRow({ phase: 'decomposing', currentSectionIndex: 0 })
-    const state = loopRowToState(row)
-    expect(state.phase).toBe('decomposing')
-    const decomposing = state as DecomposingState
-    expect(decomposing.phase).toBe('decomposing')
   })
 
   it('narrows final_auditing phase to FinalAuditingState', () => {
@@ -140,23 +128,21 @@ describe('loopRowToState', () => {
     expect(stateNull.completedAt).toBeUndefined()
   })
 
-  it('handles large field for prompt and lastAuditResult', () => {
+  it('handles large field for lastAuditResult', () => {
     const row = makeRow()
-    const large = { prompt: 'test prompt', lastAuditResult: 'all good' }
+    const large = { lastAuditResult: 'all good' }
     const state = loopRowToState(row, large)
-    expect(state.prompt).toBe('test prompt')
     expect(state.lastAuditResult).toBe('all good')
   })
 
   it('defaults large fields to undefined when not provided', () => {
     const row = makeRow()
     const state = loopRowToState(row)
-    expect(state.prompt).toBeUndefined()
     expect(state.lastAuditResult).toBeUndefined()
   })
 
-  it('returns all four phases without runtime errors', () => {
-    for (const phase of ['coding', 'auditing', 'decomposing', 'final_auditing'] as const) {
+  it('returns all three phases without runtime errors', () => {
+    for (const phase of ['coding', 'auditing', 'final_auditing'] as const) {
       const row = makeRow({ phase })
       const state = loopRowToState(row)
       expect(state.phase).toBe(phase)
@@ -166,9 +152,9 @@ describe('loopRowToState', () => {
 
 describe('loopStateToRow', () => {
   it('preserves phase value', () => {
-    const state = loopRowToState(makeRow({ phase: 'decomposing' }))
+    const state = loopRowToState(makeRow({ phase: 'coding' }))
     const row = loopStateToRow(state, 'proj-1')
-    expect(row.phase).toBe('decomposing')
+    expect(row.phase).toBe('coding')
   })
 
   it('maps active flag to status', () => {
@@ -248,40 +234,26 @@ describe('loopRowToState + loopStateToRow round-trip', () => {
     expect(result.totalSections).toBe(7)
   })
 
-  it('round-trips booleans and decomposition fields', () => {
+  it('round-trips booleans', () => {
     const row = makeRow({
       worktree: true,
       modelFailed: true,
       sandbox: true,
-      decompositionStatus: 'completed',
-      decompositionMode: 'agent',
     })
     const state = loopRowToRow_backwardCompat(row)
     const result = loopStateToRow(state, 'proj-1')
     expect(result.worktree).toBe(true)
     expect(result.modelFailed).toBe(true)
     expect(result.sandbox).toBe(true)
-    expect(result.decompositionStatus).toBe('completed')
-    expect(result.decompositionMode).toBe('agent')
   })
 
   it('preserves projectId through round-trip for each phase', () => {
-    for (const phase of ['coding', 'auditing', 'decomposing', 'final_auditing'] as const) {
+    for (const phase of ['coding', 'auditing', 'final_auditing'] as const) {
       const row = makeRow({ phase, projectId: 'proj-round' })
       const state = loopRowToState(row)
       const result = loopStateToRow(state, 'proj-round')
       expect(result.projectId).toBe('proj-round')
     }
-  })
-})
-
-describe('decomposing state specific assertions', () => {
-  it('has phase: decomposing, currentSectionIndex: 0, no required lastAuditResult', () => {
-    const row = makeRow({ phase: 'decomposing', currentSectionIndex: 0 })
-    const state = loopRowToState(row)
-    expect(state.phase).toBe('decomposing')
-    expect((state as DecomposingState).currentSectionIndex).toBe(0)
-    expect(state.lastAuditResult).toBeUndefined()
   })
 })
 

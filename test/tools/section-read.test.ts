@@ -60,9 +60,6 @@ describe('section-read tool', () => {
         workspace_id         TEXT,
         host_session_id      TEXT,
         session_directory    TEXT,
-        decomposition_status TEXT NOT NULL DEFAULT 'pending',
-        decomposition_mode   TEXT NOT NULL DEFAULT 'agent',
-        decomposition_session_id TEXT,
         current_section_index INTEGER NOT NULL DEFAULT 0,
         total_sections       INTEGER NOT NULL DEFAULT 0,
         final_audit_done     INTEGER NOT NULL DEFAULT 0,
@@ -75,7 +72,6 @@ describe('section-read tool', () => {
       CREATE TABLE loop_large_fields (
         project_id          TEXT NOT NULL,
         loop_name           TEXT NOT NULL,
-        prompt              TEXT,
         last_audit_result   TEXT,
         PRIMARY KEY (project_id, loop_name),
         FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
@@ -169,13 +165,10 @@ describe('section-read tool', () => {
       completionSummary: null,
       workspaceId: null,
       hostSessionId: null,
-      decompositionStatus: 'completed',
-      decompositionMode: 'deterministic',
-      decompositionSessionId: null,
       currentSectionIndex: opts?.currentSectionIndex ?? 0,
       totalSections: opts?.totalSections ?? 0,
       finalAuditDone: 0,
-    }, { prompt: 'test plan', lastAuditResult: null })
+    }, { lastAuditResult: null })
   }
 
   function insertSections(loopName: string, count: number) {

@@ -52,8 +52,6 @@ function rowToLoopInfo(row: import('../storage/repos/loops-repo').LoopRow, secti
     auditorModel: row.auditorModel ?? undefined,
     workspaceId: row.workspaceId ?? undefined,
     hostSessionId: row.hostSessionId ?? undefined,
-    decompositionStatus: row.decompositionStatus,
-    decompositionMode: row.decompositionMode,
     currentSectionIndex: row.currentSectionIndex,
     totalSections: row.totalSections,
     finalAuditDone: !!row.finalAuditDone,

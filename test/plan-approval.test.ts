@@ -1446,12 +1446,12 @@ describe('Execute here bypass', () => {
     const planAfter = plansRepo.getForSession(projectId, testSessionID)
     expect(planAfter?.content).toBe(originalPlan)
 
-    // Verify loop was created and prompt was stored in loop_large_fields
+    // Verify loop was created and plan was stored in plans table
     const loopRow = db.prepare('SELECT loop_name FROM loops WHERE project_id = ?').get(projectId) as { loop_name: string } | null
     expect(loopRow).toBeDefined()
     if (loopRow) {
-      const largeFields = db.prepare('SELECT prompt FROM loop_large_fields WHERE project_id = ? AND loop_name = ?').get(projectId, loopRow.loop_name) as { prompt: string } | null
-      expect(largeFields?.prompt).toBe(originalPlan)
+      const planRow = db.prepare('SELECT content FROM plans WHERE project_id = ? AND loop_name = ?').get(projectId, loopRow.loop_name) as { content: string } | null
+      expect(planRow?.content).toBe(originalPlan)
     }
   })
 

@@ -2,7 +2,6 @@ import type { AgentRole, AgentDefinition } from './types'
 import { buildCodeAgent } from './code'
 import { buildArchitectAgent } from './architect'
 import { buildAuditorAgent, buildAuditorLoopAgent } from './auditor'
-import { buildDecomposerAgent } from './decomposer'
 
 export function buildAgents(): Record<AgentRole, AgentDefinition> {
   return {
@@ -10,7 +9,6 @@ export function buildAgents(): Record<AgentRole, AgentDefinition> {
     architect: buildArchitectAgent(),
     auditor: buildAuditorAgent(),
     'auditor-loop': buildAuditorLoopAgent(),
-    decomposer: buildDecomposerAgent(),
   }
 }
 

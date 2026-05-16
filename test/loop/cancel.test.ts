@@ -96,9 +96,6 @@ CREATE TABLE loops (
   workspace_id         TEXT,
   host_session_id      TEXT,
   audit_session_id     TEXT,
-  decomposition_status TEXT NOT NULL DEFAULT 'pending' CHECK (decomposition_status IN ('pending','running','completed','failed','skipped')),
-  decomposition_mode   TEXT NOT NULL DEFAULT 'agent' CHECK (decomposition_mode IN ('agent','deterministic')),
-  decomposition_session_id TEXT,
   current_section_index INTEGER NOT NULL DEFAULT 0,
   total_sections       INTEGER NOT NULL DEFAULT 0,
   final_audit_done     INTEGER NOT NULL DEFAULT 0,
@@ -111,7 +108,6 @@ const LOOP_LARGE_FIELDS_SCHEMA = `
 CREATE TABLE loop_large_fields (
   project_id          TEXT NOT NULL,
   loop_name           TEXT NOT NULL,
-  prompt              TEXT,
   last_audit_result   TEXT,
   PRIMARY KEY (project_id, loop_name),
   FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
@@ -235,9 +231,6 @@ describe('Loop Runtime cancel()', () => {
       sandbox: false,
       executionModel: 'test/model',
       auditorModel: 'test/auditor',
-      decompositionStatus: 'completed',
-      decompositionMode: 'deterministic',
-      decompositionSessionId: null,
       currentSectionIndex: 0,
       totalSections: 0,
       finalAuditDone: false,

@@ -32,7 +32,7 @@ describe('LoopsRepo', () => {
         iteration            INTEGER NOT NULL DEFAULT 0,
         audit_count          INTEGER NOT NULL DEFAULT 0,
         error_count          INTEGER NOT NULL DEFAULT 0,
-        phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing','decomposing','final_auditing')),
+        phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing','final_auditing')),
         execution_model      TEXT,
         auditor_model        TEXT,
         model_failed         INTEGER NOT NULL DEFAULT 0,
@@ -45,9 +45,6 @@ describe('LoopsRepo', () => {
         workspace_id         TEXT,
         host_session_id      TEXT,
         audit_session_id     TEXT,
-        decomposition_status TEXT NOT NULL DEFAULT 'pending' CHECK (decomposition_status IN ('pending','running','completed','failed','skipped')),
-        decomposition_mode TEXT NOT NULL DEFAULT 'agent' CHECK (decomposition_mode IN ('agent','deterministic')),
-        decomposition_session_id TEXT,
         current_section_index INTEGER NOT NULL DEFAULT 0,
         total_sections INTEGER NOT NULL DEFAULT 0,
         final_audit_done INTEGER NOT NULL DEFAULT 0,
@@ -60,7 +57,6 @@ describe('LoopsRepo', () => {
       CREATE TABLE loop_large_fields (
         project_id          TEXT NOT NULL,
         loop_name           TEXT NOT NULL,
-        prompt              TEXT,
         last_audit_result   TEXT,
         PRIMARY KEY (project_id, loop_name),
         FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
@@ -110,7 +106,6 @@ describe('LoopsRepo', () => {
   }
 
   const testLarge: LoopLargeFields = {
-    prompt: 'Test prompt',
     lastAuditResult: null,
   }
 
@@ -126,7 +121,7 @@ describe('LoopsRepo', () => {
       
       const large = repo.getLarge(testRow.projectId, testRow.loopName)
       expect(large).toBeTruthy()
-      expect(large!.prompt).toBe('Test prompt')
+      expect(large!.lastAuditResult).toBeNull()
     })
 
     test('should error on second insert (conflict)', () => {
@@ -138,7 +133,7 @@ describe('LoopsRepo', () => {
         errorCount: 3,
       }
       expect(() => {
-        repo.insert(updated, { prompt: 'Updated prompt', lastAuditResult: null })
+        repo.insert(updated, { lastAuditResult: null })
       }).toThrow() // Insert throws due to conflict
       
       // Original row is unchanged
@@ -414,6 +409,15 @@ describe('LoopsRepo', () => {
       expect(retrieved!.iteration).toBe(2)
       expect(retrieved!.errorCount).toBe(0)
       expect(retrieved!.modelFailed).toBe(false)
+    })
+  })
+
+  describe('decomposition setters removed', () => {
+    test('LoopsRepo no longer exposes decomposition setters', () => {
+      const repoAsAny = repo as unknown as Record<string, unknown>
+      expect(repoAsAny.setDecompositionStatus).toBeUndefined()
+      expect(repoAsAny.setDecompositionMode).toBeUndefined()
+      expect(repoAsAny.setDecompositionSessionId).toBeUndefined()
     })
   })
 })

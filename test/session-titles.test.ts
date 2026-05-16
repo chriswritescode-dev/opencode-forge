@@ -5,7 +5,6 @@ import {
   formatLoopSessionTitle,
   formatPlanSessionTitle,
   formatAuditSessionTitle,
-  formatDecomposerSessionTitle,
 } from '../src/utils/session-titles'
 
 describe('session-titles', () => {
@@ -118,18 +117,6 @@ describe('session-titles', () => {
     test('truncates after suffixes are appended', () => {
       const long = 'x'.repeat(80)
       const out = formatLoopSessionTitle(long, { iteration: 12, currentSectionIndex: 0, totalSections: 5 })
-      expect(out.length).toBeLessThanOrEqual(60)
-      expect(out.endsWith('...')).toBe(true)
-    })
-  })
-
-  describe('formatDecomposerSessionTitle', () => {
-    test('returns decomposer-<name>', () => {
-      expect(formatDecomposerSessionTitle('user-detail-orders')).toBe('decomposer-user-detail-orders')
-    })
-    test('truncates long loop names', () => {
-      const long = 'x'.repeat(80)
-      const out = formatDecomposerSessionTitle(long)
       expect(out.length).toBeLessThanOrEqual(60)
       expect(out.endsWith('...')).toBe(true)
     })

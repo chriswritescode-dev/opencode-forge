@@ -71,12 +71,4 @@
   //   "auditor": { "temperature": 0.0 },
   //   "code": { "temperature": 0.7 }
   // }
-
-  // Decomposer configuration for plan section decomposition
-  "decomposer": {
-    "enabled": true,
-    "mode": "agent",
-    "onParseFailure": "legacy",
-    "maxSections": 12
-  }
 }

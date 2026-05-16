@@ -107,7 +107,7 @@ describe('review-write', () => {
       workspaceId: null,
       hostSessionId: null,
       startedAt: Date.now(),
-    }, { prompt: null, lastAuditResult: null })
+    }, { lastAuditResult: null })
 
     const result = await tools['review-write'].execute(
       {
@@ -271,7 +271,7 @@ describe('review-read', () => {
       workspaceId: null,
       hostSessionId: null,
       startedAt: Date.now(),
-    }, { prompt: null, lastAuditResult: null })
+    }, { lastAuditResult: null })
 
     const result = await tools['review-read'].execute(
       {},
@@ -374,7 +374,7 @@ describe('review-delete', () => {
       workspaceId: null,
       hostSessionId: null,
       startedAt: Date.now(),
-    }, { prompt: null, lastAuditResult: null })
+    }, { lastAuditResult: null })
 
     // Delete from alpha loop context
     const result = await tools['review-delete'].execute(

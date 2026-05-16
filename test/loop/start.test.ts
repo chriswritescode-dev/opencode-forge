@@ -1,5 +1,5 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest'
-import Database from 'better-sqlite3'
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -86,9 +86,6 @@ CREATE TABLE loops (
   workspace_id         TEXT,
   host_session_id      TEXT,
   audit_session_id     TEXT,
-  decomposition_status TEXT NOT NULL DEFAULT 'pending' CHECK (decomposition_status IN ('pending','running','completed','failed','skipped')),
-  decomposition_mode   TEXT NOT NULL DEFAULT 'agent' CHECK (decomposition_mode IN ('agent','deterministic')),
-  decomposition_session_id TEXT,
   current_section_index INTEGER NOT NULL DEFAULT 0,
   total_sections       INTEGER NOT NULL DEFAULT 0,
   final_audit_done     INTEGER NOT NULL DEFAULT 0,
@@ -101,7 +98,6 @@ const LOOP_LARGE_FIELDS_SCHEMA = `
 CREATE TABLE loop_large_fields (
   project_id          TEXT NOT NULL,
   loop_name           TEXT NOT NULL,
-  prompt              TEXT,
   last_audit_result   TEXT,
   PRIMARY KEY (project_id, loop_name),
   FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
@@ -225,9 +221,6 @@ describe('Loop Runtime start()', () => {
       sandbox: false,
       executionModel: 'test/model',
       auditorModel: 'test/auditor',
-      decompositionStatus: 'completed',
-      decompositionMode: 'deterministic',
-      decompositionSessionId: null,
       currentSectionIndex: 0,
       totalSections: 0,
       finalAuditDone: false,
@@ -269,58 +262,10 @@ describe('Loop Runtime start()', () => {
       expect(persisted!.maxIterations).toBe(5)
     })
 
-    test('writes correct decomposition settings', () => {
-      const { loop } = createRuntime()
-      const state = makeState({
-        decompositionStatus: 'pending',
-        decompositionMode: 'agent',
-      })
-
-      loop.start({ state })
-
-      const persisted = loopService.getActiveState(state.loopName)!
-      expect(persisted.decompositionStatus).toBe('pending')
-      expect(persisted.decompositionMode).toBe('agent')
-      expect(persisted.phase).toBe('decomposing')
-    })
-
-  })
-
-  describe('start derives initial phase from decomposition settings', () => {
-    test('sets phase to decomposing for agent decomposition mode with pending status', () => {
+    test('loop start always begins in phase=coding regardless of plan content', () => {
       const { loop } = createRuntime()
       const state = makeState({
         phase: 'coding',
-        decompositionMode: 'agent',
-        decompositionStatus: 'pending',
-      })
-
-      loop.start({ state })
-
-      const persisted = loopService.getActiveState(state.loopName)!
-      expect(persisted.phase).toBe('decomposing')
-    })
-
-    test('sets phase to decomposing for agent decomposition mode with running status', () => {
-      const { loop } = createRuntime()
-      const state = makeState({
-        phase: 'coding',
-        decompositionMode: 'agent',
-        decompositionStatus: 'running',
-      })
-
-      loop.start({ state })
-
-      const persisted = loopService.getActiveState(state.loopName)!
-      expect(persisted.phase).toBe('decomposing')
-    })
-
-    test('keeps phase as coding for deterministic decomposition with completed status', () => {
-      const { loop } = createRuntime()
-      const state = makeState({
-        phase: 'coding',
-        decompositionMode: 'deterministic',
-        decompositionStatus: 'completed',
       })
 
       loop.start({ state })
@@ -329,48 +274,6 @@ describe('Loop Runtime start()', () => {
       expect(persisted.phase).toBe('coding')
     })
 
-    test('keeps phase as coding for deterministic decomposition with pending status', () => {
-      const { loop } = createRuntime()
-      const state = makeState({
-        phase: 'coding',
-        decompositionMode: 'deterministic',
-        decompositionStatus: 'pending',
-      })
-
-      loop.start({ state })
-
-      const persisted = loopService.getActiveState(state.loopName)!
-      expect(persisted.phase).toBe('coding')
-    })
-
-    test('keeps phase as coding when decomposition is skipped', () => {
-      const { loop } = createRuntime()
-      const state = makeState({
-        phase: 'coding',
-        decompositionMode: 'agent',
-        decompositionStatus: 'skipped',
-      })
-
-      loop.start({ state })
-
-      const persisted = loopService.getActiveState(state.loopName)!
-      expect(persisted.phase).toBe('coding')
-    })
-
-    test('preserves explicitly provided decomposing phase for agent decomposer', () => {
-      const { loop } = createRuntime()
-      const state = makeState({
-        phase: 'decomposing',
-        decompositionMode: 'agent',
-        decompositionStatus: 'running',
-      })
-
-      loop.start({ state })
-
-      const persisted = loopService.getActiveState(state.loopName)!
-      expect(persisted.phase).toBe('decomposing')
-      expect(persisted.decompositionStatus).toBe('running')
-    })
   })
 
   describe('start generates unique loop names', () => {
@@ -475,40 +378,5 @@ describe('Loop Runtime start()', () => {
       expect(active.length).toBeGreaterThanOrEqual(1)
       expect(active.find(s => s.loopName === state.loopName)).toBeDefined()
     })
-  })
-
-  describe('plan-approval path delegates phase derivation via start()', () => {
-    test('loop.start() sets phase to decomposing when called with agent decomposition state', () => {
-      const { loop } = createRuntime()
-      const state = makeState({
-        phase: 'coding',
-        decompositionMode: 'agent',
-        decompositionStatus: 'running',
-        decompositionSessionId: null,
-      })
-
-      loop.start({ state })
-
-      const persisted = loopService.getActiveState(state.loopName)!
-      expect(persisted.phase).toBe('decomposing')
-      expect(persisted.decompositionMode).toBe('agent')
-      expect(persisted.decompositionStatus).toBe('running')
-    })
-
-    test('loop.start() preserves phase as coding when called with deterministic decomposition state', () => {
-      const { loop } = createRuntime()
-      const state = makeState({
-        phase: 'coding',
-        decompositionMode: 'deterministic',
-        decompositionStatus: 'completed',
-        totalSections: 5,
-      })
-
-      loop.start({ state })
-
-      const persisted = loopService.getActiveState(state.loopName)!
-      expect(persisted.phase).toBe('coding')
-    })
-
   })
 })

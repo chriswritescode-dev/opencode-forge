@@ -8,27 +8,6 @@ export function parseModelString(modelStr?: string): { providerID: string; model
   }
 }
 
-export interface DecomposerModelSources {
-  decomposerModel?: string
-  auditorModel?: string
-  executionModel?: string
-}
-
-/**
- * Resolve the model to pass to the decomposer agent.
- * Precedence: decomposer.model > auditorModel > executionModel > undefined (opencode default).
- * Returns undefined when no source is set, signaling "let opencode pick".
- */
-export function resolveDecomposerModel(
-  sources: DecomposerModelSources,
-): { providerID: string; modelID: string } | undefined {
-  return (
-    parseModelString(sources.decomposerModel) ??
-    parseModelString(sources.auditorModel) ??
-    parseModelString(sources.executionModel)
-  )
-}
-
 export async function retryWithModelFallback<T>(
   callWithModel: () => Promise<{ data?: T; error?: unknown }>,
   callWithoutModel: () => Promise<{ data?: T; error?: unknown }>,
@@ -47,6 +26,14 @@ export async function retryWithModelFallback<T>(
       return { result, usedModel: model }
     }
     lastError = result.error
+    if (
+      typeof result.error === 'object' &&
+      result.error !== null &&
+      'code' in result.error &&
+      (result.error as { code?: unknown }).code === 'concurrent_prompt'
+    ) {
+      return { result: { data: result.data, error: result.error }, usedModel: model }
+    }
     if (attempt < maxRetries) {
       logger.log(`model attempt ${attempt}/${maxRetries} failed, retrying`)
     } else {

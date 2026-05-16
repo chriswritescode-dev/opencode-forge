@@ -168,5 +168,26 @@ describe('createConfigHandler', () => {
         expect(tools['review-delete']).not.toBe(false)
       }
     })
+
+    test('registers review-plan command with auditor agent', async () => {
+      const configHandler = createConfigHandler(agents)
+      const config: Record<string, unknown> = {}
+
+      await configHandler(config)
+
+      const commands = config.command as Record<string, Record<string, unknown>>
+      const reviewPlan = commands['review-plan']
+
+      expect(reviewPlan).toBeDefined()
+      expect(reviewPlan.agent).toBe('auditor')
+      expect(reviewPlan.subtask).toBe(true)
+      expect(reviewPlan.template).toContain('plan-read')
+      expect(reviewPlan.template).toContain('Do not use loop management tools')
+      expect(reviewPlan.template).toContain('completed implementation')
+      expect(reviewPlan.template).toContain('recent: true')
+      expect(reviewPlan.template).not.toContain('loop-status')
+      expect(reviewPlan.description).not.toContain('before execution')
+      expect(reviewPlan.description).toContain('completed implementation')
+    })
   })
 })

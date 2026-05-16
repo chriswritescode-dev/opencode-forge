@@ -1,6 +1,6 @@
 import type { Logger } from '../types'
 
-export type PromptAgent = 'code' | 'auditor-loop' | 'decomposer'
+export type PromptAgent = 'code' | 'auditor-loop'
 
 export class ConcurrentPromptError extends Error {
   readonly code = 'concurrent_prompt'
@@ -36,6 +36,30 @@ export function clearPromptInFlight(loopName: string): void {
   inFlight.delete(loopName)
 }
 
+export function clearPromptInFlightBySession(loopName: string, sessionId: string): boolean {
+  const entry = inFlight.get(loopName)
+  if (!entry) return false
+  if (entry.sessionId === sessionId) {
+    inFlight.delete(loopName)
+    return true
+  }
+  return false
+}
+
+export function clearPromptInFlightIfMatches(
+  loopName: string,
+  sessionId: string,
+  agent: PromptAgent,
+): boolean {
+  const entry = inFlight.get(loopName)
+  if (!entry) return false
+  if (entry.sessionId === sessionId && entry.agent === agent) {
+    inFlight.delete(loopName)
+    return true
+  }
+  return false
+}
+
 export function getPromptInFlight(loopName: string): InFlightEntry | undefined {
   return inFlight.get(loopName)
 }
@@ -48,12 +72,27 @@ export function assertNoPromptInFlight(
 ): void {
   const prior = inFlight.get(loopName)
   if (!prior) return
-  if (prior.sessionId === attemptedSessionId && prior.agent === attemptedAgent) return
   logger.error(
     `[in-flight-guard] concurrent prompt rejected loop=${loopName} ` +
     `prior=${prior.agent}: ${prior.sessionId} attempted=${attemptedAgent}: ${attemptedSessionId}`,
   )
   throw new ConcurrentPromptError(loopName, prior.sessionId, prior.agent, attemptedSessionId, attemptedAgent)
+}
+
+export async function withInFlightGuard<T>(
+  loopName: string,
+  sessionId: string,
+  agent: PromptAgent,
+  logger: Logger,
+  fn: () => Promise<T>,
+): Promise<T> {
+  assertNoPromptInFlight(loopName, sessionId, agent, logger)
+  markPromptInFlight(loopName, sessionId, agent)
+  try {
+    return await fn()
+  } finally {
+    clearPromptInFlightIfMatches(loopName, sessionId, agent)
+  }
 }
 
 // Test-only: clear all state.

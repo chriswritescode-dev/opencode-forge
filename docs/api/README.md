@@ -79,19 +79,20 @@ Loop search dialog:
 
 ## Agents
 
-The plugin bundles three agents:
+The plugin bundles three user-facing agents plus a hidden `auditor-loop` variant used by loop audit sessions:
 
 | Agent | Mode | Description |
 |-------|------|-------------|
-| **code** | primary | Primary coding agent. |
+| **code** | all | Primary coding agent. |
 | **architect** | primary | Read-only planning agent. Researches the codebase, designs implementation plans, and caches them for user approval before execution. |
 | **auditor** | subagent | Read-only code auditor for convention-aware reviews. Invoked via Task tool to review diffs, commits, branches, or PRs against stored conventions and decisions. |
+| **auditor-loop** | primary, hidden | Internal audit agent used for loop-runner audit sessions. |
 
-The auditor agent is a read-only subagent (`temperature: 0.0`) that cannot write, edit, or delete entries or execute plans. It is invoked by other agents via the Task tool to review code changes against stored project conventions and decisions.
+The auditor agent is a read-only subagent that cannot edit source files or execute plans. It is invoked by other agents via the Task tool to review code changes against stored project conventions and decisions.
 
 **Tool restrictions:** The auditor cannot use the `loop` tool to prevent interference with active workflows.
 
-The architect agent operates in read-only mode (`temperature: 0.0`, all edits denied) with message-level enforcement via the `experimental.chat.messages.transform` hook. Final plans are rendered once in the assistant response between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers, then auto-captured into SQL before execution approval. After user approval via the question tool, execution is dispatched programmatically — no additional LLM calls are needed. The user can view and edit the cached plan from the sidebar or command palette before or during execution. 
+The architect agent operates as a read-only planner with message-level reinforcement via the `experimental.chat.messages.transform` hook. Final plans are rendered once in the assistant response between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers, then auto-captured into SQL before execution approval. After user approval via the question tool, execution is dispatched programmatically — no additional LLM calls are needed. The user can view and edit the cached plan from the sidebar or command palette before or during execution. 
 
 ## Tools
 
@@ -123,7 +124,7 @@ Iterative development loops with automatic auditing. Loops always run in an isol
 | `loop-cancel` | Cancel an active loop by worktree name |
 | `loop-status` | List all active loops or get detailed status by worktree name. Supports `restart` to resume inactive loops. |
 
-`loop` reads the current session's captured plan when `plan` is omitted. `maxIterations`, execution model, auditor model, decomposition, and sandbox behavior come from configuration or the TUI execution dialog, not direct `loop` tool arguments.
+`loop` reads the current session's captured plan when `plan` is omitted. `maxIterations`, execution model, auditor model, and sandbox behavior come from configuration or the TUI execution dialog, not direct `loop` tool arguments.
 
 ## Slash Commands
 
@@ -211,13 +212,6 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
     }
   },
 
-  // Plan decomposition settings (optional, defaults to agent-based decomposition)
-  "decomposer": {
-    "enabled": true,                 // Enable plan decomposition
-    "mode": "agent",                // Decomposition mode: "agent" or "deterministic"
-    "maxSections": 12               // Maximum number of sections
-  },
-
   // TUI sidebar widget configuration
   "tui": {
     "sidebar": true,               // Show Forge sidebar in OpenCode TUI
@@ -286,13 +280,6 @@ When enabled, logs are written to the specified file with timestamps. The log fi
   - `memorySwap` - Memory+swap limit, e.g., `'12g'`. Maps to `--memory-swap`.
   - `cpus` - Number of CPUs, e.g., `'4'`, `'2.5'`. Maps to `--cpus`.
   - `shmSize` - Shared memory size, e.g., `'1g'`. Maps to `--shm-size`.
-
-#### Decomposer
-- `decomposer.enabled` - Enable plan decomposition into sections (default: `true`)
-- `decomposer.mode` - Decomposition mode: `"agent"` (LLM) or `"deterministic"` (parser). Defaults to `"agent"`.
-- `decomposer.model` - Model override for the decomposer agent. Ignored in deterministic mode.
-- `decomposer.onParseFailure` - Fallback when deterministic parse fails: `"legacy"` (skip decomposition) or `"agent"` (try agent mode). Defaults to `"legacy"`.
-- `decomposer.maxSections` - Maximum number of sections per plan (default: `12`).
 
 #### TUI
 - `tui.sidebar` - Show the forge sidebar widget in OpenCode TUI (default: `true`)

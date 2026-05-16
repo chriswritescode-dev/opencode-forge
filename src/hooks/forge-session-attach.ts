@@ -9,6 +9,7 @@ export interface ForgeSessionAttachHookDeps {
   projectId: string
   directory: string
   logger: Logger
+  attachLoopToSession?: typeof attachLoopToSession
 }
 
 interface WorkspaceEntry {
@@ -62,7 +63,6 @@ export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
       title?: string
       executionModel?: string
       auditorModel?: string
-      decomposerMode?: 'agent' | 'deterministic' | 'disabled'
       planSource?: 'stored' | 'inline'
       planText?: string
       maxIterations?: number
@@ -116,7 +116,8 @@ export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
     }
 
     try {
-      const result = await attachLoopToSession(
+      const loopFn = deps.attachLoopToSession ?? attachLoopToSession
+      const result = await loopFn(
         deps.execDeps,
         { surface: 'tui', projectId: sessionProjectId, directory: ws.directory ?? deps.directory },
         {
@@ -131,7 +132,6 @@ export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
           auditorModel: cfg.auditorModel,
           maxIterations: cfg.maxIterations ?? 50,
           sandboxEnabled: cfg.sandboxEnabled ?? false,
-          decomposerMode: cfg.decomposerMode ?? 'agent',
           planText,
           selectSession: true,
           selectSessionTiming: 'after-prompt',

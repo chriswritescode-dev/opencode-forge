@@ -2,7 +2,6 @@ import { describe, test, expect } from 'vitest'
 import {
   buildContinuationPrompt,
   buildAuditPrompt,
-  buildDecomposerInitialPrompt,
   buildSectionInitialPrompt,
   buildSectionAuditPrompt,
   buildSectionContinuationPrompt,
@@ -24,9 +23,6 @@ const defaultState = {
   phase: 'coding' as const,
   errorCount: 0,
   auditCount: 0,
-  decompositionStatus: 'pending' as const,
-  decompositionMode: 'agent' as const,
-  decompositionSessionId: null as string | null,
   currentSectionIndex: 0,
   totalSections: 0,
   finalAuditDone: false,
@@ -129,15 +125,6 @@ describe('prompt builders (src/loop/prompts)', () => {
       const ctx = makeCtx()
       const result = buildAuditPrompt(ctx, { ...sectionState, phase: 'final_auditing' })
       expect(result).toContain('[Final integration audit]')
-    })
-  })
-
-  describe('buildDecomposerInitialPrompt', () => {
-    test('decomposer initial includes plan text', () => {
-      const ctx = makeCtx()
-      const result = buildDecomposerInitialPrompt(ctx, { ...defaultState })
-      expect(result).toContain('[Decomposing master plan into section plans]')
-      expect(result).toContain('Mock plan content')
     })
   })
 

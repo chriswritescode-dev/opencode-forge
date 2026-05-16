@@ -226,4 +226,141 @@ describe('PlansRepo', () => {
       expect(() => repo.writeForSession(projectId, 'session', 'content')).not.toThrow()
     })
   })
+
+  describe('listRecent', () => {
+    test('lists project plans newest first and excludes other projects', () => {
+      const otherProject = 'other-project'
+      const t1 = 1000000
+      const t2 = 2000000
+      const t3 = 3000000
+
+      db.run(
+        "INSERT INTO plans (project_id, loop_name, content, updated_at) VALUES (?, ?, ?, ?)",
+        [projectId, 'loop-older', 'Older plan content', t1]
+      )
+      db.run(
+        "INSERT INTO plans (project_id, session_id, content, updated_at) VALUES (?, ?, ?, ?)",
+        [projectId, 'session-newer', 'Newer plan content', t2]
+      )
+      db.run(
+        "INSERT INTO plans (project_id, loop_name, content, updated_at) VALUES (?, ?, ?, ?)",
+        [otherProject, 'other-loop', 'Other project plan', t3]
+      )
+
+      const rows = repo.listRecent(projectId, { limit: 10 })
+
+      expect(rows).toHaveLength(2)
+      expect(rows[0].updatedAt).toBe(t2)
+      expect(rows[0].sessionId).toBe('session-newer')
+      expect(rows[0].loopName).toBeNull()
+      expect(rows[0].content).toBe('Newer plan content')
+      expect(rows[0].projectId).toBe(projectId)
+
+      expect(rows[1].updatedAt).toBe(t1)
+      expect(rows[1].loopName).toBe('loop-older')
+      expect(rows[1].sessionId).toBeNull()
+      expect(rows[1].content).toBe('Older plan content')
+
+      expect(rows.every((r) => r.projectId === projectId)).toBe(true)
+    })
+
+    test('limits recent project plans', () => {
+      const t1 = 1000000
+      const t2 = 2000000
+      const t3 = 3000000
+
+      db.run(
+        "INSERT INTO plans (project_id, loop_name, content, updated_at) VALUES (?, ?, ?, ?)",
+        [projectId, 'oldest-loop', 'Oldest', t1]
+      )
+      db.run(
+        "INSERT INTO plans (project_id, loop_name, content, updated_at) VALUES (?, ?, ?, ?)",
+        [projectId, 'middle-loop', 'Middle', t2]
+      )
+      db.run(
+        "INSERT INTO plans (project_id, loop_name, content, updated_at) VALUES (?, ?, ?, ?)",
+        [projectId, 'newest-loop', 'Newest', t3]
+      )
+
+      const rows = repo.listRecent(projectId, { limit: 2 })
+      expect(rows).toHaveLength(2)
+      expect(rows[0].loopName).toBe('newest-loop')
+      expect(rows[1].loopName).toBe('middle-loop')
+    })
+
+    test('uses default limit of 20 when not specified', () => {
+      const bigProject = 'big-project'
+      for (let i = 0; i < 25; i++) {
+        db.run(
+          "INSERT INTO plans (project_id, loop_name, content, updated_at) VALUES (?, ?, ?, ?)",
+          [bigProject, `loop-${i}`, `Plan ${i}`, 1000000 + i * 1000]
+        )
+      }
+
+      const rows = repo.listRecent(bigProject)
+      expect(rows).toHaveLength(20)
+      expect(rows[0].updatedAt).toBeGreaterThan(rows[rows.length - 1].updatedAt)
+    })
+  })
+
+  describe('searchRecent', () => {
+    test('searches recent project plans by regex', () => {
+      const otherProject = 'other-project'
+      const t1 = 1000000
+      const t2 = 2000000
+      const t3 = 3000000
+      const t4 = 4000000
+
+      db.run(
+        "INSERT INTO plans (project_id, loop_name, content, updated_at) VALUES (?, ?, ?, ?)",
+        [projectId, 'auth-loop', 'Implementation of auth module', t1]
+      )
+      db.run(
+        "INSERT INTO plans (project_id, loop_name, content, updated_at) VALUES (?, ?, ?, ?)",
+        [projectId, 'ui-loop', 'UI redesign for dashboard', t2]
+      )
+      db.run(
+        "INSERT INTO plans (project_id, loop_name, content, updated_at) VALUES (?, ?, ?, ?)",
+        [projectId, 'login-loop', 'Login page improvements', t3]
+      )
+      db.run(
+        "INSERT INTO plans (project_id, loop_name, content, updated_at) VALUES (?, ?, ?, ?)",
+        [otherProject, 'other-auth-loop', 'Auth for other project', t4]
+      )
+
+      const rows = repo.searchRecent(projectId, /auth|login/i, { limit: 10 })
+
+      expect(rows).toHaveLength(2)
+      expect(rows[0].loopName).toBe('login-loop')
+      expect(rows[0].updatedAt).toBe(t3)
+      expect(rows[1].loopName).toBe('auth-loop')
+      expect(rows[1].updatedAt).toBe(t1)
+
+      expect(rows.every((r) => r.projectId === projectId)).toBe(true)
+    })
+
+    test('limits search results', () => {
+      const t1 = 1000000
+      const t2 = 2000000
+      const t3 = 3000000
+
+      db.run(
+        "INSERT INTO plans (project_id, loop_name, content, updated_at) VALUES (?, ?, ?, ?)",
+        [projectId, 'loop-auth-a', 'Auth module A', t1]
+      )
+      db.run(
+        "INSERT INTO plans (project_id, loop_name, content, updated_at) VALUES (?, ?, ?, ?)",
+        [projectId, 'loop-auth-b', 'Auth module B', t2]
+      )
+      db.run(
+        "INSERT INTO plans (project_id, loop_name, content, updated_at) VALUES (?, ?, ?, ?)",
+        [projectId, 'loop-auth-c', 'Auth module C', t3]
+      )
+
+      const rows = repo.searchRecent(projectId, /auth/i, { limit: 2 })
+      expect(rows).toHaveLength(2)
+      expect(rows[0].updatedAt).toBe(t3)
+      expect(rows[1].updatedAt).toBe(t2)
+    })
+  })
 })

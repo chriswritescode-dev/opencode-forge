@@ -23,7 +23,7 @@ export function createSectionReadTool(ctx: ToolContext): ReturnType<typeof tool>
       if (!state) return JSON.stringify({ error: `Loop "${loopName}" not found.` })
 
       if (state.totalSections === 0) {
-        return JSON.stringify({ error: 'No sections available. This loop does not use section-based decomposition.' })
+        return JSON.stringify({ error: 'No sections available for this loop.' })
       }
 
       const explicitIndex = args.section_index

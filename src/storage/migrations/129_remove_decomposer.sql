@@ -1,6 +1,9 @@
--- Migration 126: Drop final_audit_attempts column from loops table.
--- The final audit is now bounded only by maxIterations; no separate attempt counter.
+-- Migration 129: Remove decomposer columns from loops table.
+-- Drops decomposition_status, decomposition_mode, decomposition_session_id;
+-- narrows phase CHECK to ('coding','auditing','final_auditing').
 -- Note: PRAGMA foreign_keys=OFF is handled by the migration runner in database.ts
+
+DELETE FROM loops WHERE phase = 'decomposing';
 
 CREATE TABLE loops_new (
   project_id           TEXT NOT NULL,
@@ -15,7 +18,7 @@ CREATE TABLE loops_new (
   iteration            INTEGER NOT NULL DEFAULT 0,
   audit_count          INTEGER NOT NULL DEFAULT 0,
   error_count          INTEGER NOT NULL DEFAULT 0,
-  phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing','decomposing','final_auditing')),
+  phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing','final_auditing')),
   execution_model      TEXT,
   auditor_model        TEXT,
   model_failed         INTEGER NOT NULL DEFAULT 0,
@@ -27,18 +30,16 @@ CREATE TABLE loops_new (
   completion_summary   TEXT,
   workspace_id         TEXT,
   host_session_id      TEXT,
-  decomposition_status TEXT NOT NULL DEFAULT 'pending' CHECK (decomposition_status IN ('pending','running','completed','failed','skipped')),
-  decomposition_mode   TEXT NOT NULL DEFAULT 'agent' CHECK (decomposition_mode IN ('agent','deterministic')),
-  decomposition_session_id TEXT,
   current_section_index INTEGER NOT NULL DEFAULT 0,
   total_sections       INTEGER NOT NULL DEFAULT 0,
   final_audit_done     INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (project_id, loop_name)
 );
-INSERT INTO loops_new (project_id, loop_name, status, current_session_id, worktree, worktree_dir, worktree_branch, project_dir, max_iterations, iteration, audit_count, error_count, phase, execution_model, auditor_model, model_failed, sandbox, sandbox_container, started_at, completed_at, termination_reason, completion_summary, workspace_id, host_session_id, decomposition_status, decomposition_mode, decomposition_session_id, current_section_index, total_sections, final_audit_done)
-SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir, worktree_branch, project_dir, max_iterations, iteration, audit_count, error_count, phase, execution_model, auditor_model, model_failed, sandbox, sandbox_container, started_at, completed_at, termination_reason, completion_summary, workspace_id, host_session_id, decomposition_status, decomposition_mode, decomposition_session_id, current_section_index, total_sections, final_audit_done FROM loops;
+INSERT INTO loops_new (project_id, loop_name, status, current_session_id, worktree, worktree_dir, worktree_branch, project_dir, max_iterations, iteration, audit_count, error_count, phase, execution_model, auditor_model, model_failed, sandbox, sandbox_container, started_at, completed_at, termination_reason, completion_summary, workspace_id, host_session_id, current_section_index, total_sections, final_audit_done)
+SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir, worktree_branch, project_dir, max_iterations, iteration, audit_count, error_count, phase, execution_model, auditor_model, model_failed, sandbox, sandbox_container, started_at, completed_at, termination_reason, completion_summary, workspace_id, host_session_id, current_section_index, total_sections, final_audit_done FROM loops;
 DROP TABLE loops;
 ALTER TABLE loops_new RENAME TO loops;
 CREATE INDEX IF NOT EXISTS idx_loops_status ON loops(project_id, status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_loops_session ON loops(project_id, current_session_id);
 CREATE INDEX IF NOT EXISTS idx_loops_completed_at ON loops(status, completed_at) WHERE status != 'running';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_loops_project_name ON loops(project_id, loop_name);

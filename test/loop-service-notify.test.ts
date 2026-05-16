@@ -31,7 +31,18 @@ function createMockRepos() {
     resetError: () => {},
   } as unknown as LoopsRepo
 
-  const mockPlansRepo = {} as PlansRepo
+  const mockPlansRepo = {
+    writeForSession: () => {},
+    writeForLoop: () => {},
+    getForSession: () => null,
+    getForLoop: () => null,
+    getForLoopOrSession: () => null,
+    promote: () => false,
+    deleteForSession: () => {},
+    deleteForLoop: () => {},
+    listRecent: () => [],
+    searchRecent: () => [],
+  } as unknown as PlansRepo
   const mockReviewFindingsRepo = {} as ReviewFindingsRepo
   const mockLogger = { log: () => {}, error: () => {}, debug: () => {} } as Logger
 
@@ -106,6 +117,65 @@ describe('LoopChangeNotifier', () => {
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('delete')
       expect(notifyCalls[0].loopName).toBe('test-loop')
+    })
+
+    it('should cascade plan deletion when deleteState is called', () => {
+      const deletedPlans: Array<{ projectId: string; loopName: string }> = []
+      const mockLoopsRepo = {
+        insert: () => true,
+        get: () => null,
+        getLarge: () => null,
+        delete: () => {},
+        setStatus: () => {},
+        setCurrentSessionId: () => {},
+        getBySessionId: () => null,
+        findPartial: () => ({ match: null, candidates: [] }),
+        listByStatus: () => [],
+        updatePhase: () => {},
+        setPhaseAndResetError: () => {},
+        setModelFailed: () => {},
+        setLastAuditResult: () => {},
+        replaceSession: () => {},
+        terminate: () => {},
+        setSandboxContainer: () => {},
+        clearWorkspaceId: () => {},
+        setWorkspaceId: () => {},
+        incrementError: () => 0,
+        resetError: () => {},
+      } as unknown as LoopsRepo
+
+      const mockPlansRepo = {
+        writeForSession: () => {},
+        writeForLoop: () => {},
+        getForSession: () => null,
+        getForLoop: () => null,
+        getForLoopOrSession: () => null,
+        promote: () => false,
+        deleteForSession: () => {},
+        deleteForLoop: (projectId: string, loopName: string) => {
+          deletedPlans.push({ projectId, loopName })
+        },
+        listRecent: () => [],
+        searchRecent: () => [],
+      } as unknown as PlansRepo
+
+      const loop = createLoop({
+        loopsRepo: mockLoopsRepo,
+        plansRepo: mockPlansRepo,
+        reviewFindingsRepo: {} as ReviewFindingsRepo,
+        projectId: 'proj-test',
+        logger: { log: () => {}, error: () => {}, debug: () => {} } as Logger,
+        client: {} as any,
+        v2Client: {} as any,
+        getConfig: () => ({} as any),
+        notify: () => {},
+      })
+
+      loop.deleteState('test-loop')
+
+      expect(deletedPlans.length).toBe(1)
+      expect(deletedPlans[0].projectId).toBe('proj-test')
+      expect(deletedPlans[0].loopName).toBe('test-loop')
     })
   })
 
@@ -510,7 +580,7 @@ describe('LoopChangeNotifier', () => {
 
       // Mock listActive to return two loops with valid row data
       mockLoopsRepo.listByStatus = () => [validRow, { ...validRow, loopName: 'loop-2' }]
-      mockLoopsRepo.getLarge = () => ({ prompt: 'test prompt', lastAuditResult: null })
+      mockLoopsRepo.getLarge = () => ({ lastAuditResult: null })
 
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
       const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
@@ -574,7 +644,7 @@ describe('LoopChangeNotifier', () => {
 
       // Mock listActive to return one loop
       mockLoopsRepo.listByStatus = () => [validRow]
-      mockLoopsRepo.getLarge = () => ({ prompt: 'test prompt', lastAuditResult: null })
+      mockLoopsRepo.getLarge = () => ({ lastAuditResult: null })
 
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
       const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
@@ -635,7 +705,7 @@ describe('LoopChangeNotifier', () => {
       }
 
       mockLoopsRepo.listByStatus = () => [sandboxRow]
-      mockLoopsRepo.getLarge = () => ({ prompt: 'test prompt', lastAuditResult: null })
+      mockLoopsRepo.getLarge = () => ({ lastAuditResult: null })
 
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
       const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
@@ -695,7 +765,7 @@ describe('LoopChangeNotifier', () => {
       }
 
       mockLoopsRepo.listByStatus = () => [sandboxRow]
-      mockLoopsRepo.getLarge = () => ({ prompt: 'test prompt', lastAuditResult: null })
+      mockLoopsRepo.getLarge = () => ({ lastAuditResult: null })
 
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
       const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
@@ -757,7 +827,7 @@ describe('LoopChangeNotifier', () => {
       }
 
       mockLoopsRepo.listByStatus = () => [nonSandboxRow]
-      mockLoopsRepo.getLarge = () => ({ prompt: 'test prompt', lastAuditResult: null })
+      mockLoopsRepo.getLarge = () => ({ lastAuditResult: null })
 
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
       const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
@@ -820,7 +890,7 @@ describe('LoopChangeNotifier', () => {
       }
 
       mockLoopsRepo.listByStatus = () => [noContainerRow]
-      mockLoopsRepo.getLarge = () => ({ prompt: 'test prompt', lastAuditResult: null })
+      mockLoopsRepo.getLarge = () => ({ lastAuditResult: null })
 
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
       const notify: LoopChangeNotifier = (reason, loopName, _hint) => {

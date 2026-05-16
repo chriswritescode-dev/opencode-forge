@@ -1,12 +1,6 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest'
 
-const { mockAttachLoop } = vi.hoisted(() => ({
-  mockAttachLoop: vi.fn(),
-}))
-
-vi.mock('../../src/services/execution', () => ({
-  attachLoopToSession: mockAttachLoop,
-}))
+const mockAttachLoop = vi.fn()
 
 import { reconcileForgeWorkspaceLoops } from '../../src/services/reconcile-loops'
 
@@ -53,6 +47,7 @@ describe('reconcileForgeWorkspaceLoops', () => {
         error: loggerErrorSpy,
         debug: () => {},
       },
+      attachLoopToSession: (...args: unknown[]) => mockAttachLoop(...args),
     }
   }
 
