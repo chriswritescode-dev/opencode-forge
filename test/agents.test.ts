@@ -13,10 +13,12 @@ describe('Agent definitions', () => {
       expect(architectAgent.mode).toBe('primary')
     })
 
-    test('architect agent excludes plan and plan_exit tools', () => {
+    test('architect agent excludes plan tools', () => {
       expect(architectAgent.tools?.exclude).toBeDefined()
       expect(architectAgent.tools?.exclude).toContain('plan')
+      expect(architectAgent.tools?.exclude).toContain('plan_enter')
       expect(architectAgent.tools?.exclude).toContain('plan_exit')
+      expect(architectAgent.tools?.exclude).not.toContain('loop')
     })
 
     test('architect agent allows question tool', () => {
@@ -55,7 +57,9 @@ describe('Agent definitions', () => {
       expect(codeAgent.tools?.exclude).toBeDefined()
       expect(codeAgent.tools?.exclude).toContain('review-delete')
       expect(codeAgent.tools?.exclude).toContain('plan')
+      expect(codeAgent.tools?.exclude).toContain('plan_enter')
       expect(codeAgent.tools?.exclude).toContain('plan_exit')
+      expect(codeAgent.tools?.exclude).not.toContain('loop')
       expect(codeAgent.tools?.exclude).not.toContain('loop-cancel')
       expect(codeAgent.tools?.exclude).not.toContain('loop-status')
     })

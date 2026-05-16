@@ -239,7 +239,7 @@ export function buildArchitectAgent(): AgentDefinition {
       question: 'allow',
     },
     tools: {
-      exclude: ['plan', 'plan_exit'],
+      exclude: ['plan', 'plan_enter', 'plan_exit'],
     },
     systemPrompt: buildPrompt(),
   }

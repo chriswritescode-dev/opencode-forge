@@ -1,5 +1,6 @@
 import { describe, test, expect, mock } from 'bun:test'
 import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../src/constants/loop'
+import { createLoopPermissionRejectHook } from '../src/hooks/loop-permission'
 import { createAuditSession } from '../src/utils/audit-session'
 import { createLoopSessionWithWorkspace } from '../src/utils/loop-session'
 import type { Logger } from '../src/types'
@@ -12,6 +13,8 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'external_directory', pattern: '*',          action: 'deny' },
       { permission: 'review-write',       pattern: '*',          action: 'deny' },
       { permission: 'review-delete',      pattern: '*',          action: 'deny' },
+      { permission: 'plan',               pattern: '*',          action: 'deny' },
+      { permission: 'plan_enter',         pattern: '*',          action: 'deny' },
       { permission: 'plan_exit',          pattern: '*',          action: 'deny' },
       { permission: 'loop',               pattern: '*',          action: 'deny' },
       { permission: 'bash',               pattern: 'git push *', action: 'deny' },
@@ -21,7 +24,7 @@ describe('buildLoopPermissionRuleset', () => {
   })
 
   test('EMITS session-level denies for code-agent tool exclusions (auditor now runs in separate session)', () => {
-    const required = ['review-write', 'review-delete', 'loop']
+    const required = ['review-write', 'review-delete', 'plan', 'plan_enter', 'plan_exit', 'loop']
     const rules = buildLoopPermissionRuleset()
     for (const tool of required) {
       expect(rules.find((r) => r.permission === tool && r.action === 'deny')).toBeDefined()
@@ -64,6 +67,9 @@ describe('buildAuditSessionPermissionRuleset', () => {
     expect(rules.some(r => r.permission === 'bash' && r.pattern === 'mv *' && r.action === 'deny')).toBe(true)
     
     // Loop/plan denies
+    expect(rules.some(r => r.permission === 'plan' && r.pattern === '*' && r.action === 'deny')).toBe(true)
+    expect(rules.some(r => r.permission === 'plan_enter' && r.pattern === '*' && r.action === 'deny')).toBe(true)
+    expect(rules.some(r => r.permission === 'plan_exit' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'loop' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'loop-cancel' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'loop-status' && r.pattern === '*' && r.action === 'deny')).toBe(true)
@@ -81,6 +87,9 @@ describe('buildAuditSessionPermissionRuleset', () => {
     expect(rules.some(r => r.permission === 'apply_patch' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'bash' && r.pattern === 'git commit *' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'bash' && r.pattern === 'git push *' && r.action === 'deny')).toBe(true)
+    expect(rules.some(r => r.permission === 'plan' && r.pattern === '*' && r.action === 'deny')).toBe(true)
+    expect(rules.some(r => r.permission === 'plan_enter' && r.pattern === '*' && r.action === 'deny')).toBe(true)
+    expect(rules.some(r => r.permission === 'plan_exit' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'loop' && r.pattern === '*' && r.action === 'deny')).toBe(true)
   })
 
@@ -174,6 +183,93 @@ describe('createLoopSessionWithWorkspace passes loop permission rules into sessi
       permission: 'external_directory',
       pattern: '*',
       action: 'deny',
+    })
+  })
+})
+
+describe('createLoopPermissionRejectHook', () => {
+  test('does not update subagent session permissions when the session is outside an active loop', async () => {
+    const mockGet = mock(async () => ({ data: { permission: buildLoopPermissionRuleset() } }))
+    const mockUpdate = mock(async () => ({ data: {}, error: null }))
+    const mockResolve = mock(async () => null)
+    const logger = { log: mock(), error: mock(), debug: mock() } as unknown as Logger
+
+    const hook = createLoopPermissionRejectHook({
+      v2: {
+        session: {
+          get: mockGet,
+          update: mockUpdate,
+        },
+      } as any,
+      sessionLoopResolver: {
+        resolveActiveLoopForSession: mockResolve,
+      } as any,
+      directory: '/repo',
+      logger,
+    })
+
+    await hook({
+      event: {
+        type: 'session.created',
+        properties: {
+          info: {
+            id: 'child-session',
+            parentID: 'parent-session',
+            directory: '/repo',
+          },
+        },
+      },
+    })
+
+    expect(mockResolve).toHaveBeenCalledWith('child-session')
+    expect(mockGet).not.toHaveBeenCalled()
+    expect(mockUpdate).not.toHaveBeenCalled()
+  })
+
+  test('copies active loop parent permissions onto child subagent sessions', async () => {
+    const parentPermission = buildLoopPermissionRuleset()
+    const mockGet = mock(async () => ({ data: { permission: parentPermission } }))
+    const mockUpdate = mock(async () => ({ data: {}, error: null }))
+    const logger = { log: mock(), error: mock(), debug: mock() } as unknown as Logger
+
+    const hook = createLoopPermissionRejectHook({
+      v2: {
+        session: {
+          get: mockGet,
+          update: mockUpdate,
+        },
+      } as any,
+      sessionLoopResolver: {
+        resolveActiveLoopForSession: mock(async () => ({
+          loopName: 'active-loop',
+          active: true,
+          worktreeDir: '/repo/.worktrees/active-loop',
+        })),
+      } as any,
+      directory: '/repo',
+      logger,
+    })
+
+    await hook({
+      event: {
+        type: 'session.created',
+        properties: {
+          info: {
+            id: 'child-session',
+            parentID: 'parent-session',
+          },
+        },
+      },
+    })
+
+    expect(mockGet).toHaveBeenCalledWith({
+      sessionID: 'parent-session',
+      directory: '/repo/.worktrees/active-loop',
+    })
+    expect(mockUpdate).toHaveBeenCalledWith({
+      sessionID: 'child-session',
+      directory: '/repo/.worktrees/active-loop',
+      permission: parentPermission,
     })
   })
 })
