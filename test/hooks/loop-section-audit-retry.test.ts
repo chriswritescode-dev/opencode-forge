@@ -443,6 +443,77 @@ describe('Loop Section Audit Retry', () => {
       const hasPriorSectionSummary = promptCalls.some(p => p.text && p.text.includes('Implemented feature X'))
       expect(hasPriorSectionSummary).toBe(true)
     })
+
+    test('rotated session title reflects new section index and iteration after clean audit advance', async () => {
+      const state = makeState({
+        currentSectionIndex: 3,
+        totalSections: 12,
+        phase: 'auditing',
+        iteration: 12,
+        maxIterations: 50,
+      })
+      loopService.setState(state.loopName, state)
+
+      sectionPlansRepo.bulkInsert({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        sections: Array.from({ length: 12 }, (_, i) => ({
+          index: i,
+          title: `Section ${i + 1}`,
+          content: `Content for section ${i + 1}`,
+        })),
+      })
+      loopService.startSection(state.loopName, 3)
+
+      const { logger } = createCapturingLogger()
+
+      const summaryText = 'OK\n<!-- section-summary:start -->\n### Done\n- Implemented section 4\n### Deviations\n- None\n### Follow-ups\n- None\n<!-- section-summary:end -->'
+
+      const v2Client = createMockV2Client({
+        messagesCalls: [
+          { lastMessageRole: 'assistant', text: summaryText },
+        ],
+        createCalls: [],
+      })
+
+      const createTitleCalls: string[] = []
+      ;(v2Client as any).session.create = async (opts: any) => {
+        if (opts?.title) createTitleCalls.push(opts.title)
+        return { data: { id: `rotated-sess-${createTitleCalls.length}` }, error: undefined }
+      }
+
+      const pluginClient = {
+        session: {
+          create: async () => ({ data: { id: 'new-audit-sess' } }),
+          promptAsync: async () => ({ data: {}, error: null }),
+        },
+      }
+
+      const getConfig = () => mockConfig as PluginConfig
+
+      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, pluginClient as any, v2Client as any, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
+
+      await handler.onEvent({
+        event: {
+          type: 'session.status',
+          properties: {
+            sessionID: state.sessionId,
+            status: { type: 'idle' },
+          },
+        },
+      })
+
+      const after = loopService.getActiveState(state.loopName)!
+      expect(after.currentSectionIndex).toBe(4)
+      expect(after.iteration).toBe(13)
+
+      const rotationTitle = createTitleCalls.find(t => t.startsWith('Loop: '))
+      expect(rotationTitle).toBeDefined()
+      expect(rotationTitle).toContain('5/12')
+      expect(rotationTitle).toContain('#13')
+      expect(rotationTitle).not.toContain('4/12')
+      expect(rotationTitle).not.toContain('#12')
+    })
   })
 
   describe('exhausted retries', () => {
