@@ -415,7 +415,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    * then fire-and-forget deletes the old session. This ordering ensures the workspace always
    * has at least one bound session, preventing the host from pruning it from non-focused TUIs.
    */
-  async function rotateSession(loopName: string, state: LoopState): Promise<string> {
+  async function rotateSession(
+    loopName: string,
+    state: LoopState,
+    titleContext?: { iteration?: number; currentSectionIndex?: number },
+  ): Promise<string> {
     const oldSessionId = state.sessionId
     const sessionDir = state.worktreeDir
 
@@ -432,8 +436,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const createResult = await createLoopSessionWithWorkspace({
       v2: v2Client,
       title: formatLoopSessionTitle(state.loopName, {
-        iteration: state.iteration ?? 0,
-        currentSectionIndex: state.currentSectionIndex ?? 0,
+        iteration: titleContext?.iteration ?? state.iteration ?? 0,
+        currentSectionIndex: titleContext?.currentSectionIndex ?? state.currentSectionIndex ?? 0,
         totalSections: state.totalSections ?? 0,
       }),
       directory: sessionDir,
@@ -563,7 +567,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   ): Promise<void> {
     let activeSessionId = currentState.sessionId
     try {
-      activeSessionId = await rotateSession(loopName, currentState)
+      activeSessionId = await rotateSession(loopName, currentState, {
+        iteration: stateUpdates.iteration ?? currentState.iteration,
+        currentSectionIndex: stateUpdates.currentSectionIndex ?? currentState.currentSectionIndex,
+      })
     } catch (err) {
       logger.error(`Loop: session rotation failed, continuing with existing session`, err)
     }
@@ -1325,6 +1332,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
               currentState,
               {
                 iteration: nextIter,
+                currentSectionIndex: nextIdx,
                 phase: 'coding',
                 lastAuditResult: auditText || undefined,
                 auditCount: newAuditCount,
@@ -1523,7 +1531,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
       let newCodeSessionId: string
       try {
-        newCodeSessionId = await rotateSession(loopName, currentState)
+        newCodeSessionId = await rotateSession(loopName, currentState, {
+          iteration: nextIter,
+          currentSectionIndex: offendingIdx,
+        })
       } catch (err) {
         logger.error(`Loop: session rotation failed during final audit rewind, aborting rewind`, err)
         return
