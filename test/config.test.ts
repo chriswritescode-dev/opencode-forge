@@ -72,6 +72,43 @@ describe('createConfigHandler', () => {
       expect(code.mode).toBe('all')
     })
 
+    test('code and architect agent config does not install loop session permission overrides', async () => {
+      const configHandler = createConfigHandler(agents)
+      const config: Record<string, unknown> = {}
+
+      await configHandler(config)
+
+      const agentConfigs = config.agent as Record<string, unknown>
+      const code = agentConfigs.code as Record<string, unknown>
+      const architect = agentConfigs.architect as Record<string, unknown>
+      const codePermission = code.permission as Record<string, string>
+      const architectPermission = architect.permission as Record<string, string>
+
+      expect(Object.keys(codePermission).sort()).toEqual([
+        'plan',
+        'plan_enter',
+        'plan_exit',
+        'question',
+        'review-delete',
+        'review-write',
+      ].sort())
+      expect(Object.keys(architectPermission).sort()).toEqual([
+        'plan',
+        'plan_enter',
+        'plan_exit',
+        'question',
+      ].sort())
+
+      for (const permission of [codePermission, architectPermission]) {
+        expect(permission['*']).toBeUndefined()
+        expect(permission.external_directory).toBeUndefined()
+        expect(permission.bash).toBeUndefined()
+        expect(permission.loop).toBeUndefined()
+        expect(permission['loop-cancel']).toBeUndefined()
+        expect(permission['loop-status']).toBeUndefined()
+      }
+    })
+
     test('code agent excluded tools are mirrored to permission: deny (opencode enforces via permission, not tools)', async () => {
       const configHandler = createConfigHandler(agents)
       const config: Record<string, unknown> = {}
@@ -83,9 +120,10 @@ describe('createConfigHandler', () => {
       const permission = code.permission as Record<string, string>
 
       expect(permission).toBeDefined()
-      for (const tool of ['review-write', 'review-delete', 'loop', 'plan']) {
+      for (const tool of ['review-write', 'review-delete', 'plan', 'plan_enter', 'plan_exit']) {
         expect(permission[tool]).toBe('deny')
       }
+      expect(permission.loop).toBeUndefined()
     })
 
     test('user tool override cannot flip built-in permission deny', async () => {
@@ -151,6 +189,41 @@ describe('createConfigHandler', () => {
       const tools = code.tools as Record<string, boolean>
 
       expect(tools['review-delete']).toBe(false)
+    })
+
+    test('user wildcard permission cannot outrank built-in permission denies', async () => {
+      const configHandler = createConfigHandler(agents)
+      const config: Record<string, unknown> = {
+        agent: {
+          code: {
+            permission: {
+              '*': 'allow',
+              bash: 'ask',
+            },
+            tools: {
+              'review-delete': true,
+            },
+          },
+        },
+      }
+
+      await configHandler(config)
+
+      const agentConfigs = config.agent as Record<string, unknown>
+      const code = agentConfigs.code as Record<string, unknown>
+      const permission = code.permission as Record<string, string>
+      const keys = Object.keys(permission)
+      const wildcardIndex = keys.indexOf('*')
+
+      expect(permission['*']).toBe('allow')
+      expect(permission.bash).toBe('ask')
+      expect(wildcardIndex).toBeGreaterThanOrEqual(0)
+
+      for (const tool of ['review-write', 'review-delete', 'plan', 'plan_enter', 'plan_exit']) {
+        expect(permission[tool]).toBe('deny')
+        expect(keys.indexOf(tool)).toBeGreaterThan(wildcardIndex)
+      }
+      expect(permission.loop).toBeUndefined()
     })
 
     test('auditor agent retains review-delete access', async () => {

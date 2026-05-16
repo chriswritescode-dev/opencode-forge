@@ -22,6 +22,7 @@ import { LRUCache } from './utils/lru-cache'
 import { createSessionLoopResolver } from './services/session-loop-resolver'
 import { createPlanCaptureEventHook } from './hooks/plan-capture'
 import { createForgeSessionAttachHook } from './hooks/forge-session-attach'
+import { createLoopPermissionRejectHook } from './hooks/loop-permission'
 import { reconcileForgeWorkspaceLoops } from './services/reconcile-loops'
 
 export interface CreateParentSessionLookupOptions {
@@ -481,6 +482,12 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       getSessionDirectory: sessionDirectoryLookup,
       logger,
     })
+    const loopPermissionRejectHook = createLoopPermissionRejectHook({
+      v2,
+      sessionLoopResolver,
+      directory,
+      logger,
+    })
     // Resolves sandbox context for a session by following parent hops until an
     // active sandbox loop is found. Returns null if no sandbox is active for
     // the session or its ancestor.
@@ -513,6 +520,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         await forgeSessionAttachHook(eventInput)
         await sessionHooks.onEvent(eventInput)
         await planApprovalEventHook(eventInput)
+        await loopPermissionRejectHook(eventInput)
       },
       'tool.execute.before': async (input, output) => {
         const resolved = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)

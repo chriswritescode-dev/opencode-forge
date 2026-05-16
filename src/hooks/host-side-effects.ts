@@ -151,6 +151,37 @@ function getToastMessage(state: LoopState, reason: TerminationReason): string {
 // 3. Worktree teardown (always commits unless directory is already gone)
 // ---------------------------------------------------------------------------
 
+/**
+ * Unwarp the TUI back to the host project session before workspace removal.
+ *
+ * The TUI may currently be "warped" — displaying the workspace's worktree
+ * session. Once `workspace.remove` fires, that view becomes orphaned. We
+ * publish a `tui.session.select` event targeting the host project directory
+ * and the original host session, with no `workspace` property, to return the
+ * user to the local system. Best-effort: failures are logged but never block
+ * teardown.
+ */
+async function unwarpToHostSession(
+  state: LoopState,
+  ctx: TerminationSideEffectsContext,
+): Promise<void> {
+  if (!ctx.v2Client.tui) return
+  if (!state.hostSessionId || !state.projectDir) return
+
+  try {
+    await ctx.v2Client.tui.publish({
+      directory: state.projectDir,
+      body: {
+        type: 'tui.session.select',
+        properties: { sessionID: state.hostSessionId },
+      },
+    })
+    ctx.logger.log(`Loop: unwarped TUI to host session ${state.hostSessionId} for ${state.loopName}`)
+  } catch (err) {
+    ctx.logger.error(`Loop: unwarp publish failed for ${state.loopName}`, err)
+  }
+}
+
 /** Tear down the worktree workspace — always commits changes back. */
 async function teardownWorktree(
   state: LoopState,
@@ -169,6 +200,8 @@ async function teardownWorktree(
     doCommit,
     doRemoveWorktree,
   })
+
+  await unwarpToHostSession(state, ctx)
 
   try {
     const workspaceApi = ctx.v2Client.experimental?.workspace

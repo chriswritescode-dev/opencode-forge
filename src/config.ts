@@ -184,6 +184,7 @@ export function createConfigHandler(
           for (const [tool, enabled] of Object.entries(existing?.tools ?? {})) {
             if (enabled === false && existingPermission[tool] === 'deny') {
               mergedTools[tool] = false
+              delete mergedPermission[tool]
               mergedPermission[tool] = 'deny'
             }
           }

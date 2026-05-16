@@ -13,23 +13,22 @@ export function buildLoopPermissionRuleset(): PermissionRule[] {
   // Blanket allow-all for worktree loops (isolated environment).
   rules.push({ permission: '*', pattern: '*', action: 'allow' })
 
-  // External directory access: always denied to prevent unauthorized file system traversal.
-  // /tmp is allowed as a scratch area.
+  // External directory access: always denied. Bash runs inside the sandbox
+  // while read/write run on the host, so any shared path (including /tmp)
+  // would resolve to different filesystems and create false-positive escape
+  // hatches. Worktree-only access keeps host and sandbox views consistent.
   rules.push({
     permission: 'external_directory',
     pattern: '*',
     action: 'deny',
-  })
-  rules.push({
-    permission: 'external_directory',
-    pattern: '/tmp',
-    action: 'allow',
   })
 
   // Code agent forbidden tools. Placed after *:allow so findLast picks them up.
   rules.push(
     { permission: 'review-write',  pattern: '*', action: 'deny' },
     { permission: 'review-delete', pattern: '*', action: 'deny' },
+    { permission: 'plan',          pattern: '*', action: 'deny' },
+    { permission: 'plan_enter',    pattern: '*', action: 'deny' },
     { permission: 'plan_exit',     pattern: '*', action: 'deny' },
     { permission: 'loop',          pattern: '*', action: 'deny' },
   )
@@ -71,6 +70,8 @@ export function buildAuditSessionPermissionRuleset(): PermissionRule[] {
     { permission: 'bash',        pattern: 'rm *',         action: 'deny' },
     { permission: 'bash',        pattern: 'mv *',         action: 'deny' },
     // Auditors must never launch loops or manage other loops.
+    { permission: 'plan',         pattern: '*', action: 'deny' },
+    { permission: 'plan_enter',   pattern: '*', action: 'deny' },
     { permission: 'plan_exit',    pattern: '*', action: 'deny' },
     { permission: 'loop',         pattern: '*', action: 'deny' },
     { permission: 'loop-cancel',  pattern: '*', action: 'deny' },
