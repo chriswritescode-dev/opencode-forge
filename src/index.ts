@@ -21,9 +21,8 @@ import type { ToolContext } from './tools'
 import { LRUCache } from './utils/lru-cache'
 import { createSessionLoopResolver } from './services/session-loop-resolver'
 import { createPlanCaptureEventHook } from './hooks/plan-capture'
-import { createForgeSessionAttachHook } from './hooks/forge-session-attach'
+import { createForgeSessionAttachHook, createForgeSessionMessageAttachHook } from './hooks/forge-session-attach'
 import { createLoopPermissionRejectHook } from './hooks/loop-permission'
-import { reconcileForgeWorkspaceLoops } from './services/reconcile-loops'
 
 export interface CreateParentSessionLookupOptions {
   v2: ReturnType<typeof createV2Client>
@@ -446,18 +445,12 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       directory,
       logger,
     })
-
-    // Reconcile existing forge workspaces whose session.created events were missed
-    // (e.g. plugin reload, TUI restart in a worktree directory). Runs async so we
-    // don't block plugin init.
-    void reconcileForgeWorkspaceLoops({
+    const forgeSessionMessageAttachHook = createForgeSessionMessageAttachHook({
       v2,
       execDeps: forgeAttachExecDeps,
       projectId,
       directory,
       logger,
-    }).catch((err) => {
-      logger.error('reconcileForgeWorkspaceLoops: top-level failure', err)
     })
 
     const tools = createTools(ctx)
@@ -505,6 +498,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       tool: tools,
       config: createConfigHandler(agents, config.agents),
       'chat.message': async (input, output) => {
+        await forgeSessionMessageAttachHook(input)
         await sessionHooks.onMessage(input, output)
       },
       event: async (input) => {

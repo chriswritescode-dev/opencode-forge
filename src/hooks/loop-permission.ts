@@ -91,9 +91,6 @@ export function createLoopPermissionRejectHook(
     )
 
     try {
-      // NOTE: opencode's session.update merges (concatenates) permission rulesets.
-      // Idempotency is enforced via PATCHED_SESSIONS above. Do not call session.update
-      // from elsewhere to "repair" permissions — set them at session.create instead.
       const result = await v2.session.update({
         sessionID,
         directory: targetDirectory,

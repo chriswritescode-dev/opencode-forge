@@ -3,6 +3,7 @@ import { cleanupLoopWorktree } from '../../src/utils/worktree-cleanup'
 
 vi.mock('fs', () => ({
   existsSync: vi.fn().mockReturnValue(true),
+  rmSync: vi.fn(),
 }))
 
 vi.mock('child_process', () => ({
@@ -21,8 +22,47 @@ function createMockLogger() {
 describe('cleanupLoopWorktree', () => {
   let mockLogger: ReturnType<typeof createMockLogger>
 
-  beforeEach(() => {
+  beforeEach(async () => {
     mockLogger = createMockLogger()
+    const fs = await import('fs')
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.rmSync).mockReturnValue(undefined)
+
+    const childProcess = await import('child_process')
+    vi.mocked(childProcess.execSync).mockReturnValue('/tmp/.git')
+    vi.mocked(childProcess.spawnSync).mockReturnValue({
+      status: 0,
+      stdout: '',
+      stderr: '',
+      error: undefined,
+      pid: 0,
+      output: [null, null, null],
+      signal: null,
+    })
+  })
+
+  it('removes stale directories without .git before running git commands', async () => {
+    const fs = await import('fs')
+    vi.mocked(fs.existsSync)
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(false)
+
+    const childProcess = await import('child_process')
+
+    const result = await cleanupLoopWorktree({
+      worktreeDir: '/tmp/not-git',
+      logPrefix: 'Test',
+      logger: mockLogger,
+    })
+
+    expect(result.removed).toBe(true)
+    expect(result.error).toBeUndefined()
+    expect(childProcess.execSync).not.toHaveBeenCalled()
+    expect(childProcess.spawnSync).not.toHaveBeenCalled()
+    expect(fs.rmSync).toHaveBeenCalledWith('/tmp/not-git', { recursive: true, force: true })
+    expect(mockLogger.log).toHaveBeenCalledWith(
+      expect.stringContaining('removed non-git worktree directory'),
+    )
   })
 
   it('returns removed when worktreeDir is missing at entry', async () => {
@@ -45,6 +85,7 @@ describe('cleanupLoopWorktree', () => {
   it('returns removed with prune when Permission denied and dir is gone', async () => {
     const fs = await import('fs')
     vi.mocked(fs.existsSync)
+      .mockReturnValueOnce(true)
       .mockReturnValueOnce(true)
       .mockReturnValueOnce(false)
 

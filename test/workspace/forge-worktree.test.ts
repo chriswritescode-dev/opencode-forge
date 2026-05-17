@@ -17,13 +17,15 @@ describe('createBuiltinWorktreeWorkspace', () => {
     logger = createMockLogger()
   })
 
-  function mockV2Client(overrides?: { syncList?: any; create?: any; syncStart?: any }) {
+  function mockV2Client(overrides?: { syncList?: any; create?: any; syncStart?: any; list?: any; remove?: any }) {
     return {
       ...(overrides?.syncStart !== undefined
         ? { sync: { start: overrides.syncStart } }
         : {}),
       experimental: {
         workspace: {
+          list: overrides?.list ?? vi.fn().mockResolvedValue({ data: [] }),
+          remove: overrides?.remove ?? vi.fn().mockResolvedValue({ data: {} }),
           create: overrides?.create ?? vi.fn().mockResolvedValue({
             data: { id: 'ws-1', directory: '/tmp/wt-1', branch: 'feature/x' },
           }),
@@ -176,6 +178,35 @@ describe('createBuiltinWorktreeWorkspace', () => {
       expect(syncListMock.mock.invocationCallOrder[0]).toBeLessThan(
         syncStartMock.mock.invocationCallOrder[0],
       )
+    })
+
+    it('removes old forge workspaces for the same loop before creating a new one', async () => {
+      const listMock = vi.fn().mockResolvedValue({
+        data: [
+          { id: 'ws-old-name', type: 'forge', name: 'sync-loop' },
+          { id: 'ws-old-extra', type: 'forge', extra: { loopName: 'sync-loop' } },
+          { id: 'ws-other', type: 'forge', name: 'other-loop' },
+          { id: 'ws-worktree', type: 'worktree', name: 'sync-loop' },
+        ],
+      })
+      const removeMock = vi.fn().mockResolvedValue({ data: {} })
+      const createMock = vi.fn().mockResolvedValue({
+        data: { id: 'ws-new', directory: '/tmp/wt-new', branch: 'feature/new' },
+      })
+
+      const client = mockV2Client({ list: listMock, remove: removeMock, create: createMock })
+
+      const result = await createBuiltinWorktreeWorkspace(
+        client,
+        { loopName: 'sync-loop', directory: '/tmp/project' },
+        logger,
+      )
+
+      expect(result).toEqual({ workspaceId: 'ws-new', directory: '/tmp/wt-new', branch: 'feature/new' })
+      expect(removeMock).toHaveBeenCalledTimes(2)
+      expect(removeMock).toHaveBeenNthCalledWith(1, { id: 'ws-old-name' })
+      expect(removeMock).toHaveBeenNthCalledWith(2, { id: 'ws-old-extra' })
+      expect(removeMock.mock.invocationCallOrder[1]).toBeLessThan(createMock.mock.invocationCallOrder[0])
     })
   })
 })

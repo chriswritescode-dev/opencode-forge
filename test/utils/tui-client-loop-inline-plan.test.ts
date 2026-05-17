@@ -24,6 +24,10 @@ vi.mock('../../src/utils/workspace-listing', () => ({
   listConnectedWorkspaces: vi.fn().mockResolvedValue([]),
 }))
 
+vi.mock('../../src/utils/tui-loop-store', () => ({
+  fetchLoopsList: vi.fn().mockReturnValue([]),
+}))
+
 vi.mock('../../src/storage', () => ({
   resolveLogPath: vi.fn().mockReturnValue('/tmp/forge-test.log'),
 }))
@@ -42,6 +46,7 @@ describe('Load Plans inline plan is sent as inline even when host session exists
   let mockApi: any
 
   beforeEach(() => {
+    process.env.FORGE_TUI_WORKSPACE_SETTLE_MS = '0'
     mockApi = {
       client: {
         project: {
@@ -68,6 +73,7 @@ describe('Load Plans inline plan is sent as inline even when host session exists
           create: vi.fn().mockImplementation(async (args: any) => ({
             data: { id: 'sess_new' },
           })),
+          promptAsync: vi.fn().mockResolvedValue({ data: {} }),
         },
         tui: {
           selectSession: vi.fn().mockImplementation(async () => {}),
@@ -101,5 +107,13 @@ describe('Load Plans inline plan is sent as inline even when host session exists
     expect(forgeLoop.planSource).toBe('inline')
     expect(forgeLoop.planText).toBe('# My Plan\n\nFresh content')
     expect(forgeLoop.hostSessionId).toBe(SESSION_ID)
+
+    expect(mockApi.client.session.promptAsync).toHaveBeenCalledWith({
+      sessionID: 'sess_new',
+      directory: '/tmp/wt/loop',
+      workspace: 'ws_loop',
+      agent: 'code',
+      parts: [{ type: 'text', text: '# My Plan\n\nFresh content' }],
+    })
   })
 })

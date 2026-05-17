@@ -30,6 +30,50 @@ export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
     const sessionProjectId = (sessionInfo?.projectID as string | undefined) ?? deps.projectId
     if (!sessionId || !workspaceId) return
 
+    await attachForgeSession(deps, {
+      sessionId,
+      workspaceId,
+      sessionDirectory,
+      sessionProjectId,
+      sendInitialPrompt: true,
+      selectSession: true,
+    })
+  }
+}
+
+export function createForgeSessionMessageAttachHook(deps: ForgeSessionAttachHookDeps) {
+  return async (input: { sessionID: string }) => {
+    const sessionId = input.sessionID
+    if (!sessionId) return
+
+    const sessionResult = await deps.v2.session?.get?.({ sessionID: sessionId }).catch(() => null)
+    const sessionInfo = (sessionResult?.data ?? null) as Record<string, unknown> | null
+    const workspaceId = sessionInfo?.workspaceID as string | undefined
+    if (!workspaceId) return
+
+    await attachForgeSession(deps, {
+      sessionId,
+      workspaceId,
+      sessionDirectory: sessionInfo?.directory as string | undefined,
+      sessionProjectId: (sessionInfo?.projectID as string | undefined) ?? deps.projectId,
+      sendInitialPrompt: false,
+      selectSession: false,
+    })
+  }
+}
+
+async function attachForgeSession(
+  deps: ForgeSessionAttachHookDeps,
+  input: {
+    sessionId: string
+    workspaceId: string
+    sessionDirectory?: string
+    sessionProjectId: string
+    sendInitialPrompt: boolean
+    selectSession: boolean
+  },
+): Promise<void> {
+    const { sessionId, workspaceId, sessionDirectory, sessionProjectId, sendInitialPrompt, selectSession } = input
     let ws = await findWorkspaceById(deps, workspaceId, sessionDirectory)
     if (!ws) {
       await new Promise<void>((r) => setTimeout(r, 100))
@@ -65,6 +109,7 @@ export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
       auditorModel?: string
       planSource?: 'stored' | 'inline'
       planText?: string
+      initialPromptOwner?: 'server' | 'tui'
       maxIterations?: number
       sandboxEnabled?: boolean
     } | undefined
@@ -75,17 +120,32 @@ export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
       return
     }
 
-    const existing = deps.execDeps.loopsRepo.get(sessionProjectId, cfg.loopName)
-    if (existing && existing.status === 'running') {
-      // Live loop with this name; skip to avoid double-attach.
-      deps.logger.log(`[forge-session-attach] skip session=${sessionId} loop=${cfg.loopName} reason=already-running`)
+    if (cfg.initialPromptOwner === 'tui' && sendInitialPrompt) {
+      deps.logger.log(`[forge-session-attach] skip session=${sessionId} loop=${cfg.loopName} reason=tui-owned-initial-prompt`)
       return
     }
+
+    const existing = deps.execDeps.loopsRepo.get(sessionProjectId, cfg.loopName)
     if (existing) {
-      deps.logger.log(`[forge-session-attach] session=${sessionId} loop=${cfg.loopName} projectId=${sessionProjectId} existing-row-status=${existing.status} (will re-attach)`)
-    } else {
-      deps.logger.log(`[forge-session-attach] session=${sessionId} loop=${cfg.loopName} projectId=${sessionProjectId} no existing row, proceeding`)
+      if (existing.status === 'running') {
+        deps.logger.log(`[forge-session-attach] skip session=${sessionId} loop=${cfg.loopName} reason=already-running`)
+        return
+      }
+      // Terminal rows must not auto-resurrect. Manual restart goes through
+      // Loop-status restart, which uses a separate execution path.
+      const cleanupLabel = existing.status === 'completed' ? `; removing orphan workspace=${workspaceId}` : '; preserving restartable workspace'
+      deps.logger.log(
+        `[forge-session-attach] refuse session=${sessionId} loop=${cfg.loopName} reason=terminal-loop-row status=${existing.status}${cleanupLabel}`,
+      )
+      const message = `Loop "${cfg.loopName}" is in terminal status "${existing.status}". Auto-resurrect disabled — use Loop-status restart to resume manually.`
+      if (existing.status === 'completed') {
+        await failAndCleanup(deps, workspaceId, ws.directory ?? deps.directory, cfg.loopName, message)
+      } else {
+        publishAttachFailureToast(deps, ws.directory ?? deps.directory, cfg.loopName, message)
+      }
+      return
     }
+    deps.logger.log(`[forge-session-attach] session=${sessionId} loop=${cfg.loopName} projectId=${sessionProjectId} proceeding`)
 
     const resolvedHostSessionId = cfg.hostSessionId && cfg.hostSessionId.length > 0
       ? cfg.hostSessionId
@@ -133,11 +193,12 @@ export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
           maxIterations: cfg.maxIterations ?? 50,
           sandboxEnabled: cfg.sandboxEnabled ?? false,
           planText,
-          selectSession: true,
-          selectSessionTiming: 'after-prompt',
-          startWatchdog: true,
-        },
-      )
+           selectSession,
+           selectSessionTiming: 'after-prompt',
+           startWatchdog: true,
+           sendInitialPrompt,
+         },
+       )
       if (!result.ok && result.code !== 'already_attached') {
         await failAndCleanup(
           deps,
@@ -157,7 +218,6 @@ export function createForgeSessionAttachHook(deps: ForgeSessionAttachHookDeps) {
         'Failed to start loop (unexpected error). Check forge logs.',
       )
     }
-  }
 }
 
 async function failAndCleanup(

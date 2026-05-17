@@ -55,6 +55,7 @@ function buildCtx(overrides?: {
 }
 
 const completed: TerminationReason = { kind: 'completed' }
+const maxIterations: TerminationReason = { kind: 'max_iterations' }
 
 describe('performTerminationSideEffects unwarp', () => {
   test('publishes select to host session in projectDir before workspace.remove', async () => {
@@ -128,5 +129,18 @@ describe('performTerminationSideEffects unwarp', () => {
       expect.stringContaining('unwarp publish failed for feat-x'),
       expect.any(Error),
     )
+  })
+
+  test('max_iterations removes workspace but preserves restartable worktree', async () => {
+    const { ctx, tuiPublish, workspaceRemove } = buildCtx()
+    const state = buildState({ iteration: 10, maxIterations: 10 })
+
+    await performTerminationSideEffects(state, maxIterations, 'sess_worktree', ctx)
+
+    expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_abc' })
+    const selectCall = tuiPublish.mock.calls.find(
+      (c) => (c[0] as { body: { type: string } }).body.type === 'tui.session.select',
+    )
+    expect(selectCall).toBeTruthy()
   })
 })

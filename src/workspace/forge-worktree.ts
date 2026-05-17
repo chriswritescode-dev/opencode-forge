@@ -22,35 +22,55 @@ export interface ForgeWorkspaceEntry {
 }
 
 /**
- * Look up an existing forge workspace by loop name. Returns the first match
- * whose `type === 'forge'` and `name === loopName`. Used to avoid creating
- * duplicate workspaces when the same loop is restarted.
+ * Look up existing forge workspaces by loop name.
  */
-export async function findExistingForgeWorkspace(
+export async function findExistingForgeWorkspaces(
   client: OpencodeClient,
   loopName: string,
   logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void },
-): Promise<ForgeWorkspaceEntry | null> {
+): Promise<ForgeWorkspaceEntry[]> {
   const workspaceApi = client.experimental?.workspace
-  if (!workspaceApi || typeof workspaceApi.list !== 'function') return null
+  if (!workspaceApi || typeof workspaceApi.list !== 'function') return []
   try {
     const result = await workspaceApi.list()
     const entries = ((result as { data?: unknown[] } | undefined)?.data ?? []) as ForgeWorkspaceEntry[]
-    const match = entries.find((entry) => entry.type === 'forge' && entry.name === loopName) ?? null
-    if (match) {
-      (logger ?? console).log?.(`findExistingForgeWorkspace: found existing workspace ${match.id} for loop ${loopName}`)
+    const matches = entries.filter((entry) => entry.id && workspaceMatchesLoop(entry, loopName))
+    if (matches.length > 0) {
+      (logger ?? console).log?.(`findExistingForgeWorkspaces: found ${matches.length} existing workspace(s) for loop ${loopName}`)
     }
-    return match
+    return matches
   } catch (err) {
-    (logger ?? console).error('findExistingForgeWorkspace: workspace.list threw', err)
-    return null
+    (logger ?? console).error('findExistingForgeWorkspaces: workspace.list threw', err)
+    return []
+  }
+}
+
+export function workspaceMatchesLoop(entry: ForgeWorkspaceEntry, loopName: string): boolean {
+  if (entry.type !== 'forge') return false
+  if (entry.name === loopName) return true
+  if (entry.extra?.loopName === loopName) return true
+  const forgeLoop = entry.extra?.forgeLoop
+  return !!forgeLoop && typeof forgeLoop === 'object' && (forgeLoop as { loopName?: unknown }).loopName === loopName
+}
+
+export async function removeExistingForgeLoopWorkspaces(
+  client: OpencodeClient,
+  loopName: string,
+  logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void },
+): Promise<void> {
+  const workspaceApi = client.experimental?.workspace
+  if (!workspaceApi || typeof workspaceApi.remove !== 'function') return
+  const matches = await findExistingForgeWorkspaces(client, loopName, logger)
+  for (const match of matches) {
+    await workspaceApi.remove({ id: match.id })
+    ;(logger ?? console).log?.(`removeExistingForgeLoopWorkspaces: removed old workspace ${match.id} for loop ${loopName}`)
   }
 }
 
 /**
  * Creates a Forge workspace via opencode's experimental workspace API with the `forge` adapter.
- * If a forge workspace with the same `loopName` already exists, it is reused instead of
- * creating a new one (prevents duplicate workspace accumulation across retries).
+ * If forge workspaces with the same `loopName` already exist, they are removed before
+ * creating a fresh one so stale sessions cannot intercept loop startup.
  *
  * Uses `experimental.workspace.create({ type: 'forge', branch: null })` so the
  * workspace appears as fully connected (green dot) in the TUI.
@@ -78,16 +98,7 @@ export async function createBuiltinWorktreeWorkspace(
     (logger ?? console).error('createBuiltinWorktreeWorkspace: options.directory is required')
     return null
   }
-  // Reuse existing workspace if one already exists for this loop.
-  const existing = await findExistingForgeWorkspace(client, options.loopName, logger)
-  if (existing && existing.id && existing.directory) {
-    (logger ?? console).log?.(`createBuiltinWorktreeWorkspace: reusing existing workspace ${existing.id} for loop ${options.loopName}`)
-    return {
-      workspaceId: existing.id,
-      directory: existing.directory,
-      branch: existing.branch ?? '',
-    }
-  }
+  await removeExistingForgeLoopWorkspaces(client, options.loopName, logger)
   try {
     const _wsStart = Date.now()
     ;(logger ?? console).log?.(`[warp] workspace.create.start loopName=${options.loopName}`)

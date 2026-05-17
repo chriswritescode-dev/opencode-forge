@@ -68,6 +68,7 @@ export interface ForgeLoopExtra {
   auditorModel?: string
   planSource: 'stored' | 'inline'
   planText?: string
+  initialPromptOwner?: 'server' | 'tui'
 }
 
 export interface AttachLoopInput {
@@ -88,6 +89,7 @@ export interface AttachLoopInput {
   selectSession?: boolean
   selectSessionTiming?: 'after-create' | 'after-prompt'
   startWatchdog?: boolean
+  sendInitialPrompt?: boolean
   abortSourceSessionOnSuccess?: boolean
   onStarted?: (info: {
     sessionId: string
@@ -771,6 +773,7 @@ export async function attachLoopToSession(
     selectSession,
     selectSessionTiming,
     startWatchdog,
+    sendInitialPrompt = true,
     abortSourceSessionOnSuccess,
     onStarted,
   } = input
@@ -909,6 +912,14 @@ export async function attachLoopToSession(
       selectSessionWithFallback(deps, selection).catch((err: unknown) => {
         deps.logger.error('attachLoopToSession: failed to navigate TUI (early)', err as Error)
       })
+    }
+
+    if (!sendInitialPrompt) {
+      if (startWatchdog && deps.loopHandler) {
+        deps.loopHandler.startWatchdog(loopName)
+      }
+      deps.logger.log(`attachLoopToSession: attached loop=${loopName} without sending initial prompt`)
+      return { ok: true, loopName }
     }
 
     // Send initial prompt with fallback
@@ -1677,6 +1688,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
       }
 
+      stoppedState.iteration = 1
+
       // Create new session for restart
 
       let newSessionId: string | undefined
@@ -1689,6 +1702,18 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           deps.logger.error('loop-restart: failed to start sandbox container', err)
           return { ok: false, error: 'Restart failed: could not start sandbox container.' }
         }
+      }
+
+      if (stoppedState.worktree) {
+        const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
+        const ws = await createBuiltinWorktreeWorkspace(deps.v2, {
+          loopName: stoppedState.loopName,
+          directory: stoppedState.projectDir || ctx.directory,
+        }, deps.logger, deps.workspaceStatusRegistry)
+        if (!ws) return { ok: false, error: 'Restart failed: could not create fresh workspace for preserved worktree.' }
+        stoppedState.workspaceId = ws.workspaceId
+        stoppedState.worktreeDir = ws.directory
+        stoppedState.worktreeBranch = ws.branch
       }
 
       // Unified session creation for restart (always a single code session)

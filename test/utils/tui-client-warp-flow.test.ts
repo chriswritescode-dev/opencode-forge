@@ -24,6 +24,10 @@ vi.mock('../../src/utils/workspace-listing', () => ({
   listConnectedWorkspaces: vi.fn().mockResolvedValue([]),
 }))
 
+vi.mock('../../src/utils/tui-loop-store', () => ({
+  fetchLoopsList: vi.fn().mockReturnValue([]),
+}))
+
 vi.mock('../../src/storage', () => ({
   resolveLogPath: vi.fn().mockReturnValue('/tmp/forge-test.log'),
 }))
@@ -34,6 +38,7 @@ vi.mock('../../src/services/execution', () => ({
 
 import { connectForgeProject } from '../../src/utils/tui-client'
 import { buildLoopPermissionRuleset } from '../../src/constants/loop'
+import { fetchLoopsList } from '../../src/utils/tui-loop-store'
 
 describe('TUI warp flow for plan.execute mode=loop', () => {
   const PROJECT_ID = 'proj_test'
@@ -44,6 +49,8 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
   let mockApi: any
 
   beforeEach(() => {
+    vi.mocked(fetchLoopsList).mockReturnValue([])
+    process.env.FORGE_TUI_WORKSPACE_SETTLE_MS = '0'
     callOrder = []
     mockApi = {
       client: {
@@ -54,6 +61,8 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
         },
         experimental: {
           workspace: {
+            list: vi.fn().mockResolvedValue({ data: [] }),
+            remove: vi.fn().mockResolvedValue({ data: {} }),
             create: vi.fn().mockImplementation(async (args: any) => {
               callOrder.push('workspace.create')
               return {
@@ -82,6 +91,10 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
                 id: 'sess_new',
               },
             }
+          }),
+          promptAsync: vi.fn().mockImplementation(async () => {
+            callOrder.push('session.promptAsync')
+            return { data: {} }
           }),
         },
         tui: {
@@ -128,8 +141,9 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
     expect(callOrder).toEqual([
       'workspace.create',
       'workspace.syncList',
-      'session.create',
       'workspace.status',
+      'session.create',
+      'session.promptAsync',
       'route.navigate',
       'workspace.syncList',
     ])
@@ -149,17 +163,25 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
       auditorModel: 'prov/aud',
       planSource: 'inline',
       planText: '# Plan\n\nImplement feature X.',
+      initialPromptOwner: 'tui',
     })
 
     // Verify session.create was called with correct params
     const sesCreateArgs = mockApi.client.session.create.mock.calls[0][0]
     expect(sesCreateArgs.workspaceID).toBe('ws_loop')
     expect(sesCreateArgs.workspace).toBeUndefined()
-    expect(sesCreateArgs.title).toBe('My Cool Feature')
+    expect(sesCreateArgs.title).toBe('my-cool-feature')
     expect(sesCreateArgs.directory).toBe('/tmp/wt/loop')
     expect(sesCreateArgs.permission).toEqual(buildLoopPermissionRuleset())
     expect(sesCreateArgs.permission).toContainEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
     expect(sesCreateArgs.permission).toContainEqual({ permission: 'bash', pattern: 'git push *', action: 'deny' })
+
+    const promptArgs = mockApi.client.session.promptAsync.mock.calls[0][0]
+    expect(promptArgs.sessionID).toBe('sess_new')
+    expect(promptArgs.directory).toBe('/tmp/wt/loop')
+    expect(promptArgs.workspace).toBe('ws_loop')
+    expect(promptArgs.agent).toBe('code')
+    expect(promptArgs.parts).toEqual([{ type: 'text', text: '# Plan\n\nImplement feature X.' }])
 
     // Verify route.navigate was called instead of tui.selectSession
     expect(mockApi.route.navigate).toHaveBeenCalledWith('session', { sessionID: 'sess_new' })
@@ -167,6 +189,88 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
 
     // syncList called twice
     expect(mockApi.client.experimental.workspace.syncList).toHaveBeenCalledTimes(2)
+  })
+
+  test('removes old forge workspaces for same loop before creating replacement', async () => {
+    mockApi.client.experimental.workspace.list.mockResolvedValueOnce({
+      data: [
+        { id: 'ws_old_1', type: 'forge', name: 'my-cool-feature-1' },
+        { id: 'ws_old_2', type: 'forge', extra: { loopName: 'my-cool-feature-1' } },
+        { id: 'ws_old_3', type: 'forge', extra: { forgeLoop: { loopName: 'my-cool-feature-1' } } },
+        { id: 'ws_other', type: 'forge', name: 'other-loop' },
+        { id: 'ws_worktree', type: 'worktree', name: 'my-cool-feature' },
+      ],
+    })
+
+    const client = await connectForgeProject(mockApi, DIRECTORY)
+
+    const result = await client!.plan.execute(
+      SESSION_ID,
+      {
+        mode: 'loop',
+        title: 'My Cool Feature',
+        plan: '# Plan\n\nImplement feature X.',
+      },
+      {} as any,
+    )
+
+    expect(result).not.toBeNull()
+    expect(result!.loopName).toBe('my-cool-feature-2')
+    expect(mockApi.client.experimental.workspace.remove).toHaveBeenCalledTimes(0)
+    expect(mockApi.client.experimental.workspace.create.mock.invocationCallOrder[0]).toBeGreaterThan(0)
+    const createArgs = mockApi.client.experimental.workspace.create.mock.calls[0][0]
+    expect(createArgs.extra.loopName).toBe('my-cool-feature-2')
+    expect(createArgs.extra.forgeLoop.loopName).toBe('my-cool-feature-2')
+  })
+
+  test('suffixes new TUI loop start before workspace creation when base workspace already exists', async () => {
+    mockApi.client.experimental.workspace.list.mockResolvedValueOnce({
+      data: [
+        { id: 'ws_done', type: 'forge', name: 'my-cool-feature' },
+      ],
+    })
+
+    const client = await connectForgeProject(mockApi, DIRECTORY)
+
+    const result = await client!.plan.execute(
+      SESSION_ID,
+      {
+        mode: 'loop',
+        title: 'My Cool Feature',
+        plan: '# Plan\n\nImplement feature X.',
+      },
+      {} as any,
+    )
+
+    expect(result!.loopName).toBe('my-cool-feature-1')
+    const createArgs = mockApi.client.experimental.workspace.create.mock.calls[0][0]
+    expect(createArgs.extra.loopName).toBe('my-cool-feature-1')
+    expect(createArgs.extra.forgeLoop.loopName).toBe('my-cool-feature-1')
+    expect(mockApi.client.session.create.mock.calls[0][0].title).toBe('my-cool-feature-1')
+  })
+
+  test('suffixes new TUI loop start before workspace creation when terminal loop row exists', async () => {
+    vi.mocked(fetchLoopsList).mockReturnValueOnce([
+      { name: 'my-cool-feature', active: false } as any,
+    ])
+
+    const client = await connectForgeProject(mockApi, DIRECTORY)
+
+    const result = await client!.plan.execute(
+      SESSION_ID,
+      {
+        mode: 'loop',
+        title: 'My Cool Feature',
+        plan: '# Plan\n\nImplement feature X.',
+      },
+      {} as any,
+    )
+
+    expect(result!.loopName).toBe('my-cool-feature-1')
+    const createArgs = mockApi.client.experimental.workspace.create.mock.calls[0][0]
+    expect(createArgs.extra.loopName).toBe('my-cool-feature-1')
+    expect(createArgs.extra.forgeLoop.loopName).toBe('my-cool-feature-1')
+    expect(mockApi.client.session.create.mock.calls[0][0].title).toBe('my-cool-feature-1')
   })
 
   test('failure: workspace.create returns error → returns null, downstream NOT called', async () => {
@@ -190,6 +294,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
     expect(mockApi.client.session.create).not.toHaveBeenCalled()
     expect(mockApi.client.tui.selectSession).not.toHaveBeenCalled()
     expect(mockApi.client.experimental.workspace.syncList).not.toHaveBeenCalled()
+    expect(mockApi.client.session.promptAsync).not.toHaveBeenCalled()
   })
 
   test('failure: workspace.create returns no data → returns null', async () => {
@@ -229,6 +334,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
     // workspace.create should still have been called but downstream after session.create shouldn't
     expect(mockApi.client.experimental.workspace.create).toHaveBeenCalled()
     expect(mockApi.client.tui.selectSession).not.toHaveBeenCalled()
+    expect(mockApi.client.session.promptAsync).not.toHaveBeenCalled()
   })
 
   test('empty sessionId switches forgeLoop.planSource to inline and embeds planText', async () => {
@@ -258,11 +364,13 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
       auditorModel: 'prov/aud',
       planSource: 'inline',
       planText: '# Archived Plan\n\nLoaded from disk.',
+      hostSessionId: undefined,
+      initialPromptOwner: 'tui',
     })
     expect(createArgs.extra.forgeLoop.hostSessionId).toBeUndefined()
   })
 
-  test('title truncation at 60 chars in session.create', async () => {
+  test('session title uses reserved loop name', async () => {
     const longTitle = 'A'.repeat(100)
     const client = await connectForgeProject(mockApi, DIRECTORY)
 
@@ -277,9 +385,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
     )
 
     expect(result).not.toBeNull()
-    // Title should be truncated to "AAAA...AA..."
     const sesCreateArgs = mockApi.client.session.create.mock.calls[0][0]
-    expect(sesCreateArgs.title.length).toBeLessThanOrEqual(60)
-    expect(sesCreateArgs.title.endsWith('...')).toBe(true)
+    expect(sesCreateArgs.title).toBe('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
   })
 })

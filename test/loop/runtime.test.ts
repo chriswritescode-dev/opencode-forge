@@ -799,13 +799,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
         properties: { status: { type: 'idle' }, sessionID: state.sessionId },
       })
 
-      // After one rotation: queue.length=1 ≤ SESSION_RETENTION(2)
-      // The old coding session is queued but NOT yet deleted
-      // (no delete call expected because retention limit not exceeded)
-
-      // Verify the old session was scheduled for deletion (via debug logs).
-      // The actual delete only occurs when queue > SESSION_RETENTION.
-      expect(clientState.deleteCalls).toHaveLength(0)
+      expect(clientState.deleteCalls.map((call) => call.sessionID)).toContain(state.sessionId)
     })
 
     test('tolerates delete failure without crashing', async () => {
