@@ -18,7 +18,7 @@ import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session
 import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../constants/loop'
 import { findPartialMatch } from '../utils/partial-match'
 import { isSandboxEnabled } from '../sandbox/context'
-import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
+import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast, ensureLoopSessionPermissions } from '../utils/loop-session'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { decomposeDeterministically } from './deterministic-decomposer'
@@ -806,6 +806,25 @@ export async function attachLoopToSession(
   } catch (err) {
     deps.logger.error(`attachLoopToSession: failed to purge orphaned per-loop rows for ${loopName}`, err)
     // Non-fatal — proceed.
+  }
+
+  // TUI-only permission repair before prompting
+  if (ctx.surface === 'tui') {
+    const permissionsOk = await ensureLoopSessionPermissions({
+      v2: deps.v2,
+      sessionId,
+      directory: worktreeDir ?? ctx.directory,
+      permission: buildLoopPermissionRuleset(),
+      logPrefix: 'attachLoopToSession',
+      logger: deps.logger,
+    })
+    if (!permissionsOk) {
+      return {
+        ok: false,
+        code: 'internal_error',
+        message: 'Failed to apply loop permissions before prompting session',
+      }
+    }
   }
 
   try {

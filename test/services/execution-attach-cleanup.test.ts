@@ -147,6 +147,7 @@ describe('attachLoopToSession', () => {
 
     const promptAsyncMock = vi.fn().mockResolvedValue({ error: null })
     const tuiSelectSessionMock = vi.fn().mockResolvedValue(undefined)
+    const sessionUpdateMock = vi.fn().mockResolvedValue({ data: {} })
 
     const deps = {
       projectId: PROJECT_ID,
@@ -162,6 +163,7 @@ describe('attachLoopToSession', () => {
         session: {
           create: vi.fn().mockResolvedValue({ data: { id: 'new-session' } }),
           get: vi.fn().mockResolvedValue({ data: {} }),
+          update: sessionUpdateMock,
           promptAsync: promptAsyncMock,
           abort: vi.fn().mockResolvedValue({}),
           delete: vi.fn().mockResolvedValue({}),

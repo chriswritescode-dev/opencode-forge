@@ -9,6 +9,7 @@ import { readExecutionPreferences, writeExecutionPreferences } from './tui-execu
 import { parseModelString } from './model-fallback'
 import { listConnectedWorkspaces, type WorkspaceListApi } from './workspace-listing'
 import { type ForgeLoopExtra } from '../services/execution'
+import { buildLoopPermissionRuleset } from '../constants/loop'
 
 export type ApiExecutionMode = 'new-session' | 'execute-here' | 'loop'
 
@@ -285,10 +286,12 @@ export async function connectForgeProject(
 
           await api.client.experimental.workspace.syncList().catch(() => undefined)
 
+          const permission = buildLoopPermissionRuleset()
           const sesRes = await api.client.session.create({
             workspaceID: workspace.id,
             title: req.title.length > 60 ? `${req.title.substring(0, 57)}...` : req.title,
             directory: workspace.directory ?? undefined,
+            permission,
           })
           if (sesRes.error || !sesRes.data) return null
           const session = sesRes.data

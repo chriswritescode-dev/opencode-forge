@@ -168,3 +168,47 @@ export function publishWorkspaceDetachedToast(input: WorkspaceDetachedToastInput
     input.logger.error('Loop: failed to publish workspace-detached toast', err)
   })
 }
+
+export async function ensureLoopSessionPermissions(input: {
+  v2: OpencodeClient
+  sessionId: string
+  directory: string
+  permission?: ReturnType<typeof buildLoopPermissionRuleset>
+  logPrefix: string
+  logger: Logger | Console
+}): Promise<boolean> {
+  const permission = input.permission ?? buildLoopPermissionRuleset()
+
+  try {
+    const updateResult = await input.v2.session.update({
+      sessionID: input.sessionId,
+      directory: input.directory,
+      permission,
+    })
+
+    if (updateResult.error) {
+      input.logger.error(`${input.logPrefix}: [perm-diag] session.update failed`, updateResult.error)
+      return false
+    }
+
+    input.logger.log(
+      `${input.logPrefix}: [perm-diag] session.update complete sessionId=${input.sessionId} permissionRules=${permission.length ?? 0}`
+    )
+
+    // Optional diagnostic get — do not fail if mock/older server omits permission field
+    try {
+      const verify = await input.v2.session.get({ sessionID: input.sessionId, directory: input.directory })
+      const persisted = (verify.data as { permission?: unknown })?.permission ?? null
+      input.logger.log(
+        `${input.logPrefix}: [perm-diag] session.get verify sessionId=${input.sessionId} persisted=${JSON.stringify(persisted)}`
+      )
+    } catch (err) {
+      input.logger.error(`${input.logPrefix}: [perm-diag] session.get verify failed`, err)
+    }
+
+    return true
+  } catch (err) {
+    input.logger.error(`${input.logPrefix}: [perm-diag] session.update threw`, err)
+    return false
+  }
+}

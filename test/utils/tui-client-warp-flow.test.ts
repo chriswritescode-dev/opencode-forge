@@ -33,6 +33,7 @@ vi.mock('../../src/services/execution', () => ({
 }))
 
 import { connectForgeProject } from '../../src/utils/tui-client'
+import { buildLoopPermissionRuleset } from '../../src/constants/loop'
 
 describe('TUI warp flow for plan.execute mode=loop', () => {
   const PROJECT_ID = 'proj_test'
@@ -156,6 +157,9 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
     expect(sesCreateArgs.workspace).toBeUndefined()
     expect(sesCreateArgs.title).toBe('My Cool Feature')
     expect(sesCreateArgs.directory).toBe('/tmp/wt/loop')
+    expect(sesCreateArgs.permission).toEqual(buildLoopPermissionRuleset())
+    expect(sesCreateArgs.permission).toContainEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
+    expect(sesCreateArgs.permission).toContainEqual({ permission: 'bash', pattern: 'git push *', action: 'deny' })
 
     // Verify route.navigate was called instead of tui.selectSession
     expect(mockApi.route.navigate).toHaveBeenCalledWith('session', { sessionID: 'sess_new' })
