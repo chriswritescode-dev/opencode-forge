@@ -299,3 +299,34 @@ test('WorkspaceStatusRegistry primeFromSnapshot is called during bind', async ()
     { workspaceID: 'ws-1', status: 'connected' },
   ])
 })
+
+test('createLoopSessionWithWorkspace does not emit [perm-diag] log entries', async () => {
+  const logEntries: string[] = []
+  const errorEntries: string[] = []
+  const logger: Logger | Console = {
+    log: (msg: string) => { logEntries.push(msg) },
+    error: (msg: string) => { errorEntries.push(typeof msg === 'string' ? msg : String(msg)) },
+    debug: () => {},
+  }
+  const mockClient = {
+    session: {
+      create: () => Promise.resolve({ data: { id: 's1' } }),
+      get: () => Promise.resolve({ data: { permission: [] } }),
+    },
+    experimental: { workspace: { warp: () => Promise.resolve({ data: {} }) } },
+  } as unknown as OpencodeClient
+
+  await createLoopSessionWithWorkspace({
+    v2: mockClient,
+    title: 't',
+    directory: '/d',
+    permission: buildLoopPermissionRuleset(),
+    workspaceId: 'ws-1',
+    logPrefix: 'test',
+    logger,
+  })
+
+  const allEntries = [...logEntries, ...errorEntries]
+  expect(allEntries.some((e) => e.includes('[perm-diag]'))).toBe(false)
+  expect(allEntries.some((e) => e.includes('DRIFT'))).toBe(false)
+})

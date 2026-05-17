@@ -88,16 +88,6 @@ export async function createLoopSessionWithWorkspace(
 
   input.logger.log(`[warp] session.create.complete loopName="${input.loopName ?? 'unknown'}" logPrefix="${input.logPrefix}" sessionId=${sessionId}${input.workspaceId ? ` workspaceId=${input.workspaceId}` : ''} elapsedMs=${Date.now() - _sessionStart}`)
 
-  try {
-    const verify = await input.v2.session.get({ sessionID: sessionId, directory: input.directory })
-    const persisted = (verify.data as { permission?: unknown })?.permission ?? null
-    input.logger.log(
-      `${input.logPrefix}: [perm-diag] post-create session=${sessionId} requested=${input.permission ? JSON.stringify(input.permission) : '<none>'} persisted=${JSON.stringify(persisted)}`
-    )
-  } catch (err) {
-    input.logger.error(`${input.logPrefix}: [perm-diag] post-create verify failed`, err)
-  }
-
   const result: CreateLoopSessionResult = {
     sessionId,
     bindFailed: false,
@@ -111,21 +101,6 @@ export async function createLoopSessionWithWorkspace(
       result.boundWorkspaceId = input.workspaceId
       input.logger.log(`${input.logPrefix}: workspace ${input.workspaceId} bound to session ${result.sessionId}`)
       input.logger.log(`[warp] bind.complete loopName="${input.loopName ?? 'unknown'}" workspaceId=${input.workspaceId} sessionId=${result.sessionId} elapsedMs=${Date.now() - _bindStart}`)
-
-      try {
-        const afterBind = await input.v2.session.get({ sessionID: result.sessionId, directory: input.directory })
-        const persisted = (afterBind.data as { permission?: unknown })?.permission ?? null
-        input.logger.log(
-          `${input.logPrefix}: [perm-diag] post-bind session=${result.sessionId} persisted=${JSON.stringify(persisted)}`
-        )
-        if (input.permission && JSON.stringify(persisted) !== JSON.stringify(input.permission)) {
-          input.logger.error(
-            `${input.logPrefix}: [perm-diag] DRIFT after workspace warp — persisted ruleset does not match requested`
-          )
-        }
-      } catch (err) {
-        input.logger.error(`${input.logPrefix}: [perm-diag] post-bind verify failed`, err)
-      }
     } catch (bindErr) {
       input.logger.error(`${input.logPrefix}: failed to bind session to workspace; clearing workspace id`, bindErr)
       input.logger.log(`[warp] bind.failed loopName="${input.loopName ?? 'unknown'}" workspaceId=${input.workspaceId} sessionId=${result.sessionId} elapsedMs=${Date.now() - _bindStart} error="${bindErr instanceof Error ? bindErr.message : String(bindErr)}"`)
@@ -167,48 +142,4 @@ export function publishWorkspaceDetachedToast(input: WorkspaceDetachedToastInput
   }).catch((err) => {
     input.logger.error('Loop: failed to publish workspace-detached toast', err)
   })
-}
-
-export async function ensureLoopSessionPermissions(input: {
-  v2: OpencodeClient
-  sessionId: string
-  directory: string
-  permission?: ReturnType<typeof buildLoopPermissionRuleset>
-  logPrefix: string
-  logger: Logger | Console
-}): Promise<boolean> {
-  const permission = input.permission ?? buildLoopPermissionRuleset()
-
-  try {
-    const updateResult = await input.v2.session.update({
-      sessionID: input.sessionId,
-      directory: input.directory,
-      permission,
-    })
-
-    if (updateResult.error) {
-      input.logger.error(`${input.logPrefix}: [perm-diag] session.update failed`, updateResult.error)
-      return false
-    }
-
-    input.logger.log(
-      `${input.logPrefix}: [perm-diag] session.update complete sessionId=${input.sessionId} permissionRules=${permission.length}`
-    )
-
-    // Optional diagnostic get — do not fail if mock/older server omits permission field
-    try {
-      const verify = await input.v2.session.get({ sessionID: input.sessionId, directory: input.directory })
-      const persisted = (verify.data as { permission?: unknown })?.permission ?? null
-      input.logger.log(
-        `${input.logPrefix}: [perm-diag] session.get verify sessionId=${input.sessionId} persisted=${JSON.stringify(persisted)}`
-      )
-    } catch (err) {
-      input.logger.error(`${input.logPrefix}: [perm-diag] session.get verify failed`, err)
-    }
-
-    return true
-  } catch (err) {
-    input.logger.error(`${input.logPrefix}: [perm-diag] session.update threw`, err)
-    return false
-  }
 }

@@ -9,7 +9,6 @@ import { createReviewFindingsRepo } from '../../src/storage/repos/review-finding
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopService } from '../../src/loop/service'
 import type { Logger } from '../../src/types'
-import { buildLoopPermissionRuleset } from '../../src/constants/loop'
 
 const noopFn = () => {}
 
@@ -148,7 +147,6 @@ describe('attachLoopToSession', () => {
 
     const promptAsyncMock = vi.fn().mockResolvedValue({ error: null })
     const tuiSelectSessionMock = vi.fn().mockResolvedValue(undefined)
-    const sessionUpdateMock = vi.fn().mockResolvedValue({ data: {} })
 
     const deps = {
       projectId: PROJECT_ID,
@@ -164,7 +162,7 @@ describe('attachLoopToSession', () => {
         session: {
           create: vi.fn().mockResolvedValue({ data: { id: 'new-session' } }),
           get: vi.fn().mockResolvedValue({ data: {} }),
-          update: sessionUpdateMock,
+          update: vi.fn().mockResolvedValue({ data: {} }),
           promptAsync: promptAsyncMock,
           abort: vi.fn().mockResolvedValue({}),
           delete: vi.fn().mockResolvedValue({}),
@@ -195,7 +193,7 @@ describe('attachLoopToSession', () => {
       },
     }
 
-    return { deps, loopsRepo, plansRepo, sectionPlansRepo, loopService, promptAsyncMock, tuiSelectSessionMock, sessionUpdateMock }
+    return { deps, loopsRepo, plansRepo, sectionPlansRepo, loopService, promptAsyncMock, tuiSelectSessionMock }
   }
 
   test('disabled mode persists state and sends code-agent prompt', async () => {
@@ -640,91 +638,35 @@ describe('attachLoopToSession', () => {
     expect(state!.phase).toBe('coding')
   })
 
-  test('repairs TUI-attached loop permissions before sending the code prompt', async () => {
-    const { deps, promptAsyncMock, sessionUpdateMock } = buildDeps()
-
-    const { attachLoopToSession } = await import('../../src/services/execution')
-
-    const result = await attachLoopToSession(
-      deps as any,
-      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
-      {
-        sessionId: 'sess_abc',
-        workspaceId: 'ws_test',
-        worktreeDir: '/tmp/wt/abc',
-        loopName: 'my-loop',
-        displayName: 'My Loop',
-        executionName: 'my-loop',
-        hostSessionId: 'host-sess',
-        executionModel: 'prov/exec',
-        auditorModel: 'prov/aud',
-        maxIterations: 50,
-        sandboxEnabled: false,
-        planText: '# Test Plan\n\nDo something.',
-        selectSession: true,
-        selectSessionTiming: 'after-prompt',
-        startWatchdog: true,
-      },
-    )
-
-    expect(result.ok).toBe(true)
-
-    // Assert session.update was called with permission ruleset
-    expect(sessionUpdateMock).toHaveBeenCalledTimes(1)
-    expect(sessionUpdateMock).toHaveBeenCalledWith({
-      sessionID: 'sess_abc',
-      directory: '/tmp/wt/abc',
-      permission: buildLoopPermissionRuleset(),
-    })
-
-    // Assert session.update was called before promptAsync
-    expect(sessionUpdateMock.mock.invocationCallOrder[0]).toBeLessThan(promptAsyncMock.mock.invocationCallOrder[0])
-
-    // Assert promptAsync still receives agent: 'code' after permission repair succeeds
-    expect(promptAsyncMock).toHaveBeenCalledTimes(1)
-    const promptCallArgs = promptAsyncMock.mock.calls[0][0]
-    expect(promptCallArgs.agent).toBe('code')
-  })
-
-  test('does not prompt when TUI permission repair fails', async () => {
-    const { deps, promptAsyncMock, sessionUpdateMock } = buildDeps()
-
-    // Configure session.update to return an error
-    sessionUpdateMock.mockResolvedValueOnce({ error: new Error('update failed') })
-
-    const { attachLoopToSession } = await import('../../src/services/execution')
-
-    const result = await attachLoopToSession(
-      deps as any,
-      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
-      {
-        sessionId: 'sess_fail_perm',
-        workspaceId: 'ws_fail',
-        worktreeDir: '/tmp/wt/fail',
-        loopName: 'fail-perm-loop',
-        displayName: 'Fail Perm Loop',
-        executionName: 'fail-perm-loop',
-        maxIterations: 10,
-        sandboxEnabled: false,
-        planText: '# Fail Plan\n\nWill fail on permission.',
-        selectSession: false,
-        selectSessionTiming: 'after-prompt',
-        startWatchdog: false,
-      },
-    )
-
-    // Assert result is failure with internal_error
-    expect(result.ok).toBe(false)
-    if (!result.ok) {
-      expect(result.code).toBe('internal_error')
-      expect(result.message).toBe('Failed to apply loop permissions before prompting session')
+  test('attachLoopToSession does NOT call session.update for permission repair on any surface', async () => {
+    const surfaces: Array<'tui' | 'tool' | 'approval-hook'> = ['tui', 'tool', 'approval-hook']
+    for (const surface of surfaces) {
+      const { deps } = buildDeps()
+      const sessionUpdateMock = deps.v2.session.update
+      const { attachLoopToSession } = await import('../../src/services/execution')
+      await attachLoopToSession(
+        deps as any,
+        { surface, projectId: PROJECT_ID, directory: '/tmp/test' },
+        {
+          sessionId: 'sess_abc',
+          workspaceId: 'ws_test',
+          worktreeDir: '/tmp/wt/abc',
+          loopName: 'my-loop',
+          displayName: 'My Loop',
+          executionName: 'my-loop',
+          hostSessionId: 'host-sess',
+          executionModel: 'prov/exec',
+          auditorModel: 'prov/aud',
+          maxIterations: 50,
+          sandboxEnabled: false,
+          planText: '# Test Plan\n\nDo something.',
+          selectSession: surface === 'tui',
+          selectSessionTiming: 'after-prompt',
+          startWatchdog: true,
+        },
+      )
+      // Assert: session.update was NEVER called (no permission repair)
+      expect(sessionUpdateMock).not.toHaveBeenCalled()
     }
-
-    // Assert promptAsync was not called
-    expect(promptAsyncMock).not.toHaveBeenCalled()
-
-    // Assert no active loop state exists for the loop name
-    const state = (deps.loop as any).getActiveState('fail-perm-loop')
-    expect(state).toBeNull()
   })
 })
