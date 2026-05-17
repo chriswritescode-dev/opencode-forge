@@ -192,7 +192,7 @@ export async function ensureLoopSessionPermissions(input: {
     }
 
     input.logger.log(
-      `${input.logPrefix}: [perm-diag] session.update complete sessionId=${input.sessionId} permissionRules=${permission.length ?? 0}`
+      `${input.logPrefix}: [perm-diag] session.update complete sessionId=${input.sessionId} permissionRules=${permission.length}`
     )
 
     // Optional diagnostic get — do not fail if mock/older server omits permission field
