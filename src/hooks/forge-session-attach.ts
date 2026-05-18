@@ -2,8 +2,9 @@ import type { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2
 import type { Logger } from '../types'
 import type { ForgeExecutionServiceDeps, PlanSource } from '../services/execution'
 import { attachLoopToSession } from '../services/execution'
-import { classifyForgeWorkspace } from '../workspace/classify-stale'
+import { classifyForgeWorkspace, isPendingAttachWorkspace } from '../workspace/classify-stale'
 import { removeForgeWorkspaceWithContext } from '../workspace/remove-with-context'
+import { getForgeWorkspaceLoopName } from '../workspace/forge-worktree'
 
 export interface ForgeSessionAttachHookDeps {
   v2: ReturnType<typeof createV2Client>
@@ -103,8 +104,14 @@ async function attachForgeSession(
       return
     }
 
+    const loopName = getForgeWorkspaceLoopName(ws)
+    if (!loopName) {
+      const extraKeys = ws.extra ? Object.keys(ws.extra) : []
+      deps.logger.log(`[forge-session-attach] skip session=${sessionId} workspace=${workspaceId} reason=no-loop-name extraKeys=[${extraKeys.join(',')}]`)
+      return
+    }
+
     const cfg = (ws.extra ?? {}).forgeLoop as {
-      loopName?: string
       hostSessionId?: string
       title?: string
       executionModel?: string
@@ -116,14 +123,8 @@ async function attachForgeSession(
       sandboxEnabled?: boolean
     } | undefined
 
-    if (!cfg || !cfg.loopName) {
-      const extraKeys = ws.extra ? Object.keys(ws.extra) : []
-      deps.logger.log(`[forge-session-attach] skip session=${sessionId} workspace=${workspaceId} reason=no-forgeLoop-config extraKeys=[${extraKeys.join(',')}]`)
-      return
-    }
-
-    if (cfg.initialPromptOwner === 'tui' && sendInitialPrompt) {
-      deps.logger.log(`[forge-session-attach] skip session=${sessionId} loop=${cfg.loopName} reason=tui-owned-initial-prompt`)
+    if (cfg?.initialPromptOwner === 'tui' && sendInitialPrompt) {
+      deps.logger.log(`[forge-session-attach] skip session=${sessionId} loop=${loopName} reason=tui-owned-initial-prompt`)
       return
     }
 
@@ -147,7 +148,7 @@ async function attachForgeSession(
       projectDirectory,
     )
 
-    if (action.action === 'keep' && action.reason !== 'running') {
+    if (action.action === 'keep' && action.reason !== 'running' && action.reason !== 'pending-attach') {
       // bad config or wrong-project — toast and bail, do not attach
       deps.logger.log(
         `[forge-session-attach] skip session=${sessionId} workspace=${workspaceId} reason=${action.reason}`,
@@ -155,41 +156,78 @@ async function attachForgeSession(
       return
     }
 
-    if (action.action === 'remove-fully' && action.reason === 'missing-row') {
+    if ((action.action === 'remove-fully' && action.reason === 'missing-row') || (action.action === 'keep' && action.reason === 'pending-attach')) {
       // Fresh attach (no loop row yet) - proceed to attach
-      deps.logger.log(`[forge-session-attach] session=${sessionId} loop=${cfg.loopName} projectId=${sessionProjectId} proceeding (fresh-attach)`)
+      if (!cfg) {
+        if (action.action === 'remove-fully') {
+          await removeForgeWorkspaceWithContext(
+            { v2: deps.v2, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
+            { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-missing-row-no-config' },
+          )
+          publishAttachFailureToast(
+            deps,
+            ws.directory ?? deps.directory,
+            `Forge loop "${loopName}"`,
+            'Loop metadata missing. Removed stale workspace registration.',
+          )
+        } else {
+          const extraKeys = ws.extra ? Object.keys(ws.extra) : []
+          deps.logger.log(`[forge-session-attach] skip session=${sessionId} workspace=${workspaceId} reason=no-forgeLoop-config extraKeys=[${extraKeys.join(',')}]`)
+        }
+        return
+      }
+      if (action.action === 'remove-fully' && cfg.initialPromptOwner === 'tui' && !isPendingAttachWorkspace(classifyEntry)) {
+        await removeForgeWorkspaceWithContext(
+          { v2: deps.v2, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
+          { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-expired-pending' },
+        )
+        publishAttachFailureToast(
+          deps,
+          ws.directory ?? deps.directory,
+          `Forge loop "${loopName}"`,
+          'Loop attach window expired. Run a new plan to start fresh.',
+        )
+        return
+      }
+      deps.logger.log(`[forge-session-attach] session=${sessionId} loop=${loopName} projectId=${sessionProjectId} proceeding (fresh-attach)`)
     } else if (action.action === 'keep' && action.reason === 'running') {
       // Running loop but no in-memory state: this is the plugin-reload recovery case
       // However, the loop is already running, so we should NOT re-attach
-      deps.logger.log(`[forge-session-attach] skip session=${sessionId} loop=${cfg.loopName} reason=already-running`)
+      deps.logger.log(`[forge-session-attach] skip session=${sessionId} loop=${loopName} reason=already-running`)
       return
     } else if (action.action === 'remove-fully' && action.reason === 'completed') {
       // Completed loop: remove workspace + toast
       await removeForgeWorkspaceWithContext(
         { v2: deps.v2, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
-        { workspaceId, loopName: cfg.loopName, action: 'remove-fully', reasonLabel: 'attach-safety-net-completed' },
+        { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-safety-net-completed' },
       )
       publishAttachFailureToast(
         deps,
         ws.directory ?? deps.directory,
-        `Forge loop "${cfg.loopName}"`,
+        `Forge loop "${loopName}"`,
         'Loop already completed. Run a new plan to start fresh.',
       )
       return
     } else if (action.action === 'remove-registration-only') {
-      // Restartable-terminal (cancelled/errored/stalled): toast only, preserve workspace for manual restart
+      // Restartable-terminal (cancelled/errored/stalled): remove registration, preserve worktree for manual restart
+      await removeForgeWorkspaceWithContext(
+        { v2: deps.v2, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
+        { workspaceId, loopName, action: 'remove-registration-only', reasonLabel: 'attach-safety-net-restartable-terminal' },
+      )
       publishAttachFailureToast(
         deps,
         ws.directory ?? deps.directory,
-        `Forge loop "${cfg.loopName}"`,
-        `Loop "${cfg.loopName}" is in terminal status. Use Loop-status restart to resume.`,
+        `Forge loop "${loopName}"`,
+        `Loop "${loopName}" is in terminal status. Use Loop-status restart to resume.`,
       )
       return
     } else {
       // Fallback: should not reach here
-      deps.logger.log(`[forge-session-attach] skip session=${sessionId} loop=${cfg.loopName} reason=unexpected-classification`)
+      deps.logger.log(`[forge-session-attach] skip session=${sessionId} loop=${loopName} reason=unexpected-classification`)
       return
     }
+
+    if (!cfg) return
 
     const resolvedHostSessionId = cfg.hostSessionId && cfg.hostSessionId.length > 0
       ? cfg.hostSessionId
@@ -206,11 +244,11 @@ async function attachForgeSession(
     } else {
       const row = deps.execDeps.plansRepo.getForSession(sessionProjectId, planSource.sessionId)
       if (!row) {
-        deps.logger.error(`[forge-session-attach] plan not found for session=${planSource.sessionId} loop=${cfg.loopName} workspace=${workspaceId}`)
-        publishAttachFailureToast(deps, ws.directory ?? deps.directory, `Forge loop "${cfg.loopName}"`, 'No stored plan found for this loop. Re-run "Execute → Loop" from a session that has a captured plan.')
+        deps.logger.error(`[forge-session-attach] plan not found for session=${planSource.sessionId} loop=${loopName} workspace=${workspaceId}`)
+        publishAttachFailureToast(deps, ws.directory ?? deps.directory, `Forge loop "${loopName}"`, 'No stored plan found for this loop. Re-run "Execute → Loop" from a session that has a captured plan.')
         await removeForgeWorkspaceWithContext(
           { v2: deps.v2, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
-          { workspaceId, loopName: cfg.loopName, action: 'remove-fully', reasonLabel: 'attach-no-plan' },
+          { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-no-plan' },
         )
         return
       }
@@ -226,9 +264,9 @@ async function attachForgeSession(
           sessionId,
           workspaceId,
           worktreeDir: ws.directory ?? '',
-          loopName: cfg.loopName,
-          displayName: cfg.title ?? cfg.loopName,
-          executionName: cfg.loopName,
+          loopName,
+          displayName: cfg.title ?? loopName,
+          executionName: loopName,
           hostSessionId: resolvedHostSessionId,
           executionModel: cfg.executionModel,
           auditorModel: cfg.auditorModel,
@@ -240,22 +278,39 @@ async function attachForgeSession(
            startWatchdog: true,
            sendInitialPrompt,
          },
-       )
-       if (!result.ok && result.code !== 'already_attached') {
-         publishAttachFailureToast(deps, ws.directory ?? deps.directory, `Forge loop "${cfg.loopName}"`, `Failed to start loop: ${result.message}`)
-         await removeForgeWorkspaceWithContext(
-           { v2: deps.v2, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
-           { workspaceId, loopName: cfg.loopName, action: 'remove-fully', reasonLabel: 'attach-failed' },
-         )
-       }
-     } catch (err) {
-       deps.logger.error('[forge-session-attach] attachLoopToSession threw', err)
-       publishAttachFailureToast(deps, ws.directory ?? deps.directory, `Forge loop "${cfg.loopName}"`, 'Failed to start loop (unexpected error). Check forge logs.')
-       await removeForgeWorkspaceWithContext(
-         { v2: deps.v2, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
-         { workspaceId, loopName: cfg.loopName, action: 'remove-fully', reasonLabel: 'attach-error' },
-       )
-     }
+        )
+        if (!result.ok && result.code === 'conflict') {
+          const row = deps.execDeps.loopsRepo.get(sessionProjectId, loopName)
+          const removalAction = row?.status === 'cancelled' || row?.status === 'errored' || row?.status === 'stalled'
+            ? 'remove-registration-only'
+            : 'remove-fully'
+          publishAttachFailureToast(
+            deps,
+            ws.directory ?? deps.directory,
+            `Forge loop "${loopName}"`,
+            removalAction === 'remove-registration-only'
+              ? `Loop "${loopName}" is in terminal status. Use Loop-status restart to resume.`
+              : `Failed to start loop: ${result.message}`,
+          )
+          await removeForgeWorkspaceWithContext(
+            { v2: deps.v2, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
+            { workspaceId, loopName, action: removalAction, reasonLabel: 'attach-conflict-terminal' },
+          )
+        } else if (!result.ok && result.code !== 'already_attached') {
+          publishAttachFailureToast(deps, ws.directory ?? deps.directory, `Forge loop "${loopName}"`, `Failed to start loop: ${result.message}`)
+          await removeForgeWorkspaceWithContext(
+            { v2: deps.v2, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
+            { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-failed' },
+          )
+        }
+      } catch (err) {
+        deps.logger.error('[forge-session-attach] attachLoopToSession threw', err)
+        publishAttachFailureToast(deps, ws.directory ?? deps.directory, `Forge loop "${loopName}"`, 'Failed to start loop (unexpected error). Check forge logs.')
+        await removeForgeWorkspaceWithContext(
+          { v2: deps.v2, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
+          { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-error' },
+        )
+      }
 }
 
 function publishAttachFailureToast(

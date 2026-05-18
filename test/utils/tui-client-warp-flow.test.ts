@@ -155,8 +155,8 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
     expect(createArgs.branch).toBeNull()
     expect(createArgs.extra.loopName).toBe('my-cool-feature')
     expect(createArgs.extra.projectDirectory).toBe(DIRECTORY)
+    expect(createArgs.extra.workspaceCreatedAt).toEqual(expect.any(Number))
     expect(createArgs.extra.forgeLoop).toEqual({
-      loopName: 'my-cool-feature',
       hostSessionId: SESSION_ID,
       title: 'My Cool Feature',
       executionModel: 'prov/exec',
@@ -164,6 +164,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
       planSource: 'inline',
       planText: '# Plan\n\nImplement feature X.',
       initialPromptOwner: 'tui',
+      pendingAttachStartedAt: expect.any(Number),
     })
 
     // Verify session.create was called with correct params
@@ -196,7 +197,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
       data: [
         { id: 'ws_old_1', type: 'forge', name: 'my-cool-feature-1' },
         { id: 'ws_old_2', type: 'forge', extra: { loopName: 'my-cool-feature-1' } },
-        { id: 'ws_old_3', type: 'forge', extra: { forgeLoop: { loopName: 'my-cool-feature-1' } } },
+        { id: 'ws_old_3', type: 'forge', extra: { loopName: 'my-cool-feature-1' } },
         { id: 'ws_other', type: 'forge', name: 'other-loop' },
         { id: 'ws_worktree', type: 'worktree', name: 'my-cool-feature' },
       ],
@@ -220,7 +221,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
     expect(mockApi.client.experimental.workspace.create.mock.invocationCallOrder[0]).toBeGreaterThan(0)
     const createArgs = mockApi.client.experimental.workspace.create.mock.calls[0][0]
     expect(createArgs.extra.loopName).toBe('my-cool-feature-2')
-    expect(createArgs.extra.forgeLoop.loopName).toBe('my-cool-feature-2')
+    expect(createArgs.extra.workspaceCreatedAt).toEqual(expect.any(Number))
   })
 
   test('suffixes new TUI loop start before workspace creation when base workspace already exists', async () => {
@@ -245,7 +246,6 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
     expect(result!.loopName).toBe('my-cool-feature-1')
     const createArgs = mockApi.client.experimental.workspace.create.mock.calls[0][0]
     expect(createArgs.extra.loopName).toBe('my-cool-feature-1')
-    expect(createArgs.extra.forgeLoop.loopName).toBe('my-cool-feature-1')
     expect(mockApi.client.session.create.mock.calls[0][0].title).toBe('my-cool-feature-1')
   })
 
@@ -269,7 +269,6 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
     expect(result!.loopName).toBe('my-cool-feature-1')
     const createArgs = mockApi.client.experimental.workspace.create.mock.calls[0][0]
     expect(createArgs.extra.loopName).toBe('my-cool-feature-1')
-    expect(createArgs.extra.forgeLoop.loopName).toBe('my-cool-feature-1')
     expect(mockApi.client.session.create.mock.calls[0][0].title).toBe('my-cool-feature-1')
   })
 
@@ -358,7 +357,6 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
 
     const createArgs = mockApi.client.experimental.workspace.create.mock.calls[0][0]
     expect(createArgs.extra.forgeLoop).toEqual({
-      loopName: 'archived-plan-loop',
       title: 'Archived Plan Loop',
       executionModel: 'prov/exec',
       auditorModel: 'prov/aud',
@@ -366,6 +364,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
       planText: '# Archived Plan\n\nLoaded from disk.',
       hostSessionId: undefined,
       initialPromptOwner: 'tui',
+      pendingAttachStartedAt: expect.any(Number),
     })
     expect(createArgs.extra.forgeLoop.hostSessionId).toBeUndefined()
   })

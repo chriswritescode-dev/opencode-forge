@@ -10,7 +10,7 @@ import { parseModelString } from './model-fallback'
 import { listConnectedWorkspaces, type WorkspaceListApi } from './workspace-listing'
 import { type ForgeLoopExtra } from '../services/execution'
 import { buildLoopPermissionRuleset } from '../constants/loop'
-import { removeExistingForgeLoopWorkspaces } from '../workspace/forge-worktree'
+import { getForgeWorkspaceLoopName, removeExistingForgeLoopWorkspaces } from '../workspace/forge-worktree'
 import { fetchLoopsList } from './tui-loop-store'
 
 export type ApiExecutionMode = 'new-session' | 'execute-here' | 'loop'
@@ -58,11 +58,8 @@ async function reserveTuiLoopName(api: TuiPluginApi, projectId: string | null, b
     const entries = ((result as { data?: unknown[] } | undefined)?.data ?? []) as Array<{ name?: string; extra?: Record<string, unknown> | null }>
     for (const entry of entries) {
       if (entry.name) names.add(entry.name)
-      if (typeof entry.extra?.loopName === 'string') names.add(entry.extra.loopName)
-      const forgeLoop = entry.extra?.forgeLoop
-      if (forgeLoop && typeof forgeLoop === 'object' && typeof (forgeLoop as { loopName?: unknown }).loopName === 'string') {
-        names.add((forgeLoop as { loopName: string }).loopName)
-      }
+      const loopName = getForgeWorkspaceLoopName(entry)
+      if (loopName) names.add(loopName)
     }
     return nextAvailableLoopName(baseName, [...names])
   } catch {
@@ -318,8 +315,8 @@ export async function connectForgeProject(
       if (req.mode === 'loop') {
         const loopName = await reserveTuiLoopName(api, projectId, deriveLoopNameFromTitle(req.title))
         tuiDebug(`plan.execute(loop): inline plan (planText.length=${req.plan.length}) hostSession=${sessionId ?? 'none'} loop=${loopName}`)
+        const createdAt = Date.now()
         const forgeLoop: ForgeLoopExtra = {
-          loopName,
           hostSessionId: sessionId || undefined,
           title: req.title,
           executionModel: req.executionModel,
@@ -327,6 +324,7 @@ export async function connectForgeProject(
           planSource: 'inline',
           planText: req.plan,
           initialPromptOwner: 'tui',
+          pendingAttachStartedAt: createdAt,
         }
         try {
           await removeExistingForgeLoopWorkspaces(api.client, loopName, {
@@ -336,7 +334,7 @@ export async function connectForgeProject(
           const wsRes = await api.client.experimental.workspace.create({
             type: 'forge',
             branch: null,
-            extra: { loopName, projectDirectory: directory, forgeLoop },
+            extra: { loopName, projectDirectory: directory, workspaceCreatedAt: createdAt, forgeLoop },
           })
           if (wsRes.error || !wsRes.data) return null
           const workspace = wsRes.data

@@ -106,7 +106,7 @@ describe('sweepStaleForgeWorkspaces', () => {
           id: 'ws-excluded',
           type: 'forge',
           extra: {
-            forgeLoop: { loopName: 'terminating-loop' },
+            loopName: 'terminating-loop',
             projectDirectory,
           },
         },
@@ -130,7 +130,7 @@ describe('sweepStaleForgeWorkspaces', () => {
           id: 'ws-completed',
           type: 'forge',
           extra: {
-            forgeLoop: { loopName: 'completed-loop' },
+            loopName: 'completed-loop',
             projectDirectory,
           },
         },
@@ -169,7 +169,7 @@ describe('sweepStaleForgeWorkspaces', () => {
           id: 'ws-cancelled',
           type: 'forge',
           extra: {
-            forgeLoop: { loopName: 'cancelled-loop' },
+            loopName: 'cancelled-loop',
             projectDirectory,
           },
         },
@@ -206,7 +206,7 @@ describe('sweepStaleForgeWorkspaces', () => {
           id: 'ws-running',
           type: 'forge',
           extra: {
-            forgeLoop: { loopName: 'running-loop' },
+            loopName: 'running-loop',
             projectDirectory,
           },
         },
@@ -236,7 +236,7 @@ describe('sweepStaleForgeWorkspaces', () => {
           id: 'ws-cross',
           type: 'forge',
           extra: {
-            forgeLoop: { loopName: 'cross-loop' },
+            loopName: 'cross-loop',
             projectDirectory: '/tmp/other-project',
           },
         },
@@ -260,7 +260,7 @@ describe('sweepStaleForgeWorkspaces', () => {
           id: 'ws-missing',
           type: 'forge',
           extra: {
-            forgeLoop: { loopName: 'missing-loop' },
+            loopName: 'missing-loop',
             projectDirectory,
           },
         },
@@ -279,33 +279,88 @@ describe('sweepStaleForgeWorkspaces', () => {
     expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws-missing' })
   })
 
+  test('keeps missing-row TUI workspace during pending attach grace window', async () => {
+    const { v2, pendingTeardowns, logger, loopsRepo, workspaceRemove } = await createSweepDeps({
+      workspaceListResult: [
+        {
+          id: 'ws-pending',
+          type: 'forge',
+          extra: {
+            loopName: 'pending-loop',
+            projectDirectory,
+            forgeLoop: {
+              initialPromptOwner: 'tui',
+              pendingAttachStartedAt: Date.now(),
+            },
+          },
+        },
+      ],
+      loopsRepoGet: vi.fn().mockReturnValue(null),
+    })
+
+    const report = await sweepStaleForgeWorkspaces(
+      { v2: v2 as any, pendingTeardowns, logger, loopsRepo },
+      { projectId, projectDirectory },
+    )
+
+    expect(report.swept).toEqual([])
+    expect(report.skipped).toEqual([{ workspaceId: 'ws-pending', reason: 'pending-attach' }])
+    expect(workspaceRemove).not.toHaveBeenCalled()
+  })
+
+  test('keeps missing-row freshly created server workspace during pending start grace window', async () => {
+    const { v2, pendingTeardowns, logger, loopsRepo, workspaceRemove } = await createSweepDeps({
+      workspaceListResult: [
+        {
+          id: 'ws-pending-start',
+          type: 'forge',
+          extra: {
+            loopName: 'pending-start-loop',
+            projectDirectory,
+            workspaceCreatedAt: Date.now(),
+          },
+        },
+      ],
+      loopsRepoGet: vi.fn().mockReturnValue(null),
+    })
+
+    const report = await sweepStaleForgeWorkspaces(
+      { v2: v2 as any, pendingTeardowns, logger, loopsRepo },
+      { projectId, projectDirectory },
+    )
+
+    expect(report.swept).toEqual([])
+    expect(report.skipped).toEqual([{ workspaceId: 'ws-pending-start', reason: 'pending-start' }])
+    expect(workspaceRemove).not.toHaveBeenCalled()
+  })
+
   test('mixed scenario: completed, cancelled, running, missing-row, cross-project', async () => {
     const { v2, pendingTeardowns, logger, loopsRepo, workspaceRemove } = await createSweepDeps({
       workspaceListResult: [
         {
           id: 'ws-completed',
           type: 'forge',
-          extra: { forgeLoop: { loopName: 'completed-loop' }, projectDirectory },
+          extra: { loopName: 'completed-loop', projectDirectory },
         },
         {
           id: 'ws-cancelled',
           type: 'forge',
-          extra: { forgeLoop: { loopName: 'cancelled-loop' }, projectDirectory },
+          extra: { loopName: 'cancelled-loop', projectDirectory },
         },
         {
           id: 'ws-running',
           type: 'forge',
-          extra: { forgeLoop: { loopName: 'running-loop' }, projectDirectory },
+          extra: { loopName: 'running-loop', projectDirectory },
         },
         {
           id: 'ws-missing',
           type: 'forge',
-          extra: { forgeLoop: { loopName: 'missing-loop' }, projectDirectory },
+          extra: { loopName: 'missing-loop', projectDirectory },
         },
         {
           id: 'ws-cross',
           type: 'forge',
-          extra: { forgeLoop: { loopName: 'cross-loop' }, projectDirectory: '/tmp/other' },
+          extra: { loopName: 'cross-loop', projectDirectory: '/tmp/other' },
         },
       ],
       loopsRepoGet: (pid, name) => {
@@ -362,9 +417,9 @@ describe('sweepStaleForgeWorkspaces', () => {
         workspace: {
           list: vi.fn().mockResolvedValue({
             data: [
-              { id: 'ws1', type: 'forge', extra: { forgeLoop: { loopName: 'loop1' }, projectDirectory } },
-              { id: 'ws2', type: 'forge', extra: { forgeLoop: { loopName: 'loop2' }, projectDirectory } },
-              { id: 'ws3', type: 'forge', extra: { forgeLoop: { loopName: 'loop3' }, projectDirectory } },
+              { id: 'ws1', type: 'forge', extra: { loopName: 'loop1', projectDirectory } },
+              { id: 'ws2', type: 'forge', extra: { loopName: 'loop2', projectDirectory } },
+              { id: 'ws3', type: 'forge', extra: { loopName: 'loop3', projectDirectory } },
             ],
           }),
           remove: workspaceRemove,
@@ -443,7 +498,7 @@ describe('sweepStaleForgeWorkspaces', () => {
         workspace: {
           list: vi.fn().mockResolvedValue({
             data: [
-              { id: 'ws-failed', type: 'forge', extra: { forgeLoop: { loopName: 'failed-loop' }, projectDirectory } },
+              { id: 'ws-failed', type: 'forge', extra: { loopName: 'failed-loop', projectDirectory } },
             ],
           }),
           remove: workspaceRemove,

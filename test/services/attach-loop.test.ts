@@ -356,7 +356,7 @@ describe('attachLoopToSession', () => {
     expect(deleteStateSpy).not.toHaveBeenCalled()
   })
 
-  test('attachLoopToSession clears terminal loop row before re-attaching (cancelled)', async () => {
+  test('attachLoopToSession refuses terminal loop row without deleting state', async () => {
     const { deps, loopsRepo, loopService } = buildDeps()
 
     // Pre-seed a terminal loop row.
@@ -407,12 +407,15 @@ describe('attachLoopToSession', () => {
       },
     )
 
-    expect(deleteStateSpy).toHaveBeenCalledWith('reusable-loop')
-    expect(result.ok).toBe(true)
-    // Re-inserted with the new session.
+    expect(deleteStateSpy).not.toHaveBeenCalled()
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.code).toBe('conflict')
+      expect(result.message).toContain('Use loop restart')
+    }
     const after = loopsRepo.get(PROJECT_ID, 'reusable-loop')
-    expect(after?.currentSessionId).toBe('sess_new')
-    expect(after?.status).toBe('running')
+    expect(after?.currentSessionId).toBe('sess_old')
+    expect(after?.status).toBe('cancelled')
   })
 
   test('attachLoopToSession returns already_attached when existing row is running', async () => {

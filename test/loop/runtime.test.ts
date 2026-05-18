@@ -457,7 +457,14 @@ describe('runtime re-provisioning updates state.workspaceId', () => {
     // createBuiltinWorktreeWorkspace was invoked (proves internal state mutation occurred)
     expect(wsCreateMock).toHaveBeenCalledTimes(1)
     expect(wsCreateMock).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'forge', extra: { loopName: 'test-loop', projectDirectory: expect.any(String) } }),
+      expect.objectContaining({
+        type: 'forge',
+        extra: expect.objectContaining({
+          loopName: 'test-loop',
+          projectDirectory: expect.any(String),
+          workspaceCreatedAt: expect.any(Number),
+        }),
+      }),
     )
   })
 })

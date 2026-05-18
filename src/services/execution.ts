@@ -61,7 +61,6 @@ export type PlanSource =
 // ============================================================================
 
 export interface ForgeLoopExtra {
-  loopName: string
   hostSessionId?: string
   title?: string
   executionModel?: string
@@ -69,6 +68,7 @@ export interface ForgeLoopExtra {
   planSource: 'stored' | 'inline'
   planText?: string
   initialPromptOwner?: 'server' | 'tui'
+  pendingAttachStartedAt?: number
 }
 
 export interface AttachLoopInput {
@@ -760,7 +760,7 @@ export async function attachLoopToSession(
   deps: ForgeExecutionServiceDeps,
   ctx: ForgeExecutionRequestContext,
   input: AttachLoopInput,
-): Promise<{ ok: true; loopName: string } | { ok: false; code: 'already_attached' | 'internal_error' | 'prompt_failed'; message: string }> {
+): Promise<{ ok: true; loopName: string } | { ok: false; code: 'already_attached' | 'conflict' | 'internal_error' | 'prompt_failed'; message: string }> {
   const {
     sessionId,
     workspaceId,
@@ -790,15 +790,8 @@ export async function attachLoopToSession(
       deps.logger.log(`attachLoopToSession: loop ${loopName} already attached (running), skipping`)
       return { ok: false, code: 'already_attached', message: `Loop ${loopName} is already attached` }
     }
-    // Terminal row from a prior run (cancelled/completed/errored/stalled).
-    // Clear it so the new attach can insert fresh state without colliding.
-    deps.logger.log(`attachLoopToSession: clearing terminal loop row ${loopName} (status=${existing.status}) before re-attach`)
-    try {
-      deps.loop.deleteState(loopName)
-    } catch (err) {
-      deps.logger.error(`attachLoopToSession: failed to clear terminal loop row ${loopName}`, err)
-      return { ok: false, code: 'internal_error', message: `Failed to clear stale loop state for ${loopName}` }
-    }
+    deps.logger.log(`attachLoopToSession: loop ${loopName} has terminal status ${existing.status}; refusing attach`)
+    return { ok: false, code: 'conflict', message: `Loop ${loopName} is terminal. Use loop restart to resume or start a new suffixed loop.` }
   }
 
   // Defensive purge of orphaned per-loop rows (section_plans cascade may not have fired

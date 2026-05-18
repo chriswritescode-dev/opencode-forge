@@ -21,6 +21,11 @@ export interface ForgeWorkspaceEntry {
   extra?: Record<string, unknown> | null
 }
 
+export function getForgeWorkspaceLoopName(entry: Pick<ForgeWorkspaceEntry, 'extra'>): string | undefined {
+  const loopName = entry.extra?.loopName
+  return typeof loopName === 'string' && loopName.length > 0 ? loopName : undefined
+}
+
 /**
  * Look up existing forge workspaces by loop name.
  */
@@ -48,9 +53,7 @@ export async function findExistingForgeWorkspaces(
 export function workspaceMatchesLoop(entry: ForgeWorkspaceEntry, loopName: string): boolean {
   if (entry.type !== 'forge') return false
   if (entry.name === loopName) return true
-  if (entry.extra?.loopName === loopName) return true
-  const forgeLoop = entry.extra?.forgeLoop
-  return !!forgeLoop && typeof forgeLoop === 'object' && (forgeLoop as { loopName?: unknown }).loopName === loopName
+  return getForgeWorkspaceLoopName(entry) === loopName
 }
 
 export async function removeExistingForgeLoopWorkspaces(
@@ -99,10 +102,10 @@ export async function createBuiltinWorktreeWorkspace(
   try {
     const _wsStart = Date.now()
     ;(logger ?? console).log?.(`[warp] workspace.create.start loopName=${options.loopName}`)
-    const createParams: { type: string; branch: string | null; extra: { loopName: string; projectDirectory: string } } = {
+    const createParams: { type: string; branch: string | null; extra: { loopName: string; projectDirectory: string; workspaceCreatedAt: number } } = {
       type: 'forge',
       branch: null,
-      extra: { loopName: options.loopName, projectDirectory: options.directory },
+      extra: { loopName: options.loopName, projectDirectory: options.directory, workspaceCreatedAt: Date.now() },
     }
     const result = await workspaceApi.create(createParams)
 

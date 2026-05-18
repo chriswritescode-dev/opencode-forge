@@ -154,7 +154,7 @@ describe('performTerminationSideEffects unwarp', () => {
           id: 'ws_abc',
           type: 'forge',
           extra: {
-            forgeLoop: { loopName: 'feat-x' },
+            loopName: 'feat-x',
             projectDirectory: '/tmp/project',
           },
         },
@@ -163,7 +163,7 @@ describe('performTerminationSideEffects unwarp', () => {
           id: 'ws_sibling_completed',
           type: 'forge',
           extra: {
-            forgeLoop: { loopName: 'sibling-completed-loop' },
+            loopName: 'sibling-completed-loop',
             projectDirectory: '/tmp/project',
           },
         },
@@ -172,7 +172,7 @@ describe('performTerminationSideEffects unwarp', () => {
           id: 'ws_sibling_running',
           type: 'forge',
           extra: {
-            forgeLoop: { loopName: 'sibling-running-loop' },
+            loopName: 'sibling-running-loop',
             projectDirectory: '/tmp/project',
           },
         },

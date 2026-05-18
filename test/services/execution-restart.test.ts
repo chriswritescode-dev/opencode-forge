@@ -505,7 +505,11 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect(workspaceCreate).toHaveBeenCalledWith({
       type: 'forge',
       branch: null,
-      extra: { loopName: 'worktree-loop', projectDirectory: '/tmp' },
+      extra: {
+        loopName: 'worktree-loop',
+        projectDirectory: '/tmp',
+        workspaceCreatedAt: expect.any(Number),
+      },
     })
     const newState = loopService.getActiveState('worktree-loop')!
     expect(newState.workspaceId).toBe('ws_new')

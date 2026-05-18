@@ -268,7 +268,15 @@ describe('handleStartLoop builtin worktree workspace', () => {
     // Assert: experimental.workspace.create was called (builtin worktree path)
     expect(experimentalWorkspaceCreateMock).toHaveBeenCalledTimes(1)
     expect(experimentalWorkspaceCreateMock).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'forge', branch: null, extra: { loopName: 'test-plan', projectDirectory: expect.any(String) } }),
+      expect.objectContaining({
+        type: 'forge',
+        branch: null,
+        extra: expect.objectContaining({
+          loopName: 'test-plan',
+          projectDirectory: expect.any(String),
+          workspaceCreatedAt: expect.any(Number),
+        }),
+      }),
     )
 
     // Assert: old v2.worktree.create was NOT called

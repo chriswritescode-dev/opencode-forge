@@ -14,6 +14,7 @@ import type { PendingTeardownRegistry } from './pending-teardown'
 import type { Logger } from '../types'
 import type { ForgeWorkspaceEntry, ClassifyAction } from './classify-stale'
 import { classifyForgeWorkspace } from './classify-stale'
+import { getForgeWorkspaceLoopName } from './forge-worktree'
 import { removeForgeWorkspaceWithContext } from './remove-with-context'
 
 export interface SweepStaleDeps {
@@ -65,7 +66,7 @@ export async function sweepStaleForgeWorkspaces(
     return { swept, skipped, failed }
   }
 
-  let entries: ForgeWorkspaceEntry[] = []
+  let entries: ForgeWorkspaceEntry[]
   try {
     const result = await workspaceApi.list()
     const dataList = ((result as { data?: unknown[] } | undefined)?.data ?? []) as Array<{ id?: unknown; type?: unknown; extra?: unknown }>
@@ -83,8 +84,7 @@ export async function sweepStaleForgeWorkspaces(
 
   for (const entry of entries) {
     // Skip the terminating loop's own workspace
-    const forgeLoop = (entry.extra?.forgeLoop ?? {}) as { loopName?: unknown }
-    const entryLoopName = typeof forgeLoop.loopName === 'string' ? forgeLoop.loopName : undefined
+    const entryLoopName = getForgeWorkspaceLoopName(entry)
     if (excludeLoopName && entryLoopName === excludeLoopName) {
       continue
     }

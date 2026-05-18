@@ -45,8 +45,8 @@ describe('classifyForgeWorkspace', () => {
     expect(result).toEqual({ action: 'keep', reason: 'not-forge' })
   })
 
-  test('missing forgeLoop.loopName → keep/no-loop-name', () => {
-    const entry = { id: 'ws1', type: 'forge', extra: { forgeLoop: {} } }
+  test('missing extra.loopName → keep/no-loop-name', () => {
+    const entry = { id: 'ws1', type: 'forge', extra: {} }
     const result = classifyForgeWorkspace(entry, createMockLoopsRepo(), projectId, projectDirectory)
     expect(result).toEqual({ action: 'keep', reason: 'no-loop-name' })
   })
@@ -55,7 +55,7 @@ describe('classifyForgeWorkspace', () => {
     const entry = {
       id: 'ws1',
       type: 'forge',
-      extra: { forgeLoop: { loopName: 'test-loop' } },
+      extra: { loopName: 'test-loop' },
     }
     const result = classifyForgeWorkspace(entry, createMockLoopsRepo(), projectId, projectDirectory)
     expect(result).toEqual({ action: 'keep', reason: 'no-project-directory' })
@@ -66,7 +66,7 @@ describe('classifyForgeWorkspace', () => {
       id: 'ws1',
       type: 'forge',
       extra: {
-        forgeLoop: { loopName: 'test-loop' },
+        loopName: 'test-loop',
         projectDirectory: '/tmp/other-project',
       },
     }
@@ -79,7 +79,7 @@ describe('classifyForgeWorkspace', () => {
       id: 'ws1',
       type: 'forge',
       extra: {
-        forgeLoop: { loopName: 'test-loop' },
+        loopName: 'test-loop',
         projectDirectory,
       },
     }
@@ -88,12 +88,82 @@ describe('classifyForgeWorkspace', () => {
     expect(result).toEqual({ action: 'remove-fully', reason: 'missing-row', loopName: 'test-loop' })
   })
 
+  test('missing row with pending TUI attach inside grace window → keep/pending-attach', () => {
+    const nowMs = 10_000
+    const entry = {
+      id: 'ws1',
+      type: 'forge',
+      extra: {
+        loopName: 'test-loop',
+        projectDirectory,
+        forgeLoop: {
+          initialPromptOwner: 'tui',
+          pendingAttachStartedAt: nowMs - 1_000,
+        },
+      },
+    }
+    const loopsRepo = createMockLoopsRepo({ get: vi.fn().mockReturnValue(null) })
+    const result = classifyForgeWorkspace(entry, loopsRepo, projectId, projectDirectory, { nowMs, pendingAttachGraceMs: 5_000 })
+    expect(result).toEqual({ action: 'keep', reason: 'pending-attach' })
+  })
+
+  test('missing row with expired TUI attach grace → remove-fully/missing-row', () => {
+    const nowMs = 10_000
+    const entry = {
+      id: 'ws1',
+      type: 'forge',
+      extra: {
+        loopName: 'test-loop',
+        projectDirectory,
+        forgeLoop: {
+          initialPromptOwner: 'tui',
+          pendingAttachStartedAt: nowMs - 10_000,
+        },
+      },
+    }
+    const loopsRepo = createMockLoopsRepo({ get: vi.fn().mockReturnValue(null) })
+    const result = classifyForgeWorkspace(entry, loopsRepo, projectId, projectDirectory, { nowMs, pendingAttachGraceMs: 5_000 })
+    expect(result).toEqual({ action: 'remove-fully', reason: 'missing-row', loopName: 'test-loop' })
+  })
+
+  test('missing row with fresh workspace creation timestamp → keep/pending-start', () => {
+    const nowMs = 10_000
+    const entry = {
+      id: 'ws1',
+      type: 'forge',
+      extra: {
+        loopName: 'test-loop',
+        projectDirectory,
+        workspaceCreatedAt: nowMs - 1_000,
+      },
+    }
+    const loopsRepo = createMockLoopsRepo({ get: vi.fn().mockReturnValue(null) })
+    const result = classifyForgeWorkspace(entry, loopsRepo, projectId, projectDirectory, { nowMs, pendingAttachGraceMs: 5_000 })
+    expect(result).toEqual({ action: 'keep', reason: 'pending-start' })
+  })
+
+  test('missing row with expired workspace creation timestamp → remove-fully/missing-row', () => {
+    const nowMs = 10_000
+    const entry = {
+      id: 'ws1',
+      type: 'forge',
+      extra: {
+        loopName: 'test-loop',
+        projectDirectory,
+        workspaceCreatedAt: nowMs - 10_000,
+      },
+    }
+    const loopsRepo = createMockLoopsRepo({ get: vi.fn().mockReturnValue(null) })
+    const result = classifyForgeWorkspace(entry, loopsRepo, projectId, projectDirectory, { nowMs, pendingAttachGraceMs: 5_000 })
+    expect(result).toEqual({ action: 'remove-fully', reason: 'missing-row', loopName: 'test-loop' })
+  })
+
   test('running loop → keep/running', () => {
     const entry = {
       id: 'ws1',
       type: 'forge',
       extra: {
-        forgeLoop: { loopName: 'test-loop' },
+        loopName: 'test-loop',
         projectDirectory,
       },
     }
@@ -109,7 +179,7 @@ describe('classifyForgeWorkspace', () => {
       id: 'ws1',
       type: 'forge',
       extra: {
-        forgeLoop: { loopName: 'test-loop' },
+        loopName: 'test-loop',
         projectDirectory,
       },
     }
@@ -125,7 +195,7 @@ describe('classifyForgeWorkspace', () => {
       id: 'ws1',
       type: 'forge',
       extra: {
-        forgeLoop: { loopName: 'test-loop' },
+        loopName: 'test-loop',
         projectDirectory,
       },
     }
@@ -141,7 +211,7 @@ describe('classifyForgeWorkspace', () => {
       id: 'ws1',
       type: 'forge',
       extra: {
-        forgeLoop: { loopName: 'test-loop' },
+        loopName: 'test-loop',
         projectDirectory,
       },
     }
@@ -157,7 +227,7 @@ describe('classifyForgeWorkspace', () => {
       id: 'ws1',
       type: 'forge',
       extra: {
-        forgeLoop: { loopName: 'test-loop' },
+        loopName: 'test-loop',
         projectDirectory,
       },
     }
