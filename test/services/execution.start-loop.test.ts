@@ -1010,6 +1010,9 @@ describe('handleStartLoop select-session ordering', () => {
   })
 
   test('onStarted fires after a bounded timeout if selectSession hangs', async () => {
+    // Shorten the select timeout for this test to keep it fast
+    const prevEnv = process.env.FORGE_SELECT_TIMEOUT_MS
+    process.env.FORGE_SELECT_TIMEOUT_MS = '50'
     const tempDir = mkdtempSync(join(tmpdir(), 'exec-ordering-timeout-'))
     const db = new Database(join(tempDir, 'test.db'))
     db.exec(DB_SCHEMA); db.exec(LOOP_LARGE_FIELDS_SCHEMA); db.exec(PLANS_SCHEMA); db.exec(REVIEW_FINDINGS_SCHEMA); db.exec(SECTION_PLANS_SCHEMA)
@@ -1058,5 +1061,7 @@ describe('handleStartLoop select-session ordering', () => {
     expect(totalElapsed).toBeLessThan(5000)
 
     db.close()
+    if (prevEnv === undefined) delete process.env.FORGE_SELECT_TIMEOUT_MS
+    else process.env.FORGE_SELECT_TIMEOUT_MS = prevEnv
   })
 })
