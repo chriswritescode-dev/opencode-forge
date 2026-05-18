@@ -294,6 +294,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
             sandboxManager: ctx.sandboxManager,
             sectionPlansRepo: ctx.sectionPlansRepo,
             workspaceStatusRegistry: ctx.workspaceStatusRegistry,
+            pendingTeardowns: ctx.pendingTeardowns,
           })
           
           if (matchedLabel === 'New session') {

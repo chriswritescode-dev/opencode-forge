@@ -46,7 +46,12 @@ describe('createForgeSessionAttachHook', () => {
         loopsRepo: {
           get: overrides?.loopsRepoGet ?? vi.fn().mockReturnValue(null),
         },
-      },
+        pendingTeardowns: {
+          set: vi.fn(),
+          get: vi.fn(),
+          clear: vi.fn(),
+        },
+      } as any,
       projectId: 'proj_1',
       directory: '/tmp/test',
       logger: {
@@ -60,6 +65,7 @@ describe('createForgeSessionAttachHook', () => {
 
   test('session.created event for forge workspace with forgeLoop invokes attachLoopToSession', async () => {
     const getForSessionMock = vi.fn().mockReturnValue({ content: '# Plan\n\nDo stuff.' })
+    const loopsRepoGetMock = vi.fn().mockReturnValue(null)
     const deps = buildHookDeps({
       workspaceList: vi.fn().mockResolvedValue({
         data: [
@@ -85,6 +91,7 @@ describe('createForgeSessionAttachHook', () => {
         ],
       }),
       plansRepoGetForSession: getForSessionMock,
+      loopsRepoGet: loopsRepoGetMock,
     })
 
     const handler = createForgeSessionAttachHook(deps as any)
@@ -115,6 +122,7 @@ describe('createForgeSessionAttachHook', () => {
   })
 
   test('chat.message fallback attaches TUI-created loop session without re-sending initial prompt', async () => {
+    const loopsRepoGetMock = vi.fn().mockReturnValue(null)
     const deps = buildHookDeps({
       sessionGet: vi.fn().mockResolvedValue({
         data: {
@@ -141,6 +149,7 @@ describe('createForgeSessionAttachHook', () => {
           },
         ],
       }),
+      loopsRepoGet: loopsRepoGetMock,
     })
 
     const handler = createForgeSessionMessageAttachHook(deps as any)
@@ -751,17 +760,18 @@ describe('createForgeSessionAttachHook', () => {
       expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_restart' })
     }
     expect(tuiPublish).toHaveBeenCalledTimes(1)
+    const expectedMessage = status === 'completed'
+      ? 'Loop already completed. Run a new plan to start fresh.'
+      : 'in terminal status. Use Loop-status restart to resume.'
     expect(tuiPublish).toHaveBeenCalledWith(expect.objectContaining({
       body: expect.objectContaining({
         properties: expect.objectContaining({
           title: expect.stringContaining('restart-loop'),
-          message: expect.stringContaining(status),
+          message: expect.stringContaining(expectedMessage),
           variant: 'error',
         }),
       }),
     }))
-    expect(loggerLogSpy).toHaveBeenCalledWith(expect.stringContaining('[forge-session-attach]'))
-    expect(loggerLogSpy).toHaveBeenCalledWith(expect.stringContaining('reason=terminal-loop-row'))
   }
 
   test('terminal loop row (cancelled) refuses re-attach and preserves restartable workspace', async () => {

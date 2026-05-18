@@ -367,6 +367,7 @@ export interface ForgeExecutionServiceDeps {
   sectionPlansRepo?: import('../storage/repos/section-plans-repo').SectionPlansRepo
   reviewFindingsRepo?: import('../storage/repos/review-findings-repo').ReviewFindingsRepo
   workspaceStatusRegistry: import('../utils/workspace-status-registry').WorkspaceStatusRegistry
+  pendingTeardowns: import('../workspace/pending-teardown').PendingTeardownRegistry
 }
 
 // ============================================================================
@@ -693,6 +694,8 @@ export interface SelectInitialWorktreeSessionOpts {
   logger: Logger | Console
   workspaceStatusRegistry: import('../utils/workspace-status-registry').WorkspaceStatusRegistry
   selectSessionFn: (selection: { sessionID: string; workspace?: string }) => Promise<void>
+  /** Maximum time to wait for selectSessionFn before falling through. Defaults to 2000ms. */
+  selectTimeoutMs?: number
 }
 
 export async function selectInitialWorktreeSession(
@@ -733,7 +736,8 @@ export async function selectInitialWorktreeSession(
       )
     }
 
-    const SELECT_TIMEOUT_MS = 2000
+    const envTimeout = Number(process.env.FORGE_SELECT_TIMEOUT_MS)
+    const SELECT_TIMEOUT_MS = opts.selectTimeoutMs ?? (Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : 2000)
     await Promise.race([
       opts.selectSessionFn({ sessionID: targetSessionId, workspace: boundWorkspaceId }),
       new Promise<void>((resolve) => setTimeout(resolve, SELECT_TIMEOUT_MS)),

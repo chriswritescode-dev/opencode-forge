@@ -72,6 +72,8 @@ export function createLoopEventHandler(
         dataDir,
         getPlanText: loop.getPlanText,
         pendingTeardowns,
+        loopsRepo,
+        projectId,
       })
     },
   })

@@ -180,13 +180,11 @@ describe('createBuiltinWorktreeWorkspace', () => {
       )
     })
 
-    it('removes old forge workspaces for the same loop before creating a new one', async () => {
+    it('creates workspace without removing old forge workspaces (sweep handles orphan cleanup on teardown)', async () => {
       const listMock = vi.fn().mockResolvedValue({
         data: [
           { id: 'ws-old-name', type: 'forge', name: 'sync-loop' },
           { id: 'ws-old-extra', type: 'forge', extra: { loopName: 'sync-loop' } },
-          { id: 'ws-other', type: 'forge', name: 'other-loop' },
-          { id: 'ws-worktree', type: 'worktree', name: 'sync-loop' },
         ],
       })
       const removeMock = vi.fn().mockResolvedValue({ data: {} })
@@ -203,10 +201,8 @@ describe('createBuiltinWorktreeWorkspace', () => {
       )
 
       expect(result).toEqual({ workspaceId: 'ws-new', directory: '/tmp/wt-new', branch: 'feature/new' })
-      expect(removeMock).toHaveBeenCalledTimes(2)
-      expect(removeMock).toHaveBeenNthCalledWith(1, { id: 'ws-old-name' })
-      expect(removeMock).toHaveBeenNthCalledWith(2, { id: 'ws-old-extra' })
-      expect(removeMock.mock.invocationCallOrder[1]).toBeLessThan(createMock.mock.invocationCallOrder[0])
+      expect(removeMock).not.toHaveBeenCalled()
+      expect(createMock).toHaveBeenCalledTimes(1)
     })
   })
 })

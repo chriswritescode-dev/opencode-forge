@@ -5,6 +5,8 @@ import type { createSandboxManager } from '../sandbox/manager'
 import { terminationReasonToString } from '../loop'
 import { buildWorktreeCompletionPayload, writeWorktreeCompletionLog } from '../services/worktree-log'
 import type { PendingTeardownRegistry } from '../workspace/pending-teardown'
+import type { LoopsRepo } from '../storage/repos/loops-repo'
+import { sweepStaleForgeWorkspaces } from '../workspace/sweep-stale'
 
 export interface TerminationSideEffectsContext {
   v2Client: OpencodeClient
@@ -14,6 +16,8 @@ export interface TerminationSideEffectsContext {
   dataDir?: string
   getPlanText?: (loopName: string, sessionId: string) => string | null
   pendingTeardowns?: PendingTeardownRegistry
+  loopsRepo?: LoopsRepo
+  projectId?: string
 }
 
 /**
@@ -219,6 +223,24 @@ async function teardownWorktree(
     ctx.logger.error(`Loop: workspace.remove threw for ${state.workspaceId}`, err)
   } finally {
     ctx.pendingTeardowns?.clear(state.loopName)
+  }
+
+  // Opportunistic sweep of stale sibling workspaces
+  if (ctx.loopsRepo && ctx.projectId && ctx.pendingTeardowns && state.projectDir) {
+    try {
+      const report = await sweepStaleForgeWorkspaces(
+        { v2: ctx.v2Client, loopsRepo: ctx.loopsRepo, pendingTeardowns: ctx.pendingTeardowns, logger: ctx.logger },
+        { projectId: ctx.projectId, projectDirectory: state.projectDir, excludeLoopName: state.loopName, reasonLabel: 'orphan-sweep' },
+      )
+      if (report.swept.length > 0) {
+        ctx.logger.log(`Loop: stale-workspace sweep removed ${report.swept.length} entries during teardown of ${state.loopName}`)
+      }
+      if (report.failed.length > 0) {
+        ctx.logger.error(`Loop: stale-workspace sweep had ${report.failed.length} failure(s) during teardown of ${state.loopName}`, report.failed)
+      }
+    } catch (err) {
+      ctx.logger.error(`Loop: stale-workspace sweep threw during teardown of ${state.loopName}`, err)
+    }
   }
 }
 

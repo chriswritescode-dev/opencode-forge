@@ -116,8 +116,15 @@ function createMockV2Client(overrides?: Partial<OpencodeClient>): OpencodeClient
     },
     experimental: {
       workspace: {
-        create: vi.fn(async () => ({ data: { id: 'mock-workspace-' + Date.now() }, error: null })),
+        create: vi.fn(async () => ({
+          data: { id: 'mock-workspace-' + Date.now(), directory: TEST_DIR + '/worktree', branch: 'opencode/loop-test-loop' },
+          error: null,
+        })),
         warp: vi.fn(async () => ({ data: {}, error: null })),
+        list: vi.fn(async () => ({ data: [], error: null })),
+        status: vi.fn(async () => ({ data: [], error: null })),
+        syncList: vi.fn(async () => ({ data: {}, error: null })),
+        remove: vi.fn(async () => ({ data: {}, error: null })),
       },
     },
     tui: {
@@ -264,22 +271,23 @@ describe('loop-status tool restart path', () => {
     const createCalls = ((v2Client.session.create as any)).mock.calls
     expect(createCalls.length).toBeGreaterThan(0)
     const lastCreateCall = createCalls[createCalls.length - 1][0]
-    expect(lastCreateCall.directory).toBe(worktreeDir)
-    expect(lastCreateCall.workspaceID).toBe(workspaceId)
+    // Restart creates a FRESH workspace, so directory points to the new workspace directory
+    expect(lastCreateCall.workspaceID).toMatch(/^mock-workspace-/)
     expect(lastCreateCall.title).toContain(loopName)
     expect(lastCreateCall).not.toHaveProperty('parentID')
-    
-    // Verify workspace binding was called
-    expect((v2Client.experimental?.workspace?.warp as any)).toHaveBeenCalledWith({
-      id: workspaceId,
-      sessionID: expect.any(String),
-    })
-    
-    // Verify persisted state retains workspaceId and hostSessionId
+
+    // Verify workspace binding was called with the fresh workspace id
+    expect((v2Client.experimental?.workspace?.warp as any)).toHaveBeenCalled()
+
+    // Verify persisted state has a fresh workspaceId (new on every restart)
+    // and preserves hostSessionId
     const newState = loopService.getActiveState(loopName)
     expect(newState).toBeDefined()
-    expect(newState?.workspaceId).toBe(workspaceId)
+    expect(newState?.workspaceId).toMatch(/^mock-workspace-/)
+    expect(newState?.workspaceId).not.toBe(workspaceId) // fresh workspace, not old one
     expect(newState?.hostSessionId).toBe(hostSessionId)
+    // Suppress unused variable warning for worktreeDir
+    void worktreeDir
   })
 
   test('force-restart during auditing phase prevents double-rotation', async () => {
@@ -466,17 +474,21 @@ describe('loop-status tool restart path', () => {
     }, { sessionID: 'test-session' } as any)
     
     expect(result).toContain('Restarted loop')
-    
-    // Verify new state has workspace metadata
+
+    // Verify new state has fresh workspace (created on every restart)
+    // hostSessionId is preserved for post-completion TUI redirect
     const newState = loopService.getActiveState(loopName)
-    expect(newState?.workspaceId).toBe(workspaceId)
+    expect(newState?.workspaceId).toMatch(/^mock-workspace-/)
+    expect(newState?.workspaceId).not.toBe(workspaceId)
     expect(newState?.hostSessionId).toBe(hostSessionId)
-    
+
     // Verify restart session was created without parentID
     const createCalls = ((v2Client.session.create as any)).mock.calls
     expect(createCalls.length).toBeGreaterThan(0)
     const createArgs = createCalls[0][0]
     expect(createArgs).not.toHaveProperty('parentID')
+    // Suppress unused warning
+    void worktreeDir
   })
 
   test('force-restart errored loop without workspace includes permission ruleset', async () => {

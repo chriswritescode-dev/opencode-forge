@@ -48,5 +48,7 @@ export interface ToolContext {
   sectionPlansRepo: SectionPlansRepo
   /** Workspace status registry for tracking workspace readiness. */
   workspaceStatusRegistry: import('../utils/workspace-status-registry').WorkspaceStatusRegistry
+  /** Pending teardown registry for workspace removal context. */
+  pendingTeardowns: import('../workspace/pending-teardown').PendingTeardownRegistry
 }
 

@@ -302,6 +302,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         sectionPlansRepo,
         reviewFindingsRepo,
         workspaceStatusRegistry,
+        pendingTeardowns,
       })
 
       let restored = 0
@@ -407,6 +408,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       loopsRepo,
       sectionPlansRepo,
       workspaceStatusRegistry,
+      pendingTeardowns,
     }
 
     if (sandboxManager) {
@@ -437,6 +439,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       sectionPlansRepo,
       reviewFindingsRepo,
       workspaceStatusRegistry,
+      pendingTeardowns,
     }
     const forgeSessionAttachHook = createForgeSessionAttachHook({
       v2,

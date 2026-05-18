@@ -69,8 +69,6 @@ export async function removeExistingForgeLoopWorkspaces(
 
 /**
  * Creates a Forge workspace via opencode's experimental workspace API with the `forge` adapter.
- * If forge workspaces with the same `loopName` already exist, they are removed before
- * creating a fresh one so stale sessions cannot intercept loop startup.
  *
  * Uses `experimental.workspace.create({ type: 'forge', branch: null })` so the
  * workspace appears as fully connected (green dot) in the TUI.
@@ -98,7 +96,6 @@ export async function createBuiltinWorktreeWorkspace(
     (logger ?? console).error('createBuiltinWorktreeWorkspace: options.directory is required')
     return null
   }
-  await removeExistingForgeLoopWorkspaces(client, options.loopName, logger)
   try {
     const _wsStart = Date.now()
     ;(logger ?? console).log?.(`[warp] workspace.create.start loopName=${options.loopName}`)

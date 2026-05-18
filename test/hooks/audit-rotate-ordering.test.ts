@@ -478,16 +478,17 @@ describe('audit→code rotation ordering', () => {
 
     const createIndex = successCallTracker.findIndex(c => c.kind === 'create')
     const restoreIndex = successCallTracker.findIndex(c => c.kind === 'restore')
+    const deleteIndex = successCallTracker.findIndex(c =>
+      c.kind === 'delete' && (c.args as any).sessionID === 'audit-1'
+    )
 
     expect(createIndex).toBeGreaterThanOrEqual(0)
     expect(restoreIndex).toBeGreaterThanOrEqual(0)
-    expect(createIndex).toBeLessThan(restoreIndex)
+    expect(deleteIndex).toBeGreaterThanOrEqual(0)
 
-    // Session deletion is disabled; old sessions are preserved for history
-    const deleteCalls = successCallTracker.filter(c => 
-      c.kind === 'delete' && (c.args as any).sessionID === 'audit-1'
-    )
-    expect(deleteCalls.length).toBe(0)
+    // Order: create new session → bind (restore) workspace → delete old session
+    expect(createIndex).toBeLessThan(restoreIndex)
+    expect(restoreIndex).toBeLessThan(deleteIndex)
 
     const restoreCall = successCallTracker.find(c => c.kind === 'restore')
     expect((restoreCall?.args as any).id).toBe('ws-1')
@@ -555,16 +556,17 @@ describe('audit→code rotation ordering', () => {
 
     const createIndex = failureCallTracker.findIndex(c => c.kind === 'create')
     const restoreIndex = failureCallTracker.findIndex(c => c.kind === 'restore')
+    const deleteIndex = failureCallTracker.findIndex(c =>
+      c.kind === 'delete' && (c.args as any).sessionID === 'audit-fail-1'
+    )
 
     expect(createIndex).toBeGreaterThanOrEqual(0)
     expect(restoreIndex).toBeGreaterThanOrEqual(0)
-    expect(createIndex).toBeLessThan(restoreIndex)
+    expect(deleteIndex).toBeGreaterThanOrEqual(0)
 
-    // Session deletion is disabled; old sessions are preserved for history
-    const deleteCalls = failureCallTracker.filter(c => 
-      c.kind === 'delete' && (c.args as any).sessionID === 'audit-fail-1'
-    )
-    expect(deleteCalls.length).toBe(0)
+    // Order: create new session → bind (restore) workspace → delete old session
+    expect(createIndex).toBeLessThan(restoreIndex)
+    expect(restoreIndex).toBeLessThan(deleteIndex)
 
     const restoreCall = failureCallTracker.find(c => c.kind === 'restore')
     expect((restoreCall?.args as any).id).toBe('ws-1')
