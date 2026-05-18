@@ -17,6 +17,7 @@ export interface ModelUsage {
   model: string
   cost: number
   tokens: TokenBreakdown
+  messageCount: number
 }
 
 /** Summary of loop usage, optionally attributed to a role */
@@ -77,10 +78,11 @@ export const DEFAULT_MODEL_LABEL = 'default/session model'
 /**
  * Extract model label from message info, falling back to provided model or default.
  * Priority:
- * 1. info.model, info.modelID, info.modelId (with provider prefix if available)
- * 2. provider/model pairs: providerID+modelID, provider+model_name
- * 3. fallbackModel parameter
- * 4. DEFAULT_MODEL_LABEL ('default/session model')
+ * 1. info.model (already includes provider if applicable)
+ * 2. info.modelID or info.modelId combined with providerID or provider
+ * 3. provider/model pairs: providerID+model_name, provider+model_name
+ * 4. fallbackModel parameter (used when model ID lacks provider to avoid cross-provider collisions)
+ * 5. DEFAULT_MODEL_LABEL ('default/session model')
  */
 export function modelLabelFromMessage(
   info: {
@@ -113,7 +115,8 @@ export function modelLabelFromMessage(
     if (info.provider) {
       return `${info.provider}/${info.modelID}`
     }
-    return info.modelID
+    // No provider info available - use fallback to avoid merging models from different providers
+    return fallbackModel ?? DEFAULT_MODEL_LABEL
   }
   if (info.modelId) {
     // If we have providerID, combine them
@@ -124,7 +127,8 @@ export function modelLabelFromMessage(
     if (info.provider) {
       return `${info.provider}/${info.modelId}`
     }
-    return info.modelId
+    // No provider info available - use fallback to avoid merging models from different providers
+    return fallbackModel ?? DEFAULT_MODEL_LABEL
   }
 
   // Check provider/model pairs
@@ -160,7 +164,7 @@ export function summarizeAssistantUsage(
   }[],
   attribution?: UsageAttribution,
 ): LoopUsageSummary {
-  const modelMap = new Map<string, { cost: number; tokens: TokenBreakdown }>()
+  const modelMap = new Map<string, { cost: number; tokens: TokenBreakdown; messageCount: number }>()
   let totalCost = 0
   let totalTokens = emptyTokenBreakdown()
 
@@ -178,14 +182,15 @@ export function summarizeAssistantUsage(
     if (existing) {
       existing.cost += cost
       existing.tokens = addTokens(existing.tokens, tokens)
+      existing.messageCount += 1
     } else {
-      modelMap.set(model, { cost, tokens: { ...tokens } })
+      modelMap.set(model, { cost, tokens: { ...tokens }, messageCount: 1 })
     }
   }
 
   // Convert map to sorted array for deterministic output
   const perModel: ModelUsage[] = Array.from(modelMap.entries())
-    .map(([model, data]) => ({ model, cost: data.cost, tokens: data.tokens }))
+    .map(([model, data]) => ({ model, cost: data.cost, tokens: data.tokens, messageCount: data.messageCount }))
     .sort((a, b) => a.model.localeCompare(b.model))
 
   return {
@@ -209,7 +214,7 @@ export function mergeUsageSummaries(...summaries: LoopUsageSummary[]): LoopUsage
     }
   }
 
-  const modelMap = new Map<string, { cost: number; tokens: TokenBreakdown }>()
+  const modelMap = new Map<string, { cost: number; tokens: TokenBreakdown; messageCount: number }>()
   let totalCost = 0
   let totalTokens = emptyTokenBreakdown()
   let attribution: UsageAttribution | undefined
@@ -227,15 +232,16 @@ export function mergeUsageSummaries(...summaries: LoopUsageSummary[]): LoopUsage
       if (existing) {
         existing.cost += modelUsage.cost
         existing.tokens = addTokens(existing.tokens, modelUsage.tokens)
+        existing.messageCount += modelUsage.messageCount
       } else {
-        modelMap.set(modelUsage.model, { cost: modelUsage.cost, tokens: { ...modelUsage.tokens } })
+        modelMap.set(modelUsage.model, { cost: modelUsage.cost, tokens: { ...modelUsage.tokens }, messageCount: modelUsage.messageCount })
       }
     }
   }
 
   // Convert map to sorted array for deterministic output
   const perModel: ModelUsage[] = Array.from(modelMap.entries())
-    .map(([model, data]) => ({ model, cost: data.cost, tokens: data.tokens }))
+    .map(([model, data]) => ({ model, cost: data.cost, tokens: data.tokens, messageCount: data.messageCount }))
     .sort((a, b) => a.model.localeCompare(b.model))
 
   return {

@@ -7,6 +7,7 @@ import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
+import { createLoopSessionUsageRepo, type LoopSessionUsageRepo } from '../../src/storage/repos/loop-session-usage-repo'
 import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoop, type Loop, type LoopRuntimeDeps } from '../../src/loop/runtime'
@@ -41,6 +42,7 @@ interface MockClientState {
   abortCalls: string[]
   promptCalls: Array<{ sessionID: string; agent?: string }>
   messagesResult: Array<{ info: { role: string; finish?: string }; parts: Array<{ type: string; text?: string }> }> | null
+  messagesBySession?: Map<string, Array<{ info: { role: string; finish?: string }; parts: Array<{ type: string; text?: string }> }>>
 }
 
 function createMockV2Client(state: MockClientState): OpencodeClient {
@@ -64,10 +66,19 @@ function createMockV2Client(state: MockClientState): OpencodeClient {
         if (state.deleteThrows) throw new Error('delete failed')
         return { error: undefined }
       },
-      messages: async () => ({
-        error: null,
-        data: (state.messagesResult ?? []) as any,
-      }),
+      messages: async (params) => {
+        const sessionID = (params as any)?.sessionID as string | undefined
+        if (sessionID && state.messagesBySession?.has(sessionID)) {
+          return {
+            error: null,
+            data: state.messagesBySession.get(sessionID) as any,
+          }
+        }
+        return {
+          error: null,
+          data: (state.messagesResult ?? []) as any,
+        }
+      },
       get: async () => ({ error: null, data: {} }),
     },
     tui: {
@@ -196,6 +207,25 @@ CREATE TABLE section_plans (
 )
 `
 
+const LOOP_SESSION_USAGE_SCHEMA = `
+CREATE TABLE loop_session_usage (
+  project_id TEXT NOT NULL,
+  loop_name TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  model TEXT NOT NULL,
+  cost REAL NOT NULL DEFAULT 0,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+  message_count INTEGER NOT NULL DEFAULT 1,
+  captured_at INTEGER NOT NULL,
+  PRIMARY KEY (project_id, loop_name, session_id, model)
+)
+`
+
 describe('Loop Runtime', () => {
   let db: Database
   let loopService: ReturnType<typeof createLoopService>
@@ -204,6 +234,7 @@ describe('Loop Runtime', () => {
   let plansRepo: ReturnType<typeof createPlansRepo>
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
   let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
+  let loopSessionUsageRepo: LoopSessionUsageRepo
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-runtime-test-'))
@@ -214,11 +245,13 @@ describe('Loop Runtime', () => {
     db.exec(PLANS_SCHEMA)
     db.exec(REVIEW_FINDINGS_SCHEMA)
     db.exec(SECTION_PLANS_SCHEMA)
+    db.exec(LOOP_SESSION_USAGE_SCHEMA)
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
     reviewFindingsRepo = createReviewFindingsRepo(db)
     sectionPlansRepo = createSectionPlansRepo(db)
+    loopSessionUsageRepo = createLoopSessionUsageRepo(db)
 
     loopService = createLoopService(
       loopsRepo,
@@ -277,6 +310,7 @@ describe('Loop Runtime', () => {
     v2Client?: OpencodeClient
     loopConfig?: Partial<PluginConfig>
     serviceLoopConfig?: LoopConfig
+    withUsageRepo?: boolean
   } = {}): { loop: Loop; clientState: MockClientState; logger: Logger; logs: Array<{ level: string; message: string }> } {
     const clientState: MockClientState = {
       deleteCalls: [],
@@ -305,6 +339,7 @@ describe('Loop Runtime', () => {
       getConfig: () => config,
       sandboxManager: undefined,
       dataDir: tempDir,
+      loopSessionUsageRepo: overrides.withUsageRepo ? loopSessionUsageRepo : undefined,
     })
 
     return { loop, clientState, logger, logs }
@@ -872,6 +907,259 @@ describe('stall handling terminates with stall timeout when configured cap is re
       // Check that v2Client.session.delete was called for the old coding session
       const deletedSids = clientState.deleteCalls.map((c) => c.sessionID)
       expect(deletedSids).toContain(state.sessionId)
+    })
+  })
+
+  describe('usage capture', () => {
+    function mockAssistantMessage(cost: number, tokens: { input: number; output: number; reasoning: number }) {
+      return {
+        info: {
+          role: 'assistant' as const,
+          finish: 'stop',
+          cost,
+          tokens: {
+            input: tokens.input,
+            output: tokens.output,
+            reasoning: tokens.reasoning,
+            cache: { read: 0, write: 0 },
+          },
+        },
+        parts: [{ type: 'text' as const, text: 'Implementation complete.' }],
+      }
+    }
+
+    test('code session rotation captures usage with state.executionModel', async () => {
+      const { loop, clientState, logs } = createRuntime({ withUsageRepo: true })
+      clientState.messagesResult = [mockAssistantMessage(0.001, { input: 100, output: 50, reasoning: 10 })]
+
+      const state = makeState({
+        phase: 'coding',
+        executionModel: 'test/exec-model',
+        auditorModel: 'test/auditor-model',
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+      })
+
+      // Wait a tick for async capture to complete
+      await new Promise(resolve => setTimeout(resolve, 10))
+
+      const usage = loopSessionUsageRepo.getAggregate(PROJECT_ID, state.loopName)
+      expect(usage).not.toBeNull()
+      expect(usage!.byModel).toHaveProperty('test/exec-model')
+      expect(usage!.byModel['test/exec-model'].inputTokens).toBe(100)
+    })
+
+    test('audit termination captures usage with state.auditorModel', async () => {
+      const { loop, clientState } = createRuntime({ withUsageRepo: true })
+      clientState.messagesResult = [mockAssistantMessage(0.002, { input: 200, output: 100, reasoning: 20 })]
+
+      const state = makeState({
+        phase: 'auditing',
+        executionModel: 'test/exec-model',
+        auditorModel: 'test/audit-model',
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 3,
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+      })
+
+      // Wait for async capture
+      await new Promise(resolve => setTimeout(resolve, 10))
+
+      const usage = loopSessionUsageRepo.getAggregate(PROJECT_ID, state.loopName)
+      expect(usage).not.toBeNull()
+      expect(usage!.byModel).toHaveProperty('test/audit-model')
+      expect(usage!.byModel['test/audit-model'].inputTokens).toBe(200)
+    })
+
+    test('state models take precedence over current config', async () => {
+      const { loop, clientState } = createRuntime({ withUsageRepo: true })
+      clientState.messagesResult = [mockAssistantMessage(0.001, { input: 150, output: 75, reasoning: 15 })]
+
+      const state = makeState({
+        phase: 'coding',
+        executionModel: 'state/exec-model',
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+      })
+
+      await new Promise(resolve => setTimeout(resolve, 10))
+
+      const usage = loopSessionUsageRepo.getAggregate(PROJECT_ID, state.loopName)
+      expect(usage).not.toBeNull()
+      // Should use state.executionModel, not config.executionModel
+      expect(usage!.byModel).toHaveProperty('state/exec-model')
+    })
+
+    test('capture failure logs error but does not block termination', async () => {
+      const clientState: MockClientState = {
+        deleteCalls: [],
+        createCalls: [],
+        publishCalls: [],
+        selectCalls: [],
+        deleteThrows: false,
+        abortCalls: [],
+        promptCalls: [],
+        messagesResult: null,
+      }
+
+      const v2Client = createMockV2Client(clientState)
+      ;(v2Client.session.messages as any) = async () => {
+        throw new Error('messages fetch failed')
+      }
+
+      const { loop, logs } = createRuntime({ v2Client, withUsageRepo: true })
+
+      const state = makeState({ phase: 'coding' })
+      loopService.setState(state.loopName, state)
+
+      await loop.cancel(state.loopName)
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+
+      const hasCaptureError = logs.some(l => l.level === 'error' && l.message.includes('failed to capture usage'))
+      expect(hasCaptureError).toBe(true)
+    })
+
+    test('retained sessions preserve role and model: code session retained, audit session enqueued', async () => {
+      const { loop, clientState } = createRuntime({ withUsageRepo: true })
+
+      // Set up per-session messages
+      clientState.messagesBySession = new Map()
+      clientState.messagesBySession.set('coding-session-1', [
+        mockAssistantMessage(0.001, { input: 100, output: 50, reasoning: 10 }),
+      ])
+
+      const state = makeState({
+        phase: 'coding',
+        executionModel: 'state/exec-model',
+        auditorModel: 'state/audit-model',
+        auditCount: 0,
+        loopName: 'test-loop-mixed-1',
+        sessionId: 'coding-session-1',
+      })
+      loopService.setState(state.loopName, state)
+
+      // First rotation: coding→audit, queues coding session as 'code' role
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+      })
+
+      // After first tick, state is now in auditing phase with a new session
+      const afterFirstTick = loopService.getActiveState(state.loopName)!
+      expect(afterFirstTick.phase).toBe('auditing')
+
+      // Set up messages for the audit session
+      clientState.messagesBySession.set(afterFirstTick.sessionId, [
+        mockAssistantMessage(0.002, { input: 200, output: 100, reasoning: 20 }),
+      ])
+
+      // The coding session should already be captured
+      await new Promise(resolve => setTimeout(resolve, 10))
+      let usage = loopSessionUsageRepo.getAggregate(PROJECT_ID, state.loopName)
+      expect(usage).not.toBeNull()
+      expect(usage!.byModel).toHaveProperty('state/exec-model')
+      expect(usage!.byModel['state/exec-model'].inputTokens).toBe(100)
+
+      // Now terminate the loop while in auditing phase
+      // This should capture the audit session with auditor role
+      await loop.cancel(state.loopName)
+
+      // Wait for async capture
+      await new Promise(resolve => setTimeout(resolve, 10))
+
+      usage = loopSessionUsageRepo.getAggregate(PROJECT_ID, state.loopName)
+      expect(usage).not.toBeNull()
+
+      // Audit session should be captured as 'auditor' with state.auditorModel
+      expect(usage!.byModel).toHaveProperty('state/audit-model')
+      expect(usage!.byModel['state/audit-model'].inputTokens).toBe(200)
+    })
+
+    test('retained audit session cleaned up on termination with correct attribution', async () => {
+      const { loop, clientState } = createRuntime({ withUsageRepo: true })
+      clientState.messagesResult = [
+        mockAssistantMessage(0.002, { input: 200, output: 100, reasoning: 20 }),
+      ]
+
+      // Start in auditing phase
+      const state = makeState({
+        phase: 'auditing',
+        executionModel: 'state/exec-model',
+        auditorModel: 'state/audit-model',
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 3,
+      })
+      loopService.setState(state.loopName, state)
+
+      // Rotation: audit→coding, queues audit session as 'auditor' role
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+      })
+
+      // Now terminate the loop
+      await loop.cancel(state.loopName)
+
+      // Wait for async capture
+      await new Promise(resolve => setTimeout(resolve, 10))
+
+      const usage = loopSessionUsageRepo.getAggregate(PROJECT_ID, state.loopName)
+      expect(usage).not.toBeNull()
+
+      // Retained audit session should be captured with state.auditorModel
+      expect(usage!.byModel).toHaveProperty('state/audit-model')
+      expect(usage!.byModel['state/audit-model'].inputTokens).toBe(200)
+    })
+
+    test('retained sessions cleaned up on clearLoopTimers with correct attribution', async () => {
+      const { loop, clientState } = createRuntime({ withUsageRepo: true })
+      clientState.messagesResult = [
+        mockAssistantMessage(0.001, { input: 150, output: 75, reasoning: 15 }),
+      ]
+
+      const state = makeState({
+        phase: 'coding',
+        executionModel: 'state/exec-model',
+        auditorModel: 'state/audit-model',
+      })
+      loopService.setState(state.loopName, state)
+
+      // Rotation: coding→audit, queues coding session as 'code' role
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+      })
+
+      // Call clearLoopTimers to clean up retained sessions
+      await loop.clearLoopTimers(state.loopName)
+
+      // Wait for async capture
+      await new Promise(resolve => setTimeout(resolve, 10))
+
+      const usage = loopSessionUsageRepo.getAggregate(PROJECT_ID, state.loopName)
+      expect(usage).not.toBeNull()
+
+      // Retained coding session should be captured with state.executionModel
+      expect(usage!.byModel).toHaveProperty('state/exec-model')
+      expect(usage!.byModel['state/exec-model'].inputTokens).toBe(150)
     })
   })
 })

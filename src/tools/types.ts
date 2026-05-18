@@ -8,6 +8,7 @@ import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../storage/repos/review-findings-repo'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { SectionPlansRepo } from '../storage/repos/section-plans-repo'
+import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
 import type { Loop } from '../loop'
 
 /**
@@ -46,6 +47,8 @@ export interface ToolContext {
   loopsRepo: LoopsRepo
   /** Section plans repo for section-scoped plan storage. */
   sectionPlansRepo: SectionPlansRepo
+  /** Loop session usage repo for usage tracking. */
+  loopSessionUsageRepo?: LoopSessionUsageRepo
   /** Workspace status registry for tracking workspace readiness. */
   workspaceStatusRegistry: import('../utils/workspace-status-registry').WorkspaceStatusRegistry
   /** Pending teardown registry for workspace removal context. */

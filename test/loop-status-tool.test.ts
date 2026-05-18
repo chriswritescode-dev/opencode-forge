@@ -7,6 +7,7 @@ import type { LoopState } from '../src/loop/state'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
+import { createLoopSessionUsageRepo } from '../src/storage/repos/loop-session-usage-repo'
 import { createLoopTools } from '../src/tools/loop'
 import { createLogger } from '../src/utils/logger'
 import { createLoopEventHandler } from '../src/hooks/loop'
@@ -64,6 +65,24 @@ CREATE TABLE IF NOT EXISTS loop_large_fields (
   last_audit_result   TEXT,
   PRIMARY KEY (project_id, loop_name),
   FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
+)`)
+
+  db.exec(`
+CREATE TABLE IF NOT EXISTS loop_session_usage (
+  project_id          TEXT NOT NULL,
+  loop_name           TEXT NOT NULL,
+  session_id          TEXT NOT NULL,
+  role                TEXT NOT NULL,
+  model               TEXT NOT NULL,
+  cost                REAL NOT NULL,
+  input_tokens        INTEGER NOT NULL,
+  output_tokens       INTEGER NOT NULL,
+  reasoning_tokens    INTEGER NOT NULL,
+  cache_read_tokens   INTEGER NOT NULL,
+  cache_write_tokens  INTEGER NOT NULL,
+  message_count       INTEGER NOT NULL,
+  captured_at         INTEGER NOT NULL,
+  PRIMARY KEY (project_id, loop_name, session_id, model)
 )`)
 
   db.exec(`
@@ -728,5 +747,798 @@ describe('loop-status tool restart path', () => {
     )
     expect(callWithPermission).toBeDefined()
     expect(callWithPermission![0].permission).toEqual(buildAuditSessionPermissionRuleset())
+  })
+})
+
+describe('loop-status cumulative usage', () => {
+  let db: Database
+  let dbPath: string
+  const projectId = 'test-project'
+  const loopName = 'test-loop-usage'
+
+  beforeEach(() => {
+    const result = createTestDb()
+    db = result.db
+    dbPath = result.path
+  })
+
+  afterEach(() => {
+    db.close()
+  })
+
+  function createMockV2ClientWithMessages(messages: Array<{ role: string; cost?: number; tokens?: any; model?: string }>): OpencodeClient {
+    return {
+      session: {
+        create: vi.fn(async (params) => ({
+          data: { id: 'mock-session-' + Date.now(), title: params.title },
+          error: null,
+        })),
+        promptAsync: vi.fn(async () => ({ data: {}, error: null })),
+        abort: vi.fn(async () => ({ data: {}, error: null })),
+        status: vi.fn(async () => ({ data: {}, error: null })),
+        delete: vi.fn(async () => ({ data: {}, error: null })),
+        messages: vi.fn(async () => ({
+          data: messages.map((m, i) => ({
+            id: `msg-${i}`,
+            role: m.role,
+            parts: [{ type: 'text' as const, text: 'test' }],
+            info: {
+              role: m.role,
+              cost: m.cost ?? 0,
+              tokens: m.tokens ?? { input: 100, output: 50, reasoning: 20, cache: { read: 10, write: 5 } },
+              model: m.model,
+            },
+          })),
+          error: null,
+        })),
+        get: vi.fn(async () => ({ data: { summary: { additions: 10, deletions: 5, files: 2 } }, error: null })),
+      },
+      worktree: {
+        create: vi.fn(async () => ({ data: { name: 'mock', directory: '/tmp/mock', branch: 'main' }, error: null })),
+        remove: vi.fn(async () => ({ data: {}, error: null })),
+      },
+      experimental: {
+        workspace: {
+          create: vi.fn(async () => ({
+            data: { id: 'mock-workspace-' + Date.now(), directory: TEST_DIR + '/worktree', branch: 'opencode/loop-test' },
+            error: null,
+          })),
+          warp: vi.fn(async () => ({ data: {}, error: null })),
+          list: vi.fn(async () => ({ data: [], error: null })),
+          status: vi.fn(async () => ({ data: [], error: null })),
+          syncList: vi.fn(async () => ({ data: {}, error: null })),
+          remove: vi.fn(async () => ({ data: {}, error: null })),
+        },
+      },
+      tui: {
+        selectSession: vi.fn(async () => ({ data: {}, error: null })),
+        publish: vi.fn(async () => ({ data: {}, error: null })),
+      },
+    } as unknown as OpencodeClient
+  }
+
+  test('cumulative usage appears in detailed status for inactive loop', async () => {
+    const mockApi = createMockTuiApi()
+    const v2Client = mockApi.client as unknown as OpencodeClient
+    const logger = createLogger({ enabled: false, file: '' })
+    
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+    
+    const worktreeDir = `${TEST_DIR}/worktree-usage`
+    mkdirSync(worktreeDir, { recursive: true })
+    
+    // Create inactive loop
+    loopService.setState(loopName, {
+      active: false,
+      sessionId: 'session-done',
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-usage',
+      iteration: 3,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt',
+      phase: 'coding',
+      errorCount: 0,
+      auditCount: 0,
+      worktree: true,
+      sandbox: false,
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      workspaceId: 'ws-123',
+      hostSessionId: 'host-456',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+      terminationReason: 'completed',
+      completedAt: new Date().toISOString(),
+    } as any)
+    
+    // Insert usage data
+    loopSessionUsageRepo.upsertSessionUsage({
+      projectId,
+      loopName,
+      sessionId: 'session-done',
+      role: 'code',
+      model: 'anthropic/claude-3-5-sonnet',
+      cost: 0.0525,
+      inputTokens: 5000,
+      outputTokens: 2500,
+      reasoningTokens: 500,
+      cacheReadTokens: 100,
+      cacheWriteTokens: 200,
+      messageCount: 10,
+      capturedAt: Date.now(),
+    })
+    
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
+    const tools = createLoopTools({
+      v2: v2Client,
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+      loopSessionUsageRepo,
+    } as any)
+    
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+    }, { sessionID: 'test-session' } as any)
+    
+    expect(result).toContain('Cumulative Usage:')
+    expect(result).toContain('Total Cost:')
+    expect(result).toContain('$0.0525')
+    expect(result).toContain('anthropic/claude-3-5-sonnet')
+  })
+
+  test('cumulative usage appears in detailed status for active loop', async () => {
+    const mockApi = createMockTuiApi()
+    const v2Client = mockApi.client as unknown as OpencodeClient
+    const logger = createLogger({ enabled: false, file: '' })
+    
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+    
+    const worktreeDir = `${TEST_DIR}/worktree-usage-active`
+    mkdirSync(worktreeDir, { recursive: true })
+    
+    // Create active loop
+    loopService.setState(loopName, {
+      active: true,
+      sessionId: 'session-active',
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-usage-active',
+      iteration: 2,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt active',
+      phase: 'auditing',
+      errorCount: 0,
+      auditCount: 1,
+      worktree: true,
+      sandbox: false,
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      workspaceId: 'ws-789',
+      hostSessionId: 'host-012',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+    } as any)
+    
+    // Insert usage data from previous session
+    loopSessionUsageRepo.upsertSessionUsage({
+      projectId,
+      loopName,
+      sessionId: 'session-prev',
+      role: 'code',
+      model: 'anthropic/claude-3-opus',
+      cost: 0.1250,
+      inputTokens: 10000,
+      outputTokens: 5000,
+      reasoningTokens: 1000,
+      cacheReadTokens: 200,
+      cacheWriteTokens: 400,
+      messageCount: 20,
+      capturedAt: Date.now() - 10000,
+    })
+    
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
+    const tools = createLoopTools({
+      v2: v2Client,
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+      loopSessionUsageRepo,
+    } as any)
+    
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+    }, { sessionID: 'test-session' } as any)
+    
+    expect(result).toContain('Cumulative Usage:')
+    expect(result).toContain('$0.1250')
+    expect(result).toContain('anthropic/claude-3-opus')
+  })
+
+  test('per-model totals appear in cumulative usage', async () => {
+    const mockApi = createMockTuiApi()
+    const v2Client = mockApi.client as unknown as OpencodeClient
+    const logger = createLogger({ enabled: false, file: '' })
+    
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+    
+    const worktreeDir = `${TEST_DIR}/worktree-usage-multi`
+    mkdirSync(worktreeDir, { recursive: true })
+    
+    loopService.setState(loopName, {
+      active: false,
+      sessionId: 'session-multi',
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-multi',
+      iteration: 1,
+      maxIterations: 3,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test',
+      phase: 'coding',
+      errorCount: 0,
+      auditCount: 0,
+      worktree: true,
+      sandbox: false,
+      executionModel: 'model-a',
+      auditorModel: 'model-b',
+      workspaceId: 'ws-multi',
+      hostSessionId: 'host-multi',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+      terminationReason: 'completed',
+      completedAt: new Date().toISOString(),
+    } as any)
+    
+    // Insert multiple models
+    loopSessionUsageRepo.upsertSessionUsage([
+      {
+        projectId,
+        loopName,
+        sessionId: 'session-multi',
+        role: 'code',
+        model: 'anthropic/claude-3-5-sonnet',
+        cost: 0.05,
+        inputTokens: 5000,
+        outputTokens: 2500,
+        reasoningTokens: 500,
+        cacheReadTokens: 100,
+        cacheWriteTokens: 200,
+        messageCount: 10,
+        capturedAt: Date.now(),
+      },
+      {
+        projectId,
+        loopName,
+        sessionId: 'session-multi',
+        role: 'auditor',
+        model: 'openai/gpt-4o',
+        cost: 0.08,
+        inputTokens: 8000,
+        outputTokens: 4000,
+        reasoningTokens: 800,
+        cacheReadTokens: 150,
+        cacheWriteTokens: 300,
+        messageCount: 15,
+        capturedAt: Date.now(),
+      },
+    ])
+    
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
+    const tools = createLoopTools({
+      v2: v2Client,
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+      loopSessionUsageRepo,
+    } as any)
+    
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+    }, { sessionID: 'test-session' } as any)
+    
+    expect(result).toContain('Per-model usage:')
+    expect(result).toContain('anthropic/claude-3-5-sonnet')
+    expect(result).toContain('openai/gpt-4o')
+  })
+
+  test('live current session is merged when not persisted', async () => {
+    const mockApi = createMockTuiApi()
+    const v2Client = createMockV2ClientWithMessages([
+      { role: 'assistant', cost: 0.02, tokens: { input: 2000, output: 1000, reasoning: 200, cache: { read: 50, write: 25 } }, model: 'anthropic/claude-3-5-sonnet' },
+    ])
+    const logger = createLogger({ enabled: false, file: '' })
+    
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+    
+    const worktreeDir = `${TEST_DIR}/worktree-usage-merge`
+    mkdirSync(worktreeDir, { recursive: true })
+    
+    // Active loop with current session NOT persisted
+    loopService.setState(loopName, {
+      active: true,
+      sessionId: 'session-current-live',
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-merge',
+      iteration: 2,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt merge',
+      phase: 'coding',
+      errorCount: 0,
+      auditCount: 0,
+      worktree: true,
+      sandbox: false,
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      workspaceId: 'ws-merge',
+      hostSessionId: 'host-merge',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+    } as any)
+    
+    // Insert persisted data from PREVIOUS session only
+    loopSessionUsageRepo.upsertSessionUsage({
+      projectId,
+      loopName,
+      sessionId: 'session-prev',
+      role: 'code',
+      model: 'anthropic/claude-3-opus',
+      cost: 0.10,
+      inputTokens: 8000,
+      outputTokens: 4000,
+      reasoningTokens: 800,
+      cacheReadTokens: 200,
+      cacheWriteTokens: 400,
+      messageCount: 15,
+      capturedAt: Date.now() - 10000,
+    })
+    
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
+    const tools = createLoopTools({
+      v2: v2Client,
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+      loopSessionUsageRepo,
+    } as any)
+    
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+    }, { sessionID: 'test-session' } as any)
+    
+    // Should show merged total: 0.10 (persisted) + 0.02 (live) = 0.12
+    expect(result).toContain('Cumulative Usage:')
+    expect(result).toContain('$0.1200')
+    // Both models should appear
+    expect(result).toContain('anthropic/claude-3-opus')
+    expect(result).toContain('anthropic/claude-3-5-sonnet')
+  })
+
+  test('already-persisted current session is not double-counted', async () => {
+    const mockApi = createMockTuiApi()
+    const v2Client = createMockV2ClientWithMessages([
+      { role: 'assistant', cost: 0.03, tokens: { input: 3000, output: 1500, reasoning: 300, cache: { read: 75, write: 40 } }, model: 'anthropic/claude-3-5-sonnet' },
+    ])
+    const logger = createLogger({ enabled: false, file: '' })
+    
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+    
+    const worktreeDir = `${TEST_DIR}/worktree-usage-nodouble`
+    mkdirSync(worktreeDir, { recursive: true })
+    
+    // Active loop with current session ALREADY persisted
+    loopService.setState(loopName, {
+      active: true,
+      sessionId: 'session-current-persisted',
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-nodouble',
+      iteration: 2,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt nodouble',
+      phase: 'auditing',
+      errorCount: 0,
+      auditCount: 1,
+      worktree: true,
+      sandbox: false,
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      workspaceId: 'ws-nodouble',
+      hostSessionId: 'host-nodouble',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+    } as any)
+    
+    // Insert persisted data including CURRENT session
+    loopSessionUsageRepo.upsertSessionUsage([
+      {
+        projectId,
+        loopName,
+        sessionId: 'session-prev-nodouble',
+        role: 'code',
+        model: 'anthropic/claude-3-opus',
+        cost: 0.10,
+        inputTokens: 8000,
+        outputTokens: 4000,
+        reasoningTokens: 800,
+        cacheReadTokens: 200,
+        cacheWriteTokens: 400,
+        messageCount: 15,
+        capturedAt: Date.now() - 10000,
+      },
+      {
+        projectId,
+        loopName,
+        sessionId: 'session-current-persisted',
+        role: 'code',
+        model: 'anthropic/claude-3-5-sonnet',
+        cost: 0.03,
+        inputTokens: 3000,
+        outputTokens: 1500,
+        reasoningTokens: 300,
+        cacheReadTokens: 75,
+        cacheWriteTokens: 40,
+        messageCount: 5,
+        capturedAt: Date.now(),
+      },
+    ])
+    
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
+    const tools = createLoopTools({
+      v2: v2Client,
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+      loopSessionUsageRepo,
+    } as any)
+    
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+    }, { sessionID: 'test-session' } as any)
+    
+    // Should show ONLY persisted total: 0.10 + 0.03 = 0.13 (NOT double-counted)
+    expect(result).toContain('Cumulative Usage:')
+    expect(result).toContain('$0.1300')
+    // Should NOT be 0.16 (which would indicate double-counting)
+    expect(result).not.toContain('$0.1600')
+    expect(result).toContain('anthropic/claude-3-opus')
+    expect(result).toContain('anthropic/claude-3-5-sonnet')
+  })
+
+  test('cumulative usage appears from live usage even when no persisted aggregate exists', async () => {
+    const mockApi = createMockTuiApi()
+    const v2Client = createMockV2ClientWithMessages([
+      { role: 'assistant', cost: 0.015, tokens: { input: 1500, output: 750, reasoning: 150, cache: { read: 40, write: 20 } }, model: 'anthropic/claude-3-5-sonnet' },
+    ])
+    const logger = createLogger({ enabled: false, file: '' })
+    
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+    
+    const worktreeDir = `${TEST_DIR}/worktree-usage-liveonly`
+    mkdirSync(worktreeDir, { recursive: true })
+    
+    // Active loop with NO persisted usage
+    loopService.setState(loopName, {
+      active: true,
+      sessionId: 'session-live-only',
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-liveonly',
+      iteration: 1,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt live only',
+      phase: 'coding',
+      errorCount: 0,
+      auditCount: 0,
+      worktree: true,
+      sandbox: false,
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      workspaceId: 'ws-liveonly',
+      hostSessionId: 'host-liveonly',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+    } as any)
+    
+    // NO persisted usage inserted
+    
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
+    const tools = createLoopTools({
+      v2: v2Client,
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+      loopSessionUsageRepo,
+    } as any)
+    
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+    }, { sessionID: 'test-session' } as any)
+    
+    // Should show live usage only
+    expect(result).toContain('Cumulative Usage:')
+    expect(result).toContain('$0.0150')
+    expect(result).toContain('anthropic/claude-3-5-sonnet')
+  })
+
+  test('inactive loop merges live final session when not persisted', async () => {
+    const mockApi = createMockTuiApi()
+    const v2Client = createMockV2ClientWithMessages([
+      { role: 'assistant', cost: 0.025, tokens: { input: 2500, output: 1250, reasoning: 250, cache: { read: 60, write: 30 } }, model: 'anthropic/claude-3-5-sonnet' },
+    ])
+    const logger = createLogger({ enabled: false, file: '' })
+    
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+    
+    const worktreeDir = `${TEST_DIR}/worktree-usage-inactive-live`
+    mkdirSync(worktreeDir, { recursive: true })
+    
+    // Inactive loop with final session NOT persisted (simulates failed termination capture)
+    loopService.setState(loopName, {
+      active: false,
+      sessionId: 'session-final-live',
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-inactive-live',
+      iteration: 3,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt inactive live',
+      phase: 'coding',
+      errorCount: 0,
+      auditCount: 0,
+      worktree: true,
+      sandbox: false,
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      workspaceId: 'ws-inactive-live',
+      hostSessionId: 'host-inactive-live',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+      terminationReason: 'completed',
+      completedAt: new Date().toISOString(),
+    } as any)
+    
+    // Insert persisted data from PREVIOUS sessions only (final session NOT persisted)
+    loopSessionUsageRepo.upsertSessionUsage({
+      projectId,
+      loopName,
+      sessionId: 'session-prev-inactive',
+      role: 'code',
+      model: 'anthropic/claude-3-opus',
+      cost: 0.08,
+      inputTokens: 7000,
+      outputTokens: 3500,
+      reasoningTokens: 700,
+      cacheReadTokens: 180,
+      cacheWriteTokens: 360,
+      messageCount: 12,
+      capturedAt: Date.now() - 10000,
+    })
+    
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
+    const tools = createLoopTools({
+      v2: v2Client,
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+      loopSessionUsageRepo,
+    } as any)
+    
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+    }, { sessionID: 'test-session' } as any)
+    
+    // Should show merged total: 0.08 (persisted) + 0.025 (live) = 0.105
+    expect(result).toContain('Cumulative Usage:')
+    expect(result).toContain('$0.1050')
+    // Both models should appear
+    expect(result).toContain('anthropic/claude-3-opus')
+    expect(result).toContain('anthropic/claude-3-5-sonnet')
+  })
+
+  test('inactive loop uses persisted-only when final session is already persisted', async () => {
+    const mockApi = createMockTuiApi()
+    const v2Client = createMockV2ClientWithMessages([
+      { role: 'assistant', cost: 0.035, tokens: { input: 3500, output: 1750, reasoning: 350, cache: { read: 90, write: 45 } }, model: 'anthropic/claude-3-5-sonnet' },
+    ])
+    const logger = createLogger({ enabled: false, file: '' })
+    
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+    
+    const worktreeDir = `${TEST_DIR}/worktree-usage-inactive-persisted`
+    mkdirSync(worktreeDir, { recursive: true })
+    
+    // Inactive loop with final session ALREADY persisted
+    loopService.setState(loopName, {
+      active: false,
+      sessionId: 'session-final-persisted',
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-inactive-persisted',
+      iteration: 2,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt inactive persisted',
+      phase: 'auditing',
+      errorCount: 0,
+      auditCount: 1,
+      worktree: true,
+      sandbox: false,
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      workspaceId: 'ws-inactive-persisted',
+      hostSessionId: 'host-inactive-persisted',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+      terminationReason: 'completed',
+      completedAt: new Date().toISOString(),
+    } as any)
+    
+    // Insert persisted data including final session
+    loopSessionUsageRepo.upsertSessionUsage([
+      {
+        projectId,
+        loopName,
+        sessionId: 'session-prev-inactive-p',
+        role: 'code',
+        model: 'anthropic/claude-3-opus',
+        cost: 0.09,
+        inputTokens: 7500,
+        outputTokens: 3750,
+        reasoningTokens: 750,
+        cacheReadTokens: 190,
+        cacheWriteTokens: 380,
+        messageCount: 14,
+        capturedAt: Date.now() - 10000,
+      },
+      {
+        projectId,
+        loopName,
+        sessionId: 'session-final-persisted',
+        role: 'code',
+        model: 'anthropic/claude-3-5-sonnet',
+        cost: 0.035,
+        inputTokens: 3500,
+        outputTokens: 1750,
+        reasoningTokens: 350,
+        cacheReadTokens: 90,
+        cacheWriteTokens: 45,
+        messageCount: 6,
+        capturedAt: Date.now(),
+      },
+    ])
+    
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
+    const tools = createLoopTools({
+      v2: v2Client,
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+      loopSessionUsageRepo,
+    } as any)
+    
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+    }, { sessionID: 'test-session' } as any)
+    
+    // Should show ONLY persisted total: 0.09 + 0.035 = 0.125 (NOT double-counted with live)
+    expect(result).toContain('Cumulative Usage:')
+    expect(result).toContain('$0.1250')
+    // Should NOT be 0.160 (which would indicate double-counting with live 0.035)
+    expect(result).not.toContain('$0.1600')
+    expect(result).toContain('anthropic/claude-3-opus')
+    expect(result).toContain('anthropic/claude-3-5-sonnet')
   })
 })

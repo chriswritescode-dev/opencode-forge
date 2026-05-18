@@ -4,7 +4,7 @@ import { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2'
 import { buildAgents } from './agents'
 import { createConfigHandler } from './config'
 import { createSessionHooks, createLoopEventHandler } from './hooks'
-import { initializeDatabase, resolveDataDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo } from './storage'
+import { initializeDatabase, resolveDataDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo } from './storage'
 import type { LoopChangeNotifier } from './loop'
 import { loadPluginConfig } from './setup'
 import { resolveLogPath } from './storage'
@@ -259,6 +259,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     const sectionPlansRepo = createSectionPlansRepo(db)
+    const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
 
     const notifyLoopChange: LoopChangeNotifier = (reason, loopName, hint) => {
       const targetDirectories = Array.from(new Set([
@@ -269,7 +270,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       logger.debug(`[notifyLoopChange] reason=${reason} loop=${loopName} dirs=${targetDirectories.join(',')} projectId=${projectId}`)
     }
 
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, v2, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, v2, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo)
 
     const reconcileResult = await loopHandler.loop.reconcileStale(
       sandboxManager
@@ -407,6 +408,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       reviewFindingsRepo,
       loopsRepo,
       sectionPlansRepo,
+      loopSessionUsageRepo,
       workspaceStatusRegistry,
       pendingTeardowns,
     }

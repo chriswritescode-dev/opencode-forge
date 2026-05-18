@@ -282,5 +282,12 @@ export const migrations: Migration[] = [
       db.run(loadSql('129_remove_decomposer.sql'))
     },
   },
+  {
+    id: '130',
+    description: 'Create loop_session_usage table for persisting token usage snapshots',
+    apply: (db: Database) => {
+      db.run(loadSql('130_create_loop_session_usage.sql'))
+    },
+  },
 
 ]

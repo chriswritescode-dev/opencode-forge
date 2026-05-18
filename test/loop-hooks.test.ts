@@ -321,7 +321,7 @@ describe('loop-hooks integration', () => {
 
       handler.startWatchdog(loopName)
       await new Promise(resolve => setTimeout(resolve, 70))
-      handler.clearLoopTimers(loopName)
+      await handler.clearLoopTimers(loopName)
 
       const state = service.getAnyState(loopName)
       expect(state?.phase).toBe('auditing')
@@ -407,7 +407,7 @@ describe('loop-hooks integration', () => {
       const stallInfo = handler.getStallInfo(loopName)
       expect(stallInfo?.consecutiveStalls).toBe(0)
 
-      handler.clearLoopTimers(loopName)
+      await handler.clearLoopTimers(loopName)
 
       const state = service.getAnyState(loopName)
       expect(state?.active).toBe(true)
@@ -507,7 +507,7 @@ describe('loop-hooks integration', () => {
       expect(stallInfo?.lastReason).toBe('non_busy_status')
       expect(stallInfo?.lastStatus).toBe('preparing')
 
-      handler.clearLoopTimers(loopName)
+      await handler.clearLoopTimers(loopName)
       rmSync(worktreeDir, { recursive: true, force: true })
     })
 
@@ -602,7 +602,7 @@ describe('loop-hooks integration', () => {
       expect(stallInfo?.lastReason).toBe('non_busy_status')
       expect(stallInfo?.lastStatus).toBe('retry')
 
-      handler.clearLoopTimers(loopName)
+      await handler.clearLoopTimers(loopName)
       rmSync(worktreeDir, { recursive: true, force: true })
     })
 
@@ -686,7 +686,7 @@ describe('loop-hooks integration', () => {
       const stallInfo = handler.getStallInfo(loopName)
       expect(stallInfo?.consecutiveStalls).toBeLessThan(2)
 
-      handler.clearLoopTimers(loopName)
+      await handler.clearLoopTimers(loopName)
       const state = service.getAnyState(loopName)
       expect(state?.active).toBe(true)
       expect(state?.terminationReason).toBeUndefined()
@@ -778,7 +778,7 @@ describe('loop-hooks integration', () => {
       expect(state?.terminationReason).toBeUndefined()
       expect(handler.getStallInfo(loopName)?.consecutiveStalls).toBeLessThan(3)
 
-      handler.clearLoopTimers(loopName)
+      await handler.clearLoopTimers(loopName)
       rmSync(worktreeDir, { recursive: true, force: true })
     })
   })
@@ -1077,7 +1077,7 @@ describe('loop-hooks integration', () => {
       expect(state?.auditCount).toBe(0)
       expect(state?.terminationReason).toBeUndefined()
 
-      handler.clearLoopTimers(loopName)
+      await handler.clearLoopTimers(loopName)
       rmSync(worktreeDir, { recursive: true, force: true })
     })
 
@@ -2468,7 +2468,7 @@ describe('loop-hooks integration', () => {
       const stallInfo = handler.getStallInfo(loopName)
       expect(stallInfo?.consecutiveStalls).toBe(0)
 
-      handler.clearLoopTimers(loopName)
+      await handler.clearLoopTimers(loopName)
       const state = service.getAnyState(loopName)
       expect(state?.active).toBe(true)
       expect(state?.terminationReason).toBeUndefined()

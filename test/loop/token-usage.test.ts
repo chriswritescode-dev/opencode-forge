@@ -87,14 +87,14 @@ describe('modelLabelFromMessage', () => {
     expect(modelLabelFromMessage(info, 'fallback')).toBe('claude-3-opus')
   })
 
-  test('falls back to info.modelID', () => {
+  test('falls back to fallback when modelID lacks provider', () => {
     const info = { role: 'assistant', modelID: 'claude-3-sonnet' }
-    expect(modelLabelFromMessage(info, 'fallback')).toBe('claude-3-sonnet')
+    expect(modelLabelFromMessage(info, 'fallback')).toBe('fallback')
   })
 
-  test('falls back to info.modelId', () => {
+  test('falls back to fallback when modelId lacks provider', () => {
     const info = { role: 'assistant', modelId: 'claude-3-haiku' }
-    expect(modelLabelFromMessage(info, 'fallback')).toBe('claude-3-haiku')
+    expect(modelLabelFromMessage(info, 'fallback')).toBe('fallback')
   })
 
   test('uses provider/model_name pair', () => {
@@ -132,9 +132,19 @@ describe('modelLabelFromMessage', () => {
     expect(modelLabelFromMessage(info)).toBe('openai/gpt-4')
   })
 
-  test('modelID without providerID returns bare modelID', () => {
+  test('modelID without providerID uses fallback model', () => {
     const info = { role: 'assistant', modelID: 'claude-3-sonnet' }
-    expect(modelLabelFromMessage(info)).toBe('claude-3-sonnet')
+    expect(modelLabelFromMessage(info, 'fallback-model')).toBe('fallback-model')
+  })
+
+  test('modelID without providerID and no fallback uses default', () => {
+    const info = { role: 'assistant', modelID: 'claude-3-sonnet' }
+    expect(modelLabelFromMessage(info)).toBe('default/session model')
+  })
+
+  test('modelId without provider uses fallback model', () => {
+    const info = { role: 'assistant', modelId: 'gpt-4-turbo' }
+    expect(modelLabelFromMessage(info, 'fallback-model')).toBe('fallback-model')
   })
 
   test('providerID + model_name combines as provider/model', () => {

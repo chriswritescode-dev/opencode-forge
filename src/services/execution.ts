@@ -19,6 +19,7 @@ import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '
 import { findPartialMatch } from '../utils/partial-match'
 import { isSandboxEnabled } from '../sandbox/context'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
+import { aggregateToUsageSummary } from '../utils/loop-format'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { decomposeDeterministically } from './deterministic-decomposer'
@@ -306,6 +307,7 @@ export interface LoopStatusView {
   currentSectionIndex?: number
   totalSections?: number
   finalAuditDone?: boolean
+  usage?: import('../loop/token-usage').LoopUsageSummary
   sections?: Array<{
     index: number
     title: string
@@ -366,6 +368,7 @@ export interface ForgeExecutionServiceDeps {
   sandboxManager?: SandboxManager | null
   sectionPlansRepo?: import('../storage/repos/section-plans-repo').SectionPlansRepo
   reviewFindingsRepo?: import('../storage/repos/review-findings-repo').ReviewFindingsRepo
+  loopSessionUsageRepo?: import('../storage/repos/loop-session-usage-repo').LoopSessionUsageRepo
   workspaceStatusRegistry: import('../utils/workspace-status-registry').WorkspaceStatusRegistry
   pendingTeardowns: import('../workspace/pending-teardown').PendingTeardownRegistry
 }
@@ -1500,6 +1503,16 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             }
           })
         : undefined
+      
+      // Fetch cumulative usage from persisted aggregate
+      let usage: import('../loop/token-usage').LoopUsageSummary | undefined
+      if (deps.loopSessionUsageRepo) {
+        const aggregate = deps.loopSessionUsageRepo.getAggregate(deps.projectId, state.loopName)
+        if (aggregate) {
+          usage = aggregateToUsageSummary(aggregate)
+        }
+      }
+      
       return {
         loopName: state.loopName,
         displayName: state.loopName, // Could extract from plan if needed
@@ -1522,6 +1535,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         currentSectionIndex: state.currentSectionIndex,
         totalSections: state.totalSections,
         finalAuditDone: state.finalAuditDone,
+        usage,
         sections: sectionViews,
       }
     })
@@ -1666,7 +1680,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         const latestState = deps.loop.getActiveState(stoppedState.loopName)
         if (latestState?.active) {
           try { await deps.v2.session.abort({ sessionID: latestState.sessionId }) } catch {}
-          deps.loopHandler!.clearLoopTimers(stoppedState.loopName)
+          await deps.loopHandler!.clearLoopTimers(stoppedState.loopName)
           // Sync stoppedState with latest persisted values
           Object.assign(stoppedState, {
             sessionId: latestState.sessionId,
