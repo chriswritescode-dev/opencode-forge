@@ -77,6 +77,7 @@ export function createLoopEventHandler(
         pendingTeardowns,
         loopsRepo,
         projectId,
+        loopSessionUsageRepo,
       })
     },
   })

@@ -79,9 +79,9 @@ export const DEFAULT_MODEL_LABEL = 'default/session model'
  * Extract model label from message info, falling back to provided model or default.
  * Priority:
  * 1. info.model (already includes provider if applicable)
- * 2. info.modelID or info.modelId combined with providerID or provider
+ * 2. info.modelID or info.modelId (with providerID/provider if available, otherwise model ID as-is)
  * 3. provider/model pairs: providerID+model_name, provider+model_name
- * 4. fallbackModel parameter (used when model ID lacks provider to avoid cross-provider collisions)
+ * 4. fallbackModel parameter
  * 5. DEFAULT_MODEL_LABEL ('default/session model')
  */
 export function modelLabelFromMessage(
@@ -115,8 +115,8 @@ export function modelLabelFromMessage(
     if (info.provider) {
       return `${info.provider}/${info.modelID}`
     }
-    // No provider info available - use fallback to avoid merging models from different providers
-    return fallbackModel ?? DEFAULT_MODEL_LABEL
+    // No provider info available - use the model ID as-is (actual message model wins)
+    return info.modelID
   }
   if (info.modelId) {
     // If we have providerID, combine them
@@ -127,8 +127,8 @@ export function modelLabelFromMessage(
     if (info.provider) {
       return `${info.provider}/${info.modelId}`
     }
-    // No provider info available - use fallback to avoid merging models from different providers
-    return fallbackModel ?? DEFAULT_MODEL_LABEL
+    // No provider info available - use the model ID as-is (actual message model wins)
+    return info.modelId
   }
 
   // Check provider/model pairs

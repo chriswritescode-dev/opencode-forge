@@ -87,14 +87,14 @@ describe('modelLabelFromMessage', () => {
     expect(modelLabelFromMessage(info, 'fallback')).toBe('claude-3-opus')
   })
 
-  test('falls back to fallback when modelID lacks provider', () => {
+  test('uses modelID as-is when it lacks provider (actual message model wins)', () => {
     const info = { role: 'assistant', modelID: 'claude-3-sonnet' }
-    expect(modelLabelFromMessage(info, 'fallback')).toBe('fallback')
+    expect(modelLabelFromMessage(info, 'fallback')).toBe('claude-3-sonnet')
   })
 
-  test('falls back to fallback when modelId lacks provider', () => {
+  test('uses modelId as-is when it lacks provider (actual message model wins)', () => {
     const info = { role: 'assistant', modelId: 'claude-3-haiku' }
-    expect(modelLabelFromMessage(info, 'fallback')).toBe('fallback')
+    expect(modelLabelFromMessage(info, 'fallback')).toBe('claude-3-haiku')
   })
 
   test('uses provider/model_name pair', () => {
@@ -132,19 +132,19 @@ describe('modelLabelFromMessage', () => {
     expect(modelLabelFromMessage(info)).toBe('openai/gpt-4')
   })
 
-  test('modelID without providerID uses fallback model', () => {
+  test('modelID without providerID uses the model ID as-is (actual message model wins)', () => {
     const info = { role: 'assistant', modelID: 'claude-3-sonnet' }
-    expect(modelLabelFromMessage(info, 'fallback-model')).toBe('fallback-model')
+    expect(modelLabelFromMessage(info, 'fallback-model')).toBe('claude-3-sonnet')
   })
 
-  test('modelID without providerID and no fallback uses default', () => {
+  test('modelID without providerID and no fallback uses the model ID as-is', () => {
     const info = { role: 'assistant', modelID: 'claude-3-sonnet' }
-    expect(modelLabelFromMessage(info)).toBe('default/session model')
+    expect(modelLabelFromMessage(info)).toBe('claude-3-sonnet')
   })
 
-  test('modelId without provider uses fallback model', () => {
+  test('modelId without provider uses the model ID as-is (actual message model wins)', () => {
     const info = { role: 'assistant', modelId: 'gpt-4-turbo' }
-    expect(modelLabelFromMessage(info, 'fallback-model')).toBe('fallback-model')
+    expect(modelLabelFromMessage(info, 'fallback-model')).toBe('gpt-4-turbo')
   })
 
   test('providerID + model_name combines as provider/model', () => {
@@ -210,11 +210,13 @@ describe('summarizeAssistantUsage', () => {
       model: 'model-a',
       cost: 0.025,
       tokens: { input: 250, output: 125, reasoning: 25, cacheRead: 12, cacheWrite: 5 },
+      messageCount: 2,
     })
     expect(summary.perModel[1]).toEqual({
       model: 'model-b',
       cost: 0.02,
       tokens: { input: 200, output: 100, reasoning: 20, cacheRead: 10, cacheWrite: 4 },
+      messageCount: 1,
     })
   })
 
@@ -285,13 +287,13 @@ describe('mergeUsageSummaries', () => {
     const summary1: LoopUsageSummary = {
       totalCost: 0.01,
       totalTokens: { input: 100, output: 50, reasoning: 10, cacheRead: 5, cacheWrite: 2 },
-      perModel: [{ model: 'model-a', cost: 0.01, tokens: { input: 100, output: 50, reasoning: 10, cacheRead: 5, cacheWrite: 2 } }],
+      perModel: [{ model: 'model-a', cost: 0.01, tokens: { input: 100, output: 50, reasoning: 10, cacheRead: 5, cacheWrite: 2 }, messageCount: 1 }],
     }
 
     const summary2: LoopUsageSummary = {
       totalCost: 0.02,
       totalTokens: { input: 200, output: 100, reasoning: 20, cacheRead: 10, cacheWrite: 4 },
-      perModel: [{ model: 'model-b', cost: 0.02, tokens: { input: 200, output: 100, reasoning: 20, cacheRead: 10, cacheWrite: 4 } }],
+      perModel: [{ model: 'model-b', cost: 0.02, tokens: { input: 200, output: 100, reasoning: 20, cacheRead: 10, cacheWrite: 4 }, messageCount: 1 }],
     }
 
     const merged = mergeUsageSummaries(summary1, summary2)
@@ -305,13 +307,13 @@ describe('mergeUsageSummaries', () => {
     const summary1: LoopUsageSummary = {
       totalCost: 0.01,
       totalTokens: { input: 100, output: 50, reasoning: 10, cacheRead: 5, cacheWrite: 2 },
-      perModel: [{ model: 'model-a', cost: 0.01, tokens: { input: 100, output: 50, reasoning: 10, cacheRead: 5, cacheWrite: 2 } }],
+      perModel: [{ model: 'model-a', cost: 0.01, tokens: { input: 100, output: 50, reasoning: 10, cacheRead: 5, cacheWrite: 2 }, messageCount: 1 }],
     }
 
     const summary2: LoopUsageSummary = {
       totalCost: 0.02,
       totalTokens: { input: 200, output: 100, reasoning: 20, cacheRead: 10, cacheWrite: 4 },
-      perModel: [{ model: 'model-a', cost: 0.02, tokens: { input: 200, output: 100, reasoning: 20, cacheRead: 10, cacheWrite: 4 } }],
+      perModel: [{ model: 'model-a', cost: 0.02, tokens: { input: 200, output: 100, reasoning: 20, cacheRead: 10, cacheWrite: 4 }, messageCount: 1 }],
     }
 
     const merged = mergeUsageSummaries(summary1, summary2)
@@ -321,6 +323,7 @@ describe('mergeUsageSummaries', () => {
       model: 'model-a',
       cost: 0.03,
       tokens: { input: 300, output: 150, reasoning: 30, cacheRead: 15, cacheWrite: 6 },
+      messageCount: 2,
     })
   })
 
@@ -354,13 +357,13 @@ describe('mergeUsageSummaries', () => {
     const summary1: LoopUsageSummary = {
       totalCost: 0.01,
       totalTokens: { input: 100, output: 50, reasoning: 10, cacheRead: 5, cacheWrite: 2 },
-      perModel: [{ model: 'z-model', cost: 0.01, tokens: { input: 100, output: 50, reasoning: 10, cacheRead: 5, cacheWrite: 2 } }],
+      perModel: [{ model: 'z-model', cost: 0.01, tokens: { input: 100, output: 50, reasoning: 10, cacheRead: 5, cacheWrite: 2 }, messageCount: 1 }],
     }
 
     const summary2: LoopUsageSummary = {
       totalCost: 0.02,
       totalTokens: { input: 200, output: 100, reasoning: 20, cacheRead: 10, cacheWrite: 4 },
-      perModel: [{ model: 'a-model', cost: 0.02, tokens: { input: 200, output: 100, reasoning: 20, cacheRead: 10, cacheWrite: 4 } }],
+      perModel: [{ model: 'a-model', cost: 0.02, tokens: { input: 200, output: 100, reasoning: 20, cacheRead: 10, cacheWrite: 4 }, messageCount: 1 }],
     }
 
     const merged = mergeUsageSummaries(summary1, summary2)

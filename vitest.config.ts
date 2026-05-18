@@ -71,6 +71,7 @@ export default defineConfig({
       'test/loop-format.test.ts',
       'test/loop-session-usage-repo.test.ts',
       'test/storage-migrations.test.ts',
+      'test/worktree-log.test.ts',
     ],
     globals: true,
   },

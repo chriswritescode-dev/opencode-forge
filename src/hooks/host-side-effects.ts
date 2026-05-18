@@ -6,6 +6,8 @@ import { terminationReasonToString } from '../loop'
 import { buildWorktreeCompletionPayload, writeWorktreeCompletionLog } from '../services/worktree-log'
 import type { PendingTeardownRegistry } from '../workspace/pending-teardown'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
+import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
+import { aggregateToUsageSummary } from '../utils/loop-format'
 import { sweepStaleForgeWorkspaces } from '../workspace/sweep-stale'
 
 export interface TerminationSideEffectsContext {
@@ -18,6 +20,7 @@ export interface TerminationSideEffectsContext {
   pendingTeardowns?: PendingTeardownRegistry
   loopsRepo?: LoopsRepo
   projectId?: string
+  loopSessionUsageRepo?: LoopSessionUsageRepo
 }
 
 /**
@@ -62,6 +65,12 @@ function writeTerminationLog(
   const planText = ctx.getPlanText?.(state.loopName, state.sessionId)
   const completionTimestamp = new Date()
 
+  // Fetch cumulative usage after runtime termination has captured the final session
+  const usageAggregate = ctx.projectId && ctx.loopSessionUsageRepo
+    ? ctx.loopSessionUsageRepo.getAggregate(ctx.projectId, state.loopName)
+    : null
+  const usage = usageAggregate ? aggregateToUsageSummary(usageAggregate) : null
+
   const result = buildWorktreeCompletionPayload(
     ctx.getConfig(),
     {
@@ -71,6 +80,7 @@ function writeTerminationLog(
       iteration: state.iteration,
       worktreeBranch: state.worktreeBranch,
       dataDir: ctx.dataDir,
+      usage,
     },
     ctx.logger,
   )

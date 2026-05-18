@@ -1541,4 +1541,142 @@ describe('loop-status cumulative usage', () => {
     expect(result).toContain('anthropic/claude-3-opus')
     expect(result).toContain('anthropic/claude-3-5-sonnet')
   })
+
+  test('active loop attributes live usage to executionModel when messages lack model metadata', async () => {
+    const mockApi = createMockTuiApi()
+    // Messages WITHOUT model field - should fall back to loop state's executionModel
+    const v2Client = createMockV2ClientWithMessages([
+      { role: 'assistant', cost: 0.02, tokens: { input: 2000, output: 1000, reasoning: 200, cache: { read: 50, write: 25 } } },
+    ])
+    const logger = createLogger({ enabled: false, file: '' })
+    
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+    
+    const worktreeDir = `${TEST_DIR}/worktree-usage-attrib-active`
+    mkdirSync(worktreeDir, { recursive: true })
+    
+    // Active loop in coding phase with dialog-selected model
+    loopService.setState(loopName, {
+      active: true,
+      sessionId: 'session-live-attrib',
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-attrib-active',
+      iteration: 1,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt attribution',
+      phase: 'coding',
+      errorCount: 0,
+      auditCount: 0,
+      worktree: true,
+      sandbox: false,
+      executionModel: 'anthropic/claude-3-7-sonnet',
+      auditorModel: 'anthropic/claude-3-opus',
+      workspaceId: 'ws-attrib-active',
+      hostSessionId: 'host-attrib-active',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+    } as any)
+    
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
+    const tools = createLoopTools({
+      v2: v2Client,
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+      loopSessionUsageRepo,
+    } as any)
+    
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+    }, { sessionID: 'test-session' } as any)
+    
+    // Live usage should be attributed to executionModel from loop state, NOT 'default/session model'
+    expect(result).toContain('Cumulative Usage:')
+    expect(result).toContain('anthropic/claude-3-7-sonnet')
+    expect(result).not.toContain('default/session model')
+  })
+
+  test('active loop in auditing phase attributes live usage to auditorModel when messages lack model metadata', async () => {
+    const mockApi = createMockTuiApi()
+    // Messages WITHOUT model field - should fall back to loop state's auditorModel
+    const v2Client = createMockV2ClientWithMessages([
+      { role: 'assistant', cost: 0.025, tokens: { input: 2500, output: 1250, reasoning: 250, cache: { read: 60, write: 30 } } },
+    ])
+    const logger = createLogger({ enabled: false, file: '' })
+    
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+    
+    const worktreeDir = `${TEST_DIR}/worktree-usage-attrib-audit`
+    mkdirSync(worktreeDir, { recursive: true })
+    
+    // Active loop in auditing phase with distinct auditor model
+    loopService.setState(loopName, {
+      active: true,
+      sessionId: 'session-live-audit-attrib',
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-attrib-audit',
+      iteration: 2,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt audit attribution',
+      phase: 'auditing',
+      errorCount: 0,
+      auditCount: 1,
+      worktree: true,
+      sandbox: false,
+      executionModel: 'anthropic/claude-3-7-sonnet',
+      auditorModel: 'openai/gpt-4o',
+      workspaceId: 'ws-attrib-audit',
+      hostSessionId: 'host-attrib-audit',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+    } as any)
+    
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
+    const tools = createLoopTools({
+      v2: v2Client,
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+      loopSessionUsageRepo,
+    } as any)
+    
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+    }, { sessionID: 'test-session' } as any)
+    
+    // Live usage should be attributed to auditorModel from loop state, NOT 'default/session model'
+    expect(result).toContain('Cumulative Usage:')
+    expect(result).toContain('openai/gpt-4o')
+    expect(result).not.toContain('default/session model')
+  })
 })

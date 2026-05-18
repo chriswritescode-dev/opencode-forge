@@ -332,7 +332,18 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             statusLines.push(...formatAuditResult(state.lastAuditResult))
           }
 
-          const sessionOutput = state.worktreeDir ? await fetchSessionOutput(v2, state.sessionId, state.worktreeDir, logger) : null
+          const sessionOutput = state.worktreeDir ? await fetchSessionOutput(
+            v2,
+            state.sessionId,
+            state.worktreeDir,
+            logger,
+            {
+              fallbackModel: state.phase === 'auditing' || state.phase === 'final_auditing'
+                ? (state.auditorModel ?? state.executionModel ?? config.executionModel)
+                : (state.executionModel ?? config.executionModel),
+              role: state.phase === 'auditing' || state.phase === 'final_auditing' ? 'auditor' : 'code',
+            },
+          ) : null
           if (sessionOutput) {
             statusLines.push('')
             statusLines.push('Session Output:')
@@ -413,7 +424,18 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         let sessionOutput: LoopSessionOutput | null = null
         if (state.worktreeDir) {
           try {
-            sessionOutput = await fetchSessionOutput(v2, state.sessionId, state.worktreeDir, logger)
+            sessionOutput = await fetchSessionOutput(
+              v2,
+              state.sessionId,
+              state.worktreeDir,
+              logger,
+              {
+                fallbackModel: state.phase === 'auditing' || state.phase === 'final_auditing'
+                  ? (state.auditorModel ?? state.executionModel ?? config.auditorModel ?? config.executionModel)
+                  : (state.executionModel ?? config.executionModel ?? config.loop?.model),
+                role: state.phase === 'auditing' || state.phase === 'final_auditing' ? 'auditor' : 'code',
+              },
+            )
           } catch {
             // Silently ignore fetch errors to avoid cluttering output
           }
