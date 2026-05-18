@@ -64,11 +64,11 @@ The codebase is organized into these module groups under `src/`:
 | `agents/` | AI agent definitions (code, architect, auditor) | `index.ts`, `code.ts`, `architect.ts`, `auditor.ts` |
 | `hooks/` | Plugin event/lifecycle hooks (session, plan capture, sandbox, watchdog) | `index.ts`, `session.ts`, `loop.ts`, `plan-capture.ts`, `watchdog.ts`, `sandbox-tools.ts` |
 | `loop/` | Core loop state machine and runtime | `runtime.ts`, `service.ts`, `state.ts`, `transitions.ts`, `prompts.ts` |
-| `services/` | Higher-level orchestration services | `execution.ts`, `session-loop-resolver.ts`, `reconcile-loops.ts`, `deterministic-decomposer.ts` |
+| `services/` | Higher-level orchestration services | `execution.ts`, `session-loop-resolver.ts`, `deterministic-decomposer.ts`, `plan-capture.ts`, `worktree-log.ts` |
 | `sandbox/` | Docker sandbox management | `docker.ts`, `manager.ts`, `context.ts`, `reconcile.ts` |
 | `storage/` | SQLite persistence layer (repos + migrations) | `database.ts`, `repos/*.ts`, `migrations/*.sql` |
 | `tools/` | Plugin tools callable by AI agents | `loop.ts`, `review.ts`, `plan-kv.ts`, `section-read.ts` |
-| `workspace/` | Git worktree / workspace management | `forge-adapter.ts`, `forge-worktree.ts`, `pending-teardown.ts` |
+| `workspace/` | Git worktree / workspace management | `forge-adapter.ts`, `forge-worktree.ts`, `pending-teardown.ts`, `classify-stale.ts`, `remove-with-context.ts`, `sweep-stale.ts` |
 | `utils/` | Shared utility modules (~25 files) | `logger.ts`, `lru-cache.ts`, `model-fallback.ts`, etc. |
 | `tui/` | TUI-specific components | `execute-plan-panel.tsx` |
 

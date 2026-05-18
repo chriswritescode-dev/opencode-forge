@@ -233,7 +233,6 @@ Higher-level orchestration services coordinating between hooks, loop runtime, an
 |------|---------|
 | `execution.ts` | Unified command bus for plan execution (`createForgeExecutionService()`) |
 | `session-loop-resolver.ts` | Resolve which loop owns a given session |
-| `reconcile-loops.ts` | Reconcile workspace loops on reload |
 | `deterministic-decomposer.ts` | Parse plan sections without LLM (`decomposeDeterministically()`) |
 | `plan-capture.ts` | Extract plan text from messages |
 | `worktree-log.ts` | Log worktree completions |
@@ -405,6 +404,9 @@ Creates and manages git worktrees for isolated loop execution, integrated with O
 | `forge-adapter.ts` | `createForgeWorkspaceAdapter()` — implements OpenCode's workspace API |
 | `forge-worktree.ts` | `bindSessionToWorkspace()`, `createBuiltinWorktreeWorkspace()` |
 | `pending-teardown.ts` | Registry of pending teardown contexts for commit message building |
+| `classify-stale.ts` | Decision function for stale forge workspace handling |
+| `remove-with-context.ts` | Workspace removal with teardown context |
+| `sweep-stale.ts` | Opportunistic same-project sweep of stale forge workspaces during loop teardown |
 
 Source: [src/workspace/forge-adapter.ts](../src/workspace/forge-adapter.ts)
 

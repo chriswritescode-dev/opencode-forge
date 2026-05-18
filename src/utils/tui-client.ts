@@ -9,6 +9,9 @@ import { readExecutionPreferences, writeExecutionPreferences } from './tui-execu
 import { parseModelString } from './model-fallback'
 import { listConnectedWorkspaces, type WorkspaceListApi } from './workspace-listing'
 import { type ForgeLoopExtra } from '../services/execution'
+import { buildLoopPermissionRuleset } from '../constants/loop'
+import { getForgeWorkspaceLoopName, removeExistingForgeLoopWorkspaces } from '../workspace/forge-worktree'
+import { fetchLoopsList } from './tui-loop-store'
 
 export type ApiExecutionMode = 'new-session' | 'execute-here' | 'loop'
 
@@ -29,6 +32,39 @@ export interface ExecutePlanRequest {
   executionModel?: string
   auditorModel?: string
   targetSessionId?: string
+}
+
+function nextAvailableLoopName(baseName: string, names: string[]): string {
+  let candidate = baseName
+  let suffix = 1
+  while (names.includes(candidate)) {
+    candidate = `${baseName}-${suffix}`
+    suffix += 1
+  }
+  return candidate
+}
+
+async function reserveTuiLoopName(api: TuiPluginApi, projectId: string | null, baseName: string): Promise<string> {
+  const workspaceApi = api.client.experimental.workspace
+  const names = new Set<string>()
+  if (projectId) {
+    for (const loop of fetchLoopsList(projectId)) {
+      names.add(loop.name)
+    }
+  }
+  if (typeof workspaceApi.list !== 'function') return nextAvailableLoopName(baseName, [...names])
+  try {
+    const result = await workspaceApi.list()
+    const entries = ((result as { data?: unknown[] } | undefined)?.data ?? []) as Array<{ name?: string; extra?: Record<string, unknown> | null }>
+    for (const entry of entries) {
+      if (entry.name) names.add(entry.name)
+      const loopName = getForgeWorkspaceLoopName(entry)
+      if (loopName) names.add(loopName)
+    }
+    return nextAvailableLoopName(baseName, [...names])
+  } catch {
+    return nextAvailableLoopName(baseName, [...names])
+  }
 }
 
 export interface ForgeProjectClient {
@@ -119,6 +155,20 @@ export async function awaitWorkspaceConnected(
     tuiDebug(`awaitWorkspaceConnected: unexpected error workspace=${workspaceId} error=${(err as Error).message}`)
     return { connected: false, source: 'error', elapsedMs: Date.now() - start, lastStatus }
   }
+}
+
+function getWorkspacePluginSettleMs(): number {
+  const raw = process.env.FORGE_TUI_WORKSPACE_SETTLE_MS
+  if (!raw) return 750
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 750
+}
+
+async function waitForWorkspacePluginSettle(workspaceId: string): Promise<void> {
+  const settleMs = getWorkspacePluginSettleMs()
+  if (settleMs <= 0) return
+  tuiDebug(`waitForWorkspacePluginSettle: workspace=${workspaceId} delayMs=${settleMs}`)
+  await new Promise<void>((resolve) => setTimeout(resolve, settleMs))
 }
 
 function deriveLoopNameFromTitle(title: string): string {
@@ -263,38 +313,65 @@ export async function connectForgeProject(
       }
 
       if (req.mode === 'loop') {
-        const loopName = deriveLoopNameFromTitle(req.title)
+        const loopName = await reserveTuiLoopName(api, projectId, deriveLoopNameFromTitle(req.title))
         tuiDebug(`plan.execute(loop): inline plan (planText.length=${req.plan.length}) hostSession=${sessionId ?? 'none'} loop=${loopName}`)
+        const createdAt = Date.now()
         const forgeLoop: ForgeLoopExtra = {
-          loopName,
           hostSessionId: sessionId || undefined,
           title: req.title,
           executionModel: req.executionModel,
           auditorModel: req.auditorModel,
           planSource: 'inline',
           planText: req.plan,
+          initialPromptOwner: 'tui',
+          pendingAttachStartedAt: createdAt,
         }
         try {
+          await removeExistingForgeLoopWorkspaces(api.client, loopName, {
+            log: (message) => tuiDebug(`plan.execute(loop): ${message}`),
+            error: (message, err) => tuiDebug(`plan.execute(loop): ${message} ${err instanceof Error ? err.message : String(err)}`),
+          })
           const wsRes = await api.client.experimental.workspace.create({
             type: 'forge',
             branch: null,
-            extra: { loopName, projectDirectory: directory, forgeLoop },
+            extra: { loopName, projectDirectory: directory, workspaceCreatedAt: createdAt, forgeLoop },
           })
           if (wsRes.error || !wsRes.data) return null
           const workspace = wsRes.data
 
           await api.client.experimental.workspace.syncList().catch(() => undefined)
 
+          const connected = await awaitWorkspaceConnected(api, workspace.id, 5000, 100)
+          tuiDebug(`plan.execute(loop): workspace ${workspace.id} connected=${connected.connected} source=${connected.source} elapsedMs=${connected.elapsedMs} lastStatus=${connected.lastStatus ?? 'unknown'}`)
+          if (connected.connected) {
+            await waitForWorkspacePluginSettle(workspace.id)
+          }
+
+          const permission = buildLoopPermissionRuleset()
           const sesRes = await api.client.session.create({
             workspaceID: workspace.id,
-            title: req.title.length > 60 ? `${req.title.substring(0, 57)}...` : req.title,
+            title: loopName,
             directory: workspace.directory ?? undefined,
+            permission,
           })
           if (sesRes.error || !sesRes.data) return null
           const session = sesRes.data
 
-          const connected = await awaitWorkspaceConnected(api, workspace.id, 5000, 100)
-          tuiDebug(`plan.execute(loop): workspace ${workspace.id} connected=${connected.connected} source=${connected.source} elapsedMs=${connected.elapsedMs} lastStatus=${connected.lastStatus ?? 'unknown'}`)
+          const promptInput = {
+            sessionID: session.id,
+            directory: workspace.directory ?? undefined,
+            workspace: workspace.id,
+            agent: 'code',
+            parts: [{ type: 'text' as const, text: req.plan }],
+            ...(parsedModel ? { model: parsedModel } : {}),
+          }
+          const promptResult = await api.client.session.promptAsync(promptInput)
+          if (promptResult.error) {
+            tuiDebug(`plan.execute(loop): promptAsync failed session=${session.id} workspace=${workspace.id} error=${String(promptResult.error)}`)
+            await api.client.experimental.workspace.remove({ id: workspace.id }).catch(() => undefined)
+            return null
+          }
+          tuiDebug(`plan.execute(loop): promptAsync ok session=${session.id} workspace=${workspace.id}`)
 
           await selectTuiSession(api, session.id, workspace.id)
 

@@ -2005,7 +2005,7 @@ describe('loop-hooks integration', () => {
   })
 
   describe('session deletion order', () => {
-    it('handleCodingPhase creates audit session and schedules deferred deletion of code session', async () => {
+    it('handleCodingPhase creates audit session and deletes previous code session', async () => {
       const sessionDeletes: string[] = []
       const sessionCreates: string[] = []
       
@@ -2090,7 +2090,7 @@ describe('loop-hooks integration', () => {
 
       const state = service.getAnyState(loopName)
       expect(state?.phase).toBe('auditing')
-      expect(sessionDeletes.length).toBe(0)
+      expect(sessionDeletes).toContain(sessionId)
       expect(sessionCreates.length).toBe(1)
 
       rmSync(worktreeDir, { recursive: true, force: true })

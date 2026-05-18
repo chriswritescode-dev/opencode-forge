@@ -155,7 +155,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   const codingLaunchRecoveryAttempts = new Map<string, number>()
   const loopRetainedSessions = new Map<string, string[]>()
-  const SESSION_RETENTION = 2
+  const SESSION_RETENTION = 0
 
   function withStateLock<T>(loopName: string, fn: () => Promise<T>): Promise<T> {
     const prev = stateLocks.get(loopName) ?? Promise.resolve()
@@ -469,7 +469,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     watchdog.stop(loopName)
     watchdog.start(loopName)
 
-    logger.log(`Loop: preserving old session ${oldSessionId} after rotation to ${newSessionId}`)
+    scheduleSessionDelete({ loopName, sessionId: oldSessionId, directory: sessionDir, context: 'after session rotation' })
 
     logger.log(`Loop: rotated session ${oldSessionId} → ${newSessionId}`)
 

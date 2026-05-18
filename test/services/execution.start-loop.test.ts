@@ -10,6 +10,7 @@ import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-re
 import { createLoopService } from '../../src/loop/service'
 import type { Logger } from '../../src/types'
 import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
+import { buildLoopPermissionRuleset } from '../../src/constants/loop'
 import type { PlansRepo } from '../../src/storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import type { SectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
@@ -267,7 +268,15 @@ describe('handleStartLoop builtin worktree workspace', () => {
     // Assert: experimental.workspace.create was called (builtin worktree path)
     expect(experimentalWorkspaceCreateMock).toHaveBeenCalledTimes(1)
     expect(experimentalWorkspaceCreateMock).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'forge', branch: null, extra: { loopName: 'test-plan', projectDirectory: expect.any(String) } }),
+      expect.objectContaining({
+        type: 'forge',
+        branch: null,
+        extra: expect.objectContaining({
+          loopName: 'test-plan',
+          projectDirectory: expect.any(String),
+          workspaceCreatedAt: expect.any(Number),
+        }),
+      }),
     )
 
     // Assert: old v2.worktree.create was NOT called
@@ -394,6 +403,109 @@ describe('handleStartLoop builtin worktree workspace', () => {
     expect(state!.sandbox).toBe(false)
     expect(state!.worktree).toBe(true)
     expect(state!.sandboxContainer).toBeUndefined()
+  })
+
+  test('passes buildLoopPermissionRuleset() to session.create regardless of surface', async () => {
+    const sessionCreateMock = vi.fn().mockResolvedValue({ data: { id: 'sess-1' } })
+    const experimentalWorkspaceCreateMock = vi.fn().mockResolvedValue({
+      data: {
+        id: 'ws_test',
+        directory: '/tmp/wt/abc',
+        branch: 'opencode/abc',
+        type: 'worktree',
+        name: 'opencode/abc',
+        extra: null,
+        projectID: PROJECT_ID,
+        timeUsed: Date.now(),
+      },
+    })
+
+    const mockV2Client = {
+      session: {
+        create: sessionCreateMock,
+        get: vi.fn().mockResolvedValue({ data: {} }),
+        promptAsync: async () => ({ error: null }),
+        abort: async () => ({}),
+        delete: async () => ({}),
+        messages: async () => ({ data: [] }),
+        status: async () => ({ data: {} }),
+      },
+      experimental: {
+        workspace: {
+          create: experimentalWorkspaceCreateMock,
+          warp: vi.fn().mockResolvedValue({}),
+          remove: vi.fn().mockResolvedValue({}),
+          list: vi.fn().mockResolvedValue({ data: [] }),
+          status: vi.fn().mockResolvedValue({ data: {} }),
+        },
+      },
+      tui: {
+        publish: async () => {},
+        selectSession: vi.fn().mockResolvedValue({}),
+      },
+      worktree: {
+        create: vi.fn().mockResolvedValue({ data: { directory: '/tmp/wt/abc', branch: 'opencode/abc' } }),
+        remove: async () => {},
+      },
+    }
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const mockSandboxManager = {
+      docker: {} as any,
+      start: vi.fn().mockResolvedValue({ containerName: 'opencode-forge-sandbox-test' }),
+      stop: vi.fn().mockResolvedValue(undefined),
+      getActive: vi.fn().mockReturnValue(null),
+      isActive: vi.fn().mockReturnValue(false),
+      isLive: vi.fn().mockResolvedValue(false),
+      isLiveByName: vi.fn().mockResolvedValue(false),
+      cleanupOrphans: vi.fn().mockResolvedValue(0),
+      restore: vi.fn().mockResolvedValue(undefined),
+      provisionDependencies: vi.fn().mockResolvedValue(undefined),
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+      v2: mockV2Client as any,
+      plansRepo,
+      loopsRepo,
+      loop: loopService as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      sandboxManager: mockSandboxManager as any,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
+    })
+
+    for (const surface of ['tool', 'approval-hook'] as const) {
+      sessionCreateMock.mockClear()
+      await service.dispatch(
+        { surface, projectId: PROJECT_ID, directory: '/tmp/test' },
+        {
+          type: 'loop.start' as const,
+          source: { kind: 'inline', planText: '# Test Plan\n\nTest.' },
+          lifecycle: { selectSession: false },
+        },
+      )
+      expect(sessionCreateMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          permission: buildLoopPermissionRuleset(),
+        }),
+      )
+    }
   })
 
   test('fails and rolls back when sandbox manager present but start throws', async () => {
@@ -906,6 +1018,9 @@ describe('handleStartLoop select-session ordering', () => {
   })
 
   test('onStarted fires after a bounded timeout if selectSession hangs', async () => {
+    // Shorten the select timeout for this test to keep it fast
+    const prevEnv = process.env.FORGE_SELECT_TIMEOUT_MS
+    process.env.FORGE_SELECT_TIMEOUT_MS = '50'
     const tempDir = mkdtempSync(join(tmpdir(), 'exec-ordering-timeout-'))
     const db = new Database(join(tempDir, 'test.db'))
     db.exec(DB_SCHEMA); db.exec(LOOP_LARGE_FIELDS_SCHEMA); db.exec(PLANS_SCHEMA); db.exec(REVIEW_FINDINGS_SCHEMA); db.exec(SECTION_PLANS_SCHEMA)
@@ -954,5 +1069,7 @@ describe('handleStartLoop select-session ordering', () => {
     expect(totalElapsed).toBeLessThan(5000)
 
     db.close()
+    if (prevEnv === undefined) delete process.env.FORGE_SELECT_TIMEOUT_MS
+    else process.env.FORGE_SELECT_TIMEOUT_MS = prevEnv
   })
 })

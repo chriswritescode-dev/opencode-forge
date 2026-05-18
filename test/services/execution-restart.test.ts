@@ -305,7 +305,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
 
-    expect(result.data.iteration).toBe(4)
+    expect(result.data.iteration).toBe(1)
     expect(result.data.loopName).toBe('stall-loop')
     expect(result.data.sessionId).toBe('new-session-123')
     expect(result.data.previousSessionId).toBe('session-old')
@@ -314,14 +314,14 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect(newState).not.toBeNull()
     expect(newState.phase).toBe('coding')
     expect(newState.currentSectionIndex).toBe(2)
-    expect(newState.iteration).toBe(4)
+    expect(newState.iteration).toBe(1)
     expect(newState.totalSections).toBe(5)
 
     expect(buildSectionInitialPromptSpy).toHaveBeenCalledTimes(1)
     expect(buildFinalAuditPromptSpy).not.toHaveBeenCalled()
   })
 
-  test('restart from stall_timeout does not reset iteration to 0', async () => {
+  test('restart from stall_timeout resets iteration budget to 1', async () => {
     insertLoop({
       loopName: 'iter-loop',
       status: 'stalled',
@@ -415,12 +415,105 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
 
-    expect(result.data.iteration).toBe(7)
+    expect(result.data.iteration).toBe(1)
 
     const newState = loopService.getActiveState('iter-loop')!
-    expect(newState.iteration).toBe(7)
+    expect(newState.iteration).toBe(1)
     expect(newState.currentSectionIndex).toBe(1)
     expect(newState.phase).toBe('coding')
+  })
+
+  test('restart creates fresh workspace for preserved worktree', async () => {
+    insertLoop({
+      loopName: 'worktree-loop',
+      status: 'errored',
+      terminationReason: 'max_iterations',
+      iteration: 10,
+      worktree: true,
+      workspaceId: 'ws_old',
+    })
+
+    const noopFn = () => {}
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: noopFn,
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: noopFn,
+      buildSectionInitialPrompt: () => 'section prompt',
+      buildFinalAuditPrompt: () => 'audit prompt',
+      generateUniqueLoopName: () => 'worktree-loop',
+    }
+
+    const workspaceCreate = vi.fn().mockResolvedValue({
+      data: { id: 'ws_new', directory: '/tmp', branch: 'forge/worktree-loop' },
+    })
+    const mockV2Client = {
+      session: {
+        create: async () => ({ data: { id: 'new-sess-worktree' } }),
+        get: async () => ({ data: {} }),
+        promptAsync: async () => ({}),
+        abort: async () => ({}),
+        delete: async () => ({}),
+        messages: async () => ({ data: [] }),
+        status: async () => ({ data: {} }),
+      },
+      experimental: {
+        workspace: {
+          list: async () => ({ data: [] }),
+          remove: async () => ({}),
+          create: workspaceCreate,
+          warp: async () => ({}),
+          syncList: async () => ({}),
+        },
+        session: { list: async () => ({ data: [] }) },
+      },
+      tui: { publish: async () => ({}), selectSession: async () => ({}) },
+      sync: { start: async () => ({}) },
+    }
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
+      logger: mockLogger,
+      dataDir: '/tmp',
+      v2: mockV2Client as any,
+      plansRepo,
+      loopsRepo,
+      loop: mockLoopService as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: 'worktree-loop' } },
+    )
+
+    expect(result.ok).toBe(true)
+    expect(workspaceCreate).toHaveBeenCalledWith({
+      type: 'forge',
+      branch: null,
+      extra: {
+        loopName: 'worktree-loop',
+        projectDirectory: '/tmp',
+        workspaceCreatedAt: expect.any(Number),
+      },
+    })
+    const newState = loopService.getActiveState('worktree-loop')!
+    expect(newState.workspaceId).toBe('ws_new')
+    expect(newState.iteration).toBe(1)
   })
 
   test('restart from stall_timeout routes to final_auditing when persisted phase is final_auditing', async () => {

@@ -167,23 +167,29 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
         const stderr = res.stderr?.trim() || 'unknown error'
         const isAlreadyExists = /already exists/i.test(stderr) || /is already (checked out|registered)/i.test(stderr)
         if (isAlreadyExists && existsSync(info.directory)) {
-          logger.log(`forge-adapter: worktree directory ${info.directory} already exists; cleaning up orphan and retrying`)
-          const cleanup = await cleanupLoopWorktree({
-            worktreeDir: info.directory,
-            logPrefix: 'forge-adapter:create:orphan-cleanup',
-            logger,
-          })
-          if (!cleanup.removed) {
-            logger.error(`forge-adapter: orphan cleanup failed for ${info.directory}: ${cleanup.error ?? 'unknown error'}`)
-            throw new Error(`git worktree add failed: ${stderr}`)
+          const existingBranch = spawnSync('git', ['branch', '--show-current'], { cwd: info.directory, encoding: 'utf-8' })
+          if (existingBranch.status === 0 && existingBranch.stdout.trim() === info.branch) {
+            logger.log(`forge-adapter: reusing existing worktree ${info.directory} on branch ${info.branch}`)
+            reusedOrphan = true
+          } else {
+            logger.log(`forge-adapter: worktree directory ${info.directory} already exists; cleaning up orphan and retrying`)
+            const cleanup = await cleanupLoopWorktree({
+              worktreeDir: info.directory,
+              logPrefix: 'forge-adapter:create:orphan-cleanup',
+              logger,
+            })
+            if (!cleanup.removed) {
+              logger.error(`forge-adapter: orphan cleanup failed for ${info.directory}: ${cleanup.error ?? 'unknown error'}`)
+              throw new Error(`git worktree add failed: ${stderr}`)
+            }
+            res = spawnSync('git', addArgs, { cwd: projectDir, encoding: 'utf-8' })
+            if (res.status !== 0) {
+              const retryStderr = res.stderr?.trim() || 'unknown error'
+              logger.error(`forge-adapter: git worktree add still failed after orphan cleanup: ${retryStderr}`)
+              throw new Error(`git worktree add failed: ${retryStderr}`)
+            }
+            reusedOrphan = true
           }
-          res = spawnSync('git', addArgs, { cwd: projectDir, encoding: 'utf-8' })
-          if (res.status !== 0) {
-            const retryStderr = res.stderr?.trim() || 'unknown error'
-            logger.error(`forge-adapter: git worktree add still failed after orphan cleanup: ${retryStderr}`)
-            throw new Error(`git worktree add failed: ${retryStderr}`)
-          }
-          reusedOrphan = true
         } else {
           logger.error(`forge-adapter: git worktree add failed: ${stderr}`)
           throw new Error(`git worktree add failed: ${stderr}`)

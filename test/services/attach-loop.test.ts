@@ -162,6 +162,7 @@ describe('attachLoopToSession', () => {
         session: {
           create: vi.fn().mockResolvedValue({ data: { id: 'new-session' } }),
           get: vi.fn().mockResolvedValue({ data: {} }),
+          update: vi.fn().mockResolvedValue({ data: {} }),
           promptAsync: promptAsyncMock,
           abort: vi.fn().mockResolvedValue({}),
           delete: vi.fn().mockResolvedValue({}),
@@ -355,7 +356,7 @@ describe('attachLoopToSession', () => {
     expect(deleteStateSpy).not.toHaveBeenCalled()
   })
 
-  test('attachLoopToSession clears terminal loop row before re-attaching (cancelled)', async () => {
+  test('attachLoopToSession refuses terminal loop row without deleting state', async () => {
     const { deps, loopsRepo, loopService } = buildDeps()
 
     // Pre-seed a terminal loop row.
@@ -406,12 +407,15 @@ describe('attachLoopToSession', () => {
       },
     )
 
-    expect(deleteStateSpy).toHaveBeenCalledWith('reusable-loop')
-    expect(result.ok).toBe(true)
-    // Re-inserted with the new session.
+    expect(deleteStateSpy).not.toHaveBeenCalled()
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.code).toBe('conflict')
+      expect(result.message).toContain('Use loop restart')
+    }
     const after = loopsRepo.get(PROJECT_ID, 'reusable-loop')
-    expect(after?.currentSessionId).toBe('sess_new')
-    expect(after?.status).toBe('running')
+    expect(after?.currentSessionId).toBe('sess_old')
+    expect(after?.status).toBe('cancelled')
   })
 
   test('attachLoopToSession returns already_attached when existing row is running', async () => {
@@ -635,5 +639,37 @@ describe('attachLoopToSession', () => {
     const state = (deps.loop as any).getActiveState('nodecomp-loop')
     expect(state).not.toBeNull()
     expect(state!.phase).toBe('coding')
+  })
+
+  test('attachLoopToSession does NOT call session.update for permission repair on any surface', async () => {
+    const surfaces: Array<'tui' | 'tool' | 'approval-hook'> = ['tui', 'tool', 'approval-hook']
+    for (const surface of surfaces) {
+      const { deps } = buildDeps()
+      const sessionUpdateMock = deps.v2.session.update
+      const { attachLoopToSession } = await import('../../src/services/execution')
+      await attachLoopToSession(
+        deps as any,
+        { surface, projectId: PROJECT_ID, directory: '/tmp/test' },
+        {
+          sessionId: 'sess_abc',
+          workspaceId: 'ws_test',
+          worktreeDir: '/tmp/wt/abc',
+          loopName: 'my-loop',
+          displayName: 'My Loop',
+          executionName: 'my-loop',
+          hostSessionId: 'host-sess',
+          executionModel: 'prov/exec',
+          auditorModel: 'prov/aud',
+          maxIterations: 50,
+          sandboxEnabled: false,
+          planText: '# Test Plan\n\nDo something.',
+          selectSession: surface === 'tui',
+          selectSessionTiming: 'after-prompt',
+          startWatchdog: true,
+        },
+      )
+      // Assert: session.update was NEVER called (no permission repair)
+      expect(sessionUpdateMock).not.toHaveBeenCalled()
+    }
   })
 })

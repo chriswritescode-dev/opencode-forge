@@ -457,7 +457,14 @@ describe('runtime re-provisioning updates state.workspaceId', () => {
     // createBuiltinWorktreeWorkspace was invoked (proves internal state mutation occurred)
     expect(wsCreateMock).toHaveBeenCalledTimes(1)
     expect(wsCreateMock).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'forge', extra: { loopName: 'test-loop', projectDirectory: expect.any(String) } }),
+      expect.objectContaining({
+        type: 'forge',
+        extra: expect.objectContaining({
+          loopName: 'test-loop',
+          projectDirectory: expect.any(String),
+          workspaceCreatedAt: expect.any(Number),
+        }),
+      }),
     )
   })
 })
@@ -799,13 +806,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
         properties: { status: { type: 'idle' }, sessionID: state.sessionId },
       })
 
-      // After one rotation: queue.length=1 ≤ SESSION_RETENTION(2)
-      // The old coding session is queued but NOT yet deleted
-      // (no delete call expected because retention limit not exceeded)
-
-      // Verify the old session was scheduled for deletion (via debug logs).
-      // The actual delete only occurs when queue > SESSION_RETENTION.
-      expect(clientState.deleteCalls).toHaveLength(0)
+      expect(clientState.deleteCalls.map((call) => call.sessionID)).toContain(state.sessionId)
     })
 
     test('tolerates delete failure without crashing', async () => {

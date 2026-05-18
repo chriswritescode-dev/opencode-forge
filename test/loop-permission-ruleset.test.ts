@@ -1,9 +1,13 @@
-import { describe, test, expect, mock } from 'bun:test'
+import { describe, test, expect, mock, beforeEach } from 'bun:test'
 import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../src/constants/loop'
-import { createLoopPermissionRejectHook } from '../src/hooks/loop-permission'
+import { createLoopPermissionRejectHook, __resetLoopPermissionCache } from '../src/hooks/loop-permission'
 import { createAuditSession } from '../src/utils/audit-session'
 import { createLoopSessionWithWorkspace } from '../src/utils/loop-session'
 import type { Logger } from '../src/types'
+
+beforeEach(() => {
+  __resetLoopPermissionCache()
+})
 
 describe('buildLoopPermissionRuleset', () => {
   test('worktree + sandbox ruleset: allow-all first, external_directory denied, code-agent denies, then operational denies last', () => {
@@ -271,5 +275,84 @@ describe('createLoopPermissionRejectHook', () => {
       directory: '/repo/.worktrees/active-loop',
       permission: parentPermission,
     })
+  })
+
+  test('is idempotent: firing twice for the same child session results in a single session.update call', async () => {
+    const parentPermission = buildLoopPermissionRuleset()
+    const mockGet = mock(async () => ({ data: { permission: parentPermission } }))
+    const mockUpdate = mock(async () => ({ data: {}, error: null }))
+    const logger = { log: mock(), error: mock(), debug: mock() } as unknown as Logger
+
+    const hook = createLoopPermissionRejectHook({
+      v2: { session: { get: mockGet, update: mockUpdate } } as any,
+      sessionLoopResolver: {
+        resolveActiveLoopForSession: mock(async () => ({
+          loopName: 'active-loop',
+          active: true,
+          worktreeDir: '/repo/.worktrees/active-loop',
+        })),
+      } as any,
+      directory: '/repo',
+      logger,
+    })
+
+    const event = {
+      event: {
+        type: 'session.created',
+        properties: { info: { id: 'child-session', parentID: 'parent-session' } },
+      },
+    }
+    await hook(event)
+    await hook(event)
+
+    expect(mockUpdate).toHaveBeenCalledTimes(1)
+  })
+
+  test('logs an explicit "applied" tag when permissions are successfully patched', async () => {
+    const parentPermission = buildLoopPermissionRuleset()
+    const logger = { log: mock(), error: mock(), debug: mock() } as unknown as Logger
+    const hook = createLoopPermissionRejectHook({
+      v2: {
+        session: {
+          get: mock(async () => ({ data: { permission: parentPermission } })),
+          update: mock(async () => ({ data: {}, error: null })),
+        },
+      } as any,
+      sessionLoopResolver: {
+        resolveActiveLoopForSession: mock(async () => ({ loopName: 'lp', active: true, worktreeDir: '/r' })),
+      } as any,
+      directory: '/repo',
+      logger,
+    })
+    await hook({
+      event: { type: 'session.created', properties: { info: { id: 'c1', parentID: 'p1' } } },
+    })
+    const logCalls = (logger.log as any).mock.calls.map((c: unknown[]) => String(c[0]))
+    expect(logCalls.some((m: string) => m.includes('[loop-permission] applied'))).toBe(true)
+  })
+
+  test('falls back to buildLoopPermissionRuleset when parent has no allow-all rule', async () => {
+    const mockUpdate = mock(async () => ({ data: {}, error: null }))
+    const hook = createLoopPermissionRejectHook({
+      v2: {
+        session: {
+          get: mock(async () => ({ data: { permission: [{ permission: 'edit', pattern: '*', action: 'deny' }] } })),
+          update: mockUpdate,
+        },
+      } as any,
+      sessionLoopResolver: {
+        resolveActiveLoopForSession: mock(async () => ({ loopName: 'lp', active: true, worktreeDir: '/r' })),
+      } as any,
+      directory: '/repo',
+      logger: { log: mock(), error: mock(), debug: mock() } as unknown as Logger,
+    })
+    await hook({
+      event: { type: 'session.created', properties: { info: { id: 'c2', parentID: 'p2' } } },
+    })
+    expect(mockUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        permission: buildLoopPermissionRuleset(),
+      }),
+    )
   })
 })

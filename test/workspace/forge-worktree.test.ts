@@ -17,13 +17,15 @@ describe('createBuiltinWorktreeWorkspace', () => {
     logger = createMockLogger()
   })
 
-  function mockV2Client(overrides?: { syncList?: any; create?: any; syncStart?: any }) {
+  function mockV2Client(overrides?: { syncList?: any; create?: any; syncStart?: any; list?: any; remove?: any }) {
     return {
       ...(overrides?.syncStart !== undefined
         ? { sync: { start: overrides.syncStart } }
         : {}),
       experimental: {
         workspace: {
+          list: overrides?.list ?? vi.fn().mockResolvedValue({ data: [] }),
+          remove: overrides?.remove ?? vi.fn().mockResolvedValue({ data: {} }),
           create: overrides?.create ?? vi.fn().mockResolvedValue({
             data: { id: 'ws-1', directory: '/tmp/wt-1', branch: 'feature/x' },
           }),
@@ -152,7 +154,15 @@ describe('createBuiltinWorktreeWorkspace', () => {
       )
 
       expect(result).toEqual({ workspaceId: 'ws-scoped', directory: '/tmp/wt-scoped', branch: 'feature/scoped' })
-      expect(createMock).toHaveBeenCalledWith({ type: 'forge', branch: null, extra: { loopName: 'scoped-loop', projectDirectory: '/tmp/project' } })
+      expect(createMock).toHaveBeenCalledWith({
+        type: 'forge',
+        branch: null,
+        extra: {
+          loopName: 'scoped-loop',
+          projectDirectory: '/tmp/project',
+          workspaceCreatedAt: expect.any(Number),
+        },
+      })
       expect(syncListMock).toHaveBeenCalledWith()
     })
 
@@ -176,6 +186,31 @@ describe('createBuiltinWorktreeWorkspace', () => {
       expect(syncListMock.mock.invocationCallOrder[0]).toBeLessThan(
         syncStartMock.mock.invocationCallOrder[0],
       )
+    })
+
+    it('creates workspace without removing old forge workspaces (sweep handles orphan cleanup on teardown)', async () => {
+      const listMock = vi.fn().mockResolvedValue({
+        data: [
+          { id: 'ws-old-name', type: 'forge', name: 'sync-loop' },
+          { id: 'ws-old-extra', type: 'forge', extra: { loopName: 'sync-loop' } },
+        ],
+      })
+      const removeMock = vi.fn().mockResolvedValue({ data: {} })
+      const createMock = vi.fn().mockResolvedValue({
+        data: { id: 'ws-new', directory: '/tmp/wt-new', branch: 'feature/new' },
+      })
+
+      const client = mockV2Client({ list: listMock, remove: removeMock, create: createMock })
+
+      const result = await createBuiltinWorktreeWorkspace(
+        client,
+        { loopName: 'sync-loop', directory: '/tmp/project' },
+        logger,
+      )
+
+      expect(result).toEqual({ workspaceId: 'ws-new', directory: '/tmp/wt-new', branch: 'feature/new' })
+      expect(removeMock).not.toHaveBeenCalled()
+      expect(createMock).toHaveBeenCalledTimes(1)
     })
   })
 })

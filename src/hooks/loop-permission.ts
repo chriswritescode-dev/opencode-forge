@@ -3,6 +3,13 @@ import type { Logger } from '../types'
 import type { createSessionLoopResolver } from '../services/session-loop-resolver'
 import { buildLoopPermissionRuleset } from '../constants/loop'
 
+const PATCHED_SESSIONS = new Set<string>()
+const PATCHED_SESSIONS_MAX = 5000
+
+export function __resetLoopPermissionCache() {
+  PATCHED_SESSIONS.clear()
+}
+
 interface SessionCreatedProperties {
   info?: {
     id?: string
@@ -56,6 +63,13 @@ export function createLoopPermissionRejectHook(
     const resolved = await sessionLoopResolver.resolveActiveLoopForSession(sessionID)
     if (!resolved?.active) return
 
+    if (PATCHED_SESSIONS.has(sessionID)) {
+      logger.log(
+        `[loop-permission] skipped: already patched session=${sessionID} loop=${resolved.loopName}`,
+      )
+      return
+    }
+
     const targetDirectory = info?.directory ?? resolved.worktreeDir ?? directory
 
     let ruleset: PermissionRule[] | null = null
@@ -73,7 +87,7 @@ export function createLoopPermissionRejectHook(
     if (!ruleset) ruleset = buildLoopPermissionRuleset()
 
     logger.log(
-      `[loop-permission] patching subagent permissions loop=${resolved.loopName} session=${sessionID} parent=${parentID} directory=${targetDirectory} ruleset=${rulesetSource} title=${JSON.stringify(info?.title ?? null)}`,
+      `[loop-permission] patching loop=${resolved.loopName} session=${sessionID} parent=${parentID} ruleset=${rulesetSource}`,
     )
 
     try {
@@ -86,6 +100,15 @@ export function createLoopPermissionRejectHook(
         logger.error(
           `[loop-permission] session.update returned error for ${sessionID}`,
           (result as { error?: unknown }).error,
+        )
+      } else {
+        PATCHED_SESSIONS.add(sessionID)
+        if (PATCHED_SESSIONS.size > PATCHED_SESSIONS_MAX) {
+          const oldest = PATCHED_SESSIONS.values().next().value
+          if (oldest) PATCHED_SESSIONS.delete(oldest)
+        }
+        logger.log(
+          `[loop-permission] applied loop=${resolved.loopName} session=${sessionID} ruleCount=${ruleset.length}`,
         )
       }
     } catch (err) {

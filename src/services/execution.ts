@@ -61,13 +61,14 @@ export type PlanSource =
 // ============================================================================
 
 export interface ForgeLoopExtra {
-  loopName: string
   hostSessionId?: string
   title?: string
   executionModel?: string
   auditorModel?: string
   planSource: 'stored' | 'inline'
   planText?: string
+  initialPromptOwner?: 'server' | 'tui'
+  pendingAttachStartedAt?: number
 }
 
 export interface AttachLoopInput {
@@ -88,6 +89,7 @@ export interface AttachLoopInput {
   selectSession?: boolean
   selectSessionTiming?: 'after-create' | 'after-prompt'
   startWatchdog?: boolean
+  sendInitialPrompt?: boolean
   abortSourceSessionOnSuccess?: boolean
   onStarted?: (info: {
     sessionId: string
@@ -365,6 +367,7 @@ export interface ForgeExecutionServiceDeps {
   sectionPlansRepo?: import('../storage/repos/section-plans-repo').SectionPlansRepo
   reviewFindingsRepo?: import('../storage/repos/review-findings-repo').ReviewFindingsRepo
   workspaceStatusRegistry: import('../utils/workspace-status-registry').WorkspaceStatusRegistry
+  pendingTeardowns: import('../workspace/pending-teardown').PendingTeardownRegistry
 }
 
 // ============================================================================
@@ -691,6 +694,8 @@ export interface SelectInitialWorktreeSessionOpts {
   logger: Logger | Console
   workspaceStatusRegistry: import('../utils/workspace-status-registry').WorkspaceStatusRegistry
   selectSessionFn: (selection: { sessionID: string; workspace?: string }) => Promise<void>
+  /** Maximum time to wait for selectSessionFn before falling through. Defaults to 2000ms. */
+  selectTimeoutMs?: number
 }
 
 export async function selectInitialWorktreeSession(
@@ -731,7 +736,8 @@ export async function selectInitialWorktreeSession(
       )
     }
 
-    const SELECT_TIMEOUT_MS = 2000
+    const envTimeout = Number(process.env.FORGE_SELECT_TIMEOUT_MS)
+    const SELECT_TIMEOUT_MS = opts.selectTimeoutMs ?? (Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : 2000)
     await Promise.race([
       opts.selectSessionFn({ sessionID: targetSessionId, workspace: boundWorkspaceId }),
       new Promise<void>((resolve) => setTimeout(resolve, SELECT_TIMEOUT_MS)),
@@ -754,7 +760,7 @@ export async function attachLoopToSession(
   deps: ForgeExecutionServiceDeps,
   ctx: ForgeExecutionRequestContext,
   input: AttachLoopInput,
-): Promise<{ ok: true; loopName: string } | { ok: false; code: 'already_attached' | 'internal_error' | 'prompt_failed'; message: string }> {
+): Promise<{ ok: true; loopName: string } | { ok: false; code: 'already_attached' | 'conflict' | 'internal_error' | 'prompt_failed'; message: string }> {
   const {
     sessionId,
     workspaceId,
@@ -771,6 +777,7 @@ export async function attachLoopToSession(
     selectSession,
     selectSessionTiming,
     startWatchdog,
+    sendInitialPrompt = true,
     abortSourceSessionOnSuccess,
     onStarted,
   } = input
@@ -783,15 +790,8 @@ export async function attachLoopToSession(
       deps.logger.log(`attachLoopToSession: loop ${loopName} already attached (running), skipping`)
       return { ok: false, code: 'already_attached', message: `Loop ${loopName} is already attached` }
     }
-    // Terminal row from a prior run (cancelled/completed/errored/stalled).
-    // Clear it so the new attach can insert fresh state without colliding.
-    deps.logger.log(`attachLoopToSession: clearing terminal loop row ${loopName} (status=${existing.status}) before re-attach`)
-    try {
-      deps.loop.deleteState(loopName)
-    } catch (err) {
-      deps.logger.error(`attachLoopToSession: failed to clear terminal loop row ${loopName}`, err)
-      return { ok: false, code: 'internal_error', message: `Failed to clear stale loop state for ${loopName}` }
-    }
+    deps.logger.log(`attachLoopToSession: loop ${loopName} has terminal status ${existing.status}; refusing attach`)
+    return { ok: false, code: 'conflict', message: `Loop ${loopName} is terminal. Use loop restart to resume or start a new suffixed loop.` }
   }
 
   // Defensive purge of orphaned per-loop rows (section_plans cascade may not have fired
@@ -909,6 +909,14 @@ export async function attachLoopToSession(
       selectSessionWithFallback(deps, selection).catch((err: unknown) => {
         deps.logger.error('attachLoopToSession: failed to navigate TUI (early)', err as Error)
       })
+    }
+
+    if (!sendInitialPrompt) {
+      if (startWatchdog && deps.loopHandler) {
+        deps.loopHandler.startWatchdog(loopName)
+      }
+      deps.logger.log(`attachLoopToSession: attached loop=${loopName} without sending initial prompt`)
+      return { ok: true, loopName }
     }
 
     // Send initial prompt with fallback
@@ -1677,6 +1685,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
       }
 
+      stoppedState.iteration = 1
+
       // Create new session for restart
 
       let newSessionId: string | undefined
@@ -1689,6 +1699,18 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           deps.logger.error('loop-restart: failed to start sandbox container', err)
           return { ok: false, error: 'Restart failed: could not start sandbox container.' }
         }
+      }
+
+      if (stoppedState.worktree) {
+        const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
+        const ws = await createBuiltinWorktreeWorkspace(deps.v2, {
+          loopName: stoppedState.loopName,
+          directory: stoppedState.projectDir || ctx.directory,
+        }, deps.logger, deps.workspaceStatusRegistry)
+        if (!ws) return { ok: false, error: 'Restart failed: could not create fresh workspace for preserved worktree.' }
+        stoppedState.workspaceId = ws.workspaceId
+        stoppedState.worktreeDir = ws.directory
+        stoppedState.worktreeBranch = ws.branch
       }
 
       // Unified session creation for restart (always a single code session)

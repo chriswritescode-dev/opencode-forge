@@ -1,6 +1,6 @@
 import { execSync, spawnSync } from 'child_process'
-import { resolve } from 'path'
-import { existsSync } from 'fs'
+import { join, resolve } from 'path'
+import { existsSync, rmSync } from 'fs'
 import type { Logger } from '../types'
 
 interface WorktreeCleanupInput {
@@ -35,7 +35,25 @@ export async function cleanupLoopWorktree(
       return result
     }
 
-    const gitCommonDir = execSync('git rev-parse --git-common-dir', { cwd: input.worktreeDir, encoding: 'utf-8' }).trim()
+    if (!existsSync(join(input.worktreeDir, '.git'))) {
+      rmSync(input.worktreeDir, { recursive: true, force: true })
+      result.removed = true
+      input.logger.log(`${input.logPrefix}: removed non-git worktree directory ${input.worktreeDir}`)
+      return result
+    }
+
+    let gitCommonDir: string
+    try {
+      gitCommonDir = execSync('git rev-parse --git-common-dir', { cwd: input.worktreeDir, encoding: 'utf-8' }).trim()
+    } catch (err) {
+      if (isNotGitRepositoryError(err)) {
+        rmSync(input.worktreeDir, { recursive: true, force: true })
+        result.removed = true
+        input.logger.log(`${input.logPrefix}: removed non-git worktree directory ${input.worktreeDir}`)
+        return result
+      }
+      throw err
+    }
     const gitRoot = resolve(input.worktreeDir, gitCommonDir, '..')
     const removeResult = spawnSync('git', ['worktree', 'remove', '-f', input.worktreeDir], { cwd: gitRoot, encoding: 'utf-8' })
     if (removeResult.status !== 0) {
@@ -62,4 +80,7 @@ export async function cleanupLoopWorktree(
   return result
 }
 
-
+function isNotGitRepositoryError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err)
+  return /not a git repository/i.test(message)
+}

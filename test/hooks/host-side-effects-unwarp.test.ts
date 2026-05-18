@@ -55,6 +55,7 @@ function buildCtx(overrides?: {
 }
 
 const completed: TerminationReason = { kind: 'completed' }
+const maxIterations: TerminationReason = { kind: 'max_iterations' }
 
 describe('performTerminationSideEffects unwarp', () => {
   test('publishes select to host session in projectDir before workspace.remove', async () => {
@@ -128,5 +129,123 @@ describe('performTerminationSideEffects unwarp', () => {
       expect.stringContaining('unwarp publish failed for feat-x'),
       expect.any(Error),
     )
+  })
+
+  test('max_iterations removes workspace but preserves restartable worktree', async () => {
+    const { ctx, tuiPublish, workspaceRemove } = buildCtx()
+    const state = buildState({ iteration: 10, maxIterations: 10 })
+
+    await performTerminationSideEffects(state, maxIterations, 'sess_worktree', ctx)
+
+    expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_abc' })
+    const selectCall = tuiPublish.mock.calls.find(
+      (c) => (c[0] as { body: { type: string } }).body.type === 'tui.session.select',
+    )
+    expect(selectCall).toBeTruthy()
+  })
+
+  test('sweep removes sibling completed forge workspace during teardown', async () => {
+    const tuiPublish = vi.fn().mockResolvedValue({ data: {} })
+    const workspaceRemove = vi.fn().mockResolvedValue({ data: {} })
+    const workspaceList = vi.fn().mockResolvedValue({
+      data: [
+        // The terminating loop's own workspace
+        {
+          id: 'ws_abc',
+          type: 'forge',
+          extra: {
+            loopName: 'feat-x',
+            projectDirectory: '/tmp/project',
+          },
+        },
+        // A sibling completed workspace that should be swept
+        {
+          id: 'ws_sibling_completed',
+          type: 'forge',
+          extra: {
+            loopName: 'sibling-completed-loop',
+            projectDirectory: '/tmp/project',
+          },
+        },
+        // A sibling running workspace that should be kept
+        {
+          id: 'ws_sibling_running',
+          type: 'forge',
+          extra: {
+            loopName: 'sibling-running-loop',
+            projectDirectory: '/tmp/project',
+          },
+        },
+      ],
+    })
+
+    const loopsRepoGet = vi.fn().mockImplementation((projectId: string, loopName: string) => {
+      if (loopName === 'sibling-completed-loop') return { projectId, loopName, status: 'completed' }
+      if (loopName === 'sibling-running-loop') return { projectId, loopName, status: 'running' }
+      return null
+    })
+
+    const pendingTeardowns = {
+      set: vi.fn(),
+      get: vi.fn(),
+      clear: vi.fn(),
+    }
+
+    const ctx = {
+      v2Client: {
+        tui: { publish: tuiPublish },
+        experimental: { workspace: { remove: workspaceRemove, list: workspaceList } },
+      } as never,
+      logger: { log: vi.fn(), error: vi.fn(), debug: () => {} },
+      getConfig: () => ({}) as PluginConfig,
+      pendingTeardowns: pendingTeardowns as never,
+      loopsRepo: { get: loopsRepoGet } as never,
+      projectId: 'proj_1',
+    }
+
+    await performTerminationSideEffects(buildState(), completed, 'sess_worktree', ctx)
+
+    // Verify the terminating loop's own workspace was removed
+    expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_abc' })
+
+    // Verify the sibling completed workspace was swept (excludeLoopName excludes feat-x)
+    expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_sibling_completed' })
+
+    // Verify the sibling running workspace was NOT removed (kept)
+    expect(workspaceRemove).not.toHaveBeenCalledWith({ id: 'ws_sibling_running' })
+
+    // Verify pendingTeardowns.set was called for the sibling with doRemoveWorktree: true
+    expect(pendingTeardowns.set).toHaveBeenCalledWith(
+      'sibling-completed-loop',
+      expect.objectContaining({ doRemoveWorktree: true, doCommit: false }),
+    )
+
+    // Verify the sweep was scoped to exclude the terminating loop
+    // (i.e., workspaceList was called and the terminating workspace was NOT swept)
+    expect(workspaceList).toHaveBeenCalled()
+  })
+
+  test('sweep is skipped when loopsRepo or projectId not in ctx', async () => {
+    const tuiPublish = vi.fn().mockResolvedValue({ data: {} })
+    const workspaceRemove = vi.fn().mockResolvedValue({ data: {} })
+    const workspaceList = vi.fn().mockResolvedValue({ data: [] })
+
+    const ctx = {
+      v2Client: {
+        tui: { publish: tuiPublish },
+        experimental: { workspace: { remove: workspaceRemove, list: workspaceList } },
+      } as never,
+      logger: { log: vi.fn(), error: vi.fn(), debug: () => {} },
+      getConfig: () => ({}) as PluginConfig,
+      // No loopsRepo, projectId, or pendingTeardowns
+    }
+
+    await performTerminationSideEffects(buildState(), completed, 'sess_worktree', ctx)
+
+    // The terminating loop's own workspace was still removed
+    expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_abc' })
+
+    // The sweep was NOT invoked (workspace.list was not called for sweep purposes)
+    expect(workspaceList).not.toHaveBeenCalled()
   })
 })

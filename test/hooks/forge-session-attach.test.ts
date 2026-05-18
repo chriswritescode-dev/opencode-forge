@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, vi } from 'vitest'
 
 const mockAttachLoop = vi.fn().mockResolvedValue({ ok: true, loopName: 'test-loop' })
 
-import { createForgeSessionAttachHook } from '../../src/hooks/forge-session-attach'
+import { createForgeSessionAttachHook, createForgeSessionMessageAttachHook } from '../../src/hooks/forge-session-attach'
 
 describe('createForgeSessionAttachHook', () => {
   beforeEach(() => {
@@ -14,6 +14,7 @@ describe('createForgeSessionAttachHook', () => {
     workspaceList?: () => Promise<{ data?: unknown[] }>
     workspaceRemove?: ReturnType<typeof vi.fn>
     tuiPublish?: ReturnType<typeof vi.fn>
+    sessionGet?: ReturnType<typeof vi.fn>
     plansRepoGetForSession?: (projectId: string, sessionId: string) => { content: string } | null
     loggerErrorSpy?: ReturnType<typeof vi.fn>
     loggerLogSpy?: ReturnType<typeof vi.fn>
@@ -33,6 +34,9 @@ describe('createForgeSessionAttachHook', () => {
         tui: {
           publish: overrides?.tuiPublish ?? vi.fn().mockResolvedValue({ data: {} }),
         },
+        session: {
+          get: overrides?.sessionGet ?? vi.fn().mockResolvedValue({ data: null }),
+        },
       },
       execDeps: {
         plansRepo: {
@@ -42,7 +46,12 @@ describe('createForgeSessionAttachHook', () => {
         loopsRepo: {
           get: overrides?.loopsRepoGet ?? vi.fn().mockReturnValue(null),
         },
-      },
+        pendingTeardowns: {
+          set: vi.fn(),
+          get: vi.fn(),
+          clear: vi.fn(),
+        },
+      } as any,
       projectId: 'proj_1',
       directory: '/tmp/test',
       logger: {
@@ -56,6 +65,7 @@ describe('createForgeSessionAttachHook', () => {
 
   test('session.created event for forge workspace with forgeLoop invokes attachLoopToSession', async () => {
     const getForSessionMock = vi.fn().mockReturnValue({ content: '# Plan\n\nDo stuff.' })
+    const loopsRepoGetMock = vi.fn().mockReturnValue(null)
     const deps = buildHookDeps({
       workspaceList: vi.fn().mockResolvedValue({
         data: [
@@ -67,7 +77,6 @@ describe('createForgeSessionAttachHook', () => {
               loopName: 'my-feature',
               projectDirectory: '/tmp/wt/forge',
               forgeLoop: {
-                loopName: 'my-feature',
                 hostSessionId: 'host_sess',
                 title: 'My Feature',
                 executionModel: 'prov/exec',
@@ -81,6 +90,7 @@ describe('createForgeSessionAttachHook', () => {
         ],
       }),
       plansRepoGetForSession: getForSessionMock,
+      loopsRepoGet: loopsRepoGetMock,
     })
 
     const handler = createForgeSessionAttachHook(deps as any)
@@ -110,6 +120,198 @@ describe('createForgeSessionAttachHook', () => {
     expect(getForSessionMock).toHaveBeenCalledWith('proj_1', 'host_sess')
   })
 
+  test('chat.message fallback attaches TUI-created loop session without re-sending initial prompt', async () => {
+    const loopsRepoGetMock = vi.fn().mockReturnValue(null)
+    const deps = buildHookDeps({
+      sessionGet: vi.fn().mockResolvedValue({
+        data: {
+          id: 'new_sess',
+          workspaceID: 'ws_inline',
+          directory: '/tmp/wt/inline',
+          projectID: 'proj_1',
+        },
+      }),
+      workspaceList: vi.fn().mockResolvedValue({
+        data: [
+          {
+            id: 'ws_inline',
+            type: 'forge',
+            directory: '/tmp/wt/inline',
+            extra: {
+              loopName: 'inline-loop',
+              forgeLoop: {
+                title: 'Inline Loop',
+                planSource: 'inline',
+                planText: '# Inline Plan\n\nInline stuff.',
+                initialPromptOwner: 'tui',
+                pendingAttachStartedAt: Date.now(),
+              },
+            },
+          },
+        ],
+      }),
+      loopsRepoGet: loopsRepoGetMock,
+    })
+
+    const handler = createForgeSessionMessageAttachHook(deps as any)
+
+    await handler({ sessionID: 'new_sess' })
+
+    expect(mockAttachLoop).toHaveBeenCalledTimes(1)
+    const [, ctx, input] = mockAttachLoop.mock.calls[0]
+    expect(ctx.surface).toBe('tui')
+    expect(ctx.directory).toBe('/tmp/wt/inline')
+    expect(input.sessionId).toBe('new_sess')
+    expect(input.loopName).toBe('inline-loop')
+    expect(input.planText).toBe('# Inline Plan\n\nInline stuff.')
+    expect(input.sendInitialPrompt).toBe(false)
+    expect(input.selectSession).toBe(false)
+    expect(input.startWatchdog).toBe(true)
+  })
+
+  test('chat.message fallback removes expired pending attach workspace without binding', async () => {
+    const workspaceRemove = vi.fn().mockResolvedValue({ data: {} })
+    const tuiPublish = vi.fn().mockResolvedValue({ data: {} })
+    const deps = buildHookDeps({
+      workspaceRemove,
+      tuiPublish,
+      sessionGet: vi.fn().mockResolvedValue({
+        data: {
+          id: 'new_sess',
+          workspaceID: 'ws_expired',
+          directory: '/tmp/wt/expired',
+          projectID: 'proj_1',
+        },
+      }),
+      workspaceList: vi.fn().mockResolvedValue({
+        data: [
+          {
+            id: 'ws_expired',
+            type: 'forge',
+            directory: '/tmp/wt/expired',
+            extra: {
+              loopName: 'expired-loop',
+              projectDirectory: '/tmp/wt/expired',
+              forgeLoop: {
+                title: 'Expired Loop',
+                planSource: 'inline',
+                planText: '# Inline Plan',
+                initialPromptOwner: 'tui',
+                pendingAttachStartedAt: Date.now() - (10 * 60 * 1000),
+              },
+            },
+          },
+        ],
+      }),
+    })
+
+    const handler = createForgeSessionMessageAttachHook(deps as any)
+
+    await handler({ sessionID: 'new_sess' })
+
+    expect(mockAttachLoop).not.toHaveBeenCalled()
+    expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_expired' })
+    expect(deps.execDeps.pendingTeardowns.set).toHaveBeenCalledWith(
+      'expired-loop',
+      expect.objectContaining({ doRemoveWorktree: true, doCommit: false }),
+    )
+    expect(tuiPublish).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.objectContaining({
+        properties: expect.objectContaining({
+          message: expect.stringContaining('attach window expired'),
+        }),
+      }),
+    }))
+  })
+
+  test('attach conflict with restartable terminal row removes registration only', async () => {
+    const workspaceRemove = vi.fn().mockResolvedValue({ data: {} })
+    const loopsRepoGet = vi.fn()
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce({ projectId: 'proj_1', loopName: 'race-loop', status: 'cancelled' })
+    mockAttachLoop.mockResolvedValueOnce({ ok: false, code: 'conflict', message: 'Loop race-loop is terminal' })
+    const deps = buildHookDeps({
+      workspaceRemove,
+      loopsRepoGet,
+      workspaceList: vi.fn().mockResolvedValue({
+        data: [
+          {
+            id: 'ws_race',
+            type: 'forge',
+            directory: '/tmp/wt/race',
+            extra: {
+              loopName: 'race-loop',
+              projectDirectory: '/tmp/wt/race',
+              forgeLoop: {
+                title: 'Race Loop',
+                planSource: 'inline',
+                planText: '# Plan',
+              },
+            },
+          },
+        ],
+      }),
+    })
+
+    const handler = createForgeSessionAttachHook(deps as any)
+
+    await handler({
+      event: {
+        type: 'session.created',
+        properties: { info: { id: 'sess_race', workspaceID: 'ws_race' } },
+      },
+    })
+
+    expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_race' })
+    expect(deps.execDeps.pendingTeardowns.set).toHaveBeenCalledWith(
+      'race-loop',
+      expect.objectContaining({ doRemoveWorktree: false, doCommit: false }),
+    )
+  })
+
+  test('chat.message fallback refuses terminal row when TUI did not pre-suffix loop name', async () => {
+    const loopsRepoGet = vi.fn((projectId: string, loopName: string) => {
+      if (projectId !== 'proj_1') return null
+      if (loopName === 'inline-loop') return { projectId, loopName, status: 'completed' }
+      return null
+    })
+    const deps = buildHookDeps({
+      loopsRepoGet,
+      sessionGet: vi.fn().mockResolvedValue({
+        data: {
+          id: 'new_sess',
+          workspaceID: 'ws_inline',
+          directory: '/tmp/wt/inline',
+          projectID: 'proj_1',
+        },
+      }),
+      workspaceList: vi.fn().mockResolvedValue({
+        data: [
+          {
+            id: 'ws_inline',
+            type: 'forge',
+            directory: '/tmp/wt/inline',
+            extra: {
+              loopName: 'inline-loop',
+              forgeLoop: {
+                title: 'Inline Loop',
+                planSource: 'inline',
+                planText: '# Inline Plan\n\nInline stuff.',
+                initialPromptOwner: 'tui',
+              },
+            },
+          },
+        ],
+      }),
+    })
+
+    const handler = createForgeSessionMessageAttachHook(deps as any)
+
+    await handler({ sessionID: 'new_sess' })
+
+    expect(mockAttachLoop).not.toHaveBeenCalled()
+  })
+
   test('inline planSource resolves planText inline', async () => {
     const deps = buildHookDeps({
       workspaceList: vi.fn().mockResolvedValue({
@@ -122,7 +324,6 @@ describe('createForgeSessionAttachHook', () => {
               loopName: 'inline-loop',
               projectDirectory: '/tmp/wt/inline',
               forgeLoop: {
-                loopName: 'inline-loop',
                 title: 'Inline Loop',
                 planSource: 'inline',
                 planText: '# Inline Plan\n\nInline stuff.',
@@ -207,7 +408,7 @@ describe('createForgeSessionAttachHook', () => {
             extra: {
               loopName: 'test-loop',
               projectDirectory: '/tmp/wt/test',
-              forgeLoop: { loopName: 'test-loop' },
+              forgeLoop: {},
             },
           },
         ],
@@ -238,7 +439,7 @@ describe('createForgeSessionAttachHook', () => {
             directory: '/tmp/wt/test',
             extra: {
               loopName: 'test-loop',
-              forgeLoop: { loopName: 'test-loop' },
+              forgeLoop: {},
             },
           },
         ],
@@ -294,6 +495,47 @@ describe('createForgeSessionAttachHook', () => {
     expect(mockAttachLoop).not.toHaveBeenCalled()
   })
 
+  test('missing-row workspace with loopName but no forgeLoop config is removed as stale', async () => {
+    const workspaceRemove = vi.fn().mockResolvedValue({ data: {} })
+    const tuiPublish = vi.fn().mockResolvedValue({ data: {} })
+    const deps = buildHookDeps({
+      workspaceRemove,
+      tuiPublish,
+      workspaceList: vi.fn().mockResolvedValue({
+        data: [
+          {
+            id: 'ws_no_config',
+            type: 'forge',
+            directory: '/tmp/wt/no-config',
+            extra: {
+              loopName: 'no-config-loop',
+              projectDirectory: '/tmp/wt/no-config',
+            },
+          },
+        ],
+      }),
+    })
+
+    const handler = createForgeSessionAttachHook(deps as any)
+
+    await handler({
+      event: {
+        type: 'session.created',
+        properties: {
+          info: { id: 'sess_no_config', workspaceID: 'ws_no_config' },
+        },
+      },
+    })
+
+    expect(mockAttachLoop).not.toHaveBeenCalled()
+    expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_no_config' })
+    expect(deps.execDeps.pendingTeardowns.set).toHaveBeenCalledWith(
+      'no-config-loop',
+      expect.objectContaining({ doRemoveWorktree: true, doCommit: false }),
+    )
+    expect(tuiPublish).toHaveBeenCalled()
+  })
+
   test('stored plan missing logs error, removes orphan workspace, and publishes toast', async () => {
     const loggerErrorSpy = vi.fn()
     const workspaceRemove = vi.fn().mockResolvedValue({ data: {} })
@@ -309,7 +551,6 @@ describe('createForgeSessionAttachHook', () => {
               loopName: 'stored-loop',
               projectDirectory: '/tmp/wt/stored',
               forgeLoop: {
-                loopName: 'stored-loop',
                 planSource: 'stored',
                 hostSessionId: 'host_sess',
               },
@@ -366,7 +607,6 @@ describe('createForgeSessionAttachHook', () => {
               loopName: 'empty-host-loop',
               projectDirectory: '/tmp/wt/empty-host',
               forgeLoop: {
-                loopName: 'empty-host-loop',
                 hostSessionId: '',
                 title: 'Empty Host',
                 planSource: 'stored',
@@ -412,7 +652,6 @@ describe('createForgeSessionAttachHook', () => {
               loopName: 'err-loop',
               projectDirectory: '/tmp/wt/err',
               forgeLoop: {
-                loopName: 'err-loop',
                 title: 'Err Loop',
                 planSource: 'inline',
                 planText: '# Plan',
@@ -462,7 +701,6 @@ describe('createForgeSessionAttachHook', () => {
               loopName: 'fail-loop',
               projectDirectory: '/tmp/wt/fail',
               forgeLoop: {
-                loopName: 'fail-loop',
                 title: 'Fail Loop',
                 planSource: 'inline',
                 planText: '# Plan',
@@ -514,7 +752,6 @@ describe('createForgeSessionAttachHook', () => {
               loopName: 'dup-loop',
               projectDirectory: '/tmp/wt/dup',
               forgeLoop: {
-                loopName: 'dup-loop',
                 title: 'Dup Loop',
                 planSource: 'inline',
                 planText: '# Plan',
@@ -559,7 +796,6 @@ describe('createForgeSessionAttachHook', () => {
               loopName: 'my-feature',
               projectDirectory: '/tmp/wt/forge',
               forgeLoop: {
-                loopName: 'my-feature',
                 hostSessionId: 'host_sess',
                 title: 'My Feature',
                 executionModel: 'prov/exec',
@@ -606,12 +842,15 @@ describe('createForgeSessionAttachHook', () => {
     expect(loggerErrorSpy).not.toHaveBeenCalled()
   })
 
-  test('terminal loop row (cancelled) does NOT block re-attach for new session', async () => {
+  async function expectTerminalLoopRowRefusesReattach(status: 'completed' | 'cancelled' | 'errored' | 'stalled', shouldRemoveWorkspace: boolean) {
     const loopsRepoGetMock = vi.fn().mockReturnValue({
       projectId: 'proj_1',
       loopName: 'restart-loop',
-      status: 'cancelled',
+      status,
     })
+    const workspaceRemove = vi.fn().mockResolvedValue({ data: {} })
+    const tuiPublish = vi.fn().mockResolvedValue({ data: {} })
+    const loggerLogSpy = vi.fn()
 
     const deps = buildHookDeps({
       workspaceList: vi.fn().mockResolvedValue({
@@ -624,7 +863,6 @@ describe('createForgeSessionAttachHook', () => {
               loopName: 'restart-loop',
               projectDirectory: '/tmp/wt/restart',
               forgeLoop: {
-                loopName: 'restart-loop',
                 title: 'Restart',
                 planSource: 'inline',
                 planText: '# Plan',
@@ -634,6 +872,9 @@ describe('createForgeSessionAttachHook', () => {
         ],
       }),
       loopsRepoGet: loopsRepoGetMock,
+      workspaceRemove,
+      tuiPublish,
+      loggerLogSpy,
     })
 
     const handler = createForgeSessionAttachHook(deps as any)
@@ -647,8 +888,47 @@ describe('createForgeSessionAttachHook', () => {
       },
     })
 
-    expect(mockAttachLoop).toHaveBeenCalledTimes(1)
-    expect(mockAttachLoop.mock.calls[0][2].sessionId).toBe('ses_restart')
+    expect(mockAttachLoop).not.toHaveBeenCalled()
+    expect(workspaceRemove).toHaveBeenCalledTimes(shouldRemoveWorkspace ? 1 : 0)
+    if (shouldRemoveWorkspace) {
+      expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_restart' })
+      expect(deps.execDeps.pendingTeardowns.set).toHaveBeenCalledWith(
+        'restart-loop',
+        expect.objectContaining({
+          doRemoveWorktree: status === 'completed',
+          doCommit: false,
+        }),
+      )
+    }
+    expect(tuiPublish).toHaveBeenCalledTimes(1)
+    const expectedMessage = status === 'completed'
+      ? 'Loop already completed. Run a new plan to start fresh.'
+      : 'in terminal status. Use Loop-status restart to resume.'
+    expect(tuiPublish).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.objectContaining({
+        properties: expect.objectContaining({
+          title: expect.stringContaining('restart-loop'),
+          message: expect.stringContaining(expectedMessage),
+          variant: 'error',
+        }),
+      }),
+    }))
+  }
+
+  test('terminal loop row (cancelled) refuses re-attach, removes registration, and preserves worktree', async () => {
+    await expectTerminalLoopRowRefusesReattach('cancelled', true)
+  })
+
+  test('terminal loop row (completed) refuses re-attach and removes orphan workspace', async () => {
+    await expectTerminalLoopRowRefusesReattach('completed', true)
+  })
+
+  test('terminal loop row (errored) refuses re-attach, removes registration, and preserves worktree', async () => {
+    await expectTerminalLoopRowRefusesReattach('errored', true)
+  })
+
+  test('terminal loop row (stalled) refuses re-attach, removes registration, and preserves worktree', async () => {
+    await expectTerminalLoopRowRefusesReattach('stalled', true)
   })
 
   test('hook fires for initial workspace session, no-ops for warp-created coding session in same workspace', async () => {
@@ -666,7 +946,6 @@ describe('createForgeSessionAttachHook', () => {
               loopName: 'my-feature',
               projectDirectory: '/tmp/wt/forge',
               forgeLoop: {
-                loopName: 'my-feature',
                 hostSessionId: 'host_sess',
                 title: 'My Feature',
                 executionModel: 'prov/exec',
@@ -728,7 +1007,6 @@ describe('createForgeSessionAttachHook', () => {
         loopName: 'cross-loop',
         projectDirectory: '/tmp/cross-proj',
         forgeLoop: {
-          loopName: 'cross-loop',
           hostSessionId: 'host_sess',
           title: 'Cross Project Loop',
           planSource: 'inline',
@@ -763,7 +1041,6 @@ describe('createForgeSessionAttachHook', () => {
         loopName: 'nodir-loop',
         projectDirectory: '/tmp/same-proj',
         forgeLoop: {
-          loopName: 'nodir-loop',
           hostSessionId: 'host_sess',
           title: 'No Dir Loop',
           planSource: 'inline',
@@ -802,7 +1079,6 @@ describe('createForgeSessionAttachHook', () => {
             loopName: 'demo',
             projectDirectory: '/tmp/wt/pid',
             forgeLoop: {
-              loopName: 'demo',
               hostSessionId: 'host_sess',
               title: 'Demo Loop',
               planSource: 'stored',
@@ -849,7 +1125,6 @@ describe('createForgeSessionAttachHook', () => {
             loopName: 'fallback-loop',
             projectDirectory: '/tmp/wt/fb',
             forgeLoop: {
-              loopName: 'fallback-loop',
               hostSessionId: 'host_sess',
               title: 'Fallback Loop',
               planSource: 'stored',
@@ -947,7 +1222,6 @@ describe('createForgeSessionAttachHook', () => {
               loopName: 'my-plan',
               projectDirectory: '/tmp/wt/inline-vs-stored',
               forgeLoop: {
-                loopName: 'my-plan',
                 hostSessionId: 'ses_host',
                 title: 'My Plan',
                 planSource: 'inline',

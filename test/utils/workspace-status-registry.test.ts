@@ -290,15 +290,20 @@ describe('workspace-status-registry', () => {
 
   describe('default timeout', () => {
     it('uses default 5000ms timeout when no options provided', async () => {
-      const registry = createWorkspaceStatusRegistry()
+      vi.useFakeTimers()
+      try {
+        const registry = createWorkspaceStatusRegistry()
 
-      const start = Date.now()
-      const result = await registry.awaitConnected('ws-1')
-      const elapsed = Date.now() - start
+        const promise = registry.awaitConnected('ws-1')
+        await vi.advanceTimersByTimeAsync(5000)
+        const result = await promise
 
-      expect(result.connected).toBe(false)
-      expect(result.reason).toBe('timeout')
-      expect(elapsed).toBeGreaterThanOrEqual(4800)
+        expect(result.connected).toBe(false)
+        expect(result.reason).toBe('timeout')
+        expect(result.elapsedMs).toBeGreaterThanOrEqual(4800)
+      } finally {
+        vi.useRealTimers()
+      }
     })
   })
 })
