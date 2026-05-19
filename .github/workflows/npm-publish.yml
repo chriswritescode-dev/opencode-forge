@@ -42,8 +42,12 @@ jobs:
       - name: Read package metadata
         id: package
         run: |
-          echo "name=$(node -p \"JSON.parse(require('fs').readFileSync('package.json', 'utf8')).name\")" >> "$GITHUB_OUTPUT"
-          echo "version=$(node -p \"JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version\")" >> "$GITHUB_OUTPUT"
+          node --input-type=commonjs <<'NODE'
+          const fs = require('fs')
+          const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, 'name=' + packageJson.name + '\n')
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, 'version=' + packageJson.version + '\n')
+          NODE
 
       - name: Verify tag matches package version
         env:
