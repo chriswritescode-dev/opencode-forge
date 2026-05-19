@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'bun:test'
-import { formatTokens, formatSessionOutput, formatAuditResult } from '../src/utils/loop-format'
+import { formatTokens, formatSessionOutput, formatAuditResult, formatUsageSummary } from '../src/utils/loop-format'
 import type { LoopSessionOutput } from '../src/loop/session-output'
+import type { LoopUsageSummary } from '../src/loop/token-usage'
 
 describe('formatTokens', () => {
   test('numbers less than 1000 returned as string', () => {
@@ -216,5 +217,124 @@ describe('formatAuditResult', () => {
 
     expect(lines).toHaveLength(3)
     expect(lines[2]).toBe('  Short audit result')
+  })
+})
+
+describe('formatUsageSummary', () => {
+  test('formats total cost and tokens', () => {
+    const summary: LoopUsageSummary = {
+      totalCost: 0.0123,
+      totalTokens: {
+        input: 1000,
+        output: 500,
+        reasoning: 200,
+        cacheRead: 100,
+        cacheWrite: 50,
+      },
+      perModel: [],
+    }
+
+    const lines = formatUsageSummary(summary)
+    expect(lines[0]).toContain('$0.0123')
+    expect(lines[0]).toContain('1.0k in')
+    expect(lines[0]).toContain('500 out')
+    expect(lines[0]).toContain('200 reasoning')
+    expect(lines[0]).toContain('100 cache read')
+    expect(lines[0]).toContain('50 cache write')
+  })
+
+  test('formats per-model usage', () => {
+    const summary: LoopUsageSummary = {
+      totalCost: 0.03,
+      totalTokens: {
+        input: 300,
+        output: 150,
+        reasoning: 30,
+        cacheRead: 15,
+        cacheWrite: 6,
+      },
+      perModel: [
+        {
+          model: 'model-a',
+          cost: 0.01,
+          tokens: { input: 100, output: 50, reasoning: 10, cacheRead: 5, cacheWrite: 2 },
+        },
+        {
+          model: 'model-b',
+          cost: 0.02,
+          tokens: { input: 200, output: 100, reasoning: 20, cacheRead: 10, cacheWrite: 4 },
+        },
+      ],
+    }
+
+    const lines = formatUsageSummary(summary)
+    expect(lines).toContain('Per-model usage:')
+    expect(lines.join('\n')).toContain('model-a:')
+    expect(lines.join('\n')).toContain('model-b:')
+    expect(lines.join('\n')).toContain('$0.0100')
+    expect(lines.join('\n')).toContain('$0.0200')
+  })
+
+  test('preserves per-model order from summary', () => {
+    // Note: formatUsageSummary preserves the order from the summary.
+    // Sorting is done by summarizeAssistantUsage before creating the summary.
+    const summary: LoopUsageSummary = {
+      totalCost: 0.03,
+      totalTokens: {
+        input: 300,
+        output: 150,
+        reasoning: 30,
+        cacheRead: 15,
+        cacheWrite: 6,
+      },
+      perModel: [
+        { model: 'a-model', cost: 0.02, tokens: { input: 200, output: 100, reasoning: 20, cacheRead: 10, cacheWrite: 4 } },
+        { model: 'm-model', cost: 0.005, tokens: { input: 50, output: 25, reasoning: 5, cacheRead: 2, cacheWrite: 1 } },
+        { model: 'z-model', cost: 0.01, tokens: { input: 100, output: 50, reasoning: 10, cacheRead: 5, cacheWrite: 2 } },
+      ],
+    }
+
+    const lines = formatUsageSummary(summary)
+    const perModelIndex = lines.findIndex((line) => line.includes('Per-model usage:'))
+    const modelLines = lines.slice(perModelIndex + 1)
+    expect(modelLines[0]).toContain('a-model:')
+    expect(modelLines[1]).toContain('m-model:')
+    expect(modelLines[2]).toContain('z-model:')
+  })
+
+  test('omits per-model section when empty', () => {
+    const summary: LoopUsageSummary = {
+      totalCost: 0.01,
+      totalTokens: {
+        input: 100,
+        output: 50,
+        reasoning: 10,
+        cacheRead: 5,
+        cacheWrite: 2,
+      },
+      perModel: [],
+    }
+
+    const lines = formatUsageSummary(summary)
+    const hasPerModel = lines.some((line) => line.includes('Per-model usage:'))
+    expect(hasPerModel).toBe(false)
+  })
+
+  test('formats zero values correctly', () => {
+    const summary: LoopUsageSummary = {
+      totalCost: 0,
+      totalTokens: {
+        input: 0,
+        output: 0,
+        reasoning: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+      },
+      perModel: [],
+    }
+
+    const lines = formatUsageSummary(summary)
+    expect(lines[0]).toContain('$0.0000')
+    expect(lines[0]).toContain('0 in')
   })
 })

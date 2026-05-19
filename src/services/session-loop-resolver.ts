@@ -49,7 +49,7 @@ export function createSessionLoopResolver(deps: SessionLoopResolverDeps): {
         }
       }
 
-      if (deps.getSessionDirectory && deps.loop.listActive) {
+      if (parentId && deps.getSessionDirectory && deps.loop.listActive) {
         const dir = await deps.getSessionDirectory(sessionId)
         if (dir) {
           const normalized = resolve(dir)

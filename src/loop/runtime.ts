@@ -9,6 +9,7 @@ import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo, ReviewFindingRow } from '../storage/repos/review-findings-repo'
 import type { SectionPlansRepo, SectionPlanRow } from '../storage/repos/section-plans-repo'
+import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
 import { createLoopWatchdog, type LoopWatchdogStallInfo, type LoopWatchdogRecoveryContext } from '../hooks/watchdog'
 import { retryWithModelFallback } from '../utils/model-fallback'
 import { resolveLoopModel, resolveLoopAuditorModel } from '../utils/loop-helpers'
@@ -30,6 +31,7 @@ import {
 import type { TerminationReason } from './termination'
 import { terminationStatusFor, terminationReasonToString } from './termination'
 import { nextTransition } from './transitions'
+import { summarizeAssistantUsage, type UsageAttribution } from './token-usage'
 
 export interface LoopEvent {
   type: string
@@ -57,6 +59,7 @@ export interface LoopRuntimeDeps {
   notify?: LoopChangeNotifier
   loopConfig?: LoopConfig
   sectionPlansRepo?: SectionPlansRepo
+  loopSessionUsageRepo?: LoopSessionUsageRepo
 }
 
 export interface StartLoopInput {
@@ -76,7 +79,7 @@ export interface Loop {
   terminate(name: string, reason: TerminationReason): Promise<boolean>
   cancelBySessionId(sessionId: string): Promise<boolean>
   runExclusive<T>(name: string, fn: () => Promise<T>): Promise<T>
-  clearLoopTimers(name: string): void
+  clearLoopTimers(name: string): Promise<void>
   clearAllRetryTimeouts(): void
   recordActivity(name: string, source?: string): void
   startWatchdog(name: string): void
@@ -141,7 +144,7 @@ export function isWorkspaceNotFoundError(err: unknown): boolean {
 }
 
 export function createLoop(deps: LoopRuntimeDeps): Loop {
-  const { loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, v2Client, logger, getConfig, onTerminated, notify, loopConfig, sectionPlansRepo } = deps
+  const { loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, v2Client, logger, getConfig, onTerminated, notify, loopConfig, sectionPlansRepo, loopSessionUsageRepo } = deps
   const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, loopConfig, notify, undefined, sectionPlansRepo)
 
   const retryTimeouts = new Map<string, NodeJS.Timeout>()
@@ -154,7 +157,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const MAX_CODE_LAUNCH_RECOVERIES = MAX_RETRIES
 
   const codingLaunchRecoveryAttempts = new Map<string, number>()
-  const loopRetainedSessions = new Map<string, string[]>()
+  interface RetainedSessionMeta {
+    sessionId: string
+    role: 'code' | 'auditor'
+    fallbackModel: string | undefined
+    directory: string
+  }
+  const loopRetainedSessions = new Map<string, RetainedSessionMeta[]>()
   const SESSION_RETENTION = 0
 
   function withStateLock<T>(loopName: string, fn: () => Promise<T>): Promise<T> {
@@ -298,6 +307,99 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     } catch (err) {
       logger.error(`Loop: could not read session messages`, err)
       return { text: null, error: null, lastMessageRole: 'error' }
+    }
+  }
+
+  /**
+   * Determine the fallback model for a session based on phase and loop state.
+   * For code sessions: state.executionModel > config.executionModel > config.loop.model
+   * For audit/final-audit sessions: state.auditorModel > state.executionModel > config.auditorModel > config.executionModel
+   */
+  function getFallbackModelForSession(state: LoopState, phase: LoopState['phase']): string | undefined {
+    const config = getConfig()
+    if (phase === 'auditing' || phase === 'final_auditing') {
+      return (
+        state.auditorModel ??
+        state.executionModel ??
+        config.auditorModel ??
+        config.executionModel
+      )
+    }
+    // Code session
+    return (
+      state.executionModel ??
+      config.executionModel ??
+      config.loop?.model
+    )
+  }
+
+  /**
+   * Capture and persist token usage for a loop session.
+   * Non-fatal: logs errors but does not block deletion or termination.
+   */
+  async function captureLoopSessionUsage(input: {
+    loopName: string
+    sessionId: string
+    directory: string
+    role: 'code' | 'auditor' | 'unknown'
+    fallbackModel?: string
+  }): Promise<void> {
+    if (!loopSessionUsageRepo) {
+      return
+    }
+
+    try {
+      const messagesResult = await v2Client.session.messages({
+        sessionID: input.sessionId,
+        directory: input.directory,
+      })
+
+      const messages = (messagesResult.data ?? []) as Array<{
+        info: {
+          role: string
+          cost?: number
+          tokens?: { input: number; output: number; reasoning: number; cache: { read: number; write: number } }
+          model?: string
+          modelID?: string
+          modelId?: string
+          provider?: string
+          providerID?: string
+          model_name?: string
+        }
+      }>
+
+      const attribution: UsageAttribution = {
+        role: input.role,
+        fallbackModel: input.fallbackModel,
+      }
+
+      const usageSummary = summarizeAssistantUsage(messages, attribution)
+
+      if (usageSummary.perModel.length === 0) {
+        logger.debug(`Loop: no assistant usage to capture for session ${input.sessionId}`)
+        return
+      }
+
+      const rows = usageSummary.perModel.map((modelUsage) => ({
+        projectId,
+        loopName: input.loopName,
+        sessionId: input.sessionId,
+        role: input.role,
+        model: modelUsage.model,
+        cost: modelUsage.cost,
+        inputTokens: modelUsage.tokens.input,
+        outputTokens: modelUsage.tokens.output,
+        reasoningTokens: modelUsage.tokens.reasoning,
+        cacheReadTokens: modelUsage.tokens.cacheRead,
+        cacheWriteTokens: modelUsage.tokens.cacheWrite,
+        messageCount: modelUsage.messageCount,
+        capturedAt: Date.now(),
+      }))
+
+      loopSessionUsageRepo.upsertSessionUsage(rows)
+      logger.debug(`Loop: captured usage for session ${input.sessionId} (${input.role})`)
+    } catch (err) {
+      logger.error(`Loop: failed to capture usage for session ${input.sessionId}`, err)
     }
   }
 
@@ -469,7 +571,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     watchdog.stop(loopName)
     watchdog.start(loopName)
 
-    scheduleSessionDelete({ loopName, sessionId: oldSessionId, directory: sessionDir, context: 'after session rotation' })
+    void scheduleSessionDelete({ loopName, sessionId: oldSessionId, directory: sessionDir, context: 'after session rotation', phase: state.phase, state })
 
     logger.log(`Loop: rotated session ${oldSessionId} → ${newSessionId}`)
 
@@ -734,24 +836,43 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
-  function scheduleSessionDelete(input: {
+  async function scheduleSessionDelete(input: {
     loopName: string
     sessionId: string
     directory: string
     context: string
-  }): void {
-    const { loopName, sessionId, directory, context } = input
+    phase?: LoopState['phase']
+    state?: LoopState
+  }): Promise<void> {
+    const { loopName, sessionId, directory, context, phase, state } = input
     const queue = loopRetainedSessions.get(loopName) ?? []
-    if (queue.includes(sessionId)) return
-    queue.push(sessionId)
+    
+    // Check if already queued by sessionId
+    if (queue.some(entry => entry.sessionId === sessionId)) return
+    
+    // Determine role and fallback model at queue time
+    const role: 'code' | 'auditor' = phase && (phase === 'auditing' || phase === 'final_auditing') ? 'auditor' : 'code'
+    const fallbackModel = phase && state ? getFallbackModelForSession(state, phase) : undefined
+    
+    queue.push({ sessionId, role, fallbackModel, directory })
     loopRetainedSessions.set(loopName, queue)
     logger.debug(`Loop: queued session ${sessionId} for retention (loop=${loopName}, context=${context}, queue=${queue.length})`)
 
     while (queue.length > SESSION_RETENTION) {
       const oldest = queue.shift()!
-      logger.log(`Loop: trimming session ${oldest} (loop=${loopName}, retention=${SESSION_RETENTION})`)
-      void v2Client.session.delete({ sessionID: oldest, directory }).catch((err: unknown) => {
-        logger.error(`Loop: failed to delete trimmed session ${oldest} (loop=${loopName})`, err)
+      logger.log(`Loop: trimming session ${oldest.sessionId} (loop=${loopName}, retention=${SESSION_RETENTION})`)
+      
+      // Capture usage before deletion using stored metadata
+      await captureLoopSessionUsage({
+        loopName,
+        sessionId: oldest.sessionId,
+        directory: oldest.directory,
+        role: oldest.role,
+        fallbackModel: oldest.fallbackModel,
+      })
+      
+      void v2Client.session.delete({ sessionID: oldest.sessionId, directory: oldest.directory }).catch((err: unknown) => {
+        logger.error(`Loop: failed to delete trimmed session ${oldest.sessionId} (loop=${loopName})`, err)
       })
     }
   }
@@ -778,14 +899,35 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const retained = loopRetainedSessions.get(loopName)
     if (retained) {
-      for (const sid of retained) {
-        if (sid === sessionId) continue
-        void v2Client.session.delete({ sessionID: sid, directory: state.worktreeDir }).catch((err) => {
-          logger.error(`Loop: failed to delete retained session ${sid} on terminate (loop=${loopName})`, err)
+      // Capture usage for retained sessions before deletion using stored metadata
+      for (const entry of retained) {
+        if (entry.sessionId === sessionId) continue
+        await captureLoopSessionUsage({
+          loopName,
+          sessionId: entry.sessionId,
+          directory: entry.directory,
+          role: entry.role,
+          fallbackModel: entry.fallbackModel,
+        }).catch((err: unknown) => {
+          logger.error(`Loop: failed to capture usage for retained session ${entry.sessionId} on terminate (loop=${loopName})`, err)
+        })
+        void v2Client.session.delete({ sessionID: entry.sessionId, directory: entry.directory }).catch((err: unknown) => {
+          logger.error(`Loop: failed to delete retained session ${entry.sessionId} on terminate (loop=${loopName})`, err)
         })
       }
       loopRetainedSessions.delete(loopName)
     }
+
+    // Capture usage for the final active session before termination
+    const fallbackModel = getFallbackModelForSession(state, state.phase)
+    const role: 'code' | 'auditor' = state.phase === 'auditing' || state.phase === 'final_auditing' ? 'auditor' : 'code'
+    await captureLoopSessionUsage({
+      loopName,
+      sessionId: state.sessionId,
+      directory: state.worktreeDir,
+      role,
+      fallbackModel,
+    })
 
     const now = Date.now()
     loopService.terminate(loopName, {
@@ -998,7 +1140,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       phase: 'final_auditing',
     })
 
-    scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after final audit creation' })
+    // The retired session is a code session (pre-final-audit)
+    void scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after final audit creation', phase: 'coding', state: currentState })
 
     const { error: finalAuditPromptErr } = await sendPromptWithFallback({
       loopName,
@@ -1163,7 +1306,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       phase: 'auditing',
     })
 
-    scheduleSessionDelete({ loopName, sessionId: codeSessionId, directory: currentState.worktreeDir, context: 'after audit creation' })
+    // The retired session is a code session
+    void scheduleSessionDelete({ loopName, sessionId: codeSessionId, directory: currentState.worktreeDir, context: 'after audit creation', phase: 'coding', state: currentState })
 
     const { error: auditPromptErr, usedModel: actualAuditorModel } = await sendPromptWithFallback({
       loopName,
@@ -1770,7 +1914,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return true
   }
 
-  function clearLoopTimers(loopName: string): void {
+  async function clearLoopTimers(loopName: string): Promise<void> {
     watchdog.stop(loopName)
 
     const retryTimeout = retryTimeouts.get(loopName)
@@ -1789,8 +1933,18 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const retained = loopRetainedSessions.get(loopName)
     if (retained) {
-      for (const sid of retained) {
-        void v2Client.session.delete({ sessionID: sid, directory: loopService.getActiveState(loopName)?.worktreeDir ?? '' }).catch(() => {})
+      // Capture usage for retained sessions before deletion using stored metadata
+      for (const entry of retained) {
+        await captureLoopSessionUsage({
+          loopName,
+          sessionId: entry.sessionId,
+          directory: entry.directory,
+          role: entry.role,
+          fallbackModel: entry.fallbackModel,
+        }).catch((err: unknown) => {
+          logger.error(`Loop: failed to capture usage for retained session ${entry.sessionId} on clear (loop=${loopName})`, err)
+        })
+        void v2Client.session.delete({ sessionID: entry.sessionId, directory: entry.directory }).catch(() => {})
       }
       loopRetainedSessions.delete(loopName)
     }

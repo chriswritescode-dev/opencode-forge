@@ -11,6 +11,7 @@ import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../storage/repos/review-findings-repo'
 import type { SectionPlansRepo } from '../storage/repos/section-plans-repo'
+import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
 import type { PendingTeardownRegistry } from '../workspace/pending-teardown'
 
 export interface LoopEventHandler {
@@ -22,7 +23,7 @@ export interface LoopEventHandler {
   cancelBySessionId(sessionId: string): Promise<boolean>
   terminateLoopByName(loopName: string, reason: TerminationReason): Promise<boolean>
   runExclusive<T>(loopName: string, fn: () => Promise<T>): Promise<T>
-  clearLoopTimers(loopName: string): void
+  clearLoopTimers(loopName: string): Promise<void>
   recordActivity(loopName: string, source?: string): void
   loop: import('../loop/runtime').Loop
 }
@@ -48,6 +49,7 @@ export function createLoopEventHandler(
   sectionPlansRepo?: SectionPlansRepo,
   notify?: LoopChangeNotifier,
   pendingTeardowns?: PendingTeardownRegistry,
+  loopSessionUsageRepo?: LoopSessionUsageRepo,
 ): LoopEventHandler {
   const loop = createLoop({
     loopsRepo,
@@ -63,6 +65,7 @@ export function createLoopEventHandler(
     loopConfig,
     sectionPlansRepo,
     notify,
+    loopSessionUsageRepo,
     onTerminated: async (state, reason) => {
       await performTerminationSideEffects(state, reason, state.sessionId, {
         v2Client,
@@ -74,6 +77,7 @@ export function createLoopEventHandler(
         pendingTeardowns,
         loopsRepo,
         projectId,
+        loopSessionUsageRepo,
       })
     },
   })

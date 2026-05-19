@@ -35,6 +35,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
       loop: ctx.loop,
       sandboxManager: ctx.sandboxManager,
       sectionPlansRepo: ctx.sectionPlansRepo,
+      loopSessionUsageRepo: ctx.loopSessionUsageRepo,
       workspaceStatusRegistry: ctx.workspaceStatusRegistry,
       pendingTeardowns: ctx.pendingTeardowns,
     })
@@ -199,7 +200,34 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           const recent = ctx.loop.listRecent()
 
           if (active.length === 0) {
-            if (recent.length === 0) return 'No loops found.'
+            if (recent.length === 0) {
+              // Even with no active loops, show cumulative usage if available
+              const loopsRepo = ctx.loopsRepo
+              const allLoopNames = new Set<string>()
+              for (const loop of loopsRepo.listAll(ctx.projectId)) {
+                allLoopNames.add(loop.loopName)
+              }
+              
+              const usageLines: string[] = []
+              if (ctx.loopSessionUsageRepo) {
+                for (const loopName of allLoopNames) {
+                  const aggregate = ctx.loopSessionUsageRepo.getAggregate(ctx.projectId, loopName)
+                  if (aggregate) {
+                    const { aggregateToUsageSummary, formatUsageSummary } = await import('../utils/loop-format')
+                    const summary = aggregateToUsageSummary(aggregate)
+                    usageLines.push(`Loop: ${loopName}`)
+                    usageLines.push(...formatUsageSummary(summary).map(l => `  ${l}`))
+                    usageLines.push('')
+                  }
+                }
+              }
+              
+              if (usageLines.length > 0) {
+                return ['Cumulative Loop Usage', '', ...usageLines].join('\n')
+              }
+              
+              return 'No loops found.'
+            }
 
             const lines: string[] = ['Recently Completed Loops', '']
             recent.forEach((s, i) => {
@@ -304,11 +332,37 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             statusLines.push(...formatAuditResult(state.lastAuditResult))
           }
 
-          const sessionOutput = state.worktreeDir ? await fetchSessionOutput(v2, state.sessionId, state.worktreeDir, logger) : null
+          const sessionOutput = state.worktreeDir ? await fetchSessionOutput(
+            v2,
+            state.sessionId,
+            state.worktreeDir,
+            logger,
+            {
+              fallbackModel: state.phase === 'auditing' || state.phase === 'final_auditing'
+                ? (state.auditorModel ?? state.executionModel ?? config.executionModel)
+                : (state.executionModel ?? config.executionModel),
+              role: state.phase === 'auditing' || state.phase === 'final_auditing' ? 'auditor' : 'code',
+            },
+          ) : null
           if (sessionOutput) {
             statusLines.push('')
             statusLines.push('Session Output:')
             statusLines.push(...formatSessionOutput(sessionOutput))
+          }
+
+          // Add cumulative usage (merged persisted + live, with double-count prevention)
+          const { buildCumulativeUsage, formatUsageSummary } = await import('../utils/loop-format')
+          const cumulativeSummary = buildCumulativeUsage(
+            ctx.loopSessionUsageRepo,
+            ctx.projectId,
+            state.loopName,
+            state.sessionId,
+            sessionOutput,
+          )
+          if (cumulativeSummary) {
+            statusLines.push('')
+            statusLines.push('Cumulative Usage:')
+            statusLines.push(...formatUsageSummary(cumulativeSummary).map(l => `  ${l}`))
           }
 
           return statusLines.join('\n')
@@ -370,7 +424,18 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         let sessionOutput: LoopSessionOutput | null = null
         if (state.worktreeDir) {
           try {
-            sessionOutput = await fetchSessionOutput(v2, state.sessionId, state.worktreeDir, logger)
+            sessionOutput = await fetchSessionOutput(
+              v2,
+              state.sessionId,
+              state.worktreeDir,
+              logger,
+              {
+                fallbackModel: state.phase === 'auditing' || state.phase === 'final_auditing'
+                  ? (state.auditorModel ?? state.executionModel ?? config.auditorModel ?? config.executionModel)
+                  : (state.executionModel ?? config.executionModel ?? config.loop?.model),
+                role: state.phase === 'auditing' || state.phase === 'final_auditing' ? 'auditor' : 'code',
+              },
+            )
           } catch {
             // Silently ignore fetch errors to avoid cluttering output
           }
@@ -383,6 +448,21 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
         if (state.lastAuditResult) {
           statusLines.push(...formatAuditResult(state.lastAuditResult))
+        }
+
+        // Add cumulative usage (merged persisted + live, with double-count prevention)
+        const { buildCumulativeUsage, formatUsageSummary } = await import('../utils/loop-format')
+        const cumulativeSummary = buildCumulativeUsage(
+          ctx.loopSessionUsageRepo,
+          ctx.projectId,
+          state.loopName,
+          state.sessionId,
+          sessionOutput,
+        )
+        if (cumulativeSummary) {
+          statusLines.push('')
+          statusLines.push('Cumulative Usage:')
+          statusLines.push(...formatUsageSummary(cumulativeSummary).map(l => `  ${l}`))
         }
 
         statusLines.push(

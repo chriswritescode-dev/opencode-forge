@@ -2,398 +2,117 @@ import { describe, test, expect } from 'vitest'
 import { decomposeDeterministically } from '../src/services/deterministic-decomposer'
 
 describe('decomposeDeterministically', () => {
-  test('returns empty array when no Phase headings found', () => {
-    const result = decomposeDeterministically('Just some plain text')
-    expect(result).toEqual([])
+  test('returns empty array when no section markers found', () => {
+    expect(decomposeDeterministically('## Phase 1: Setup\n- step')).toEqual([])
+    expect(decomposeDeterministically('Just prose')).toEqual([])
+    expect(decomposeDeterministically('')).toEqual([])
   })
 
-  test('returns empty array for empty string', () => {
-    const result = decomposeDeterministically('')
-    expect(result).toEqual([])
+  test('splits on <!-- forge-section --> markers', () => {
+    const plan = ['<!-- forge-section -->', '## Setup', 'a', '<!-- forge-section -->', '## Build', 'b'].join('\n')
+    const r = decomposeDeterministically(plan)
+    expect(r).toHaveLength(2)
+    expect(r[0].title).toBe('Setup'); expect(r[0].index).toBe(0)
+    expect(r[1].title).toBe('Build'); expect(r[1].index).toBe(1)
+    expect(r[0].content).toContain('a'); expect(r[1].content).toContain('b')
+    expect(r[0].content).not.toContain('forge-section')
   })
 
-  test('returns empty array when only non-phase headings exist', () => {
-    const result = decomposeDeterministically('## Random Heading\nSome content\n## Another Heading')
-    expect(result).toEqual([])
+  test('extracts title from first `## <heading>` inside section', () => {
+    const plan = ['<!-- forge-section -->', '## Add auth validation', '### Files', '- src/a.ts'].join('\n')
+    const r = decomposeDeterministically(plan)
+    expect(r[0].title).toBe('Add auth validation')
   })
 
-  test('extracts single section correctly', () => {
-    const plan = '## Phase 1: Setup\n- Create files\n- Run init'
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(1)
-    expect(result[0]).toEqual({
-      index: 0,
-      title: 'Setup',
-      content: '## Phase 1: Setup\n- Create files\n- Run init',
-    })
+  test('falls back to "Section N" title when no `## <heading>` inside section', () => {
+    const plan = ['<!-- forge-section -->', '### Files', '- src/a.ts'].join('\n')
+    const r = decomposeDeterministically(plan)
+    expect(r[0].title).toBe('Section 1')
   })
 
-  test('extracts multiple sections in order', () => {
-    const plan = [
-      '## Phase 1: Setup',
-      '- Create project',
-      '## Phase 2: Build',
-      '- Compile code',
-      '## Phase 3: Test',
-      '- Run tests',
-    ].join('\n')
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(3)
-    expect(result[0].title).toBe('Setup')
-    expect(result[0].index).toBe(0)
-    expect(result[1].title).toBe('Build')
-    expect(result[1].index).toBe(1)
-    expect(result[2].title).toBe('Test')
-    expect(result[2].index).toBe(2)
+  test('ignores structural `## <heading>` candidates as section titles', () => {
+    const plan = ['<!-- forge-section -->', '## Verification', '- cmd', '## Real Title', 'body'].join('\n')
+    const r = decomposeDeterministically(plan)
+    // stops at ## Verification, so this section is empty — verify empty sections are skipped
+    expect(r).toEqual([])
   })
 
-  test('extracts markerless phases with required per-phase blocks', () => {
-    const plan = [
-      '<!-- forge-plan:start -->',
-      '## Objective',
-      'Make the planner simpler',
-      '## Phase 1: Prompt update',
-      '### Files',
-      '- src/agents/architect.ts',
-      '### Edits',
-      '- Use heading-based phases',
-      '### Acceptance Criteria',
-      '- Prompt contains no section marker requirement',
-      '### Verification',
-      '- bun test test/agents.test.ts',
-      '## Phase 2: Runtime split',
-      '### Files',
-      '- src/services/deterministic-decomposer.ts',
-      '### Edits',
-      '- Split on phase headings',
-      '### Acceptance Criteria',
-      '- Two sections are extracted',
-      '### Verification',
-      '- bun test test/deterministic-decomposer.test.ts',
-      '## Decisions',
-      '- Keep outer plan markers only',
-      '<!-- forge-plan:end -->',
-    ].join('\n')
-
-    const result = decomposeDeterministically(plan)
-
-    expect(result).toHaveLength(2)
-    expect(result[0].title).toBe('Prompt update')
-    expect(result[0].content).toContain('### Files')
-    expect(result[0].content).toContain('### Verification')
-    expect(result[0].content).not.toContain('## Decisions')
-    expect(result[1].title).toBe('Runtime split')
+  test('respects maxSections cap (default 12)', () => {
+    const plan = Array.from({ length: 15 }, () => '<!-- forge-section -->\nbody').join('\n')
+    expect(decomposeDeterministically(plan)).toHaveLength(12)
+    expect(decomposeDeterministically(plan, { maxSections: 3 })).toHaveLength(3)
   })
 
-  test('ignores legacy section markers when splitting by headings', () => {
-    const plan = [
-      '<!-- forge-section:start -->',
-      '## Phase 1: First',
-      'content 1',
-      '<!-- forge-section:end -->',
-      '<!-- forge-section:start -->',
-      '## Phase 2: Second',
-      'content 2',
-      '<!-- forge-section:end -->',
-    ].join('\n')
-
-    const result = decomposeDeterministically(plan)
-
-    expect(result).toHaveLength(2)
-    expect(result[0].content).not.toContain('forge-section')
-    expect(result[1].content).not.toContain('forge-section')
+  test('strips outer <!-- forge-plan:start/end --> markers', () => {
+    const plan = '<!-- forge-plan:start -->\n<!-- forge-section -->\n## Setup\na\n<!-- forge-plan:end -->'
+    const r = decomposeDeterministically(plan)
+    expect(r).toHaveLength(1)
+    expect(r[0].title).toBe('Setup')
+    expect(r[0].content).not.toContain('forge-plan')
   })
 
-  test('respects maxSections limit', () => {
-    const plan = [
-      '## Phase 1: First',
-      'content 1',
-      '## Phase 2: Second',
-      'content 2',
-      '## Phase 3: Third',
-      'content 3',
-      '## Phase 4: Fourth',
-      'content 4',
-      '## Phase 5: Fifth',
-      'content 5',
-    ].join('\n')
-    const result = decomposeDeterministically(plan, { maxSections: 2 })
-    expect(result).toHaveLength(2)
-    expect(result[0].title).toBe('First')
-    expect(result[1].title).toBe('Second')
+  test('stops section at ## Verification', () => {
+    const plan = ['<!-- forge-section -->', '## Setup', '- a', '## Verification', '- check'].join('\n')
+    const r = decomposeDeterministically(plan)
+    expect(r).toHaveLength(1)
+    expect(r[0].content).toContain('- a')
+    expect(r[0].content).not.toContain('Verification')
+    expect(r[0].content).not.toContain('- check')
   })
 
-  test('defaults maxSections to 12', () => {
-    const sections = Array.from({ length: 15 }, (_, i) => `## Phase ${i + 1}: Section ${i + 1}\ncontent ${i + 1}`)
-    const plan = sections.join('\n')
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(12)
+  test('stops section at ## Decisions', () => {
+    const plan = ['<!-- forge-section -->', '## Setup', '- a', '## Decisions', '- decide'].join('\n')
+    const r = decomposeDeterministically(plan)
+    expect(r).toHaveLength(1)
+    expect(r[0].content).toContain('- a')
+    expect(r[0].content).not.toContain('Decisions')
   })
 
-  test('strips forge-plan start marker', () => {
-    const plan = '<!-- forge-plan:start -->\n## Phase 1: Setup\n- Create files'
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(1)
-    expect(result[0].title).toBe('Setup')
+  test('stops section at ## Conventions', () => {
+    const plan = ['<!-- forge-section -->', '## Setup', '- a', '## Conventions', '- conv'].join('\n')
+    const r = decomposeDeterministically(plan)
+    expect(r).toHaveLength(1)
+    expect(r[0].content).toContain('- a')
+    expect(r[0].content).not.toContain('Conventions')
   })
 
-  test('strips forge-plan end marker', () => {
-    const plan = '## Phase 1: Setup\n- Create files\n<!-- forge-plan:end -->'
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(1)
-    expect(result[0].title).toBe('Setup')
+  test('stops section at ## Key Context', () => {
+    const plan = ['<!-- forge-section -->', '## Setup', '- a', '## Key Context', '- ctx'].join('\n')
+    const r = decomposeDeterministically(plan)
+    expect(r).toHaveLength(1)
+    expect(r[0].content).toContain('- a')
+    expect(r[0].content).not.toContain('Key Context')
   })
 
-  test('strips both forge-plan markers', () => {
-    const plan = '<!-- forge-plan:start -->\n## Phase 1: Setup\n- Create files\n<!-- forge-plan:end -->'
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(1)
-    expect(result[0].title).toBe('Setup')
+  test('skips empty section bodies between adjacent markers', () => {
+    const plan = ['<!-- forge-section -->', '<!-- forge-section -->', '## Real', 'body'].join('\n')
+    const r = decomposeDeterministically(plan)
+    expect(r).toHaveLength(1)
+    expect(r[0].title).toBe('Real')
+    expect(r[0].index).toBe(0) // index based on emitted sections, not marker count
   })
 
-  test('strips forge-plan markers with extra whitespace', () => {
-    const plan = '<!-- forge-plan:start -->\n<!-- forge-plan:end -->\n## Phase 1: Setup\ncontent'
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(1)
-    expect(result[0].title).toBe('Setup')
+  test('legacy <!-- forge-section:start --> and <!-- forge-section:end --> are stripped but do NOT trigger sectioning', () => {
+    const plan = ['<!-- forge-section:start -->', '## Phase 1: Setup', 'a', '<!-- forge-section:end -->'].join('\n')
+    expect(decomposeDeterministically(plan)).toEqual([])
   })
 
-  test('stops at Verification heading', () => {
-    const plan = [
-      '## Phase 1: Setup',
-      '- Create files',
-      '## Verification',
-      '- Check files exist',
-    ].join('\n')
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(1)
-    expect(result[0].title).toBe('Setup')
-    expect(result[0].content).toContain('Create files')
-    expect(result[0].content).not.toContain('Check files exist')
+  test('title truncated to 60 chars', () => {
+    const plan = '<!-- forge-section -->\n## ' + 'A'.repeat(100) + '\nbody'
+    const r = decomposeDeterministically(plan)
+    expect(r[0].title).toHaveLength(60)
+    expect(r[0].title).toBe('A'.repeat(60))
   })
 
-  test('stops at Decisions heading', () => {
-    const plan = [
-      '## Phase 1: Setup',
-      '- Create files',
-      '## Decisions',
-      '- Use TypeScript',
-    ].join('\n')
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(1)
-    expect(result[0].title).toBe('Setup')
-    expect(result[0].content).not.toContain('Use TypeScript')
+  test('marker tolerates surrounding whitespace', () => {
+    const plan = '<!--  forge-section  -->\n## Setup\nbody'
+    expect(decomposeDeterministically(plan)).toHaveLength(1)
   })
 
-  test('stops at Conventions heading', () => {
-    const plan = [
-      '## Phase 1: Setup',
-      '- Create files',
-      '## Conventions',
-      '- Use 2 spaces',
-    ].join('\n')
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(1)
-    expect(result[0].title).toBe('Setup')
-    expect(result[0].content).not.toContain('Use 2 spaces')
-  })
-
-  test('stops at Key Context heading', () => {
-    const plan = [
-      '## Phase 1: Setup',
-      '- Create files',
-      '## Key Context',
-      '- Important info',
-    ].join('\n')
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(1)
-    expect(result[0].title).toBe('Setup')
-    expect(result[0].content).not.toContain('Important info')
-  })
-
-  test('stops at first stop heading encountered', () => {
-    const plan = [
-      '## Phase 1: Setup',
-      '- Create files',
-      '## Verification',
-      '- Check files exist',
-      '## Decisions',
-      '- Use TypeScript',
-    ].join('\n')
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(1)
-    expect(result[0].content).not.toContain('Verification')
-    expect(result[0].content).not.toContain('Decisions')
-  })
-
-  test('handles nested content within phases', () => {
-    const plan = [
-      '## Phase 1: Setup',
-      '- Step 1: Create dirs',
-      '- Step 2: Init config',
-      '  - Sub-step A',
-      '  - Sub-step B',
-      '- Step 3: Verify',
-    ].join('\n')
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(1)
-    expect(result[0].content).toContain('Step 1')
-    expect(result[0].content).toContain('Sub-step A')
-    expect(result[0].content).toContain('Step 3')
-  })
-
-  test('handles phases with blank lines between them', () => {
-    const plan = [
-      '## Phase 1: Setup',
-      '- Create files',
-      '',
-      '',
-      '## Phase 2: Build',
-      '- Compile code',
-    ].join('\n')
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(2)
-    expect(result[0].title).toBe('Setup')
-    expect(result[1].title).toBe('Build')
-  })
-
-  test('truncates titles to 60 characters', () => {
-    const longTitle = 'A'.repeat(100)
-    const plan = `## Phase 1: ${longTitle}\ncontent`
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(1)
-    expect(result[0].title).toHaveLength(60)
-    expect(result[0].title).toBe('A'.repeat(60))
-  })
-
-  test('trims whitespace from titles', () => {
-    const plan = '## Phase 1:   Some Title  \ncontent'
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(1)
-    expect(result[0].title).toBe('Some Title')
-  })
-
-  test('phase numbers are parsed correctly', () => {
-    const plan = [
-      '## Phase 3: Third',
-      'content 3',
-      '## Phase 1: First',
-      'content 1',
-      '## Phase 2: Second',
-      'content 2',
-    ].join('\n')
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(3)
-    expect(result[0].title).toBe('Third')
-    expect(result[1].title).toBe('First')
-    expect(result[2].title).toBe('Second')
-  })
-
-  test('handles phase headings without colon space variations', () => {
-    const plan = '## Phase 1:Title Without Space\ncontent'
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(1)
-    expect(result[0].title).toBe('Title Without Space')
-  })
-
-  test('handles multiple stop headings within same phase', () => {
-    const plan = [
-      '## Phase 1: Setup',
-      '- Create files',
-      '## Verification',
-      '- Check',
-      '## Phase 2: Build',
-      '- Compile',
-      '## Decisions',
-      '- Decision 1',
-    ].join('\n')
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(2)
-    expect(result[0].title).toBe('Setup')
-    expect(result[1].title).toBe('Build')
-  })
-
-  test('each section has correct index', () => {
-    const plan = [
-      '## Phase 1: First',
-      'a',
-      '## Phase 2: Second',
-      'b',
-      '## Phase 3: Third',
-      'c',
-    ].join('\n')
-    const result = decomposeDeterministically(plan)
-    expect(result[0].index).toBe(0)
-    expect(result[1].index).toBe(1)
-    expect(result[2].index).toBe(2)
-  })
-
-  test('content includes phase heading line', () => {
-    const plan = '## Phase 1: Setup\n- Step 1'
-    const result = decomposeDeterministically(plan)
-    expect(result[0].content).toContain('## Phase 1: Setup')
-  })
-
-  test('handles phase numbers > 9', () => {
-    const plan = [
-      '## Phase 10: Tenth',
-      'content',
-      '## Phase 11: Eleventh',
-      'content',
-    ].join('\n')
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(2)
-    expect(result[0].title).toBe('Tenth')
-    expect(result[1].title).toBe('Eleventh')
-  })
-
-  test('handles non-phase lines between phases', () => {
-    const plan = [
-      '## Phase 1: Setup',
-      '- Step 1',
-      '',
-      '## Phase 2: Build',
-      '- Step 2',
-    ].join('\n')
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(2)
-    expect(result[0].content).toContain('- Step 1')
-    expect(result[1].content).toContain('- Step 2')
-  })
-
-  test('handles single section with no other content', () => {
-    const plan = '## Phase 1: Only'
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(1)
-    expect(result[0].title).toBe('Only')
-    expect(result[0].content).toBe('## Phase 1: Only')
-  })
-
-  test('extracts sections from ## Section N: headings', () => {
-    const plan = [
-      '## Section 0: Foo',
-      'body foo',
-      '## Section 1: Bar',
-      'body bar',
-    ].join('\n')
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(2)
-    expect(result[0].title).toBe('Foo')
-    expect(result[1].title).toBe('Bar')
-    expect(result[0].index).toBe(0)
-    expect(result[1].index).toBe(1)
-  })
-
-  test('handles mixed Phase and Section headings', () => {
-    const plan = [
-      '## Phase 1: Setup',
-      'phase content',
-      '## Section 2: Build',
-      'section content',
-    ].join('\n')
-    const result = decomposeDeterministically(plan)
-    expect(result).toHaveLength(2)
-    expect(result[0].title).toBe('Setup')
-    expect(result[1].title).toBe('Build')
+  test('marker inside fenced code block is ignored', () => {
+    const plan = ['```', '<!-- forge-section -->', '```', '<!-- forge-section -->', '## Real', 'body'].join('\n')
+    const r = decomposeDeterministically(plan)
+    expect(r).toHaveLength(1)
+    expect(r[0].title).toBe('Real')
   })
 })

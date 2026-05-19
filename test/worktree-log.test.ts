@@ -12,6 +12,8 @@ import {
 } from '../src/services/worktree-log'
 import { buildLoopPermissionRuleset } from '../src/constants/loop'
 import type { LoopSessionOutput } from '../src/loop/session-output'
+import type { LoopUsageSummary } from '../src/loop/token-usage'
+import { formatUsageSummary } from '../src/utils/loop-format'
 
 const TEST_DIR = '/tmp/opencode-worktree-log-test-' + Date.now()
 
@@ -740,5 +742,255 @@ describe('writeWorktreeCompletionLog', () => {
     expect(content).toContain('## first-loop')
     expect(content).toContain('## second-loop')
     expect(content.indexOf('first-loop')).toBeLessThan(content.indexOf('second-loop'))
+  })
+})
+
+describe('usage in worktree completion logs', () => {
+  let testLogDir: string
+  let testProjectDir: string
+
+  beforeEach(() => {
+    testLogDir = TEST_DIR + '-logs-' + Math.random().toString(36).slice(2)
+    testProjectDir = TEST_DIR + '-project-' + Math.random().toString(36).slice(2)
+    mkdirSync(testLogDir, { recursive: true })
+    mkdirSync(testProjectDir, { recursive: true })
+  })
+
+  afterEach(() => {
+    if (existsSync(testLogDir)) {
+      rmSync(testLogDir, { recursive: true, force: true })
+    }
+    if (existsSync(testProjectDir)) {
+      rmSync(testProjectDir, { recursive: true, force: true })
+    }
+  })
+
+  const sampleUsage: LoopUsageSummary = {
+    totalCost: 0.1234,
+    totalTokens: {
+      input: 1000,
+      output: 500,
+      reasoning: 200,
+      cacheRead: 100,
+      cacheWrite: 50,
+    },
+    perModel: [
+      {
+        model: 'gpt-4',
+        cost: 0.0800,
+        tokens: {
+          input: 800,
+          output: 400,
+          reasoning: 150,
+          cacheRead: 80,
+          cacheWrite: 40,
+        },
+        messageCount: 5,
+      },
+      {
+        model: 'gpt-3.5-turbo',
+        cost: 0.0434,
+        tokens: {
+          input: 200,
+          output: 100,
+          reasoning: 50,
+          cacheRead: 20,
+          cacheWrite: 10,
+        },
+        messageCount: 3,
+      },
+    ],
+  }
+
+  test('formatWorktreeCompletionEntry includes Usage section when usage is provided', () => {
+    const timestamp = new Date('2024-01-15T10:30:00Z')
+    const options = {
+      projectDir: '/path/to/project',
+      loopName: 'test-loop',
+      completionTimestamp: timestamp,
+      iteration: 3,
+    }
+
+    const result = formatWorktreeCompletionEntry(options, 'Test plan', sampleUsage)
+
+    expect(result).toContain('### Usage')
+    expect(result).toContain('Total Cost: $0.1234')
+    expect(result).toContain('1.0k in / 500 out / 200 reasoning / 100 cache read / 50 cache write')
+    expect(result).toContain('Per-model usage:')
+    expect(result).toContain('gpt-4: $0.0800')
+    expect(result).toContain('gpt-3.5-turbo: $0.0434')
+    expect(result).toContain('### Plan')
+    expect(result).toContain('Test plan')
+  })
+
+  test('formatWorktreeCompletionEntry omits Usage section when usage is null', () => {
+    const timestamp = new Date('2024-01-15T10:30:00Z')
+    const options = {
+      projectDir: '/path/to/project',
+      loopName: 'test-loop',
+      completionTimestamp: timestamp,
+      iteration: 3,
+    }
+
+    const result = formatWorktreeCompletionEntry(options, 'Test plan', null)
+
+    expect(result).not.toContain('### Usage')
+    expect(result).toContain('### Plan')
+  })
+
+  test('formatWorktreeCompletionEntry omits Usage section when usage is undefined', () => {
+    const timestamp = new Date('2024-01-15T10:30:00Z')
+    const options = {
+      projectDir: '/path/to/project',
+      loopName: 'test-loop',
+      completionTimestamp: timestamp,
+      iteration: 3,
+    }
+
+    const result = formatWorktreeCompletionEntry(options, 'Test plan', undefined)
+
+    expect(result).not.toContain('### Usage')
+    expect(result).toContain('### Plan')
+  })
+
+  test('appendWorktreeLogEntry writes usage to log file', () => {
+    const timestamp = new Date('2024-01-15T10:30:00Z')
+    const options = {
+      projectDir: '/path/to/project',
+      loopName: 'test-loop',
+      completionTimestamp: timestamp,
+      iteration: 3,
+    }
+
+    const result = appendWorktreeLogEntry(testLogDir, options, 'Test plan', undefined, sampleUsage)
+    expect(result).toBe(true)
+
+    const expectedFile = join(testLogDir, '2024-01-15.md')
+    expect(existsSync(expectedFile)).toBe(true)
+
+    const content = readFileSync(expectedFile, 'utf-8')
+    expect(content).toContain('### Usage')
+    expect(content).toContain('Total Cost: $0.1234')
+    expect(content).toContain('Per-model usage:')
+  })
+
+  test('buildWorktreeCompletionPayload accepts and includes usage', () => {
+    const config: PluginConfig = {
+      loop: {
+        worktreeLogging: {
+          enabled: true,
+          directory: testLogDir,
+        },
+      },
+    }
+
+    const timestamp = new Date('2024-01-15T10:30:00Z')
+    const result = buildWorktreeCompletionPayload(config, {
+      projectDir: testProjectDir,
+      loopName: 'test-loop',
+      completionTimestamp: timestamp,
+      iteration: 3,
+      usage: sampleUsage,
+    })
+
+    expect(result).not.toBeNull()
+    expect(result!.payload.usage).toEqual(sampleUsage)
+  })
+
+  test('buildWorktreeCompletionPayload handles usage as undefined', () => {
+    const config: PluginConfig = {
+      loop: {
+        worktreeLogging: {
+          enabled: true,
+          directory: testLogDir,
+        },
+      },
+    }
+
+    const timestamp = new Date('2024-01-15T10:30:00Z')
+    const result = buildWorktreeCompletionPayload(config, {
+      projectDir: testProjectDir,
+      loopName: 'test-loop',
+      completionTimestamp: timestamp,
+      iteration: 3,
+      usage: undefined,
+    })
+
+    expect(result).not.toBeNull()
+    expect(result!.payload.usage).toBeUndefined()
+  })
+
+  test('payload with usage remains JSON serializable', () => {
+    const config: PluginConfig = {
+      loop: {
+        worktreeLogging: {
+          enabled: true,
+          directory: testLogDir,
+        },
+      },
+    }
+
+    const timestamp = new Date('2024-01-15T10:30:00Z')
+    const result = buildWorktreeCompletionPayload(config, {
+      projectDir: testProjectDir,
+      loopName: 'test-loop',
+      completionTimestamp: timestamp,
+      iteration: 3,
+      usage: sampleUsage,
+    })
+
+    expect(result).not.toBeNull()
+    
+    const serialized = JSON.stringify(result!.payload)
+    expect(serialized).toContain('0.1234')
+    expect(serialized).toContain('gpt-4')
+    
+    const deserialized = JSON.parse(serialized)
+    expect(deserialized.usage.totalCost).toBe(0.1234)
+    expect(deserialized.usage.perModel.length).toBe(2)
+  })
+
+  test('writeWorktreeCompletionLog persists usage from payload', () => {
+    const timestamp = new Date('2024-01-15T10:30:00Z')
+    const payload = {
+      logDirectory: testLogDir,
+      projectDir: '/path/to/project',
+      loopName: 'test-loop',
+      completionTimestamp: timestamp.toISOString(),
+      iteration: 5,
+      usage: sampleUsage,
+    }
+
+    const result = writeWorktreeCompletionLog(payload)
+    expect(result).toBe(true)
+
+    const expectedFile = join(testLogDir, '2024-01-15.md')
+    expect(existsSync(expectedFile)).toBe(true)
+
+    const content = readFileSync(expectedFile, 'utf-8')
+    expect(content).toContain('### Usage')
+    expect(content).toContain('Total Cost: $0.1234')
+    expect(content).toContain('Per-model usage:')
+    expect(content).toContain('gpt-4: $0.0800')
+    expect(content).toContain('gpt-3.5-turbo: $0.0434')
+  })
+
+  test('log omits usage section when usage is absent in payload', () => {
+    const timestamp = new Date('2024-01-15T10:30:00Z')
+    const payload = {
+      logDirectory: testLogDir,
+      projectDir: '/path/to/project',
+      loopName: 'test-loop',
+      completionTimestamp: timestamp.toISOString(),
+      iteration: 1,
+    }
+
+    const result = writeWorktreeCompletionLog(payload)
+    expect(result).toBe(true)
+
+    const expectedFile = join(testLogDir, '2024-01-15.md')
+    const content = readFileSync(expectedFile, 'utf-8')
+    expect(content).not.toContain('### Usage')
+    expect(content).toContain('### Plan')
   })
 })

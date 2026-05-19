@@ -1,5 +1,6 @@
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import type { Logger } from '../types'
+import { summarizeAssistantUsage, type LoopUsageSummary, type UsageAttribution } from './token-usage'
 
 const RECENT_MESSAGES_COUNT = 5
 
@@ -8,6 +9,12 @@ export interface LoopSessionOutput {
   totalCost: number
   totalTokens: { input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number }
   fileChanges: { additions: number; deletions: number; files: number } | null
+  usageSummary?: LoopUsageSummary
+}
+
+export interface FetchSessionOutputOptions {
+  fallbackModel?: string
+  role?: 'code' | 'auditor' | 'unknown'
 }
 
 export async function fetchSessionOutput(
@@ -15,6 +22,7 @@ export async function fetchSessionOutput(
   sessionId: string,
   directory: string,
   logger?: Logger,
+  options?: FetchSessionOutputOptions,
 ): Promise<LoopSessionOutput | null> {
   if (!directory || !sessionId) {
     logger?.debug('fetchSessionOutput: invalid directory or sessionId')
@@ -28,7 +36,17 @@ export async function fetchSessionOutput(
     })
 
     const messages = (messagesResult.data ?? []) as {
-      info: { role: string; cost?: number; tokens?: { input: number; output: number; reasoning: number; cache: { read: number; write: number } } }
+      info: {
+        role: string
+        cost?: number
+        tokens?: { input: number; output: number; reasoning: number; cache: { read: number; write: number } }
+        model?: string
+        modelID?: string
+        modelId?: string
+        provider?: string
+        providerID?: string
+        model_name?: string
+      }
       parts: { type: string; text?: string }[]
     }[]
 
@@ -55,24 +73,11 @@ export async function fetchSessionOutput(
       }
     })
 
-    let totalCost = 0
-    let totalInputTokens = 0
-    let totalOutputTokens = 0
-    let totalReasoningTokens = 0
-    let totalCacheRead = 0
-    let totalCacheWrite = 0
-
-    for (const msg of assistantMessages) {
-      totalCost += msg.info.cost ?? 0
-      const tokens = msg.info.tokens
-      if (tokens) {
-        totalInputTokens += tokens.input
-        totalOutputTokens += tokens.output
-        totalReasoningTokens += tokens.reasoning
-        totalCacheRead += tokens.cache.read
-        totalCacheWrite += tokens.cache.write
-      }
-    }
+    // Use shared token usage extraction for aggregate totals
+    const attribution: UsageAttribution | undefined = options
+      ? { role: options.role ?? 'unknown', fallbackModel: options.fallbackModel }
+      : undefined
+    const usageSummary = summarizeAssistantUsage(messages, attribution)
 
     const sessionResult = await v2Client.session.get({ sessionID: sessionId, directory })
     const session = sessionResult.data as { summary?: { additions: number; deletions: number; files: number } } | undefined
@@ -86,15 +91,16 @@ export async function fetchSessionOutput(
 
     return {
       messages: extractedMessages,
-      totalCost,
+      totalCost: usageSummary.totalCost,
       totalTokens: {
-        input: totalInputTokens,
-        output: totalOutputTokens,
-        reasoning: totalReasoningTokens,
-        cacheRead: totalCacheRead,
-        cacheWrite: totalCacheWrite,
+        input: usageSummary.totalTokens.input,
+        output: usageSummary.totalTokens.output,
+        reasoning: usageSummary.totalTokens.reasoning,
+        cacheRead: usageSummary.totalTokens.cacheRead,
+        cacheWrite: usageSummary.totalTokens.cacheWrite,
       },
       fileChanges,
+      usageSummary,
     }
   } catch (err) {
     if (logger) {

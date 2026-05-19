@@ -3,6 +3,8 @@ import { join, isAbsolute } from 'path'
 import { homedir } from 'os'
 import type { PluginConfig, Logger } from '../types'
 import { toContainerPath } from '../sandbox/path'
+import type { LoopUsageSummary } from '../loop/token-usage'
+import { formatUsageSummary } from '../utils/loop-format'
 
 /**
  * Context for resolving worktree log target paths.
@@ -37,6 +39,8 @@ export interface WorktreeCompletionLogPayload {
   worktreeBranch?: string
   /** The plan text to include in the log entry, if available. */
   planText?: string | null
+  /** Cumulative usage summary for the loop, if available. */
+  usage?: LoopUsageSummary | null
 }
 
 /**
@@ -199,10 +203,13 @@ export function formatWorktreeCompletionEntry(
     worktreeBranch?: string
   },
   planText: string | null,
+  usage?: LoopUsageSummary | null,
 ): string {
   const timestamp = options.completionTimestamp.toISOString()
   const branchInfo = options.worktreeBranch ? `\n- **Branch:** ${options.worktreeBranch}` : ''
   const planSection = (planText?.trim()) || 'Plan unavailable'
+  
+  const usageSection = usage ? `\n### Usage\n\n${formatUsageSummary(usage).join('\n')}\n` : ''
   
   return `# ${options.projectDir}
 
@@ -211,7 +218,7 @@ export function formatWorktreeCompletionEntry(
 - **Loop:** ${options.loopName}${branchInfo}
 - **Completed:** ${timestamp}
 - **Iteration:** ${options.iteration}
-
+${usageSection}
 ### Plan
 
 ${planSection}
@@ -237,12 +244,13 @@ export function appendWorktreeLogEntry(
   },
   planText?: string | null,
   logger?: Logger,
+  usage?: LoopUsageSummary | null,
 ): boolean {
   try {
     const dateKey = formatDateKey(options.completionTimestamp)
     const logFile = join(directory, `${dateKey}.md`)
 
-    const entry = formatWorktreeCompletionEntry(options, planText ?? null)
+    const entry = formatWorktreeCompletionEntry(options, planText ?? null, usage)
 
     appendFileSync(logFile, entry, 'utf-8')
     logger?.debug(`Worktree log: appended entry to ${logFile}`)
@@ -268,6 +276,7 @@ export function buildWorktreeCompletionPayload(
     iteration: number
     worktreeBranch?: string
     dataDir?: string
+    usage?: LoopUsageSummary | null
   },
   logger?: Logger,
 ): BuildWorktreeCompletionPayloadResult | null {
@@ -294,6 +303,7 @@ export function buildWorktreeCompletionPayload(
     completionTimestamp: options.completionTimestamp.toISOString(),
     iteration: options.iteration,
     worktreeBranch: options.worktreeBranch,
+    usage: options.usage,
   }
 
   return {
@@ -331,6 +341,7 @@ export function writeWorktreeCompletionLog(
     },
     payload.planText,
     logger,
+    payload.usage,
   )
 }
 

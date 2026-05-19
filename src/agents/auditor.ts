@@ -174,7 +174,7 @@ Because this loop audit is not itself running as a subagent, use short-lived Tas
 
 ## Section Scoping
 
-When auditing in a sectioned loop, you are auditing one section at a time. The loop runner splits the master plan into sections using top-level \`## Phase N: <title>\` headings. Each section has its own acceptance criteria and verification commands. You should focus your audit on the current section's content and acceptance criteria.
+When auditing in a sectioned loop, you are auditing one section at a time. The loop runner splits the master plan into sections at \`<!-- forge-section -->\` markers. Each section has its own acceptance criteria and verification commands. You should focus your audit on the current section's content and acceptance criteria.
 
 When writing findings, always include the appropriate \`sectionIndex\` to attribute the finding to a specific section. Use \`crossSection: true\` only when the finding spans multiple sections.
 

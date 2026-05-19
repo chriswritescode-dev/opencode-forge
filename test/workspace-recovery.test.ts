@@ -153,10 +153,10 @@ describe('workspace recovery', () => {
     loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, testProjectId, logger, testConfig as any)
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     // Clear all loop timers to prevent watchdog interval leaks
     for (const { handler, loopName } of handlersToCleanup) {
-      handler.clearLoopTimers(loopName)
+      await handler.clearLoopTimers(loopName)
       handler.clearAllRetryTimeouts()
     }
     handlersToCleanup.length = 0

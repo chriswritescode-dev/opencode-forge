@@ -87,6 +87,17 @@ function buildContinuationPrompt(state: LoopState, auditFindings?: string): stri
 }
 ```
 
+## Usage Tracking
+
+Loop usage is captured across rotated code and auditor sessions so `loop-status` can report cumulative cost and token totals after the original session has been replaced.
+
+- `token-usage.ts` extracts assistant message usage, normalizes token fields, and groups totals by model label.
+- `loop_session_usage` persists per-session, per-model rows keyed by project, loop name, session ID, and role.
+- `loop-status <name>` merges persisted rows with the currently live session output while avoiding double-counting the active session.
+- When no loops are active, `loop-status` can still show cumulative usage for completed loops that have persisted usage data.
+
+Tracked token buckets are input, output, reasoning, cache read, and cache write, plus cost and assistant message count.
+
 ## Stall Detection
 
 A watchdog monitors loop activity. If no progress is detected within `stallTimeoutMs` (default: 60 seconds), the current phase is re-triggered.

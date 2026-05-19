@@ -121,7 +121,7 @@ Iterative development loops with automatic auditing. Loops always run in an isol
 |------|-------------|
 | `loop` | Execute a plan using an iterative development loop in an isolated git worktree. Args: `title` required; `plan`, `loopName`, and `hostSessionId` optional. |
 | `loop-cancel` | Cancel an active loop by worktree name |
-| `loop-status` | List all active loops or get detailed status by worktree name. Supports `restart` to resume inactive loops. |
+| `loop-status` | List active/recent loops or get detailed status by worktree name, including cumulative token usage when available. Supports `restart` to resume inactive loops. |
 
 `loop` reads the current session's captured plan when `plan` is omitted. `maxIterations`, execution model, auditor model, and sandbox behavior come from configuration or the TUI execution dialog, not direct `loop` tool arguments.
 
@@ -477,6 +477,10 @@ Audit findings survive session rotation via the **review store**. The auditor st
 - Existing findings are retrieved via `review-read`
 - Resolved findings are deleted via `review-delete`
 - Unresolved findings are carried forward into the review
+
+### Usage Tracking
+
+Loop sessions rotate between code and auditor work, so Forge persists per-session usage rows in `loop_session_usage` and merges them for `loop-status`. Detailed status includes cumulative cost, input/output/reasoning/cache token totals, per-model breakdowns, and live active-session output when available.
 
 ### Worktree Isolation
 

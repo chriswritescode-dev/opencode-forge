@@ -4,7 +4,7 @@ import { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2'
 import { buildAgents } from './agents'
 import { createConfigHandler } from './config'
 import { createSessionHooks, createLoopEventHandler } from './hooks'
-import { initializeDatabase, resolveDataDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo } from './storage'
+import { initializeDatabase, resolveDataDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo } from './storage'
 import type { LoopChangeNotifier } from './loop'
 import { loadPluginConfig } from './setup'
 import { resolveLogPath } from './storage'
@@ -259,6 +259,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     const sectionPlansRepo = createSectionPlansRepo(db)
+    const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
 
     const notifyLoopChange: LoopChangeNotifier = (reason, loopName, hint) => {
       const targetDirectories = Array.from(new Set([
@@ -269,7 +270,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       logger.debug(`[notifyLoopChange] reason=${reason} loop=${loopName} dirs=${targetDirectories.join(',')} projectId=${projectId}`)
     }
 
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, v2, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, v2, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo)
 
     const reconcileResult = await loopHandler.loop.reconcileStale(
       sandboxManager
@@ -407,6 +408,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       reviewFindingsRepo,
       loopsRepo,
       sectionPlansRepo,
+      loopSessionUsageRepo,
       workspaceStatusRegistry,
       pendingTeardowns,
     }
@@ -572,7 +574,13 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         userMessage.parts.push({
           type: 'text',
           text: `<system-reminder>
-You are in READ-ONLY mode for file system operations. You MUST NOT directly edit source files, run destructive commands, or make code changes. You may only read, search, and analyze the codebase. Ask clarifying questions during research on scope, intent, or tradeoffs.
+READ-ONLY mode: no file edits, no destructive commands. Search and analyze only. Ask clarifying questions during research on scope, intent, or tradeoffs.
+
+When emitting the final plan:
+- Wrap the plan in \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` (each on its own line)
+- Insert \`<!-- forge-section -->\` on its own line before each executable section
+- Shared \`## Decisions\` / \`## Conventions\` / \`## Key Context\` blocks go after all sections (no preceding marker)
+- After the plan, call the \`question\` tool with options: "New session", "Execute here", "Loop"
 </system-reminder>`,
           synthetic: true,
         })

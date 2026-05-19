@@ -470,17 +470,19 @@ describe('attachLoopToSession', () => {
     expect(deleteStateSpy).not.toHaveBeenCalled()
   })
 
-  test('attach extracts sections via phase headings', async () => {
+  test('attach extracts sections via forge-section markers', async () => {
     const { deps, loopService, promptAsyncMock } = buildDeps()
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
     const planText = [
-      '## Phase 1: Setup',
+      '<!-- forge-section -->',
+      '## Setup',
       '### Files',
       '- package.json',
       'Install dependencies.',
-      '## Phase 2: Build',
+      '<!-- forge-section -->',
+      '## Build',
       '### Files',
       '- src/index.ts',
       'Compile project.',
@@ -518,21 +520,17 @@ describe('attachLoopToSession', () => {
     expect(promptCallArgs.agent).toBe('code')
   })
 
-  test('attach ignores legacy section markers around phase headings', async () => {
+  test('attach falls back to single-prompt mode when no forge-section markers present', async () => {
     const { deps, loopService, promptAsyncMock } = buildDeps()
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
     const planText = [
       '# Plan',
-      '<!-- forge-section:start -->',
       '## Phase 1: Setup',
       'Install deps.',
-      '<!-- forge-section:end -->',
-      '<!-- forge-section:start -->',
       '## Phase 2: Build',
       'Compile.',
-      '<!-- forge-section:end -->',
     ].join('\n')
 
     const result = await attachLoopToSession(
@@ -558,13 +556,10 @@ describe('attachLoopToSession', () => {
 
     const state = (deps.loop as any).getActiveState('phase-loop')
     expect(state).not.toBeNull()
-    expect(state!.phase).toBe('coding')
-    expect(state!.currentSectionIndex).toBe(0)
-    expect(state!.totalSections).toBe(2)
-
-    expect(promptAsyncMock).toHaveBeenCalledTimes(1)
+    expect(state!.totalSections).toBe(0)
+    // The prompt sent to the code agent equals the raw plan text (legacy single-prompt mode)
     const promptCallArgs = promptAsyncMock.mock.calls[0][0]
-    expect(promptCallArgs.agent).toBe('code')
+    expect(promptCallArgs.parts[0].text).toBe(planText)
   })
 
   test('attach falls back to single raw-plan dispatch when no markers and no phase headings', async () => {

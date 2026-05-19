@@ -116,4 +116,39 @@ describe('Load Plans inline plan is sent as inline even when host session exists
       parts: [{ type: 'text', text: '# My Plan\n\nFresh content' }],
     })
   })
+
+  test('plan.execute({ mode: "loop" }) sends only the first section for sectioned inline plans', async () => {
+    const client = await connectForgeProject(mockApi, DIRECTORY)
+    expect(client).not.toBeNull()
+
+    const plan = [
+      '<!-- forge-plan:start -->',
+      '# My Plan',
+      '<!-- forge-section -->',
+      '## First Section',
+      'Do first work.',
+      '<!-- forge-section -->',
+      '## Second Section',
+      'Do second work.',
+      '<!-- forge-plan:end -->',
+    ].join('\n')
+
+    await client!.plan.execute(
+      SESSION_ID,
+      {
+        mode: 'loop',
+        title: 'My Plan',
+        plan,
+        executionModel: undefined,
+        auditorModel: undefined,
+      },
+      {} as any,
+    )
+
+    const promptArgs = mockApi.client.session.promptAsync.mock.calls[0][0]
+    expect(promptArgs.parts[0].text).toContain('[Loop section 1/2 -- iteration 1/50]')
+    expect(promptArgs.parts[0].text).toContain('## Section plan\n## First Section\nDo first work.')
+    expect(promptArgs.parts[0].text).not.toContain('Second Section')
+    expect(promptArgs.parts[0].text).not.toContain('forge-plan:start')
+  })
 })

@@ -12,6 +12,8 @@ import { type ForgeLoopExtra } from '../services/execution'
 import { buildLoopPermissionRuleset } from '../constants/loop'
 import { getForgeWorkspaceLoopName, removeExistingForgeLoopWorkspaces } from '../workspace/forge-worktree'
 import { fetchLoopsList } from './tui-loop-store'
+import { decomposeDeterministically } from '../services/deterministic-decomposer'
+import { buildSectionInitialPromptText } from '../loop/prompts'
 
 export type ApiExecutionMode = 'new-session' | 'execute-here' | 'loop'
 
@@ -178,6 +180,20 @@ function deriveLoopNameFromTitle(title: string): string {
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
     .substring(0, 60)
+}
+
+function buildTuiLoopInitialPrompt(planText: string): string {
+  const sections = decomposeDeterministically(planText, { maxSections: 12 })
+  const firstSection = sections[0]
+  if (!firstSection) return planText
+
+  return buildSectionInitialPromptText({
+    currentSectionIndex: 0,
+    totalSections: sections.length,
+    iteration: 1,
+    maxIterations: 50,
+    sectionContent: firstSection.content,
+  })
 }
 
 export async function selectTuiSession(api: TuiPluginApi, sessionId: string, workspaceId?: string): Promise<void> {
@@ -356,13 +372,14 @@ export async function connectForgeProject(
           })
           if (sesRes.error || !sesRes.data) return null
           const session = sesRes.data
+          const promptText = buildTuiLoopInitialPrompt(req.plan)
 
           const promptInput = {
             sessionID: session.id,
             directory: workspace.directory ?? undefined,
             workspace: workspace.id,
             agent: 'code',
-            parts: [{ type: 'text' as const, text: req.plan }],
+            parts: [{ type: 'text' as const, text: promptText }],
             ...(parsedModel ? { model: parsedModel } : {}),
           }
           const promptResult = await api.client.session.promptAsync(promptInput)

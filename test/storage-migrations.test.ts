@@ -44,6 +44,7 @@ test('migrations are recorded exactly once', () => {
   expect(ids).toContain('105')
   expect(ids).toContain('106')
   expect(ids).toContain('129')
+  expect(ids).toContain('130')
 
   const uniqueIds = new Set(ids)
   expect(uniqueIds.size).toBe(migrations.length)
@@ -562,7 +563,7 @@ test('migration 129 narrows phase CHECK and drops decomposition columns', () => 
 
   // decomposing row should be deleted
   const decompRow = migrated.prepare("SELECT * FROM loops WHERE phase = 'decomposing'").get()
-  expect(decompRow).toBeNull()
+  expect(decompRow).toBeUndefined()
 
   // coding row should remain
   const codingRow = migrated.prepare("SELECT * FROM loops WHERE project_id = 'project-a' AND loop_name = 'loop-coding'").get()
@@ -583,4 +584,56 @@ test('migration 129 narrows phase CHECK and drops decomposition columns', () => 
   }).toThrow()
 
   migrated.close()
+})
+
+test('migration 130 creates loop_session_usage table with correct schema', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as Array<{ name: string }>
+  expect(tables.some(t => t.name === 'loop_session_usage')).toBe(true)
+
+  const cols = db.prepare('PRAGMA table_info(loop_session_usage)').all() as Array<{ name: string; pk: number; notnull: number }>
+  const colNames = cols.map(c => c.name)
+  expect(colNames).toContain('project_id')
+  expect(colNames).toContain('loop_name')
+  expect(colNames).toContain('session_id')
+  expect(colNames).toContain('role')
+  expect(colNames).toContain('model')
+  expect(colNames).toContain('cost')
+  expect(colNames).toContain('input_tokens')
+  expect(colNames).toContain('output_tokens')
+  expect(colNames).toContain('reasoning_tokens')
+  expect(colNames).toContain('cache_read_tokens')
+  expect(colNames).toContain('cache_write_tokens')
+  expect(colNames).toContain('message_count')
+  expect(colNames).toContain('captured_at')
+
+  const pkCols = cols.filter(c => c.pk > 0).sort((a, b) => a.pk - b.pk)
+  expect(pkCols[0].name).toBe('project_id')
+  expect(pkCols[1].name).toBe('loop_name')
+  expect(pkCols[2].name).toBe('session_id')
+  expect(pkCols[3].name).toBe('model')
+
+  const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='loop_session_usage'").all() as Array<{ name: string }>
+  expect(indexes.some(i => i.name === 'idx_loop_session_usage_project_loop')).toBe(true)
+
+  db.close()
+})
+
+test('migration 130 is idempotent on re-opened databases', () => {
+  const dbPath = createTempDb()
+
+  const db1 = openForgeDatabase(dbPath)
+  db1.close()
+
+  const db2 = openForgeDatabase(dbPath)
+
+  const tables = db2.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as Array<{ name: string }>
+  expect(tables.some(t => t.name === 'loop_session_usage')).toBe(true)
+
+  const count = db2.prepare('SELECT COUNT(*) as count FROM migrations').get() as { count: number }
+  expect(count.count).toBeGreaterThan(0)
+
+  db2.close()
 })
