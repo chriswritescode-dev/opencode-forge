@@ -19,8 +19,8 @@ export interface PromptContext {
   getCompletedSectionDigest(state: LoopState): SectionDigestEntry[]
 }
 
-function buildSandboxContextNote(state: LoopState): string {
-  if (!state.sandbox) return ''
+function buildSandboxContextNoteFromFlag(sandbox: boolean): string {
+  if (!sandbox) return ''
   return [
     '',
     '---',
@@ -28,6 +28,10 @@ function buildSandboxContextNote(state: LoopState): string {
     'Focus on what the code does, not whether local tooling matches — this saves time and avoids false positives.',
     '',
   ].join('\n')
+}
+
+function buildSandboxContextNote(state: LoopState): string {
+  return buildSandboxContextNoteFromFlag(state.sandbox ?? false)
 }
 
 function formatSectionsSummary(digest: SectionDigestEntry[]): string {
@@ -107,21 +111,40 @@ export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
 export function buildSectionInitialPrompt(ctx: PromptContext, state: LoopState): string {
   const idx = state.currentSectionIndex
   const total = state.totalSections
-  const iter = state.iteration
-  const maxIter = state.maxIterations
   const section = ctx.getSectionPlan(state, idx)
   if (!section) return ''
 
-  const digest = ctx.getCompletedSectionDigest(state)
-  let header = `[Loop section ${idx + 1}/${total} -- iteration ${iter}/${maxIter}]`
+  return buildSectionInitialPromptText({
+    currentSectionIndex: idx,
+    totalSections: total,
+    iteration: state.iteration,
+    maxIterations: state.maxIterations,
+    sectionContent: section.content,
+    completedSectionDigest: ctx.getCompletedSectionDigest(state),
+    sandbox: state.sandbox,
+  })
+}
+
+export function buildSectionInitialPromptText(input: {
+  currentSectionIndex: number
+  totalSections: number
+  iteration: number
+  maxIterations: number
+  sectionContent: string
+  completedSectionDigest?: SectionDigestEntry[]
+  sandbox?: boolean
+}): string {
+  const idx = input.currentSectionIndex
+  const digest = input.completedSectionDigest ?? []
+  let header = `[Loop section ${idx + 1}/${input.totalSections} -- iteration ${input.iteration}/${input.maxIterations}]`
 
   if (digest.length > 0) {
     header += `\n\n### Prior Sections' Summaries\n${formatSectionsSummary(digest)}`
   }
 
-  header += `\n\n## Section plan\n${section.content}`
+  header += `\n\n## Section plan\n${input.sectionContent}`
 
-  return header + buildSandboxContextNote(state)
+  return header + buildSandboxContextNoteFromFlag(input.sandbox ?? false)
 }
 
 export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): string {

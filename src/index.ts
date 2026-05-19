@@ -574,7 +574,13 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         userMessage.parts.push({
           type: 'text',
           text: `<system-reminder>
-You are in READ-ONLY mode for file system operations. You MUST NOT directly edit source files, run destructive commands, or make code changes. You may only read, search, and analyze the codebase. Ask clarifying questions during research on scope, intent, or tradeoffs.
+READ-ONLY mode: no file edits, no destructive commands. Search and analyze only. Ask clarifying questions during research on scope, intent, or tradeoffs.
+
+When emitting the final plan:
+- Wrap the plan in \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` (each on its own line)
+- Insert \`<!-- forge-section -->\` on its own line before each executable section
+- Shared \`## Decisions\` / \`## Conventions\` / \`## Key Context\` blocks go after all sections (no preceding marker)
+- After the plan, call the \`question\` tool with options: "New session", "Execute here", "Loop"
 </system-reminder>`,
           synthetic: true,
         })
