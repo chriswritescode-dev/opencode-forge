@@ -334,11 +334,12 @@ Each created via `createXxxRepo(db)` factory with project-scoped queries:
 | `PlansRepo` | `plans` | `PlanRow` |
 | `ReviewFindingsRepo` | `review_findings` | `ReviewFindingRow` |
 | `SectionPlansRepo` | `section_plans` | `SectionPlanRow` |
+| `LoopSessionUsageRepo` | `loop_session_usage` | `LoopSessionUsageRow`, `LoopUsageAggregate` |
 | `TuiPrefsRepo` | `tui_preferences` | N/A |
 
 ### Migrations
 
-Sequential numbered `.sql` files (100–126) tracked in a `migrations` table.
+Sequential numbered `.sql` files (100–130) tracked in a `migrations` table.
 
 See [storage/migrations/README.md](../src/storage/migrations/README.md) for migration details.
 
@@ -360,7 +361,7 @@ Implements tools callable by AI agents during conversations.
 | `plan-read` | `plan-kv.ts` | Retrieve plans with pagination and pattern search |
 | `section-read` | `section-read.ts` | Retrieve a specific section of a plan |
 | `loop` | `loop.ts` | Execute a plan using iterative development loop. Args: `title` required; `plan`, `loopName`, and `hostSessionId` optional. |
-| `loop-status` | `loop.ts` | List active loops, get detailed status, or restart loops with `restart`/`force` arguments |
+| `loop-status` | `loop.ts` | List active/recent loops, show cumulative usage for detailed status, or restart loops with `restart`/`force` arguments |
 | `loop-cancel` | `loop.ts` | Cancel an active loop by worktree name |
 
 ### ToolContext

@@ -122,7 +122,7 @@ Iterative development loops with automatic auditing. Loops always run in an isol
 |------|-------------|
 | `loop` | Execute a plan using an iterative development loop in an isolated git worktree. Args: `title` required; `plan`, `loopName`, and `hostSessionId` optional. |
 | `loop-cancel` | Cancel an active loop by worktree name |
-| `loop-status` | List all active loops or get detailed status by worktree name. Supports `restart` to resume inactive loops. |
+| `loop-status` | List active/recent loops or get detailed status by worktree name, including cumulative token usage when available. Supports `restart` to resume inactive loops. |
 
 `loop` reads the current session's captured plan when `plan` is omitted. `maxIterations`, execution model, auditor model, and sandbox behavior come from configuration or the TUI execution dialog, not direct `loop` tool arguments.
 
@@ -355,6 +355,7 @@ The Loop Details dialog shows a detailed view of a single loop:
 
 - Name and status badge (active / completed / error / cancelled / stalled)
 - Session stats: session ID, iteration count, token usage (input/output/cache), cost
+- Cumulative usage from persisted loop sessions plus live active-session output when available
 - Latest output from the last assistant message (scrollable, up to 500 chars)
 - **Back** — return to the loop list (when opened from the command palette)
 - **Cancel loop** — abort the active loop session (visible only when loop is active)
