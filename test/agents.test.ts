@@ -132,6 +132,18 @@ describe('Agent definitions', () => {
       expect(prompt).toContain('### Edits')
       expect(prompt).toContain('### Acceptance Criteria')
       expect(prompt).toContain('### Verification')
+      // New explicit rules
+      expect(prompt).toContain('exactly one')
+      expect(prompt).toContain('immediately before')
+      expect(prompt).toContain('## Phase')
+      expect(prompt).toContain('Never place')
+    })
+
+    test('architect.systemPrompt prohibits markers before subsection headings', () => {
+      const prompt = architectAgent.systemPrompt
+      // The prompt must not say "before each section's heading" without clarifying
+      // it means the ## Phase heading, not ### subsection headings
+      expect(prompt).not.toMatch(/before each section'?s? heading/i)
     })
 
     test('architect.systemPrompt does not duplicate marker self-check (moved to reminder)', () => {

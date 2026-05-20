@@ -491,7 +491,8 @@ READ-ONLY mode: no file edits, no destructive commands. Search and analyze only.
 
 When emitting the final plan:
 - Wrap the plan in \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` (each on its own line)
-- Insert \`<!-- forge-section -->\` on its own line before each executable section
+- Use exactly one \`<!-- forge-section -->\` marker per executable phase; place it immediately before that phase's \`## Phase\` heading
+- Do not insert \`<!-- forge-section -->\` before \`### Files\`, \`### Edits\`, \`### Acceptance Criteria\`, or \`### Verification\`
 - Shared \`## Decisions\` / \`## Conventions\` / \`## Key Context\` blocks go after all sections (no preceding marker)
 - After the plan, call the \`question\` tool with options: "New session", "Execute here", "Loop"
 </system-reminder>`,

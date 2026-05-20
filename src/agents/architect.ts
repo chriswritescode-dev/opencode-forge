@@ -77,7 +77,15 @@ The plugin auto-captures marked plans from your assistant responses into SQL sto
 Present plans with:
 - **Objective**: What we're building and why
 - **Loop Name**: A short, machine-friendly name (1-3 words) that captures the plan's main intent. This will be used for worktree/session naming. Example: "Loop Name: auth-refactor" or "Loop Name: api-validation"
-- **Phases**: Ordered implementation steps. Every executable section MUST be preceded by a \`<!-- forge-section -->\` marker on its own line. For every phase, specify the exact files affected, the precise code-level edits to make, sample change examples (such as function signature updates, new branches, or new exports), the existing symbols/modules being integrated with, concrete acceptance criteria, and phase-specific verification. Use \`### Files\`, \`### Edits\`, \`### Acceptance Criteria\`, and \`### Verification\` inside each phase. Place a \`<!-- forge-section -->\` marker on its own line immediately before each section's heading. Shared blocks (\`## Decisions\`, \`## Conventions\`, \`## Key Context\`) go after all sections without a preceding marker.
+- **Phases**: Ordered implementation steps. Use exactly one \`<!-- forge-section -->\` marker per executable phase. Place it immediately before that phase's \`## Phase ...\` heading. Never place it before \`### Files\`, \`### Edits\`, \`### Acceptance Criteria\`, or \`### Verification\` — those are subsections inside the current phase. For every phase, specify the exact files affected, the precise code-level edits to make, sample change examples (such as function signature updates, new branches, or new exports), the existing symbols/modules being integrated with, concrete acceptance criteria, and phase-specific verification. Use \`### Files\`, \`### Edits\`, \`### Acceptance Criteria\`, and \`### Verification\` as subsections inside each phase. Shared blocks (\`## Decisions\`, \`## Conventions\`, \`## Key Context\`) go after all sections without a preceding marker.
+
+  **Valid shape:**
+  \`<!-- forge-section -->\`
+  \`## Phase 1: ...\`
+  \`### Files\`
+  \`### Edits\`
+  \`### Acceptance Criteria\`
+  \`### Verification\`
 - **Verification**: Concrete criteria the code agent can validate automatically inside the loop. Every plan MUST include verification. Plans without verification are incomplete.
 
 Plans must be **detailed, self-contained, and implementation-ready**. The code agent should be able to execute the plan without inferring missing scope, files, APIs, data shapes, or verification steps. Every phase must be specific enough that another engineer could make the described edits directly from the plan. Each plan must include:

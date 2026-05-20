@@ -554,6 +554,11 @@ describe('messages.transform hook', () => {
     const text = userMsg.parts[1].text as string
     expect(text).toContain('system-reminder')
     expect(text).toContain('READ-ONLY mode')
+    // New explicit rules
+    expect(text).toContain('exactly one')
+    expect(text).toContain('## Phase')
+    expect(text).toContain('Do not insert')
+    expect(text).toContain('### Files')
   })
 
   test('does NOT inject for non-architect agents', async () => {
