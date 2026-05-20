@@ -3,7 +3,7 @@
  *
  * Invoked from teardownWorktree in host-side-effects.ts after the terminating
  * loop's own workspace is removed. Scans same-project forge workspaces and
- * removes those classified as stale (completed, missing-row, restartable-terminal).
+ * removes those classified as stale (completed, missing-row, non-running restartable loops).
  *
  * The sweep is fire-and-forget: failures are logged but never block the teardown.
  */

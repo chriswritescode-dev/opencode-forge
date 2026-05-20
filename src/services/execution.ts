@@ -29,6 +29,7 @@ import {
   ConcurrentPromptError,
   type PromptAgent,
 } from '../loop/in-flight-guard'
+import { getRestartability, type RestartBlockedReason } from '../loop/restartability'
 
 // ============================================================================
 // Surface Types - Identifies the caller boundary
@@ -308,6 +309,10 @@ export interface LoopStatusView {
   totalSections?: number
   finalAuditDone?: boolean
   usage?: import('../loop/token-usage').LoopUsageSummary
+  restartable: boolean
+  restartRequiresForce: boolean
+  restartBlockedReason?: RestartBlockedReason
+  restartBlockedMessage?: string
   sections?: Array<{
     index: number
     title: string
@@ -827,6 +832,7 @@ export async function attachLoopToSession(
       phase: 'coding',
       errorCount: 0,
       auditCount: 0,
+      status: 'running',
       worktree: true,
       sandbox: sandboxEnabled,
       sandboxContainer: sandboxContainer ?? undefined,
@@ -1513,6 +1519,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
       }
       
+      const restartability = getRestartability(state, { worktreeExists: existsSync })
+      
       return {
         loopName: state.loopName,
         displayName: state.loopName, // Could extract from plan if needed
@@ -1536,6 +1544,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         totalSections: state.totalSections,
         finalAuditDone: state.finalAuditDone,
         usage,
+        restartable: restartability.restartable,
+        restartRequiresForce: restartability.restartRequiresForce,
+        restartBlockedReason: restartability.restartBlockedReason,
+        restartBlockedMessage: restartability.restartBlockedMessage,
         sections: sectionViews,
       }
     })
@@ -1639,27 +1651,15 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     if (!stoppedState) {
       return fail('not_found', 404, `No loop found for "${name}".`, undefined, allStates.map(s => s.loopName))
     }
-    if (stoppedState.active && !command.force) {
-      return fail('conflict', 409, `Loop "${stoppedState.loopName}" is currently active. Use force=true to force-restart a stuck loop.`)
+    
+    const restartability = getRestartability(stoppedState, { force: command.force, worktreeExists: existsSync })
+    
+    if (!restartability.restartable) {
+      return fail('conflict', 409, restartability.restartBlockedMessage!)
     }
-    if (stoppedState.terminationReason && parseTerminationReasonString(stoppedState.terminationReason).kind === 'completed') {
-      return fail('conflict', 409, `Loop "${stoppedState.loopName}" completed successfully and cannot be restarted.`)
-    }
-    if (
-      stoppedState.terminationReason &&
-      parseTerminationReasonString(stoppedState.terminationReason).kind === 'final_audit_retry_exhausted' &&
-      !command.force
-    ) {
-      return fail(
-        'conflict',
-        409,
-        `Loop "${stoppedState.loopName}" terminated during final audit retry exhaustion. Use force=true to restart.`,
-      )
-    }
-    if (stoppedState.worktree && stoppedState.worktreeDir) {
-      if (!existsSync(stoppedState.worktreeDir)) {
-        return fail('conflict', 409, `Cannot restart "${stoppedState.loopName}": worktree directory no longer exists at ${stoppedState.worktreeDir}.`)
-      }
+    
+    if (restartability.restartRequiresForce && !command.force) {
+      return fail('conflict', 409, restartability.restartBlockedMessage!)
     }
 
     const restartSandbox = isSandboxEnabled(deps.config, deps.sandboxManager)
@@ -1796,6 +1796,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         phase: restartPhase,
         errorCount: 0,
         auditCount: 0,
+        status: 'running',
         worktree: stoppedState.worktree,
         sandbox: restartSandbox,
         sandboxContainer: restartSandbox ? deps.sandboxManager?.docker.containerName(stoppedState.loopName) : undefined,

@@ -23,7 +23,7 @@ function createMockV2Client(responses: Map<string, { data?: { parentID?: string 
   }
 }
 
-function createMockLoopService(activeLoops: Array<{ loopName: string; worktreeDir: string }>) {
+function createMockLoop(activeLoops: Array<{ loopName: string; worktreeDir: string }>) {
   return {
     listActive: () => activeLoops.map((l) => ({ ...l, active: true, sandbox: false, sessionId: '', startedAt: '', iteration: 0, maxIterations: 0, phase: 'coding' as const, audit: false, errorCount: 0, auditCount: 0, worktree: false })),
     resolveLoopName: () => null,
@@ -38,12 +38,12 @@ describe('createParentSessionLookup', () => {
     const v2 = createMockV2Client(
       new Map([[sessionId, { data: { parentID: parentId } }]]),
     )
-    const loopService = createMockLoopService([])
+    const loop = createMockLoop([])
 
     const lookup = createParentSessionLookup({
       v2,
       directory: '/host',
-      loopService: loopService as any,
+      loop: loop as any,
       logger: mockLogger,
     })
 
@@ -70,12 +70,12 @@ describe('createParentSessionLookup', () => {
         ],
       ]),
     )
-    const loopService = createMockLoopService([])
+    const loop = createMockLoop([])
 
     const lookup = createParentSessionLookup({
       v2,
       directory: '/host',
-      loopService: loopService as any,
+      loop: loop as any,
       logger: mockLogger,
       negativeTtlMs: 100,
     })
@@ -108,12 +108,12 @@ describe('createParentSessionLookup', () => {
         ],
       ]),
     )
-    const loopService = createMockLoopService([])
+    const loop = createMockLoop([])
 
     const lookup = createParentSessionLookup({
       v2,
       directory: '/host',
-      loopService: loopService as any,
+      loop: loop as any,
       logger: mockLogger,
       negativeTtlMs: 50,
     })
@@ -143,12 +143,12 @@ describe('createParentSessionLookup', () => {
       },
     }
 
-    const loopService = createMockLoopService([{ loopName: 'test-loop', worktreeDir }])
+    const loop = createMockLoop([{ loopName: 'test-loop', worktreeDir }])
 
     const lookup = createParentSessionLookup({
       v2: v2 as any,
       directory: '/host',
-      loopService: loopService as any,
+      loop: loop as any,
       logger: mockLogger,
       negativeTtlMs: 10,
     })

@@ -5,7 +5,6 @@
 --
 -- Note: If any loops are currently in phase=auditing at deploy time, the
 -- audit_session_id value is lost. This is acceptable because loops do not
--- persist across forge restarts in any meaningful way (they get reconciled
--- stale on startup via reconcileStale).
+-- persist across forge restarts (boot-time recovery was removed).
 
 ALTER TABLE loops DROP COLUMN audit_session_id;

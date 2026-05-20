@@ -14,6 +14,7 @@ interface LoopStateBase {
   lastAuditResult?: string
   errorCount: number
   auditCount: number
+  status: LoopRow['status']
   terminationReason?: string
   completedAt?: string
   worktree?: boolean
@@ -60,6 +61,7 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
     lastAuditResult: large?.lastAuditResult ?? undefined,
     errorCount: row.errorCount,
     auditCount: row.auditCount,
+    status: row.status,
     terminationReason: row.terminationReason ?? undefined,
     completedAt: row.completedAt ? new Date(row.completedAt).toISOString() : undefined,
     worktree: row.worktree,
@@ -90,7 +92,7 @@ export function loopStateToRow(state: LoopState, projectId: string): Omit<LoopRo
   return {
     projectId,
     loopName: state.loopName,
-    status: state.active ? 'running' : 'completed',
+    status: state.status,
     currentSessionId: state.sessionId,
     worktree: state.worktree ?? false,
     worktreeDir: state.worktreeDir,

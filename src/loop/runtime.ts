@@ -32,6 +32,7 @@ import type { TerminationReason } from './termination'
 import { terminationStatusFor, terminationReasonToString } from './termination'
 import { nextTransition } from './transitions'
 import { summarizeAssistantUsage, type UsageAttribution } from './token-usage'
+import { loopRegistry } from '../utils/loop-registry'
 
 export interface LoopEvent {
   type: string
@@ -109,8 +110,6 @@ export interface Loop {
   resetError(name: string): void
   terminateLoop(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
   getOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[]
-  reconcileStale(opts?: { isSandboxLive?: (loopName: string) => Promise<boolean> }): Promise<{ cancelled: number; preserved: string[]; restartCandidates: LoopState[] }>
-  reconcileFinalize(loopName: string, action: 'cancel' | 'restored'): void
   getStallTimeoutMs(): number
   getMaxConsecutiveStalls(): number
 
@@ -880,6 +879,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   async function terminateLoop(loopName: string, state: LoopState, reason: TerminationReason): Promise<void> {
     const sessionId = state.sessionId
     watchdog.stop(loopName)
+    loopRegistry.remove(loopName)
 
     const retryTimeout = retryTimeouts.get(loopName)
     if (retryTimeout) {
@@ -2013,6 +2013,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     loopService.setState(state.loopName, state)
     loopService.registerLoopSession(state.sessionId, state.loopName)
+    loopRegistry.add(state.loopName)
     logger.log(`Loop: started loop=${state.loopName} session=${state.sessionId}`)
   }
 
@@ -2020,6 +2021,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     loopService.deleteState(name)
     loopService.setState(name, params.newState)
     loopService.registerLoopSession(params.newSessionId, name)
+    loopRegistry.add(name)
   }
 
   function setPhase(name: string, phase: LoopState['phase']): void {
@@ -2068,8 +2070,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     resetError: (name: string) => loopService.resetError(name),
     terminateLoop: (name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }) => loopService.terminate(name, opts),
     getOutstandingFindings: (loopName?: string, severity?: 'bug' | 'warning') => loopService.getOutstandingFindings(loopName, severity),
-    reconcileStale: (opts?: { isSandboxLive?: (loopName: string) => Promise<boolean> }) => loopService.reconcileStale(opts),
-    reconcileFinalize: (loopName: string, action: 'cancel' | 'restored') => loopService.reconcileFinalize(loopName, action),
     getStallTimeoutMs: () => loopService.getStallTimeoutMs(),
     getMaxConsecutiveStalls: () => loopService.getMaxConsecutiveStalls(),
 

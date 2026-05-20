@@ -2,6 +2,34 @@
 
 The loop system provides autonomous iterative development with automatic code auditing.
 
+## Loop Lifecycle Rules
+
+### Plugin Boot Behavior
+
+- **Plugin boot does not mutate loop rows.** Initialization loads storage and runtime services only.
+- No loops are recovered, cancelled, restarted, or reconciled during plugin startup.
+- Loop recovery and restart are explicit user actions via `loop-status restart=true`.
+
+### Restartability
+
+- **Any non-completed loop is restartable** via explicit restart when the worktree is available.
+- Restartable statuses: `running`, `cancelled`, `errored`, `stalled`.
+- **Completed loops are history-only** and cannot be restarted.
+- **Missing worktree blocks restart** — the worktree directory must exist for restart to proceed.
+
+### Restart Semantics
+
+- Restart preserves loop identity, plan, worktree path, section progress, and review findings.
+- Restart resets iteration count and error budget.
+- Restart creates a fresh session and resumes from the persisted phase and section index.
+
+### Stale Workspace Sweep
+
+- Stale workspace sweep is **teardown cleanup-only**, not boot-time recovery.
+- Sweep removes workspace registrations for non-running restartable loops (`cancelled`, `errored`, `stalled`) while preserving worktrees for manual restart.
+- Completed loops are fully removed (registration + worktree).
+- Running loops are never touched by sweep.
+
 ## Loop Lifecycle
 
 ```mermaid
