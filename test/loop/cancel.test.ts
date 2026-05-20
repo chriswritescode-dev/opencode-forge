@@ -226,6 +226,7 @@ describe('Loop Runtime cancel()', () => {
       phase: 'coding',
       errorCount: 0,
       auditCount: 0,
+      status: 'running',
       worktree: false,
       modelFailed: false,
       sandbox: false,

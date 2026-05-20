@@ -14,6 +14,7 @@ function createState(overrides?: Partial<LoopState>): LoopState {
     phase: 'coding',
     errorCount: 0,
     auditCount: 0,
+    status: 'running',
     currentSectionIndex: 0,
     totalSections: 0,
     finalAuditDone: false,

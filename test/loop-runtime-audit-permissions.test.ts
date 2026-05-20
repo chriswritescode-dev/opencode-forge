@@ -155,6 +155,7 @@ describe('Legacy audit fallback permissions', () => {
       phase: 'coding',
       errorCount: 0,
       auditCount: 0,
+      status: 'running',
       worktree: true,
       modelFailed: false,
       sandbox: false,

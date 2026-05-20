@@ -91,12 +91,15 @@ describe('Plan Approval Tool Interception', () => {
         startedAt: new Date().toISOString(),
         prompt: 'Test prompt',
         phase: 'coding' as const,
-
+        status: 'running' as const,
         errorCount: 0,
         auditCount: 0,
         worktree: true,
+        currentSectionIndex: 0,
+        totalSections: 0,
+        finalAuditDone: false,
       }
-      loopService.setState(loopName, state)
+      loopService.setState(loopName, state as any)
     }
 
     if (tool === 'question') {
