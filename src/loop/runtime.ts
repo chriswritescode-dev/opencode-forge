@@ -283,14 +283,17 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       }>
 
       const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null
-      const lastAssistant = [...messages].reverse().find((m) => m.info.role === 'assistant')
 
-      if (!lastAssistant) {
-        const role = lastMessage?.info.role ?? 'none'
-        logger.log(`Loop: no assistant message found in session ${sessionId}, last message role: ${role}`)
-        return { text: null, error: null, lastMessageRole: role }
+      if (!lastMessage) {
+        return { text: null, error: null, lastMessageRole: 'none' }
       }
 
+      if (lastMessage.info.role !== 'assistant') {
+        logger.log(`Loop: no assistant message found in session ${sessionId}, last message role: ${lastMessage.info.role ?? 'unknown'}`)
+        return { text: null, error: null, lastMessageRole: lastMessage.info.role ?? 'unknown' }
+      }
+
+      const lastAssistant = lastMessage
       if (lastAssistant.info.finish && lastAssistant.info.finish !== 'stop') {
         logger.log(`Loop: assistant message in session ${sessionId} is not final yet (finish=${lastAssistant.info.finish})`)
         return { text: null, error: null, lastMessageRole: `assistant:${lastAssistant.info.finish}` }

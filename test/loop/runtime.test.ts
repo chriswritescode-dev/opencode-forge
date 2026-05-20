@@ -385,6 +385,44 @@ describe('Loop Runtime', () => {
       expect(updatedState).not.toBeNull()
       expect(updatedState!.phase).toBe('auditing')
     })
+
+    test('does not transition to auditing when latest coding message is still user prompt', async () => {
+      const { loop, clientState } = createRuntime()
+      clientState.messagesResult = [
+        {
+          info: { role: 'assistant', finish: 'stop' },
+          parts: [{ type: 'text', text: 'Older code response.' }],
+        },
+        {
+          info: { role: 'user' },
+          parts: [{ type: 'text', text: 'Latest code prompt that was not answered.' }],
+        },
+      ]
+
+      const state = makeState({
+        phase: 'coding',
+        totalSections: 0,
+        auditCount: 0,
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: state.sessionId,
+        },
+      })
+
+      const updatedState = loopService.getActiveState(state.loopName)
+      expect(updatedState).not.toBeNull()
+      expect(updatedState!.phase).toBe('coding')
+
+      expect(clientState.promptCalls.some((call) => call.agent === 'auditor-loop')).toBe(false)
+
+      const hasCodePrompt = clientState.promptCalls.some((call) => call.agent === 'code')
+      expect(hasCodePrompt).toBe(false)
+    })
   })
 
   describe('clean non-sectioned audit terminates completed', () => {
