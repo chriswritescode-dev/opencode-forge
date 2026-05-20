@@ -54,7 +54,7 @@ The TUI plugin providing sidebar widget and dialog system. Communicates with the
 
 - Exports `{ id: 'oc-forge', tui }`
 - Registers commands: `forge.plan.view`, `forge.plan.load`
-- Provides plan viewer, execution dialog, loop details, model selection
+- Provides plan viewer, execution dialog, loop details, model and variant selection
 
 Source: [src/tui.tsx](../src/tui.tsx)
 

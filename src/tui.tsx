@@ -84,13 +84,17 @@ function PlanViewerDialog(props: {
   startInExecuteMode?: boolean
   initialExecutionModel?: string
   initialAuditorModel?: string
+  initialExecutionVariant?: string
+  initialAuditorVariant?: string
 }) {
   const theme = () => props.api.theme.current
   const [editing, setEditing] = createSignal(false)
   const startInExecuteModeValue = () => !!props.startInExecuteMode
   const planContentValue = () => props.planContent
-  const initialExecutionModelValue = () => props.initialExecutionModel ?? ''
-  const initialAuditorModelValue = () => props.initialAuditorModel ?? ''
+  const initialExecutionModelValue = () => props.initialExecutionModel
+  const initialAuditorModelValue = () => props.initialAuditorModel
+  const initialExecutionVariantValue = () => props.initialExecutionVariant
+  const initialAuditorVariantValue = () => props.initialAuditorVariant
   const [executing, setExecuting] = createSignal(startInExecuteModeValue())
   const [content, setContent] = createSignal(planContentValue())
   let textareaRef: TextareaRenderable | undefined
@@ -206,9 +210,11 @@ function PlanViewerDialog(props: {
           sessionId={props.sessionId}
           initialExecutionModel={initialExecutionModelValue()}
           initialAuditorModel={initialAuditorModelValue()}
+          initialExecutionVariant={initialExecutionVariantValue()}
+          initialAuditorVariant={initialAuditorVariantValue()}
           onBack={() => setExecuting(false)}
           onExecuted={props.onRefresh}
-          onModelSelected={({ target, selectedModel, executionModel, auditorModel }) => {
+          onSelectionChanged={({ executionModel, auditorModel, executionVariant, auditorVariant }) => {
             props.api.ui.dialog.setSize('xlarge')
             props.api.ui.dialog.replace(() => (
               <PlanViewerDialog
@@ -220,8 +226,10 @@ function PlanViewerDialog(props: {
                 sessionId={props.sessionId}
                 onRefresh={props.onRefresh}
                 startInExecuteMode={true}
-                initialExecutionModel={target === 'execution' ? selectedModel : executionModel}
-                initialAuditorModel={target === 'auditor' ? selectedModel : auditorModel}
+                initialExecutionModel={executionModel}
+                initialAuditorModel={auditorModel}
+                initialExecutionVariant={executionVariant}
+                initialAuditorVariant={auditorVariant}
               />
             ))
           }}

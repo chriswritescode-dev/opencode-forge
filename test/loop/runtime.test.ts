@@ -40,7 +40,8 @@ interface MockClientState {
   selectCalls: Array<{ sessionID: string; workspace?: string }>
   deleteThrows: boolean
   abortCalls: string[]
-  promptCalls: Array<{ sessionID: string; agent?: string }>
+  promptCalls: Array<{ sessionID: string; agent?: string; variant?: string }>
+  promptAsyncFailCount?: number
   messagesResult: Array<{ info: { role: string; finish?: string }; parts: Array<{ type: string; text?: string }> }> | null
   messagesBySession?: Map<string, Array<{ info: { role: string; finish?: string }; parts: Array<{ type: string; text?: string }> }>>
 }
@@ -53,7 +54,11 @@ function createMockV2Client(state: MockClientState): OpencodeClient {
         return { error: null, data: { id: 'sess' } }
       },
       promptAsync: async (params) => {
-        state.promptCalls.push({ sessionID: (params as any).sessionID ?? '', agent: (params as any).agent })
+        state.promptCalls.push({ sessionID: (params as any).sessionID ?? '', agent: (params as any).agent, variant: (params as any).variant })
+        if (state.promptAsyncFailCount && state.promptAsyncFailCount > 0) {
+          state.promptAsyncFailCount--
+          return { error: { name: 'TestError', data: { message: 'simulated model failure' } }, data: null }
+        }
         return { error: null, data: null }
       },
       status: async () => ({ error: null, data: {} }),
@@ -145,6 +150,8 @@ CREATE TABLE loops (
   total_sections       INTEGER NOT NULL DEFAULT 0,
   final_audit_done     INTEGER NOT NULL DEFAULT 0,
   final_audit_attempts INTEGER NOT NULL DEFAULT 0,
+  execution_variant    TEXT,
+  auditor_variant      TEXT,
   PRIMARY KEY (project_id, loop_name)
 )
 `
@@ -300,6 +307,8 @@ describe('Loop Runtime', () => {
       sandbox: false,
       executionModel: 'test/model',
       auditorModel: 'test/auditor',
+      executionVariant: undefined,
+      auditorVariant: undefined,
       currentSectionIndex: 0,
       totalSections: 0,
       finalAuditDone: false,
@@ -1161,6 +1170,157 @@ describe('stall handling terminates with stall timeout when configured cap is re
       // Retained coding session should be captured with state.executionModel
       expect(usage!.byModel).toHaveProperty('state/exec-model')
       expect(usage!.byModel['state/exec-model'].inputTokens).toBe(150)
+    })
+  })
+
+  describe('variant dispatch', () => {
+    test('coding prompt sends executionVariant from loop state', async () => {
+      const { loop, clientState } = createRuntime()
+      clientState.messagesResult = [
+        {
+          info: { role: 'assistant', finish: 'stop' },
+          parts: [{ type: 'text', text: 'Audit passed.' }],
+        },
+      ]
+
+      const state = makeState({
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 1,
+        executionVariant: 'thinking-max',
+        auditorVariant: 'audit-high',
+      })
+      loopService.setState(state.loopName, state)
+
+      // Add a bug finding so the audit is dirty and transitions back to coding
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/test.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Test bug',
+      })
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: state.sessionId,
+        },
+      })
+
+      // After auditing phase processes dirty audit, it transitions to coding and sends code prompts
+      const codePrompts = clientState.promptCalls.filter(c => c.agent === 'code')
+      expect(codePrompts.length).toBeGreaterThan(0)
+      for (const call of codePrompts) {
+        expect(call.variant).toBe('thinking-max')
+      }
+    })
+
+    test('auditor prompt sends auditorVariant from loop state', async () => {
+      const { loop, clientState } = createRuntime()
+      clientState.messagesResult = [
+        {
+          info: { role: 'assistant', finish: 'stop' },
+          parts: [{ type: 'text', text: 'Audit passed.' }],
+        },
+      ]
+
+      const state = makeState({
+        phase: 'coding',
+        totalSections: 0,
+        auditCount: 0,
+        executionVariant: 'thinking-max',
+        auditorVariant: 'audit-high',
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: state.sessionId,
+        },
+      })
+
+      // The auditor prompt should have the auditorVariant
+      const auditorPrompts = clientState.promptCalls.filter(c => c.agent === 'auditor-loop')
+      expect(auditorPrompts.length).toBeGreaterThan(0)
+      for (const call of auditorPrompts) {
+        expect(call.variant).toBe('audit-high')
+      }
+    })
+
+    test('model fallback omits variant when model is undefined', async () => {
+      const clientState: MockClientState = {
+        deleteCalls: [],
+        createCalls: [],
+        publishCalls: [],
+        selectCalls: [],
+        deleteThrows: false,
+        abortCalls: [],
+        promptCalls: [],
+        promptAsyncFailCount: 2,
+        messagesResult: [
+          {
+            info: { role: 'assistant', finish: 'stop' },
+            parts: [{ type: 'text', text: 'Audit passed.' }],
+          },
+        ],
+      }
+
+      const v2Client = createMockV2Client(clientState)
+      const { logger } = createCapturingLogger()
+      const config: PluginConfig = { ...mockConfig, executionModel: 'test/model' }
+
+      const loop = createLoop({
+        loopsRepo,
+        plansRepo,
+        reviewFindingsRepo,
+        sectionPlansRepo,
+        projectId: PROJECT_ID,
+        client: { client: {} as any } as any,
+        v2Client,
+        logger,
+        getConfig: () => config,
+        sandboxManager: undefined,
+        dataDir: tempDir,
+      })
+
+      const state = makeState({
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 1,
+        executionModel: 'test/model',
+        executionVariant: 'thinking-max',
+      })
+      loopService.setState(state.loopName, state)
+
+      // Add a bug finding so the audit is dirty and transitions back to coding
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/test.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Test bug',
+      })
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: state.sessionId,
+        },
+      })
+
+      // Model-based attempts should have been made (and failed)
+      const codePrompts = clientState.promptCalls.filter(c => c.agent === 'code')
+      expect(codePrompts.length).toBeGreaterThan(0)
+      // After model fails, fallback without model should NOT send variant
+      const fallbackPrompts = codePrompts.filter(c => !c.variant)
+      expect(fallbackPrompts.length).toBeGreaterThan(0)
     })
   })
 })

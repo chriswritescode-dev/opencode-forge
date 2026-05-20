@@ -116,6 +116,8 @@ async function attachForgeSession(
       title?: string
       executionModel?: string
       auditorModel?: string
+      executionVariant?: string
+      auditorVariant?: string
       planSource?: 'stored' | 'inline'
       planText?: string
       initialPromptOwner?: 'server' | 'tui'
@@ -270,6 +272,8 @@ async function attachForgeSession(
           hostSessionId: resolvedHostSessionId,
           executionModel: cfg.executionModel,
           auditorModel: cfg.auditorModel,
+          executionVariant: cfg.executionVariant,
+          auditorVariant: cfg.auditorVariant,
           maxIterations: cfg.maxIterations ?? 50,
           sandboxEnabled: cfg.sandboxEnabled ?? false,
           planText,
@@ -278,7 +282,7 @@ async function attachForgeSession(
            startWatchdog: true,
            sendInitialPrompt,
          },
-        )
+       )
         if (!result.ok && result.code === 'conflict') {
           const row = deps.execDeps.loopsRepo.get(sessionProjectId, loopName)
           const removalAction = row?.status === 'cancelled' || row?.status === 'errored' || row?.status === 'stalled'

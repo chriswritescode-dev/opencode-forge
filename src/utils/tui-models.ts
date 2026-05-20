@@ -30,6 +30,7 @@ export interface ModelInfo {
     input?: number
     output?: number
   }
+  variants?: Record<string, { disabled?: boolean; [key: string]: unknown }>
 }
 
 export interface ProviderInfo {
@@ -187,6 +188,7 @@ export async function fetchAvailableModels(api: TuiPluginApi): Promise<FetchMode
               attachment: (md.capabilities as Record<string, unknown> | undefined)?.attachment as boolean | undefined,
             },
             cost: md.cost as { input?: number; output?: number } | undefined,
+            variants: md.variants as ModelInfo['variants'],
           })
         }
       }
@@ -379,4 +381,75 @@ export function sortModelsByPriority(
     // Then alphabetically by name
     return a.name.localeCompare(b.name)
   })
+}
+
+export interface ModelVariantInfo {
+  id: string
+  label: string
+  description?: string
+}
+
+/**
+ * Converts a raw variant key into a human-readable label.
+ * E.g., "thinking-max" → "Thinking Max", "reasoning_high" → "Reasoning High"
+ */
+function variantKeyToLabel(key: string): string {
+  return key
+    .replace(/[-_]/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase())
+}
+
+/**
+ * Generates a description from variant config when applicable.
+ * Returns undefined when no relevant field is present.
+ */
+function variantDescription(config: Record<string, unknown>): string | undefined {
+  if (typeof config.description === 'string') return config.description
+
+  const reasoning = config.reasoningEffort ?? config.reasoning_effort
+  if (reasoning != null) return `Reasoning: ${reasoning}`
+
+  const thinking = config.thinking
+  if (thinking != null) return `Thinking: ${thinking}`
+
+  const budget = config.thinkingBudget ?? config.thinking_budget
+  if (budget != null) return `Thinking budget: ${budget}`
+
+  return undefined
+}
+
+export function getAvailableModelVariants(model?: ModelInfo | null): ModelVariantInfo[] {
+  if (!model?.variants) return []
+
+  return Object.entries(model.variants)
+    .filter(([, cfg]) => cfg && !cfg.disabled)
+    .map(([key, cfg]) => ({
+      id: key,
+      label: typeof cfg.name === 'string' ? cfg.name : variantKeyToLabel(key),
+      description: variantDescription(cfg as Record<string, unknown>),
+    }))
+}
+
+export function getVariantDisplayLabel(
+  variant: string | undefined,
+  model?: ModelInfo | null,
+): string {
+  if (!variant) return 'default'
+
+  const available = getAvailableModelVariants(model)
+  const found = available.find(v => v.id === variant)
+  if (found) return found.label
+
+  return variant
+}
+
+export function normalizeVariantForModel(
+  variant: string | undefined,
+  model?: ModelInfo | null,
+): string {
+  if (!variant) return ''
+  if (!model?.variants) return ''
+
+  const available = getAvailableModelVariants(model)
+  return available.some(v => v.id === variant) ? variant : ''
 }

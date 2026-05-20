@@ -210,6 +210,76 @@ describe('Execution Preferences', () => {
     expect(result.auditorModel).toBe('anthropic/claude-3-opus')
   })
 
+  test('write then read preserves executionVariant and auditorVariant', () => {
+    const projectId = 'test-project'
+    const prefs: ExecutionPreferences = {
+      mode: 'Loop',
+      executionModel: 'anthropic/claude-3-5-sonnet',
+      auditorModel: 'anthropic/claude-3-opus',
+      executionVariant: 'extended-thinking',
+      auditorVariant: 'extended-reasoning',
+    }
+
+    writeExecutionPreferences(projectId, prefs, TEST_DB_PATH)
+    const result = readExecutionPreferences(projectId, TEST_DB_PATH)
+
+    expect(result?.executionVariant).toBe('extended-thinking')
+    expect(result?.auditorVariant).toBe('extended-reasoning')
+  })
+
+  test('resolveExecutionDialogDefaults returns stored variants', () => {
+    const config: PluginConfig = {
+      executionModel: 'anthropic/claude-3-haiku',
+      loop: { model: 'anthropic/claude-3-sonnet' },
+      auditorModel: 'anthropic/claude-3-opus',
+    }
+    const storedPrefs: ExecutionPreferences = {
+      mode: 'Loop',
+      executionModel: 'anthropic/claude-3-5-sonnet',
+      auditorModel: 'anthropic/claude-3-opus',
+      executionVariant: 'extended-thinking',
+      auditorVariant: 'extended-reasoning',
+    }
+
+    const result = resolveExecutionDialogDefaults(config, storedPrefs)
+    expect(result.executionVariant).toBe('extended-thinking')
+    expect(result.auditorVariant).toBe('extended-reasoning')
+  })
+
+  test('resolveExecutionDialogDefaults defaults missing variants to empty string', () => {
+    const config: PluginConfig = {
+      executionModel: 'anthropic/claude-3-haiku',
+      loop: { model: 'anthropic/claude-3-sonnet' },
+      auditorModel: 'anthropic/claude-3-opus',
+    }
+
+    const result = resolveExecutionDialogDefaults(config, null)
+    expect(result.executionVariant).toBe('')
+    expect(result.auditorVariant).toBe('')
+  })
+
+  test('legacy preferences without variant fields still read successfully', () => {
+    const projectId = 'legacy-prefs-test'
+
+    const db = new Database(TEST_DB_PATH)
+    db.run('PRAGMA busy_timeout=5000')
+    const repo = createTuiPrefsRepo(db)
+    repo.set(projectId, 'tui:plan-execution-preferences', {
+      mode: 'Loop',
+      executionModel: 'some/model',
+      auditorModel: 'other/model',
+    }, 7 * 24 * 60 * 60 * 1000)
+    db.close()
+
+    const result = readExecutionPreferences(projectId, TEST_DB_PATH)
+    expect(result?.mode).toBe('Loop')
+    expect(result?.executionModel).toBe('some/model')
+    expect(result?.auditorModel).toBe('other/model')
+    // Variant fields are undefined for legacy prefs (not stored)
+    expect(result?.executionVariant).toBeUndefined()
+    expect(result?.auditorVariant).toBeUndefined()
+  })
+
   test('writeExecutionPreferences does not mutate other preference keys', () => {
     const projectId = 'test-project'
     
@@ -248,5 +318,34 @@ describe('Execution Preferences', () => {
       expect(typedRetrieved.mode).toBeUndefined() // preferences key should not appear in other key
     }
     loopDb.close()
+  })
+
+  test('resolveExecutionDialogDefaults preserves stored variant values (regression: explicit empty override)', () => {
+    // Regression for Bug 1: When the user explicitly selects "Use default" for a variant,
+    // the initial variant prop is "". The applyDefaults function must treat "" as an explicit
+    // override and not reapply stored defaults.
+    const config: PluginConfig = {
+      executionModel: 'anthropic/claude-3-haiku',
+      loop: { model: 'anthropic/claude-3-sonnet' },
+      auditorModel: 'anthropic/claude-3-opus',
+    }
+
+    const storedPrefs: ExecutionPreferences = {
+      mode: 'Loop',
+      executionModel: 'anthropic/claude-3-5-sonnet',
+      auditorModel: 'anthropic/claude-3-opus',
+      executionVariant: 'thinking-max',
+      auditorVariant: 'reasoning-high',
+    }
+
+    // resolveExecutionDialogDefaults returns stored variants when present
+    const result = resolveExecutionDialogDefaults(config, storedPrefs)
+    expect(result.executionVariant).toBe('thinking-max')
+    expect(result.auditorVariant).toBe('reasoning-high')
+
+    // When stored prefs have no variant fields, defaults to empty string
+    const resultWithoutVariants = resolveExecutionDialogDefaults(config, { ...storedPrefs, executionVariant: undefined, auditorVariant: undefined })
+    expect(resultWithoutVariants.executionVariant).toBe('')
+    expect(resultWithoutVariants.auditorVariant).toBe('')
   })
 })

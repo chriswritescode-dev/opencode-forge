@@ -183,6 +183,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     promptText: string
     agent: 'code' | 'auditor-loop'
     model?: { providerID: string; modelID: string } | null
+    variant?: string
   }): Promise<{ error?: unknown; usedModel?: { providerID: string; modelID: string } | undefined }> {
     const { loopName, sessionId, promptText, agent } = input
 
@@ -200,7 +201,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
               worktreeDir: freshState.worktreeDir,
               workspaceId: freshState.workspaceId,
               prompt: promptText,
-              ...(model ? { auditorModel: model } : {}),
+              ...(model ? { auditorModel: model, ...(input.variant ? { auditorVariant: input.variant } : {}) } : {}),
             })
             return result.ok ? { data: true } : { error: result.error }
           })
@@ -234,7 +235,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
             agent: 'code',
             parts: [{ type: 'text' as const, text: promptText }],
-            ...(model ? { model } : {}),
+            ...(model ? { model, ...(input.variant ? { variant: input.variant } : {}) } : {}),
           })
         })
       } catch (err) {
@@ -700,6 +701,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       promptText: continuationPrompt,
       agent: 'code',
       model: loopModel,
+      variant: currentState.executionVariant,
     })
 
     if (promptResultError) {
@@ -762,6 +764,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       promptText: continuationPrompt,
       agent: 'code',
       model: loopModel,
+      variant: state.executionVariant,
     })
     if (error) {
       logger.error(`rotateToCodingAfterAuditFailure: failed to send continuation prompt`, error)
@@ -804,6 +807,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         promptText: recoveryPrompt,
         agent: 'code',
         model: resolveLoopModel(currentConfig, loopService, loopName),
+        variant: freshState.executionVariant,
       })
       if (promptResultError) {
         clearPromptPending(loopName, logger)
@@ -1057,6 +1061,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     workspaceId?: string
     prompt: string
     auditorModel?: { providerID: string; modelID: string }
+    auditorVariant?: string
   }): Promise<{ ok: true } | { ok: false; error: unknown }> {
     const result = await promptAuditSession(v2Client, input)
     if (result.ok) return result
@@ -1069,7 +1074,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         body: {
           agent: 'auditor-loop',
           parts: [{ type: 'text' as const, text: input.prompt }],
-          ...(input.auditorModel ? { model: input.auditorModel } : {}),
+          ...(input.auditorModel ? { model: input.auditorModel, ...(input.auditorVariant ? { variant: input.auditorVariant } : {}) } : {}),
         },
       })
       if (legacyResult.error) return { ok: false, error: legacyResult.error }
@@ -1149,6 +1154,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       promptText: finalAuditPrompt,
       agent: 'auditor-loop',
       model: auditorModel,
+      variant: currentState.auditorVariant,
     })
 
     if (finalAuditPromptErr) {
@@ -1281,6 +1287,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           sessionId: rotatedSessionId,
           promptText: continuationPrompt,
           agent: 'code',
+          variant: currentState.executionVariant,
         })
         if (promptErr) {
           logger.error(`Loop: failed to send continuation prompt after audit creation failure`, promptErr)
@@ -1315,6 +1322,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       promptText: loopService.buildAuditPrompt(currentState),
       agent: 'auditor-loop',
       model: auditorModel,
+      variant: currentState.auditorVariant,
     })
 
     if (auditPromptErr) {
@@ -1327,6 +1335,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             worktreeDir: currentState.worktreeDir,
             workspaceId: currentState.workspaceId,
             prompt: loopService.buildAuditPrompt(currentState),
+            auditorModel,
+            auditorVariant: currentState.auditorVariant,
           })
           if (retryResult.ok) {
             logger.log(`Loop: recovered audit prompt after workspace re-bind for ${loopName}`)
@@ -1345,6 +1355,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
               worktreeDir: fresh.worktreeDir,
               workspaceId: fresh.workspaceId,
               prompt: loopService.buildAuditPrompt(fresh),
+              auditorModel,
+              auditorVariant: fresh.auditorVariant,
             })
             if (!retry.ok) throw retry.error
           })
@@ -1699,6 +1711,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         sessionId: newCodeSessionId,
         promptText: continuationPrompt,
         agent: 'code',
+        variant: currentState.executionVariant,
       })
       if (promptErr) {
         logger.error(`Loop: failed to send rewind continuation prompt for ${loopName}`, promptErr)

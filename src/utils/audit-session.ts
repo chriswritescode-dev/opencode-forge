@@ -60,6 +60,7 @@ export async function promptAuditSession(
     workspaceId?: string
     prompt: string
     auditorModel?: { providerID: string; modelID: string }
+    auditorVariant?: string
   },
 ): Promise<{ ok: true } | { ok: false; error: unknown }> {
   const parts = [{ type: 'text' as const, text: input.prompt }]
@@ -70,6 +71,7 @@ export async function promptAuditSession(
     agent: 'auditor-loop',
     parts,
     ...(input.auditorModel ? { model: input.auditorModel } : {}),
+    ...(input.auditorVariant ? { variant: input.auditorVariant } : {}),
   })
   if (result.error) return { ok: false, error: result.error }
   return { ok: true }

@@ -29,6 +29,8 @@ export interface LoopRow {
   currentSectionIndex: number
   totalSections: number
   finalAuditDone: number
+  executionVariant: string | null
+  auditorVariant: string | null
 }
 
 export interface LoopLargeFields {
@@ -123,6 +125,8 @@ function mapRow(row: LoopRowRaw): LoopRow {
     currentSectionIndex: row.current_section_index,
     totalSections: row.total_sections,
     finalAuditDone: row.final_audit_done,
+    executionVariant: row.execution_variant,
+    auditorVariant: row.auditor_variant,
   }
 }
 
@@ -154,6 +158,8 @@ interface LoopRowRaw {
   current_section_index: number
   total_sections: number
   final_audit_done: number
+  execution_variant: string | null
+  auditor_variant: string | null
 }
 
 export function createLoopsRepo(db: Database): LoopsRepo {
@@ -164,8 +170,9 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       error_count, phase, execution_model, auditor_model,
       model_failed, sandbox, sandbox_container, started_at, completed_at,
       termination_reason, completion_summary, workspace_id, host_session_id,
-      current_section_index, total_sections, final_audit_done
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      current_section_index, total_sections, final_audit_done,
+      execution_variant, auditor_variant
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   const upsertLargeStmt = db.prepare(`
@@ -181,7 +188,8 @@ export function createLoopsRepo(db: Database): LoopsRepo {
            error_count, phase, execution_model, auditor_model,
            model_failed, sandbox, sandbox_container, started_at, completed_at,
            termination_reason, completion_summary, workspace_id, host_session_id,
-           current_section_index, total_sections, final_audit_done
+           current_section_index, total_sections, final_audit_done,
+           execution_variant, auditor_variant
     FROM loops
     WHERE project_id = ? AND loop_name = ?
   `)
@@ -198,7 +206,8 @@ export function createLoopsRepo(db: Database): LoopsRepo {
            error_count, phase, execution_model, auditor_model,
            model_failed, sandbox, sandbox_container, started_at, completed_at,
            termination_reason, completion_summary, workspace_id, host_session_id,
-           current_section_index, total_sections, final_audit_done
+           current_section_index, total_sections, final_audit_done,
+           execution_variant, auditor_variant
     FROM loops
     WHERE project_id = ? AND current_session_id = ?
   `)
@@ -209,7 +218,8 @@ export function createLoopsRepo(db: Database): LoopsRepo {
            error_count, phase, execution_model, auditor_model,
            model_failed, sandbox, sandbox_container, started_at, completed_at,
            termination_reason, completion_summary, workspace_id, host_session_id,
-           current_section_index, total_sections, final_audit_done
+           current_section_index, total_sections, final_audit_done,
+           execution_variant, auditor_variant
     FROM loops
     WHERE project_id = ? AND status IN
   `
@@ -358,6 +368,8 @@ export function createLoopsRepo(db: Database): LoopsRepo {
         row.currentSectionIndex ?? 0,
         row.totalSections ?? 0,
         row.finalAuditDone ?? 0,
+        row.executionVariant ?? null,
+        row.auditorVariant ?? null,
       ) as unknown as { changes: number }
       if (result.changes === 0) {
         return false

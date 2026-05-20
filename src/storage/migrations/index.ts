@@ -289,5 +289,14 @@ export const migrations: Migration[] = [
       db.run(loadSql('130_create_loop_session_usage.sql'))
     },
   },
+  {
+    id: '131',
+    description: 'Add execution and auditor model variant columns to loops table',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      if (cols.some((c) => c.name === 'execution_variant')) return
+      db.run(loadSql('131_add_loop_model_variants.sql'))
+    },
+  },
 
 ]

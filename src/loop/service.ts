@@ -111,6 +111,8 @@ export function rowToLoopState(row: LoopRow, large: LoopLargeFields | null): Loo
     currentSectionIndex: row.currentSectionIndex,
     totalSections: row.totalSections,
     finalAuditDone: row.finalAuditDone === 1,
+    executionVariant: row.executionVariant ?? undefined,
+    auditorVariant: row.auditorVariant ?? undefined,
   }
 }
 
@@ -156,6 +158,8 @@ export function createLoopService(
       currentSectionIndex: state.currentSectionIndex,
       totalSections: state.totalSections,
       finalAuditDone: state.finalAuditDone ? 1 : 0,
+      executionVariant: state.executionVariant ?? null,
+      auditorVariant: state.auditorVariant ?? null,
     }
   }
 

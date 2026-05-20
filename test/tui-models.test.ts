@@ -6,6 +6,9 @@ import {
   buildDialogSelectOptions,
   getModelDisplayLabel,
   sortModelsByPriority,
+  getAvailableModelVariants,
+  getVariantDisplayLabel,
+  normalizeVariantForModel,
   type ProviderInfo,
   type ModelInfo,
 } from '../src/utils/tui-models'
@@ -565,5 +568,384 @@ describe('getModelDisplayLabel', () => {
 
   test('ignores fallback when value is non-empty', () => {
     expect(getModelDisplayLabel('anthropic/claude', models, 'unknown/model')).toBe('Claude Sonnet')
+  })
+})
+
+describe('fetchAvailableModels with variants', () => {
+  test('preserves variants from provider model data', async () => {
+    const mockProviders: any = [
+      {
+        id: 'anthropic',
+        name: 'Anthropic',
+        models: {
+          'claude-sonnet': {
+            id: 'claude-sonnet',
+            name: 'Claude Sonnet',
+            variants: {
+              default: { name: 'Default' },
+              'thinking-max': { name: 'Thinking Max' },
+            },
+          },
+        },
+      },
+    ]
+
+    const providerListMock = mock(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
+    const mockApi = createMockApi(['anthropic'], providerListMock)
+
+    const result = await fetchAvailableModels(mockApi)
+
+    expect(result.providers[0].models[0].variants).toEqual({
+      default: { name: 'Default' },
+      'thinking-max': { name: 'Thinking Max' },
+    })
+  })
+})
+
+describe('getAvailableModelVariants', () => {
+  test('returns empty array when model is null', () => {
+    expect(getAvailableModelVariants(null)).toEqual([])
+  })
+
+  test('returns empty array when model has no variants', () => {
+    const model: ModelInfo = {
+      id: 'test',
+      name: 'Test',
+      providerID: 'provider',
+      providerName: 'Provider',
+      fullName: 'provider/test',
+    }
+    expect(getAvailableModelVariants(model)).toEqual([])
+  })
+
+  test('excludes disabled variants', () => {
+    const model: ModelInfo = {
+      id: 'test',
+      name: 'Test',
+      providerID: 'provider',
+      providerName: 'Provider',
+      fullName: 'provider/test',
+      variants: {
+        default: { disabled: false },
+        legacy: { disabled: true },
+        active: {},
+      },
+    }
+    const result = getAvailableModelVariants(model)
+    expect(result).toHaveLength(2)
+    expect(result.map(v => v.id)).toEqual(['default', 'active'])
+  })
+
+  test('uses configured names/descriptions when present', () => {
+    const model: ModelInfo = {
+      id: 'test',
+      name: 'Test',
+      providerID: 'provider',
+      providerName: 'Provider',
+      fullName: 'provider/test',
+      variants: {
+        default: { name: 'Default Variant', description: 'The default configuration' },
+        'thinking-max': { thinkingBudget: 32000 },
+      },
+    }
+    const result = getAvailableModelVariants(model)
+    expect(result).toHaveLength(2)
+    expect(result[0].label).toBe('Default Variant')
+    expect(result[0].description).toBe('The default configuration')
+    expect(result[1].label).toBe('Thinking Max')
+    expect(result[1].description).toBe('Thinking budget: 32000')
+  })
+
+  test('generates labels from kebab-case and snake_case keys', () => {
+    const model: ModelInfo = {
+      id: 'test',
+      name: 'Test',
+      providerID: 'provider',
+      providerName: 'Provider',
+      fullName: 'provider/test',
+      variants: {
+        'thinking-max': {},
+        reasoning_high: {},
+      },
+    }
+    const result = getAvailableModelVariants(model)
+    expect(result.map(v => v.label)).toEqual(['Thinking Max', 'Reasoning High'])
+  })
+
+  test('generates descriptions from reasoningEffort field', () => {
+    const model: ModelInfo = {
+      id: 'test',
+      name: 'Test',
+      providerID: 'provider',
+      providerName: 'Provider',
+      fullName: 'provider/test',
+      variants: {
+        high: { reasoningEffort: 'high' },
+      },
+    }
+    const result = getAvailableModelVariants(model)
+    expect(result[0].description).toBe('Reasoning: high')
+  })
+
+  test('generates descriptions from thinking field', () => {
+    const model: ModelInfo = {
+      id: 'test',
+      name: 'Test',
+      providerID: 'provider',
+      providerName: 'Provider',
+      fullName: 'provider/test',
+      variants: {
+        default: { thinking: 'low' },
+      },
+    }
+    const result = getAvailableModelVariants(model)
+    expect(result[0].description).toBe('Thinking: low')
+  })
+
+  test('generates descriptions from reasoning_effort field', () => {
+    const model: ModelInfo = {
+      id: 'test',
+      name: 'Test',
+      providerID: 'provider',
+      providerName: 'Provider',
+      fullName: 'provider/test',
+      variants: {
+        mid: { reasoning_effort: 'medium' },
+      },
+    }
+    const result = getAvailableModelVariants(model)
+    expect(result[0].description).toBe('Reasoning: medium')
+  })
+
+  test('generates descriptions from thinking_budget field', () => {
+    const model: ModelInfo = {
+      id: 'test',
+      name: 'Test',
+      providerID: 'provider',
+      providerName: 'Provider',
+      fullName: 'provider/test',
+      variants: {
+        default: { thinking_budget: 16000 },
+      },
+    }
+    const result = getAvailableModelVariants(model)
+    expect(result[0].description).toBe('Thinking budget: 16000')
+  })
+
+  test('returns undefined description when no relevant fields present', () => {
+    const model: ModelInfo = {
+      id: 'test',
+      name: 'Test',
+      providerID: 'provider',
+      providerName: 'Provider',
+      fullName: 'provider/test',
+      variants: {
+        default: { unrelated_field: 'value' },
+      },
+    }
+    const result = getAvailableModelVariants(model)
+    expect(result[0].description).toBeUndefined()
+  })
+
+  test('preserves variant key as id', () => {
+    const model: ModelInfo = {
+      id: 'test',
+      name: 'Test',
+      providerID: 'provider',
+      providerName: 'Provider',
+      fullName: 'provider/test',
+      variants: {
+        'custom-id': {},
+      },
+    }
+    const result = getAvailableModelVariants(model)
+    expect(result[0].id).toBe('custom-id')
+  })
+})
+
+describe('getVariantDisplayLabel', () => {
+  test('returns "default" for undefined variant', () => {
+    expect(getVariantDisplayLabel(undefined)).toBe('default')
+  })
+
+  test('returns "default" for empty string', () => {
+    expect(getVariantDisplayLabel('')).toBe('default')
+  })
+
+  test('returns friendly label for known variant', () => {
+    const model: ModelInfo = {
+      id: 'test',
+      name: 'Test',
+      providerID: 'provider',
+      providerName: 'Provider',
+      fullName: 'provider/test',
+      variants: {
+        'thinking-max': { name: 'Thinking Max' },
+      },
+    }
+    expect(getVariantDisplayLabel('thinking-max', model)).toBe('Thinking Max')
+  })
+
+  test('returns raw string for unknown variant', () => {
+    const model: ModelInfo = {
+      id: 'test',
+      name: 'Test',
+      providerID: 'provider',
+      providerName: 'Provider',
+      fullName: 'provider/test',
+      variants: {
+        default: {},
+      },
+    }
+    expect(getVariantDisplayLabel('unknown-variant', model)).toBe('unknown-variant')
+  })
+
+  test('returns raw string when model is null', () => {
+    expect(getVariantDisplayLabel('some-variant', null)).toBe('some-variant')
+  })
+
+  test('returns raw string when model has no variants', () => {
+    const model: ModelInfo = {
+      id: 'test',
+      name: 'Test',
+      providerID: 'provider',
+      providerName: 'Provider',
+      fullName: 'provider/test',
+    }
+    expect(getVariantDisplayLabel('some-variant', model)).toBe('some-variant')
+  })
+})
+
+describe('normalizeVariantForModel', () => {
+  test('returns empty string for undefined variant', () => {
+    expect(normalizeVariantForModel(undefined)).toBe('')
+  })
+
+  test('returns empty string for empty string', () => {
+    expect(normalizeVariantForModel('')).toBe('')
+  })
+
+  test('returns empty string when model has no variants', () => {
+    const model: ModelInfo = {
+      id: 'test',
+      name: 'Test',
+      providerID: 'provider',
+      providerName: 'Provider',
+      fullName: 'provider/test',
+    }
+    expect(normalizeVariantForModel('some-variant', model)).toBe('')
+  })
+
+  test('returns variant when it exists in available variants', () => {
+    const model: ModelInfo = {
+      id: 'test',
+      name: 'Test',
+      providerID: 'provider',
+      providerName: 'Provider',
+      fullName: 'provider/test',
+      variants: {
+        'thinking-max': {},
+        default: {},
+      },
+    }
+    expect(normalizeVariantForModel('thinking-max', model)).toBe('thinking-max')
+    expect(normalizeVariantForModel('default', model)).toBe('default')
+  })
+
+  test('returns empty string when variant is not in available variants', () => {
+    const model: ModelInfo = {
+      id: 'test',
+      name: 'Test',
+      providerID: 'provider',
+      providerName: 'Provider',
+      fullName: 'provider/test',
+      variants: {
+        default: {},
+      },
+    }
+    expect(normalizeVariantForModel('thinking-max', model)).toBe('')
+  })
+
+  test('returns empty string when variant is disabled', () => {
+    const model: ModelInfo = {
+      id: 'test',
+      name: 'Test',
+      providerID: 'provider',
+      providerName: 'Provider',
+      fullName: 'provider/test',
+      variants: {
+        default: { disabled: false },
+        legacy: { disabled: true },
+      },
+    }
+    expect(normalizeVariantForModel('legacy', model)).toBe('')
+    expect(normalizeVariantForModel('default', model)).toBe('default')
+  })
+
+  test('clears invalid variants when switching models', () => {
+    const modelA: ModelInfo = {
+      id: 'test-a',
+      name: 'Test A',
+      providerID: 'provider',
+      providerName: 'Provider',
+      fullName: 'provider/test-a',
+      variants: {
+        'thinking-max': {},
+      },
+    }
+
+    const modelB: ModelInfo = {
+      id: 'test-b',
+      name: 'Test B',
+      providerID: 'provider',
+      providerName: 'Provider',
+      fullName: 'provider/test-b',
+      variants: {
+        default: {},
+      },
+    }
+
+    // User had thinking-max on modelA, now switching to modelB which doesn't have it
+    expect(normalizeVariantForModel('thinking-max', modelA)).toBe('thinking-max')
+    expect(normalizeVariantForModel('thinking-max', modelB)).toBe('')
+  })
+
+  test('returns empty string when model is null (regression: use-default model)', () => {
+    // Bug 2 fix: When a user selects "Use default" for a model (empty string),
+    // the component must resolve the OpenCode default model first before normalizing.
+    // This test verifies that passing null directly returns empty string.
+    expect(normalizeVariantForModel('thinking-max', null)).toBe('')
+  })
+
+  test('preserves variant when effective model supports it (regression: use-default variant)', () => {
+    // Bug 2 fix: When the effective model supports a variant, it should be preserved.
+    const defaultModel: ModelInfo = {
+      id: 'default',
+      name: 'Default',
+      providerID: 'provider',
+      providerName: 'Provider',
+      fullName: 'provider/default',
+      variants: {
+        'thinking-max': {},
+        default: {},
+      },
+    }
+    // Even if we started from null, normalizing against the resolved default model preserves the variant
+    expect(normalizeVariantForModel('thinking-max', defaultModel)).toBe('thinking-max')
+  })
+
+  test('returns empty string when variant is not available in effective model', () => {
+    // Variant 'thinking-max' is not in the model's available variants
+    const modelWithoutThinking: ModelInfo = {
+      id: 'no-thinking',
+      name: 'No Thinking',
+      providerID: 'provider',
+      providerName: 'Provider',
+      fullName: 'provider/no-thinking',
+      variants: {
+        default: {},
+      },
+    }
+    expect(normalizeVariantForModel('thinking-max', modelWithoutThinking)).toBe('')
   })
 })

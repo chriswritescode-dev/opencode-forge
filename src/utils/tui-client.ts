@@ -18,6 +18,20 @@ import { extractPlanExecutionMetadata } from './plan-execution'
 
 export type ApiExecutionMode = 'new-session' | 'execute-here' | 'loop'
 
+/**
+ * Builds a consistent model+variant payload for promptAsync calls.
+ * Centralizes the spreading logic so each call site doesn't reinvent it.
+ */
+export function buildPromptModelSelection(
+  model: { providerID: string; modelID: string } | undefined,
+  variant?: string,
+): { model?: { providerID: string; modelID: string }; variant?: string } {
+  return {
+    ...(model ? { model } : {}),
+    ...(variant ? { variant } : {}),
+  }
+}
+
 export interface ExecutionContext {
   preferences: ExecutionPreferences | null
   models: {
@@ -35,6 +49,8 @@ export interface ExecutePlanRequest {
   plan: string
   executionModel?: string
   auditorModel?: string
+  executionVariant?: string
+  auditorVariant?: string
   targetSessionId?: string
 }
 
@@ -272,20 +288,14 @@ export async function connectForgeProject(
       if (req.mode === 'execute-here') {
         const prompt = `The architect agent has created an implementation plan in this conversation above. You are now the code agent taking over this session. Your job is to execute the plan — edit files, run commands, create tests, and implement every phase. Do NOT just describe or summarize the changes. Actually make them.\n\nPlan reference: ${req.plan}`
 
-        const result = parsedModel
-          ? await api.client.session.promptAsync({
-            sessionID: req.targetSessionId ?? sessionId,
-            directory,
-            agent: 'code',
-            model: parsedModel,
-            parts: [{ type: 'text' as const, text: prompt }],
-          })
-          : await api.client.session.promptAsync({
-            sessionID: req.targetSessionId ?? sessionId,
-            directory,
-            agent: 'code',
-            parts: [{ type: 'text' as const, text: prompt }],
-          })
+        const modelVariant = buildPromptModelSelection(parsedModel, req.executionVariant)
+        const result = await api.client.session.promptAsync({
+          sessionID: req.targetSessionId ?? sessionId,
+          directory,
+          agent: 'code',
+          ...modelVariant,
+          parts: [{ type: 'text' as const, text: prompt }],
+        })
 
         if (result.error) return null
         if (projectId) writeExecutionPreferences(projectId, prefs)
@@ -301,20 +311,14 @@ export async function connectForgeProject(
         if (createResult.error || !createResult.data) return null
 
         const newSessionId = createResult.data.id
-        const result = parsedModel
-          ? await api.client.session.promptAsync({
-            sessionID: newSessionId,
-            directory,
-            agent: 'code',
-            model: parsedModel,
-            parts: [{ type: 'text' as const, text: req.plan }],
-          })
-          : await api.client.session.promptAsync({
-            sessionID: newSessionId,
-            directory,
-            agent: 'code',
-            parts: [{ type: 'text' as const, text: req.plan }],
-          })
+        const modelVariant = buildPromptModelSelection(parsedModel, req.executionVariant)
+        const result = await api.client.session.promptAsync({
+          sessionID: newSessionId,
+          directory,
+          agent: 'code',
+          ...modelVariant,
+          parts: [{ type: 'text' as const, text: req.plan }],
+        })
 
         if (result.error) return null
         if (projectId) writeExecutionPreferences(projectId, prefs)
@@ -330,6 +334,8 @@ export async function connectForgeProject(
           title: req.title,
           executionModel: req.executionModel,
           auditorModel: req.auditorModel,
+          executionVariant: req.executionVariant,
+          auditorVariant: req.auditorVariant,
           planSource: 'inline',
           planText: req.plan,
           initialPromptOwner: 'tui',
@@ -373,7 +379,7 @@ export async function connectForgeProject(
             workspace: workspace.id,
             agent: 'code',
             parts: [{ type: 'text' as const, text: promptText }],
-            ...(parsedModel ? { model: parsedModel } : {}),
+            ...buildPromptModelSelection(parsedModel, req.executionVariant),
           }
           const promptResult = await api.client.session.promptAsync(promptInput)
           if (promptResult.error) {

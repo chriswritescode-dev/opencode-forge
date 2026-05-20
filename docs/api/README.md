@@ -342,6 +342,16 @@ Two model selectors are available:
 - Same model selection interface
 - Defaults to last-used selection, falling back to `config.auditorModel` → `config.executionModel`
 
+#### Variant Selection
+
+Each model selector has a companion **variant selector** that lets you choose a provider-specific reasoning or thinking-effort level. Variants are optional and provider/model-dependent — they appear only when the selected model exposes them via OpenCode model metadata.
+
+- Variants are provided by OpenCode model metadata. Examples include reasoning/thinking effort levels such as `low`, `high`, or `max` when exposed by the provider.
+- **Use default** leaves OpenCode, the agent, and the model defaults in control.
+- **Execution variants** affect code prompts for all launch modes (`New session`, `Execute here`, and `Loop`).
+- **Auditor variants** affect loop audit and final-audit prompts.
+- Variants are persisted per-project alongside model selections (same 30-day TTL).
+
 #### Persistence
 
 Your selections are automatically saved in `tui_preferences` after launch:
@@ -477,6 +487,10 @@ Model selection follows this priority order:
 2. `config.auditorModel`
 3. `config.executionModel`
 4. Platform default
+
+**For variants:**
+1. Dialog selection persisted per project
+2. OpenCode/agent/model default
 
 ### Troubleshooting
 

@@ -48,7 +48,7 @@ The TUI plugin provides a sidebar widget that displays:
 
 - Active and recent loops
 - Plan viewer with inline editing (view/edit/execute/export tabs)
-- Execution dialog with mode and model selection
+- Execution dialog with mode, model, and variant selection
 - Loop details dialog with session statistics
 - Command palette integration (`Forge: Show loops`, `Forge: View plan`, `Forge: Execute plan`)
 - Model selection dialog with recent model tracking
