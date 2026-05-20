@@ -194,9 +194,10 @@ The plugin follows this initialization sequence within `createForgePlugin()`:
 7. **Database** - Initialize SQLite storage (`initializeDatabase()`)
 8. **Repositories** - Create typed repos (loops, plans, reviewFindings, sectionPlans)
 9. **Loop Event Handler** - Connect loop runtime to events and state management
-10. **Stale Loop Reconciliation** - Reconcile loops from previous session (cancel stalled, preserve active sandboxes, restart candidates)
-11. **Tools and Agents** - Register all tools (`createTools()`) and agents (`buildAgents()`)
-12. **Hooks** - Final registration of all hook points
+10. **Tools and Agents** - Register all tools (`createTools()`) and agents (`buildAgents()`)
+11. **Hooks** - Final registration of all hook points
+
+**Note:** Plugin initialization does not recover, cancel, or restart loops. Boot initializes storage and runtime services only. Loop recovery and restart are explicit user actions via `loop-status restart=true`.
 
 ## Cleanup
 

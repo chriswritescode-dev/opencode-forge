@@ -2,13 +2,18 @@
  * Sandbox reconciliation module for periodic container lifecycle management.
  * 
  * This module provides a reconciliation function that ensures sandbox containers
- * are started/restored for loops that have sandbox enabled but no active container.
+ * are started/restored for loops that have sandbox enabled.
  * It is designed to be called periodically from the plugin server.
+ * 
+ * IMPORTANT: This function only reconciles loops that are registered in the
+ * loop registry (i.e., loops started/restarted in the current plugin process).
+ * Pre-existing persisted loops from before plugin initialization are NOT reconciled.
  */
 
 import type { SandboxManager } from './manager'
 import type { Loop } from '../loop'
 import type { Logger } from '../types'
+import { loopRegistry } from '../utils/loop-registry'
 
 export interface ReconcileSandboxesDeps {
   sandboxManager: SandboxManager
@@ -28,6 +33,9 @@ const inFlightByDeps = new WeakMap<ReconcileSandboxesDeps, boolean>()
  * 2. Container names are persisted in loop state
  * 3. Stale container references are restored
  * 
+ * IMPORTANT: Only loops registered in the current plugin process are reconciled.
+ * Pre-existing persisted loops are NOT reconciled to avoid boot-time recovery.
+ * 
  * The function includes a re-entrancy guard to prevent concurrent executions.
  * 
  * @param deps - Dependencies including sandbox manager, loop service, and logger
@@ -45,8 +53,14 @@ export async function reconcileSandboxes(deps: ReconcileSandboxesDeps): Promise<
 
   try {
     const activeLoops = loop.listActive()
+    const registeredLoops = loopRegistry.getAll()
 
     for (const state of activeLoops) {
+      // Only reconcile loops that were started/restarted in the current process.
+      // This prevents boot-time recovery of pre-existing persisted loops.
+      if (!registeredLoops.includes(state.loopName)) {
+        continue
+      }
       // Only process loops with sandbox enabled, worktree mode, and a worktree directory.
       if (state.sandbox !== true || !state.worktreeDir || !state.loopName) {
         continue

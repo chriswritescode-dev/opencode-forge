@@ -135,7 +135,7 @@ The heart of Forge. Implements autonomous iterative development with phases: `co
 | `index.ts` | Public API barrel (all re-exports) |
 | `runtime.ts` | `createLoop()` factory, `Loop` interface (~2100 lines) |
 | `service.ts` | DB-backed `LoopService` (`createLoopService`) |
-| `state.ts` | Discriminated union `LoopState` (4 phases), converters |
+| `state.ts` | Discriminated union `LoopState` (3 phases: `coding`, `auditing`, `final_auditing`), converters |
 | `transitions.ts` | Pure `nextTransition()` table |
 | `termination.ts` | `TerminationReason` union, `terminationStatusFor()` |
 | `prompts.ts` | Prompt builders for each loop phase |

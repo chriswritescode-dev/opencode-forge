@@ -1,5 +1,4 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import Database from 'better-sqlite3'
 import { mkdtempSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -14,6 +13,8 @@ import type { PlansRepo } from '../../src/storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import type { SectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import type { LoopService } from '../../src/loop/service'
+const Database = require('better-sqlite3')
+type Database = ReturnType<typeof Database>
 
 const mockLogger: Logger = {
   log: () => {},
@@ -30,6 +31,16 @@ describe('handleLoopRestart from stall_timeout', () => {
   let reviewFindingsRepo: ReviewFindingsRepo
   let sectionPlansRepo: SectionPlansRepo
   let loopService: LoopService
+
+  const mockWorkspaceStatusRegistry = {
+    awaitConnected: async () => ({ connected: true }),
+  }
+
+  const mockPendingTeardowns = {
+    register: () => {},
+    unregister: () => {},
+    get: () => undefined,
+  }
 
   beforeEach(() => {
     const tempDir = mkdtempSync(join(tmpdir(), 'exec-restart-test-'))
@@ -292,6 +303,8 @@ describe('handleLoopRestart from stall_timeout', () => {
       loop: mockLoopService as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      pendingTeardowns: mockPendingTeardowns as any,
     })
 
     const result = await service.dispatch(
@@ -402,6 +415,8 @@ describe('handleLoopRestart from stall_timeout', () => {
       loop: mockLoopService as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      pendingTeardowns: mockPendingTeardowns as any,
     })
 
     const result = await service.dispatch(
@@ -494,6 +509,8 @@ describe('handleLoopRestart from stall_timeout', () => {
       loop: mockLoopService as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      pendingTeardowns: mockPendingTeardowns as any,
     })
 
     const result = await service.dispatch(
@@ -602,6 +619,8 @@ describe('handleLoopRestart from stall_timeout', () => {
       loop: mockLoopService as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      pendingTeardowns: mockPendingTeardowns as any,
     })
 
     const result = await service.dispatch(
@@ -702,6 +721,8 @@ describe('handleLoopRestart from stall_timeout', () => {
       loop: mockLoopService as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      pendingTeardowns: mockPendingTeardowns as any,
     })
 
     const result = await service.dispatch(
@@ -813,6 +834,8 @@ describe('handleLoopRestart from stall_timeout', () => {
       loop: mockLoopService as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      pendingTeardowns: mockPendingTeardowns as any,
     })
 
     const result = await service.dispatch(
@@ -842,5 +865,410 @@ describe('handleLoopRestart from stall_timeout', () => {
     // Exactly one abort for the old session
     expect(abortCalls.length).toBe(1)
     expect(abortCalls[0].sessionID).toBe('session-old')
+  })
+})
+
+describe('handleLoopRestart restartability rules', () => {
+  let db: Database
+  let loopsRepo: LoopsRepo
+  let plansRepo: PlansRepo
+  let reviewFindingsRepo: ReviewFindingsRepo
+  let sectionPlansRepo: SectionPlansRepo
+  let loopService: LoopService
+
+  beforeEach(() => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'exec-restart-rules-test-'))
+    db = new Database(join(tempDir, 'test.db'))
+
+    db.exec(`
+      CREATE TABLE loops (
+        project_id           TEXT NOT NULL,
+        loop_name            TEXT NOT NULL,
+        status               TEXT NOT NULL,
+        current_session_id   TEXT NOT NULL,
+        worktree             INTEGER NOT NULL,
+        worktree_dir         TEXT NOT NULL,
+        session_directory    TEXT,
+        worktree_branch      TEXT,
+        project_dir          TEXT NOT NULL,
+        max_iterations       INTEGER NOT NULL,
+        iteration            INTEGER NOT NULL DEFAULT 0,
+        audit_count          INTEGER NOT NULL DEFAULT 0,
+        error_count          INTEGER NOT NULL DEFAULT 0,
+        phase                TEXT NOT NULL,
+        execution_model      TEXT,
+        auditor_model        TEXT,
+        model_failed         INTEGER NOT NULL DEFAULT 0,
+        sandbox              INTEGER NOT NULL DEFAULT 0,
+        sandbox_container    TEXT,
+        started_at           INTEGER NOT NULL,
+        completed_at         INTEGER,
+        termination_reason   TEXT,
+        completion_summary   TEXT,
+        workspace_id         TEXT,
+        host_session_id      TEXT,
+        audit_session_id     TEXT,
+        current_section_index INTEGER NOT NULL DEFAULT 0,
+        total_sections INTEGER NOT NULL DEFAULT 0,
+        final_audit_done INTEGER NOT NULL DEFAULT 0,
+        final_audit_attempts INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (project_id, loop_name)
+      )
+    `)
+
+    db.exec(`
+      CREATE TABLE loop_large_fields (
+        project_id          TEXT NOT NULL,
+        loop_name           TEXT NOT NULL,
+        last_audit_result   TEXT,
+        PRIMARY KEY (project_id, loop_name),
+        FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
+      )
+    `)
+
+    db.exec(`
+      CREATE TABLE plans (
+        project_id   TEXT NOT NULL,
+        loop_name    TEXT,
+        session_id   TEXT,
+        content      TEXT NOT NULL,
+        updated_at   INTEGER NOT NULL,
+        CHECK (loop_name IS NOT NULL OR session_id IS NOT NULL),
+        CHECK (NOT (loop_name IS NOT NULL AND session_id IS NOT NULL)),
+        UNIQUE (project_id, loop_name),
+        UNIQUE (project_id, session_id)
+      )
+    `)
+
+    db.exec(`
+      CREATE TABLE review_findings (
+        project_id TEXT NOT NULL,
+        loop_name TEXT NOT NULL DEFAULT '',
+        file TEXT NOT NULL,
+        line INTEGER NOT NULL,
+        severity TEXT NOT NULL,
+        description TEXT NOT NULL,
+        scenario TEXT,
+        created_at INTEGER NOT NULL,
+        section_index INTEGER,
+        PRIMARY KEY (project_id, loop_name, file, line, section_index)
+      )
+    `)
+
+    db.exec(`
+      CREATE TABLE section_plans (
+        project_id TEXT NOT NULL,
+        loop_name TEXT NOT NULL,
+        section_index INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','in_progress','completed','failed')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        started_at INTEGER,
+        completed_at INTEGER,
+        summary_done TEXT,
+        summary_deviations TEXT,
+        summary_follow_ups TEXT,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (project_id, loop_name, section_index)
+      )
+    `)
+
+    loopsRepo = createLoopsRepo(db)
+    plansRepo = createPlansRepo(db)
+    reviewFindingsRepo = createReviewFindingsRepo(db)
+    sectionPlansRepo = createSectionPlansRepo(db)
+    loopService = createLoopService(
+      loopsRepo,
+      plansRepo,
+      reviewFindingsRepo,
+      PROJECT_ID,
+      mockLogger,
+      undefined,
+      undefined,
+      undefined,
+      sectionPlansRepo,
+    )
+  })
+
+  afterEach(() => {
+    try { db.close() } catch {}
+  })
+
+  function insertLoop(overrides: Partial<{
+    loopName: string
+    phase: string
+    currentSectionIndex: number
+    totalSections: number
+    iteration: number
+    status: string
+    terminationReason: string | null
+    active: boolean
+    worktree: boolean
+    worktreeDir: string
+    workspaceId: string | null
+  }> = {}) {
+    const defaults = {
+      loopName: 'test-loop',
+      phase: 'coding',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      iteration: 1,
+      status: 'cancelled',
+      terminationReason: 'user_aborted',
+      active: false,
+      worktree: false,
+      worktreeDir: '/tmp/test-worktree',
+      workspaceId: null as string | null,
+    }
+    const opts = { ...defaults, ...overrides }
+    loopsRepo.insert({
+      projectId: PROJECT_ID,
+      loopName: opts.loopName,
+      status: opts.status as any,
+      currentSessionId: 'session-old',
+      worktree: opts.worktree,
+      worktreeDir: opts.worktreeDir,
+      worktreeBranch: null,
+      projectDir: '/tmp',
+      maxIterations: 10,
+      iteration: opts.iteration,
+      auditCount: 0,
+      errorCount: 0,
+      phase: opts.phase as any,
+      executionModel: null,
+      auditorModel: null,
+      modelFailed: false,
+      sandbox: false,
+      sandboxContainer: null,
+      startedAt: Date.now(),
+      completedAt: null,
+      terminationReason: opts.terminationReason,
+      completionSummary: null,
+      workspaceId: opts.workspaceId,
+      hostSessionId: null,
+      currentSectionIndex: opts.currentSectionIndex,
+      totalSections: opts.totalSections,
+      finalAuditDone: 0,
+    }, { lastAuditResult: null })
+  }
+
+  async function createMockService() {
+    const noopFn = () => {}
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: noopFn,
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: noopFn,
+      buildSectionInitialPrompt: () => 'section prompt',
+      buildFinalAuditPrompt: () => 'audit prompt',
+      generateUniqueLoopName: (name) => name,
+    }
+
+    const sessionCreateSpy = vi.fn().mockResolvedValue({ data: { id: 'new-session-restart' } })
+    const sessionPromptAsyncSpy = vi.fn().mockResolvedValue({})
+    const workspaceCreateSpy = vi.fn().mockResolvedValue({ data: { id: 'ws-new', directory: '/tmp', branch: 'main' } })
+
+    const mockV2Client = {
+      session: {
+        create: sessionCreateSpy,
+        get: async () => ({ data: {} }),
+        promptAsync: sessionPromptAsyncSpy,
+        abort: async () => ({}),
+        delete: async () => ({}),
+        messages: async () => ({ data: [] }),
+        status: async () => ({ data: {} }),
+      },
+      experimental: {
+        workspace: {
+          list: async () => ({ data: [] }),
+          remove: async () => ({}),
+          create: workspaceCreateSpy,
+          warp: async () => ({}),
+          syncList: async () => ({}),
+        },
+        session: { list: async () => ({ data: [] }) },
+      },
+      tui: { publish: async () => ({}), selectSession: async () => ({}) },
+      worktree: { create: async () => ({ data: { directory: '/tmp/wt', branch: 'main' } }) },
+    }
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const mockWorkspaceStatusRegistry = {
+      awaitConnected: async () => ({ connected: true }),
+    }
+
+    const mockPendingTeardowns = {
+      register: noopFn,
+      unregister: noopFn,
+      get: () => undefined,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+      v2: mockV2Client as any,
+      plansRepo,
+      loopsRepo,
+      loop: mockLoopService as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      pendingTeardowns: mockPendingTeardowns as any,
+    })
+
+    return {
+      service,
+      sessionCreateSpy,
+      sessionPromptAsyncSpy,
+      workspaceCreateSpy,
+    }
+  }
+
+  test.each([
+    ['cancelled', 'user_aborted'],
+    ['errored', 'max_iterations'],
+    ['errored', 'error_max_retries'],
+    ['stalled', 'stall_timeout'],
+    ['errored', 'final_audit_retry_exhausted'],
+  ])(
+    'restarts %s loop with terminationReason %s without force',
+    async (status, terminationReason) => {
+      const loopName = `restart-${status}-${terminationReason.replace(/:/g, '_')}`
+      insertLoop({
+        loopName,
+        status,
+        terminationReason,
+        phase: 'coding',
+      })
+
+      const { service } = await createMockService()
+      const result = await service.dispatch(
+        { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+        {
+          type: 'loop.restart' as const,
+          selector: { kind: 'exact' as const, name: loopName },
+        },
+      )
+
+      expect(result.ok).toBe(true)
+      if (!result.ok) return
+
+      expect(result.data.loopName).toBe(loopName)
+      expect(result.data.previousSessionId).toBe('session-old')
+      expect(result.data.sessionId).toBe('new-session-restart')
+      expect(result.data.iteration).toBe(1)
+
+      const newState = loopService.getActiveState(loopName)
+      expect(newState).not.toBeNull()
+      expect(newState?.terminationReason).toBeFalsy()
+      expect(newState?.completedAt).toBeFalsy()
+      expect(newState?.active).toBe(true)
+    },
+  )
+
+  test('completed loop cannot restart', async () => {
+    insertLoop({
+      loopName: 'completed-loop',
+      status: 'completed',
+      terminationReason: 'completed',
+      phase: 'coding',
+    })
+
+    const { service, sessionCreateSpy, sessionPromptAsyncSpy } = await createMockService()
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'completed-loop' },
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.message).toContain('completed successfully and cannot be restarted')
+
+    expect(sessionCreateSpy).not.toHaveBeenCalled()
+    expect(sessionPromptAsyncSpy).not.toHaveBeenCalled()
+
+    const newState = loopService.getActiveState('completed-loop')
+    expect(newState).toBeNull()
+  })
+
+  test('completed loop with null terminationReason cannot restart', async () => {
+    insertLoop({
+      loopName: 'completed-loop-null-reason',
+      status: 'completed',
+      terminationReason: null,
+      phase: 'coding',
+    })
+
+    const { service, sessionCreateSpy, sessionPromptAsyncSpy } = await createMockService()
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'completed-loop-null-reason' },
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.message).toContain('completed successfully and cannot be restarted')
+
+    expect(sessionCreateSpy).not.toHaveBeenCalled()
+    expect(sessionPromptAsyncSpy).not.toHaveBeenCalled()
+
+    const newState = loopService.getActiveState('completed-loop-null-reason')
+    expect(newState).toBeNull()
+  })
+
+  test('missing worktree blocks restart', async () => {
+    const missingDir = join(tmpdir(), `missing-worktree-${Date.now()}`)
+    insertLoop({
+      loopName: 'missing-worktree-loop',
+      status: 'cancelled',
+      terminationReason: 'user_aborted',
+      worktree: true,
+      worktreeDir: missingDir,
+      phase: 'coding',
+    })
+
+    const { service, sessionCreateSpy, sessionPromptAsyncSpy, workspaceCreateSpy } = await createMockService()
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'missing-worktree-loop' },
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.message).toContain('worktree directory no longer exists')
+
+    expect(sessionCreateSpy).not.toHaveBeenCalled()
+    expect(sessionPromptAsyncSpy).not.toHaveBeenCalled()
+    expect(workspaceCreateSpy).not.toHaveBeenCalled()
+
+    const newState = loopService.getActiveState('missing-worktree-loop')
+    expect(newState).toBeNull()
   })
 })

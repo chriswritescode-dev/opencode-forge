@@ -4,6 +4,7 @@ import type { SandboxManager } from '../../src/sandbox/manager'
 import type { LoopService } from '../../src/loop/service'
 import type { Logger } from '../../src/types'
 import type { LoopRow } from '../../src/storage'
+import { loopRegistry } from '../../src/utils/loop-registry'
 
 describe('reconcileSandboxes', () => {
   let mockSandboxManager: Partial<SandboxManager>
@@ -12,6 +13,9 @@ describe('reconcileSandboxes', () => {
   let deps: ReconcileSandboxesDeps
 
   beforeEach(() => {
+    // Clear registry before each test to avoid cross-test contamination
+    loopRegistry.clear()
+
     mockSandboxManager = {
       isActive: mock(),
       isLive: mock(async () => true),
@@ -74,6 +78,7 @@ describe('reconcileSandboxes', () => {
   it('should not call start when container is already active', async () => {
     const state = createBaseState({ sandboxContainer: 'forge-test-loop' })
 
+    loopRegistry.add('test-loop')
     mockLoopService.listActive.mockReturnValue([state])
     mockSandboxManager.isActive.mockReturnValue(true)
     mockSandboxManager.isLive.mockResolvedValue(true)
@@ -93,6 +98,7 @@ describe('reconcileSandboxes', () => {
   it('should backfill sandboxContainer when container is active but name is missing', async () => {
     const state = createBaseState({ sandboxContainer: null })
 
+    loopRegistry.add('test-loop')
     mockLoopService.listActive.mockReturnValue([state])
     mockSandboxManager.isActive.mockReturnValue(true)
     mockSandboxManager.isLive.mockResolvedValue(true)
@@ -111,6 +117,7 @@ describe('reconcileSandboxes', () => {
   it('should call restore when container name exists but container is not active', async () => {
     const state = createBaseState({ sandboxContainer: 'forge-test-loop' })
 
+    loopRegistry.add('test-loop')
     mockLoopService.listActive.mockReturnValue([state])
     mockSandboxManager.isActive.mockReturnValue(false)
 
@@ -123,6 +130,7 @@ describe('reconcileSandboxes', () => {
   it('should call start when no container name exists', async () => {
     const state = createBaseState({ sandboxContainer: null })
 
+    loopRegistry.add('test-loop')
     mockLoopService.listActive.mockReturnValue([state])
     mockLoopService.getActiveState.mockReturnValue(state)
     mockSandboxManager.isActive.mockReturnValue(false)
@@ -137,6 +145,7 @@ describe('reconcileSandboxes', () => {
   it('should skip loops without sandbox enabled', async () => {
     const state = createBaseState({ sandbox: false })
 
+    loopRegistry.add('test-loop')
     mockLoopService.listActive.mockReturnValue([state])
 
     await reconcileSandboxes(deps)
@@ -149,6 +158,7 @@ describe('reconcileSandboxes', () => {
   it('should skip loops without worktreeDir', async () => {
     const state = createBaseState({ worktreeDir: '' })
 
+    loopRegistry.add('test-loop')
     mockLoopService.listActive.mockReturnValue([state])
 
     await reconcileSandboxes(deps)
@@ -160,6 +170,7 @@ describe('reconcileSandboxes', () => {
   it('should correct stale sandboxContainer when it differs from manager value', async () => {
     const state = createBaseState({ sandboxContainer: 'forge-stale-name' })
 
+    loopRegistry.add('test-loop')
     mockLoopService.listActive.mockReturnValue([state])
     mockLoopService.getActiveState.mockReturnValue(state)
     mockSandboxManager.isActive.mockReturnValue(true)
@@ -179,6 +190,7 @@ describe('reconcileSandboxes', () => {
   it('should not set state when container is active and name already matches', async () => {
     const state = createBaseState({ sandboxContainer: 'forge-test-loop' })
 
+    loopRegistry.add('test-loop')
     mockLoopService.listActive.mockReturnValue([state])
     mockSandboxManager.isActive.mockReturnValue(true)
     mockSandboxManager.getActive.mockReturnValue({
@@ -196,6 +208,8 @@ describe('reconcileSandboxes', () => {
     const state1 = createBaseState({ loopName: 'test-loop-1' })
     const state2 = createBaseState({ loopName: 'test-loop-2' })
 
+    loopRegistry.add('test-loop-1')
+    loopRegistry.add('test-loop-2')
     mockLoopService.listActive.mockReturnValue([state1, state2])
     mockLoopService.getActiveState.mockImplementation((loopName) => {
       if (loopName === 'test-loop-1') return state1
@@ -224,6 +238,7 @@ describe('reconcileSandboxes', () => {
   it('should prevent concurrent execution (re-entrancy guard)', async () => {
     const state = createBaseState()
     
+    loopRegistry.add('test-loop')
     mockLoopService.listActive.mockReturnValue([state])
     
     // Track when isActive is called
@@ -253,6 +268,7 @@ describe('reconcileSandboxes', () => {
   it('should restore container when map is stale but Docker reports container missing', async () => {
     const state = createBaseState({ sandboxContainer: 'forge-test-loop' })
     
+    loopRegistry.add('test-loop')
     mockLoopService.listActive.mockReturnValue([state])
     // Map says active, but isLive will check Docker
     mockSandboxManager.isActive.mockReturnValue(true)

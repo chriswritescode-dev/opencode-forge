@@ -4,6 +4,7 @@ import { mkdirSync, rmSync, existsSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import type { PluginConfig } from '../src/types'
 import type { PluginInput } from '@opencode-ai/plugin'
+import { initializeDatabase, closeDatabase, createLoopsRepo, createPlansRepo } from '../src/storage'
 
 const TEST_DIR = '/tmp/opencode-manager-memory-test-' + Date.now()
 
@@ -309,6 +310,148 @@ describe('createForgePlugin', () => {
     expect(typeof adapter.create).toBe('function')
     expect(typeof adapter.remove).toBe('function')
     expect(typeof adapter.target).toBe('function')
+  })
+
+  test('does not mutate persisted running loops on plugin initialization', async () => {
+    const config: PluginConfig = {
+      dataDir: `${testDir}/.opencode/memory`,
+    }
+
+    const plugin = createForgePlugin(config)
+
+    const db = initializeDatabase(config.dataDir!)
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+
+    const preInsertRow = {
+      projectId: TEST_PROJECT_ID,
+      loopName: 'interrupted-loop',
+      status: 'running' as const,
+      currentSessionId: 'old-session',
+      worktree: false,
+      worktreeDir: testDir,
+      worktreeBranch: null,
+      projectDir: testDir,
+      maxIterations: 50,
+      iteration: 3,
+      auditCount: 0,
+      errorCount: 0,
+      phase: 'coding' as const,
+      executionModel: null,
+      auditorModel: null,
+      modelFailed: false,
+      sandbox: false,
+      sandboxContainer: null,
+      startedAt: Date.now() - 10000,
+      completedAt: null,
+      terminationReason: null,
+      completionSummary: null,
+      workspaceId: null,
+      hostSessionId: null,
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: 0,
+    }
+
+    loopsRepo.insert(preInsertRow, { lastAuditResult: null })
+    closeDatabase(db)
+
+    const mockInput = {
+      directory: testDir,
+      worktree: testDir,
+      client: {} as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    const hooks = await plugin(mockInput)
+    currentHooks = hooks as { getCleanup?: () => Promise<void> }
+
+    const dbAfter = initializeDatabase(config.dataDir!)
+    const loopsRepoAfter = createLoopsRepo(dbAfter)
+    const rowAfter = loopsRepoAfter.get(TEST_PROJECT_ID, 'interrupted-loop')
+
+    expect(rowAfter).not.toBeNull()
+    expect(rowAfter!.status).toBe('running')
+    expect(rowAfter!.currentSessionId).toBe('old-session')
+    expect(rowAfter!.iteration).toBe(3)
+    expect(rowAfter!.terminationReason).toBeNull()
+    expect(rowAfter!.completedAt).toBeNull()
+
+    closeDatabase(dbAfter)
+  })
+
+  test('does not restore or mutate persisted running sandbox loops on plugin initialization', async () => {
+    const config: PluginConfig = {
+      dataDir: `${testDir}/.opencode/memory`,
+    }
+
+    const plugin = createForgePlugin(config)
+
+    const db = initializeDatabase(config.dataDir!)
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+
+    const preInsertRow = {
+      projectId: TEST_PROJECT_ID,
+      loopName: 'sandbox-loop',
+      status: 'running' as const,
+      currentSessionId: 'sandbox-session',
+      worktree: true,
+      worktreeDir: testDir,
+      worktreeBranch: null,
+      projectDir: testDir,
+      maxIterations: 50,
+      iteration: 2,
+      auditCount: 0,
+      errorCount: 0,
+      phase: 'coding' as const,
+      executionModel: null,
+      auditorModel: null,
+      modelFailed: false,
+      sandbox: true,
+      sandboxContainer: 'pre-existing-container-name',
+      startedAt: Date.now() - 10000,
+      completedAt: null,
+      terminationReason: null,
+      completionSummary: null,
+      workspaceId: null,
+      hostSessionId: null,
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: 0,
+    }
+
+    loopsRepo.insert(preInsertRow, { lastAuditResult: null })
+    closeDatabase(db)
+
+    const mockInput = {
+      directory: testDir,
+      worktree: testDir,
+      client: {} as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    const hooks = await plugin(mockInput)
+    currentHooks = hooks as { getCleanup?: () => Promise<void> }
+
+    const dbAfter = initializeDatabase(config.dataDir!)
+    const loopsRepoAfter = createLoopsRepo(dbAfter)
+    const rowAfter = loopsRepoAfter.get(TEST_PROJECT_ID, 'sandbox-loop')
+
+    expect(rowAfter).not.toBeNull()
+    expect(rowAfter!.status).toBe('running')
+    expect(rowAfter!.currentSessionId).toBe('sandbox-session')
+    expect(rowAfter!.iteration).toBe(2)
+    expect(rowAfter!.terminationReason).toBeNull()
+    expect(rowAfter!.completedAt).toBeNull()
+    expect(rowAfter!.sandbox).toBe(true)
+    expect(rowAfter!.sandboxContainer).toBe('pre-existing-container-name')
+
+    closeDatabase(dbAfter)
   })
 
 })

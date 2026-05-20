@@ -214,7 +214,7 @@ describe('loop-status tool restart path', () => {
     db.close()
   })
 
-  function makeState(active: boolean): Partial<LoopState> & Pick<LoopState, 'sessionId' | 'loopName' | 'worktreeDir' | 'projectDir'> {
+  function makeState(active: boolean, status?: LoopState['status']): Partial<LoopState> & Pick<LoopState, 'sessionId' | 'loopName' | 'worktreeDir' | 'projectDir'> {
     return {
       active,
       sessionId: active ? 'old-session-active' : 'old-session-done',
@@ -229,6 +229,7 @@ describe('loop-status tool restart path', () => {
       phase: active ? 'auditing' : ('coding' as const),
       errorCount: 0,
       auditCount: active ? 1 : 0,
+      status: status ?? (active ? 'running' : 'completed'),
       worktree: true,
       sandbox: false,
       executionModel: 'test-model',
@@ -464,7 +465,7 @@ describe('loop-status tool restart path', () => {
     
     // Create an inactive loop
     loopService.setState(loopName, {
-      ...makeState(false),
+      ...makeState(false, 'cancelled'),
       sessionId: oldSessionId,
       completedAt: new Date().toISOString(),
       terminationReason: 'cancelled',
@@ -538,6 +539,7 @@ describe('loop-status tool restart path', () => {
       phase: 'coding',
       errorCount: 0,
       auditCount: 0,
+      status: 'errored',
       worktree: true,
       sandbox: false,
       executionModel: 'test-model',
@@ -583,7 +585,7 @@ describe('loop-status tool restart path', () => {
     expect(callWithPermission![0].permission).toEqual(buildLoopPermissionRuleset())
   })
 
-  test('non-force restart of final_audit_retry_exhausted returns conflict', async () => {
+  test('non-force restart of final_audit_retry_exhausted succeeds without force', async () => {
     const mockApi = createMockTuiApi()
     const v2Client = mockApi.client as unknown as OpencodeClient
     const logger = createLogger({ enabled: false, file: '' })
@@ -607,14 +609,15 @@ describe('loop-status tool restart path', () => {
       iteration: 2,
       maxIterations: 5,
       startedAt: new Date().toISOString(),
-      prompt: 'Test prompt',
+      prompt: 'Test prompt for final audit restart',
       phase: 'final_auditing',
       errorCount: 0,
       auditCount: 1,
+      status: 'errored',
       worktree: true,
       sandbox: false,
-      executionModel: 'test-model',
-      auditorModel: 'test-auditor',
+      executionModel: 'provider/execution-model',
+      auditorModel: 'provider/auditor-model',
       workspaceId,
       hostSessionId,
       currentSectionIndex: 1,
@@ -645,16 +648,34 @@ describe('loop-status tool restart path', () => {
       force: false,
     }, { sessionID: 'test-session' } as any)
 
-    expect(result).toContain('terminated during final audit retry exhaustion')
-    expect(result).toContain('Use force=true to restart')
+    expect(result).toContain('Restarted loop')
 
-    // No new session.create should have been called
+    // Verify persisted state
+    const newState = loopService.getActiveState(loopName)
+    expect(newState).toBeDefined()
+    expect(newState?.active).toBe(true)
+    expect(newState?.phase).toBe('final_auditing')
+    expect(newState?.terminationReason).toBeFalsy()
+    expect(newState?.completedAt).toBeFalsy()
+    expect(newState?.currentSectionIndex).toBe(1)
+    expect(newState?.totalSections).toBe(2)
+    expect(newState?.finalAuditDone).toBe(false)
+
+    // Verify promptAsync was called with auditor-loop agent using auditor model
+    const promptCalls = ((v2Client.session.promptAsync as any)).mock.calls
+    expect(promptCalls.length).toBeGreaterThan(0)
+    const lastPromptCall = promptCalls[promptCalls.length - 1][0]
+    expect(lastPromptCall.agent).toBe('auditor-loop')
+    expect(lastPromptCall.model).toEqual({ providerID: 'provider', modelID: 'auditor-model' })
+
+    // Verify session creation uses audit permissions, not loop permissions
     const createCalls = ((v2Client.session.create as any)).mock.calls
-    expect(createCalls.length).toBe(0)
-
-    // Loop should remain inactive
-    const state = loopService.getActiveState(loopName)
-    expect(state).toBeNull()
+    expect(createCalls.length).toBeGreaterThan(0)
+    const callWithPermission = createCalls.find((call: any[]) =>
+      call[0]?.permission !== undefined
+    )
+    expect(callWithPermission).toBeDefined()
+    expect(callWithPermission![0].permission).toEqual(buildAuditSessionPermissionRuleset())
   })
 
   test('forced restart of final_audit_retry_exhausted resumes at final_auditing', async () => {
@@ -685,6 +706,7 @@ describe('loop-status tool restart path', () => {
       phase: 'final_auditing',
       errorCount: 0,
       auditCount: 1,
+      status: 'errored',
       worktree: true,
       sandbox: false,
       executionModel: 'provider/execution-model',
@@ -846,6 +868,7 @@ describe('loop-status cumulative usage', () => {
       phase: 'coding',
       errorCount: 0,
       auditCount: 0,
+      status: 'completed',
       worktree: true,
       sandbox: false,
       executionModel: 'test-model',
@@ -919,6 +942,7 @@ describe('loop-status cumulative usage', () => {
     // Create active loop
     loopService.setState(loopName, {
       active: true,
+      status: 'running',
       sessionId: 'session-active',
       loopName,
       worktreeDir,
@@ -1012,6 +1036,7 @@ describe('loop-status cumulative usage', () => {
       phase: 'coding',
       errorCount: 0,
       auditCount: 0,
+      status: 'completed',
       worktree: true,
       sandbox: false,
       executionModel: 'model-a',
@@ -1103,6 +1128,7 @@ describe('loop-status cumulative usage', () => {
     // Active loop with current session NOT persisted
     loopService.setState(loopName, {
       active: true,
+      status: 'running',
       sessionId: 'session-current-live',
       loopName,
       worktreeDir,
@@ -1190,6 +1216,7 @@ describe('loop-status cumulative usage', () => {
     // Active loop with current session ALREADY persisted
     loopService.setState(loopName, {
       active: true,
+      status: 'running',
       sessionId: 'session-current-persisted',
       loopName,
       worktreeDir,
@@ -1295,6 +1322,7 @@ describe('loop-status cumulative usage', () => {
     // Active loop with NO persisted usage
     loopService.setState(loopName, {
       active: true,
+      status: 'running',
       sessionId: 'session-live-only',
       loopName,
       worktreeDir,
@@ -1377,6 +1405,7 @@ describe('loop-status cumulative usage', () => {
       phase: 'coding',
       errorCount: 0,
       auditCount: 0,
+      status: 'completed',
       worktree: true,
       sandbox: false,
       executionModel: 'test-model',
@@ -1466,6 +1495,7 @@ describe('loop-status cumulative usage', () => {
       phase: 'auditing',
       errorCount: 0,
       auditCount: 1,
+      status: 'completed',
       worktree: true,
       sandbox: false,
       executionModel: 'test-model',
@@ -1562,6 +1592,7 @@ describe('loop-status cumulative usage', () => {
     // Active loop in coding phase with dialog-selected model
     loopService.setState(loopName, {
       active: true,
+      status: 'running',
       sessionId: 'session-live-attrib',
       loopName,
       worktreeDir,
@@ -1631,6 +1662,7 @@ describe('loop-status cumulative usage', () => {
     // Active loop in auditing phase with distinct auditor model
     loopService.setState(loopName, {
       active: true,
+      status: 'running',
       sessionId: 'session-live-audit-attrib',
       loopName,
       worktreeDir,
@@ -1678,5 +1710,436 @@ describe('loop-status cumulative usage', () => {
     expect(result).toContain('Cumulative Usage:')
     expect(result).toContain('openai/gpt-4o')
     expect(result).not.toContain('default/session model')
+  })
+})
+
+describe('loop-status restartability display', () => {
+  let db: Database
+  let dbPath: string
+  const projectId = 'test-project'
+  const loopName = 'test-loop-restart'
+
+  beforeEach(() => {
+    const result = createTestDb()
+    db = result.db
+    dbPath = result.path
+  })
+
+  afterEach(() => {
+    db.close()
+  })
+
+  function createMockV2ClientWithWorktreeCheck(worktreeDir: string): OpencodeClient {
+    return {
+      session: {
+        create: vi.fn(async (params) => ({
+          data: { id: 'mock-session-' + Date.now(), title: params.title },
+          error: null,
+        })),
+        promptAsync: vi.fn(async () => ({ data: {}, error: null })),
+        abort: vi.fn(async () => ({ data: {}, error: null })),
+        status: vi.fn(async () => ({ data: {}, error: null })),
+        delete: vi.fn(async () => ({ data: {}, error: null })),
+        messages: vi.fn(async () => ({ data: [], error: null })),
+        get: vi.fn(async () => ({ data: {}, error: null })),
+      },
+      worktree: {
+        create: vi.fn(async () => ({ data: { name: 'mock', directory: '/tmp/mock', branch: 'main' }, error: null })),
+        remove: vi.fn(async () => ({ data: {}, error: null })),
+      },
+      experimental: {
+        workspace: {
+          create: vi.fn(async () => ({
+            data: { id: 'mock-workspace-' + Date.now(), directory: TEST_DIR + '/worktree', branch: 'opencode/loop-test' },
+            error: null,
+          })),
+          warp: vi.fn(async () => ({ data: {}, error: null })),
+          list: vi.fn(async () => ({ data: [], error: null })),
+          status: vi.fn(async () => ({ data: [], error: null })),
+          syncList: vi.fn(async () => ({ data: {}, error: null })),
+          remove: vi.fn(async () => ({ data: {}, error: null })),
+        },
+      },
+      tui: {
+        selectSession: vi.fn(async () => ({ data: {}, error: null })),
+        publish: vi.fn(async () => ({ data: {}, error: null })),
+      },
+    } as unknown as OpencodeClient
+  }
+
+  test('inactive cancelled loop with worktree shows Restart: available', async () => {
+    const mockApi = createMockTuiApi()
+    const v2Client = mockApi.client as unknown as OpencodeClient
+    const logger = createLogger({ enabled: false, file: '' })
+    
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+    
+    const worktreeDir = `${TEST_DIR}/worktree-restart-cancelled`
+    mkdirSync(worktreeDir, { recursive: true })
+    
+    loopService.setState(loopName, {
+      active: false,
+      sessionId: 'session-cancelled',
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-restart',
+      iteration: 2,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt',
+      phase: 'coding',
+      errorCount: 0,
+      auditCount: 0,
+      status: 'cancelled',
+      worktree: true,
+      sandbox: false,
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      workspaceId: 'ws-123',
+      hostSessionId: 'host-456',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+      terminationReason: 'cancelled',
+      completedAt: new Date().toISOString(),
+    } as any)
+    
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const tools = createLoopTools({
+      v2: v2Client,
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+    } as any)
+    
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+    }, { sessionID: 'test-session' } as any)
+    
+    expect(result).toContain('Restart: available with loop-status name=test-loop-restart restart=true')
+  })
+
+  test('inactive errored loop with worktree shows Restart: available', async () => {
+    const mockApi = createMockTuiApi()
+    const v2Client = mockApi.client as unknown as OpencodeClient
+    const logger = createLogger({ enabled: false, file: '' })
+    
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+    
+    const worktreeDir = `${TEST_DIR}/worktree-restart-errored`
+    mkdirSync(worktreeDir, { recursive: true })
+    
+    loopService.setState(loopName, {
+      active: false,
+      sessionId: 'session-errored',
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-errored',
+      iteration: 2,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt',
+      phase: 'coding',
+      errorCount: 3,
+      auditCount: 0,
+      status: 'errored',
+      worktree: true,
+      sandbox: false,
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      workspaceId: 'ws-123',
+      hostSessionId: 'host-456',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+      terminationReason: 'error_max_retries: test error',
+      completedAt: new Date().toISOString(),
+    } as any)
+    
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const tools = createLoopTools({
+      v2: v2Client,
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+    } as any)
+    
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+    }, { sessionID: 'test-session' } as any)
+    
+    expect(result).toContain('Restart: available with loop-status name=test-loop-restart restart=true')
+  })
+
+  test('inactive stalled loop with worktree shows Restart: available', async () => {
+    const mockApi = createMockTuiApi()
+    const v2Client = mockApi.client as unknown as OpencodeClient
+    const logger = createLogger({ enabled: false, file: '' })
+    
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+    
+    const worktreeDir = `${TEST_DIR}/worktree-restart-stalled`
+    mkdirSync(worktreeDir, { recursive: true })
+    
+    loopService.setState(loopName, {
+      active: false,
+      sessionId: 'session-stalled',
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-stalled',
+      iteration: 2,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt',
+      phase: 'coding',
+      errorCount: 0,
+      auditCount: 0,
+      status: 'stalled',
+      worktree: true,
+      sandbox: false,
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      workspaceId: 'ws-123',
+      hostSessionId: 'host-456',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+      terminationReason: 'stalled',
+      completedAt: new Date().toISOString(),
+    } as any)
+    
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const tools = createLoopTools({
+      v2: v2Client,
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+    } as any)
+    
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+    }, { sessionID: 'test-session' } as any)
+    
+    expect(result).toContain('Restart: available with loop-status name=test-loop-restart restart=true')
+  })
+
+  test('completed loop shows Restart: not available (completed)', async () => {
+    const mockApi = createMockTuiApi()
+    const v2Client = mockApi.client as unknown as OpencodeClient
+    const logger = createLogger({ enabled: false, file: '' })
+    
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+    
+    const worktreeDir = `${TEST_DIR}/worktree-restart-completed`
+    mkdirSync(worktreeDir, { recursive: true })
+    
+    loopService.setState(loopName, {
+      active: false,
+      sessionId: 'session-completed',
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-completed',
+      iteration: 3,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt',
+      phase: 'coding',
+      errorCount: 0,
+      auditCount: 0,
+      status: 'completed',
+      worktree: true,
+      sandbox: false,
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      workspaceId: 'ws-789',
+      hostSessionId: 'host-012',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+      terminationReason: 'completed',
+      completedAt: new Date().toISOString(),
+    } as any)
+    
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const tools = createLoopTools({
+      v2: v2Client,
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+    } as any)
+    
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+    }, { sessionID: 'test-session' } as any)
+    
+    expect(result).toContain('Restart: not available (completed)')
+  })
+
+  test('loop with missing worktree shows Restart blocked message', async () => {
+    const mockApi = createMockTuiApi()
+    const v2Client = mockApi.client as unknown as OpencodeClient
+    const logger = createLogger({ enabled: false, file: '' })
+    
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+    
+    const worktreeDir = `${TEST_DIR}/worktree-restart-missing`
+    // Do NOT create directory - simulate missing worktree
+    
+    loopService.setState(loopName, {
+      active: false,
+      sessionId: 'session-missing-wt',
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-missing',
+      iteration: 2,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt',
+      phase: 'coding',
+      errorCount: 0,
+      auditCount: 0,
+      status: 'errored',
+      worktree: true,
+      sandbox: false,
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      workspaceId: 'ws-missing',
+      hostSessionId: 'host-missing',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+      terminationReason: 'error_max_retries: test',
+      completedAt: new Date().toISOString(),
+    } as any)
+    
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const tools = createLoopTools({
+      v2: v2Client,
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+    } as any)
+    
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+    }, { sessionID: 'test-session' } as any)
+    
+    expect(result).toContain(`Restart blocked: worktree directory no longer exists at ${worktreeDir}`)
+  })
+
+  test('active loop shows Restart: available with force=true', async () => {
+    const mockApi = createMockTuiApi()
+    const v2Client = mockApi.client as unknown as OpencodeClient
+    const logger = createLogger({ enabled: false, file: '' })
+    
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+    
+    const worktreeDir = `${TEST_DIR}/worktree-restart-active`
+    mkdirSync(worktreeDir, { recursive: true })
+    
+    loopService.setState(loopName, {
+      active: true,
+      status: 'running',
+      sessionId: 'session-active-restart',
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-active',
+      iteration: 2,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt active',
+      phase: 'auditing',
+      errorCount: 0,
+      auditCount: 1,
+      worktree: true,
+      sandbox: false,
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      workspaceId: 'ws-active',
+      hostSessionId: 'host-active',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+    } as any)
+    
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const tools = createLoopTools({
+      v2: v2Client,
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+    } as any)
+    
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+    }, { sessionID: 'test-session' } as any)
+    
+    expect(result).toContain('Restart: available with force=true')
   })
 })

@@ -190,7 +190,7 @@ describe('classifyForgeWorkspace', () => {
     expect(result).toEqual({ action: 'remove-fully', reason: 'completed', loopName: 'test-loop' })
   })
 
-  test('cancelled loop → remove-registration-only/restartable-terminal', () => {
+  test('cancelled loop → remove-registration-only/restartable', () => {
     const entry = {
       id: 'ws1',
       type: 'forge',
@@ -203,10 +203,10 @@ describe('classifyForgeWorkspace', () => {
       get: vi.fn().mockReturnValue({ projectId, loopName: 'test-loop', status: 'cancelled' }),
     })
     const result = classifyForgeWorkspace(entry, loopsRepo, projectId, projectDirectory)
-    expect(result).toEqual({ action: 'remove-registration-only', reason: 'restartable-terminal', loopName: 'test-loop' })
+    expect(result).toEqual({ action: 'remove-registration-only', reason: 'restartable', loopName: 'test-loop' })
   })
 
-  test('errored loop → remove-registration-only/restartable-terminal', () => {
+  test('errored loop → remove-registration-only/restartable', () => {
     const entry = {
       id: 'ws1',
       type: 'forge',
@@ -219,10 +219,10 @@ describe('classifyForgeWorkspace', () => {
       get: vi.fn().mockReturnValue({ projectId, loopName: 'test-loop', status: 'errored' }),
     })
     const result = classifyForgeWorkspace(entry, loopsRepo, projectId, projectDirectory)
-    expect(result).toEqual({ action: 'remove-registration-only', reason: 'restartable-terminal', loopName: 'test-loop' })
+    expect(result).toEqual({ action: 'remove-registration-only', reason: 'restartable', loopName: 'test-loop' })
   })
 
-  test('stalled loop → remove-registration-only/restartable-terminal', () => {
+  test('stalled loop → remove-registration-only/restartable', () => {
     const entry = {
       id: 'ws1',
       type: 'forge',
@@ -235,6 +235,6 @@ describe('classifyForgeWorkspace', () => {
       get: vi.fn().mockReturnValue({ projectId, loopName: 'test-loop', status: 'stalled' }),
     })
     const result = classifyForgeWorkspace(entry, loopsRepo, projectId, projectDirectory)
-    expect(result).toEqual({ action: 'remove-registration-only', reason: 'restartable-terminal', loopName: 'test-loop' })
+    expect(result).toEqual({ action: 'remove-registration-only', reason: 'restartable', loopName: 'test-loop' })
   })
 })

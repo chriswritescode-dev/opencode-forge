@@ -21,7 +21,7 @@ export interface ForgeWorkspaceEntry {
 
 export type ClassifyAction =
   | { action: 'keep'; reason: 'running' | 'pending-attach' | 'pending-start' | 'not-forge' | 'no-loop-name' | 'no-project-directory' | 'wrong-project' }
-  | { action: 'remove-registration-only'; reason: 'restartable-terminal'; loopName: string }
+  | { action: 'remove-registration-only'; reason: 'restartable'; loopName: string }
   | { action: 'remove-fully'; reason: 'completed' | 'missing-row'; loopName: string }
 
 export interface ClassifyForgeWorkspaceOptions {
@@ -72,7 +72,7 @@ export function isPendingStartWorkspace(
  * 7. loopsRepo.get returns null → remove-fully/missing-row
  * 8. loop status === 'running' → keep/running
  * 9. loop status === 'completed' → remove-fully/completed
- * 10. loop status in ['cancelled', 'errored', 'stalled'] → remove-registration-only/restartable-terminal
+ * 10. loop status in ['cancelled', 'errored', 'stalled'] → remove-registration-only/restartable
  */
 export function classifyForgeWorkspace(
   entry: ForgeWorkspaceEntry,
@@ -125,10 +125,10 @@ export function classifyForgeWorkspace(
     return { action: 'remove-fully', reason: 'completed', loopName }
   }
 
-  // Check 10: restartable terminal statuses (cancelled, errored, stalled)
-  // Remove registration only, preserve worktree for manual restart
+  // Check 10: non-running restartable loops (cancelled, errored, stalled)
+  // Remove registration only, preserve worktree for restart
   if (row.status === 'cancelled' || row.status === 'errored' || row.status === 'stalled') {
-    return { action: 'remove-registration-only', reason: 'restartable-terminal', loopName }
+    return { action: 'remove-registration-only', reason: 'restartable', loopName }
   }
 
   // Fallback: should not reach here, but treat as keep to be safe

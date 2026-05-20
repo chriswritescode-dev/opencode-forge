@@ -8,6 +8,7 @@ import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
 import { captureLatestPlanForSession } from '../services/plan-capture'
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
+import { getRestartability } from '../loop/restartability'
 
 const z = tool.schema
 
@@ -160,10 +161,10 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
     }),
 
     'loop-status': tool({
-      description: 'Lists all active loops when called with no arguments. Pass a worktree name for detailed status of a specific loop. Use restart to resume an inactive loop. Use restart with force to force-restart a stuck active loop.',
+      description: 'Lists all active loops when called with no arguments. Pass a worktree name for detailed status of a specific loop. Use restart to explicitly resume a non-completed loop. Running loops require force. Completed loops cannot restart.',
       args: {
         name: z.string().optional().describe('Worktree name to check for detailed status'),
-        restart: z.boolean().optional().default(false).describe('Restart an inactive loop by name'),
+        restart: z.boolean().optional().default(false).describe('Restart a non-completed loop by name. Running loops require force.'),
         force: z.boolean().optional().default(false).describe('Force restart an active/stuck loop'),
       },
       execute: async (args) => {
@@ -229,11 +230,11 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
               return 'No loops found.'
             }
 
-            const lines: string[] = ['Recently Completed Loops', '']
+            const lines: string[] = ['Recent Loops', '']
             recent.forEach((s, i) => {
               const durationStr = formatDuration(computeElapsedSeconds(s.startedAt, s.completedAt))
               lines.push(`${i + 1}. ${s.loopName}`)
-              lines.push(`   Reason: ${s.terminationReason ?? 'unknown'} | Iterations: ${s.iteration} | Duration: ${durationStr} | Completed: ${s.completedAt ?? 'unknown'}`)
+              lines.push(`   Status: ${s.terminationReason ?? 'unknown'} | Iterations: ${s.iteration} | Duration: ${durationStr} | Completed: ${s.completedAt ?? 'unknown'}`)
               lines.push('')
             })
             lines.push('Use loop-status <name> for detailed info.')
@@ -273,13 +274,13 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           })
 
           if (recent.length > 0) {
-            lines.push('Recently Completed:')
+            lines.push('Recent Loops:')
             lines.push('')
             const limitedRecent = recent.slice(0, 10)
             limitedRecent.forEach((s, i) => {
               const durationStr = formatDuration(computeElapsedSeconds(s.startedAt, s.completedAt))
               lines.push(`${i + 1}. ${s.loopName}`)
-              lines.push(`   Reason: ${s.terminationReason ?? 'unknown'} | Iterations: ${s.iteration} | Duration: ${durationStr} | Completed: ${s.completedAt ?? 'unknown'}`)
+              lines.push(`   Status: ${s.terminationReason ?? 'unknown'} | Iterations: ${s.iteration} | Duration: ${durationStr} | Completed: ${s.completedAt ?? 'unknown'}`)
               lines.push('')
             })
             if (recent.length > 10) {
@@ -289,6 +290,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           }
 
           lines.push('Use loop-status <name> for detailed info, or loop-cancel <name> to stop a loop.')
+          lines.push('Use loop-status <name> restart=true force=true to force-restart a stuck running loop.')
           return lines.join('\n')
         }
 
@@ -348,6 +350,18 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             statusLines.push('')
             statusLines.push('Session Output:')
             statusLines.push(...formatSessionOutput(sessionOutput))
+          }
+
+          // Add restartability display
+          const restartability = getRestartability(state)
+          if (!restartability.restartable) {
+            if (restartability.restartBlockedReason === 'completed') {
+              statusLines.push('Restart: not available (completed)')
+            } else if (restartability.restartBlockedReason === 'missing_worktree') {
+              statusLines.push(`Restart blocked: worktree directory no longer exists at ${state.worktreeDir}`)
+            }
+          } else {
+            statusLines.push(`Restart: available with loop-status name=${state.loopName} restart=true`)
           }
 
           // Add cumulative usage (merged persisted + live, with double-count prevention)
@@ -448,6 +462,18 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
         if (state.lastAuditResult) {
           statusLines.push(...formatAuditResult(state.lastAuditResult))
+        }
+
+        // Add restartability display for active loops using shared helper
+        const restartability = getRestartability(state)
+        if (!restartability.restartable) {
+          if (restartability.restartBlockedReason === 'missing_worktree') {
+            statusLines.push(`Restart blocked: worktree directory no longer exists at ${state.worktreeDir}`)
+          }
+        } else if (restartability.restartRequiresForce) {
+          statusLines.push('Restart: available with force=true')
+        } else {
+          statusLines.push(`Restart: available with loop-status name=${state.loopName} restart=true`)
         }
 
         // Add cumulative usage (merged persisted + live, with double-count prevention)

@@ -11,7 +11,6 @@ import { resolveLogPath } from './storage'
 import { createLogger } from './utils/logger'
 import { createDockerService } from './sandbox/docker'
 import { createSandboxManager } from './sandbox/manager'
-import { reconcileSandboxes } from './sandbox/reconcile'
 import type { PluginConfig, CompactionConfig } from './types'
 import { createTools } from './tools'
 import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from './hooks'
@@ -272,79 +271,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, v2, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo)
 
-    const reconcileResult = await loopHandler.loop.reconcileStale(
-      sandboxManager
-        ? { isSandboxLive: (name: string) => sandboxManager!.isLiveByName(name) }
-        : undefined
-    )
-    if (reconcileResult.cancelled > 0) {
-      logger.log(`Reconciled ${reconcileResult.cancelled} stale loop(s) from previous session`)
-    }
-    if (reconcileResult.preserved.length > 0) {
-      logger.log(`Preserved ${reconcileResult.preserved.length} active sandbox loop(s) across restart: ${reconcileResult.preserved.join(', ')}`)
-    }
-
-    if (reconcileResult.restartCandidates.length > 0) {
-      const { existsSync } = await import('node:fs')
-      const { createForgeExecutionService } = await import('./services/execution')
-      const restartService = createForgeExecutionService({
-        projectId,
-        directory,
-        config,
-        logger,
-        dataDir,
-        v2,
-        legacyClient: client,
-        plansRepo,
-        loopsRepo,
-        loopHandler,
-        loop: loopHandler.loop,
-        sandboxManager,
-        sectionPlansRepo,
-        reviewFindingsRepo,
-        workspaceStatusRegistry,
-        pendingTeardowns,
-      })
-
-      let restored = 0
-      let restoreFailed = 0
-      for (const candidate of reconcileResult.restartCandidates) {
-        if (!candidate.worktreeDir || !existsSync(candidate.worktreeDir)) {
-          logger.log(`Loop: cannot auto-restart ${candidate.loopName}, worktree missing at ${candidate.worktreeDir}`)
-          loopHandler.loop.reconcileFinalize(candidate.loopName, 'cancel')
-          restoreFailed++
-          continue
-        }
-        try {
-          const result = await restartService.dispatch(
-            { surface: 'tool', projectId, directory: candidate.projectDir ?? candidate.worktreeDir },
-            { type: 'loop.restart', selector: { kind: 'partial', name: candidate.loopName }, force: true },
-          )
-          if (result.ok) {
-            loopHandler.loop.reconcileFinalize(candidate.loopName, 'restored')
-            restored++
-          } else {
-            logger.error(`Loop: auto-restart failed for ${candidate.loopName}: ${result.error.message}`)
-            loopHandler.loop.reconcileFinalize(candidate.loopName, 'cancel')
-            restoreFailed++
-          }
-        } catch (err) {
-          logger.error(`Loop: auto-restart threw for ${candidate.loopName}`, err)
-          loopHandler.loop.reconcileFinalize(candidate.loopName, 'cancel')
-          restoreFailed++
-        }
-      }
-      if (restored > 0) {
-        logger.log(`Auto-restored ${restored} loop(s) across plugin restart`)
-      }
-      if (restoreFailed > 0) {
-        logger.log(`Auto-restart unavailable for ${restoreFailed} loop(s); cancelled`)
-      }
-    }
-
-    // Sandbox reconciliation interval handle
-    let sandboxReconcileInterval: ReturnType<typeof setInterval> | null = null
-
     const agents = buildAgents()
 
     const compactionConfig: CompactionConfig | undefined = config.compaction
@@ -364,12 +290,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         process.removeListener('exit', handleExit)
         process.removeListener('SIGINT', handleSigint)
         process.removeListener('SIGTERM', handleSigterm)
-
-        // Clear sandbox reconciliation interval
-        if (sandboxReconcileInterval) {
-          clearInterval(sandboxReconcileInterval)
-          sandboxReconcileInterval = null
-        }
 
         logger.log('Loop: active loops preserved during plugin cleanup')
         
@@ -413,16 +333,9 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       pendingTeardowns,
     }
 
-    if (sandboxManager) {
-      const reconcileDeps = { sandboxManager, loop: loopHandler.loop, logger }
-      await reconcileSandboxes(reconcileDeps)
-
-      sandboxReconcileInterval = setInterval(() => {
-        reconcileSandboxes(reconcileDeps).catch((err) => {
-          logger.error('Sandbox reconciliation failed', err)
-        })
-      }, 2000)
-    }
+    // Sandbox reconciliation interval removed per Phase 2 requirements.
+    // Sandbox reconciliation now only occurs for loops started/restarted
+    // in the current plugin process, triggered by explicit runtime events.
 
     // Create forge-session-attach hook for triggering attachLoopToSession on session.created events
     const forgeAttachExecDeps = {

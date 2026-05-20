@@ -70,7 +70,7 @@ Load plans dialog showing archived plans:
 - **Plans** — architect produces marked plans that are auto-captured to SQL storage
 - **Execution** — `New session`, `Execute here`, and `Loop` launch paths for approved plans
 - **Loops** — iterative coding/auditing with isolated git worktree and optional Docker sandbox
-- **Review Findings** — persistent, branch-aware review findings across loop sessions
+- **Review Findings** — persistent, loop-scoped review findings across loop sessions
 - **TUI** — sidebar, plan viewer/editor, execution dialog, and load-plan UI
 - **Sandbox** — Optional Docker worktree loop isolation with bind-mounted project files
 
@@ -109,7 +109,7 @@ Review finding storage for persisting audit results across session rotations.
 
 | Tool | Description |
 |------|-------------|
-| `review-write` | Store a review finding with file, line, severity, and description. Auto-injects branch field. |
+| `review-write` | Store a review finding with file, line, severity, and description. Findings are scoped to the current loop. |
 | `review-read` | Retrieve review findings. Filter by file path or search by regex pattern. |
 | `review-delete` | Delete a review finding by file and line. |
 
@@ -121,7 +121,7 @@ Iterative development loops with automatic auditing. Loops always run in an isol
 |------|-------------|
 | `loop` | Execute a plan using an iterative development loop in an isolated git worktree. Args: `title` required; `plan`, `loopName`, and `hostSessionId` optional. |
 | `loop-cancel` | Cancel an active loop by worktree name |
-| `loop-status` | List active/recent loops or get detailed status by worktree name, including cumulative token usage when available. Supports `restart` to resume inactive loops. |
+| `loop-status` | List active/recent loops or get detailed status by worktree name, including cumulative token usage when available. Supports `restart=true` to restart any non-completed loop (`running`, `cancelled`, `errored`, `stalled`). Completed loops are history-only and cannot be restarted. |
 
 `loop` reads the current session's captured plan when `plan` is omitted. `maxIterations`, execution model, auditor model, and sandbox behavior come from configuration or the TUI execution dialog, not direct `loop` tool arguments.
 
@@ -488,7 +488,7 @@ Loops always run in an isolated git worktree. Sandbox is optional: when Docker i
 
 ### Auditor Integration
 
-After each coding iteration, the auditor agent reviews changes against project conventions and stored review findings. Findings are persisted via `review-write` scoped to the loop's branch. Outstanding `severity: 'bug'` findings block completion — the loop terminates only when the auditor has run at least once and zero bug-severity findings remain.
+After each coding iteration, the auditor agent reviews changes against project conventions and stored review findings. Findings are persisted via `review-write` scoped to the current loop. Outstanding `severity: 'bug'` findings block completion — the loop terminates only when the auditor has run at least once and zero bug-severity findings remain.
 
 ### Stall Detection
 

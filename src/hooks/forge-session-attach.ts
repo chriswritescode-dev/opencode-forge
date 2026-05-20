@@ -209,10 +209,10 @@ async function attachForgeSession(
       )
       return
     } else if (action.action === 'remove-registration-only') {
-      // Restartable-terminal (cancelled/errored/stalled): remove registration, preserve worktree for manual restart
+      // Restartable (cancelled/errored/stalled): remove registration, preserve worktree for manual restart
       await removeForgeWorkspaceWithContext(
         { v2: deps.v2, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
-        { workspaceId, loopName, action: 'remove-registration-only', reasonLabel: 'attach-safety-net-restartable-terminal' },
+        { workspaceId, loopName, action: 'remove-registration-only', reasonLabel: 'attach-safety-net-restartable' },
       )
       publishAttachFailureToast(
         deps,
