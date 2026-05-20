@@ -2,7 +2,7 @@
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
-import { extractPlanTitle } from '../utils/plan-execution'
+import { extractPlanExecutionMetadata } from '../utils/plan-execution'
 import { buildDialogSelectOptions, flattenProviders, getModelDisplayLabel, sortModelsByPriority, type ModelInfo } from '../utils/tui-models'
 import { resolveExecutionDialogDefaults } from '../utils/tui-execution-preferences'
 import { selectTuiSession, type ForgeProjectClient } from '../utils/tui-client'
@@ -160,7 +160,7 @@ export function ExecutePlanPanel(props: {
 
   async function runExecuteMode(mode: string, execModel?: string, auditModel?: string): Promise<void> {
     const planText = props.planContent
-    const title = extractPlanTitle(planText)
+    const { title, executionName } = extractPlanExecutionMetadata(planText)
 
     const normalizedMode = mode.toLowerCase()
     const matchedLabel = PLAN_EXECUTION_LABELS.find(
@@ -178,6 +178,7 @@ export function ExecutePlanPanel(props: {
     const result = await props.client.plan.execute(props.sessionId, {
       mode: apiMode,
       title,
+      loopName: executionName,
       plan: planText,
       executionModel: execModel,
       auditorModel: auditModel,

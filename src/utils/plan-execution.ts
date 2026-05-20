@@ -28,6 +28,9 @@ const STRUCTURAL_PLAN_HEADINGS = new Set([
   'phase',
   'plan',
   'verification',
+  'files',
+  'edits',
+  'acceptance criteria',
   'decisions',
   'conventions',
   'key context',
@@ -40,12 +43,10 @@ const STRUCTURAL_PLAN_HEADINGS = new Set([
  * Truncates to 60 characters with ellipsis if needed.
  */
 export function extractPlanTitle(planContent: string): string {
-  // Priority 1: Extract loop name if present (most meaningful title)
-  const loopNameFromHeading = extractLoopNameFromHeading(planContent)
-  if (loopNameFromHeading) {
-    return loopNameFromHeading.length > 60 ? `${loopNameFromHeading.substring(0, 57)}...` : loopNameFromHeading
-  }
+  return extractPlanExecutionMetadata(planContent).title
+}
 
+function extractFallbackPlanTitle(planContent: string): string {
   const headings: Array<{ text: string; line: number }> = []
   const lines = planContent.split('\n')
   
@@ -62,7 +63,7 @@ export function extractPlanTitle(planContent: string): string {
     if (STRUCTURAL_PLAN_HEADINGS.has(normalized)) continue
     if (isStructuralHeadingPrefix(normalized)) continue
     const title = heading.text
-    return title.length > 60 ? `${title.substring(0, 57)}...` : title
+    return truncateName(title, true)
   }
   
   // Try first sentence/line under Objective
@@ -70,7 +71,7 @@ export function extractPlanTitle(planContent: string): string {
   if (objectiveMatch?.[1]) {
     const firstLine = objectiveMatch[1].trim().split('\n')[0]
     if (firstLine) {
-      return firstLine.length > 60 ? `${firstLine.substring(0, 57)}...` : firstLine
+      return truncateName(firstLine, true)
     }
   }
   
@@ -78,7 +79,7 @@ export function extractPlanTitle(planContent: string): string {
   const firstLine = planContent.split('\n').find(line => line.trim() && !line.trim().startsWith('---'))
   if (firstLine) {
     const trimmed = firstLine.trim()
-    return trimmed.length > 60 ? `${trimmed.substring(0, 57)}...` : trimmed
+    return truncateName(trimmed, true)
   }
   
   return 'Implementation Plan'
@@ -102,6 +103,10 @@ export interface LoopNameResult {
   executionName: string
 }
 
+export interface PlanExecutionMetadata extends LoopNameResult {
+  title: string
+}
+
 /**
  * Extracts loop name from heading-style field.
  * Handles:
@@ -113,17 +118,30 @@ function extractLoopNameFromHeading(planContent: string): string | null {
   const headingInlineMatch = planContent.match(/^#+\s*Loop Name:\s*(.+)$/im)
   if (headingInlineMatch?.[1]) {
     const name = headingInlineMatch[1].trim()
-    return name.length > 60 ? name.substring(0, 60) : name
+    return truncateName(name)
   }
   
   // Try heading followed by value on next line: ## Loop Name\n\nvalue
   const headingBlockMatch = planContent.match(/^#+\s*Loop Name\s*\n+\s*([^\n#]+)/im)
   if (headingBlockMatch?.[1]) {
     const name = headingBlockMatch[1].trim()
-    return name.length > 60 ? name.substring(0, 60) : name
+    return truncateName(name)
   }
   
   return null
+}
+
+function extractExplicitLoopName(planContent: string): string | null {
+  const loopNameMatch = planContent.match(/^(?:\s*(?:-\s*)?)?(?:\*\*)?Loop Name(?:\*\*)?:\s*(.+)$/m)
+  if (loopNameMatch?.[1]) {
+    return truncateName(loopNameMatch[1].trim())
+  }
+  return extractLoopNameFromHeading(planContent)
+}
+
+function truncateName(name: string, ellipsis = false): string {
+  if (name.length <= 60) return name
+  return ellipsis ? `${name.substring(0, 57)}...` : name.substring(0, 60)
 }
 
 /**
@@ -147,24 +165,7 @@ function extractLoopNameFromHeading(planContent: string): string | null {
  * The result is truncated to 60 characters.
  */
 export function extractLoopName(planContent: string): string {
-  // Try inline loop name field first
-  // Accepts: "Loop Name: foo", "**Loop Name**: foo", "- **Loop Name**: foo"
-  // with optional leading whitespace and markdown list prefixes
-  const loopNameMatch = planContent.match(/^(?:\s*(?:-\s*)?)?(?:\*\*)?Loop Name(?:\*\*)?:\s*(.+)$/m)
-  if (loopNameMatch?.[1]) {
-    const name = loopNameMatch[1].trim()
-    return name.length > 60 ? name.substring(0, 60) : name
-  }
-  
-  // Try heading-style loop name
-  const headingLoopName = extractLoopNameFromHeading(planContent)
-  if (headingLoopName) {
-    return headingLoopName
-  }
-  
-  // Fallback to title extraction for older plans
-  const title = extractPlanTitle(planContent)
-  return title
+  return extractExplicitLoopName(planContent) ?? extractFallbackPlanTitle(planContent)
 }
 
 /**
@@ -177,9 +178,14 @@ export function extractLoopName(planContent: string): string {
  * This is the preferred way to get loop naming information.
  */
 export function extractLoopNames(planContent: string): LoopNameResult {
+  const { displayName, executionName } = extractPlanExecutionMetadata(planContent)
+  return { displayName, executionName }
+}
+
+export function extractPlanExecutionMetadata(planContent: string): PlanExecutionMetadata {
   const displayName = extractLoopName(planContent)
   const executionName = sanitizeLoopName(displayName)
-  return { displayName, executionName }
+  return { title: truncateName(displayName, true), displayName, executionName }
 }
 
 /**

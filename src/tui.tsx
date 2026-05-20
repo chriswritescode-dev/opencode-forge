@@ -7,7 +7,7 @@ import { join } from 'path'
 import { VERSION } from './version'
 import { loadPluginConfig, setTuiAutoSavePlans } from './setup'
 import { slugify } from './utils/logger'
-import { extractLoopName } from './utils/plan-execution'
+import { extractPlanExecutionMetadata } from './utils/plan-execution'
 import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
 import { createExecutionContextCache } from './utils/tui-execution-context-cache'
 import type { PluginConfig } from './types'
@@ -111,7 +111,7 @@ function PlanViewerDialog(props: {
 
   const handleExport = () => {
     const planText = content()
-    const name = extractLoopName(planText)
+    const name = extractPlanExecutionMetadata(planText).executionName
     const slugifiedName = slugify(name)
     const directory = props.api.state.path.directory
     const filename = `${slugifiedName}.md`

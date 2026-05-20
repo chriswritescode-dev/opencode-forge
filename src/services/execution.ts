@@ -11,7 +11,7 @@ import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { createLoopEventHandler } from '../hooks'
 import type { SandboxManager } from '../sandbox/manager'
-import { extractPlanTitle, extractLoopNames } from '../utils/plan-execution'
+import { extractPlanExecutionMetadata } from '../utils/plan-execution'
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
 
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
@@ -1055,7 +1055,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     if (!planResult.ok) return { ok: false, error: planResult.error }
     
     const planText = planResult.planText
-    const title = command.title ?? extractPlanTitle(planText)
+    const title = command.title ?? extractPlanExecutionMetadata(planText).title
     const sessionTitle = formatPlanSessionTitle(title)
     const executionModel = command.executionModel ?? deps.config.executionModel
     const parsedModel = parseModelString(executionModel)
@@ -1153,7 +1153,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     if (!planResult.ok) return { ok: false, error: planResult.error }
     
     const planText = planResult.planText
-    const title = command.title ?? extractPlanTitle(planText)
+    const title = command.title ?? extractPlanExecutionMetadata(planText).title
     const executionModel = command.executionModel ?? deps.config.executionModel
     const parsedModel = parseModelString(executionModel)
     
@@ -1206,7 +1206,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const planText = planResult.planText
     
     // Extract loop names first so the session title can prefer the explicit Loop Name
-    const { displayName, executionName } = extractLoopNames(planText)
+    const { displayName, executionName } = extractPlanExecutionMetadata(planText)
     const title = command.title ?? displayName
     const sessionTitle = formatLoopSessionTitle(title, { iteration: 1, currentSectionIndex: 0, totalSections: 0 })
     

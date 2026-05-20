@@ -14,6 +14,7 @@ import { getForgeWorkspaceLoopName, removeExistingForgeLoopWorkspaces } from '..
 import { fetchLoopsList } from './tui-loop-store'
 import { decomposeDeterministically } from '../services/deterministic-decomposer'
 import { buildSectionInitialPromptText } from '../loop/prompts'
+import { extractPlanExecutionMetadata } from './plan-execution'
 
 export type ApiExecutionMode = 'new-session' | 'execute-here' | 'loop'
 
@@ -30,6 +31,7 @@ export interface ExecutionContext {
 export interface ExecutePlanRequest {
   mode: ApiExecutionMode
   title: string
+  loopName?: string
   plan: string
   executionModel?: string
   auditorModel?: string
@@ -171,15 +173,6 @@ async function waitForWorkspacePluginSettle(workspaceId: string): Promise<void> 
   if (settleMs <= 0) return
   tuiDebug(`waitForWorkspacePluginSettle: workspace=${workspaceId} delayMs=${settleMs}`)
   await new Promise<void>((resolve) => setTimeout(resolve, settleMs))
-}
-
-function deriveLoopNameFromTitle(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .substring(0, 60)
 }
 
 function buildTuiLoopInitialPrompt(planText: string): string {
@@ -329,7 +322,7 @@ export async function connectForgeProject(
       }
 
       if (req.mode === 'loop') {
-        const loopName = await reserveTuiLoopName(api, projectId, deriveLoopNameFromTitle(req.title))
+        const loopName = await reserveTuiLoopName(api, projectId, req.loopName ?? extractPlanExecutionMetadata(req.plan).executionName)
         tuiDebug(`plan.execute(loop): inline plan (planText.length=${req.plan.length}) hostSession=${sessionId ?? 'none'} loop=${loopName}`)
         const createdAt = Date.now()
         const forgeLoop: ForgeLoopExtra = {

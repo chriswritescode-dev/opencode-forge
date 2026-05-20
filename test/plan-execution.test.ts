@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'vitest'
 import {
   extractPlanTitle,
+  extractPlanExecutionMetadata,
   extractLoopName,
   extractLoopNames,
   sanitizeLoopName,
@@ -70,6 +71,31 @@ describe('Plan Execution Utilities', () => {
     test('Skips Loop Name heading with inline value', () => {
       const plan = '# Plan\n\n## Loop Name: auth-refactor\n\n## Phase 1: Setup\n\nContent'
       expect(extractPlanTitle(plan)).toBe('auth-refactor')
+    })
+
+    test('Prioritizes inline Loop Name over phase subsections like Files', () => {
+      const plan = '# Objective\n\nAdd model variant selection.\n\nLoop Name: plan-variant-selection\n\n<!-- forge-section -->\n## Phase 1: Capture variants\n\n### Files\n\n- src/utils/tui-models.ts\n\n### Edits\n\n1. Extend metadata'
+      expect(extractPlanTitle(plan)).toBe('plan-variant-selection')
+    })
+  })
+
+  describe('extractPlanExecutionMetadata', () => {
+    test('Returns one canonical metadata shape for execution methods', () => {
+      const plan = '# Objective\n\nAdd model variant selection.\n\nLoop Name: plan-variant-selection\n\n<!-- forge-section -->\n## Phase 1: Capture variants\n\n### Files\n\n- src/utils/tui-models.ts'
+      expect(extractPlanExecutionMetadata(plan)).toEqual({
+        title: 'plan-variant-selection',
+        displayName: 'plan-variant-selection',
+        executionName: 'plan-variant-selection',
+      })
+    })
+
+    test('Falls back to non-structural heading when no explicit loop name exists', () => {
+      const plan = '# Objective\n\nBuild the thing.\n\n## Real Feature Title\n\n### Files\n\n- src/a.ts'
+      expect(extractPlanExecutionMetadata(plan)).toEqual({
+        title: 'Real Feature Title',
+        displayName: 'Real Feature Title',
+        executionName: 'real-feature-title',
+      })
     })
   })
 

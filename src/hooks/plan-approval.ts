@@ -1,7 +1,7 @@
 import type { ToolContext } from '../tools/types'
 import type { Hooks } from '@opencode-ai/plugin'
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
-import { extractPlanTitle, extractLoopNames, PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
+import { extractPlanExecutionMetadata, PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext } from '../services/execution'
 import { captureLatestPlanForSession } from '../services/plan-capture'
 
@@ -96,7 +96,7 @@ const processedApprovalCalls = new WeakMap<ToolContext, Set<string>>()
 const claimedApprovalPlans = new Set<string>()
 
 export { LOOP_BLOCKED_TOOLS }
-export { extractPlanTitle }
+export { extractPlanTitle } from '../utils/plan-execution'
 
 function isActiveLoopToolSession(state: { active?: boolean; sessionId?: string }, sessionID: string): boolean {
   return state.active === true && state.sessionId === sessionID
@@ -262,7 +262,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
             return
           }
           const planText = plan.content
-          const title = extractPlanTitle(planText)
+          const { title, executionName } = extractPlanExecutionMetadata(planText)
 
           if (matchedLabel && !claimApprovalCall(ctx, input, matchedLabel, plan.key)) {
             markApprovalHandled(output, true)
@@ -330,7 +330,6 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
           }
           
           if (matchedLabel === 'Loop') {
-            const { executionName } = extractLoopNames(planText)
             const uniqueLoopName = loop.generateUniqueLoopName(executionName)
 
             logger.log(`Plan approval: "${matchedLabel}" — scheduling dispatch IIFE for loop "${uniqueLoopName}"`)
