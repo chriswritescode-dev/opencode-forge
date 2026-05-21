@@ -4,6 +4,7 @@ import type { createLoopEventHandler } from '../hooks'
 import type { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2'
 import type { PluginInput } from '@opencode-ai/plugin'
 import type { createSandboxManager } from '../sandbox/manager'
+import type { SandboxContext } from '../sandbox/context'
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../storage/repos/review-findings-repo'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
@@ -53,5 +54,6 @@ export interface ToolContext {
   workspaceStatusRegistry: import('../utils/workspace-status-registry').WorkspaceStatusRegistry
   /** Pending teardown registry for workspace removal context. */
   pendingTeardowns: import('../workspace/pending-teardown').PendingTeardownRegistry
+  /** Resolves the active sandbox context for a session, or null when no sandbox is active. */
+  resolveSandboxForSession: (sessionID: string) => Promise<SandboxContext | null>
 }
-

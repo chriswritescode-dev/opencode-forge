@@ -1,5 +1,4 @@
 import type { LoopState } from '../loop'
-import { execSync } from 'child_process'
 
 export type FindingScope =
   | { kind: 'loop'; loopName: string }
@@ -78,17 +77,5 @@ export function injectScopeField(
   } else {
     record.loopName = null
     record.sectionIndex = null
-  }
-}
-
-export function resolveCurrentGitBranch(directory: string): string | undefined {
-  try {
-    const branch = execSync('git rev-parse --abbrev-ref HEAD', {
-      cwd: directory,
-      encoding: 'utf-8',
-    }).trim()
-    return branch || undefined
-  } catch {
-    return undefined
   }
 }

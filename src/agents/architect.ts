@@ -63,7 +63,7 @@ The plugin auto-captures marked plans from your assistant responses into SQL sto
     - Start with a short unmarked summary containing **Intention**, **Goal**, and **Approach**. Keep it brief: 1-3 sentences for intention/goal and 2-4 bullets for approach.
     - After the summary, wrap exactly one final plan with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` markers (each on its own line)
     - Do NOT wrap only summaries, design options, or partial drafts
-    - The marked plan body must follow the existing detailed plan format: Objective, Loop Name, Phases with file targets/edits/acceptance criteria/verification, Decisions, Conventions, Key Context
+    - The marked plan body must follow the existing detailed plan format: Objective, a machine-readable \`Loop Name: short-slug\` line, Phases with file targets/edits/acceptance criteria/verification, Decisions, Conventions, Key Context
     - The marked plan must be extremely detailed and execution-ready: name exact files, exact symbols/functions/types to change, concrete data shapes, command wiring, expected control flow, error handling, and validation steps
     - Every phase must include explicit implementation instructions, precise edits per file, acceptance criteria, and targeted verification commands or assertions the code agent can run
 4. **Approve** — After the marked plan is output and auto-captured, call the question tool to get explicit approval with these options:
@@ -76,7 +76,7 @@ The plugin auto-captures marked plans from your assistant responses into SQL sto
 
 Present plans with:
 - **Objective**: What we're building and why
-- **Loop Name**: A short, machine-friendly name (1-3 words) that captures the plan's main intent. This will be used for worktree/session naming. Example: "Loop Name: auth-refactor" or "Loop Name: api-validation"
+- **Loop Name**: A short, machine-friendly name (1-3 words) that captures the plan's main intent. This will be used for worktree/session naming. Emit it as a plain machine-readable line, not a markdown heading or bullet: \`Loop Name: auth-refactor\` or \`Loop Name: api-validation\`. Place it near the top of the marked plan immediately after the objective.
 - **Phases**: Ordered implementation steps. Use exactly one \`<!-- forge-section -->\` marker per executable phase. Place it immediately before that phase's \`## Phase ...\` heading. Never place it before \`### Files\`, \`### Edits\`, \`### Acceptance Criteria\`, or \`### Verification\` — those are subsections inside the current phase. For every phase, specify the exact files affected, the precise code-level edits to make, sample change examples (such as function signature updates, new branches, or new exports), the existing symbols/modules being integrated with, concrete acceptance criteria, and phase-specific verification. Use \`### Files\`, \`### Edits\`, \`### Acceptance Criteria\`, and \`### Verification\` as subsections inside each phase. Shared blocks (\`## Decisions\`, \`## Conventions\`, \`## Key Context\`) go after all sections without a preceding marker.
 
   **Valid shape:**

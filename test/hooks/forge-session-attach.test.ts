@@ -19,6 +19,7 @@ describe('createForgeSessionAttachHook', () => {
     loggerErrorSpy?: ReturnType<typeof vi.fn>
     loggerLogSpy?: ReturnType<typeof vi.fn>
     loopsRepoGet?: ReturnType<typeof vi.fn>
+    sandboxManager?: unknown
   }) {
     const loggerErrorSpy = overrides?.loggerErrorSpy ?? vi.fn()
     const loggerLogSpy = overrides?.loggerLogSpy ?? vi.fn()
@@ -51,6 +52,7 @@ describe('createForgeSessionAttachHook', () => {
           get: vi.fn(),
           clear: vi.fn(),
         },
+        sandboxManager: overrides?.sandboxManager,
       } as any,
       projectId: 'proj_1',
       directory: '/tmp/test',
@@ -167,6 +169,58 @@ describe('createForgeSessionAttachHook', () => {
     expect(input.sendInitialPrompt).toBe(false)
     expect(input.selectSession).toBe(false)
     expect(input.startWatchdog).toBe(true)
+  })
+
+  test('chat.message fallback restores sandbox for TUI-created loop workspace', async () => {
+    const restore = vi.fn().mockResolvedValue(undefined)
+    const getActive = vi.fn()
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce({
+        containerName: 'forge-inline-loop',
+        projectDir: '/tmp/wt/inline',
+        startedAt: '2026-05-21T14:07:11.000Z',
+      })
+    const deps = buildHookDeps({
+      sandboxManager: { restore, getActive },
+      sessionGet: vi.fn().mockResolvedValue({
+        data: {
+          id: 'new_sess',
+          workspaceID: 'ws_inline',
+          directory: '/tmp/wt/inline',
+          projectID: 'proj_1',
+        },
+      }),
+      workspaceList: vi.fn().mockResolvedValue({
+        data: [
+          {
+            id: 'ws_inline',
+            type: 'forge',
+            directory: '/tmp/wt/inline',
+            extra: {
+              loopName: 'inline-loop',
+              forgeLoop: {
+                title: 'Inline Loop',
+                planSource: 'inline',
+                planText: '# Inline Plan\n\nInline stuff.',
+                initialPromptOwner: 'tui',
+                pendingAttachStartedAt: Date.now(),
+              },
+            },
+          },
+        ],
+      }),
+      loopsRepoGet: vi.fn().mockReturnValue(null),
+    })
+
+    const handler = createForgeSessionMessageAttachHook(deps as any)
+
+    await handler({ sessionID: 'new_sess' })
+
+    expect(restore).toHaveBeenCalledWith('inline-loop', '/tmp/wt/inline', expect.any(String))
+    expect(mockAttachLoop).toHaveBeenCalledTimes(1)
+    const [, , input] = mockAttachLoop.mock.calls[0]
+    expect(input.sandboxEnabled).toBe(true)
+    expect(input.sandboxContainer).toBe('forge-inline-loop')
   })
 
   test('chat.message fallback removes expired pending attach workspace without binding', async () => {

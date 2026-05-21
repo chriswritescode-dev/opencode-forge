@@ -72,8 +72,8 @@ describe('withBusyGuard (used by ExecutePlanPanel handleExecuteMode)', () => {
       setBusy: signal.set,
     })
 
-    await guarded('Execute here', 'prov/exec', 'prov/aud')
+    await guarded('Execute here', 'prov/exec', 'prov/aud', 'thinking-max', 'reasoning-high')
 
-    expect(work).toHaveBeenCalledWith('Execute here', 'prov/exec', 'prov/aud')
+    expect(work).toHaveBeenCalledWith('Execute here', 'prov/exec', 'prov/aud', 'thinking-max', 'reasoning-high')
   })
 })

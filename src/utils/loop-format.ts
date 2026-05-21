@@ -5,8 +5,7 @@ import type { LoopUsageAggregate, LoopSessionUsageRepo } from '../storage/repos/
 import { mergeUsageSummaries } from '../loop/token-usage'
 
 export { formatTokens } from './format'
-export type { LoopUsageSummary, ModelUsage } from '../loop/token-usage'
-export type { LoopSessionOutput } from '../loop'
+export type { LoopUsageSummary } from '../loop/token-usage'
 
 /**
  * Build cumulative usage for a loop by merging persisted aggregate with live session output.

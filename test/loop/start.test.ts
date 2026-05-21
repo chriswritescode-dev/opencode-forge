@@ -13,6 +13,7 @@ import { createLoop, type Loop, type LoopRuntimeDeps } from '../../src/loop/runt
 import { sessionsAwaitingBusy } from '../../src/loop/idle-gate'
 import type { Logger, PluginConfig } from '../../src/types'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
+import { setupLoopsTestDb } from '../helpers/loops-test-db'
 
 const PROJECT_ID = 'test-project'
 
@@ -165,11 +166,7 @@ describe('Loop Runtime start()', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-start-test-'))
     db = new Database(join(tempDir, 'test.db'))
 
-    db.exec(DB_SCHEMA)
-    db.exec(LOOP_LARGE_FIELDS_SCHEMA)
-    db.exec(PLANS_SCHEMA)
-    db.exec(REVIEW_FINDINGS_SCHEMA)
-    db.exec(SECTION_PLANS_SCHEMA)
+    setupLoopsTestDb(db)
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -282,7 +279,7 @@ describe('Loop Runtime start()', () => {
       const { loop } = createRuntime()
 
       const state1 = makeState({ loopName: 'loop-alpha' })
-      const state2 = makeState({ loopName: 'loop-beta' })
+      const state2 = makeState({ loopName: 'loop-beta', sessionId: 'session-beta' })
 
       loop.start({ state: state1 })
       loop.start({ state: state2 })
@@ -357,8 +354,8 @@ describe('Loop Runtime start()', () => {
       const { loop } = createRuntime()
 
       const s1 = makeState({ loopName: 'loop' })
-      const s2 = makeState({ loopName: 'loop-1' })
-      const s3 = makeState({ loopName: 'loop-2' })
+      const s2 = makeState({ loopName: 'loop-1', sessionId: 'session-loop-1' })
+      const s3 = makeState({ loopName: 'loop-2', sessionId: 'session-loop-2' })
       loop.start({ state: s1 })
       loop.start({ state: s2 })
       loop.start({ state: s3 })

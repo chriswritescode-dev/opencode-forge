@@ -193,6 +193,17 @@ Sandbox is optional. When Docker is available and configured, a sandbox containe
 
 See [sandbox documentation](architecture.md#sandbox-system) for details.
 
+## Milestones (aka sections)
+
+In user-facing language, a plan is decomposed into **milestones** — ordered units of execution. In the code and database, these are called **sections**:
+
+- `section_plans` SQL table — one row per milestone, ordered by `sectionIndex`
+- `currentSectionIndex` / `totalSections` columns on the loop row
+- `<!-- forge-section -->` markers in the architect plan output
+- `section-read` tool reads the current or specified milestone
+
+Decomposition is a one-shot preprocessing step at loop start (`services/deterministic-decomposer.ts`), not a runtime loop phase. Once milestones exist, the loop advances through them via `advance-section` / `rewind-section` transitions inside the `auditing` and `final_auditing` phases.
+
 ## Completion Conditions
 
 A loop completes when the active phase emits a clean audit result:

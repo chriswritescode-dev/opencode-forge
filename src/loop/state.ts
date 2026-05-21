@@ -29,6 +29,8 @@ interface LoopStateBase {
   currentSectionIndex: number
   totalSections: number
   finalAuditDone: boolean
+  executionVariant?: string
+  auditorVariant?: string
 }
 
 export interface CodingState extends LoopStateBase {
@@ -44,8 +46,6 @@ export interface FinalAuditingState extends LoopStateBase {
 }
 
 export type LoopState = CodingState | AuditingState | FinalAuditingState
-
-export type Phase = LoopState['phase']
 
 export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): LoopState {
   const base = {
@@ -76,6 +76,8 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
     currentSectionIndex: row.currentSectionIndex,
     totalSections: row.totalSections,
     finalAuditDone: row.finalAuditDone === 1,
+    executionVariant: row.executionVariant ?? undefined,
+    auditorVariant: row.auditorVariant ?? undefined,
   }
 
   switch (row.phase) {
@@ -117,5 +119,7 @@ export function loopStateToRow(state: LoopState, projectId: string): Omit<LoopRo
     currentSectionIndex: state.currentSectionIndex,
     totalSections: state.totalSections,
     finalAuditDone: state.finalAuditDone ? 1 : 0,
+    executionVariant: state.executionVariant ?? null,
+    auditorVariant: state.auditorVariant ?? null,
   }
 }

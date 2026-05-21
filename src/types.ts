@@ -104,8 +104,6 @@ export interface MessagesTransformConfig {
 export interface TuiConfig {
   /** Show sidebar. */
   sidebar?: boolean
-  /** Show active loops in TUI. */
-  showLoops?: boolean
   /** Show version information. */
   showVersion?: boolean
   /** Auto-save captured plans to disk under <dataDir>/plans/<projectId>/. Default false. */

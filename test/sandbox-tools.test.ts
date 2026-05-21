@@ -80,20 +80,6 @@ describe('sandbox tool hooks', () => {
   // No cleanup needed - Bun test handles this
 
   describe('non-sandbox passthrough', () => {
-    test('bash is not intercepted when no sandbox session is resolved', async () => {
-      const hook = createSandboxToolBeforeHook({
-        resolveSandboxForSession: async () => null,
-        logger: mockLogger,
-      })
-
-      const input = { tool: 'bash', sessionID: 'no-sandbox-session', callID: 'call-1' }
-      const output = { args: { command: 'echo test' } }
-
-      await hook(input as never, output as never)
-
-      expect(output.args.command).toBe('echo test')
-    })
-
     test('glob is not intercepted when no sandbox session is resolved', async () => {
       const hook = createSandboxToolBeforeHook({
         resolveSandboxForSession: async () => null,
@@ -236,47 +222,22 @@ describe('sandbox tool hooks', () => {
     })
   })
 
-  describe('bash interception', () => {
-    test('bash still works after refactor', async () => {
-      const input = {
-        tool: 'bash',
-        sessionID: TEST_SESSION_ID,
-        callID: TEST_CALL_ID,
-      }
-      const output = {
-        args: {
-          command: 'echo "test output"',
-        },
-        title: '',
-        output: '',
-        metadata: undefined,
-      }
+  describe('bash passthrough', () => {
+    test('hook ignores bash tool entirely (handled by plugin tool override)', async () => {
+      const hook = createSandboxToolBeforeHook({
+        resolveSandboxForSession: async () => ({
+          docker: mockDocker,
+          containerName: 'test-container',
+          hostDir: '/tmp/host',
+        }),
+        logger: mockLogger,
+      })
+      const input = { tool: 'bash', sessionID: TEST_SESSION_ID, callID: 'bash-1' }
+      const output = { args: Object.freeze({ command: 'echo hi' }) }
 
-      await beforeHook(input as never, output as never)
-      await afterHook({ ...input, args: output.args } as never, output as never)
+      await hook(input as never, output as never)
 
-      expect(output.output).toContain('echo "test output"')
-    })
-
-    test('bash git push is blocked in sandbox', async () => {
-      const input = {
-        tool: 'bash',
-        sessionID: TEST_SESSION_ID,
-        callID: 'git-push-call',
-      }
-      const output = {
-        args: {
-          command: 'git push',
-        },
-        title: '',
-        output: '',
-        metadata: undefined,
-      }
-
-      await beforeHook(input as never, output as never)
-      await afterHook({ ...input, args: output.args } as never, output as never)
-
-      expect(output.output).toContain('Git push is not available')
+      expect(output.args.command).toBe('echo hi')
     })
   })
 })

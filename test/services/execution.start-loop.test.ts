@@ -15,6 +15,7 @@ import type { PlansRepo } from '../../src/storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import type { SectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import type { LoopService } from '../../src/loop/service'
+import { setupLoopsTestDb } from '../helpers/loops-test-db'
 
 const mockLogger: Logger = {
   log: () => {},
@@ -31,100 +32,6 @@ const mockWorkspaceStatusRegistry = {
 
 const PROJECT_ID = 'test-project'
 
-const DB_SCHEMA = `
-CREATE TABLE loops (
-  project_id           TEXT NOT NULL,
-  loop_name            TEXT NOT NULL,
-  status               TEXT NOT NULL,
-  current_session_id   TEXT NOT NULL,
-  worktree             INTEGER NOT NULL,
-  worktree_dir         TEXT NOT NULL,
-  session_directory    TEXT,
-  worktree_branch      TEXT,
-  project_dir          TEXT NOT NULL,
-  max_iterations       INTEGER NOT NULL,
-  iteration            INTEGER NOT NULL DEFAULT 0,
-  audit_count          INTEGER NOT NULL DEFAULT 0,
-  error_count          INTEGER NOT NULL DEFAULT 0,
-  phase                TEXT NOT NULL,
-  execution_model      TEXT,
-  auditor_model        TEXT,
-  model_failed         INTEGER NOT NULL DEFAULT 0,
-  sandbox              INTEGER NOT NULL DEFAULT 0,
-  sandbox_container    TEXT,
-  started_at           INTEGER NOT NULL,
-  completed_at         INTEGER,
-  termination_reason   TEXT,
-  completion_summary   TEXT,
-  workspace_id         TEXT,
-  host_session_id      TEXT,
-  audit_session_id     TEXT,
-  current_section_index INTEGER NOT NULL DEFAULT 0,
-  total_sections       INTEGER NOT NULL DEFAULT 0,
-  final_audit_done     INTEGER NOT NULL DEFAULT 0,
-  final_audit_attempts INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (project_id, loop_name)
-)
-`
-
-const LOOP_LARGE_FIELDS_SCHEMA = `
-CREATE TABLE loop_large_fields (
-  project_id          TEXT NOT NULL,
-  loop_name           TEXT NOT NULL,
-  last_audit_result   TEXT,
-  PRIMARY KEY (project_id, loop_name),
-  FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
-)
-`
-
-const PLANS_SCHEMA = `
-CREATE TABLE plans (
-  project_id   TEXT NOT NULL,
-  loop_name    TEXT,
-  session_id   TEXT,
-  content      TEXT NOT NULL,
-  updated_at   INTEGER NOT NULL,
-  CHECK (loop_name IS NOT NULL OR session_id IS NOT NULL),
-  CHECK (NOT (loop_name IS NOT NULL AND session_id IS NOT NULL)),
-  UNIQUE (project_id, loop_name),
-  UNIQUE (project_id, session_id)
-)
-`
-
-const REVIEW_FINDINGS_SCHEMA = `
-CREATE TABLE review_findings (
-  project_id TEXT NOT NULL,
-  loop_name TEXT NOT NULL DEFAULT '',
-  file TEXT NOT NULL,
-  line INTEGER NOT NULL,
-  severity TEXT NOT NULL,
-  description TEXT NOT NULL,
-  scenario TEXT,
-  created_at INTEGER NOT NULL,
-  section_index INTEGER,
-  PRIMARY KEY (project_id, loop_name, file, line, section_index)
-)
-`
-
-const SECTION_PLANS_SCHEMA = `
-CREATE TABLE section_plans (
-  project_id TEXT NOT NULL,
-  loop_name TEXT NOT NULL,
-  section_index INTEGER NOT NULL,
-  title TEXT NOT NULL,
-  content TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','in_progress','completed','failed')),
-  attempts INTEGER NOT NULL DEFAULT 0,
-  started_at INTEGER,
-  completed_at INTEGER,
-  summary_done TEXT,
-  summary_deviations TEXT,
-  summary_follow_ups TEXT,
-  created_at INTEGER NOT NULL,
-  PRIMARY KEY (project_id, loop_name, section_index)
-)
-`
-
 describe('handleStartLoop builtin worktree workspace', () => {
   let db: Database
   let loopsRepo: LoopsRepo
@@ -138,11 +45,7 @@ describe('handleStartLoop builtin worktree workspace', () => {
   beforeEach(() => {
     const tempDir = mkdtempSync(join(tmpdir(), 'exec-start-loop-test-'))
     db = new Database(join(tempDir, 'test.db'))
-    db.exec(DB_SCHEMA)
-    db.exec(LOOP_LARGE_FIELDS_SCHEMA)
-    db.exec(PLANS_SCHEMA)
-    db.exec(REVIEW_FINDINGS_SCHEMA)
-    db.exec(SECTION_PLANS_SCHEMA)
+    setupLoopsTestDb(db)
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -634,9 +537,10 @@ describe('handleStartLoop concurrent-start dedupe', () => {
       },
     })
     const experimentalWorkspaceWarpMock = vi.fn().mockResolvedValue({})
-    const sessionCreateMock = vi.fn().mockResolvedValue({
-      data: { id: 'session_test' },
-    })
+    let sessionCounter = 0
+    const sessionCreateMock = vi.fn().mockImplementation(async () => ({
+      data: { id: `session_test_${++sessionCounter}` },
+    }))
     const sessionGetMock = vi.fn().mockResolvedValue({ data: {} })
     const tuiSelectSessionMock = vi.fn().mockResolvedValue({})
     const worktreeCreateMock = vi.fn().mockResolvedValue({
@@ -705,7 +609,7 @@ describe('handleStartLoop concurrent-start dedupe', () => {
   test('two concurrent calls with same source produce only one workspace + session', async () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'exec-dedupe-concurrent-'))
     const db = new Database(join(tempDir, 'test.db'))
-    db.exec(DB_SCHEMA); db.exec(LOOP_LARGE_FIELDS_SCHEMA); db.exec(PLANS_SCHEMA); db.exec(REVIEW_FINDINGS_SCHEMA); db.exec(SECTION_PLANS_SCHEMA)
+    setupLoopsTestDb(db)
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -759,7 +663,7 @@ describe('handleStartLoop concurrent-start dedupe', () => {
   test('different source sessions do not dedupe each other', async () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'exec-dedupe-diffsource-'))
     const db = new Database(join(tempDir, 'test.db'))
-    db.exec(DB_SCHEMA); db.exec(LOOP_LARGE_FIELDS_SCHEMA); db.exec(PLANS_SCHEMA); db.exec(REVIEW_FINDINGS_SCHEMA); db.exec(SECTION_PLANS_SCHEMA)
+    setupLoopsTestDb(db)
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -813,7 +717,7 @@ describe('handleStartLoop concurrent-start dedupe', () => {
   test('sequential second call after first completes is not deduped', async () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'exec-dedupe-seq-'))
     const db = new Database(join(tempDir, 'test.db'))
-    db.exec(DB_SCHEMA); db.exec(LOOP_LARGE_FIELDS_SCHEMA); db.exec(PLANS_SCHEMA); db.exec(REVIEW_FINDINGS_SCHEMA); db.exec(SECTION_PLANS_SCHEMA)
+    setupLoopsTestDb(db)
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -919,7 +823,7 @@ describe('handleStartLoop select-session ordering', () => {
   test('onStarted fires only after selectSessionWithFallback resolves', async () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'exec-ordering-resolve-'))
     const db = new Database(join(tempDir, 'test.db'))
-    db.exec(DB_SCHEMA); db.exec(LOOP_LARGE_FIELDS_SCHEMA); db.exec(PLANS_SCHEMA); db.exec(REVIEW_FINDINGS_SCHEMA); db.exec(SECTION_PLANS_SCHEMA)
+    setupLoopsTestDb(db)
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -973,7 +877,7 @@ describe('handleStartLoop select-session ordering', () => {
   test('onStarted still fires if selectSession rejects', async () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'exec-ordering-reject-'))
     const db = new Database(join(tempDir, 'test.db'))
-    db.exec(DB_SCHEMA); db.exec(LOOP_LARGE_FIELDS_SCHEMA); db.exec(PLANS_SCHEMA); db.exec(REVIEW_FINDINGS_SCHEMA); db.exec(SECTION_PLANS_SCHEMA)
+    setupLoopsTestDb(db)
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -1023,7 +927,7 @@ describe('handleStartLoop select-session ordering', () => {
     process.env.FORGE_SELECT_TIMEOUT_MS = '50'
     const tempDir = mkdtempSync(join(tmpdir(), 'exec-ordering-timeout-'))
     const db = new Database(join(tempDir, 'test.db'))
-    db.exec(DB_SCHEMA); db.exec(LOOP_LARGE_FIELDS_SCHEMA); db.exec(PLANS_SCHEMA); db.exec(REVIEW_FINDINGS_SCHEMA); db.exec(SECTION_PLANS_SCHEMA)
+    setupLoopsTestDb(db)
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)

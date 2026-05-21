@@ -8,6 +8,7 @@ import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
 import { createLoop } from '../src/loop/runtime'
 import type { Logger } from '../src/types'
+import { setupLoopsTestDb } from './helpers/loops-test-db'
 
 describe('Loop', () => {
   let db: Database
@@ -26,81 +27,7 @@ describe('Loop', () => {
     const dbPath = join(tempDir, 'loop-service-test.db')
     db = new Database(dbPath)
 
-    // Create tables
-    db.run(`
-      CREATE TABLE loops (
-        project_id           TEXT NOT NULL,
-        loop_name            TEXT NOT NULL,
-        status               TEXT NOT NULL,
-        current_session_id   TEXT NOT NULL,
-        worktree             INTEGER NOT NULL,
-        worktree_dir         TEXT NOT NULL,
-        session_directory    TEXT,
-        worktree_branch      TEXT,
-        project_dir          TEXT NOT NULL,
-        max_iterations       INTEGER NOT NULL,
-        iteration            INTEGER NOT NULL DEFAULT 0,
-        audit_count          INTEGER NOT NULL DEFAULT 0,
-        error_count          INTEGER NOT NULL DEFAULT 0,
-        phase                TEXT NOT NULL,
-        execution_model      TEXT,
-        auditor_model        TEXT,
-        model_failed         INTEGER NOT NULL DEFAULT 0,
-        sandbox              INTEGER NOT NULL DEFAULT 0,
-        sandbox_container    TEXT,
-        started_at           INTEGER NOT NULL,
-        completed_at         INTEGER,
-        termination_reason   TEXT,
-        completion_summary   TEXT,
-        workspace_id         TEXT,
-        host_session_id      TEXT,
-        audit_session_id     TEXT,
-        current_section_index INTEGER NOT NULL DEFAULT 0,
-        total_sections INTEGER NOT NULL DEFAULT 0,
-        final_audit_done INTEGER NOT NULL DEFAULT 0,
-        final_audit_attempts INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (project_id, loop_name)
-      )
-    `)
-
-    db.run(`
-      CREATE TABLE loop_large_fields (
-        project_id          TEXT NOT NULL,
-        loop_name           TEXT NOT NULL,
-        last_audit_result   TEXT,
-        PRIMARY KEY (project_id, loop_name),
-        FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
-      )
-    `)
-
-    db.run(`
-      CREATE TABLE plans (
-        project_id   TEXT NOT NULL,
-        loop_name    TEXT,
-        session_id   TEXT,
-        content      TEXT NOT NULL,
-        updated_at   INTEGER NOT NULL,
-        CHECK (loop_name IS NOT NULL OR session_id IS NOT NULL),
-        CHECK (NOT (loop_name IS NOT NULL AND session_id IS NOT NULL)),
-        UNIQUE (project_id, loop_name),
-        UNIQUE (project_id, session_id)
-      )
-    `)
-
-    db.run(`
-      CREATE TABLE review_findings (
-        project_id TEXT NOT NULL,
-        loop_name TEXT NOT NULL DEFAULT '',
-        file TEXT NOT NULL,
-        line INTEGER NOT NULL,
-        severity TEXT NOT NULL,
-        description TEXT NOT NULL,
-        scenario TEXT,
-        created_at INTEGER NOT NULL,
-        section_index INTEGER,
-        PRIMARY KEY (project_id, loop_name, file, line, section_index)
-      )
-    `)
+    setupLoopsTestDb(db)
 
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)

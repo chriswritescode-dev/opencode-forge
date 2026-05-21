@@ -2,6 +2,7 @@ import type { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2
 import type { Logger } from '../types'
 import type { ForgeExecutionServiceDeps, PlanSource } from '../services/execution'
 import { attachLoopToSession } from '../services/execution'
+import { resolveSandboxContextForLoop } from '../sandbox/context'
 import { classifyForgeWorkspace, isPendingAttachWorkspace } from '../workspace/classify-stale'
 import { removeForgeWorkspaceWithContext } from '../workspace/remove-with-context'
 import { getForgeWorkspaceLoopName } from '../workspace/forge-worktree'
@@ -116,11 +117,14 @@ async function attachForgeSession(
       title?: string
       executionModel?: string
       auditorModel?: string
+      executionVariant?: string
+      auditorVariant?: string
       planSource?: 'stored' | 'inline'
       planText?: string
       initialPromptOwner?: 'server' | 'tui'
       maxIterations?: number
       sandboxEnabled?: boolean
+      sandboxContainer?: string
     } | undefined
 
     if (cfg?.initialPromptOwner === 'tui' && sendInitialPrompt) {
@@ -256,6 +260,7 @@ async function attachForgeSession(
     }
 
     try {
+      const sandbox = await resolveAttachSandbox(deps, cfg, loopName, ws.directory ?? deps.directory)
       const loopFn = deps.attachLoopToSession ?? attachLoopToSession
       const result = await loopFn(
         deps.execDeps,
@@ -270,16 +275,19 @@ async function attachForgeSession(
           hostSessionId: resolvedHostSessionId,
           executionModel: cfg.executionModel,
           auditorModel: cfg.auditorModel,
+          executionVariant: cfg.executionVariant,
+          auditorVariant: cfg.auditorVariant,
           maxIterations: cfg.maxIterations ?? 50,
-          sandboxEnabled: cfg.sandboxEnabled ?? false,
+          sandboxEnabled: sandbox.enabled,
+          sandboxContainer: sandbox.containerName,
           planText,
-           selectSession,
-           selectSessionTiming: 'after-prompt',
-           startWatchdog: true,
-           sendInitialPrompt,
-         },
-        )
-        if (!result.ok && result.code === 'conflict') {
+          selectSession,
+          selectSessionTiming: 'after-prompt',
+          startWatchdog: true,
+          sendInitialPrompt,
+        },
+      )
+      if (!result.ok && result.code === 'conflict') {
           const row = deps.execDeps.loopsRepo.get(sessionProjectId, loopName)
           const removalAction = row?.status === 'cancelled' || row?.status === 'errored' || row?.status === 'stalled'
             ? 'remove-registration-only'
@@ -311,6 +319,31 @@ async function attachForgeSession(
           { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-error' },
         )
       }
+}
+
+async function resolveAttachSandbox(
+  deps: ForgeSessionAttachHookDeps,
+  cfg: { sandboxEnabled?: boolean; sandboxContainer?: string } | undefined,
+  loopName: string,
+  worktreeDir: string | undefined,
+): Promise<{ enabled: boolean; containerName?: string }> {
+  if (cfg?.sandboxEnabled === false) return { enabled: false }
+
+  const sandbox = await resolveSandboxContextForLoop(
+    deps.execDeps.sandboxManager,
+    { loopName, active: true, sandbox: true, worktreeDir },
+    deps.logger,
+    { throwOnRestoreError: true },
+  )
+  if (sandbox) {
+    return { enabled: true, containerName: sandbox.containerName }
+  }
+
+  if (!deps.execDeps.sandboxManager || !worktreeDir) {
+    return { enabled: cfg?.sandboxEnabled ?? false, containerName: cfg?.sandboxContainer }
+  }
+
+  return { enabled: cfg?.sandboxEnabled ?? false, containerName: cfg?.sandboxContainer }
 }
 
 function publishAttachFailureToast(

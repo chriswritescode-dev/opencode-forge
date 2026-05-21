@@ -66,6 +66,8 @@ describe('review section scoping', () => {
         total_sections       INTEGER NOT NULL DEFAULT 0,
         final_audit_done     INTEGER NOT NULL DEFAULT 0,
         final_audit_attempts INTEGER NOT NULL DEFAULT 0,
+        execution_variant    TEXT,
+        auditor_variant      TEXT,
         PRIMARY KEY (project_id, loop_name)
       )
     `)
@@ -141,9 +143,9 @@ describe('review section scoping', () => {
       loopsRepo,
       projectId,
       logger: mockLogger,
-      loopService,
+      loop: loopService,
       directory: tempDir,
-    }
+    } as any
     tools = createReviewTools(ctx)
   })
 
@@ -181,6 +183,8 @@ describe('review section scoping', () => {
       currentSectionIndex: opts?.currentSectionIndex ?? 0,
       totalSections: opts?.totalSections ?? 0,
       finalAuditDone: 0,
+      executionVariant: null,
+      auditorVariant: null,
     }, { lastAuditResult: null })
   }
 

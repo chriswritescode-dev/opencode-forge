@@ -15,6 +15,8 @@ export interface ExecutionPreferences {
   mode: 'New session' | 'Execute here' | 'Loop'
   executionModel?: string
   auditorModel?: string
+  executionVariant?: string
+  auditorVariant?: string
 }
 
 const PREFERENCES_KEY = 'tui:plan-execution-preferences'
@@ -59,6 +61,8 @@ export function readExecutionPreferences(projectId: string, dbPathOverride?: str
       mode: normalizeMode(stored.mode ?? 'Loop'),
       executionModel: stored.executionModel,
       auditorModel: stored.auditorModel,
+      executionVariant: stored.executionVariant,
+      auditorVariant: stored.auditorVariant,
     }
   } catch {
     return null
@@ -119,7 +123,7 @@ export function writeExecutionPreferences(
 export function resolveExecutionDialogDefaults(
   config: PluginConfig,
   storedPrefs: ExecutionPreferences | null
-): { mode: string; executionModel: string; auditorModel: string } {
+): { mode: string; executionModel: string; auditorModel: string; executionVariant: string; auditorVariant: string } {
   const mode = normalizeMode(storedPrefs?.mode ?? 'Loop')
   const executionModel = storedPrefs?.executionModel
     ?? config.executionModel
@@ -130,6 +134,9 @@ export function resolveExecutionDialogDefaults(
     ?? storedPrefs?.executionModel
     ?? config.executionModel
     ?? ''
+
+  const executionVariant = storedPrefs?.executionVariant ?? ''
+  const auditorVariant = storedPrefs?.auditorVariant ?? ''
   
-  return { mode, executionModel, auditorModel }
+  return { mode, executionModel, auditorModel, executionVariant, auditorVariant }
 }

@@ -13,6 +13,7 @@ import { createLoop, type Loop, type LoopRuntimeDeps } from '../../src/loop/runt
 import { sessionsAwaitingBusy } from '../../src/loop/idle-gate'
 import type { Logger, PluginConfig } from '../../src/types'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
+import { setupLoopsTestDb } from '../helpers/loops-test-db'
 
 const PROJECT_ID = 'test-project'
 
@@ -175,11 +176,7 @@ describe('Loop Runtime cancel()', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-cancel-test-'))
     db = new Database(join(tempDir, 'test.db'))
 
-    db.exec(DB_SCHEMA)
-    db.exec(LOOP_LARGE_FIELDS_SCHEMA)
-    db.exec(PLANS_SCHEMA)
-    db.exec(REVIEW_FINDINGS_SCHEMA)
-    db.exec(SECTION_PLANS_SCHEMA)
+    setupLoopsTestDb(db)
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)

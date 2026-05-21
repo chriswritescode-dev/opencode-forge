@@ -7,7 +7,7 @@ import { join } from 'path'
 import { VERSION } from './version'
 import { loadPluginConfig, setTuiAutoSavePlans } from './setup'
 import { slugify } from './utils/logger'
-import { extractLoopName } from './utils/plan-execution'
+import { extractPlanExecutionMetadata } from './utils/plan-execution'
 import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
 import { createExecutionContextCache } from './utils/tui-execution-context-cache'
 import type { PluginConfig } from './types'
@@ -84,13 +84,19 @@ function PlanViewerDialog(props: {
   startInExecuteMode?: boolean
   initialExecutionModel?: string
   initialAuditorModel?: string
+  initialExecutionVariant?: string
+  initialAuditorVariant?: string
+  initialLoopName?: string
 }) {
   const theme = () => props.api.theme.current
   const [editing, setEditing] = createSignal(false)
   const startInExecuteModeValue = () => !!props.startInExecuteMode
   const planContentValue = () => props.planContent
-  const initialExecutionModelValue = () => props.initialExecutionModel ?? ''
-  const initialAuditorModelValue = () => props.initialAuditorModel ?? ''
+  const initialExecutionModelValue = () => props.initialExecutionModel
+  const initialAuditorModelValue = () => props.initialAuditorModel
+  const initialExecutionVariantValue = () => props.initialExecutionVariant
+  const initialAuditorVariantValue = () => props.initialAuditorVariant
+  const initialLoopNameValue = () => props.initialLoopName
   const [executing, setExecuting] = createSignal(startInExecuteModeValue())
   const [content, setContent] = createSignal(planContentValue())
   let textareaRef: TextareaRenderable | undefined
@@ -111,7 +117,7 @@ function PlanViewerDialog(props: {
 
   const handleExport = () => {
     const planText = content()
-    const name = extractLoopName(planText)
+    const name = extractPlanExecutionMetadata(planText).executionName
     const slugifiedName = slugify(name)
     const directory = props.api.state.path.directory
     const filename = `${slugifiedName}.md`
@@ -206,9 +212,12 @@ function PlanViewerDialog(props: {
           sessionId={props.sessionId}
           initialExecutionModel={initialExecutionModelValue()}
           initialAuditorModel={initialAuditorModelValue()}
+          initialExecutionVariant={initialExecutionVariantValue()}
+          initialAuditorVariant={initialAuditorVariantValue()}
+          initialLoopName={initialLoopNameValue()}
           onBack={() => setExecuting(false)}
           onExecuted={props.onRefresh}
-          onModelSelected={({ target, selectedModel, executionModel, auditorModel }) => {
+          onSelectionChanged={({ executionModel, auditorModel, executionVariant, auditorVariant, loopName }) => {
             props.api.ui.dialog.setSize('xlarge')
             props.api.ui.dialog.replace(() => (
               <PlanViewerDialog
@@ -220,8 +229,11 @@ function PlanViewerDialog(props: {
                 sessionId={props.sessionId}
                 onRefresh={props.onRefresh}
                 startInExecuteMode={true}
-                initialExecutionModel={target === 'execution' ? selectedModel : executionModel}
-                initialAuditorModel={target === 'auditor' ? selectedModel : auditorModel}
+                initialExecutionModel={executionModel}
+                initialAuditorModel={auditorModel}
+                initialExecutionVariant={executionVariant}
+                initialAuditorVariant={auditorVariant}
+                initialLoopName={loopName}
               />
             ))
           }}

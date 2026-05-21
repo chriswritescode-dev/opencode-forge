@@ -42,7 +42,7 @@ describe('loopService.getPlanText', () => {
       startedAt: new Date().toISOString(),
       prompt: undefined as string | undefined,
       phase: 'coding' as const,
-
+      status: 'running' as const,
       errorCount: 0,
       auditCount: 0,
       worktree: true,

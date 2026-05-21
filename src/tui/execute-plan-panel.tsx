@@ -2,8 +2,8 @@
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
-import { extractPlanTitle } from '../utils/plan-execution'
-import { buildDialogSelectOptions, flattenProviders, getModelDisplayLabel, sortModelsByPriority, type ModelInfo } from '../utils/tui-models'
+import { extractPlanExecutionMetadata } from '../utils/plan-execution'
+import { buildDialogSelectOptions, flattenProviders, getModelDisplayLabel, sortModelsByPriority, getAvailableModelVariants, getVariantDisplayLabel, normalizeVariantForModel, type ModelInfo } from '../utils/tui-models'
 import { resolveExecutionDialogDefaults } from '../utils/tui-execution-preferences'
 import { selectTuiSession, type ForgeProjectClient } from '../utils/tui-client'
 import type { ExecutionContextCache, ExecutionContextSnapshot } from '../utils/tui-execution-context-cache'
@@ -19,13 +19,17 @@ export function ExecutePlanPanel(props: {
   sessionId: string
   initialExecutionModel?: string
   initialAuditorModel?: string
+  initialExecutionVariant?: string
+  initialAuditorVariant?: string
+  initialLoopName?: string
   onBack: () => void
   onExecuted?: () => void | Promise<void>
-  onModelSelected: (args: {
-    target: 'execution' | 'auditor'
-    selectedModel: string
+  onSelectionChanged: (args: {
     executionModel: string
     auditorModel: string
+    executionVariant: string
+    auditorVariant: string
+    loopName: string
   }) => void
 }) {
   const cache = untrack(() => props.cache)
@@ -46,18 +50,40 @@ export function ExecutePlanPanel(props: {
   const [auditorModel, setAuditorModel] = createSignal(
     props.initialAuditorModel ?? initialDefaults.auditorModel,
   )
+  const [executionVariant, setExecutionVariant] = createSignal(
+    props.initialExecutionVariant ?? initialDefaults.executionVariant,
+  )
+  const [auditorVariant, setAuditorVariant] = createSignal(
+    props.initialAuditorVariant ?? initialDefaults.auditorVariant,
+  )
   const [models, setModels] = createSignal<ModelInfo[]>(initialSnapshot?.models ?? [])
   const [recents, setRecents] = createSignal<string[]>(initialSnapshot?.recents ?? [])
   const [modelsError, setModelsError] = createSignal<string | undefined>(initialSnapshot?.modelsError)
   const [modelsLoaded, setModelsLoaded] = createSignal(!!initialSnapshot)
   const [busy, setBusy] = createSignal(false)
+  const [loopName] = createSignal(
+    props.initialLoopName ?? extractPlanExecutionMetadata(props.planContent).executionName,
+  )
 
-  const applyDefaults = (defaults: { executionModel: string; auditorModel: string }) => {
+  const selectedModelInfo = (target: 'execution' | 'auditor') => {
+    const selected = target === 'execution' ? executionModel() : auditorModel()
+    const fallback = openCodeDefaultModel()
+    const fullName = selected || fallback
+    return models().find(m => m.fullName === fullName) ?? null
+  }
+
+  const applyDefaults = (defaults: { executionModel: string; auditorModel: string; executionVariant?: string; auditorVariant?: string }) => {
     if (!hasInitialOverrides() && !props.initialExecutionModel && !executionModel()) {
       setExecutionModel(defaults.executionModel)
     }
     if (!hasInitialOverrides() && !props.initialAuditorModel && !auditorModel()) {
       setAuditorModel(defaults.auditorModel)
+    }
+    if (props.initialExecutionVariant === undefined && !executionVariant()) {
+      setExecutionVariant(defaults.executionVariant ?? '')
+    }
+    if (props.initialAuditorVariant === undefined && !auditorVariant()) {
+      setAuditorVariant(defaults.auditorVariant ?? '')
     }
   }
 
@@ -67,6 +93,9 @@ export function ExecutePlanPanel(props: {
     setRecents(snap.recents)
     setModelsError(snap.modelsError)
     setModelsLoaded(true)
+    // Normalize variants against loaded models
+    setExecutionVariant(normalizeVariantForModel(executionVariant(), selectedModelInfo('execution')))
+    setAuditorVariant(normalizeVariantForModel(auditorVariant(), selectedModelInfo('auditor')))
   }
 
   const loadInline = async () => {
@@ -90,6 +119,9 @@ export function ExecutePlanPanel(props: {
       setModels(sorted)
       applyDefaults(inlineDefaults)
       setModelsLoaded(true)
+      // Normalize variants against loaded models
+      setExecutionVariant(normalizeVariantForModel(executionVariant(), selectedModelInfo('execution')))
+      setAuditorVariant(normalizeVariantForModel(auditorVariant(), selectedModelInfo('auditor')))
     } catch (err) {
       setModelsError(err instanceof Error ? err.message : 'Failed to load models')
       setModelsLoaded(true)
@@ -133,12 +165,103 @@ export function ExecutePlanPanel(props: {
         current={currentValue || ''}
         onSelect={(opt) => {
           const selectedModel = typeof opt.value === 'string' ? opt.value : ''
+          // Resolve the effective model for variant normalization:
+          // if selected model is empty (use default), resolve against OpenCode default
+          const effectiveModelName = selectedModel || openCodeDefaultModel()
+          const effectiveModelInfo = models().find(m => m.fullName === effectiveModelName) ?? null
+          // Normalize variant against newly selected model
+          const normalizedVariant = normalizeVariantForModel(
+            target === 'execution' ? executionVariant() : auditorVariant(),
+            effectiveModelInfo,
+          )
           props.api.ui.dialog.setSize('xlarge')
-          props.onModelSelected({
-            target,
-            selectedModel,
+          props.onSelectionChanged({
+            executionModel: target === 'execution' ? selectedModel : executionModel(),
+            auditorModel: target === 'auditor' ? selectedModel : auditorModel(),
+            executionVariant: target === 'execution' ? normalizedVariant : executionVariant(),
+            auditorVariant: target === 'auditor' ? normalizedVariant : auditorVariant(),
+            loopName: loopName(),
+          })
+        }}
+      />
+    ))
+  }
+
+  const openVariantDialog = (target: 'execution' | 'auditor') => {
+    if (!modelsLoaded()) return
+
+    const model = selectedModelInfo(target)
+    if (!model) {
+      props.api.ui.toast({ message: 'No variants available for this model', variant: 'info', duration: 3000 })
+      return
+    }
+
+    const availableVariants = getAvailableModelVariants(model)
+    if (availableVariants.length === 0) {
+      props.api.ui.toast({ message: 'No variants available for this model', variant: 'info', duration: 3000 })
+      return
+    }
+
+    const currentValue = target === 'execution' ? executionVariant() : auditorVariant()
+    const options = [
+      { title: 'Use default', value: '', description: 'Use OpenCode/model default variant' },
+      ...availableVariants.map(v => ({
+        title: v.label,
+        value: v.id,
+        description: v.description,
+      })),
+    ]
+
+    const title = target === 'execution' ? 'Execution Variant' : 'Auditor Variant'
+
+    props.api.ui.dialog.setSize('large')
+    props.api.ui.dialog.replace(() => (
+      <props.api.ui.DialogSelect
+        title={title}
+        options={options}
+        current={currentValue || ''}
+        onSelect={(opt) => {
+          const selectedVariant = typeof opt.value === 'string' ? opt.value : ''
+          props.api.ui.dialog.setSize('xlarge')
+          props.onSelectionChanged({
             executionModel: executionModel(),
             auditorModel: auditorModel(),
+            executionVariant: target === 'execution' ? selectedVariant : executionVariant(),
+            auditorVariant: target === 'auditor' ? selectedVariant : auditorVariant(),
+            loopName: loopName(),
+          })
+        }}
+      />
+    ))
+  }
+
+  const openLoopNameDialog = () => {
+    props.api.ui.dialog.setSize('large')
+    props.api.ui.dialog.replace(() => (
+      <props.api.ui.DialogPrompt
+        title="Loop name"
+        placeholder="my-feature-loop"
+        value={loopName()}
+        onConfirm={(name) => {
+          const trimmed = name.trim()
+          const newName = trimmed || loopName()
+          props.api.ui.dialog.setSize('xlarge')
+          props.onSelectionChanged({
+            executionModel: executionModel(),
+            auditorModel: auditorModel(),
+            executionVariant: executionVariant(),
+            auditorVariant: auditorVariant(),
+            loopName: newName,
+          })
+        }}
+        onCancel={() => {
+          props.api.ui.dialog.setSize('xlarge')
+          props.onSelectionChanged({
+            executionModel: executionModel(),
+            auditorModel: auditorModel(),
+            executionVariant: executionVariant(),
+            auditorVariant: auditorVariant(),
+            loopName: loopName(),
           })
         }}
       />
@@ -158,9 +281,9 @@ export function ExecutePlanPanel(props: {
     }
   }
 
-  async function runExecuteMode(mode: string, execModel?: string, auditModel?: string): Promise<void> {
+  async function runExecuteMode(mode: string, execModel?: string, auditModel?: string, execVariant?: string, auditVariant?: string): Promise<void> {
     const planText = props.planContent
-    const title = extractPlanTitle(planText)
+    const { title } = extractPlanExecutionMetadata(planText)
 
     const normalizedMode = mode.toLowerCase()
     const matchedLabel = PLAN_EXECUTION_LABELS.find(
@@ -178,14 +301,19 @@ export function ExecutePlanPanel(props: {
     const result = await props.client.plan.execute(props.sessionId, {
       mode: apiMode,
       title,
+      loopName: loopName(),
       plan: planText,
       executionModel: execModel,
       auditorModel: auditModel,
+      executionVariant: execVariant,
+      auditorVariant: auditVariant,
       targetSessionId: props.sessionId,
     }, {
       mode: matchedLabel as PlanExecutionLabel,
       executionModel: execModel,
       auditorModel: auditModel,
+      executionVariant: execVariant,
+      auditorVariant: auditVariant,
     })
 
     if (!result) {
@@ -226,9 +354,24 @@ export function ExecutePlanPanel(props: {
             value: 'model:execution',
           },
           {
+            name: `Execution variant: ${getVariantDisplayLabel(executionVariant(), selectedModelInfo('execution'))}`,
+            description: 'Press enter to change',
+            value: 'variant:execution',
+          },
+          {
             name: `Auditor model: ${getModelDisplayLabel(auditorModel(), models(), openCodeDefaultModel())}`,
             description: 'Press enter to change',
             value: 'model:auditor',
+          },
+          {
+            name: `Auditor variant: ${getVariantDisplayLabel(auditorVariant(), selectedModelInfo('auditor'))}`,
+            description: 'Press enter to change',
+            value: 'variant:auditor',
+          },
+          {
+            name: `Loop name: ${loopName()}`,
+            description: 'Press enter to edit the loop name used when launching',
+            value: 'loop-name',
           },
           ...PLAN_EXECUTION_LABELS.map(label => ({
             name: label,
@@ -246,8 +389,20 @@ export function ExecutePlanPanel(props: {
               openModelDialog('auditor')
               return
             }
+            if (option.value === 'variant:execution') {
+              openVariantDialog('execution')
+              return
+            }
+            if (option.value === 'variant:auditor') {
+              openVariantDialog('auditor')
+              return
+            }
+            if (option.value === 'loop-name') {
+              openLoopNameDialog()
+              return
+            }
             if (typeof option.value === 'string' && option.value.startsWith('mode:')) {
-              handleExecuteMode(option.value.slice(5), executionModel(), auditorModel())
+              handleExecuteMode(option.value.slice(5), executionModel(), auditorModel(), executionVariant(), auditorVariant())
             }
           }
         }}

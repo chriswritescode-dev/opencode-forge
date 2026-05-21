@@ -32,20 +32,6 @@ export type LoopPermissionRejectHook = (
   input: { event: { type: string; properties?: Record<string, unknown> } }
 ) => Promise<void>
 
-/**
- * Patches the permission ruleset of subagent sessions created inside an
- * active loop so they never raise "ask" prompts.
- *
- * Loops are autonomous — no user is available to answer prompts. OpenCode's
- * default subagent ruleset only denies a few tools (typically `todowrite`,
- * `task`); everything else falls back to "ask" and deadlocks the session.
- *
- * To preserve the parent session's intent (e.g. an auditor's subagent must
- * stay read-only just like the auditor itself), we copy the parent session's
- * permission ruleset onto the child. If the parent's ruleset is missing or
- * has no allow-all rule, we fall back to the standard loop ruleset so the
- * child still has full autonomy inside the worktree.
- */
 export function createLoopPermissionRejectHook(
   deps: CreateLoopPermissionRejectHookDeps,
 ): LoopPermissionRejectHook {
