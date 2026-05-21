@@ -28,6 +28,8 @@ The server plugin is the core of the plugin. It:
 3. Registers hooks for session management and event handling
 4. Manages the lifecycle of loops and sandbox containers
 
+Plugin boot does not reconcile, recover, cancel, or restart any persisted loops. See [No boot-time loop recovery](#no-boot-time-loop-recovery) and the [Loop Lifecycle Rules](loop-system.md#loop-lifecycle-rules) for details.
+
 Key exports:
 - `createForgePlugin(config: PluginConfig): Plugin` - Factory function
 - `createParentSessionLookup(options)` - Resolves parent sessions across worktrees
@@ -61,9 +63,9 @@ The codebase is organized into these module groups under `src/`:
 
 | Module | Purpose | Key Files |
 |--------|---------|-----------|
-| `agents/` | AI agent definitions (code, architect, auditor) | `index.ts`, `code.ts`, `architect.ts`, `auditor.ts` |
-| `hooks/` | Plugin event/lifecycle hooks (session, plan capture, sandbox, watchdog) | `index.ts`, `session.ts`, `loop.ts`, `plan-capture.ts`, `watchdog.ts`, `sandbox-tools.ts` |
-| `loop/` | Core loop state machine and runtime | `runtime.ts`, `service.ts`, `state.ts`, `transitions.ts`, `prompts.ts` |
+| `agents/` | AI agent definitions (code, architect, auditor + auditor-loop variant) | `index.ts`, `code.ts`, `architect.ts`, `auditor.ts` |
+| `hooks/` | Plugin event/lifecycle hooks (session, loop events, plan capture, plan approval, watchdog, sandbox, forge-session-attach, loop-permission, host-side-effects) | `index.ts`, `session.ts`, `loop.ts`, `plan-capture.ts`, `plan-approval.ts`, `watchdog.ts`, `sandbox-tools.ts`, `forge-session-attach.ts`, `loop-permission.ts`, `host-side-effects.ts` |
+| `loop/` | Core loop state machine and runtime | `runtime.ts`, `service.ts`, `state.ts`, `transitions.ts`, `prompts.ts`, `restartability.ts`, `in-flight-guard.ts`, `token-usage.ts`, `name-uniqueness.ts` |
 | `services/` | Higher-level orchestration services | `execution.ts`, `session-loop-resolver.ts`, `deterministic-decomposer.ts`, `plan-capture.ts`, `worktree-log.ts` |
 | `sandbox/` | Docker sandbox management | `docker.ts`, `manager.ts`, `context.ts`, `reconcile.ts` |
 | `storage/` | SQLite persistence layer (repos + migrations) | `database.ts`, `repos/*.ts`, `migrations/*.sql` |
@@ -126,19 +128,23 @@ OpenCode Forge integrates with OpenCode through several hook points. The plugin 
 - `chat.message` - Inject memory into context, handle session events
 - `experimental.session.compacting` - Custom compaction behavior for session continuity
 
-### Message Transform Hooks (`src/hooks/session.ts`)
+### Message Transform Hooks (`src/index.ts`)
 
-- `experimental.chat.messages.transform` - Architect read-only enforcement (enforces `temperature: 0.0`, blocks edit/write tools)
+- `experimental.chat.messages.transform` - Appends a "READ-ONLY mode" system-reminder onto the last user message in architect sessions, instructing the model to search/analyze only and to wrap the final plan with `<!-- forge-plan:start/end -->` markers. This is a **prompt injection**, not a permission lockdown — the architect agent's `tools.exclude` config separately excludes `plan`, `plan_enter`, `plan_exit`.
 
 ### Tool Execution Hooks
 
 - `tool.execute.before` - Sandbox tool redirection, logging (`src/hooks/sandbox-tools.ts`)
 - `tool.execute.after` - Sandbox cleanup and output capture (`src/hooks/sandbox-tools.ts`)
 
-### Permission Hooks
+### Loop Permission Patching (`src/hooks/loop-permission.ts`)
 
-- `permission.ask` - Auto-allow/deny based on patterns (e.g., deny `git push` inside loop sessions)
-- Loop permission rulesets defined in `src/constants/loop.ts`
+Loops are autonomous and cannot answer permission prompts, but OpenCode's default subagent ruleset falls back to `ask` for most tools. To prevent deadlocks, `createLoopPermissionRejectHook` listens for `session.created` events. When the new session resolves to an active loop, the hook calls `v2.session.update()` to overwrite the child session's `permission` ruleset:
+
+- If the parent session has an allow-all ruleset (e.g. an auditor subagent), the parent's ruleset is inherited so the child stays under the same constraints.
+- Otherwise the default loop ruleset from `buildLoopPermissionRuleset()` (`src/constants/loop.ts`) is applied — blanket allow-all inside the worktree, with explicit denies for `external_directory`, `git push *`, `review-write`, `review-delete`, `plan*`, `loop`, `loop-cancel`, `loop-status`.
+
+A `PATCHED_SESSIONS` set deduplicates retries. Audit-only subagents use the stricter `buildAuditSessionPermissionRuleset()` (read-only, denies `edit`/`write`/`multiedit`/`apply_patch` and destructive git/`rm`/`mv`).
 
 ### Event Hooks
 
@@ -161,7 +167,7 @@ OpenCode Forge uses `bun:sqlite` for all data persistence. The storage layer is 
 - `initializeDatabase(dataDir, options)` - Creates SQLite DB in the data directory
 - `closeDatabase()` - Closes database connections on shutdown
 - `resolveDataDir()` - Resolves platform-appropriate data directory (`~/.local/share/opencode/forge`)
-- Migrations are sequential SQL files (numbered 100-126) tracked in a `migrations` table
+- Migrations are sequential SQL files (numbered 100-131) tracked in a `migrations` table
 
 ### Repository Pattern
 
@@ -172,7 +178,8 @@ All data access goes through typed repository interfaces created via factory fun
 | `LoopsRepo` | CRUD for loop rows | `LoopRow`, `LoopLargeFields` |
 | `PlansRepo` | CRUD for plans | `PlanRow`, `PlansRepo` |
 | `ReviewFindingsRepo` | CRUD for review findings | `ReviewFindingRow`, `ReviewFindingsRepo` |
-| `SectionPlansRepo` | CRUD for section-based plans | `SectionPlanRow`, `SectionPlansRepo` |
+| `SectionPlansRepo` | CRUD for milestone (section) plans used in decomposed loops | `SectionPlanRow`, `SectionPlansRepo` |
+| `LoopSessionUsageRepo` | Per-session token/cost usage across rotated loop sessions | `LoopSessionUsageRow`, `LoopUsageAggregate` |
 | `TuiPrefsRepo` | TUI preferences persistence | `TuiPrefsRepo` |
 
 Each repository is project-scoped via `projectId` parameter.
@@ -192,12 +199,14 @@ The plugin follows this initialization sequence within `createForgePlugin()`:
 5. **Workspace Status Registry** - Track workspace connected/disconnected state
 6. **Workspace Adapter** - Register forge workspace adapter if experimental workspace API available
 7. **Database** - Initialize SQLite storage (`initializeDatabase()`)
-8. **Repositories** - Create typed repos (loops, plans, reviewFindings, sectionPlans)
+8. **Repositories** - Create typed repos (loops, plans, reviewFindings, sectionPlans, loopSessionUsage)
 9. **Loop Event Handler** - Connect loop runtime to events and state management
 10. **Tools and Agents** - Register all tools (`createTools()`) and agents (`buildAgents()`)
 11. **Hooks** - Final registration of all hook points
 
-**Note:** Plugin initialization does not recover, cancel, or restart loops. Boot initializes storage and runtime services only. Loop recovery and restart are explicit user actions via `loop-status restart=true`.
+### No boot-time loop recovery
+
+Plugin initialization does not recover, cancel, or restart loops. Boot initializes storage and runtime services only. Loop continuation requires explicit user intent via `loop-status name=<loop> restart=true` (optionally `force=true` for a running loop). Stale forge workspaces are reclaimed by an opportunistic sweep on loop teardown (see `src/workspace/sweep-stale.ts`), not at boot. See [Loop Lifecycle Rules](loop-system.md#loop-lifecycle-rules) for the full restartability contract.
 
 ## Cleanup
 

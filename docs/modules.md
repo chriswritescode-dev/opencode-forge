@@ -95,30 +95,33 @@ Translates OpenCode host events into loop actions and manages lifecycle side-eff
 | File | Purpose |
 |------|---------|
 | `index.ts` | Barrel exports |
-| `session.ts` | Session lifecycle (message, compacting, messages transform) |
+| `session.ts` | Session lifecycle (message, compacting) |
 | `loop.ts` | LoopEventHandler adapter (events → Loop runtime) |
 | `host-side-effects.ts` | Termination side-effects (teardown, toast, log) |
 | `watchdog.ts` | Stall detection and recovery |
-| `plan-approval.ts` | Plan approval dedup/event gating |
+| `plan-approval.ts` | Plan approval dedup/event gating + tool execute before/after hooks |
 | `plan-capture.ts` | Plan capture from streaming assistant messages |
-| `section-capture.ts` | Section extraction from streaming messages |
-| `forge-session-attach.ts` | Auto-attach loops to new sessions |
-| `sandbox-tools.ts` | Sandbox tool before/after hooks |
+| `forge-session-attach.ts` | Auto-attach loops on `session.created` and `chat.message` events |
+| `loop-permission.ts` | Patches subagent permission rulesets on `session.created` for active-loop sessions |
+| `sandbox-tools.ts` | Sandbox tool before/after redirection hooks |
+
+> Note: `section-capture` and `plan-execution`/`plan-archive`/`plan-patch` live under `src/utils/`, not `src/hooks/`.
 
 ### Public API (barrel exports from `hooks/index.ts`)
 
 ```typescript
-createSessionHooks(): SessionHooks          // Session lifecycle hooks
-createLoopEventHandler(): LoopEventHandler  // Loop event handling adapter
-createToolExecuteBeforeHook()              // Pre-tool execution hook
-createToolExecuteAfterHook()               // Post-tool execution hook
-createPlanApprovalEventHook()             // Plan approval event hook
+createSessionHooks(): SessionHooks          // Session lifecycle hooks (session.ts)
+createLoopEventHandler(): LoopEventHandler  // Loop event handling adapter (loop.ts)
+createToolExecuteBeforeHook()              // Pre-tool execution hook (plan-approval.ts)
+createToolExecuteAfterHook()               // Post-tool execution hook (plan-approval.ts)
+createPlanApprovalEventHook()              // Plan approval event hook (plan-approval.ts)
 ```
 
-Additional hooks available via direct imports:
-- `createSandboxToolBeforeHook()` / `createSandboxToolAfterHook()` — sandbox tool redirection
-- `createForgeSessionAttachHook()` — auto-attach loops on session creation
-- `createPlanCaptureEventHook()` — plan marker extraction from streaming messages
+Additional hooks available via direct imports (not re-exported by the barrel):
+- `createSandboxToolBeforeHook()` / `createSandboxToolAfterHook()` — sandbox tool redirection (`sandbox-tools.ts`)
+- `createForgeSessionAttachHook()` / `createForgeSessionMessageAttachHook()` — auto-attach loops on session events (`forge-session-attach.ts`)
+- `createLoopPermissionRejectHook()` — patch subagent permissions on `session.created` (`loop-permission.ts`)
+- `createPlanCaptureEventHook()` — plan marker extraction from streaming messages (`plan-capture.ts`)
 
 Source: [src/hooks/index.ts](../src/hooks/index.ts)
 
@@ -133,15 +136,18 @@ The heart of Forge. Implements autonomous iterative development with phases: `co
 | File | Purpose |
 |------|---------|
 | `index.ts` | Public API barrel (all re-exports) |
-| `runtime.ts` | `createLoop()` factory, `Loop` interface (~2100 lines) |
+| `runtime.ts` | `createLoop()` factory, `Loop` interface |
 | `service.ts` | DB-backed `LoopService` (`createLoopService`) |
-| `state.ts` | Discriminated union `LoopState` (3 phases: `coding`, `auditing`, `final_auditing`), converters |
-| `transitions.ts` | Pure `nextTransition()` table |
+| `state.ts` | Discriminated union `LoopState` (3 phases: `coding`, `auditing`, `final_auditing`), row↔state converters |
+| `transitions.ts` | Pure `nextTransition()` table — no side effects |
 | `termination.ts` | `TerminationReason` union, `terminationStatusFor()` |
 | `prompts.ts` | Prompt builders for each loop phase |
 | `section-summary.ts` | Parse audit output markers |
 | `idle-gate.ts` | Session busy detection and timeout tracking |
-| `name-uniqueness.ts` | Generate unique loop names |
+| `in-flight-guard.ts` | Single-flight guard for concurrent loop start attempts |
+| `restartability.ts` | `getRestartability()` — decides whether a non-completed loop can restart, blocked, or requires force |
+| `token-usage.ts` | Extract and normalize per-message usage from session output |
+| `name-uniqueness.ts` | Reserve a unique loop identity before any side effects |
 | `session-output.ts` | Fetch session output for loop display |
 
 ### Key Types
@@ -233,7 +239,7 @@ Higher-level orchestration services coordinating between hooks, loop runtime, an
 |------|---------|
 | `execution.ts` | Unified command bus for plan execution (`createForgeExecutionService()`) |
 | `session-loop-resolver.ts` | Resolve which loop owns a given session |
-| `deterministic-decomposer.ts` | Parse plan sections without LLM (`decomposeDeterministically()`) |
+| `deterministic-decomposer.ts` | Slice a plan into milestones (`section_plans` rows) deterministically — called once at loop start by `execution.ts`, not a runtime loop phase |
 | `plan-capture.ts` | Extract plan text from messages |
 | `worktree-log.ts` | Log worktree completions |
 
@@ -333,13 +339,13 @@ Each created via `createXxxRepo(db)` factory with project-scoped queries:
 | `LoopsRepo` | `loops`, `loop_large_fields` | `LoopRow`, `LoopLargeFields` |
 | `PlansRepo` | `plans` | `PlanRow` |
 | `ReviewFindingsRepo` | `review_findings` | `ReviewFindingRow` |
-| `SectionPlansRepo` | `section_plans` | `SectionPlanRow` |
+| `SectionPlansRepo` | `section_plans` | `SectionPlanRow` — one row per **milestone** (decomposed plan section). See [Loop System](loop-system.md#milestones-aka-sections). |
 | `LoopSessionUsageRepo` | `loop_session_usage` | `LoopSessionUsageRow`, `LoopUsageAggregate` |
 | `TuiPrefsRepo` | `tui_preferences` | N/A |
 
 ### Migrations
 
-Sequential numbered `.sql` files (100–130) tracked in a `migrations` table.
+Sequential numbered `.sql` files (100–131) tracked in a `migrations` table.
 
 See [storage/migrations/README.md](../src/storage/migrations/README.md) for migration details.
 
@@ -386,7 +392,9 @@ interface ToolContext {
   reviewFindingsRepo: ReviewFindingsRepo
   loopsRepo: LoopsRepo
   sectionPlansRepo: SectionPlansRepo
+  loopSessionUsageRepo: LoopSessionUsageRepo
   workspaceStatusRegistry: WorkspaceStatusRegistry
+  pendingTeardowns: PendingTeardownRegistry
 }
 ```
 
