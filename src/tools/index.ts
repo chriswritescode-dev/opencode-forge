@@ -3,6 +3,7 @@ import { createReviewTools } from './review'
 import { createPlanTools } from './plan-kv'
 import { createLoopTools } from './loop'
 import { createSectionReadTool } from './section-read'
+import { createBashTool } from './bash'
 import type { ToolContext } from './types'
 
 export type { ToolContext } from './types'
@@ -14,10 +15,19 @@ export type { ToolContext } from './types'
  * @returns Record of tool name to tool implementation.
  */
 export function createTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
-  return {
+  const tools: Record<string, ReturnType<typeof tool>> = {
     ...createReviewTools(ctx),
     ...createPlanTools(ctx),
     ...createLoopTools(ctx),
     'section-read': createSectionReadTool(ctx),
   }
+
+  if (ctx.sandboxManager) {
+    tools.bash = createBashTool({
+      resolveSandboxForSession: ctx.resolveSandboxForSession,
+      logger: ctx.logger,
+    })
+  }
+
+  return tools
 }

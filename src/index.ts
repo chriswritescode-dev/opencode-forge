@@ -312,28 +312,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 
     const getCleanup = cleanup
 
-    const ctx: ToolContext = {
-      projectId,
-      directory,
-      config,
-      logger,
-      db,
-      dataDir,
-      loopHandler,
-      loop: loopHandler.loop,
-      v2,
-      cleanup,
-      input,
-      sandboxManager,
-      plansRepo,
-      reviewFindingsRepo,
-      loopsRepo,
-      sectionPlansRepo,
-      loopSessionUsageRepo,
-      workspaceStatusRegistry,
-      pendingTeardowns,
-    }
-
     // Sandbox reconciliation interval removed per Phase 2 requirements.
     // Sandbox reconciliation now only occurs for loops started/restarted
     // in the current plugin process, triggered by explicit runtime events.
@@ -392,6 +370,29 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     async function resolveSandboxForSession(sessionID: string) {
       const resolved = await sessionLoopResolver.resolveActiveLoopForSession(sessionID)
       return resolveSandboxContextForLoop(sandboxManager, resolved, logger)
+    }
+
+    const ctx: ToolContext = {
+      projectId,
+      directory,
+      config,
+      logger,
+      db,
+      dataDir,
+      loopHandler,
+      loop: loopHandler.loop,
+      v2,
+      cleanup,
+      input,
+      sandboxManager,
+      plansRepo,
+      reviewFindingsRepo,
+      loopsRepo,
+      sectionPlansRepo,
+      loopSessionUsageRepo,
+      workspaceStatusRegistry,
+      pendingTeardowns,
+      resolveSandboxForSession,
     }
 
     const tools = createTools(ctx)
