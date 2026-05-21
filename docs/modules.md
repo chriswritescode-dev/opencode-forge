@@ -105,8 +105,6 @@ Translates OpenCode host events into loop actions and manages lifecycle side-eff
 | `loop-permission.ts` | Patches subagent permission rulesets on `session.created` for active-loop sessions |
 | `sandbox-tools.ts` | Sandbox tool before/after redirection hooks |
 
-> Note: `section-capture` and `plan-execution`/`plan-archive`/`plan-patch` live under `src/utils/`, not `src/hooks/`.
-
 ### Public API (barrel exports from `hooks/index.ts`)
 
 ```typescript
@@ -429,10 +427,10 @@ Cross-cutting helpers (~25 files) organized by concern:
 |---|---|---|
 | Logging | `logger.ts` | File logger with rotation (10MB max) |
 | Caching | `lru-cache.ts` | Generic LRU cache |
-| Plan | `plan-execution.ts`, `plan-capture.ts`, `plan-archive.ts`, `plan-patch.ts` | Plan parsing, archiving, patching |
+| Plan | `plan-execution.ts`, `plan-capture.ts`, `plan-archive.ts` | Plan parsing and archiving |
 | Sections | `section-capture.ts`, `section-summary.ts` | Section extraction/summary parsing |
 | Loop | `loop-helpers.ts`, `loop-format.ts`, `loop-session.ts` | Loop model/format/session helpers |
-| Sessions | `audit-session.ts`, `session-titles.ts`, `session-stats.ts` | Session naming/stats |
+| Sessions | `audit-session.ts`, `session-titles.ts` | Session naming |
 | TUI | `tui-client.ts`, `tui-plan-store.ts`, `tui-loop-store.ts`, `tui-execution-preferences.ts`, `tui-execution-context-cache.ts`, `tui-models.ts` | TUI RPC, storage, preferences, models |
 | Workspace | `worktree-cleanup.ts`, `workspace-listing.ts`, `workspace-status-registry.ts` | Worktree/workspace lifecycle |
 | Misc | `partial-match.ts`, `model-fallback.ts`, `git-branch.ts`, `busy-guard.ts`, `sandbox-ready.ts`, `format.ts` | Various helpers |

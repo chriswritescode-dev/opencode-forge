@@ -87,29 +87,3 @@ export function fetchLoopsList(projectId: string, dbPathOverride?: string): Loop
     try { db?.close() } catch {}
   }
 }
-
-/**
- * Fetches a single loop by name from the local SQLite database.
- * Returns the same shape as the former `rpc('loops.get', { loopName })`.
- */
-export function fetchLoopByName(projectId: string, loopName: string, dbPathOverride?: string): LoopInfo | null {
-  const dbPath = dbPathOverride || getDbPath()
-  if (!existsSync(dbPath)) return null
-
-  let db: Database | null = null
-  try {
-    db = new Database(dbPath, { readonly: true })
-    const loopsRepo = createLoopsRepo(db)
-    const sectionPlansRepo = createSectionPlansRepo(db)
-
-    const row = loopsRepo.get(projectId, loopName)
-    if (!row) return null
-
-    const plans = sectionPlansRepo.list(projectId, loopName)
-    return rowToLoopInfo(row, plans.length > 0 ? plans : undefined)
-  } catch {
-    return null
-  } finally {
-    try { db?.close() } catch {}
-  }
-}

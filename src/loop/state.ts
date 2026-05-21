@@ -47,8 +47,6 @@ export interface FinalAuditingState extends LoopStateBase {
 
 export type LoopState = CodingState | AuditingState | FinalAuditingState
 
-export type Phase = LoopState['phase']
-
 export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): LoopState {
   const base = {
     active: row.status === 'running',

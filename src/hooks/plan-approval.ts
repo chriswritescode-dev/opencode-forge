@@ -95,9 +95,6 @@ const pendingExecutions = new Map<string, PendingExecution>()
 const processedApprovalCalls = new WeakMap<ToolContext, Set<string>>()
 const claimedApprovalPlans = new Set<string>()
 
-export { LOOP_BLOCKED_TOOLS }
-export { extractPlanTitle } from '../utils/plan-execution'
-
 interface LoopToolBlockingDeps {
   resolveActiveLoopForSession?: (sessionID: string) => Promise<{ active?: boolean; loopName?: string; phase?: string } | null>
 }
