@@ -49,6 +49,8 @@ describe('LoopsRepo', () => {
         total_sections INTEGER NOT NULL DEFAULT 0,
         final_audit_done INTEGER NOT NULL DEFAULT 0,
         final_audit_attempts INTEGER NOT NULL DEFAULT 0,
+        execution_variant    TEXT,
+        auditor_variant      TEXT,
         PRIMARY KEY (project_id, loop_name)
       )
     `)

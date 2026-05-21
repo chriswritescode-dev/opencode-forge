@@ -32,9 +32,9 @@ function createToolContext(db: Database, reviewFindingsRepo: ReturnType<typeof c
     loopsRepo,
     projectId: 'test-project',
     logger: mockLogger,
-    loopService,
+    loop: loopService,
     directory: TEST_DIR,
-  }
+  } as any
 }
 
 describe('review-write', () => {
@@ -107,6 +107,11 @@ describe('review-write', () => {
       workspaceId: null,
       hostSessionId: null,
       startedAt: Date.now(),
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: 0,
+      executionVariant: null,
+      auditorVariant: null,
     }, { lastAuditResult: null })
 
     const result = await tools['review-write'].execute(
@@ -271,6 +276,11 @@ describe('review-read', () => {
       workspaceId: null,
       hostSessionId: null,
       startedAt: Date.now(),
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: 0,
+      executionVariant: null,
+      auditorVariant: null,
     }, { lastAuditResult: null })
 
     const result = await tools['review-read'].execute(
@@ -374,6 +384,11 @@ describe('review-delete', () => {
       workspaceId: null,
       hostSessionId: null,
       startedAt: Date.now(),
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: 0,
+      executionVariant: null,
+      auditorVariant: null,
     }, { lastAuditResult: null })
 
     // Delete from alpha loop context

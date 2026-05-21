@@ -88,7 +88,7 @@ describe('session-titles', () => {
     })
 
     test('formats with section context for sectioned loops', () => {
-      expect(formatAuditSessionTitle('test-loop', { iteration: 3, currentSectionIndex: 1, totalSections: 4 })).toBe('audit: test-loop §2/4 #3')
+      expect(formatAuditSessionTitle('test-loop', { iteration: 3, currentSectionIndex: 1, totalSections: 4 })).toBe('audit: test-loop 2/4 #3')
     })
 
     test('truncates long loop name', () => {
@@ -103,9 +103,9 @@ describe('session-titles', () => {
       expect(formatLoopSessionTitle('user-detail-orders', { iteration: 3, currentSectionIndex: 0, totalSections: 0 }))
         .toBe('Loop: user-detail-orders #3')
     })
-    test('appends section §I+1/T and iteration for sectioned loops', () => {
+    test('appends section I+1/T and iteration for sectioned loops', () => {
       expect(formatLoopSessionTitle('user-detail-orders', { iteration: 3, currentSectionIndex: 1, totalSections: 4 }))
-        .toBe('Loop: user-detail-orders §2/4 #3')
+        .toBe('Loop: user-detail-orders 2/4 #3')
     })
     test('omits both markers when context is undefined (display-only callers)', () => {
       expect(formatLoopSessionTitle('user-detail-orders')).toBe('Loop: user-detail-orders')

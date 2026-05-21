@@ -54,10 +54,13 @@ describe('Tool Blocking Logic', () => {
         startedAt: new Date().toISOString(),
         prompt: 'Test prompt',
         phase: 'coding' as const,
-
+        status: 'running' as const,
         errorCount: 0,
         auditCount: 0,
         worktree: true,
+        currentSectionIndex: 0,
+        totalSections: 0,
+        finalAuditDone: false,
       }
       loopService.setState(loopName, state)
 
@@ -84,10 +87,13 @@ describe('Tool Blocking Logic', () => {
         startedAt: new Date().toISOString(),
         prompt: 'Test prompt',
         phase: 'coding' as const,
-
+        status: 'completed' as const,
         errorCount: 0,
         auditCount: 0,
         worktree: true,
+        currentSectionIndex: 0,
+        totalSections: 0,
+        finalAuditDone: false,
       }
       loopService.setState(loopName, inactiveState)
 

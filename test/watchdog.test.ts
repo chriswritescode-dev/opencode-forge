@@ -218,7 +218,7 @@ describe('createLoopWatchdog', () => {
 
     expect(recoverCalls.length).toBeGreaterThanOrEqual(2)
     expect(terminateCalls.length).toBe(1)
-    expect(terminateCalls[0]).toBe('stall_timeout')
+    expect(terminateCalls[0]).toEqual({ kind: 'stall_timeout' })
     const lastRecovery = recoverCalls[recoverCalls.length - 1] as { reason: string; status: string }
     expect(lastRecovery.reason).toBe('non_busy_status')
     expect(lastRecovery.status).toBe('retry')
@@ -263,7 +263,7 @@ describe('createLoopWatchdog', () => {
 
     expect(recoverCalls.length).toBeGreaterThanOrEqual(2)
     expect(terminateCalls.length).toBe(1)
-    expect(terminateCalls[0]).toBe('stall_timeout')
+    expect(terminateCalls[0]).toEqual({ kind: 'stall_timeout' })
 
     const lastRecovery = recoverCalls[recoverCalls.length - 1] as { reason: string; error: unknown }
     expect(lastRecovery.reason).toBe('status_error')

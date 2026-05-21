@@ -125,7 +125,7 @@ describe('createAuditSession', () => {
     })
 
     const callArgs = (mockV2.session.create as any).mock.calls[0][0]
-    expect(callArgs.title).toBe('audit: test-loop §2/4 #3')
+    expect(callArgs.title).toBe('audit: test-loop 2/4 #3')
   })
 })
 
