@@ -258,6 +258,21 @@ describe('sandbox tool hooks', () => {
       expect(output.output).toContain('echo "test output"')
     })
 
+    test('bash mutates args.command to a no-op so host runs nothing', async () => {
+      const input = {
+        tool: 'bash',
+        sessionID: TEST_SESSION_ID,
+        callID: 'noop-call',
+      }
+      const args = { command: 'echo "host should not see this"' }
+      const output = { args, title: '', output: '', metadata: undefined }
+
+      await beforeHook(input as never, output as never)
+
+      expect(args.command).toBe('true')
+      expect(output.args).toBe(args)
+    })
+
     test('bash git push is blocked in sandbox', async () => {
       const input = {
         tool: 'bash',

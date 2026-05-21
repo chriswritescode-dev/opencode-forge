@@ -11,7 +11,7 @@ import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { createLoopEventHandler } from '../hooks'
 import type { SandboxManager } from '../sandbox/manager'
-import { extractPlanTitle, extractLoopNames } from '../utils/plan-execution'
+import { extractPlanExecutionMetadata } from '../utils/plan-execution'
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
 
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
@@ -67,6 +67,8 @@ export interface ForgeLoopExtra {
   title?: string
   executionModel?: string
   auditorModel?: string
+  executionVariant?: string
+  auditorVariant?: string
   planSource: 'stored' | 'inline'
   planText?: string
   initialPromptOwner?: 'server' | 'tui'
@@ -84,6 +86,8 @@ export interface AttachLoopInput {
   hostSessionId?: string
   executionModel?: string
   auditorModel?: string
+  executionVariant?: string
+  auditorVariant?: string
   maxIterations: number
   sandboxEnabled: boolean
   sandboxContainer?: string
@@ -145,6 +149,8 @@ export interface StartLoopCommand {
   maxIterations?: number
   executionModel?: string
   auditorModel?: string
+  executionVariant?: string
+  auditorVariant?: string
   hostSessionId?: string
   lifecycle?: {
     selectSession?: boolean
@@ -168,6 +174,8 @@ export interface BuildStartLoopCommandInput {
   maxIterations?: number
   executionModel?: string
   auditorModel?: string
+  executionVariant?: string
+  auditorVariant?: string
   hostSessionId?: string
   lifecycle?: StartLoopCommand['lifecycle']
 }
@@ -181,6 +189,8 @@ export function buildStartLoopCommand(input: BuildStartLoopCommandInput): StartL
     maxIterations: input.maxIterations,
     executionModel: input.executionModel,
     auditorModel: input.auditorModel,
+    executionVariant: input.executionVariant,
+    auditorVariant: input.auditorVariant,
     hostSessionId: input.hostSessionId,
     lifecycle: input.lifecycle,
   }
@@ -778,6 +788,8 @@ export async function attachLoopToSession(
     displayName,
     executionModel,
     auditorModel,
+    executionVariant,
+    auditorVariant,
     maxIterations,
     sandboxEnabled,
     sandboxContainer,
@@ -838,6 +850,8 @@ export async function attachLoopToSession(
       sandboxContainer: sandboxContainer ?? undefined,
       executionModel,
       auditorModel,
+      executionVariant,
+      auditorVariant,
       workspaceId,
       hostSessionId: input.hostSessionId,
       currentSectionIndex: 0,
@@ -1055,7 +1069,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     if (!planResult.ok) return { ok: false, error: planResult.error }
     
     const planText = planResult.planText
-    const title = command.title ?? extractPlanTitle(planText)
+    const title = command.title ?? extractPlanExecutionMetadata(planText).title
     const sessionTitle = formatPlanSessionTitle(title)
     const executionModel = command.executionModel ?? deps.config.executionModel
     const parsedModel = parseModelString(executionModel)
@@ -1153,7 +1167,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     if (!planResult.ok) return { ok: false, error: planResult.error }
     
     const planText = planResult.planText
-    const title = command.title ?? extractPlanTitle(planText)
+    const title = command.title ?? extractPlanExecutionMetadata(planText).title
     const executionModel = command.executionModel ?? deps.config.executionModel
     const parsedModel = parseModelString(executionModel)
     
@@ -1206,7 +1220,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const planText = planResult.planText
     
     // Extract loop names first so the session title can prefer the explicit Loop Name
-    const { displayName, executionName } = extractLoopNames(planText)
+    const { displayName, executionName } = extractPlanExecutionMetadata(planText)
     const title = command.title ?? displayName
     const sessionTitle = formatLoopSessionTitle(title, { iteration: 1, currentSectionIndex: 0, totalSections: 0 })
     
@@ -1230,6 +1244,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     // Resolve models
     const resolvedExecutionModel = command.executionModel ?? deps.config.executionModel
     const resolvedAuditorModel = command.auditorModel ?? deps.config.auditorModel
+    
+    // Resolve variants
+    const resolvedExecutionVariant = command.executionVariant
+    const resolvedAuditorVariant = command.auditorVariant
     
     // Resolve max iterations
     const maxIterations = command.maxIterations ?? deps.config.loop?.defaultMaxIterations ?? 0
@@ -1385,6 +1403,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         hostSessionId,
         executionModel: resolvedExecutionModel,
         auditorModel: resolvedAuditorModel,
+        executionVariant: resolvedExecutionVariant,
+        auditorVariant: resolvedAuditorVariant,
         maxIterations,
         sandboxEnabled: sandboxEnabledForLoop,
         sandboxContainer: sandboxContainer ?? undefined,
@@ -1692,6 +1712,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             maxIterations: latestState.maxIterations,
             executionModel: latestState.executionModel,
             auditorModel: latestState.auditorModel,
+            executionVariant: latestState.executionVariant,
+            auditorVariant: latestState.auditorVariant,
             workspaceId: latestState.workspaceId,
             hostSessionId: latestState.hostSessionId,
             sandbox: latestState.sandbox,
@@ -1802,6 +1824,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         sandboxContainer: restartSandbox ? deps.sandboxManager?.docker.containerName(stoppedState.loopName) : undefined,
         executionModel: stoppedState.executionModel,
         auditorModel: stoppedState.auditorModel,
+        executionVariant: stoppedState.executionVariant,
+        auditorVariant: stoppedState.auditorVariant,
         workspaceId: stoppedState.workspaceId,
         hostSessionId: stoppedState.hostSessionId,
         currentSectionIndex: stoppedState.currentSectionIndex,
@@ -1846,6 +1870,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       deps.loop.registerLoopSession(effectiveSessionId, stoppedState.loopName)
 
+      const restartVariant = promptAgent === 'auditor-loop'
+        ? stoppedState.auditorVariant
+        : stoppedState.executionVariant
+
       const sendRestartPrompt = async (model?: { providerID: string; modelID: string }) => {
         try {
           return await withInFlightGuard(
@@ -1860,7 +1888,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
                 directory: stoppedState.worktreeDir,
                 parts: [{ type: 'text' as const, text: promptText }],
                 agent: promptAgent,
-                ...(model ? { model } : {}),
+                ...(model ? { model, ...(restartVariant ? { variant: restartVariant } : {}) } : {}),
                 ...workspaceParam,
               })
             },

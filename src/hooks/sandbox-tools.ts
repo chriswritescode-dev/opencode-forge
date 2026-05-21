@@ -30,16 +30,16 @@ export function createSandboxToolBeforeHook(deps: SandboxToolHookDeps): Hooks['t
 
     if (input.tool === 'bash') {
       const args = output.args
+      const originalCommand: string = args.command ?? ''
+      args.command = 'true'
 
-      output.args = { ...args, command: 'true' }
-
-      const cmd = (args.command ?? '').trimStart()
+      const cmd = originalCommand.trimStart()
       if (cmd === 'git push' || cmd.startsWith('git push ')) {
         pendingResults.set(input.callID, { result: 'Git push is not available in sandbox mode. Pushes must be run on the host.', storedAt: Date.now() })
         return
       }
 
-      deps.logger.log(`[sandbox-hook] intercepting bash: ${args.command?.slice(0, 100)}`)
+      deps.logger.log(`[sandbox-hook] intercepting bash: ${originalCommand.slice(0, 100)}`)
 
       const hookTimeout = (args.timeout ?? BASH_DEFAULT_TIMEOUT_MS) + 10_000
       const cwd = args.workdir ? toContainerPath(args.workdir, hostDir) : undefined
@@ -49,7 +49,7 @@ export function createSandboxToolBeforeHook(deps: SandboxToolHookDeps): Hooks['t
           setTimeout(() => reject(new Error(`sandbox hook timeout after ${hookTimeout}ms`)), hookTimeout),
         )
 
-        const execPromise = docker.exec(containerName, args.command, {
+        const execPromise = docker.exec(containerName, originalCommand, {
           timeout: args.timeout,
           cwd,
         })

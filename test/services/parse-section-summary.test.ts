@@ -10,6 +10,7 @@ import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-re
 import { createLoopService, type LoopService } from '../../src/loop/service'
 import { parseSectionSummary, SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../../src/loop/section-summary'
 import type { Logger } from '../../src/types'
+import { setupLoopsTestDb } from '../helpers/loops-test-db'
 
 const mockLogger: Logger = {
   log: () => {},
@@ -27,99 +28,7 @@ describe('parseSectionSummary', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'parse-section-summary-test-'))
     db = new Database(join(tempDir, 'test.db'))
 
-    db.exec(`
-      CREATE TABLE loops (
-        project_id           TEXT NOT NULL,
-        loop_name            TEXT NOT NULL,
-        status               TEXT NOT NULL,
-        current_session_id   TEXT NOT NULL,
-        worktree             INTEGER NOT NULL,
-        worktree_dir         TEXT NOT NULL,
-        session_directory    TEXT,
-        worktree_branch      TEXT,
-        project_dir          TEXT NOT NULL,
-        max_iterations       INTEGER NOT NULL,
-        iteration            INTEGER NOT NULL DEFAULT 0,
-        audit_count          INTEGER NOT NULL DEFAULT 0,
-        error_count          INTEGER NOT NULL DEFAULT 0,
-        phase                TEXT NOT NULL,
-        execution_model      TEXT,
-        auditor_model        TEXT,
-        model_failed         INTEGER NOT NULL DEFAULT 0,
-        sandbox              INTEGER NOT NULL DEFAULT 0,
-        sandbox_container    TEXT,
-        started_at           INTEGER NOT NULL,
-        completed_at         INTEGER,
-        termination_reason   TEXT,
-        completion_summary   TEXT,
-        workspace_id         TEXT,
-        host_session_id      TEXT,
-        audit_session_id     TEXT,
-        current_section_index INTEGER NOT NULL DEFAULT 0,
-        total_sections       INTEGER NOT NULL DEFAULT 0,
-        final_audit_done     INTEGER NOT NULL DEFAULT 0,
-        final_audit_attempts INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (project_id, loop_name)
-      )
-    `)
-
-    db.exec(`
-      CREATE TABLE loop_large_fields (
-        project_id          TEXT NOT NULL,
-        loop_name           TEXT NOT NULL,
-        last_audit_result   TEXT,
-        PRIMARY KEY (project_id, loop_name),
-        FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
-      )
-    `)
-
-    db.exec(`
-      CREATE TABLE plans (
-        project_id   TEXT NOT NULL,
-        loop_name    TEXT,
-        session_id   TEXT,
-        content      TEXT NOT NULL,
-        updated_at   INTEGER NOT NULL,
-        CHECK (loop_name IS NOT NULL OR session_id IS NOT NULL),
-        CHECK (NOT (loop_name IS NOT NULL AND session_id IS NOT NULL)),
-        UNIQUE (project_id, loop_name),
-        UNIQUE (project_id, session_id)
-      )
-    `)
-
-    db.exec(`
-      CREATE TABLE review_findings (
-        project_id TEXT NOT NULL,
-        loop_name TEXT NOT NULL DEFAULT '',
-        file TEXT NOT NULL,
-        line INTEGER NOT NULL,
-        severity TEXT NOT NULL,
-        description TEXT NOT NULL,
-        scenario TEXT,
-        created_at INTEGER NOT NULL,
-        section_index INTEGER,
-        PRIMARY KEY (project_id, loop_name, file, line, section_index)
-      )
-    `)
-
-    db.exec(`
-      CREATE TABLE section_plans (
-        project_id TEXT NOT NULL,
-        loop_name TEXT NOT NULL,
-        section_index INTEGER NOT NULL,
-        title TEXT NOT NULL,
-        content TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','in_progress','completed','failed')),
-        attempts INTEGER NOT NULL DEFAULT 0,
-        started_at INTEGER,
-        completed_at INTEGER,
-        summary_done TEXT,
-        summary_deviations TEXT,
-        summary_follow_ups TEXT,
-        created_at INTEGER NOT NULL,
-        PRIMARY KEY (project_id, loop_name, section_index)
-      )
-    `)
+    setupLoopsTestDb(db)
 
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)

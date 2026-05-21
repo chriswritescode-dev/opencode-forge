@@ -1,7 +1,7 @@
 import type { ToolContext } from '../tools/types'
 import type { Hooks } from '@opencode-ai/plugin'
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
-import { extractPlanTitle, extractLoopNames, PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
+import { extractPlanExecutionMetadata, PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext } from '../services/execution'
 import { captureLatestPlanForSession } from '../services/plan-capture'
 
@@ -96,10 +96,27 @@ const processedApprovalCalls = new WeakMap<ToolContext, Set<string>>()
 const claimedApprovalPlans = new Set<string>()
 
 export { LOOP_BLOCKED_TOOLS }
-export { extractPlanTitle }
+export { extractPlanTitle } from '../utils/plan-execution'
+
+interface LoopToolBlockingDeps {
+  resolveActiveLoopForSession?: (sessionID: string) => Promise<{ active?: boolean; loopName?: string; phase?: string } | null>
+}
 
 function isActiveLoopToolSession(state: { active?: boolean; sessionId?: string }, sessionID: string): boolean {
   return state.active === true && state.sessionId === sessionID
+}
+
+async function resolveBlockedLoopToolState(
+  loop: ToolContext['loop'],
+  sessionID: string,
+  deps: LoopToolBlockingDeps,
+): Promise<{ active?: boolean; loopName?: string; phase?: string } | null> {
+  if (deps.resolveActiveLoopForSession) return deps.resolveActiveLoopForSession(sessionID)
+
+  const loopName = loop.resolveLoopName(sessionID)
+  const state = loopName ? loop.getActiveState(loopName) : null
+  if (state?.active && isActiveLoopToolSession(state, sessionID)) return state
+  return null
 }
 
 function hashApprovalPlan(planText: string): string {
@@ -159,7 +176,7 @@ function formatMissingPlanFeedback(reason?: string): string {
   return `${prefix}No captured implementation plan exists for this session. Output one complete plan wrapped with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\`, then call the question tool again.`
 }
 
-export function createToolExecuteBeforeHook(ctx: ToolContext): Hooks['tool.execute.before'] {
+export function createToolExecuteBeforeHook(ctx: ToolContext, deps: LoopToolBlockingDeps = {}): Hooks['tool.execute.before'] {
   const loop = ctx.loop ?? (ctx as ToolContext & { loopService: ToolContext['loop'] }).loopService
   const { logger } = ctx
 
@@ -167,9 +184,8 @@ export function createToolExecuteBeforeHook(ctx: ToolContext): Hooks['tool.execu
     input: { tool: string; sessionID: string; callID: string },
     output: { args: unknown }
   ) => {
-    const loopName = loop.resolveLoopName(input.sessionID)
-    const state = loopName ? loop.getActiveState(loopName) : null
-    if (state?.active && isActiveLoopToolSession(state, input.sessionID)) {
+    const state = await resolveBlockedLoopToolState(loop, input.sessionID, deps)
+    if (state?.active) {
       if (!(input.tool in LOOP_BLOCKED_TOOLS)) return
 
       logger.log(`Loop: blocking ${input.tool} tool before execution in ${state.phase} phase for session ${input.sessionID}`)
@@ -199,7 +215,7 @@ export function createToolExecuteBeforeHook(ctx: ToolContext): Hooks['tool.execu
   }
 }
 
-export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execute.after'] {
+export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlockingDeps = {}): Hooks['tool.execute.after'] {
   const loop = ctx.loop ?? (ctx as ToolContext & { loopService: ToolContext['loop'] }).loopService
   const { logger, config } = ctx
 
@@ -207,6 +223,14 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
     input: { tool: string; sessionID: string; callID: string; args: unknown },
     output: { title: string; output: string; metadata: unknown }
   ) => {
+    const blockedState = await resolveBlockedLoopToolState(loop, input.sessionID, deps)
+    if (blockedState?.active && input.tool in LOOP_BLOCKED_TOOLS) {
+      logger.log(`Loop: blocked ${input.tool} tool in ${blockedState.phase} phase for session ${input.sessionID}`)
+      output.title = 'Tool blocked'
+      output.output = LOOP_BLOCKED_TOOLS[input.tool]!
+      return
+    }
+
     if (input.tool === 'question' && isPlanApprovalQuestionArgs(input.args)) {
           const metadata = output.metadata as { answers?: string[][] } | undefined
           const answer = metadata?.answers?.[0]?.[0]?.trim() ?? output.output.trim()
@@ -262,7 +286,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
             return
           }
           const planText = plan.content
-          const title = extractPlanTitle(planText)
+          const { title, executionName } = extractPlanExecutionMetadata(planText)
 
           if (matchedLabel && !claimApprovalCall(ctx, input, matchedLabel, plan.key)) {
             markApprovalHandled(output, true)
@@ -330,7 +354,6 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
           }
           
           if (matchedLabel === 'Loop') {
-            const { executionName } = extractLoopNames(planText)
             const uniqueLoopName = loop.generateUniqueLoopName(executionName)
 
             logger.log(`Plan approval: "${matchedLabel}" — scheduling dispatch IIFE for loop "${uniqueLoopName}"`)
@@ -378,16 +401,6 @@ export function createToolExecuteAfterHook(ctx: ToolContext): Hooks['tool.execut
       return
     }
 
-    const loopName = loop.resolveLoopName(input.sessionID)
-    const state = loopName ? loop.getActiveState(loopName) : null
-    if (!state?.active || !isActiveLoopToolSession(state, input.sessionID)) return
-
-    if (!(input.tool in LOOP_BLOCKED_TOOLS)) return
-
-    logger.log(`Loop: blocked ${input.tool} tool in ${state.phase} phase for session ${input.sessionID}`)
-    
-    output.title = 'Tool blocked'
-    output.output = LOOP_BLOCKED_TOOLS[input.tool]!
   }
 }
 

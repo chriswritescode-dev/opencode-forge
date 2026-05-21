@@ -10,6 +10,7 @@ import { loadPluginConfig } from './setup'
 import { resolveLogPath } from './storage'
 import { createLogger } from './utils/logger'
 import { createDockerService } from './sandbox/docker'
+import { resolveSandboxContextForLoop } from './sandbox/context'
 import { createSandboxManager } from './sandbox/manager'
 import type { PluginConfig, CompactionConfig } from './types'
 import { createTools } from './tools'
@@ -371,20 +372,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       logger,
     })
 
-    const tools = createTools(ctx)
-    const toolExecuteBeforeHook = createToolExecuteBeforeHook(ctx)
-    const toolExecuteAfterHook = createToolExecuteAfterHook(ctx)
-    const planApprovalEventHook = createPlanApprovalEventHook(ctx)
-    const planCaptureEventHook = createPlanCaptureEventHook(ctx)
-    const sandboxBeforeHook = createSandboxToolBeforeHook({
-      resolveSandboxForSession,
-      logger,
-    })
-    const sandboxAfterHook = createSandboxToolAfterHook({
-      resolveSandboxForSession,
-      logger,
-    })
-
     const parentSessionLookup = createParentSessionLookup({ v2, directory, loop: loopHandler.loop, logger })
     const sessionDirectoryLookup = createSessionDirectoryLookup({ v2, directory, loop: loopHandler.loop })
     const sessionLoopResolver = createSessionLoopResolver({
@@ -404,12 +391,26 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     // the session or its ancestor.
     async function resolveSandboxForSession(sessionID: string) {
       const resolved = await sessionLoopResolver.resolveActiveLoopForSession(sessionID)
-      if (!resolved || !resolved.active || !resolved.sandbox) return null
-      if (!sandboxManager) return null
-      const active = sandboxManager.getActive(resolved.loopName)
-      if (!active) return null
-      return { docker: sandboxManager.docker, containerName: active.containerName, hostDir: active.projectDir }
+      return resolveSandboxContextForLoop(sandboxManager, resolved, logger)
     }
+
+    const tools = createTools(ctx)
+    const toolExecuteBeforeHook = createToolExecuteBeforeHook(ctx, {
+      resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
+    })
+    const toolExecuteAfterHook = createToolExecuteAfterHook(ctx, {
+      resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
+    })
+    const planApprovalEventHook = createPlanApprovalEventHook(ctx)
+    const planCaptureEventHook = createPlanCaptureEventHook(ctx)
+    const sandboxBeforeHook = createSandboxToolBeforeHook({
+      resolveSandboxForSession,
+      logger,
+    })
+    const sandboxAfterHook = createSandboxToolAfterHook({
+      resolveSandboxForSession,
+      logger,
+    })
 
     return {
       getCleanup,
@@ -429,10 +430,10 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         }
         await planCaptureEventHook(eventInput)
         await loopHandler.onEvent(eventInput)
+        await loopPermissionRejectHook(eventInput)
         await forgeSessionAttachHook(eventInput)
         await sessionHooks.onEvent(eventInput)
         await planApprovalEventHook(eventInput)
-        await loopPermissionRejectHook(eventInput)
       },
       'tool.execute.before': async (input, output) => {
         const resolved = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
@@ -491,6 +492,7 @@ READ-ONLY mode: no file edits, no destructive commands. Search and analyze only.
 
 When emitting the final plan:
 - Wrap the plan in \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` (each on its own line)
+- Include one plain machine-readable \`Loop Name: short-slug\` line near the top of the marked plan, immediately after the objective. Do not emit loop name as a markdown heading or bullet.
 - Use exactly one \`<!-- forge-section -->\` marker per executable phase; place it immediately before that phase's \`## Phase\` heading
 - Do not insert \`<!-- forge-section -->\` before \`### Files\`, \`### Edits\`, \`### Acceptance Criteria\`, or \`### Verification\`
 - Shared \`## Decisions\` / \`## Conventions\` / \`## Key Context\` blocks go after all sections (no preceding marker)

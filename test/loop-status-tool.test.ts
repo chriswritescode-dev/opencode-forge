@@ -16,6 +16,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
 import Database from 'better-sqlite3'
+import { setupLoopsTestDb } from './helpers/loops-test-db'
 
 const TEST_DIR = '/tmp/opencode-loop-status-test-' + Date.now()
 
@@ -23,94 +24,7 @@ function createTestDb(): { db: Database; path: string } {
   const path = join(tmpdir(), `forge-test-${randomUUID()}.db`)
   const db = new Database(path)
 
-  db.exec(`
-CREATE TABLE IF NOT EXISTS loops (
-  project_id           TEXT NOT NULL,
-  loop_name            TEXT NOT NULL,
-  status               TEXT NOT NULL,
-  current_session_id   TEXT NOT NULL,
-  worktree             INTEGER NOT NULL,
-  worktree_dir         TEXT NOT NULL,
-  session_directory    TEXT,
-  worktree_branch      TEXT,
-  project_dir          TEXT NOT NULL,
-  max_iterations       INTEGER NOT NULL,
-  iteration            INTEGER NOT NULL DEFAULT 0,
-  audit_count          INTEGER NOT NULL DEFAULT 0,
-  error_count          INTEGER NOT NULL DEFAULT 0,
-  phase                TEXT NOT NULL,
-  execution_model      TEXT,
-  auditor_model        TEXT,
-  model_failed         INTEGER NOT NULL DEFAULT 0,
-  sandbox              INTEGER NOT NULL DEFAULT 0,
-  sandbox_container    TEXT,
-  started_at           INTEGER NOT NULL,
-  completed_at         INTEGER,
-  termination_reason   TEXT,
-  completion_summary   TEXT,
-  workspace_id         TEXT,
-  host_session_id      TEXT,
-  audit_session_id     TEXT,
-  current_section_index INTEGER NOT NULL DEFAULT 0,
-  total_sections       INTEGER NOT NULL DEFAULT 0,
-  final_audit_done     INTEGER NOT NULL DEFAULT 0,
-  final_audit_attempts INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (project_id, loop_name)
-)`)
-
-  db.exec(`
-CREATE TABLE IF NOT EXISTS loop_large_fields (
-  project_id          TEXT NOT NULL,
-  loop_name           TEXT NOT NULL,
-  last_audit_result   TEXT,
-  PRIMARY KEY (project_id, loop_name),
-  FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
-)`)
-
-  db.exec(`
-CREATE TABLE IF NOT EXISTS loop_session_usage (
-  project_id          TEXT NOT NULL,
-  loop_name           TEXT NOT NULL,
-  session_id          TEXT NOT NULL,
-  role                TEXT NOT NULL,
-  model               TEXT NOT NULL,
-  cost                REAL NOT NULL,
-  input_tokens        INTEGER NOT NULL,
-  output_tokens       INTEGER NOT NULL,
-  reasoning_tokens    INTEGER NOT NULL,
-  cache_read_tokens   INTEGER NOT NULL,
-  cache_write_tokens  INTEGER NOT NULL,
-  message_count       INTEGER NOT NULL,
-  captured_at         INTEGER NOT NULL,
-  PRIMARY KEY (project_id, loop_name, session_id, model)
-)`)
-
-  db.exec(`
-CREATE TABLE IF NOT EXISTS plans (
-  project_id   TEXT NOT NULL,
-  loop_name    TEXT,
-  session_id   TEXT,
-  content      TEXT NOT NULL,
-  updated_at   INTEGER NOT NULL,
-  CHECK (loop_name IS NOT NULL OR session_id IS NOT NULL),
-  CHECK (NOT (loop_name IS NOT NULL AND session_id IS NOT NULL)),
-  UNIQUE (project_id, loop_name),
-  UNIQUE (project_id, session_id)
-)`)
-
-  db.exec(`
-CREATE TABLE IF NOT EXISTS review_findings (
-  project_id TEXT NOT NULL,
-  loop_name TEXT NOT NULL DEFAULT '',
-  file TEXT NOT NULL,
-  line INTEGER NOT NULL,
-  severity TEXT NOT NULL,
-  description TEXT NOT NULL,
-  scenario TEXT,
-  created_at INTEGER NOT NULL,
-  section_index INTEGER,
-  PRIMARY KEY (project_id, loop_name, file, line, section_index)
-)`)
+  setupLoopsTestDb(db)
 
   return { db, path }
 }

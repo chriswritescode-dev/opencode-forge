@@ -924,9 +924,9 @@ describe('Plan Approval Tool Interception', () => {
 describe('Tool blocking hook', () => {
   const sessionID = 'outside-session'
   const loopSessionID = 'loop-session'
-    const loopName = 'active-loop'
+  const loopName = 'active-loop'
 
-  function createContextForLoopState(state: { active: boolean; sessionId: string;  } | null): ToolContext {
+  function createContextForLoopState(state: { active: boolean; sessionId: string; phase?: string } | null): ToolContext {
     return {
       loopService: {
         resolveLoopName: () => state ? loopName : null,
@@ -967,6 +967,30 @@ describe('Tool blocking hook', () => {
     }))!
 
     await expect(hook({ tool: 'question', sessionID: loopSessionID, callID: 'call-1' }, { args: {} })).rejects.toThrow('question tool is not available')
+  })
+
+  test('blocks question for child sessions resolved into an active loop', async () => {
+    const hook = createToolExecuteBeforeHook(createContextForLoopState(null), {
+      resolveActiveLoopForSession: async (sessionID) => sessionID === 'child-session'
+        ? { active: true, loopName, phase: 'auditing' }
+        : null,
+    })!
+
+    await expect(hook({ tool: 'question', sessionID: 'child-session', callID: 'call-1' }, { args: {} })).rejects.toThrow('question tool is not available')
+  })
+
+  test('rewrites blocked question output for child sessions resolved into an active loop', async () => {
+    const hook = createToolExecuteAfterHook(createContextForLoopState(null), {
+      resolveActiveLoopForSession: async (sessionID) => sessionID === 'child-session'
+        ? { active: true, loopName, phase: 'auditing' }
+        : null,
+    })!
+    const output = { title: '', output: 'original output', metadata: {} }
+
+    await hook({ tool: 'question', sessionID: 'child-session', callID: 'call-1', args: {} }, output)
+
+    expect(output.title).toBe('Tool blocked')
+    expect(output.output).toContain('question tool is not available')
   })
 
   test('does not rewrite after-hook output when resolved loop belongs to another session', async () => {

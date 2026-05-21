@@ -1,5 +1,5 @@
-import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import Database from 'better-sqlite3'
+import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { Database } from 'bun:sqlite'
 import { mkdtempSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -44,6 +44,8 @@ CREATE TABLE loops (
   total_sections       INTEGER NOT NULL DEFAULT 0,
   final_audit_done     INTEGER NOT NULL DEFAULT 0,
   final_audit_attempts INTEGER NOT NULL DEFAULT 0,
+  execution_variant    TEXT,
+  auditor_variant      TEXT,
   PRIMARY KEY (project_id, loop_name)
 )
 `
@@ -145,8 +147,8 @@ describe('attachLoopToSession', () => {
       sectionPlansRepo,
     )
 
-    const promptAsyncMock = vi.fn().mockResolvedValue({ error: null })
-    const tuiSelectSessionMock = vi.fn().mockResolvedValue(undefined)
+    const promptAsyncMock = mock(async () => ({ error: null }))
+    const tuiSelectSessionMock = mock(async () => undefined)
 
     const deps = {
       projectId: PROJECT_ID,
@@ -160,17 +162,17 @@ describe('attachLoopToSession', () => {
       dataDir: '/tmp',
       v2: {
         session: {
-          create: vi.fn().mockResolvedValue({ data: { id: 'new-session' } }),
-          get: vi.fn().mockResolvedValue({ data: {} }),
-          update: vi.fn().mockResolvedValue({ data: {} }),
+          create: mock(async () => ({ data: { id: 'new-session' } })),
+          get: mock(async () => ({ data: {} })),
+          update: mock(async () => ({ data: {} })),
           promptAsync: promptAsyncMock,
-          abort: vi.fn().mockResolvedValue({}),
-          delete: vi.fn().mockResolvedValue({}),
-          messages: vi.fn().mockResolvedValue({ data: [] }),
-          status: vi.fn().mockResolvedValue({ data: {} }),
+          abort: mock(async () => ({})),
+          delete: mock(async () => ({})),
+          messages: mock(async () => ({ data: [] })),
+          status: mock(async () => ({ data: {} })),
         },
         tui: {
-          publish: vi.fn(),
+          publish: mock(() => {}),
           selectSession: tuiSelectSessionMock,
         },
       },
@@ -181,15 +183,15 @@ describe('attachLoopToSession', () => {
       loop: loopService as any,
       loopHandler: {
         runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-        startWatchdog: vi.fn(),
+        startWatchdog: mock(() => {}),
         clearLoopTimers: noopFn,
       },
       sandboxManager: null,
       workspaceStatusRegistry: {
-        recordEvent: vi.fn(),
-        getStatus: vi.fn().mockReturnValue('connected' as const),
-        awaitConnected: vi.fn().mockResolvedValue({ connected: true, elapsedMs: 0, source: 'cached' as const }),
-        primeFromSnapshot: vi.fn(),
+        recordEvent: mock(() => {}),
+        getStatus: mock(() => 'connected' as const),
+        awaitConnected: mock(async () => ({ connected: true, elapsedMs: 0, source: 'cached' as const })),
+        primeFromSnapshot: mock(() => {}),
       },
     }
 
@@ -247,7 +249,7 @@ describe('attachLoopToSession', () => {
   test('onStarted callback is invoked after state persistence', async () => {
     const { deps } = buildDeps()
 
-    const onStartedSpy = vi.fn()
+    const onStartedSpy = mock(() => {})
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -286,7 +288,7 @@ describe('attachLoopToSession', () => {
     const { deps, loopsRepo, promptAsyncMock } = buildDeps()
 
     // Make promptAsync return an error
-    promptAsyncMock.mockResolvedValueOnce({ error: new Error('network timeout') })
+    promptAsyncMock.mockImplementationOnce(async () => ({ error: new Error('network timeout') }))
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -322,8 +324,11 @@ describe('attachLoopToSession', () => {
   test('attachLoopToSession does NOT call loop.deleteState when setState throws because loop already exists', async () => {
     const { deps } = buildDeps()
 
-    const deleteStateSpy = vi.spyOn(deps.loop, 'deleteState')
-    ;(deps.loop as any).setState = vi.fn().mockImplementation(() => {
+    let deleteStateCalled = false
+    const originalDeleteState = deps.loop.deleteState.bind(deps.loop)
+    deps.loop.deleteState = (...args: any[]) => { deleteStateCalled = true; return originalDeleteState(...args) }
+
+    ;(deps.loop as any).setState = mock((...args: any[]) => {
       throw new Error('setState: loop "my-feature" already exists')
     })
 
@@ -353,7 +358,7 @@ describe('attachLoopToSession', () => {
       expect(result.code).toBe('already_attached')
     }
 
-    expect(deleteStateSpy).not.toHaveBeenCalled()
+    expect(deleteStateCalled).toBe(false)
   })
 
   test('attachLoopToSession refuses terminal loop row without deleting state', async () => {
@@ -385,7 +390,9 @@ describe('attachLoopToSession', () => {
     const existingBefore = loopsRepo.get(PROJECT_ID, 'reusable-loop')
     expect(existingBefore?.status).toBe('cancelled')
 
-    const deleteStateSpy = vi.spyOn(deps.loop, 'deleteState')
+    let deleteStateCalled = false
+    const originalDeleteState = deps.loop.deleteState.bind(deps.loop)
+    deps.loop.deleteState = (...args: any[]) => { deleteStateCalled = true; return originalDeleteState(...args) }
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -408,7 +415,7 @@ describe('attachLoopToSession', () => {
       },
     )
 
-    expect(deleteStateSpy).not.toHaveBeenCalled()
+    expect(deleteStateCalled).toBe(false)
     expect(result.ok).toBe(false)
     if (!result.ok) {
       expect(result.code).toBe('conflict')
@@ -442,7 +449,9 @@ describe('attachLoopToSession', () => {
       sandbox: false,
     } as any)
 
-    const deleteStateSpy = vi.spyOn(deps.loop, 'deleteState')
+    let deleteStateCalled = false
+    const originalDeleteState = deps.loop.deleteState.bind(deps.loop)
+    deps.loop.deleteState = (...args: any[]) => { deleteStateCalled = true; return originalDeleteState(...args) }
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -469,7 +478,7 @@ describe('attachLoopToSession', () => {
     if (!result.ok) {
       expect(result.code).toBe('already_attached')
     }
-    expect(deleteStateSpy).not.toHaveBeenCalled()
+    expect(deleteStateCalled).toBe(false)
   })
 
   test('attach extracts sections via forge-section markers', async () => {
@@ -668,5 +677,50 @@ describe('attachLoopToSession', () => {
       // Assert: session.update was NEVER called (no permission repair)
       expect(sessionUpdateMock).not.toHaveBeenCalled()
     }
+  })
+
+  test('attachLoopToSession persists execution and auditor variants', async () => {
+    const { deps, loopsRepo } = buildDeps()
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        sessionId: 'sess_variant',
+        workspaceId: 'ws_variant',
+        worktreeDir: '/tmp/wt/variant',
+        loopName: 'variant-loop',
+        displayName: 'Variant Loop',
+        executionName: 'variant-loop',
+        hostSessionId: 'host-variant',
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+        executionVariant: 'thinking-max',
+        auditorVariant: 'audit-high',
+        maxIterations: 50,
+        sandboxEnabled: false,
+        planText: '# Variant Plan\n\nDo things.',
+        selectSession: false,
+        selectSessionTiming: 'after-prompt',
+        startWatchdog: false,
+      },
+    )
+
+    expect(result.ok).toBe(true)
+
+    // Verify loop state was persisted with variants
+    const state = (deps.loop as any).getActiveState('variant-loop')
+    expect(state).not.toBeNull()
+    expect(state!.sessionId).toBe('sess_variant')
+    expect(state!.executionVariant).toBe('thinking-max')
+    expect(state!.auditorVariant).toBe('audit-high')
+
+    // Verify DB row contains variants
+    const row = loopsRepo.get(PROJECT_ID, 'variant-loop')
+    expect(row).not.toBeNull()
+    expect(row!.executionVariant).toBe('thinking-max')
+    expect(row!.auditorVariant).toBe('audit-high')
   })
 })

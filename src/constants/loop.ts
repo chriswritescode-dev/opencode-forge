@@ -1,4 +1,4 @@
-type PermissionRule = { permission: string; pattern: string; action: 'allow' | 'deny' }
+export type PermissionRule = { permission: string; pattern: string; action: 'allow' | 'deny' }
 
 /**
  * Builds the permission ruleset for loop sessions.

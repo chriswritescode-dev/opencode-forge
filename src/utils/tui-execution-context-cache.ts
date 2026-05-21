@@ -24,6 +24,8 @@ export interface ExecutionContextSnapshot {
     executionModel: string
     auditorModel: string
     mode: string
+    executionVariant: string
+    auditorVariant: string
   }
 }
 

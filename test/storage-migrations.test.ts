@@ -563,7 +563,7 @@ test('migration 129 narrows phase CHECK and drops decomposition columns', () => 
 
   // decomposing row should be deleted
   const decompRow = migrated.prepare("SELECT * FROM loops WHERE phase = 'decomposing'").get()
-  expect(decompRow).toBeUndefined()
+  expect(decompRow).toBeFalsy()
 
   // coding row should remain
   const codingRow = migrated.prepare("SELECT * FROM loops WHERE project_id = 'project-a' AND loop_name = 'loop-coding'").get()
@@ -631,6 +631,35 @@ test('migration 130 is idempotent on re-opened databases', () => {
 
   const tables = db2.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as Array<{ name: string }>
   expect(tables.some(t => t.name === 'loop_session_usage')).toBe(true)
+
+  const count = db2.prepare('SELECT COUNT(*) as count FROM migrations').get() as { count: number }
+  expect(count.count).toBeGreaterThan(0)
+
+  db2.close()
+})
+
+test('migration 131 adds execution_variant and auditor_variant columns to loops', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+  expect(cols.some(c => c.name === 'execution_variant')).toBe(true)
+  expect(cols.some(c => c.name === 'auditor_variant')).toBe(true)
+
+  db.close()
+})
+
+test('migration 131 is idempotent on re-opened databases', () => {
+  const dbPath = createTempDb()
+
+  const db1 = openForgeDatabase(dbPath)
+  db1.close()
+
+  const db2 = openForgeDatabase(dbPath)
+
+  const cols = db2.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+  expect(cols.some(c => c.name === 'execution_variant')).toBe(true)
+  expect(cols.some(c => c.name === 'auditor_variant')).toBe(true)
 
   const count = db2.prepare('SELECT COUNT(*) as count FROM migrations').get() as { count: number }
   expect(count.count).toBeGreaterThan(0)
