@@ -1,4 +1,31 @@
-type PermissionRule = { permission: string; pattern: string; action: 'allow' | 'deny' }
+export type PermissionRule = { permission: string; pattern: string; action: 'allow' | 'deny' }
+
+export type PermissionRequestForEval = {
+  permission: string
+  pattern?: string
+}
+
+function matchPermissionPattern(rulePattern: string, value: string): boolean {
+  if (rulePattern === '*') return true
+  const escaped = rulePattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')
+  return new RegExp(`^${escaped}$`).test(value)
+}
+
+export function evaluatePermissionRuleset(
+  rules: PermissionRule[],
+  request: PermissionRequestForEval,
+): 'allow' | 'deny' | 'ask' {
+  let lastMatch: PermissionRule | undefined
+  for (const rule of rules) {
+    const permissionMatches = rule.permission === '*' || rule.permission === request.permission
+    const patternMatches = matchPermissionPattern(rule.pattern, request.pattern ?? '')
+    if (permissionMatches && patternMatches) {
+      lastMatch = rule
+    }
+  }
+  if (!lastMatch) return 'ask'
+  return lastMatch.action
+}
 
 /**
  * Builds the permission ruleset for loop sessions.
