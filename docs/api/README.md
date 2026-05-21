@@ -24,7 +24,7 @@
 pnpm add opencode-forge
 ```
 
-Add to your `opencode.json` to enable Forge's server-side hooks, tools, and agents:
+Add to your `opencode.json` to enable Forge’s server-side hooks, tools, and agents:
 
 ```json
 {
@@ -32,7 +32,7 @@ Add to your `opencode.json` to enable Forge's server-side hooks, tools, and agen
 }
 ```
 
-**For TUI features:** Also add to your `tui.json` to enable the sidebar, plan viewer, execution dialog, and loop UI:
+**For TUI features:** Also add to your `tui.json` to enable the sidebar, plan viewer, execution dialog, and load-plan UI:
 
 ```json
 {
@@ -41,6 +41,14 @@ Add to your `opencode.json` to enable Forge's server-side hooks, tools, and agen
 }
 ```
 
+**Optional — workspace integration:** to let worktree loops appear as switchable OpenCode workspaces in the TUI, also export this in the environment that launches `opencode`:
+
+```bash
+export OPENCODE_EXPERIMENTAL_WORKSPACES=true
+```
+
+Requires OpenCode ≥ 1.15.0. Without it, loops still run normally — you just don't get workspace switching. See [Workspace Integration](#workspace-integration) for details.
+
 ## What Forge Adds
 
 Forge ships two user-facing surfaces:
@@ -48,7 +56,7 @@ Forge ships two user-facing surfaces:
 - **Server plugin** — enabled through OpenCode plugin config in `opencode.json`. The package declares the `server` oc-plugin surface and exports `./server` for the server entrypoint.
 - **TUI plugin** — enabled separately in `tui.json`. The package declares the `tui` oc-plugin surface and exports `./tui` for the terminal UI entrypoint.
 
-The server plugin provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, and sandbox support. The TUI plugin layers on sidebar, plan, execution, and loop dialogs.
+The server plugin provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, and sandbox support. The TUI plugin layers on sidebar, plan viewer/editor, execution dialog, and load-plan UI.
 
 ## Screenshots
 
@@ -64,17 +72,17 @@ Plan editor with raw text editing:
 
 ![Plan Editor](_media/plan-editor.webp)
 
-Loop search dialog:
+Load plans dialog showing archived plans:
 
-![Search Loops](_media/search-loops.webp)
+![Load Plans](_media/load-plans.webp)
 
 ## Features
 
 - **Plans** — architect produces marked plans that are auto-captured to SQL storage
 - **Execution** — `New session`, `Execute here`, and `Loop` launch paths for approved plans
 - **Loops** — iterative coding/auditing with isolated git worktree and optional Docker sandbox
-- **Review Findings** — persistent, branch-aware review findings across loop sessions
-- **TUI** — sidebar, plan viewer/editor, execution dialog, and loop details
+- **Review Findings** — persistent, loop-scoped review findings across loop sessions
+- **TUI** — sidebar, plan viewer/editor, execution dialog, and load-plan UI
 - **Sandbox** — Optional Docker worktree loop isolation with bind-mounted project files
 
 ## Agents
@@ -103,6 +111,7 @@ Session-scoped plan storage backed by SQL for managing implementation plans. Loo
 | Tool | Description |
 |------|-------------|
 | `plan-read` | Retrieve the plan. Supports pagination with offset/limit and pattern search. |
+| `section-read` | Read a section plan and its status for the active loop session. Supports reading by index or defaulting to the lowest-index incomplete section. |
 
 ### Review Tools
 
@@ -110,7 +119,7 @@ Review finding storage for persisting audit results across session rotations.
 
 | Tool | Description |
 |------|-------------|
-| `review-write` | Store a review finding with file, line, severity, and description. Auto-injects branch field. |
+| `review-write` | Store a review finding with file, line, severity, and description. Findings are scoped to the current loop. |
 | `review-read` | Retrieve review findings. Filter by file path or search by regex pattern. |
 | `review-delete` | Delete a review finding by file and line. |
 
@@ -122,7 +131,7 @@ Iterative development loops with automatic auditing. Loops always run in an isol
 |------|-------------|
 | `loop` | Execute a plan using an iterative development loop in an isolated git worktree. Args: `title` required; `plan`, `loopName`, and `hostSessionId` optional. |
 | `loop-cancel` | Cancel an active loop by worktree name |
-| `loop-status` | List active/recent loops or get detailed status by worktree name, including cumulative token usage when available. Supports `restart` to resume inactive loops. |
+| `loop-status` | List active/recent loops or get detailed status by worktree name, including cumulative token usage when available. Supports `restart=true` to restart any non-completed loop (`running`, `cancelled`, `errored`, `stalled`). Completed loops are history-only and cannot be restarted. |
 
 `loop` reads the current session's captured plan when `plan` is omitted. `maxIterations`, execution model, auditor model, and sandbox behavior come from configuration or the TUI execution dialog, not direct `loop` tool arguments.
 
@@ -200,29 +209,22 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
     }
   },
 
-  // Sandbox configuration. Sandbox is optional: when Docker is available and configured, a sandbox container is provisioned automatically.
-  // Currently only Docker is supported; additional modes may be added later.
+  // Sandbox configuration (optional; provisioned automatically when available)
   "sandbox": {
     "mode": "docker",
-    "image": "oc-forge-sandbox:latest",
-    "resources": {                   // Container resource limits (maps to docker run flags)
-      "memory": "8g",               // Memory limit (--memory)
-      "cpus": "4",                  // CPU limit (--cpus)
-      "shmSize": "1g"              // Shared memory size (--shm-size)
-    }
+    "image": "oc-forge-sandbox:latest"
   },
 
   // TUI sidebar widget configuration
   "tui": {
     "sidebar": true,               // Show Forge sidebar in OpenCode TUI
-    "showLoops": true,             // Display loop status in sidebar
     "showVersion": true,           // Show plugin version in sidebar title
     "autoSavePlans": false,        // Auto-save captured plans to disk under <dataDir>/plans/<projectId>/
     "planArchiveTtlMs": 604800000, // TTL in ms for archived plans before pruning. 0 disables pruning.
     "keybinds": {                  // Keyboard shortcut overrides
       "viewPlan": "<leader>v",     // View plan dialog
-      "executePlan": "<leader>e",  // Execute plan dialog
-      "showLoops": "<leader>w"     // Show loops dialog
+      "showLoops": "<leader>w",    // Show loops dialog
+      "loadPlan": "<leader>i"      // Load archived plans dialog
     }
   },
 
@@ -242,7 +244,7 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
 ### Options
 
 #### Top-level
-- `dataDir` - Data directory for plugin storage. When empty, resolves to `~/.local/share/opencode/forge` (or `XDG_DATA_HOME` equivalent) (default: `""`)
+- `dataDir` - Data directory for plugin storage (SQL stores, logs). When empty, resolves to `~/.local/share/opencode/forge` (or `XDG_DATA_HOME` equivalent) (default: `""`)
 - `completedLoopTtlMs` - TTL for completed/cancelled/errored/stalled loops before sweep (default: `604800000` / 7 days).
 - `executionModel` - Model override for plan execution sessions, format: `provider/model` (e.g. `anthropic/claude-sonnet-4-20250514`). When set, plan execution (via the architect's approval flow or the TUI Execute panel) uses this model for the new Code session. When empty or omitted, OpenCode's default model is used (typically the `model` field from `opencode.json`). **Recommended:** Set this to a fast, cheap model (e.g. Haiku or MiniMax) and use a smart model (e.g. Opus) for the Architect session — planning needs reasoning, execution needs speed. This value is used as a fallback when no per-launch selection is made.
 - `auditorModel` - Model override for the auditor agent (`provider/model`). When set, overrides the auditor agent's default model. When not set, uses platform default (default: `""`). This value is used as a fallback when no per-launch selection is made.
@@ -260,7 +262,7 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 - `compaction.maxContextTokens` - Maximum tokens for context during compaction (default: `0` / unlimited)
 
 #### Messages Transform
-- `messagesTransform.enabled` - Enable the messages transform hook that handles Architect read-only enforcement (default: `true`)
+- `messagesTransform.enabled` - Enable the messages transform hook for Architect read-only enforcement (default: `true`)
 - `messagesTransform.debug` - Enable debug logging for messages transform (default: `false`)
 
 #### Loop
@@ -283,31 +285,28 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 
 #### TUI
 - `tui.sidebar` - Show the forge sidebar widget in OpenCode TUI (default: `true`)
-- `tui.showLoops` - Display active loop status in the sidebar (default: `true`)
 - `tui.showVersion` - Show plugin version number in the sidebar title (default: `true`)
 - `tui.autoSavePlans` - Auto-save captured plans to disk under `<dataDir>/plans/<projectId>/`. Default: `false`.
 - `tui.planArchiveTtlMs` - TTL in ms for archived plans before pruning. 0 disables pruning. Default: `604800000` (7 days).
 - `tui.keybinds.viewPlan` - View plan dialog keybind. Default: `<leader>v`.
-- `tui.keybinds.executePlan` - Execute plan dialog keybind. Default: `<leader>e`.
 - `tui.keybinds.showLoops` - Show loops dialog keybind. Default: `<leader>w`.
 - `tui.keybinds.loadPlan` - Load archived plans dialog keybind. Default: `<leader>i`.
 
 ## TUI Plugin
 
-The plugin includes a TUI sidebar widget and dialog system for monitoring and managing loops directly in the OpenCode terminal interface.
+The plugin includes a TUI sidebar widget and dialog system for viewing, editing, executing plans directly in the OpenCode terminal interface.
 
 ### Sidebar
 
-The sidebar shows all loops for the current project:
+The sidebar provides quick access to plans and configuration:
 
-- Loop name (truncated to 25 chars with middle ellipsis) with a colored status dot
-- Status text: current phase for active loops, termination reason for completed/cancelled
-- Clicking a worktree loop opens the Loop Details dialog
-- **Plan indicator** — When a plan exists for the current session, a 📋 Plan link appears. Click it to open the Plan Viewer dialog.
+- **Auto-save plans** — Toggle checkbox to auto-save captured plans to disk under `<dataDir>/plans/<projectId>/`
+- **Load plan** — Opens the Load Plan dialog with archived plans from disk
+- **Plan indicator** — When a plan exists, shows `· plan` in collapsed sidebar header
 
 ### Plan Viewer
 
-When an architect session produces a plan, it is cached in the current session plan store. The plan is accessible from the sidebar (📋 Plan link) or the command palette (`Forge: View plan`). Missing plans show an informational toast.
+When an architect session produces a plan, it is cached in the current session plan store. The plan is accessible from the sidebar (Load plan button) or the command palette (`Forge: View plan`). Missing plans show an informational toast.
 
 The plan viewer dialog renders the full plan as GitHub-flavored markdown with syntax highlighting:
 
@@ -342,16 +341,6 @@ Two model selectors are available:
 - Same model selection interface
 - Defaults to last-used selection, falling back to `config.auditorModel` → `config.executionModel`
 
-#### Variant Selection
-
-Each model selector has a companion **variant selector** that lets you choose a provider-specific reasoning or thinking-effort level. Variants are optional and provider/model-dependent — they appear only when the selected model exposes them via OpenCode model metadata.
-
-- Variants are provided by OpenCode model metadata. Examples include reasoning/thinking effort levels such as `low`, `high`, or `max` when exposed by the provider.
-- **Use default** leaves OpenCode, the agent, and the model defaults in control.
-- **Execution variants** affect code prompts for all launch modes (`New session`, `Execute here`, and `Loop`).
-- **Auditor variants** affect loop audit and final-audit prompts.
-- Variants are persisted per-project alongside model selections (same 30-day TTL).
-
 #### Persistence
 
 Your selections are automatically saved in `tui_preferences` after launch:
@@ -359,25 +348,12 @@ Your selections are automatically saved in `tui_preferences` after launch:
 - Subsequent plan executions pre-fill with your previous choices
 - Recent models are tracked across all dialog interactions
 
-### Loop Details Dialog
-
-The Loop Details dialog shows a detailed view of a single loop:
-
-- Name and status badge (active / completed / error / cancelled / stalled)
-- Session stats: session ID, iteration count, token usage (input/output/cache), cost
-- Cumulative usage from persisted loop sessions plus live active-session output when available
-- Latest output from the last assistant message (scrollable, up to 500 chars)
-- **Back** — return to the loop list (when opened from the command palette)
-- **Cancel loop** — abort the active loop session (visible only when loop is active)
-- **Close (esc)** — dismiss the dialog
-
 ### Command Palette
 
-The command palette registers three Forge commands when the relevant session or loop data exists:
+The command palette registers two Forge commands:
 
-- `Forge: Show loops` — opens the worktree loop list, then drills into Loop Details with a Back button to return
-- `Forge: View plan` — opens the cached plan for the current session
-- `Forge: Execute plan` — opens the execution flow for the cached plan
+- `Forge: View plan` (`<leader>v`) — View cached plan for this session
+- `Forge: Load plan` (`<leader>i`) — Load an archived plan from disk
 
 ### Setup
 
@@ -426,7 +402,6 @@ TUI options are configured in `~/.config/opencode/forge-config.jsonc` under the 
 {
   "tui": {
     "sidebar": true,
-    "showLoops": true,
     "showVersion": true
   }
 }
@@ -453,7 +428,7 @@ Plan with a smart model, execute with a fast model. The architect agent research
 
 The architect is read-only and must output exactly one final plan between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers. Forge auto-captures that marked plan into SQL storage for the current session.
 
-The user can view the cached plan at any time from the **sidebar** (📋 Plan link) or the **command palette** (`Forge: View plan`). The plan viewer renders full GitHub-flavored markdown and supports inline editing — the user can modify the plan directly before approving.
+The user can view the cached plan at any time from the **sidebar** (Load plan button) or the **command palette** (`Forge: View plan`). The plan viewer renders full GitHub-flavored markdown and supports inline editing — the user can modify the plan directly before approving.
 
 ### Execution
 
@@ -469,7 +444,7 @@ After the architect presents a summary, the user chooses an execution mode from 
 | `Execute here` | When preserving current context matters |
 | `Loop` | Safer autonomous iteration |
 
-The dialog also lets you pick the execution model and auditor model at launch time. Those selections are remembered per project and pre-filled on later launches.
+The dialog also lets you pick the execution model and auditor model at launch time. Those selections are remembered per project and pre-filled on later launches. Optional **variant selectors** accompany each model selector, letting you choose provider-specific reasoning or thinking-effort levels (e.g., `low`, `high`, `max`) when the model exposes them. Variant selections are also persisted per project.
 
 Execution is immediate — there are no additional LLM calls between approval and execution. The system intercepts the user's approval answer, reads the cached plan, and dispatches it programmatically to the code agent. The architect never processes the approval response.
 
@@ -487,10 +462,6 @@ Model selection follows this priority order:
 2. `config.auditorModel`
 3. `config.executionModel`
 4. Platform default
-
-**For variants:**
-1. Dialog selection persisted per project
-2. OpenCode/agent/model default
 
 ### Troubleshooting
 
@@ -519,17 +490,21 @@ Audit findings survive session rotation via the **review store**. The auditor st
 - Resolved findings are deleted via `review-delete`
 - Unresolved findings are carried forward into the review
 
+### Usage Tracking
+
+Loop sessions rotate between code and auditor work, so Forge persists per-session usage rows in `loop_session_usage` and merges them for `loop-status`. Detailed status includes cumulative cost, input/output/reasoning/cache token totals, per-model breakdowns, and live active-session output when available.
+
 ### Worktree Isolation
 
 Loops always run in an isolated git worktree. Sandbox is optional: when Docker is available and `sandbox.mode = 'docker'` is configured, a sandbox container is provisioned automatically; otherwise the loop runs in worktree-only mode. Changes are auto-committed and the worktree is removed on completion (branch preserved for later merge).
 
 ### Auditor Integration
 
-After each coding iteration, the auditor agent reviews changes against project conventions and stored review findings. Findings are persisted via `review-write` scoped to the loop's branch. Outstanding `severity: 'bug'` findings block completion — the loop terminates only when the auditor has run at least once and zero bug-severity findings remain.
+After each coding iteration, the auditor agent reviews changes against project conventions and stored review findings. Findings are persisted via `review-write` scoped to the current loop. Outstanding `severity: 'bug'` findings block completion — the loop terminates only when the auditor has run at least once and zero bug-severity findings remain.
 
 ### Stall Detection
 
-A watchdog monitors loop activity. If no progress is detected within `stallTimeoutMs` (default: 60s), the current phase is re-triggered. After 5 consecutive stalls, the loop terminates with reason `stall_timeout`.
+A watchdog monitors loop activity. If no progress is detected within `stallTimeoutMs` (default: 60s), the current phase is re-triggered. After `maxConsecutiveStalls` consecutive stalls (default: 5), the loop terminates with reason `stall_timeout`. Use `loop-status` with `restart` to resume from the persisted section/iteration.
 
 ### Model Configuration
 
@@ -555,9 +530,14 @@ On model errors during execution, automatic fallback to the default model kicks 
 - **Slash commands**: `/loop` to start, `/loop-cancel` to cancel
 - **Tools**: `loop` to start with parameters, `loop-status` for checking progress (with restart capability), `loop-cancel` to cancel
 
-### Completion and Termination
+### Loop termination
 
-The loop auto-terminates after `maxIterations` (if set) or after 3 consecutive errors. Outstanding `bug` findings in the review system block termination.
+The loop terminates when any of these conditions is met:
+
+- **Max iterations** — The global `maxIterations` cap is exceeded (0 = unlimited).
+- **Stall timeout** — After `maxConsecutiveStalls` consecutive stalls (default: 5). Use `loop-status` with `restart` to resume from the persisted section and iteration.
+- **Final audit completion** — When no bug-severity review findings remain after the final audit phase.
+- **Consecutive errors** — 3 consecutive errors in either phase.
 
 Loops always run in an isolated git worktree. Sandbox is optional: when Docker is available and `sandbox.mode = 'docker'` is configured, a sandbox container is provisioned automatically; otherwise the loop runs in worktree-only mode.
 
@@ -565,35 +545,49 @@ Loops always run in an isolated git worktree. Sandbox is optional: when Docker i
 
 Worktree loops can optionally register as **OpenCode workspaces**, letting you switch between them (and your main project) from the same TUI session without restarting or re-opening anything.
 
-### When it runs
+### Requirements
 
-Workspace integration is **host-gated, not config-gated**. Forge uses opencode's builtin `worktree` workspace type, which is always available on hosts that expose the experimental workspace API (`experimental_workspace` on the plugin input, `experimental.workspace` on the SDK client).
+Workspace integration requires the **experimental workspace runtime** to be enabled in OpenCode itself. The plugin API surface (`experimental_workspace.register`) is always present, but the underlying sync, session-scoping, and TUI dialogs are gated behind an environment variable. Without it, Forge's adapter registers fine but `workspace.create` silently no-ops and the TUI never shows worktree workspaces.
 
-- **Host exposes the API** → worktree loops become workspace-backed. The worktree directory appears as a switchable workspace in the TUI, and its sessions are bound to that workspace.
-- **Host does not expose the API** → forge skips registration, logs a note, and worktree loops run exactly as before. Everything else (iteration, auditing, sandbox, status, cancel, restart) is unaffected.
+Set one of these in the environment that launches `opencode`:
 
-No forge config option enables or disables this — the feature lights up automatically on supported hosts.
+```bash
+export OPENCODE_EXPERIMENTAL_WORKSPACES=true
+# or, to enable every experimental opencode feature at once:
+export OPENCODE_EXPERIMENTAL=true
+```
+
+Accepted values are `true` or `1` (case-insensitive). Requires **OpenCode ≥ 1.15.0**.
+
+> The `OPENCODE_EXPERIMENTAL_WORKSPACES` flag is not currently documented on opencode.ai. The authoritative source is `packages/core/src/flag/flag.ts` and `packages/opencode/src/effect/runtime-flags.ts` in the OpenCode repo.
+
+No forge config option enables or disables this — the toggle is purely on the OpenCode side.
+
+### When workspace integration is active
+
+- **Env var set, OpenCode ≥ 1.15.0** → worktree loops become workspace-backed. The worktree directory appears as a switchable workspace in the TUI, and its sessions are bound to that workspace.
+- **Env var unset or older OpenCode** → Forge's adapter still registers (the API surface is always present), but `workspace.create` no-ops and the loop runs as a plain worktree loop with no workspace switching. Everything else (iteration, auditing, sandbox, status, cancel, restart) is unaffected.
 
 ### What it does
 
-When a worktree loop starts on a supported host, forge:
+When a worktree loop starts with `OPENCODE_EXPERIMENTAL_WORKSPACES=true`, forge:
 
-1. Creates the git worktree (as usual)
-2. Creates a new Code session pointed at the worktree directory
-3. Calls `experimental.workspace.create` with `type: "worktree"` and `branch: null` to create a builtin worktree workspace
+1. Calls `experimental.workspace.create` with `type: "forge"`, `branch: null`, and `extra: { loopName, projectDirectory, workspaceCreatedAt }` to register the workspace through the `forge` adapter
+2. The adapter's `create` hook creates the git worktree (reusing an orphaned branch when possible) and, when configured, provisions the Docker sandbox container
+3. Creates a new Code session pointed at the worktree directory
 4. Calls `experimental.workspace.warp` to bind the session to that workspace
 5. Persists the workspace ID on the loop record (`loops.workspace_id`) so the TUI can route clicks on a loop into the correct workspace
 
-The adaptor's `create` and `remove` hooks are intentional no-ops — forge's loop system owns worktree lifecycle, not the workspace system. The adaptor only surfaces existing worktrees to the workspace UI.
+The adapter's `remove` hook commits in-flight changes (when teardown context allows), stops the sandbox container if any, and removes the worktree directory unless the loop is restartable. Branches are preserved for later restart or merge.
 
 ### Graceful degradation
 
-If workspace creation or session binding fails at runtime (network error, API mismatch, unsupported host), the loop **does not abort**. Forge logs the failure, clears the workspace ID, and the loop continues as a regular (non-workspace) worktree loop. You lose workspace-based switching for that loop, but the loop itself runs to completion.
+If workspace creation or session binding fails at runtime — env var unset, OpenCode version too old, network error, API mismatch — the loop **does not abort**. Forge logs the failure, clears the workspace ID, and the loop continues as a regular (non-workspace) worktree loop. You lose workspace-based switching for that loop, but iteration, auditing, sandbox, and restart all run to completion.
 
 ### From the TUI
 
-- Clicking a worktree loop in the sidebar opens its Loop Details dialog as before
-- On hosts with workspace support, the loop is additionally accessible via the workspace switcher, letting you jump between your main project and any active worktree loop inline
+- Loops are launched via the Execute tab in the Plan Viewer dialog (select Loop mode)
+- On hosts with workspace support, active loops appear as switchable workspaces alongside your main project
 
 ## Docker Sandbox
 
@@ -613,7 +607,7 @@ docker build -t oc-forge-sandbox:latest container/
 
 The image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, and jq.
 
-**2. Enable sandbox mode in your config** (`~/.config/opencode/forge-config.jsonc`):
+**2. Configure the sandbox** (`~/.config/opencode/forge-config.jsonc`):
 
 ```jsonc
 {
@@ -652,7 +646,7 @@ Sandbox is optional. When Docker is available and configured, a sandbox containe
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `sandbox.mode` | `"docker"` | Set to `"docker"` to enable sandbox support (optional; Docker used when available) |
+| `sandbox.mode` | `"docker"` | Sandbox mode (optional; Docker used when available) |
 | `sandbox.image` | `"oc-forge-sandbox:latest"` | Docker image to use for sandbox containers |
 
 ### Customizing the Image
@@ -670,6 +664,12 @@ pnpm build      # Compile TypeScript to dist/
 pnpm test       # Run tests
 pnpm typecheck  # Type check without emitting
 ```
+
+## Loop Flow
+
+The diagram below shows the overall flow of the Forge loop system — from plan capture through iterative coding/auditing phases with section advancement and session rotation.
+
+![Loop Flow](_media/loop-flow.webp)
 
 ## License
 

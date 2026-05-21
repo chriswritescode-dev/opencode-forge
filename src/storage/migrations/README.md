@@ -1,6 +1,6 @@
 # Storage Migrations
 
-This directory contains SQL migrations for the Forge storage schema.
+This directory contains SQL migrations for the Forge storage schema. The canonical, ordered registration of every migration (and the runtime logic that decides whether each one needs to run) lives in [`index.ts`](./index.ts); this README intentionally avoids duplicating that list so it cannot go stale.
 
 ## Evolution Rules
 
@@ -8,25 +8,15 @@ This directory contains SQL migrations for the Forge storage schema.
 2. **No new JSON blob columns**: New tables should have explicit columns for queryable fields. JSON is only used for opaque payloads that are never filtered (e.g., `data` in `tui_preferences`).
 3. **Add fields when needed, not speculatively**: Add columns only when a use case requires them. Avoid preemptive denormalization.
 4. **Foreign keys with cascade**: Use FK constraints with `ON DELETE CASCADE` to ensure cleanup propagates correctly.
-5. **Indexes for query patterns**: Add indexes matching actual query patterns (branch-scoped, status-scoped, etc.).
+5. **Indexes for query patterns**: Add indexes matching actual query patterns (loop-scoped, status-scoped, etc.).
 
 ## Migration ID Scheme
 
-- Existing migrations: `001` (legacy schema)
-- New typed tables: `100`–`103` (Phase 1 of storage-repos overhaul)
-- Cleanup migrations: `105+` (e.g., dropping legacy tables)
+Migrations are numbered three-digit SQL files, applied in lexicographic order. New migrations append at the next free number. To check the current head, list files in this directory or read `MIGRATIONS` in `index.ts`.
 
-## Migrations
+## Adding a Migration
 
-- `100_create_loops.sql`: Typed `loops` table replacing `loop:*` KV keys
-- `101_create_loop_large_fields.sql`: Sibling table for large text fields (`prompt`, `last_audit_result`)
-- `102_create_plans.sql`: Plans table supporting both session-staged and loop-bound plans
-- `103_create_review_findings.sql`: Write-once review findings with branch field
-- `105_create_tui_preferences.sql`: TUI preferences table for recent models and execution preferences
-- `106_drop_project_kv.sql`: Drops legacy `project_kv` table
-- `117_branch_scope_review_findings.sql`: Add branch to primary key for branch-scoped findings
-- `119_loop_scope_review_findings.sql`: Replace branch-scope with loop-scope for review findings
-
-## Maintenance
-
-Keep this list aligned with `src/storage/migrations/index.ts` whenever a new SQL migration is added.
+1. Create `NNN_short_name.sql` in this directory with the schema change.
+2. Append a new entry to the `MIGRATIONS` array in `index.ts` with a matching id, description, and runner.
+3. The runner is expected to be idempotent (check columns/tables before applying) so re-runs are safe.
+4. Update any affected repository in `src/storage/repos/` and add a test if behavior changes.
