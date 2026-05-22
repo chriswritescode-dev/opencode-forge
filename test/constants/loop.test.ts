@@ -15,7 +15,7 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'loop', pattern: '*', action: 'deny' },
       { permission: 'question', pattern: '*', action: 'deny' },
       { permission: 'bash', pattern: '*', action: 'deny' },
-      { permission: 'forge-bash', pattern: 'git push *', action: 'deny' },
+      { permission: 'sh', pattern: '*', action: 'allow' },
       { permission: 'loop-cancel', pattern: '*', action: 'deny' },
       { permission: 'loop-status', pattern: '*', action: 'deny' },
     ])
@@ -34,10 +34,18 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'loop', pattern: '*', action: 'deny' },
       { permission: 'question', pattern: '*', action: 'deny' },
       { permission: 'bash', pattern: '*', action: 'deny' },
-      { permission: 'forge-bash', pattern: 'git push *', action: 'deny' },
+      { permission: 'sh', pattern: '*', action: 'allow' },
       { permission: 'loop-cancel', pattern: '*', action: 'deny' },
       { permission: 'loop-status', pattern: '*', action: 'deny' },
     ])
+  })
+
+  it('explicitly allows sh after bash is denied', () => {
+    const rules = buildLoopPermissionRuleset()
+    const bashDenyIndex = rules.findIndex(r => r.permission === 'bash' && r.action === 'deny')
+    const shAllowIndex = rules.findIndex(r => r.permission === 'sh' && r.action === 'allow')
+    expect(bashDenyIndex).toBeGreaterThanOrEqual(0)
+    expect(shAllowIndex).toBeGreaterThan(bashDenyIndex)
   })
 
   it('ordering assertion: index of *:*:allow is strictly less than index of every deny rule', () => {

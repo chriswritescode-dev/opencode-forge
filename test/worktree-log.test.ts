@@ -445,7 +445,7 @@ describe('buildLoopPermissionRuleset integration', () => {
     expect(ruleset).toContainEqual({ permission: '*', pattern: '*', action: 'allow' })
     expect(ruleset).toContainEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
     expect(ruleset).toContainEqual({ permission: 'bash', pattern: '*', action: 'deny' })
-    expect(ruleset).toContainEqual({ permission: 'forge-bash', pattern: 'git push *', action: 'deny' })
+    expect(ruleset).toContainEqual({ permission: 'sh', pattern: '*', action: 'allow' })
     expect(ruleset).toContainEqual({ permission: 'loop-cancel', pattern: '*', action: 'deny' })
     expect(ruleset).toContainEqual({ permission: 'loop-status', pattern: '*', action: 'deny' })
   })

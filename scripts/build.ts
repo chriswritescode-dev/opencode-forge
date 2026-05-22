@@ -68,16 +68,6 @@ if (existsSync(srcSkillsDir)) {
 
 
 
-console.log('Copying tree-sitter WASM assets...')
-import { createRequire } from 'module'
-const req = createRequire(import.meta.url)
-const distWasmDir = join(__dirname, '..', 'dist', 'wasm')
-mkdirSync(distWasmDir, { recursive: true })
-const treeSrc = join(req.resolve('web-tree-sitter/package.json'), '..', 'tree-sitter.wasm')
-const bashSrc = join(req.resolve('tree-sitter-bash/package.json'), '..', 'tree-sitter-bash.wasm')
-cpSync(treeSrc, join(distWasmDir, 'tree-sitter.wasm'))
-cpSync(bashSrc, join(distWasmDir, 'tree-sitter-bash.wasm'))
-
 console.log('Copying bash prompt template...')
 const bashPromptDist = join(__dirname, '..', 'dist', 'tools', 'bash')
 mkdirSync(bashPromptDist, { recursive: true })

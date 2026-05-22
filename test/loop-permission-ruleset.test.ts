@@ -13,20 +13,28 @@ describe('buildLoopPermissionRuleset', () => {
   test('worktree + sandbox ruleset: allow-all first, external_directory denied, code-agent denies, then operational denies last', () => {
     const rules = buildLoopPermissionRuleset()
     expect(rules).toEqual([
-      { permission: '*',                  pattern: '*',          action: 'allow' },
-      { permission: 'external_directory', pattern: '*',          action: 'deny' },
-      { permission: 'review-write',       pattern: '*',          action: 'deny' },
-      { permission: 'review-delete',      pattern: '*',          action: 'deny' },
-      { permission: 'plan',               pattern: '*',          action: 'deny' },
-      { permission: 'plan_enter',         pattern: '*',          action: 'deny' },
-      { permission: 'plan_exit',          pattern: '*',          action: 'deny' },
-      { permission: 'loop',               pattern: '*',          action: 'deny' },
-      { permission: 'question',           pattern: '*',          action: 'deny' },
-      { permission: 'bash',               pattern: '*',          action: 'deny' },
-      { permission: 'forge-bash',         pattern: 'git push *', action: 'deny' },
-      { permission: 'loop-cancel',        pattern: '*',          action: 'deny' },
-      { permission: 'loop-status',        pattern: '*',          action: 'deny' },
+      { permission: '*',                  pattern: '*', action: 'allow' },
+      { permission: 'external_directory', pattern: '*', action: 'deny' },
+      { permission: 'review-write',       pattern: '*', action: 'deny' },
+      { permission: 'review-delete',      pattern: '*', action: 'deny' },
+      { permission: 'plan',               pattern: '*', action: 'deny' },
+      { permission: 'plan_enter',         pattern: '*', action: 'deny' },
+      { permission: 'plan_exit',          pattern: '*', action: 'deny' },
+      { permission: 'loop',               pattern: '*', action: 'deny' },
+      { permission: 'question',           pattern: '*', action: 'deny' },
+      { permission: 'bash',               pattern: '*', action: 'deny' },
+      { permission: 'sh',                 pattern: '*', action: 'allow' },
+      { permission: 'loop-cancel',        pattern: '*', action: 'deny' },
+      { permission: 'loop-status',        pattern: '*', action: 'deny' },
     ])
+  })
+
+  test('explicitly allows sh after bash is denied', () => {
+    const rules = buildLoopPermissionRuleset()
+    const bashDenyIndex = rules.findIndex((r) => r.permission === 'bash' && r.action === 'deny')
+    const shAllowIndex = rules.findIndex((r) => r.permission === 'sh' && r.action === 'allow')
+    expect(bashDenyIndex).toBeGreaterThanOrEqual(0)
+    expect(shAllowIndex).toBeGreaterThan(bashDenyIndex)
   })
 
   test('EMITS session-level denies for code-agent tool exclusions (auditor now runs in separate session)', () => {
@@ -63,16 +71,10 @@ describe('buildAuditSessionPermissionRuleset', () => {
     expect(rules.some(r => r.permission === 'multiedit' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'apply_patch' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     
-    // Bash mutation denies
+    // Plain bash is denied; sh is explicitly allowed as the sandbox shell path.
     expect(rules.some(r => r.permission === 'bash' && r.pattern === '*' && r.action === 'deny')).toBe(true)
-    expect(rules.some(r => r.permission === 'forge-bash' && r.pattern === 'git commit *' && r.action === 'deny')).toBe(true)
-    expect(rules.some(r => r.permission === 'forge-bash' && r.pattern === 'git push *' && r.action === 'deny')).toBe(true)
-    expect(rules.some(r => r.permission === 'forge-bash' && r.pattern === 'git reset *' && r.action === 'deny')).toBe(true)
-    expect(rules.some(r => r.permission === 'forge-bash' && r.pattern === 'git rm *' && r.action === 'deny')).toBe(true)
-    expect(rules.some(r => r.permission === 'forge-bash' && r.pattern === 'git mv *' && r.action === 'deny')).toBe(true)
-    expect(rules.some(r => r.permission === 'forge-bash' && r.pattern === 'rm *' && r.action === 'deny')).toBe(true)
-    expect(rules.some(r => r.permission === 'forge-bash' && r.pattern === 'mv *' && r.action === 'deny')).toBe(true)
-    
+    expect(rules.some(r => r.permission === 'sh' && r.pattern === '*' && r.action === 'allow')).toBe(true)
+
     // Loop/plan denies
     expect(rules.some(r => r.permission === 'plan' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'plan_enter' && r.pattern === '*' && r.action === 'deny')).toBe(true)
@@ -94,8 +96,7 @@ describe('buildAuditSessionPermissionRuleset', () => {
     expect(rules.some(r => r.permission === 'multiedit' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'apply_patch' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'bash' && r.pattern === '*' && r.action === 'deny')).toBe(true)
-    expect(rules.some(r => r.permission === 'forge-bash' && r.pattern === 'git commit *' && r.action === 'deny')).toBe(true)
-    expect(rules.some(r => r.permission === 'forge-bash' && r.pattern === 'git push *' && r.action === 'deny')).toBe(true)
+    expect(rules.some(r => r.permission === 'sh' && r.pattern === '*' && r.action === 'allow')).toBe(true)
     expect(rules.some(r => r.permission === 'plan' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'plan_enter' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'plan_exit' && r.pattern === '*' && r.action === 'deny')).toBe(true)

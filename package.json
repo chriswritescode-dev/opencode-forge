@@ -50,7 +50,6 @@
     "@opencode-ai/plugin": "1.15.5",
     "@opencode-ai/sdk": "1.15.5",
     "jsonc-parser": "^3.3.1",
-    "tree-sitter-bash": "0.25.0",
     "web-tree-sitter": "0.25.10"
   },
   "peerDependencies": {

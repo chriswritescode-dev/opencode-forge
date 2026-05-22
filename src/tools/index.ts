@@ -3,7 +3,7 @@ import { createReviewTools } from './review'
 import { createPlanTools } from './plan-kv'
 import { createLoopTools } from './loop'
 import { createSectionReadTool } from './section-read'
-import { createBashTool } from './bash'
+import { createBashTool } from './bash/index'
 import type { ToolContext } from './types'
 
 export type { ToolContext } from './types'
@@ -23,12 +23,14 @@ export function createTools(ctx: ToolContext): Record<string, ReturnType<typeof 
   }
 
   if (ctx.sandboxManager) {
-    tools['forge-bash'] = createBashTool({
+    tools.sh = createBashTool({
       resolveSandboxForSession: ctx.resolveSandboxForSession,
       logger: ctx.logger,
       dataDir: ctx.dataDir,
-      permissionName: 'forge-bash',
-      requireSandbox: true,
+      // Use a workspace-relative scratch dir: the worktree is mounted at
+      // /workspace inside the sandbox, so .forge/tmp resolves consistently
+      // for both host (read/write tools) and sandbox (bash).
+      tmpDir: '.forge/tmp',
     })
   }
 

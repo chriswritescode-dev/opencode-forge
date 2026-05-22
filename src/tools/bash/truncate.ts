@@ -3,14 +3,8 @@ import { join } from 'path'
 
 export const MAX_LINES = 2000
 export const MAX_BYTES = 50 * 1024
-export const MAX_METADATA_LENGTH = 30_000
 
 export interface Limits { maxLines: number; maxBytes: number }
-
-export function preview(text: string): string {
-  if (text.length <= MAX_METADATA_LENGTH) return text
-  return '...\n\n' + text.slice(-MAX_METADATA_LENGTH)
-}
 
 export function tail(text: string, maxLines: number, maxBytes: number): { text: string; cut: boolean } {
   const lines = text.split('\n')

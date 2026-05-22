@@ -2,7 +2,7 @@ import { describe, test, expect } from 'bun:test'
 import { mkdtempSync, readFileSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { tail, preview, writeOverflow, MAX_METADATA_LENGTH } from '../../../src/tools/bash/truncate'
+import { tail, writeOverflow } from '../../../src/tools/bash/truncate'
 
 describe('tail', () => {
   test('returns full text under limits with cut=false', () => {
@@ -24,21 +24,9 @@ describe('tail', () => {
   })
 })
 
-describe('preview', () => {
-  test('passes short text through', () => {
-    expect(preview('hi')).toBe('hi')
-  })
-  test('truncates long text to last MAX_METADATA_LENGTH', () => {
-    const text = 'x'.repeat(MAX_METADATA_LENGTH + 100)
-    const p = preview(text)
-    expect(p.startsWith('...')).toBe(true)
-    expect(p.length).toBe(3 + 2 + MAX_METADATA_LENGTH)
-  })
-})
-
 describe('writeOverflow', () => {
   test('writes file under <dataDir>/bash-output/', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'forge-bash-out-'))
+    const dir = mkdtempSync(join(tmpdir(), 'forge-sh-out-'))
     const file = writeOverflow(dir, 'call-1', 'hello')
     expect(existsSync(file)).toBe(true)
     expect(file).toContain('bash-output')
