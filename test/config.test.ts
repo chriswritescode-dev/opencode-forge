@@ -109,6 +109,32 @@ describe('createConfigHandler', () => {
       }
     })
 
+    test('global permission hides sh outside loop sessions', async () => {
+      const configHandler = createConfigHandler(agents)
+      const config: Record<string, unknown> = {}
+
+      await configHandler(config)
+
+      const permission = config.permission as Record<string, string>
+      expect(permission.sh).toBe('deny')
+    })
+
+    test('global sh deny preserves other user permission settings', async () => {
+      const configHandler = createConfigHandler(agents)
+      const config: Record<string, unknown> = {
+        permission: {
+          bash: 'ask',
+          sh: 'allow',
+        },
+      }
+
+      await configHandler(config)
+
+      const permission = config.permission as Record<string, string>
+      expect(permission.bash).toBe('ask')
+      expect(permission.sh).toBe('deny')
+    })
+
     test('code agent excluded tools are mirrored to permission: deny (opencode enforces via permission, not tools)', async () => {
       const configHandler = createConfigHandler(agents)
       const config: Record<string, unknown> = {}
