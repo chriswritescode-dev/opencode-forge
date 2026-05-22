@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from 'bun:test'
-import { mkdtempSync, writeFileSync } from 'fs'
+import { mkdtempSync, writeFileSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { createBashTool } from '../../src/tools/bash'
@@ -28,11 +28,16 @@ describe('createBashTool', () => {
     ask: typeof mockAsk
   }
 
+  let tmpData: string
+  let tmpHostDir: string
+
   beforeEach(() => {
     order = 0
     dockerResult = { stdout: 'docker ok\n', stderr: '', exitCode: 0 }
     dockerCalls = []
     askCalls = []
+    tmpData = mkdtempSync(join(tmpdir(), 'forge-bash-data-'))
+    tmpHostDir = mkdtempSync(join(tmpdir(), 'forge-bash-host-'))
     mockAsk = async (input) => {
       askCalls.push({ order: ++order, input })
     }
@@ -47,23 +52,24 @@ describe('createBashTool', () => {
       sessionID: 's1',
       messageID: 'msg-1',
       agent: 'code',
-      directory: '/tmp/host',
-      worktree: '/tmp/host',
+      directory: tmpHostDir,
+      worktree: tmpHostDir,
       abort: new AbortController().signal,
       metadata: () => {},
       ask: mockAsk,
     }
   })
 
+  function sandbox(): SandboxContext {
+    return { docker: mockDocker, containerName: 'forge-foo', hostDir: tmpHostDir }
+  }
+
   function makeBash(sandboxFor: (sessionID: string) => Promise<SandboxContext | null> | SandboxContext | null) {
     return createBashTool({
       resolveSandboxForSession: async (sessionID) => await sandboxFor(sessionID),
       logger: mockLogger,
+      dataDir: tmpData,
     })
-  }
-
-  function sandbox(): SandboxContext {
-    return { docker: mockDocker, containerName: 'forge-foo', hostDir: '/tmp/host' }
   }
 
   test('runs command in docker when sandbox resolves', async () => {
@@ -79,7 +85,7 @@ describe('createBashTool', () => {
   test('translates workdir to /workspace path for docker', async () => {
     const tool = makeBash(() => sandbox())
 
-    await tool.execute({ command: 'ls', workdir: '/tmp/host/src', description: 'list' }, mockToolCtx as never)
+    await tool.execute({ command: 'ls', workdir: join(tmpHostDir, 'src'), description: 'list' }, mockToolCtx as never)
 
     expect(dockerCalls[0]?.opts).toMatchObject({ cwd: '/workspace/src' })
   })
@@ -90,7 +96,7 @@ describe('createBashTool', () => {
 
     const result = await tool.execute({ command: 'ls', description: 'list' }, mockToolCtx as never)
 
-    expect(result).toContain('/tmp/host/src/file.ts')
+    expect(result).toContain(join(tmpHostDir, 'src/file.ts'))
     expect(result).not.toContain('/workspace')
   })
 
@@ -150,19 +156,19 @@ describe('createBashTool', () => {
     expect(result).toContain('[Exit code: 3]')
   })
 
-  test('asks permission with bash pattern before executing', async () => {
+  test('asks permission with arity-scoped patterns and always', async () => {
     const tool = makeBash(() => sandbox())
-
     await tool.execute({ command: 'git push origin main', description: 'push' }, mockToolCtx as never)
-
     expect(askCalls).toHaveLength(1)
-    expect(askCalls[0]?.input).toEqual({
-      permission: 'bash',
-      patterns: ['git push origin main'],
-      always: ['git push origin main'],
-      metadata: {},
-    })
-    expect(askCalls[0]!.order).toBeLessThan(dockerCalls[0]!.order)
+    expect(askCalls[0]?.input.permission).toBe('bash')
+    expect(askCalls[0]?.input.patterns).toEqual(['git push origin main'])
+    expect(askCalls[0]?.input.always).toEqual(['git push *'])
+  })
+
+  test('arity for npm run uses 3-token prefix', async () => {
+    const tool = makeBash(() => sandbox())
+    await tool.execute({ command: 'npm run build', description: 'build' }, mockToolCtx as never)
+    expect(askCalls[0]?.input.always).toEqual(['npm run build *'])
   })
 
   test('propagates permission rejection', async () => {
@@ -174,9 +180,206 @@ describe('createBashTool', () => {
     expect(dockerCalls).toHaveLength(0)
   })
 
+  test('asks permission even when no command nodes found (redirection-only)', async () => {
+    const tool = makeBash(() => sandbox())
+    await tool.execute({ command: '> /tmp/marker', description: 'redirect' }, mockToolCtx as never)
+    expect(askCalls).toHaveLength(1)
+    expect(askCalls[0]?.input.permission).toBe('bash')
+    expect(askCalls[0]?.input.patterns).toEqual(['> /tmp/marker'])
+    expect(askCalls[0]?.input.always).toEqual(['> /tmp/marker'])
+  })
+
+  test('permission rejection prevents redirection command from executing', async () => {
+    mockAsk = async () => { throw new Error('Denied by user rule') }
+    mockToolCtx.ask = mockAsk
+    const tool = makeBash(() => sandbox())
+
+    await expect(tool.execute({ command: '> /tmp/marker', description: 'redirect' }, mockToolCtx as never)).rejects.toThrow(/Denied/)
+    expect(dockerCalls).toHaveLength(0)
+  })
+
+  test('asks permission with both command and redirection-only side effects', async () => {
+    const tool = makeBash(() => sandbox())
+    await tool.execute({ command: 'echo hi; > /tmp/marker', description: 'echo and redirect' }, mockToolCtx as never)
+    expect(askCalls).toHaveLength(1)
+    expect(askCalls[0]?.input.permission).toBe('bash')
+    expect(askCalls[0]?.input.patterns).toEqual(['echo hi', '> /tmp/marker'])
+    expect(askCalls[0]?.input.always).toEqual(['echo *', '> /tmp/marker'])
+  })
+
+  test('permission rejection prevents mixed command + redirect from executing', async () => {
+    mockAsk = async () => { throw new Error('Denied by user rule') }
+    mockToolCtx.ask = mockAsk
+    const tool = makeBash(() => sandbox())
+
+    await expect(tool.execute({ command: 'echo hi; > /tmp/marker', description: 'echo and redirect' }, mockToolCtx as never)).rejects.toThrow(/Denied/)
+    expect(dockerCalls).toHaveLength(0)
+  })
+
   test('regression: frozen args object does not throw', async () => {
     const tool = makeBash(() => sandbox())
 
     await expect(tool.execute(Object.freeze({ command: 'ls', description: 'list' }), mockToolCtx as never)).resolves.toBeDefined()
+  })
+
+  test('asks permission for redirection inside if statement', async () => {
+    const tool = makeBash(() => sandbox())
+    await tool.execute({ command: 'if true; then > /tmp/marker; fi', description: 'nested redirect' }, mockToolCtx as never)
+    expect(askCalls).toHaveLength(1)
+    expect(askCalls[0]?.input.permission).toBe('bash')
+    expect(askCalls[0]?.input.patterns.some(p => p.includes('> /tmp/marker'))).toBe(true)
+  })
+
+  test('asks permission for redirection inside while loop', async () => {
+    const tool = makeBash(() => sandbox())
+    await tool.execute({ command: 'while false; do > /tmp/marker; done', description: 'nested redirect' }, mockToolCtx as never)
+    expect(askCalls).toHaveLength(1)
+    expect(askCalls[0]?.input.patterns.some(p => p.includes('> /tmp/marker'))).toBe(true)
+  })
+
+  test('asks permission for redirection inside compound block', async () => {
+    const tool = makeBash(() => sandbox())
+    await tool.execute({ command: '{ echo hi; > /tmp/marker; }', description: 'nested redirect' }, mockToolCtx as never)
+    expect(askCalls).toHaveLength(1)
+    expect(askCalls[0]?.input.patterns).toEqual(['echo hi', '> /tmp/marker'])
+  })
+
+  test('truncates docker output and writes overflow file', async () => {
+    const big = Array.from({ length: 5000 }, (_, i) => `line${i}`).join('\n')
+    dockerResult = { stdout: big, stderr: '', exitCode: 0 }
+    const tool = makeBash(() => sandbox())
+    const result = await tool.execute({ command: 'big', description: 'big' }, mockToolCtx as never)
+    expect(result).toContain('...output truncated...')
+    expect(result).toContain('Full output saved to:')
+    expect(result).toContain(join(tmpData, 'bash-output'))
+  })
+
+  test('asks external_directory before bash for rm of external path', async () => {
+    const tool = createBashTool({
+      resolveSandboxForSession: async () => sandbox(),
+      logger: mockLogger,
+      dataDir: tmpData,
+    })
+    await tool.execute({ command: 'rm /tmp/external/foo.txt', description: 'rm' }, mockToolCtx as never)
+    expect(askCalls).toHaveLength(2)
+    expect(askCalls[0]?.input.permission).toBe('external_directory')
+    expect(askCalls[1]?.input.permission).toBe('bash')
+    expect(askCalls[0]!.order).toBeLessThan(askCalls[1]!.order)
+  })
+
+  test('does NOT ask external_directory for in-cwd rm', async () => {
+    mockToolCtx.directory = '/home/proj'
+    const tool = createBashTool({
+      resolveSandboxForSession: async () => sandbox(),
+      logger: mockLogger,
+      dataDir: tmpData,
+    })
+    await tool.execute({ command: 'rm src/foo.txt', description: 'rm' }, mockToolCtx as never)
+    expect(askCalls).toHaveLength(1)
+    expect(askCalls[0]?.input.permission).toBe('bash')
+  })
+
+  test('streams ctx.metadata while host command runs', async () => {
+    const metaCalls: Array<{ output: string }> = []
+    const ctx = { ...mockToolCtx, metadata: (m: { metadata: { output: string } }) => { metaCalls.push(m.metadata) } }
+    const tool = createBashTool({
+      resolveSandboxForSession: async () => null,
+      logger: mockLogger,
+      dataDir: tmpData,
+    })
+    await tool.execute({ command: 'printf one; printf two; printf three', description: 's' }, ctx as never)
+    expect(metaCalls.length).toBeGreaterThanOrEqual(1)
+    expect(metaCalls[metaCalls.length - 1]?.output).toContain('onetwothree')
+  })
+
+  test('host abort signal kills the child', async () => {
+    const controller = new AbortController()
+    const ctx = { ...mockToolCtx, abort: controller.signal }
+    const tool = createBashTool({
+      resolveSandboxForSession: async () => null,
+      logger: mockLogger,
+      dataDir: tmpData,
+    })
+    const promise = tool.execute({ command: 'sleep 5', description: 's' }, ctx as never)
+    setTimeout(() => controller.abort(), 50)
+    const result = await promise
+    expect(result).toBeDefined() // resolved (not hung)
+  })
+
+  test('external workdir triggers external_directory before bash', async () => {
+    mockToolCtx.directory = '/repo'
+    const tool = createBashTool({
+      resolveSandboxForSession: async () => sandbox(),
+      logger: mockLogger,
+      dataDir: tmpData,
+    })
+    await tool.execute({ command: 'rm foo.txt', workdir: '/tmp/external', description: 'rm' }, mockToolCtx as never)
+    expect(askCalls).toHaveLength(2)
+    expect(askCalls[0]?.input.permission).toBe('external_directory')
+    expect(askCalls[0]?.input.patterns.some(p => p.startsWith('/tmp/external/'))).toBe(true)
+    expect(askCalls[1]?.input.permission).toBe('bash')
+    expect(askCalls[0]!.order).toBeLessThan(askCalls[1]!.order)
+  })
+
+  test('in-workspace workdir does NOT request external_directory', async () => {
+    mockToolCtx.directory = '/repo'
+    const tool = createBashTool({
+      resolveSandboxForSession: async () => sandbox(),
+      logger: mockLogger,
+      dataDir: tmpData,
+    })
+    await tool.execute({ command: 'ls', workdir: '/repo/src', description: 'list' }, mockToolCtx as never)
+    expect(askCalls).toHaveLength(1)
+    expect(askCalls[0]?.input.permission).toBe('bash')
+  })
+
+  test('tool description references Bash, workdir, and truncation', () => {
+    const tool = createBashTool({
+      resolveSandboxForSession: async () => null,
+      logger: mockLogger,
+      dataDir: '/tmp',
+    })
+    expect(tool.description).toContain('bash')
+    expect(tool.description).toContain('workdir')
+    expect(tool.description).toMatch(/truncated|truncation/i)
+  })
+
+  test('tool description contains upstream prompt content', () => {
+    const tool = createBashTool({
+      resolveSandboxForSession: async () => null,
+      logger: mockLogger,
+      dataDir: '/tmp',
+    })
+    expect(tool.description).toContain('# Git and GitHub')
+    expect(tool.description).toContain('Use `gh` for GitHub tasks')
+    expect(tool.description).toContain('Directory Verification')
+    expect(tool.description).toContain('Command Execution')
+    expect(tool.description).toContain('Usage notes')
+    expect(tool.description).toContain('persistent shell session')
+  })
+
+  test('host fallback uses ctx.directory when no workdir provided', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'forge-bash-dir-'))
+    writeFileSync(join(tempDir, 'marker.txt'), 'x')
+    mockToolCtx.directory = tempDir
+    const tool = makeBash(() => null)
+
+    const result = await tool.execute({ command: 'ls', description: 'ls' }, mockToolCtx as never)
+
+    expect(result).toContain('marker.txt')
+  })
+
+  test('relative workdir resolves under ctx.directory', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'forge-bash-rel-'))
+    const subDir = join(tempDir, 'sub')
+    const { mkdirSync } = await import('fs')
+    mkdirSync(subDir, { recursive: true })
+    writeFileSync(join(subDir, 'marker.txt'), 'x')
+    mockToolCtx.directory = tempDir
+    const tool = makeBash(() => null)
+
+    const result = await tool.execute({ command: 'ls', workdir: 'sub', description: 'ls' }, mockToolCtx as never)
+
+    expect(result).toContain('marker.txt')
   })
 })

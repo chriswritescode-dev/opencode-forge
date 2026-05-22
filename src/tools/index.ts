@@ -26,6 +26,7 @@ export function createTools(ctx: ToolContext): Record<string, ReturnType<typeof 
     tools.bash = createBashTool({
       resolveSandboxForSession: ctx.resolveSandboxForSession,
       logger: ctx.logger,
+      dataDir: ctx.dataDir,
     })
   }
 
