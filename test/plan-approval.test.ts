@@ -24,7 +24,6 @@ import type { ToolContext } from '../src/tools/types'
 import type { PluginConfig } from '../src/types'
 import { tmpdir } from 'os'
 import { randomUUID } from 'crypto'
-import { PLAN_END_MARKER, PLAN_START_MARKER } from '../src/utils/marked-plan-parser'
 
 const TEST_DIR = '/tmp/opencode-manager-plan-approval-test-' + Date.now()
 
@@ -167,66 +166,6 @@ describe('Plan Approval Tool Interception', () => {
     expect(output.output).toContain('Loop')
     expect(output.output).not.toContain('<system-reminder>')
     expect(output.output).not.toContain('memory-loop')
-  })
-
-  test('blocks plan approval question when latest assistant plan is missing end marker', async () => {
-    const hook = createToolExecuteBeforeHook({
-      loopService: {
-        resolveLoopName: () => null,
-        getActiveState: () => null,
-      },
-      v2: {
-        session: {
-          messages: async () => ({
-            data: [{
-              info: { role: 'assistant', id: 'msg-unterminated' },
-              parts: [{ type: 'text', text: `${PLAN_START_MARKER}\n# Plan without an end marker` }],
-            }],
-          }),
-        },
-      },
-      input: { client: { session: { messages: async () => ({ data: [] }) } } },
-      plansRepo,
-      projectId,
-      directory: TEST_DIR,
-      logger: createMockLogger(),
-    } as unknown as ToolContext)!
-
-    await expect(hook(
-      { tool: 'question', sessionID, callID: 'call-missing-end' },
-      { args: approvalArgs }
-    )).rejects.toThrow(/Forge plan capture failed[\s\S]*Assistant feedback[\s\S]*must contain both `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers[\s\S]*output just `<!-- forge-plan:end -->`[\s\S]*call the question tool again/)
-  })
-
-  test('captures latest valid plan before showing approval question when event capture was missed', async () => {
-    const hook = createToolExecuteBeforeHook({
-      loopService: {
-        resolveLoopName: () => null,
-        getActiveState: () => null,
-      },
-      v2: {
-        session: {
-          messages: async () => ({
-            data: [{
-              info: { role: 'assistant', id: 'msg-valid' },
-              parts: [{ type: 'text', text: `${PLAN_START_MARKER}\n# Valid Plan\n${PLAN_END_MARKER}` }],
-            }],
-          }),
-        },
-      },
-      input: { client: { session: { messages: async () => ({ data: [] }) } } },
-      plansRepo,
-      projectId,
-      directory: TEST_DIR,
-      logger: createMockLogger(),
-    } as unknown as ToolContext)!
-
-    await expect(hook(
-      { tool: 'question', sessionID, callID: 'call-valid-plan' },
-      { args: approvalArgs }
-    )).resolves.toBeUndefined()
-
-    expect(plansRepo.getForSession(projectId, sessionID)?.content).toBe('# Valid Plan')
   })
 
   test('Injects directive for unknown answer', () => {

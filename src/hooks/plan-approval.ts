@@ -3,7 +3,6 @@ import type { Hooks } from '@opencode-ai/plugin'
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
 import { extractPlanExecutionMetadata, PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext } from '../services/execution'
-import { captureLatestPlanForSession } from '../services/plan-capture'
 
 function publishPlanApprovalToast(
   ctx: ToolContext,
@@ -155,22 +154,7 @@ function isPlanApprovalQuestionArgs(args: unknown): boolean {
   const options = questionArgs?.questions?.[0]?.options
   if (!options) return false
   const labels = options.map((o) => (o.label ?? '').toLowerCase())
-  const hasExecuteHere = labels.some((l) => l === 'execute here' || l.startsWith('execute here'))
-  return hasExecuteHere || PLAN_EXECUTION_LABELS.every((l) => labels.includes(l.toLowerCase()))
-}
-
-function formatMissingPlanFeedback(reason?: string): string {
-  const prefix = 'Forge plan capture failed. Assistant feedback: do not ask the user. '
-
-  if (reason === 'unterminated') {
-    return `${prefix}A plan must contain both \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` markers, each on its own line. If only the end marker is missing, output just \`<!-- forge-plan:end -->\`, then call the question tool again. Otherwise output one complete marked plan, then call the question tool again.`
-  }
-
-  if (reason) {
-    return `${prefix}The marked implementation plan is invalid (${reason}). Output one complete plan wrapped with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\`, then call the question tool again.`
-  }
-
-  return `${prefix}No captured implementation plan exists for this session. Output one complete plan wrapped with \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\`, then call the question tool again.`
+  return PLAN_EXECUTION_LABELS.every((l) => labels.includes(l.toLowerCase()))
 }
 
 export function createToolExecuteBeforeHook(ctx: ToolContext, deps: LoopToolBlockingDeps = {}): Hooks['tool.execute.before'] {
@@ -179,36 +163,15 @@ export function createToolExecuteBeforeHook(ctx: ToolContext, deps: LoopToolBloc
 
   return async (
     input: { tool: string; sessionID: string; callID: string },
-    output: { args: unknown }
+    _output: { args: unknown }
   ) => {
     const state = await resolveBlockedLoopToolState(loop, input.sessionID, deps)
-    if (state?.active) {
-      if (!(input.tool in LOOP_BLOCKED_TOOLS)) return
+    if (!state?.active) return
+    if (!(input.tool in LOOP_BLOCKED_TOOLS)) return
 
-      logger.log(`Loop: blocking ${input.tool} tool before execution in ${state.phase} phase for session ${input.sessionID}`)
+    logger.log(`Loop: blocking ${input.tool} tool before execution in ${state.phase} phase for session ${input.sessionID}`)
 
-      throw new Error(LOOP_BLOCKED_TOOLS[input.tool]!)
-    }
-
-    if (input.tool !== 'question' || !isPlanApprovalQuestionArgs(output.args)) return
-
-    if (ctx.plansRepo.getForSession(ctx.projectId, input.sessionID)) return
-
-    const captureDeps = {
-      v2: ctx.v2,
-      client: ctx.input.client,
-      plansRepo: ctx.plansRepo,
-      projectId: ctx.projectId,
-      directory: ctx.directory,
-      logger: ctx.logger,
-    }
-    const capture = await captureLatestPlanForSession(captureDeps, input.sessionID)
-    if (capture.status === 'captured' || capture.status === 'already-current') return
-    if (capture.status === 'read-failed') return
-
-    const reason = capture.status === 'invalid' ? capture.reason : undefined
-    logger.log(`Plan approval: blocking approval question because no captured plan exists for ${input.sessionID}${reason ? ` (${reason})` : ''}`)
-    throw new Error(formatMissingPlanFeedback(reason))
+    throw new Error(LOOP_BLOCKED_TOOLS[input.tool]!)
   }
 }
 
