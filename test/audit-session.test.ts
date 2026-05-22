@@ -41,7 +41,7 @@ describe('createAuditSession', () => {
     expect(result).not.toBeNull()
     expect(mockV2.session.create).toHaveBeenCalled()
     const callArgs = (mockV2.session.create as any).mock.calls[0][0]
-    expect(callArgs.permission).toEqual(buildAuditSessionPermissionRuleset())
+    expect(callArgs.permission).toEqual(buildAuditSessionPermissionRuleset({ sandbox: true }))
     expect(callArgs.title).toBe('audit: test-loop #1')
     expect(callArgs).not.toHaveProperty('parentID')
   })
@@ -83,7 +83,7 @@ describe('createAuditSession', () => {
     })
 
     const callArgs = (mockV2.session.create as any).mock.calls[0][0]
-    expect(callArgs.permission).toEqual(buildAuditSessionPermissionRuleset())
+    expect(callArgs.permission).toEqual(buildAuditSessionPermissionRuleset({ sandbox: false }))
   })
 
   test('creates audit session as top-level session even when previous code session exists', async () => {

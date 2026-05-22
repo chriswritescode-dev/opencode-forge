@@ -175,7 +175,8 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
     expect(sesCreateArgs.directory).toBe('/tmp/wt/loop')
     expect(sesCreateArgs.permission).toEqual(buildLoopPermissionRuleset())
     expect(sesCreateArgs.permission).toContainEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
-    expect(sesCreateArgs.permission).toContainEqual({ permission: 'bash', pattern: 'git push *', action: 'deny' })
+    expect(sesCreateArgs.permission).toContainEqual({ permission: 'bash', pattern: '*', action: 'deny' })
+    expect(sesCreateArgs.permission).toContainEqual({ permission: 'sh', pattern: '*', action: 'allow' })
 
     const promptArgs = mockApi.client.session.promptAsync.mock.calls[0][0]
     expect(promptArgs.sessionID).toBe('sess_new')

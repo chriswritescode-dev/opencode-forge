@@ -1,6 +1,6 @@
 {
   "name": "opencode-forge",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "type": "module",
   "oc-plugin": [
     "server",
@@ -47,9 +47,10 @@
   "license": "MIT",
   "homepage": "https://github.com/chriswritescode-dev/opencode-forge",
   "dependencies": {
-    "@opencode-ai/plugin": "^1.14.47",
-    "@opencode-ai/sdk": "^1.14.47",
-    "jsonc-parser": "^3.3.1"
+    "@opencode-ai/plugin": "1.15.5",
+    "@opencode-ai/sdk": "1.15.5",
+    "jsonc-parser": "^3.3.1",
+    "web-tree-sitter": "0.25.10"
   },
   "peerDependencies": {
     "@opentui/core": ">=0.1.105",

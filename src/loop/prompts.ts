@@ -25,6 +25,7 @@ function buildSandboxContextNoteFromFlag(sandbox: boolean): string {
     '',
     '---',
     '[Sandbox] This loop runs inside a container. Some paths, OS-specific commands, or tools may differ from your host system.',
+    'Use sh for terminal commands in this loop; standard bash is disabled so shell commands execute in the loop container.',
     'Focus on what the code does, not whether local tooling matches — this saves time and avoids false positives.',
     '',
   ].join('\n')

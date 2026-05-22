@@ -28,14 +28,16 @@ function baseCtx(overrides: Partial<ToolContext>): ToolContext {
 }
 
 describe('createTools bash registration', () => {
-  test('does not register bash when sandboxManager is null', () => {
+  test('does not register sh when sandboxManager is null', () => {
     const tools = createTools(baseCtx({ sandboxManager: null }))
     expect(tools.bash).toBeUndefined()
+    expect(tools.sh).toBeUndefined()
   })
 
-  test('registers bash when sandboxManager is non-null', () => {
+  test('registers sh without replacing standard bash when sandboxManager is non-null', () => {
     const tools = createTools(baseCtx({ sandboxManager: {} as never }))
-    expect(tools.bash).toBeDefined()
-    expect(typeof tools.bash.execute).toBe('function')
+    expect(tools.bash).toBeUndefined()
+    expect(tools.sh).toBeDefined()
+    expect(typeof tools.sh.execute).toBe('function')
   })
 })

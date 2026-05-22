@@ -496,7 +496,7 @@ describe('loop-status tool restart path', () => {
       call[0]?.permission !== undefined
     )
     expect(callWithPermission).toBeDefined()
-    expect(callWithPermission![0].permission).toEqual(buildLoopPermissionRuleset())
+    expect(callWithPermission![0].permission).toEqual(buildLoopPermissionRuleset({ sandbox: false }))
   })
 
   test('non-force restart of final_audit_retry_exhausted succeeds without force', async () => {
@@ -589,7 +589,7 @@ describe('loop-status tool restart path', () => {
       call[0]?.permission !== undefined
     )
     expect(callWithPermission).toBeDefined()
-    expect(callWithPermission![0].permission).toEqual(buildAuditSessionPermissionRuleset())
+    expect(callWithPermission![0].permission).toEqual(buildAuditSessionPermissionRuleset({ sandbox: false }))
   })
 
   test('forced restart of final_audit_retry_exhausted resumes at final_auditing', async () => {
@@ -682,7 +682,7 @@ describe('loop-status tool restart path', () => {
       call[0]?.permission !== undefined
     )
     expect(callWithPermission).toBeDefined()
-    expect(callWithPermission![0].permission).toEqual(buildAuditSessionPermissionRuleset())
+    expect(callWithPermission![0].permission).toEqual(buildAuditSessionPermissionRuleset({ sandbox: false }))
   })
 })
 

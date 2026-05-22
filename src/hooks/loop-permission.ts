@@ -70,7 +70,7 @@ export function createLoopPermissionRejectHook(
     } catch (err) {
       logger.error(`[loop-permission] failed to fetch parent ${parentID} for inheritance`, err)
     }
-    if (!ruleset) ruleset = buildLoopPermissionRuleset()
+    if (!ruleset) ruleset = buildLoopPermissionRuleset({ sandbox: resolved.sandbox ?? false })
 
     logger.log(
       `[loop-permission] patching loop=${resolved.loopName} session=${sessionID} parent=${parentID} ruleset=${rulesetSource}`,
