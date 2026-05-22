@@ -23,10 +23,12 @@ export function createTools(ctx: ToolContext): Record<string, ReturnType<typeof 
   }
 
   if (ctx.sandboxManager) {
-    tools.bash = createBashTool({
+    tools['forge-bash'] = createBashTool({
       resolveSandboxForSession: ctx.resolveSandboxForSession,
       logger: ctx.logger,
       dataDir: ctx.dataDir,
+      permissionName: 'forge-bash',
+      requireSandbox: true,
     })
   }
 

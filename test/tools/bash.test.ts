@@ -165,6 +165,30 @@ describe('createBashTool', () => {
     expect(askCalls[0]?.input.always).toEqual(['git push *'])
   })
 
+  test('supports forge-bash permission name for loop sandboxes', async () => {
+    const tool = createBashTool({
+      resolveSandboxForSession: async () => sandbox(),
+      logger: mockLogger,
+      dataDir: tmpData,
+      permissionName: 'forge-bash',
+      requireSandbox: true,
+    })
+    await tool.execute({ command: 'git status', description: 'status' }, mockToolCtx as never)
+    expect(askCalls[0]?.input.permission).toBe('forge-bash')
+  })
+
+  test('forge-bash mode rejects sessions without an active sandbox', async () => {
+    const tool = createBashTool({
+      resolveSandboxForSession: async () => null,
+      logger: mockLogger,
+      dataDir: tmpData,
+      permissionName: 'forge-bash',
+      requireSandbox: true,
+    })
+    await expect(tool.execute({ command: 'git status', description: 'status' }, mockToolCtx as never)).rejects.toThrow(/active Forge loop sandboxes/)
+    expect(askCalls).toHaveLength(0)
+  })
+
   test('arity for npm run uses 3-token prefix', async () => {
     const tool = makeBash(() => sandbox())
     await tool.execute({ command: 'npm run build', description: 'build' }, mockToolCtx as never)

@@ -17,10 +17,13 @@ export interface BashToolDeps {
   logger: Logger
   dataDir: string
   limits?: Limits
+  permissionName?: string
+  requireSandbox?: boolean
 }
 
 export function createBashTool(deps: BashToolDeps): ReturnType<typeof tool> {
   const limits = deps.limits ?? { maxLines: MAX_LINES, maxBytes: MAX_BYTES }
+  const permissionName = deps.permissionName ?? 'bash'
   return tool({
     description: renderDescription(limits),
     args: {
@@ -30,6 +33,10 @@ export function createBashTool(deps: BashToolDeps): ReturnType<typeof tool> {
       description: z.string().describe(PARAM_DESCRIPTION),
     },
     execute: async (args, ctx) => {
+      const sandbox = await deps.resolveSandboxForSession(ctx.sessionID)
+      if (deps.requireSandbox && !sandbox) {
+        throw new Error('forge-bash is only available inside active Forge loop sandboxes')
+      }
       const cwd = args.workdir ? path.resolve(ctx.directory, args.workdir) : ctx.directory
       const root = await parseBash(args.command)
       const scan = collect(root, cwd)
@@ -54,10 +61,9 @@ export function createBashTool(deps: BashToolDeps): ReturnType<typeof tool> {
         await ctx.ask({ permission: 'external_directory', patterns: globs, always: globs, metadata: {} })
       }
       if (scan.patterns.length > 0) {
-        await ctx.ask({ permission: 'bash', patterns: scan.patterns, always: scan.always, metadata: {} })
+        await ctx.ask({ permission: permissionName, patterns: scan.patterns, always: scan.always, metadata: {} })
       }
 
-      const sandbox = await deps.resolveSandboxForSession(ctx.sessionID)
       return sandbox
         ? await runInSandbox(args, sandbox, deps, ctx, limits)
         : await runOnHost(args, deps, ctx, limits, cwd)
