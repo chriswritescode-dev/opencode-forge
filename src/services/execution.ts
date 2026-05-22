@@ -1335,7 +1335,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       const sandboxEnabled = isSandboxEnabled(deps.config, deps.sandboxManager)
       sandboxEnabledForLoop = sandboxEnabled
 
-      const permissionRuleset = buildLoopPermissionRuleset()
+      const permissionRuleset = buildLoopPermissionRuleset({ sandbox: sandboxEnabled })
 
       // Create single code session
       const createResult = await createLoopSessionWithWorkspace({
@@ -1686,7 +1686,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     deps.logger.log(
       `handleRestartLoop: [perm-diag] worktree=${String(stoppedState.worktree)} sandbox=${String(restartSandbox)}`
     )
-    const permissionRuleset = buildLoopPermissionRuleset()
+    const permissionRuleset = buildLoopPermissionRuleset({ sandbox: restartSandbox })
     const previousState = { ...stoppedState }
     let bindFailed = false
     const previousSessionId = stoppedState.sessionId
@@ -1758,7 +1758,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           totalSections: stoppedState.totalSections ?? 0,
         }),
         directory: stoppedState.worktreeDir,
-        permission: stoppedState.phase === 'final_auditing' ? buildAuditSessionPermissionRuleset() : permissionRuleset,
+        permission: stoppedState.phase === 'final_auditing' ? buildAuditSessionPermissionRuleset({ sandbox: restartSandbox }) : permissionRuleset,
         workspaceId: stoppedState.workspaceId,
         loopName: stoppedState.loopName,
         logPrefix: 'loop-restart',

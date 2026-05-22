@@ -63,7 +63,7 @@ Usage notes:
 export interface RenderDescriptionOptions {
   /**
    * Path the agent should use for scratch/temporary work. Defaults to
-   * `os.tmpdir()` for host bash. Forge-bash passes a workspace-relative path
+   * `os.tmpdir()` for host bash. The sandbox sh tool passes a workspace-relative path
    * (e.g. `.forge/tmp`) because `/tmp` resolves to different filesystems on
    * the host vs. inside the loop sandbox container.
    */

@@ -28,7 +28,7 @@ interface RunAuditSessionResult {
 export async function createAuditSession(
   input: RunAuditSessionInput,
 ): Promise<RunAuditSessionResult | null> {
-  const permission = buildAuditSessionPermissionRuleset()
+  const permission = buildAuditSessionPermissionRuleset({ sandbox: input.isSandbox })
   const created = await createLoopSessionWithWorkspace({
     v2: input.v2,
     title: formatAuditSessionTitle(input.loopName, {
@@ -76,5 +76,4 @@ export async function promptAuditSession(
   if (result.error) return { ok: false, error: result.error }
   return { ok: true }
 }
-
 

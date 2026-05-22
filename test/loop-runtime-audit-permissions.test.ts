@@ -169,7 +169,7 @@ describe('Legacy audit fallback permissions', () => {
 
     const callBody = legacyCreateCalls[0] as any
     expect(callBody.body).toBeDefined()
-    expect(callBody.body.permission).toEqual(buildAuditSessionPermissionRuleset())
+    expect(callBody.body.permission).toEqual(buildAuditSessionPermissionRuleset({ sandbox: false }))
     expect(callBody.body.permission).toContainEqual({
       permission: 'external_directory',
       pattern: '*',

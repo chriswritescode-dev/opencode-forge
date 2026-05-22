@@ -30,11 +30,19 @@ describe('buildLoopPermissionRuleset', () => {
   })
 
   test('explicitly allows sh after bash is denied', () => {
-    const rules = buildLoopPermissionRuleset()
+    const rules = buildLoopPermissionRuleset({ sandbox: true })
     const bashDenyIndex = rules.findIndex((r) => r.permission === 'bash' && r.action === 'deny')
     const shAllowIndex = rules.findIndex((r) => r.permission === 'sh' && r.action === 'allow')
     expect(bashDenyIndex).toBeGreaterThanOrEqual(0)
     expect(shAllowIndex).toBeGreaterThan(bashDenyIndex)
+  })
+
+  test('worktree-only ruleset allows bash and hides sh', () => {
+    const rules = buildLoopPermissionRuleset({ sandbox: false })
+    const shDenyIndex = rules.findIndex((r) => r.permission === 'sh' && r.action === 'deny')
+    const bashAllowIndex = rules.findIndex((r) => r.permission === 'bash' && r.action === 'allow')
+    expect(shDenyIndex).toBeGreaterThanOrEqual(0)
+    expect(bashAllowIndex).toBeGreaterThan(shDenyIndex)
   })
 
   test('EMITS session-level denies for code-agent tool exclusions (auditor now runs in separate session)', () => {
@@ -86,7 +94,7 @@ describe('buildAuditSessionPermissionRuleset', () => {
   })
 
   test('non-sandbox audit session ruleset: allow-all, external_directory denied, mutation denies', () => {
-    const rules = buildAuditSessionPermissionRuleset()
+    const rules = buildAuditSessionPermissionRuleset({ sandbox: false })
     expect(rules[0]).toEqual({ permission: '*', pattern: '*', action: 'allow' })
     expect(rules[1]).toEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
     
@@ -95,8 +103,8 @@ describe('buildAuditSessionPermissionRuleset', () => {
     expect(rules.some(r => r.permission === 'write' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'multiedit' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'apply_patch' && r.pattern === '*' && r.action === 'deny')).toBe(true)
-    expect(rules.some(r => r.permission === 'bash' && r.pattern === '*' && r.action === 'deny')).toBe(true)
-    expect(rules.some(r => r.permission === 'sh' && r.pattern === '*' && r.action === 'allow')).toBe(true)
+    expect(rules.some(r => r.permission === 'sh' && r.pattern === '*' && r.action === 'deny')).toBe(true)
+    expect(rules.some(r => r.permission === 'bash' && r.pattern === '*' && r.action === 'allow')).toBe(true)
     expect(rules.some(r => r.permission === 'plan' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'plan_enter' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'plan_exit' && r.pattern === '*' && r.action === 'deny')).toBe(true)
@@ -127,7 +135,7 @@ describe('buildAuditSessionPermissionRuleset', () => {
 
 describe('createAuditSession passes audit permission rules into session creation', () => {
   test('session.create receives permission equal to buildAuditSessionPermissionRuleset()', async () => {
-    const expectedPermission = buildAuditSessionPermissionRuleset()
+    const expectedPermission = buildAuditSessionPermissionRuleset({ sandbox: false })
     const mockCreate = mock(async (params: any) => ({ data: { id: 'audit-session' }, error: null }))
     const mockGet = mock(async () => ({ data: { permission: expectedPermission }, error: null }))
     const mockV2 = {
@@ -238,7 +246,7 @@ describe('createLoopPermissionRejectHook', () => {
   })
 
   test('copies active loop parent permissions onto child subagent sessions', async () => {
-    const parentPermission = buildLoopPermissionRuleset()
+    const parentPermission = buildLoopPermissionRuleset({ sandbox: true })
     const mockGet = mock(async () => ({ data: { permission: parentPermission } }))
     const mockUpdate = mock(async () => ({ data: {}, error: null }))
     const logger = { log: mock(), error: mock(), debug: mock() } as unknown as Logger
@@ -255,6 +263,7 @@ describe('createLoopPermissionRejectHook', () => {
           loopName: 'active-loop',
           active: true,
           worktreeDir: '/repo/.worktrees/active-loop',
+          sandbox: true,
         })),
       } as any,
       directory: '/repo',
@@ -284,8 +293,41 @@ describe('createLoopPermissionRejectHook', () => {
     })
   })
 
+  test('falls back to worktree-only rules when parent permissions are unavailable for a non-sandbox loop', async () => {
+    const mockGet = mock(async () => ({ data: {} }))
+    const mockUpdate = mock(async () => ({ data: {}, error: null }))
+    const logger = { log: mock(), error: mock(), debug: mock() } as unknown as Logger
+
+    const hook = createLoopPermissionRejectHook({
+      v2: { session: { get: mockGet, update: mockUpdate } } as any,
+      sessionLoopResolver: {
+        resolveActiveLoopForSession: mock(async () => ({
+          loopName: 'active-loop',
+          active: true,
+          worktreeDir: '/repo/.worktrees/active-loop',
+          sandbox: false,
+        })),
+      } as any,
+      directory: '/repo',
+      logger,
+    })
+
+    await hook({
+      event: {
+        type: 'session.created',
+        properties: { info: { id: 'child-session', parentID: 'parent-session' } },
+      },
+    })
+
+    expect(mockUpdate).toHaveBeenCalledWith({
+      sessionID: 'child-session',
+      directory: '/repo/.worktrees/active-loop',
+      permission: buildLoopPermissionRuleset({ sandbox: false }),
+    })
+  })
+
   test('is idempotent: firing twice for the same child session results in a single session.update call', async () => {
-    const parentPermission = buildLoopPermissionRuleset()
+    const parentPermission = buildLoopPermissionRuleset({ sandbox: true })
     const mockGet = mock(async () => ({ data: { permission: parentPermission } }))
     const mockUpdate = mock(async () => ({ data: {}, error: null }))
     const logger = { log: mock(), error: mock(), debug: mock() } as unknown as Logger
@@ -297,6 +339,7 @@ describe('createLoopPermissionRejectHook', () => {
           loopName: 'active-loop',
           active: true,
           worktreeDir: '/repo/.worktrees/active-loop',
+          sandbox: true,
         })),
       } as any,
       directory: '/repo',
