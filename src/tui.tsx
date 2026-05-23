@@ -14,6 +14,7 @@ import type { PluginConfig } from './types'
 import { ExecutePlanPanel } from './tui/execute-plan-panel'
 import { connectForgeProject, type ForgeProjectClient } from './utils/tui-client'
 import { savePlanToArchive, listArchivedPlans, readArchivedPlan, resolvePlanArchiveDir, hashPlanContent, DEFAULT_PLAN_ARCHIVE_TTL_MS, type ArchivedPlan } from './utils/plan-archive'
+import { savePlanFromDialog } from './utils/plan-save-target'
 
 type TuiKeybinds = {
   viewPlan: string
@@ -103,15 +104,61 @@ function PlanViewerDialog(props: {
 
   const handleSave = async () => {
     const text = textareaRef?.plainText ?? content()
-    const saved = await props.client.plan.write(props.sessionId, text)
-    props.api.ui.toast({
-      message: saved ? 'Plan saved' : 'Failed to save plan',
-      variant: saved ? 'success' : 'error',
-      duration: 3000,
+    const ttlMs = props.pluginConfig.tui?.planArchiveTtlMs ?? DEFAULT_PLAN_ARCHIVE_TTL_MS
+    const outcome = await savePlanFromDialog({
+      sessionId: props.sessionId || undefined,
+      projectId: props.client.projectId,
+      text,
+      ttlMs,
+      writeSession: (sid, value) => props.client.plan.write(sid, value),
     })
-    if (saved) {
+
+    if (outcome.kind === 'session') {
+      props.api.ui.toast({
+        message: outcome.ok ? 'Plan saved' : 'Failed to save plan',
+        variant: outcome.ok ? 'success' : 'error',
+        duration: 3000,
+      })
+      if (outcome.ok) {
+        setContent(text)
+        setEditing(false)
+      }
+      return
+    }
+
+    if (outcome.kind === 'archive' && outcome.ok) {
+      props.api.ui.toast({
+        message: outcome.deduped ? 'Plan unchanged (already archived)' : 'Plan archived',
+        variant: 'success',
+        duration: 3000,
+      })
       setContent(text)
       setEditing(false)
+      void props.onRefresh?.()
+      return
+    }
+
+    if (outcome.kind === 'archive' && !outcome.ok) {
+      props.api.ui.toast({
+        message: `Failed to archive plan: ${outcome.error.message}`,
+        variant: 'error',
+        duration: 4000,
+      })
+      return
+    }
+
+    props.api.ui.toast({
+      message: 'No session or project context to save into',
+      variant: 'warning',
+      duration: 4000,
+    })
+  }
+
+  const flushTextareaToContent = () => {
+    if (!editing()) return
+    const text = textareaRef?.plainText
+    if (typeof text === 'string' && text !== content()) {
+      setContent(text)
     }
   }
 
@@ -162,10 +209,10 @@ function PlanViewerDialog(props: {
           onSelect={(_, option) => {
             if (!option) return
             switch (option.value) {
-              case 'view': setEditing(false); setExecuting(false); break
+              case 'view': flushTextareaToContent(); setEditing(false); setExecuting(false); break
               case 'edit': setEditing(true); setExecuting(false); break
-              case 'execute': setEditing(false); setExecuting(true); break
-              case 'export': handleExport(); break
+              case 'execute': flushTextareaToContent(); setEditing(false); setExecuting(true); break
+              case 'export': flushTextareaToContent(); handleExport(); break
             }
           }}
           showUnderline={false}
@@ -293,7 +340,6 @@ function LoadPlanDialog(props: {
             pluginConfig={props.pluginConfig}
             planContent={content}
             sessionId={props.sessionId ?? ''}
-            startInExecuteMode={true}
             onRefresh={props.onRefresh}
           />
         ))
