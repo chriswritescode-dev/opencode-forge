@@ -247,6 +247,33 @@ describe('bundled sample config', () => {
     expect(parsed.loop?.worktreeLogging?.enabled).toBe(false)
   })
 
+  test('bundled config includes sandbox.enabled defaulting to true', () => {
+    const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
+    const content = readFileSync(bundledConfigPath, 'utf-8')
+
+    const stripComments = (text: string): string => {
+      let result = text
+      result = result.replace(/\/\*[\s\S]*?\*\//g, '')
+      result = result.replace(/(^|[^:])(\/\/.*$)/gm, '$1')
+      return result
+    }
+
+    const stripTrailingCommas = (text: string): string => {
+      let result = text
+      result = result.replace(/,(\s*}[ \t\n\r]*)/g, '$1')
+      result = result.replace(/,(\s*][ \t\n\r]*)/g, '$1')
+      return result
+    }
+
+    const cleaned = stripComments(content)
+    const normalized = stripTrailingCommas(cleaned)
+    const parsed = JSON.parse(normalized)
+
+    expect(parsed.sandbox).toBeDefined()
+    expect(parsed.sandbox?.enabled).toBe(true)
+    expect(parsed.sandbox?.mode).toBe('docker')
+  })
+
   test('JSONC parsing preserves worktreeLogging config', () => {
     const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
     mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })

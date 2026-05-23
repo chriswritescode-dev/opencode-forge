@@ -72,6 +72,8 @@ export interface SandboxResources {
 export interface SandboxConfig {
   /** Sandbox mode. Currently only 'docker' is supported. Reserved for future modes. */
   mode: 'docker'
+  /** Enable sandboxed execution. When false, loops run in worktree-only mode even if Docker is available. Default: true. */
+  enabled?: boolean
   /** Docker image to use for sandboxed execution. */
   image?: string
   /** Container resource limits. Defaults to memory=8g, cpus=4, shmSize=1g. */

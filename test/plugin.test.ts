@@ -454,6 +454,30 @@ describe('createForgePlugin', () => {
     closeDatabase(dbAfter)
   })
 
+  test('Plugin initializes successfully with sandbox.enabled=false', async () => {
+    const config: PluginConfig = {
+      dataDir: `${testDir}/.opencode/memory`,
+      sandbox: { mode: 'docker', enabled: false },
+    }
+
+    const plugin = createForgePlugin(config)
+
+    const mockInput = {
+      directory: testDir,
+      worktree: testDir,
+      client: {} as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    const hooks = await plugin(mockInput as unknown as PluginInput)
+    currentHooks = hooks as { getCleanup?: () => Promise<void> }
+
+    expect(hooks).toBeDefined()
+    expect(typeof hooks).toBe('object')
+  })
+
 })
 
 describe('PluginConfig', () => {
@@ -492,6 +516,18 @@ describe('PluginConfig', () => {
     }
 
     expect(config.sandbox?.mode).toBe('docker')
+  })
+
+  test('Accepts sandbox.enabled flag for opting out of Docker', () => {
+    const enabledConfig: PluginConfig = {
+      sandbox: { mode: 'docker', enabled: true },
+    }
+    const disabledConfig: PluginConfig = {
+      sandbox: { mode: 'docker', enabled: false },
+    }
+
+    expect(enabledConfig.sandbox?.enabled).toBe(true)
+    expect(disabledConfig.sandbox?.enabled).toBe(false)
   })
 })
 

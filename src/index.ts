@@ -219,14 +219,18 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 
     let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
     const dockerService = createDockerService(logger)
-    try {
-      sandboxManager = createSandboxManager(dockerService, {
-        image: config.sandbox?.image ?? 'oc-forge-sandbox:latest',
-        ...(config.sandbox?.resources ? { resources: config.sandbox.resources } : {}),
-      }, logger)
-      logger.log('Docker sandbox manager initialized')
-    } catch (err) {
-      logger.error('Failed to initialize Docker sandbox manager', err)
+    if (config.sandbox?.enabled === false) {
+      logger.log('Docker sandbox disabled via config (sandbox.enabled=false); running in worktree-only mode')
+    } else {
+      try {
+        sandboxManager = createSandboxManager(dockerService, {
+          image: config.sandbox?.image ?? 'oc-forge-sandbox:latest',
+          ...(config.sandbox?.resources ? { resources: config.sandbox.resources } : {}),
+        }, logger)
+        logger.log('Docker sandbox manager initialized')
+      } catch (err) {
+        logger.error('Failed to initialize Docker sandbox manager', err)
+      }
     }
 
     // Pending-teardown registry: caller (loop termination side-effects) writes

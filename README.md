@@ -208,7 +208,9 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
   },
 
   // Sandbox configuration (optional; provisioned automatically when available)
+  // Set "enabled": false to force worktree-only mode even when Docker is available.
   "sandbox": {
+    "enabled": true,
     "mode": "docker",
     "image": "oc-forge-sandbox:latest"
   },
@@ -273,6 +275,7 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 - `loop.worktreeLogging.directory` - Directory for completion logs, defaults to platform data dir (default: `""`)
 
 #### Sandbox
+- `sandbox.enabled` - Enable sandboxed execution. When `false`, loops run in worktree-only mode even if Docker is available (default: `true`)
 - `sandbox.mode` - Sandbox mode: `"docker"` (optional; Docker sandbox is provisioned automatically when available)
 - `sandbox.image` - Docker image for sandbox containers (default: `"oc-forge-sandbox:latest"`)
 - `sandbox.resources` - Container resource limits mapped directly to `docker run` flags:
@@ -644,6 +647,7 @@ Sandbox is optional. When Docker is available and configured, a sandbox containe
 
 | Option | Default | Description |
 |--------|---------|-------------|
+| `sandbox.enabled` | `true` | Enable sandboxed execution. Set to `false` to force worktree-only mode even when Docker is available. |
 | `sandbox.mode` | `"docker"` | Sandbox mode (optional; Docker used when available) |
 | `sandbox.image` | `"oc-forge-sandbox:latest"` | Docker image to use for sandbox containers |
 
