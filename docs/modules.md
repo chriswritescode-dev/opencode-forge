@@ -119,7 +119,7 @@ Additional hooks available via direct imports (not re-exported by the barrel):
 - `createSandboxToolBeforeHook()` / `createSandboxToolAfterHook()` — sandbox tool redirection (`sandbox-tools.ts`)
 - `createForgeSessionAttachHook()` / `createForgeSessionMessageAttachHook()` — auto-attach loops on session events (`forge-session-attach.ts`)
 - `createLoopPermissionRejectHook()` — patch subagent permissions on `session.created` (`loop-permission.ts`)
-- `createPlanCaptureEventHook()` — plan marker extraction from streaming messages (`plan-capture.ts`)
+- `createPlanCaptureEventHook()` — plan marker extraction from streaming parts and on `message.updated` for completed assistant messages (`plan-capture.ts`)
 
 Source: [src/hooks/index.ts](../src/hooks/index.ts)
 

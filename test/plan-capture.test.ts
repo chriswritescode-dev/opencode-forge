@@ -456,3 +456,119 @@ describe('captureLatestPlanForSession legacy client fallback', () => {
     expect(plansRepo.getForSession('test-project', 'session-fb-3')).toBeNull()
   })
 })
+
+describe('plan capture trigger on assistant message completion', () => {
+  function createFakePlansRepo() {
+    const plans = new Map<string, { content: string; updatedAt: number }>()
+    let nextUpdatedAt = 1
+    return {
+      writeForSession: (_projectId: string, sessionId: string, content: string) => {
+        plans.set(sessionId, { content, updatedAt: nextUpdatedAt++ })
+      },
+      getForSession: (_projectId: string, sessionId: string) => {
+        const row = plans.get(sessionId)
+        if (!row) return null
+        return { projectId: 'test-project', loopName: null, sessionId, content: row.content, updatedAt: row.updatedAt }
+      },
+    }
+  }
+
+  const logger = {
+    log: () => {},
+    error: () => {},
+    debug: () => {},
+  }
+
+  test('captures plan on message.updated when assistant message completes, even while session stays busy', async () => {
+    const plansRepo = createFakePlansRepo()
+    const messages = [{
+      info: { role: 'assistant', id: 'msg-final', time: { created: 1, completed: 2 } },
+      parts: [{ type: 'text', text: `${PLAN_START_MARKER}\n# Completed Plan\n\n## Verification\n- bun test\n${PLAN_END_MARKER}` }],
+    }]
+    const hook = createPlanCaptureEventHook({
+      v2: { session: { messages: async () => ({ data: messages }) } },
+      input: { client: { session: { messages: async () => ({ data: messages }) } } },
+      plansRepo,
+      projectId: 'test-project',
+      directory: '/tmp/project',
+      logger,
+    } as any)
+
+    await hook({ event: { type: 'message.updated', properties: { sessionID: 'session-mu-1', info: messages[0].info } } })
+
+    expect(plansRepo.getForSession('test-project', 'session-mu-1')?.content).toBe('# Completed Plan\n\n## Verification\n- bun test')
+  })
+
+  test('ignores message.updated when role is user', async () => {
+    const plansRepo = createFakePlansRepo()
+    let messagesCalls = 0
+    const hook = createPlanCaptureEventHook({
+      v2: { session: { messages: async () => {
+        messagesCalls++
+        return { data: [] }
+      } } },
+      input: { client: { session: { messages: async () => ({ data: [] }) } } },
+      plansRepo,
+      projectId: 'test-project',
+      directory: '/tmp/project',
+      logger,
+    } as any)
+
+    await hook({ event: { type: 'message.updated', properties: { sessionID: 'session-mu-user', info: { role: 'user', id: 'msg', time: { created: 1, completed: 2 } } } } })
+
+    expect(plansRepo.getForSession('test-project', 'session-mu-user')).toBeNull()
+    expect(messagesCalls).toBe(0)
+  })
+
+  test('ignores message.updated when time.completed is undefined (streaming, not finished)', async () => {
+    const plansRepo = createFakePlansRepo()
+    let messagesCalls = 0
+    const hook = createPlanCaptureEventHook({
+      v2: { session: { messages: async () => {
+        messagesCalls++
+        return { data: [] }
+      } } },
+      input: { client: { session: { messages: async () => ({ data: [] }) } } },
+      plansRepo,
+      projectId: 'test-project',
+      directory: '/tmp/project',
+      logger,
+    } as any)
+
+    await hook({ event: { type: 'message.updated', properties: { sessionID: 'session-mu-streaming', info: { role: 'assistant', id: 'msg', time: { created: 1 } } } } })
+
+    expect(plansRepo.getForSession('test-project', 'session-mu-streaming')).toBeNull()
+    expect(messagesCalls).toBe(0)
+  })
+
+  test('does not double-write when message.part.updated already captured the same plan', async () => {
+    const plansRepo = createFakePlansRepo()
+    const text = `${PLAN_START_MARKER}\n# Completed Plan\n\n## Verification\n- bun test\n${PLAN_END_MARKER}`
+    const messages = [{
+      info: { role: 'assistant', id: 'msg-final', time: { created: 1, completed: 2 } },
+      parts: [{ type: 'text', text }],
+    }]
+    const hook = createPlanCaptureEventHook({
+      v2: { session: { messages: async () => ({ data: messages }) } },
+      input: { client: { session: { messages: async () => ({ data: messages }) } } },
+      plansRepo,
+      projectId: 'test-project',
+      directory: '/tmp/project',
+      logger,
+    } as any)
+
+    await hook({
+      event: {
+        type: 'message.part.updated',
+        properties: { sessionID: 'session-mu-dedupe', part: { type: 'text', messageID: 'msg-final', text } },
+      },
+    })
+    const captured = plansRepo.getForSession('test-project', 'session-mu-dedupe')
+
+    await hook({ event: { type: 'message.updated', properties: { sessionID: 'session-mu-dedupe', info: messages[0].info } } })
+
+    const afterCompletion = plansRepo.getForSession('test-project', 'session-mu-dedupe')
+    expect(afterCompletion?.content).toBe('# Completed Plan\n\n## Verification\n- bun test')
+    expect(afterCompletion?.updatedAt).toBe(captured?.updatedAt)
+  })
+})

@@ -150,7 +150,7 @@ A `PATCHED_SESSIONS` set deduplicates retries. Audit-only subagents use the stri
 
 - `event` - Handle server lifecycle events (e.g., `server.instance.disposed`)
 - Plan approval events via `createPlanApprovalEventHook`
-- Plan capture from streaming messages via `createPlanCaptureEventHook`
+- Plan capture from streaming message parts and on assistant message completion via `createPlanCaptureEventHook`
 
 ### Additional Hooks
 
