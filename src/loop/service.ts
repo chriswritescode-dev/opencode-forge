@@ -12,6 +12,7 @@ import {
   buildSectionAuditPrompt as _buildSectionAuditPrompt,
   buildSectionContinuationPrompt as _buildSectionContinuationPrompt,
   buildFinalAuditPrompt as _buildFinalAuditPrompt,
+  buildFinalAuditFixPrompt as _buildFinalAuditFixPrompt,
   type PromptContext,
 } from './prompts'
 import { parseSectionSummary as _parseSectionSummary } from './section-summary'
@@ -71,6 +72,7 @@ export interface LoopService {
   buildSectionAuditPrompt(state: LoopState): string
   buildSectionContinuationPrompt(state: LoopState, auditText: string): string
   buildFinalAuditPrompt(state: LoopState): string
+  buildFinalAuditFixPrompt(state: LoopState, auditText: string): string
   completeSection(loopName: string, index: number, summary: { done: string | null; deviations: string | null; followUps: string | null }): void
   incrementSectionAttempts(loopName: string, index: number): void
   resetSectionForRewind(loopName: string, index: number): void
@@ -456,6 +458,10 @@ export function createLoopService(
     return _buildFinalAuditPrompt(_promptCtx, state)
   }
 
+  function buildFinalAuditFixPrompt(state: LoopState, auditText: string): string {
+    return _buildFinalAuditFixPrompt(_promptCtx, state, auditText)
+  }
+
   function completeSection(loopName: string, index: number, summary: { done: string | null; deviations: string | null; followUps: string | null }): void {
     if (!sectionPlansRepo) return
     sectionPlansRepo.setStatus(projectId, loopName, index, 'completed')
@@ -541,6 +547,7 @@ export function createLoopService(
     buildSectionAuditPrompt,
     buildSectionContinuationPrompt,
     buildFinalAuditPrompt,
+    buildFinalAuditFixPrompt,
     completeSection,
     incrementSectionAttempts,
     resetSectionForRewind,

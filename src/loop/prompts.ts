@@ -196,6 +196,30 @@ export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopSt
   return header + buildSandboxContextNote(state)
 }
 
+export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, auditText: string): string {
+  const planText = ctx.getPlanTextForState(state) ?? 'Plan not found in plan store.'
+  const digest = ctx.getCompletedSectionDigest(state)
+
+  let header = `[Final-audit fix -- iteration ${state.iteration}/${state.maxIterations}]`
+  header += `\n\n## Master Plan\n${planText}`
+
+  if (digest.length > 0) {
+    header += `\n\n### Completed Sections' Summaries\n${formatSectionsSummary(digest)}`
+  }
+
+  header += `\n\n---\n## Final auditor feedback\n${auditText}`
+
+  const outstandingFindings = ctx.getOutstandingFindings(state.loopName, 'bug')
+  if (outstandingFindings.length > 0) {
+    const findingKeys = outstandingFindings.map(f => `- \`${f.file}:${f.line}\``).join('\n')
+    header += `\n\n---\n## Outstanding findings (${outstandingFindings.length})\n${findingKeys}`
+  }
+
+  header += `\n\n---\nInstructions:\n- The full plan has already been implemented. The final integration audit reported the bugs above.\n- Fix the reported bugs. Scope your changes to what the findings require.\n- Once you are done, the final audit will be re-run automatically against the entire codebase.`
+
+  return header + buildSandboxContextNote(state)
+}
+
 export function buildFinalAuditPrompt(ctx: PromptContext, state: LoopState): string {
   const planText = ctx.getPlanTextForState(state) ?? 'Plan not found in plan store.'
   const digest = ctx.getCompletedSectionDigest(state)

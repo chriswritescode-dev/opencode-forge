@@ -156,6 +156,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const MAX_CODE_LAUNCH_RECOVERIES = MAX_RETRIES
 
   const codingLaunchRecoveryAttempts = new Map<string, number>()
+  // Loops currently in "fix → re-final-audit" mode. When a final audit comes back dirty
+  // we rotate to a coding session with the findings, then on coding idle we transition
+  // straight back to final_auditing (skipping the per-section audit).
+  const pendingFinalAuditFix = new Set<string>()
   interface RetainedSessionMeta {
     sessionId: string
     role: 'code' | 'auditor'
@@ -775,6 +779,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   function buildCodingPromptForCurrentState(state: LoopState): string {
+    if (pendingFinalAuditFix.has(state.loopName)) {
+      return loopService.buildFinalAuditFixPrompt(state, state.lastAuditResult || '')
+    }
     if (state.totalSections > 0) {
       if (state.lastAuditResult) {
         return loopService.buildSectionContinuationPrompt(state, state.lastAuditResult)
@@ -901,6 +908,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
     idleRetryAttempts.delete(loopName)
     codingLaunchRecoveryAttempts.delete(loopName)
+    pendingFinalAuditFix.delete(loopName)
     clearPromptPending(loopName, logger)
     clearPromptInFlight(loopName)
 
@@ -1230,6 +1238,18 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     currentState = errorResult.currentState
 
     currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'coding')
+
+    // If this coding pass was a final-audit fix, skip the per-section audit and
+    // transition straight back to final_auditing.
+    if (pendingFinalAuditFix.has(loopName)) {
+      pendingFinalAuditFix.delete(loopName)
+      logger.log(`Loop: final-audit fix coding complete for ${loopName}, transitioning back to final_auditing`)
+      const started = await startFinalAuditTransition(loopName, currentState)
+      if (!started) {
+        logger.error(`Loop: failed to restart final audit after fix for ${loopName}`)
+      }
+      return
+    }
 
     const currentConfig = getConfig()
     const auditorModel = resolveLoopAuditorModel(currentConfig, loopService, loopName, logger)
@@ -1663,18 +1683,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         return
       }
 
-      // Dirty audit: rewind to the offending section
-      const allFindings = loopService.getOutstandingFindings(loopName, 'bug')
-      const rawOffendingIdx = allFindings.length > 0
-        ? (allFindings[0].sectionIndex ?? currentState.currentSectionIndex)
-        : currentState.currentSectionIndex
-
-      // Clamp to valid section range
-      const offendingIdx = (rawOffendingIdx >= 0 && rawOffendingIdx < currentState.totalSections)
-        ? rawOffendingIdx
-        : currentState.currentSectionIndex
-
-      logger.log(`Loop: final audit dirty, rewinding to section ${offendingIdx} for ${loopName}`)
+      // Dirty final audit: rotate to a coding session that fixes the findings,
+      // then on coding idle return straight to final_auditing (no section rewind).
+      const outstandingBugCount = loopService.getOutstandingFindings(loopName, 'bug').length
+      logger.log(`Loop: final audit dirty (${outstandingBugCount} outstanding bug findings), rotating to coding for fix for ${loopName}`)
 
       const nextIter = (currentState.iteration ?? 0) + 1
       if ((currentState.maxIterations ?? 0) > 0 && nextIter > currentState.maxIterations) {
@@ -1683,23 +1695,25 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         return
       }
 
-      loopService.resetSectionForRewind(loopName, offendingIdx)
+      // Persist the audit text so recovery paths can rebuild the fix prompt if needed.
+      if (auditText) loopService.setLastAuditResult(loopName, auditText)
 
-      const synthState = { ...currentState, phase: 'coding' as const, currentSectionIndex: offendingIdx }
-      const continuationPrompt = loopService.buildSectionContinuationPrompt(synthState, auditText || '')
+      const fixPrompt = loopService.buildFinalAuditFixPrompt(currentState, auditText || '')
 
       let newCodeSessionId: string
       try {
         newCodeSessionId = await rotateSession(loopName, currentState, {
           iteration: nextIter,
-          currentSectionIndex: offendingIdx,
         })
       } catch (err) {
-        logger.error(`Loop: session rotation failed during final audit rewind, aborting rewind`, err)
+        logger.error(`Loop: session rotation failed during final audit fix, aborting rotation`, err)
         return
       }
 
-      loopService.setCurrentSectionIndex(loopName, offendingIdx)
+      // Mark this loop before phase/session transitions so any idle event observed
+      // mid-rotation is handled as a final-audit fix.
+      pendingFinalAuditFix.add(loopName)
+
       loopService.setPhase(loopName, 'coding')
 
       loopService.replaceSession(loopName, {
@@ -1712,16 +1726,17 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       const { error: promptErr } = await sendPromptWithFallback({
         loopName,
         sessionId: newCodeSessionId,
-        promptText: continuationPrompt,
+        promptText: fixPrompt,
         agent: 'code',
         variant: currentState.executionVariant,
       })
       if (promptErr) {
-        logger.error(`Loop: failed to send rewind continuation prompt for ${loopName}`, promptErr)
-        await handlePromptError(loopName, currentState, 'failed to send rewind continuation', promptErr)
+        logger.error(`Loop: failed to send final-audit fix prompt for ${loopName}`, promptErr)
+        pendingFinalAuditFix.delete(loopName)
+        await handlePromptError(loopName, currentState, 'failed to send final-audit fix prompt', promptErr)
         return
       }
-      watchdog.recordActivity(loopName, 'rewind-prompt-sent')
+      watchdog.recordActivity(loopName, 'final-audit-fix-prompt-sent')
     }
   }
 

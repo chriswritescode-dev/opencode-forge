@@ -6,6 +6,7 @@ import {
   buildSectionAuditPrompt,
   buildSectionContinuationPrompt,
   buildFinalAuditPrompt,
+  buildFinalAuditFixPrompt,
 } from '../../src/loop/prompts'
 import { SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../../src/loop/section-summary'
 import type { PromptContext, SectionDigestEntry } from '../../src/loop/prompts'
@@ -235,6 +236,42 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).toContain("Completed Sections' Summaries")
       expect(result).toContain('## Section 1: Section A')
       expect(result).toContain('### Done\nImplemented X')
+    })
+  })
+
+  describe('buildFinalAuditFixPrompt', () => {
+    test('includes plan, audit feedback, and fix instructions', () => {
+      const ctx = makeCtx()
+      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState }, 'Bug: missing null check at foo.ts:10')
+      expect(result).toContain('[Final-audit fix -- iteration 1/5]')
+      expect(result).toContain('## Master Plan')
+      expect(result).toContain('Mock plan content')
+      expect(result).toContain('## Final auditor feedback')
+      expect(result).toContain('Bug: missing null check at foo.ts:10')
+      expect(result).toContain('Fix the reported bugs')
+      expect(result).toContain('Scope your changes to what the findings require')
+    })
+
+    test('lists outstanding bug findings', () => {
+      const findings: ReviewFindingRow[] = [
+        { file: 'src/a.ts', line: 12, severity: 'bug', description: 'A', scenario: null, loopName: 'test-loop', sectionIndex: 0, projectId: 'p', createdAt: 0 },
+        { file: 'src/b.ts', line: 34, severity: 'bug', description: 'B', scenario: null, loopName: 'test-loop', sectionIndex: 1, projectId: 'p', createdAt: 0 },
+      ]
+      const ctx = makeCtx({
+        getOutstandingFindings: (_loopName, severity) => severity === 'bug' ? findings : [],
+      })
+      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState }, 'audit text')
+      expect(result).toContain('## Outstanding findings (2)')
+      expect(result).toContain('`src/a.ts:12`')
+      expect(result).toContain('`src/b.ts:34`')
+    })
+
+    test('omits outstanding-findings section when there are none', () => {
+      const ctx = makeCtx({
+        getOutstandingFindings: () => [],
+      })
+      const result = buildFinalAuditFixPrompt(ctx, { ...sectionState }, 'audit text')
+      expect(result).not.toContain('## Outstanding findings')
     })
   })
 })

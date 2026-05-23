@@ -40,7 +40,8 @@ stateDiagram-v2
     Auditing --> Auditing: next section
     Auditing --> FinalAuditing: last section clean
     Auditing --> [*]: audit clear
-    FinalAuditing --> Coding: final audit dirty
+    FinalAuditing --> Coding: final audit dirty (fix mode)
+    Coding --> FinalAuditing: final-audit fix complete
     FinalAuditing --> [*]: final audit clean
     Coding --> [*]: max iterations / retry limit / stall timeout / cancellation
     Auditing --> [*]: max iterations / retry limit / stall timeout / cancellation
@@ -202,7 +203,7 @@ In user-facing language, a plan is decomposed into **milestones** — ordered un
 - `<!-- forge-section -->` markers in the architect plan output
 - `section-read` tool reads the current or specified milestone
 
-Decomposition is a one-shot preprocessing step at loop start (`services/deterministic-decomposer.ts`), not a runtime loop phase. Once milestones exist, the loop advances through them via `advance-section` / `rewind-section` transitions inside the `auditing` and `final_auditing` phases.
+Decomposition is a one-shot preprocessing step at loop start (`services/deterministic-decomposer.ts`), not a runtime loop phase. Once milestones exist, the loop advances through them via `advance-section` transitions inside the `auditing` phase. When the `final_auditing` phase reports outstanding bug findings, the loop rotates to a coding session in "final-audit fix" mode — the code agent fixes the reported findings without rewinding to a specific section, and on idle the loop transitions straight back to `final_auditing` for re-verification.
 
 ## Completion Conditions
 
@@ -210,7 +211,8 @@ A loop completes when the active phase emits a clean audit result:
 
 - Non-sectioned loops complete on `audit-clear`.
 - Sectioned loops advance through clean section audits, then complete on `final-audit-clean`.
-- Dirty section or final audit results rotate back to coding so findings can be addressed.
+- Dirty section audits rotate back to coding for the same section so findings can be addressed.
+- Dirty final audits rotate to coding in "final-audit fix" mode (no section rewind); when the fix coding pass goes idle, the loop returns straight to `final_auditing`.
 
 ## Cancellation
 

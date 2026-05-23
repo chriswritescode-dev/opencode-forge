@@ -6,6 +6,7 @@ export type Transition =
   | { kind: 'rotate' }
   | { kind: 'advance-section' }
   | { kind: 'rewind-section' }
+  | { kind: 'fix-for-final-audit' }
   | { kind: 'terminate'; reason: TerminationReason }
   | { kind: 'noop' }
 
@@ -114,7 +115,7 @@ function handleFinalAuditEvent(event: TransitionEvent): Transition {
     case 'final-audit-clean':
       return { kind: 'terminate', reason: { kind: 'completed' } }
     case 'final-audit-dirty':
-      return { kind: 'rewind-section' }
+      return { kind: 'fix-for-final-audit' }
     case 'final-audit-retry-exhausted':
       return { kind: 'terminate', reason: { kind: 'final_audit_retry_exhausted' } }
     case 'iteration-cap':

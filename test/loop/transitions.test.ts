@@ -183,10 +183,10 @@ describe('nextTransition', () => {
       expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'completed' } })
     })
 
-    it('rewinds section on final-audit-dirty', () => {
+    it('rotates to fix-for-final-audit on final-audit-dirty', () => {
       const state = makeState({ phase: 'final_auditing' })
       const transition = nextTransition(state, { type: 'final-audit-dirty' })
-      expect(transition).toEqual({ kind: 'rewind-section' })
+      expect(transition).toEqual({ kind: 'fix-for-final-audit' })
     })
 
     it('terminates with final_audit_retry_exhausted', () => {
