@@ -7,10 +7,16 @@ import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
 import { createExecutionContextCache } from './utils/tui-execution-context-cache'
 import type { PluginConfig } from './types'
 import { connectForgeProject, type ForgeProjectClient } from './utils/tui-client'
+import { ExecutePlanPanel } from './tui/execute-plan-panel'
+import { fetchLatestPlanForSession } from './utils/plan-from-messages'
 
-type TuiKeybinds = Record<string, string>
+type TuiKeybinds = {
+  executePlan: string
+}
 
-const DEFAULT_KEYBINDS: TuiKeybinds = {}
+const DEFAULT_KEYBINDS: TuiKeybinds = {
+  executePlan: '<leader>e',
+}
 
 type TuiOptions = {
   sidebar: boolean
@@ -84,6 +90,78 @@ function Sidebar(props: {
         </box>
       </box>
     </Show>
+  )
+}
+
+/**
+ * Standalone wrapper around `ExecutePlanPanel`. The picker sub-dialogs
+ * (model, variant, loop name) need to fully replace the dialog stack,
+ * which means we lose the panel's component state every time the user
+ * touches one. The wrapper re-renders itself via `dialog.replace` when
+ * the panel reports a new selection, preserving the user's choices
+ * across picker round-trips. This mirrors the pattern the deleted
+ * `PlanViewerDialog` used internally.
+ */
+function ExecutionDialog(props: {
+  api: TuiPluginApi
+  client: ForgeProjectClient
+  cache: ExecutionContextCache | null
+  pluginConfig: PluginConfig
+  planContent: string
+  sessionId: string
+  initialExecutionModel?: string
+  initialAuditorModel?: string
+  initialExecutionVariant?: string
+  initialAuditorVariant?: string
+  initialLoopName?: string
+}) {
+  const theme = () => props.api.theme.current
+
+  return (
+    <box flexDirection="column" paddingX={2}>
+      <box flexShrink={0} paddingBottom={1} flexDirection="row" gap={1}>
+        <text fg={theme().text}>
+          <b>Execute plan</b>
+        </text>
+      </box>
+
+      <ExecutePlanPanel
+        api={props.api}
+        client={props.client}
+        cache={props.cache}
+        pluginConfig={props.pluginConfig}
+        planContent={props.planContent}
+        sessionId={props.sessionId}
+        initialExecutionModel={props.initialExecutionModel}
+        initialAuditorModel={props.initialAuditorModel}
+        initialExecutionVariant={props.initialExecutionVariant}
+        initialAuditorVariant={props.initialAuditorVariant}
+        initialLoopName={props.initialLoopName}
+        onBack={() => props.api.ui.dialog.clear()}
+        onSelectionChanged={({ executionModel, auditorModel, executionVariant, auditorVariant, loopName }) => {
+          props.api.ui.dialog.setSize('xlarge')
+          props.api.ui.dialog.replace(() => (
+            <ExecutionDialog
+              api={props.api}
+              client={props.client}
+              cache={props.cache}
+              pluginConfig={props.pluginConfig}
+              planContent={props.planContent}
+              sessionId={props.sessionId}
+              initialExecutionModel={executionModel}
+              initialAuditorModel={auditorModel}
+              initialExecutionVariant={executionVariant}
+              initialAuditorVariant={auditorVariant}
+              initialLoopName={loopName}
+            />
+          ))
+        }}
+      />
+
+      <box paddingTop={1} flexShrink={0} flexDirection="row" gap={2}>
+        <text fg={theme().textMuted} onMouseUp={() => props.api.ui.dialog.clear()}>Close (esc)</text>
+      </box>
+    </box>
   )
 }
 
@@ -173,6 +251,61 @@ const tui: TuiPlugin = async (api) => {
     if (!api.state.ready || client() || connectPromise) return
     void startClientConnection()
   })
+
+  const ensureClient = async (): Promise<ForgeProjectClient | null> => {
+    const existing = client()
+    if (existing) return existing
+    return startClientConnection()
+  }
+
+  function resolveSessionID(): string | null {
+    const route = api.route.current
+    if (route.name !== 'session') return null
+    return (route as { params: { sessionID: string } }).params.sessionID
+  }
+
+  if (api.command) {
+    api.command.register(() => [
+      {
+        title: 'Forge: Execute plan',
+        value: 'forge.plan.execute',
+        description: 'Open the execution dialog for the current session\'s plan',
+        category: 'Forge',
+        keybind: opts.keybinds.executePlan,
+        onSelect: async () => {
+          const sessionID = resolveSessionID()
+          if (!sessionID) {
+            api.ui.toast({ message: 'Open a session first', variant: 'info', duration: 3000 })
+            return
+          }
+          const currentClient = await ensureClient()
+          if (!currentClient) return
+
+          const planText = await fetchLatestPlanForSession(api.client, sessionID, directory)
+          if (!planText) {
+            api.ui.toast({
+              message: 'No plan in current session — have the architect emit one first',
+              variant: 'info',
+              duration: 4000,
+            })
+            return
+          }
+
+          api.ui.dialog.setSize('xlarge')
+          api.ui.dialog.replace(() => (
+            <ExecutionDialog
+              api={api}
+              client={currentClient}
+              cache={executionContextCache()}
+              pluginConfig={pluginConfig}
+              planContent={planText}
+              sessionId={sessionID}
+            />
+          ))
+        },
+      },
+    ])
+  }
 
   api.slots.register({
     order: 150,
