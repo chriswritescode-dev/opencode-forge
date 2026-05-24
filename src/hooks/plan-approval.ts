@@ -3,6 +3,7 @@ import type { Hooks } from '@opencode-ai/plugin'
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
 import { extractPlanExecutionMetadata, PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext } from '../services/execution'
+import { PLAN_END_MARKER, PLAN_START_MARKER } from '../utils/marked-plan-parser'
 
 function publishPlanApprovalToast(
   ctx: ToolContext,
@@ -454,5 +455,155 @@ export function createPlanApprovalEventHook(ctx: ToolContext) {
     } catch (err) {
       logger.error('createPlanApprovalEventHook: v2 promptAsync threw', err)
     }
+  }
+}
+
+interface ApprovalNudgeMessagePart {
+  type: string
+  text?: string
+  tool?: string
+  state?: { input?: unknown; status?: string }
+}
+
+interface ApprovalNudgeMessageInfo {
+  id?: string
+  role?: string
+  agent?: string
+  time?: { completed?: number }
+}
+
+interface ApprovalNudgeMessage {
+  info?: ApprovalNudgeMessageInfo
+  parts?: ApprovalNudgeMessagePart[]
+}
+
+function partsContainMarkedPlan(parts: ApprovalNudgeMessagePart[]): boolean {
+  for (const part of parts) {
+    if (part.type !== 'text' || typeof part.text !== 'string') continue
+    if (part.text.includes(PLAN_START_MARKER) && part.text.includes(PLAN_END_MARKER)) {
+      return true
+    }
+  }
+  return false
+}
+
+function partsContainApprovalQuestionCall(parts: ApprovalNudgeMessagePart[]): boolean {
+  for (const part of parts) {
+    if (part.type !== 'tool' || part.tool !== 'question') continue
+    const input = (part.state as { input?: unknown })?.input
+    if (isPlanApprovalQuestionArgs(input)) return true
+  }
+  return false
+}
+
+const APPROVAL_NUDGE_PROMPT = `<system-reminder>
+You output a marked implementation plan but did not call the \`question\` tool to collect execution approval. Forge requires every marked plan to be immediately followed by an approval question so the user can dispatch the plan.
+
+Call the \`question\` tool now with exactly these three options and nothing else:
+- "New session" — Create a new session and send the plan to the code agent
+- "Execute here" — Execute the plan in the current session using the code agent
+- "Loop" — Execute using an iterative development loop in an isolated git worktree
+
+Do not re-emit or revise the plan. Only call the question tool.
+</system-reminder>`
+
+const nudgedApprovalMessages = new Set<string>()
+
+export interface PlanApprovalNudgeDeps {
+  architectAgentName?: string
+  readMessages?: (sessionID: string) => Promise<ApprovalNudgeMessage[] | null>
+}
+
+export function createPlanApprovalNudgeEventHook(ctx: ToolContext, deps: PlanApprovalNudgeDeps = {}) {
+  const { v2, logger } = ctx
+  const architectAgentName = deps.architectAgentName ?? 'architect'
+
+  async function readSessionMessages(sessionID: string): Promise<ApprovalNudgeMessage[] | null> {
+    if (deps.readMessages) return deps.readMessages(sessionID)
+    try {
+      const result = await v2.session.messages({ sessionID, directory: ctx.directory, limit: 20 })
+      if (result.error || !result.data) return null
+      return result.data as unknown as ApprovalNudgeMessage[]
+    } catch (err) {
+      logger.error(`Plan approval nudge: failed to read messages for ${sessionID}`, err as Error)
+      return null
+    }
+  }
+
+  async function sendNudge(sessionID: string): Promise<boolean> {
+    const legacyClient = ctx.input?.client
+    if (legacyClient) {
+      try {
+        const legacyResult = await legacyClient.session.promptAsync({
+          path: { id: sessionID },
+          query: { directory: ctx.directory },
+          body: {
+            agent: architectAgentName,
+            parts: [{ type: 'text' as const, text: APPROVAL_NUDGE_PROMPT }],
+          },
+        } as Parameters<typeof legacyClient.session.promptAsync>[0]) as unknown as { data?: unknown; error?: unknown }
+        if (!legacyResult?.error) {
+          logger.log(`Plan approval nudge: sent legacy prompt for session=${sessionID}`)
+          return true
+        }
+        logger.error('Plan approval nudge: legacy promptAsync returned error', legacyResult.error)
+      } catch (err) {
+        logger.error('Plan approval nudge: legacy promptAsync threw', err)
+      }
+    }
+
+    try {
+      const v2Result = await v2.session.promptAsync({
+        sessionID,
+        directory: ctx.directory,
+        agent: architectAgentName,
+        parts: [{ type: 'text' as const, text: APPROVAL_NUDGE_PROMPT }],
+      })
+      if ((v2Result as { error?: unknown })?.error) {
+        logger.error('Plan approval nudge: v2 promptAsync returned error', (v2Result as { error?: unknown }).error)
+        return false
+      }
+      logger.log(`Plan approval nudge: sent v2 prompt for session=${sessionID}`)
+      return true
+    } catch (err) {
+      logger.error('Plan approval nudge: v2 promptAsync threw', err)
+      return false
+    }
+  }
+
+  return async (eventInput: { event: { type: string; properties?: Record<string, unknown> } }) => {
+    if (eventInput.event?.type !== 'message.updated') return
+
+    const properties = eventInput.event.properties ?? {}
+    const sessionID = properties.sessionID as string | undefined
+    const info = properties.info as ApprovalNudgeMessageInfo | undefined
+
+    if (!sessionID || !info?.id) return
+    if (info.role !== 'assistant') return
+    if (typeof info.time?.completed !== 'number') return
+    if (info.agent !== architectAgentName) return
+
+    const nudgeKey = `${sessionID}:${info.id}`
+    if (nudgedApprovalMessages.has(nudgeKey)) return
+
+    const messages = await readSessionMessages(sessionID)
+    if (!messages || messages.length === 0) return
+
+    const lastMessage = messages[messages.length - 1]
+    if (lastMessage?.info?.id !== info.id) {
+      logger.log(`Plan approval nudge: skipping session=${sessionID} message=${info.id} — no longer the last message (last=${lastMessage?.info?.id})`)
+      return
+    }
+
+    if (!lastMessage.parts) return
+
+    if (!partsContainMarkedPlan(lastMessage.parts)) return
+    if (partsContainApprovalQuestionCall(lastMessage.parts)) return
+
+    nudgedApprovalMessages.add(nudgeKey)
+    if (nudgedApprovalMessages.size > 5000) nudgedApprovalMessages.clear()
+
+    logger.log(`Plan approval nudge: plan present but no approval question, nudging session=${sessionID} message=${info.id}`)
+    await sendNudge(sessionID)
   }
 }
