@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
-import { PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
+import { PLAN_EXECUTION_LABELS } from '../utils/plan-execution'
 import { extractPlanExecutionMetadata } from '../utils/plan-execution'
 import { buildDialogSelectOptions, flattenProviders, getModelDisplayLabel, sortModelsByPriority, getAvailableModelVariants, getVariantDisplayLabel, normalizeVariantForModel, type ModelInfo } from '../utils/tui-models'
 import { resolveExecutionDialogDefaults } from '../utils/tui-execution-preferences'
@@ -308,12 +308,6 @@ export function ExecutePlanPanel(props: {
       executionVariant: execVariant,
       auditorVariant: auditVariant,
       targetSessionId: props.sessionId,
-    }, {
-      mode: matchedLabel as PlanExecutionLabel,
-      executionModel: execModel,
-      auditorModel: auditModel,
-      executionVariant: execVariant,
-      auditorVariant: auditVariant,
     })
 
     if (!result) {

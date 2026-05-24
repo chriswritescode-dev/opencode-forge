@@ -4,8 +4,13 @@ import { appendFileSync, mkdirSync } from 'fs'
 import { dirname } from 'path'
 import { resolveLogPath } from '../storage'
 import { readPlan, readPlanForAnyProject, writePlan, deletePlan } from './tui-plan-store'
-import { fetchAvailableModels } from './tui-models'
-import { readExecutionPreferences, writeExecutionPreferences } from './tui-execution-preferences'
+import {
+  fetchAvailableModels,
+  readOpenCodeFavoriteModels,
+  type SessionForRecents,
+  type WorkspaceForRecents,
+} from './tui-models'
+import { deriveExecutionPreferencesFromWorkspaces } from './tui-execution-preferences'
 import { parseModelString } from './model-fallback'
 import { listConnectedWorkspaces, type WorkspaceListApi } from './workspace-listing'
 import { type ForgeLoopExtra } from '../services/execution'
@@ -40,6 +45,31 @@ export interface ExecutionContext {
     configuredProviderIds?: string[]
     error?: string
   }
+  /**
+   * Sessions for the current project, supplied to
+   * `deriveRecentModels`. Sourced from
+   * `client.experimental.session.list(...)`. Always present (defaults to
+   * `[]` on fetch failure).
+   */
+  sessions: SessionForRecents[]
+  /**
+   * Forge workspaces for the current project, supplied to both
+   * `deriveExecutionPreferencesFromWorkspaces` and (as the auditor-model
+   * layer) `deriveRecentModels`. Sourced from
+   * `client.experimental.workspace.list(...)`. Always present.
+   */
+  workspaces: WorkspaceForRecents[]
+  /**
+   * OpenCode favorite model fullnames, probed from
+   * `api.state` via {@link readOpenCodeFavoriteModels}. Empty array when
+   * the running TUI version does not expose them.
+   */
+  openCodeFavorites: string[]
+  /**
+   * The user's global default model (`api.state.config?.model`). Surfaced
+   * last in the layered recents list so it is always selectable.
+   */
+  openCodeDefault: string | undefined
 }
 
 export interface ExecutePlanRequest {
@@ -95,16 +125,16 @@ export interface ForgeProjectClient {
     write(sessionId: string, content: string): Promise<boolean>
     delete(sessionId: string): Promise<boolean>
     /**
-     * Execute workflow:
-     *   1) POST /plans/session/:id/execute
-     *   2) on success, PUT /models/preferences (best-effort)
-     *   3) plans persist in session-scoped repo for retry capability
-     * Returns the execute result; preference failures are swallowed.
+     * Execute workflow: forwards the user's chosen mode + models + plan to
+     * the server. For loop mode the model selection is persisted on the
+     * server inside the new workspace's `extra.forgeLoop` envelope — that
+     * record IS the source of truth for "last used preferences" and
+     * "recent models" on the next dialog open, so there is no separate
+     * TUI-side write.
      */
     execute(
       sessionId: string,
       req: ExecutePlanRequest,
-      prefs: ExecutionPreferences,
     ): Promise<{ sessionId?: string; loopName?: string; worktreeDir?: string; workspaceId?: string } | null>
   }
 
@@ -282,7 +312,7 @@ export async function connectForgeProject(
         return false
       }
     },
-    async execute(sessionId, req, prefs) {
+    async execute(sessionId, req) {
       const parsedModel = parseModelString(req.executionModel)
 
       if (req.mode === 'execute-here') {
@@ -298,7 +328,6 @@ export async function connectForgeProject(
         })
 
         if (result.error) return null
-        if (projectId) writeExecutionPreferences(projectId, prefs)
         return { sessionId: req.targetSessionId ?? sessionId }
       }
 
@@ -321,7 +350,6 @@ export async function connectForgeProject(
         })
 
         if (result.error) return null
-        if (projectId) writeExecutionPreferences(projectId, prefs)
         return { sessionId: newSessionId }
       }
 
@@ -394,8 +422,6 @@ export async function connectForgeProject(
 
           await api.client.experimental.workspace.syncList().catch(() => undefined)
 
-          if (projectId) writeExecutionPreferences(projectId, prefs)
-
           return {
             sessionId: session.id,
             loopName,
@@ -435,11 +461,35 @@ export async function connectForgeProject(
     plan,
     workspaces,
     async loadExecutionContext() {
-      const [prefsResult, modelsResult] = await Promise.all([
-        Promise.resolve(projectId ? readExecutionPreferences(projectId) : null),
+      const workspaceApi = api.client.experimental?.workspace
+      const sessionApi = api.client.experimental?.session
+      const [sessionsResult, workspacesResult, modelsResult] = await Promise.all([
+        sessionApi && typeof sessionApi.list === 'function'
+          ? sessionApi.list({ directory }).catch(() => null)
+          : Promise.resolve(null),
+        workspaceApi && typeof workspaceApi.list === 'function'
+          ? workspaceApi.list({ directory }).catch(() => null)
+          : Promise.resolve(null),
         fetchAvailableModels(api),
       ])
-      return { preferences: prefsResult, models: modelsResult }
+      const sessions = ((sessionsResult as { data?: unknown[] } | null)?.data ?? []) as SessionForRecents[]
+      const workspaceList = ((workspacesResult as { data?: unknown[] } | null)?.data ?? []) as WorkspaceForRecents[]
+      const preferences = projectId
+        ? deriveExecutionPreferencesFromWorkspaces(projectId, workspaceList)
+        : null
+      const openCodeFavorites = readOpenCodeFavoriteModels(api)
+      const openCodeDefault =
+        typeof (api.state.config as { model?: unknown } | undefined)?.model === 'string'
+          ? ((api.state.config as { model?: string }).model as string)
+          : undefined
+      return {
+        preferences,
+        models: modelsResult,
+        sessions,
+        workspaces: workspaceList,
+        openCodeFavorites,
+        openCodeDefault,
+      }
     },
   }
 }

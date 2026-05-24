@@ -1,17 +1,22 @@
 /**
  * Project-scoped execution context cache for TUI.
- * 
+ *
  * Provides a synchronous snapshot of execution context (preferences, models, recents)
  * with async refresh and deduped initial load. Used to pre-populate the execute dialog
  * at TUI startup so dialog opens are instant.
+ *
+ * As of the SDK-derived refactor, every input feeding the snapshot is
+ * fetched from the OpenCode server via the `loadFn`. Recents and last-used
+ * preferences are derived from `session.list()` + `workspace.list()` +
+ * favorites/default in `api.state`, so the cache works correctly even when
+ * the TUI is running on a different host than the OpenCode server.
  */
 
 import type { ExecutionPreferences } from './tui-execution-preferences'
 import type { PluginConfig } from '../types'
-import type { ModelInfo } from './tui-models'
-import { flattenProviders, sortModelsByPriority } from './tui-models'
+import type { ModelInfo, SessionForRecents, WorkspaceForRecents } from './tui-models'
+import { deriveRecentModels, flattenProviders, sortModelsByPriority } from './tui-models'
 import { resolveExecutionDialogDefaults } from './tui-execution-preferences'
-import { getRecentModels, recordRecentModel } from './tui-models'
 
 export interface ExecutionContextSnapshot {
   preferences: ExecutionPreferences | null
@@ -36,7 +41,11 @@ export interface ExecutionContextCache {
   refresh(): Promise<ExecutionContextSnapshot>
   /** Returns cached snapshot or triggers initial load if not yet loaded. */
   ensureLoaded(): Promise<ExecutionContextSnapshot>
-  /** Records a model as recently used. Updates in-memory recents and persists to SQLite. */
+  /**
+   * Records a model as recently used. Updates the in-memory snapshot only;
+   * the next `refresh()` re-derives recents from the SDK responses, so the
+   * server-side state is authoritative on the next round-trip.
+   */
   recordRecent(modelFullName: string): void
   /** Registers a listener called on every snapshot update. Returns unsubscribe function. */
   onChange(listener: (snap: ExecutionContextSnapshot) => void): () => void
@@ -50,27 +59,28 @@ interface LoadExecutionContextResult {
     configuredProviderIds?: string[]
     error?: string
   }
+  sessions: SessionForRecents[]
+  workspaces: WorkspaceForRecents[]
+  openCodeFavorites: string[]
+  openCodeDefault: string | undefined
 }
 
-export interface ExecutionContextCacheDeps {
-  getRecentModels?: (projectId: string) => string[]
-  recordRecentModel?: (projectId: string, modelFullName: string) => void
-}
+const RECENTS_CAP = 10
 
 /**
  * Creates a project-scoped execution context cache.
- * 
+ *
  * @param projectId - The project ID for recents/prefs lookups
  * @param pluginConfig - Plugin config for resolving defaults
- * @param loadFn - Function to load execution context from the bus client
- * @param deps - Optional dependency injection for testability
+ * @param loadFn - Function to load execution context from the SDK. Must
+ *   return sessions/workspaces/favorites/default alongside models +
+ *   preferences; see `LoadExecutionContextResult`.
  * @returns Cache instance with snapshot/refresh/ensureLoaded/recordRecent/onChange methods
  */
 export function createExecutionContextCache(
   projectId: string,
   pluginConfig: PluginConfig,
   loadFn: () => Promise<LoadExecutionContextResult>,
-  deps: ExecutionContextCacheDeps = {},
 ): ExecutionContextCache {
   let currentSnapshot: ExecutionContextSnapshot | null = null
   let inFlightRefresh: Promise<ExecutionContextSnapshot> | null = null
@@ -82,22 +92,24 @@ export function createExecutionContextCache(
     }
   }
 
-  const readRecents = deps.getRecentModels ?? getRecentModels
-  const writeRecent = deps.recordRecentModel ?? recordRecentModel
-
   async function refresh(): Promise<ExecutionContextSnapshot> {
     const result = await loadFn()
-    
+
     const allModelList = flattenProviders(result.models.providers as Parameters<typeof flattenProviders>[0])
-    const recents = readRecents(projectId)
+    const recents = deriveRecentModels(projectId, {
+      sessions: result.sessions,
+      workspaces: result.workspaces,
+      openCodeFavorites: result.openCodeFavorites,
+      openCodeDefault: result.openCodeDefault,
+    })
     const sorted = sortModelsByPriority(allModelList, {
       recents,
       connectedProviderIds: result.models.connectedProviderIds || [],
       configuredProviderIds: result.models.configuredProviderIds || [],
     })
-    
+
     const defaults = resolveExecutionDialogDefaults(pluginConfig, result.preferences)
-    
+
     currentSnapshot = {
       preferences: result.preferences,
       models: sorted,
@@ -107,7 +119,7 @@ export function createExecutionContextCache(
       recents,
       defaults,
     }
-    
+
     notifyListeners()
     return currentSnapshot!
   }
@@ -116,15 +128,15 @@ export function createExecutionContextCache(
     if (currentSnapshot) {
       return Promise.resolve(currentSnapshot)
     }
-    
+
     if (inFlightRefresh) {
       return inFlightRefresh
     }
-    
+
     inFlightRefresh = refresh().finally(() => {
       inFlightRefresh = null
     })
-    
+
     return inFlightRefresh
   }
 
@@ -134,11 +146,9 @@ export function createExecutionContextCache(
 
   function recordRecent(modelFullName: string): void {
     if (!modelFullName) return
-    
-    writeRecent(projectId, modelFullName)
-    
+
     if (currentSnapshot) {
-      const updated = [modelFullName, ...currentSnapshot.recents.filter(m => m !== modelFullName)].slice(0, 10)
+      const updated = [modelFullName, ...currentSnapshot.recents.filter(m => m !== modelFullName)].slice(0, RECENTS_CAP)
       currentSnapshot.recents = updated
       notifyListeners()
     }

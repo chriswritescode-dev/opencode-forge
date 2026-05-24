@@ -1,12 +1,14 @@
 /**
  * TUI model selection helpers for fetching and managing available models.
+ *
+ * Recents/preferences derivation is driven entirely by data fetched from
+ * the OpenCode server (sessions + workspaces + favorites/default in
+ * `api.state`). There is intentionally no TUI-local SQLite store: that
+ * approach diverged silently when the TUI ran on a different host than
+ * the server. See `deriveRecentModels` / `deriveRecentModelsFromWorkspaces`.
  */
 
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
-import { Database } from 'bun:sqlite'
-import { existsSync } from 'fs'
-import { join } from 'path'
-import { resolveDataDir, createTuiPrefsRepo } from '../storage'
 
 export interface ModelKey {
   providerID: string
@@ -289,33 +291,7 @@ export function getModelDisplayLabel(
   return 'default'
 }
 
-const RECENT_MODELS_KEY = 'tui:model-recents'
 const RECENT_MODELS_MAX = 10
-const RECENT_MODELS_TTL_MS = 90 * 24 * 60 * 60 * 1000 // 90 days
-
-function getDbPath(): string {
-  return join(resolveDataDir(), 'forge.db')
-}
-
-/**
- * Gets recently used models from TUI preferences.
- */
-export function getRecentModels(projectId: string, dbPathOverride?: string): string[] {
-  const dbPath = dbPathOverride || getDbPath()
-  if (!existsSync(dbPath)) return []
-
-  let db: Database | null = null
-  try {
-    db = new Database(dbPath, { readonly: true })
-    const repo = createTuiPrefsRepo(db)
-    const stored = repo.get<string[]>(projectId, RECENT_MODELS_KEY)
-    return stored && Array.isArray(stored) ? stored : []
-  } catch {
-    return []
-  } finally {
-    try { db?.close() } catch {}
-  }
-}
 
 /**
  * Loose shape used by {@link deriveRecentModelsFromWorkspaces}. Matches the
@@ -511,31 +487,6 @@ export function deriveRecentModels(
   tryPush(inputs.openCodeDefault)
 
   return recents
-}
-
-/**
- * Records a model as recently used. Pushes to front and deduplicates.
- */
-export function recordRecentModel(projectId: string, modelFullName: string, dbPathOverride?: string): void {
-  if (!modelFullName) return
-  const dbPath = dbPathOverride || getDbPath()
-  if (!existsSync(dbPath)) return
-
-  let db: Database | null = null
-  try {
-    db = new Database(dbPath)
-    db.run('PRAGMA busy_timeout=5000')
-    const repo = createTuiPrefsRepo(db)
-
-    const existing = getRecentModels(projectId, dbPath)
-    const updated = [modelFullName, ...existing.filter(m => m !== modelFullName)].slice(0, RECENT_MODELS_MAX)
-
-    repo.set(projectId, RECENT_MODELS_KEY, updated, RECENT_MODELS_TTL_MS)
-  } catch {
-    // silent
-  } finally {
-    try { db?.close() } catch {}
-  }
 }
 
 /**

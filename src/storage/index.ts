@@ -9,7 +9,5 @@ export { createReviewFindingsRepo } from './repos/review-findings-repo'
 
 export { createSectionPlansRepo } from './repos/section-plans-repo'
 
-export { createTuiPrefsRepo } from './repos/tui-prefs-repo'
-
 export { createLoopSessionUsageRepo } from './repos/loop-session-usage-repo'
 export type { LoopSessionUsageRow } from './repos/loop-session-usage-repo'

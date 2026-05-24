@@ -5,8 +5,7 @@ vi.mock('bun:sqlite', () => ({
 }))
 
 vi.mock('../../src/utils/tui-execution-preferences', () => ({
-  readExecutionPreferences: vi.fn().mockReturnValue(null),
-  writeExecutionPreferences: vi.fn(),
+  deriveExecutionPreferencesFromWorkspaces: vi.fn().mockReturnValue(null),
 }))
 
 vi.mock('../../src/utils/tui-plan-store', () => ({
@@ -18,6 +17,7 @@ vi.mock('../../src/utils/tui-plan-store', () => ({
 
 vi.mock('../../src/utils/tui-models', () => ({
   fetchAvailableModels: vi.fn().mockResolvedValue({ providers: [] }),
+  readOpenCodeFavoriteModels: vi.fn().mockReturnValue([]),
 }))
 
 vi.mock('../../src/utils/workspace-listing', () => ({
@@ -98,7 +98,6 @@ describe('Load Plans inline plan is sent as inline even when host session exists
         executionModel: undefined,
         auditorModel: undefined,
       },
-      {} as any,
     )
 
     const createArgs = mockApi.client.experimental.workspace.create.mock.calls[0][0]
@@ -142,7 +141,6 @@ describe('Load Plans inline plan is sent as inline even when host session exists
         executionModel: undefined,
         auditorModel: undefined,
       },
-      {} as any,
     )
 
     const promptArgs = mockApi.client.session.promptAsync.mock.calls[0][0]
