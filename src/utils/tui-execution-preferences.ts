@@ -1,15 +1,22 @@
 /**
- * TUI execution preferences persistence for per-loop launch settings.
+ * Execution preferences resolution for the TUI plan dialog defaults.
  *
- * This module provides helpers to read/write last-used execution preferences
- * from project KV, used only for dialog defaults - not for runtime behavior.
+ * Last-used preferences come from the most recent Forge workspace on the
+ * OpenCode server: every loop execution stamps its model + variant choices
+ * into `extra.forgeLoop`, so `workspace.list().extra.forgeLoop` is the
+ * canonical source. This avoids a separate TUI-local SQLite store and works
+ * correctly when the TUI is on a different host than the server.
+ *
+ * The mode (`New session` / `Execute here` / `Loop`) is **not** persisted
+ * across hosts — only the Loop mode creates a workspace, so the derivation
+ * can never observe a user choosing one of the other two modes. Mode falls
+ * back to the config default in `resolveExecutionDialogDefaults`. If the
+ * user wants per-host mode persistence, that's a TUI-local concern that
+ * could move into `api.kv` later.
  */
 
-import { Database } from 'bun:sqlite'
-import { existsSync } from 'fs'
-import { join } from 'path'
-import { resolveDataDir, createTuiPrefsRepo } from '../storage'
 import type { PluginConfig } from '../types'
+import type { WorkspaceForRecents } from './tui-models'
 
 export interface ExecutionPreferences {
   mode: 'New session' | 'Execute here' | 'Loop'
@@ -18,9 +25,6 @@ export interface ExecutionPreferences {
   executionVariant?: string
   auditorVariant?: string
 }
-
-const PREFERENCES_KEY = 'tui:plan-execution-preferences'
-const TTL_MS = 30 * 24 * 60 * 60 * 1000 // 30 days
 
 function normalizeMode(mode: string): ExecutionPreferences['mode'] {
   const lower = mode.toLowerCase()
@@ -31,75 +35,59 @@ function normalizeMode(mode: string): ExecutionPreferences['mode'] {
 }
 
 /**
- * Gets the database path used by the memory plugin.
+ * Picks the most recent Forge workspace for `projectId` from `workspaces`
+ * and projects its `extra.forgeLoop.{executionModel,auditorModel,executionVariant,auditorVariant}`
+ * onto an {@link ExecutionPreferences} record. Returns `null` if no eligible
+ * workspace exists or its `extra.forgeLoop` envelope is missing.
+ *
+ * `mode` is always `'Loop'` — only loop executions create a workspace, so
+ * the derivation can never witness `'New session'` or `'Execute here'`.
+ * Callers compose with {@link resolveExecutionDialogDefaults} which falls
+ * back to config when this returns `null`.
+ *
+ * Workspaces with no `projectID` are not filtered out (forward-compat),
+ * matching the policy in `deriveRecentModelsFromWorkspaces`.
+ *
+ * Workspaces with non-finite `timeUsed` (`"NaN"`, `"Infinity"`, missing)
+ * are treated as `0` for sorting, so a legitimate workspace with a real
+ * `timeUsed` always wins over them.
  */
-function getDbPath(): string {
-  return join(resolveDataDir(), 'forge.db')
-}
-
-/**
- * Reads last-used execution preferences from TUI preferences.
- * 
- * @param projectId - The project ID (git commit hash)
- * @param dbPathOverride - Optional database path override (for testing)
- * @returns The stored preferences or null if not found
- */
-export function readExecutionPreferences(projectId: string, dbPathOverride?: string): ExecutionPreferences | null {
-  const dbPath = dbPathOverride || getDbPath()
-
-  if (!existsSync(dbPath)) return null
-
-  let db: Database | null = null
-  try {
-    db = new Database(dbPath, { readonly: true })
-    const repo = createTuiPrefsRepo(db)
-    const stored = repo.get<ExecutionPreferences>(projectId, PREFERENCES_KEY)
-    
-    if (!stored) return null
-    
-    return {
-      mode: normalizeMode(stored.mode ?? 'Loop'),
-      executionModel: stored.executionModel,
-      auditorModel: stored.auditorModel,
-      executionVariant: stored.executionVariant,
-      auditorVariant: stored.auditorVariant,
-    }
-  } catch {
-    return null
-  } finally {
-    try { db?.close() } catch {}
-  }
-}
-
-/**
- * Writes execution preferences to TUI preferences after successful launch.
- * 
- * @param projectId - The project ID (git commit hash)
- * @param prefs - The preferences to persist
- * @param dbPathOverride - Optional database path override (for testing)
- * @returns true if successful, false otherwise
- */
-export function writeExecutionPreferences(
+export function deriveExecutionPreferencesFromWorkspaces(
   projectId: string,
-  prefs: ExecutionPreferences,
-  dbPathOverride?: string
-): boolean {
-  const dbPath = dbPathOverride || getDbPath()
+  workspaces: ReadonlyArray<WorkspaceForRecents>,
+): ExecutionPreferences | null {
+  const toFiniteNumber = (value: unknown): number => {
+    const n = typeof value === 'number' ? value : Number(value)
+    return Number.isFinite(n) ? n : 0
+  }
 
-  if (!existsSync(dbPath)) return false
+  const eligible = workspaces.filter((w) => {
+    if (w.type !== 'forge') return false
+    if (w.projectID !== undefined && w.projectID !== projectId) return false
+    if (typeof w.extra !== 'object' || w.extra === null) return false
+    const forgeLoop = (w.extra as { forgeLoop?: unknown }).forgeLoop
+    return typeof forgeLoop === 'object' && forgeLoop !== null
+  })
 
-  let db: Database | null = null
-  try {
-    db = new Database(dbPath)
-    db.run('PRAGMA busy_timeout=5000')
-    const repo = createTuiPrefsRepo(db)
+  if (eligible.length === 0) return null
 
-    repo.set(projectId, PREFERENCES_KEY, prefs, TTL_MS)
-    return true
-  } catch {
-    return false
-  } finally {
-    try { db?.close() } catch {}
+  const mostRecent = eligible.reduce((best, current) =>
+    toFiniteNumber(current.timeUsed) > toFiniteNumber(best.timeUsed) ? current : best,
+  )
+
+  const forgeLoop = (mostRecent.extra as { forgeLoop: Record<string, unknown> }).forgeLoop
+
+  const readString = (key: string): string | undefined => {
+    const raw = forgeLoop[key]
+    return typeof raw === 'string' && raw.length > 0 ? raw : undefined
+  }
+
+  return {
+    mode: 'Loop',
+    executionModel: readString('executionModel'),
+    auditorModel: readString('auditorModel'),
+    executionVariant: readString('executionVariant'),
+    auditorVariant: readString('auditorVariant'),
   }
 }
 

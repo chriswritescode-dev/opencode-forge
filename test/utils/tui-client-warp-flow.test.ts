@@ -5,8 +5,7 @@ vi.mock('bun:sqlite', () => ({
 }))
 
 vi.mock('../../src/utils/tui-execution-preferences', () => ({
-  readExecutionPreferences: vi.fn().mockReturnValue(null),
-  writeExecutionPreferences: vi.fn(),
+  deriveExecutionPreferencesFromWorkspaces: vi.fn().mockReturnValue(null),
 }))
 
 vi.mock('../../src/utils/tui-plan-store', () => ({
@@ -18,6 +17,7 @@ vi.mock('../../src/utils/tui-plan-store', () => ({
 
 vi.mock('../../src/utils/tui-models', () => ({
   fetchAvailableModels: vi.fn().mockResolvedValue({ providers: [] }),
+  readOpenCodeFavoriteModels: vi.fn().mockReturnValue([]),
 }))
 
 vi.mock('../../src/utils/workspace-listing', () => ({
@@ -124,10 +124,6 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
         executionModel: 'prov/exec',
         auditorModel: 'prov/aud',
       },
-      {
-        provider: 'anthropic',
-        model: 'claude-sonnet-4-20250514',
-      },
     )
 
     // Verify return value
@@ -213,7 +209,6 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
         title: 'My Cool Feature',
         plan: '# Plan\n\nImplement feature X.',
       },
-      {} as any,
     )
 
     expect(result).not.toBeNull()
@@ -241,7 +236,6 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
         title: 'My Cool Feature',
         plan: '# Plan\n\nImplement feature X.',
       },
-      {} as any,
     )
 
     expect(result!.loopName).toBe('my-cool-feature-1')
@@ -264,7 +258,6 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
         title: 'My Cool Feature',
         plan: '# Plan\n\nImplement feature X.',
       },
-      {} as any,
     )
 
     expect(result!.loopName).toBe('my-cool-feature-1')
@@ -286,7 +279,6 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
         title: 'Fail Loop',
         plan: '# Fail Plan\n\nThis will fail.',
       },
-      {} as any,
     )
 
     expect(result).toBeNull()
@@ -309,7 +301,6 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
         title: 'No Data Loop',
         plan: '# No Data\n\nShould fail.',
       },
-      {} as any,
     )
 
     expect(result).toBeNull()
@@ -327,7 +318,6 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
         title: 'Sess Fail Loop',
         plan: '# Session Fail.\n',
       },
-      {} as any,
     )
 
     expect(result).toBeNull()
@@ -350,7 +340,6 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
         executionModel: 'prov/exec',
         auditorModel: 'prov/aud',
       },
-      {} as any,
     )
 
     expect(result).not.toBeNull()
@@ -381,7 +370,6 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
         title: longTitle,
         plan: '# Long Title Test.',
       },
-      {} as any,
     )
 
     expect(result).not.toBeNull()

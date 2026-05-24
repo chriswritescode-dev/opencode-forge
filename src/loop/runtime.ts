@@ -319,7 +319,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   /**
    * Determine the fallback model for a session based on phase and loop state.
-   * For code sessions: state.executionModel > config.executionModel > config.loop.model
+   * For code sessions: state.executionModel > config.executionModel
    * For audit/final-audit sessions: state.auditorModel > state.executionModel > config.auditorModel > config.executionModel
    */
   function getFallbackModelForSession(state: LoopState, phase: LoopState['phase']): string | undefined {
@@ -335,8 +335,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     // Code session
     return (
       state.executionModel ??
-      config.executionModel ??
-      config.loop?.model
+      config.executionModel
     )
   }
 

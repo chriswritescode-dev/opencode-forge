@@ -13,7 +13,7 @@ src/
 ├── config.ts                # Agent/command configuration handler
 ├── setup.ts                 # Config loading, skill installation
 ├── types.ts                 # Core type definitions (PluginConfig, etc.)
-├── version.ts               # VERSION constant ('0.4.0')
+├── version.ts               # VERSION constant generated from package.json
 │
 ├── agents/                  # AI agent definitions
 ├── hooks/                   # Plugin event/lifecycle hooks

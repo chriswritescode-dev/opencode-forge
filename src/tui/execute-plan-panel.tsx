@@ -1,12 +1,12 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
-import { PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
+import { PLAN_EXECUTION_LABELS } from '../utils/plan-execution'
 import { extractPlanExecutionMetadata } from '../utils/plan-execution'
-import { buildDialogSelectOptions, flattenProviders, getModelDisplayLabel, sortModelsByPriority, getAvailableModelVariants, getVariantDisplayLabel, normalizeVariantForModel, type ModelInfo } from '../utils/tui-models'
+import { buildDialogSelectOptions, getModelDisplayLabel, getAvailableModelVariants, getVariantDisplayLabel, normalizeVariantForModel, type ModelInfo } from '../utils/tui-models'
 import { resolveExecutionDialogDefaults } from '../utils/tui-execution-preferences'
 import { selectTuiSession, type ForgeProjectClient } from '../utils/tui-client'
-import type { ExecutionContextCache, ExecutionContextSnapshot } from '../utils/tui-execution-context-cache'
+import { buildExecutionContextSnapshot, type ExecutionContextCache, type ExecutionContextSnapshot } from '../utils/tui-execution-context-cache'
 import { withBusyGuard } from '../utils/busy-guard'
 import type { PluginConfig } from '../types'
 
@@ -101,27 +101,8 @@ export function ExecutePlanPanel(props: {
   const loadInline = async () => {
     try {
       const ctx = await props.client.loadExecutionContext()
-      const inlineDefaults = resolveExecutionDialogDefaults(pluginConfig, ctx.preferences)
-      if (ctx.models.error) {
-        setModelsError(ctx.models.error)
-        applyDefaults(inlineDefaults)
-        setModelsLoaded(true)
-        return
-      }
-      const allModelList = flattenProviders(ctx.models.providers as Parameters<typeof flattenProviders>[0])
-      const recentsList: string[] = []
-      const sorted = sortModelsByPriority(allModelList, {
-        recents: recentsList,
-        connectedProviderIds: ctx.models.connectedProviderIds,
-        configuredProviderIds: ctx.models.configuredProviderIds,
-      })
-      setRecents(recentsList)
-      setModels(sorted)
-      applyDefaults(inlineDefaults)
-      setModelsLoaded(true)
-      // Normalize variants against loaded models
-      setExecutionVariant(normalizeVariantForModel(executionVariant(), selectedModelInfo('execution')))
-      setAuditorVariant(normalizeVariantForModel(auditorVariant(), selectedModelInfo('auditor')))
+      const snap = buildExecutionContextSnapshot(props.client.projectId, pluginConfig, ctx)
+      applySnapshot(snap)
     } catch (err) {
       setModelsError(err instanceof Error ? err.message : 'Failed to load models')
       setModelsLoaded(true)
@@ -308,12 +289,6 @@ export function ExecutePlanPanel(props: {
       executionVariant: execVariant,
       auditorVariant: auditVariant,
       targetSessionId: props.sessionId,
-    }, {
-      mode: matchedLabel as PlanExecutionLabel,
-      executionModel: execModel,
-      auditorModel: auditModel,
-      executionVariant: execVariant,
-      auditorVariant: auditVariant,
     })
 
     if (!result) {

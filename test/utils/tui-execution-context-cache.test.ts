@@ -1,81 +1,79 @@
-import { describe, it, expect, vi, beforeEach } from 'bun:test'
+import { describe, it, expect, vi } from 'bun:test'
 import { createExecutionContextCache } from '../../src/utils/tui-execution-context-cache'
 import type { ExecutionPreferences } from '../../src/utils/tui-execution-preferences'
 import type { PluginConfig } from '../../src/types'
-import type { ProviderInfo } from '../../src/utils/tui-models'
+import type {
+  ProviderInfo,
+  SessionForRecents,
+  WorkspaceForRecents,
+} from '../../src/utils/tui-models'
+
+const mockProjectId = 'test-project'
+const mockPluginConfig: PluginConfig = {
+  executionModel: 'anthropic/claude-sonnet-4',
+  auditorModel: 'anthropic/claude-3-5-sonnet',
+}
+
+const mockProviders: ProviderInfo[] = [
+  {
+    id: 'anthropic',
+    name: 'Anthropic',
+    models: [
+      {
+        id: 'claude-sonnet-4',
+        name: 'Claude Sonnet 4',
+        providerID: 'anthropic',
+        providerName: 'Anthropic',
+        fullName: 'anthropic/claude-sonnet-4',
+      },
+      {
+        id: 'claude-3-5-sonnet',
+        name: 'Claude 3.5 Sonnet',
+        providerID: 'anthropic',
+        providerName: 'Anthropic',
+        fullName: 'anthropic/claude-3-5-sonnet',
+      },
+    ],
+  },
+]
+
+interface LoadResult {
+  preferences: ExecutionPreferences | null
+  models: {
+    providers: unknown[]
+    connectedProviderIds?: string[]
+    configuredProviderIds?: string[]
+    error?: string
+  }
+  sessions: SessionForRecents[]
+  workspaces: WorkspaceForRecents[]
+  openCodeFavorites: string[]
+  openCodeDefault: string | undefined
+}
+
+function makeLoadResult(overrides: Partial<LoadResult> = {}): LoadResult {
+  return {
+    preferences: null,
+    models: { providers: mockProviders },
+    sessions: [],
+    workspaces: [],
+    openCodeFavorites: [],
+    openCodeDefault: undefined,
+    ...overrides,
+  }
+}
 
 describe('createExecutionContextCache', () => {
-  const mockProjectId = 'test-project'
-  const mockPluginConfig: PluginConfig = {
-    executionModel: 'anthropic/claude-sonnet-4',
-    auditorModel: 'anthropic/claude-3-5-sonnet',
-  }
-
-  const mockProviders: ProviderInfo[] = [
-    {
-      id: 'anthropic',
-      name: 'Anthropic',
-      models: [
-        {
-          id: 'claude-sonnet-4',
-          name: 'Claude Sonnet 4',
-          providerID: 'anthropic',
-          providerName: 'Anthropic',
-          fullName: 'anthropic/claude-sonnet-4',
-        },
-        {
-          id: 'claude-3-5-sonnet',
-          name: 'Claude 3.5 Sonnet',
-          providerID: 'anthropic',
-          providerName: 'Anthropic',
-          fullName: 'anthropic/claude-3-5-sonnet',
-        },
-      ],
-    },
-  ]
-
-  const mockLoadFn = vi.fn<() => Promise<{
-    preferences: ExecutionPreferences | null
-    models: {
-      providers: unknown[]
-      connectedProviderIds?: string[]
-      configuredProviderIds?: string[]
-      error?: string
-    }
-  }>>()
-
-  let persistedRecents: string[] = []
-  const mockGetRecentModels = vi.fn(() => [...persistedRecents])
-  const mockRecordRecentModel = vi.fn((_: string, model: string) => {
-    persistedRecents = [model, ...persistedRecents.filter(m => m !== model)]
-  })
-
-  beforeEach(() => {
-    mockLoadFn.mockReset()
-    persistedRecents = []
-    mockGetRecentModels.mockClear()
-    mockRecordRecentModel.mockClear()
-  })
-
   describe('snapshot', () => {
-    it('returns null before first load', async () => {
-      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, mockLoadFn, {
-        getRecentModels: mockGetRecentModels,
-        recordRecentModel: mockRecordRecentModel,
-      })
+    it('returns null before first load', () => {
+      const loadFn = vi.fn(async () => makeLoadResult())
+      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, loadFn)
       expect(cache.snapshot()).toBeNull()
     })
 
     it('returns a value after ensureLoaded resolves', async () => {
-      mockLoadFn.mockResolvedValue({
-        preferences: null,
-        models: { providers: mockProviders },
-      })
-
-      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, mockLoadFn, {
-        getRecentModels: mockGetRecentModels,
-        recordRecentModel: mockRecordRecentModel,
-      })
+      const loadFn = vi.fn(async () => makeLoadResult())
+      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, loadFn)
       await cache.ensureLoaded()
 
       const snap = cache.snapshot()
@@ -86,15 +84,8 @@ describe('createExecutionContextCache', () => {
 
   describe('ensureLoaded', () => {
     it('concurrent calls share a single in-flight fetch', async () => {
-      mockLoadFn.mockResolvedValue({
-        preferences: null,
-        models: { providers: mockProviders },
-      })
-
-      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, mockLoadFn, {
-        getRecentModels: mockGetRecentModels,
-        recordRecentModel: mockRecordRecentModel,
-      })
+      const loadFn = vi.fn(async () => makeLoadResult())
+      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, loadFn)
       await cache.ensureLoaded()
 
       const [result1, result2] = await Promise.all([
@@ -102,20 +93,13 @@ describe('createExecutionContextCache', () => {
         cache.ensureLoaded(),
       ])
 
-      expect(mockLoadFn).toHaveBeenCalledTimes(1)
+      expect(loadFn).toHaveBeenCalledTimes(1)
       expect(result1).toBe(result2)
     })
 
     it('returns merged snapshot with defaults from resolveExecutionDialogDefaults', async () => {
-      mockLoadFn.mockResolvedValue({
-        preferences: null,
-        models: { providers: mockProviders },
-      })
-
-      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, mockLoadFn, {
-        getRecentModels: mockGetRecentModels,
-        recordRecentModel: mockRecordRecentModel,
-      })
+      const loadFn = vi.fn(async () => makeLoadResult())
+      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, loadFn)
       const snap = await cache.ensureLoaded()
 
       expect(snap.defaults.executionModel).toBe('anthropic/claude-sonnet-4')
@@ -124,69 +108,72 @@ describe('createExecutionContextCache', () => {
     })
 
     it('models are flattened and sorted', async () => {
-      mockLoadFn.mockResolvedValue({
-        preferences: null,
-        models: { providers: mockProviders },
-      })
-
-      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, mockLoadFn, {
-        getRecentModels: mockGetRecentModels,
-        recordRecentModel: mockRecordRecentModel,
-      })
+      const loadFn = vi.fn(async () => makeLoadResult())
+      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, loadFn)
       const snap = await cache.ensureLoaded()
 
       expect(snap.models).toHaveLength(2)
       expect(snap.models[0].fullName).toBe('anthropic/claude-3-5-sonnet')
     })
 
-    it('recents are loaded from getRecentModels', async () => {
-      mockLoadFn.mockResolvedValue({
-        preferences: null,
-        models: { providers: mockProviders },
-      })
+    it('recents are derived from sessions + workspaces + favorites + default', async () => {
+      const loadFn = vi.fn(async () =>
+        makeLoadResult({
+          sessions: [
+            {
+              projectID: mockProjectId,
+              model: { providerID: 'anthropic', id: 'claude-sonnet-4' },
+              time: { updated: 200 },
+            },
+          ],
+          workspaces: [
+            {
+              type: 'forge',
+              projectID: mockProjectId,
+              timeUsed: 100,
+              extra: {
+                forgeLoop: {
+                  executionModel: 'anthropic/claude-sonnet-4',
+                  auditorModel: 'openai/gpt-5',
+                },
+              },
+            },
+          ],
+          openCodeFavorites: ['google/gemini-2'],
+          openCodeDefault: 'anthropic/claude-3-5-sonnet',
+        }),
+      )
 
-      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, mockLoadFn, {
-        getRecentModels: mockGetRecentModels,
-        recordRecentModel: mockRecordRecentModel,
-      })
+      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, loadFn)
       const snap = await cache.ensureLoaded()
 
-      expect(Array.isArray(snap.recents)).toBe(true)
-      expect(mockGetRecentModels).toHaveBeenCalledWith(mockProjectId)
+      // Session contributes claude-sonnet-4 (also in workspace, deduped);
+      // workspace contributes openai/gpt-5 (auditor); favorites contribute
+      // gemini-2; default contributes claude-3-5-sonnet.
+      expect(snap.recents).toEqual([
+        'anthropic/claude-sonnet-4',
+        'openai/gpt-5',
+        'google/gemini-2',
+        'anthropic/claude-3-5-sonnet',
+      ])
     })
 
-    it('favorites default to empty array', async () => {
-      mockLoadFn.mockResolvedValue({
-        preferences: null,
-        models: { providers: mockProviders },
-      })
-
-      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, mockLoadFn, {
-        getRecentModels: mockGetRecentModels,
-        recordRecentModel: mockRecordRecentModel,
-      })
+    it('recents default to empty array when no sources contribute', async () => {
+      const loadFn = vi.fn(async () => makeLoadResult())
+      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, loadFn)
       const snap = await cache.ensureLoaded()
-
-      expect(snap).toBeDefined()
+      expect(snap.recents).toEqual([])
     })
   })
 
   describe('recordRecent', () => {
-    it('updates recents array and moves to front', async () => {
-      mockLoadFn.mockResolvedValue({
-        preferences: null,
-        models: { providers: mockProviders },
-      })
-
-      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, mockLoadFn, {
-        getRecentModels: mockGetRecentModels,
-        recordRecentModel: mockRecordRecentModel,
-      })
+    it('updates recents array and moves new entry to front', async () => {
+      const loadFn = vi.fn(async () => makeLoadResult())
+      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, loadFn)
       await cache.ensureLoaded()
 
       cache.recordRecent('anthropic/claude-sonnet-4')
       expect(cache.snapshot()!.recents[0]).toBe('anthropic/claude-sonnet-4')
-      expect(mockRecordRecentModel).toHaveBeenCalledWith(mockProjectId, 'anthropic/claude-sonnet-4')
 
       cache.recordRecent('anthropic/claude-3-5-sonnet')
       expect(cache.snapshot()!.recents[0]).toBe('anthropic/claude-3-5-sonnet')
@@ -194,60 +181,54 @@ describe('createExecutionContextCache', () => {
     })
 
     it('deduplicates on repeat and moves to front', async () => {
-      mockLoadFn.mockResolvedValue({
-        preferences: null,
-        models: { providers: mockProviders },
-      })
-
-      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, mockLoadFn, {
-        getRecentModels: mockGetRecentModels,
-        recordRecentModel: mockRecordRecentModel,
-      })
+      const loadFn = vi.fn(async () => makeLoadResult())
+      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, loadFn)
       await cache.ensureLoaded()
 
       cache.recordRecent('model-a')
       cache.recordRecent('model-b')
-      const beforeRepeat = cache.snapshot()!.recents
-      expect(beforeRepeat[0]).toBe('model-b')
-      
+      expect(cache.snapshot()!.recents[0]).toBe('model-b')
+
       cache.recordRecent('model-a')
-      const afterRepeat = cache.snapshot()!.recents
-      expect(afterRepeat[0]).toBe('model-a')
-      expect(afterRepeat[1]).toBe('model-b')
+      const after = cache.snapshot()!.recents
+      expect(after[0]).toBe('model-a')
+      expect(after[1]).toBe('model-b')
     })
 
     it('skips empty strings', async () => {
-      mockLoadFn.mockResolvedValue({
-        preferences: null,
-        models: { providers: mockProviders },
-      })
-
-      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, mockLoadFn, {
-        getRecentModels: mockGetRecentModels,
-        recordRecentModel: mockRecordRecentModel,
-      })
+      const loadFn = vi.fn(async () => makeLoadResult())
+      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, loadFn)
       await cache.ensureLoaded()
 
       const before = [...cache.snapshot()!.recents]
       cache.recordRecent('')
-      const after = cache.snapshot()!.recents
-      
-      expect(after).toEqual(before)
-      expect(mockRecordRecentModel).not.toHaveBeenCalled()
+      expect(cache.snapshot()!.recents).toEqual(before)
+    })
+
+    it('does not persist outside the in-memory snapshot (next refresh re-derives from SDK)', async () => {
+      let preFavorites: string[] = []
+      const loadFn = vi.fn(async () =>
+        makeLoadResult({ openCodeFavorites: preFavorites }),
+      )
+      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, loadFn)
+      await cache.ensureLoaded()
+
+      cache.recordRecent('user-pick/model')
+      expect(cache.snapshot()!.recents[0]).toBe('user-pick/model')
+
+      // A subsequent refresh that does not include the user's pick in any
+      // source MUST overwrite the in-memory recents — the server response is
+      // authoritative on the next round-trip.
+      preFavorites = ['other/favorite']
+      await cache.refresh()
+      expect(cache.snapshot()!.recents).toEqual(['other/favorite'])
     })
   })
 
   describe('onChange', () => {
     it('listener is invoked on refresh', async () => {
-      mockLoadFn.mockResolvedValue({
-        preferences: null,
-        models: { providers: mockProviders },
-      })
-
-      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, mockLoadFn, {
-        getRecentModels: mockGetRecentModels,
-        recordRecentModel: mockRecordRecentModel,
-      })
+      const loadFn = vi.fn(async () => makeLoadResult())
+      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, loadFn)
       const listener = vi.fn()
 
       cache.onChange(listener)
@@ -257,35 +238,20 @@ describe('createExecutionContextCache', () => {
     })
 
     it('listener is invoked on recordRecent', async () => {
-      mockLoadFn.mockResolvedValue({
-        preferences: null,
-        models: { providers: mockProviders },
-      })
-
-      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, mockLoadFn, {
-        getRecentModels: mockGetRecentModels,
-        recordRecentModel: mockRecordRecentModel,
-      })
+      const loadFn = vi.fn(async () => makeLoadResult())
+      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, loadFn)
       await cache.ensureLoaded()
 
       const listener = vi.fn()
       cache.onChange(listener)
-
       cache.recordRecent('anthropic/claude-sonnet-4')
 
       expect(listener).toHaveBeenCalledTimes(1)
     })
 
     it('unsubscribe stops notifications', async () => {
-      mockLoadFn.mockResolvedValue({
-        preferences: null,
-        models: { providers: mockProviders },
-      })
-
-      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, mockLoadFn, {
-        getRecentModels: mockGetRecentModels,
-        recordRecentModel: mockRecordRecentModel,
-      })
+      const loadFn = vi.fn(async () => makeLoadResult())
+      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, loadFn)
       await cache.ensureLoaded()
 
       const listener = vi.fn()
@@ -293,29 +259,24 @@ describe('createExecutionContextCache', () => {
       unsub()
 
       cache.recordRecent('anthropic/claude-sonnet-4')
-
       expect(listener).not.toHaveBeenCalled()
     })
 
-    it('onChange delivers existing snapshot to listeners that subscribe after refresh', async () => {
-      mockLoadFn.mockResolvedValue({
-        preferences: {
-          mode: 'Loop',
-          executionModel: 'anthropic/claude-sonnet-4',
-          auditorModel: 'anthropic/claude-3-5-sonnet',
-        },
-        models: { providers: mockProviders },
-      })
-
-      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, mockLoadFn, {
-        getRecentModels: mockGetRecentModels,
-        recordRecentModel: mockRecordRecentModel,
-      })
+    it('delivers existing snapshot to listeners that subscribe after refresh', async () => {
+      const loadFn = vi.fn(async () =>
+        makeLoadResult({
+          preferences: {
+            mode: 'Loop',
+            executionModel: 'anthropic/claude-sonnet-4',
+            auditorModel: 'anthropic/claude-3-5-sonnet',
+          },
+        }),
+      )
+      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, loadFn)
       await cache.ensureLoaded()
 
       const seen: Array<unknown> = []
       cache.onChange((s) => seen.push(s))
-
       await new Promise(resolve => queueMicrotask(() => resolve(undefined)))
 
       expect(seen).toHaveLength(1)
@@ -324,21 +285,13 @@ describe('createExecutionContextCache', () => {
   })
 
   describe('defaults resolution', () => {
-    it('uses config.executionModel when prefs is null', async () => {
+    it('uses config.executionModel when preferences is null', async () => {
       const config: PluginConfig = {
         executionModel: 'p/m',
         auditorModel: 'p/m2',
       }
-
-      mockLoadFn.mockResolvedValue({
-        preferences: null,
-        models: { providers: mockProviders },
-      })
-
-      const cache = createExecutionContextCache(mockProjectId, config, mockLoadFn, {
-        getRecentModels: mockGetRecentModels,
-        recordRecentModel: mockRecordRecentModel,
-      })
+      const loadFn = vi.fn(async () => makeLoadResult())
+      const cache = createExecutionContextCache(mockProjectId, config, loadFn)
       const snap = await cache.ensureLoaded()
 
       expect(snap.defaults.executionModel).toBe('p/m')
@@ -350,20 +303,17 @@ describe('createExecutionContextCache', () => {
         executionModel: 'config/model',
         auditorModel: 'config/auditor',
       }
+      const loadFn = vi.fn(async () =>
+        makeLoadResult({
+          preferences: {
+            mode: 'Loop',
+            executionModel: 'stored/model',
+            auditorModel: 'stored/auditor',
+          },
+        }),
+      )
 
-      mockLoadFn.mockResolvedValue({
-        preferences: {
-          mode: 'Loop',
-          executionModel: 'stored/model',
-          auditorModel: 'stored/auditor',
-        },
-        models: { providers: mockProviders },
-      })
-
-      const cache = createExecutionContextCache(mockProjectId, config, mockLoadFn, {
-        getRecentModels: mockGetRecentModels,
-        recordRecentModel: mockRecordRecentModel,
-      })
+      const cache = createExecutionContextCache(mockProjectId, config, loadFn)
       const snap = await cache.ensureLoaded()
 
       expect(snap.defaults.executionModel).toBe('stored/model')

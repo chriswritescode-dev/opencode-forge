@@ -9,8 +9,13 @@ import {
   getAvailableModelVariants,
   getVariantDisplayLabel,
   normalizeVariantForModel,
+  deriveRecentModelsFromWorkspaces,
+  deriveRecentModels,
   type ProviderInfo,
   type ModelInfo,
+  type WorkspaceForRecents,
+  type SessionForRecents,
+  type DeriveRecentModelsInputs,
 } from '../src/utils/tui-models'
 
 function createMockApi(configProviders?: string[], providerListFn?: any): TuiPluginApi {
@@ -947,5 +952,571 @@ describe('normalizeVariantForModel', () => {
       },
     }
     expect(normalizeVariantForModel('thinking-max', modelWithoutThinking)).toBe('')
+  })
+})
+
+describe('deriveRecentModelsFromWorkspaces', () => {
+  const PROJECT_A = 'project-a'
+  const PROJECT_B = 'project-b'
+
+  function forgeWs(input: {
+    timeUsed?: number | string
+    projectID?: string
+    executionModel?: string | null
+    auditorModel?: string | null
+    extraOverride?: unknown
+  }): WorkspaceForRecents {
+    const forgeLoop: Record<string, unknown> = {}
+    if (input.executionModel !== undefined && input.executionModel !== null) {
+      forgeLoop.executionModel = input.executionModel
+    }
+    if (input.auditorModel !== undefined && input.auditorModel !== null) {
+      forgeLoop.auditorModel = input.auditorModel
+    }
+    return {
+      type: 'forge',
+      ...(input.projectID !== undefined ? { projectID: input.projectID } : {}),
+      ...(input.timeUsed !== undefined ? { timeUsed: input.timeUsed } : {}),
+      extra: input.extraOverride !== undefined ? input.extraOverride : { forgeLoop },
+    }
+  }
+
+  test('returns empty array for empty workspace list', () => {
+    expect(deriveRecentModelsFromWorkspaces(PROJECT_A, [])).toEqual([])
+  })
+
+  test('returns empty array when no workspace is type=forge', () => {
+    const workspaces: WorkspaceForRecents[] = [
+      { type: 'local', projectID: PROJECT_A, timeUsed: 1, extra: { forgeLoop: { executionModel: 'anthropic/claude' } } },
+      { type: 'worktree', projectID: PROJECT_A, timeUsed: 2, extra: { forgeLoop: { executionModel: 'openai/gpt-5' } } },
+    ]
+    expect(deriveRecentModelsFromWorkspaces(PROJECT_A, workspaces)).toEqual([])
+  })
+
+  test('extracts executionModel from a single forge workspace', () => {
+    const workspaces = [
+      forgeWs({ projectID: PROJECT_A, timeUsed: 1, executionModel: 'anthropic/claude-sonnet-4' }),
+    ]
+    expect(deriveRecentModelsFromWorkspaces(PROJECT_A, workspaces)).toEqual([
+      'anthropic/claude-sonnet-4',
+    ])
+  })
+
+  test('records executionModel before auditorModel within the same workspace', () => {
+    const workspaces = [
+      forgeWs({
+        projectID: PROJECT_A,
+        timeUsed: 1,
+        executionModel: 'anthropic/claude-sonnet-4',
+        auditorModel: 'openai/gpt-5',
+      }),
+    ]
+    expect(deriveRecentModelsFromWorkspaces(PROJECT_A, workspaces)).toEqual([
+      'anthropic/claude-sonnet-4',
+      'openai/gpt-5',
+    ])
+  })
+
+  test('sorts workspaces by timeUsed descending', () => {
+    const workspaces = [
+      forgeWs({ projectID: PROJECT_A, timeUsed: 100, executionModel: 'older/older' }),
+      forgeWs({ projectID: PROJECT_A, timeUsed: 300, executionModel: 'newest/newest' }),
+      forgeWs({ projectID: PROJECT_A, timeUsed: 200, executionModel: 'middle/middle' }),
+    ]
+    expect(deriveRecentModelsFromWorkspaces(PROJECT_A, workspaces)).toEqual([
+      'newest/newest',
+      'middle/middle',
+      'older/older',
+    ])
+  })
+
+  test('dedupes a model that appears in multiple workspaces, preserving first (most recent) occurrence', () => {
+    const workspaces = [
+      forgeWs({ projectID: PROJECT_A, timeUsed: 300, executionModel: 'anthropic/claude-sonnet-4' }),
+      forgeWs({ projectID: PROJECT_A, timeUsed: 200, executionModel: 'openai/gpt-5' }),
+      forgeWs({ projectID: PROJECT_A, timeUsed: 100, executionModel: 'anthropic/claude-sonnet-4' }),
+    ]
+    expect(deriveRecentModelsFromWorkspaces(PROJECT_A, workspaces)).toEqual([
+      'anthropic/claude-sonnet-4',
+      'openai/gpt-5',
+    ])
+  })
+
+  test('dedupes executionModel against auditorModel from earlier workspace', () => {
+    const workspaces = [
+      forgeWs({
+        projectID: PROJECT_A,
+        timeUsed: 300,
+        executionModel: 'anthropic/claude-sonnet-4',
+        auditorModel: 'openai/gpt-5',
+      }),
+      forgeWs({
+        projectID: PROJECT_A,
+        timeUsed: 200,
+        executionModel: 'openai/gpt-5',
+        auditorModel: 'google/gemini-2',
+      }),
+    ]
+    expect(deriveRecentModelsFromWorkspaces(PROJECT_A, workspaces)).toEqual([
+      'anthropic/claude-sonnet-4',
+      'openai/gpt-5',
+      'google/gemini-2',
+    ])
+  })
+
+  test('excludes workspaces whose projectID differs from the requested projectId', () => {
+    const workspaces = [
+      forgeWs({ projectID: PROJECT_A, timeUsed: 200, executionModel: 'anthropic/claude' }),
+      forgeWs({ projectID: PROJECT_B, timeUsed: 300, executionModel: 'foreign/model' }),
+    ]
+    expect(deriveRecentModelsFromWorkspaces(PROJECT_A, workspaces)).toEqual([
+      'anthropic/claude',
+    ])
+  })
+
+  test('includes workspaces with no projectID (forward-compat)', () => {
+    const workspaces = [
+      forgeWs({ timeUsed: 100, executionModel: 'legacy/model' }),
+    ]
+    expect(deriveRecentModelsFromWorkspaces(PROJECT_A, workspaces)).toEqual([
+      'legacy/model',
+    ])
+  })
+
+  test('skips workspaces with non-object extra', () => {
+    const workspaces: WorkspaceForRecents[] = [
+      { type: 'forge', projectID: PROJECT_A, timeUsed: 300, extra: null },
+      { type: 'forge', projectID: PROJECT_A, timeUsed: 200, extra: 'oops' as unknown },
+      forgeWs({ projectID: PROJECT_A, timeUsed: 100, executionModel: 'anthropic/claude' }),
+    ]
+    expect(deriveRecentModelsFromWorkspaces(PROJECT_A, workspaces)).toEqual([
+      'anthropic/claude',
+    ])
+  })
+
+  test('skips workspaces whose extra lacks a forgeLoop object', () => {
+    const workspaces: WorkspaceForRecents[] = [
+      forgeWs({ projectID: PROJECT_A, timeUsed: 400, extraOverride: { somethingElse: 1 } }),
+      forgeWs({ projectID: PROJECT_A, timeUsed: 300, extraOverride: { forgeLoop: null } }),
+      forgeWs({ projectID: PROJECT_A, timeUsed: 200, extraOverride: { forgeLoop: 'not-an-object' } }),
+      forgeWs({ projectID: PROJECT_A, timeUsed: 100, executionModel: 'anthropic/claude' }),
+    ]
+    expect(deriveRecentModelsFromWorkspaces(PROJECT_A, workspaces)).toEqual([
+      'anthropic/claude',
+    ])
+  })
+
+  test('ignores empty / non-string model fields', () => {
+    const workspaces: WorkspaceForRecents[] = [
+      forgeWs({ projectID: PROJECT_A, timeUsed: 400, executionModel: '' }),
+      forgeWs({
+        projectID: PROJECT_A,
+        timeUsed: 300,
+        extraOverride: { forgeLoop: { executionModel: 42, auditorModel: { wrong: 'shape' } } },
+      }),
+      forgeWs({ projectID: PROJECT_A, timeUsed: 200, executionModel: 'anthropic/claude' }),
+    ]
+    expect(deriveRecentModelsFromWorkspaces(PROJECT_A, workspaces)).toEqual([
+      'anthropic/claude',
+    ])
+  })
+
+  test('treats non-finite timeUsed values ("NaN", "Infinity", missing) as 0 for sort', () => {
+    const workspaces = [
+      forgeWs({ projectID: PROJECT_A, timeUsed: 'NaN', executionModel: 'nan/model' }),
+      forgeWs({ projectID: PROJECT_A, timeUsed: 'Infinity', executionModel: 'inf/model' }),
+      forgeWs({ projectID: PROJECT_A, executionModel: 'missing/model' }),
+      forgeWs({ projectID: PROJECT_A, timeUsed: 1, executionModel: 'real/model' }),
+    ]
+    const result = deriveRecentModelsFromWorkspaces(PROJECT_A, workspaces)
+    // 'real/model' must come first (timeUsed=1 vs all-zero others).
+    expect(result[0]).toBe('real/model')
+    // The other three sort relatively to each other in stable input order.
+    expect(result.slice(1).sort()).toEqual(['inf/model', 'missing/model', 'nan/model'].sort())
+  })
+
+  test('caps the result at RECENT_MODELS_MAX (10) by default', () => {
+    const workspaces: WorkspaceForRecents[] = []
+    for (let i = 0; i < 15; i++) {
+      workspaces.push(forgeWs({
+        projectID: PROJECT_A,
+        timeUsed: 1000 - i,
+        executionModel: `prov-${i}/model-${i}`,
+      }))
+    }
+    const result = deriveRecentModelsFromWorkspaces(PROJECT_A, workspaces)
+    expect(result).toHaveLength(10)
+    expect(result[0]).toBe('prov-0/model-0')
+    expect(result[9]).toBe('prov-9/model-9')
+  })
+
+  test('honors a custom `max` option', () => {
+    const workspaces = [
+      forgeWs({ projectID: PROJECT_A, timeUsed: 3, executionModel: 'a/a' }),
+      forgeWs({ projectID: PROJECT_A, timeUsed: 2, executionModel: 'b/b' }),
+      forgeWs({ projectID: PROJECT_A, timeUsed: 1, executionModel: 'c/c' }),
+    ]
+    expect(deriveRecentModelsFromWorkspaces(PROJECT_A, workspaces, { max: 2 })).toEqual([
+      'a/a',
+      'b/b',
+    ])
+  })
+
+  test('returns [] when max is 0 or negative', () => {
+    const workspaces = [
+      forgeWs({ projectID: PROJECT_A, timeUsed: 1, executionModel: 'a/a' }),
+    ]
+    expect(deriveRecentModelsFromWorkspaces(PROJECT_A, workspaces, { max: 0 })).toEqual([])
+    expect(deriveRecentModelsFromWorkspaces(PROJECT_A, workspaces, { max: -5 })).toEqual([])
+  })
+
+  test('stops scanning once the cap is reached (executionModel-then-auditor ordering preserved at boundary)', () => {
+    const workspaces = [
+      forgeWs({
+        projectID: PROJECT_A,
+        timeUsed: 100,
+        executionModel: 'first/exec',
+        auditorModel: 'first/audit',
+      }),
+      forgeWs({
+        projectID: PROJECT_A,
+        timeUsed: 50,
+        executionModel: 'second/exec',
+        auditorModel: 'second/audit',
+      }),
+    ]
+    expect(deriveRecentModelsFromWorkspaces(PROJECT_A, workspaces, { max: 3 })).toEqual([
+      'first/exec',
+      'first/audit',
+      'second/exec',
+    ])
+  })
+})
+
+describe('deriveRecentModels (layered)', () => {
+  const PROJECT_A = 'project-a'
+  const PROJECT_B = 'project-b'
+
+  function emptyInputs(): DeriveRecentModelsInputs {
+    return {
+      sessions: [],
+      workspaces: [],
+      openCodeFavorites: [],
+      openCodeDefault: undefined,
+    }
+  }
+
+  function session(input: {
+    projectID?: string
+    providerID?: string
+    id?: string
+    variant?: string
+    updated?: number
+  }): SessionForRecents {
+    return {
+      projectID: input.projectID ?? PROJECT_A,
+      model:
+        input.providerID === undefined || input.id === undefined
+          ? null
+          : { providerID: input.providerID, id: input.id, ...(input.variant !== undefined ? { variant: input.variant } : {}) },
+      time: { updated: input.updated ?? 0 },
+    }
+  }
+
+  function forgeWs(input: {
+    timeUsed?: number
+    projectID?: string
+    executionModel?: string
+    auditorModel?: string
+  }): WorkspaceForRecents {
+    const forgeLoop: Record<string, unknown> = {}
+    if (input.executionModel) forgeLoop.executionModel = input.executionModel
+    if (input.auditorModel) forgeLoop.auditorModel = input.auditorModel
+    return {
+      type: 'forge',
+      ...(input.projectID !== undefined ? { projectID: input.projectID } : {}),
+      ...(input.timeUsed !== undefined ? { timeUsed: input.timeUsed } : {}),
+      extra: { forgeLoop },
+    }
+  }
+
+  test('returns empty array when all inputs are empty', () => {
+    expect(deriveRecentModels(PROJECT_A, emptyInputs())).toEqual([])
+  })
+
+  test('returns empty array when max <= 0 even with populated inputs', () => {
+    const inputs: DeriveRecentModelsInputs = {
+      sessions: [session({ providerID: 'anthropic', id: 'claude', updated: 100 })],
+      workspaces: [forgeWs({ projectID: PROJECT_A, timeUsed: 1, executionModel: 'a/b' })],
+      openCodeFavorites: ['x/y'],
+      openCodeDefault: 'z/w',
+    }
+    expect(deriveRecentModels(PROJECT_A, inputs, { max: 0 })).toEqual([])
+    expect(deriveRecentModels(PROJECT_A, inputs, { max: -1 })).toEqual([])
+  })
+
+  describe('sessions layer', () => {
+    test('extracts model fullnames from sessions for the requested project', () => {
+      const inputs: DeriveRecentModelsInputs = {
+        ...emptyInputs(),
+        sessions: [
+          session({ providerID: 'anthropic', id: 'claude-sonnet-4', updated: 100 }),
+          session({ providerID: 'openai', id: 'gpt-5', updated: 200 }),
+        ],
+      }
+      // Sorted by time.updated desc
+      expect(deriveRecentModels(PROJECT_A, inputs)).toEqual([
+        'openai/gpt-5',
+        'anthropic/claude-sonnet-4',
+      ])
+    })
+
+    test('excludes sessions from other projects', () => {
+      const inputs: DeriveRecentModelsInputs = {
+        ...emptyInputs(),
+        sessions: [
+          session({ projectID: PROJECT_A, providerID: 'anthropic', id: 'claude', updated: 100 }),
+          session({ projectID: PROJECT_B, providerID: 'foreign', id: 'model', updated: 200 }),
+        ],
+      }
+      expect(deriveRecentModels(PROJECT_A, inputs)).toEqual(['anthropic/claude'])
+    })
+
+    test('skips sessions with null/missing model', () => {
+      const inputs: DeriveRecentModelsInputs = {
+        ...emptyInputs(),
+        sessions: [
+          { projectID: PROJECT_A, model: null, time: { updated: 300 } },
+          { projectID: PROJECT_A, time: { updated: 200 } },
+          session({ providerID: 'anthropic', id: 'claude', updated: 100 }),
+        ],
+      }
+      expect(deriveRecentModels(PROJECT_A, inputs)).toEqual(['anthropic/claude'])
+    })
+
+    test('skips sessions with malformed model (empty providerID or id)', () => {
+      const inputs: DeriveRecentModelsInputs = {
+        ...emptyInputs(),
+        sessions: [
+          { projectID: PROJECT_A, model: { providerID: '', id: 'model' }, time: { updated: 300 } },
+          { projectID: PROJECT_A, model: { providerID: 'prov', id: '' }, time: { updated: 200 } },
+          session({ providerID: 'anthropic', id: 'claude', updated: 100 }),
+        ],
+      }
+      expect(deriveRecentModels(PROJECT_A, inputs)).toEqual(['anthropic/claude'])
+    })
+
+    test('dedupes the same model across multiple sessions, preserving most-recent occurrence', () => {
+      const inputs: DeriveRecentModelsInputs = {
+        ...emptyInputs(),
+        sessions: [
+          session({ providerID: 'anthropic', id: 'claude', updated: 300 }),
+          session({ providerID: 'openai', id: 'gpt-5', updated: 200 }),
+          session({ providerID: 'anthropic', id: 'claude', updated: 100 }),
+        ],
+      }
+      expect(deriveRecentModels(PROJECT_A, inputs)).toEqual([
+        'anthropic/claude',
+        'openai/gpt-5',
+      ])
+    })
+
+    test('ignores `variant` when building the fullname', () => {
+      const inputs: DeriveRecentModelsInputs = {
+        ...emptyInputs(),
+        sessions: [
+          session({ providerID: 'anthropic', id: 'claude', variant: 'thinking', updated: 100 }),
+        ],
+      }
+      expect(deriveRecentModels(PROJECT_A, inputs)).toEqual(['anthropic/claude'])
+    })
+  })
+
+  describe('workspaces layer', () => {
+    test('surfaces models that sessions did not capture (e.g. auditor model)', () => {
+      const inputs: DeriveRecentModelsInputs = {
+        ...emptyInputs(),
+        sessions: [
+          session({ providerID: 'anthropic', id: 'claude-sonnet-4', updated: 200 }),
+        ],
+        workspaces: [
+          forgeWs({
+            projectID: PROJECT_A,
+            timeUsed: 100,
+            executionModel: 'anthropic/claude-sonnet-4',
+            auditorModel: 'openai/gpt-5',
+          }),
+        ],
+      }
+      // Session contributes claude-sonnet-4; workspace adds gpt-5 (auditor).
+      expect(deriveRecentModels(PROJECT_A, inputs)).toEqual([
+        'anthropic/claude-sonnet-4',
+        'openai/gpt-5',
+      ])
+    })
+
+    test('workspace layer runs after sessions: session order wins on overlap', () => {
+      const inputs: DeriveRecentModelsInputs = {
+        ...emptyInputs(),
+        sessions: [
+          session({ providerID: 'openai', id: 'gpt-5', updated: 100 }),
+        ],
+        workspaces: [
+          forgeWs({
+            projectID: PROJECT_A,
+            timeUsed: 1000, // even with much higher recency, sessions are layered first
+            executionModel: 'anthropic/claude-sonnet-4',
+            auditorModel: 'openai/gpt-5',
+          }),
+        ],
+      }
+      expect(deriveRecentModels(PROJECT_A, inputs)).toEqual([
+        'openai/gpt-5',
+        'anthropic/claude-sonnet-4',
+      ])
+    })
+
+    test('workspaces from other projects do not leak into the result', () => {
+      const inputs: DeriveRecentModelsInputs = {
+        ...emptyInputs(),
+        workspaces: [
+          forgeWs({ projectID: PROJECT_B, timeUsed: 100, executionModel: 'foreign/model' }),
+          forgeWs({ projectID: PROJECT_A, timeUsed: 50, executionModel: 'mine/model' }),
+        ],
+      }
+      expect(deriveRecentModels(PROJECT_A, inputs)).toEqual(['mine/model'])
+    })
+  })
+
+  describe('favorites layer', () => {
+    test('surfaces favorites after sessions + workspaces', () => {
+      const inputs: DeriveRecentModelsInputs = {
+        ...emptyInputs(),
+        sessions: [session({ providerID: 'openai', id: 'gpt-5', updated: 100 })],
+        openCodeFavorites: ['anthropic/claude', 'google/gemini'],
+      }
+      expect(deriveRecentModels(PROJECT_A, inputs)).toEqual([
+        'openai/gpt-5',
+        'anthropic/claude',
+        'google/gemini',
+      ])
+    })
+
+    test('favorites preserve the order they were provided', () => {
+      const inputs: DeriveRecentModelsInputs = {
+        ...emptyInputs(),
+        openCodeFavorites: ['z/last', 'a/first', 'm/middle'],
+      }
+      expect(deriveRecentModels(PROJECT_A, inputs)).toEqual([
+        'z/last',
+        'a/first',
+        'm/middle',
+      ])
+    })
+
+    test('favorites already present in earlier layers are deduped (first occurrence wins)', () => {
+      const inputs: DeriveRecentModelsInputs = {
+        ...emptyInputs(),
+        sessions: [session({ providerID: 'anthropic', id: 'claude', updated: 100 })],
+        openCodeFavorites: ['anthropic/claude', 'openai/gpt-5'],
+      }
+      expect(deriveRecentModels(PROJECT_A, inputs)).toEqual([
+        'anthropic/claude',
+        'openai/gpt-5',
+      ])
+    })
+  })
+
+  describe('default layer', () => {
+    test('global default appears last when no earlier layer surfaced it', () => {
+      const inputs: DeriveRecentModelsInputs = {
+        ...emptyInputs(),
+        sessions: [session({ providerID: 'openai', id: 'gpt-5', updated: 100 })],
+        openCodeDefault: 'anthropic/claude',
+      }
+      expect(deriveRecentModels(PROJECT_A, inputs)).toEqual([
+        'openai/gpt-5',
+        'anthropic/claude',
+      ])
+    })
+
+    test('global default is deduped if an earlier layer already surfaced it', () => {
+      const inputs: DeriveRecentModelsInputs = {
+        ...emptyInputs(),
+        sessions: [session({ providerID: 'anthropic', id: 'claude', updated: 100 })],
+        openCodeDefault: 'anthropic/claude',
+      }
+      expect(deriveRecentModels(PROJECT_A, inputs)).toEqual(['anthropic/claude'])
+    })
+
+    test('empty/undefined default is a no-op', () => {
+      const inputs: DeriveRecentModelsInputs = {
+        ...emptyInputs(),
+        sessions: [session({ providerID: 'openai', id: 'gpt-5', updated: 100 })],
+        openCodeDefault: undefined,
+      }
+      expect(deriveRecentModels(PROJECT_A, inputs)).toEqual(['openai/gpt-5'])
+      const inputs2: DeriveRecentModelsInputs = { ...inputs, openCodeDefault: '' }
+      expect(deriveRecentModels(PROJECT_A, inputs2)).toEqual(['openai/gpt-5'])
+    })
+  })
+
+  describe('cap and composition', () => {
+    test('respects the cap and stops scanning early', () => {
+      const inputs: DeriveRecentModelsInputs = {
+        ...emptyInputs(),
+        sessions: [
+          session({ providerID: 'p1', id: 'm1', updated: 500 }),
+          session({ providerID: 'p2', id: 'm2', updated: 400 }),
+          session({ providerID: 'p3', id: 'm3', updated: 300 }),
+        ],
+        workspaces: [
+          forgeWs({ projectID: PROJECT_A, timeUsed: 200, executionModel: 'p4/m4' }),
+        ],
+        openCodeFavorites: ['p5/m5'],
+        openCodeDefault: 'p6/m6',
+      }
+      expect(deriveRecentModels(PROJECT_A, inputs, { max: 2 })).toEqual([
+        'p1/m1',
+        'p2/m2',
+      ])
+    })
+
+    test('full composition: all four layers contribute in priority order', () => {
+      const inputs: DeriveRecentModelsInputs = {
+        sessions: [
+          session({ providerID: 'session', id: 'recent', updated: 100 }),
+        ],
+        workspaces: [
+          forgeWs({
+            projectID: PROJECT_A,
+            timeUsed: 50,
+            executionModel: 'session/recent', // duplicate of session
+            auditorModel: 'workspace/auditor',
+          }),
+        ],
+        openCodeFavorites: ['favorite/explicit', 'session/recent'],
+        openCodeDefault: 'global/default',
+      }
+      expect(deriveRecentModels(PROJECT_A, inputs)).toEqual([
+        'session/recent',
+        'workspace/auditor',
+        'favorite/explicit',
+        'global/default',
+      ])
+    })
+
+    test('caps at RECENT_MODELS_MAX (10) by default', () => {
+      const inputs: DeriveRecentModelsInputs = {
+        ...emptyInputs(),
+        sessions: Array.from({ length: 15 }, (_, i) =>
+          session({ providerID: `p${i}`, id: `m${i}`, updated: 1000 - i }),
+        ),
+      }
+      const result = deriveRecentModels(PROJECT_A, inputs)
+      expect(result).toHaveLength(10)
+      expect(result[0]).toBe('p0/m0')
+      expect(result[9]).toBe('p9/m9')
+    })
   })
 })
