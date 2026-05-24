@@ -1,9 +1,8 @@
-import { readFileSync, existsSync, mkdirSync, copyFileSync, writeFileSync, cpSync, readdirSync } from 'fs'
+import { readFileSync, existsSync, mkdirSync, copyFileSync, cpSync, readdirSync } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
 import { resolveLogPath } from './storage'
-import { modify, applyEdits, type JSONPath } from 'jsonc-parser/lib/esm/main'
 import type { PluginConfig } from './types'
 
 function resolveBundledConfigPath(): string {
@@ -153,55 +152,4 @@ function ensureBundledSkills(): void {
   }
 }
 
-/**
- * Saves the plugin config to disk while preserving comments and formatting.
- * Uses jsonc-parser to apply targeted edits without disturbing existing structure.
- */
-function savePluginConfig(next: PluginConfig): void {
-  const configDir = resolveConfigDir()
-  mkdirSync(configDir, { recursive: true })
-  const configPath = resolveConfigPath()
 
-  let existing: string
-  try {
-    existing = readFileSync(configPath, 'utf-8')
-  } catch {
-    writeFileSync(configPath, JSON.stringify(next, null, 2), 'utf-8')
-    return
-  }
-
-  const formattingOptions = { tabSize: 2, insertSpaces: true, eol: '\n' }
-  let output = existing
-  for (const [path, value] of flattenLeafEntries(next)) {
-    const edits = modify(output, path as JSONPath, value, { formattingOptions })
-    output = applyEdits(output, edits)
-  }
-  writeFileSync(configPath, output, 'utf-8')
-}
-
-function* flattenLeafEntries(obj: unknown, prefix: (string | number)[] = []): Generator<[(string | number)[], unknown]> {
-  if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) {
-    yield [prefix, obj]
-    return
-  }
-  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-    yield* flattenLeafEntries(v, [...prefix, k])
-  }
-}
-
-/**
- * Updates the tui.autoSavePlans field and persists the config to disk.
- * Returns the updated config object.
- */
-export function setTuiAutoSavePlans(enabled: boolean): PluginConfig {
-  const current = loadPluginConfig()
-  const next: PluginConfig = {
-    ...current,
-    tui: {
-      ...current.tui,
-      autoSavePlans: enabled,
-    },
-  }
-  savePluginConfig(next)
-  return next
-}

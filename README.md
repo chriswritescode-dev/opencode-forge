@@ -29,7 +29,7 @@ Add to your `opencode.json` to enable Forge’s server-side hooks, tools, and ag
 }
 ```
 
-**For TUI features:** Also add to your `tui.json` to enable the sidebar, plan viewer, execution dialog, and load-plan UI:
+**For TUI features:** Also add to your `tui.json` to enable the sidebar and execution dialog:
 
 ```json
 {
@@ -53,25 +53,13 @@ Forge ships two user-facing surfaces:
 - **Server plugin** — enabled through OpenCode plugin config in `opencode.json`. The package declares the `server` oc-plugin surface and exports `./server` for the server entrypoint.
 - **TUI plugin** — enabled separately in `tui.json`. The package declares the `tui` oc-plugin surface and exports `./tui` for the terminal UI entrypoint.
 
-The server plugin provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, and sandbox support. The TUI plugin layers on sidebar, plan viewer/editor, execution dialog, and load-plan UI.
+The server plugin provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, and sandbox support. The TUI plugin layers on the sidebar and execution dialog.
 
 ## Screenshots
-
-Plan viewer showing the plan in rendered markdown format:
-
-![Plan Viewer](docs/images/view-plan.webp)
 
 Execution flow dialog with mode and model selection:
 
 ![Execution Flow](docs/images/execution.webp)
-
-Plan editor with raw text editing:
-
-![Plan Editor](docs/images/plan-editor.webp)
-
-Load plans dialog showing archived plans:
-
-![Load Plans](docs/images/load-plans.webp)
 
 ## Features
 
@@ -79,7 +67,7 @@ Load plans dialog showing archived plans:
 - **Execution** — `New session`, `Execute here`, and `Loop` launch paths for approved plans
 - **Loops** — iterative coding/auditing with isolated git worktree and optional Docker sandbox
 - **Review Findings** — persistent, loop-scoped review findings across loop sessions
-- **TUI** — sidebar, plan viewer/editor, execution dialog, and load-plan UI
+- **TUI** — sidebar and execution dialog
 - **Sandbox** — Optional Docker worktree loop isolation with bind-mounted project files
 
 ## Agents
@@ -218,14 +206,7 @@ Enable `logging.enabled` to write logs to disk. To use the default log path, omi
   // TUI sidebar widget configuration
   "tui": {
     "sidebar": true,               // Show Forge sidebar in OpenCode TUI
-    "showVersion": true,           // Show plugin version in sidebar title
-    "autoSavePlans": false,        // Auto-save captured plans to disk under <dataDir>/plans/<projectId>/
-    "planArchiveTtlMs": 604800000, // TTL in ms for archived plans before pruning. 0 disables pruning.
-    "keybinds": {                  // Keyboard shortcut overrides
-      "viewPlan": "<leader>v",     // View plan dialog
-      "showLoops": "<leader>w",    // Show loops dialog
-      "loadPlan": "<leader>i"      // Load archived plans dialog
-    }
+    "showVersion": true            // Show plugin version in sidebar title
   },
 
   // TTL in ms for completed/cancelled loops before cleanup. Default: 604800000 (7 days)
@@ -287,34 +268,15 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 #### TUI
 - `tui.sidebar` - Show the forge sidebar widget in OpenCode TUI (default: `true`)
 - `tui.showVersion` - Show plugin version number in the sidebar title (default: `true`)
-- `tui.autoSavePlans` - Auto-save captured plans to disk under `<dataDir>/plans/<projectId>/`. Default: `false`.
-- `tui.planArchiveTtlMs` - TTL in ms for archived plans before pruning. 0 disables pruning. Default: `604800000` (7 days).
-- `tui.keybinds.viewPlan` - View plan dialog keybind. Default: `<leader>v`.
-- `tui.keybinds.showLoops` - Show loops dialog keybind. Default: `<leader>w`.
-- `tui.keybinds.loadPlan` - Load archived plans dialog keybind. Default: `<leader>i`.
+- `tui.keybinds` - Keyboard shortcut overrides for Forge commands, as a flat map of command name to key sequence (default: `{}`).
 
 ## TUI Plugin
 
-The plugin includes a TUI sidebar widget and dialog system for viewing, editing, executing plans directly in the OpenCode terminal interface.
+The plugin includes a TUI sidebar widget and an execution dialog for launching plans directly in the OpenCode terminal interface.
 
 ### Sidebar
 
-The sidebar provides quick access to plans and configuration:
-
-- **Auto-save plans** — Toggle checkbox to auto-save captured plans to disk under `<dataDir>/plans/<projectId>/`
-- **Load plan** — Opens the Load Plan dialog with archived plans from disk
-- **Plan indicator** — When a plan exists, shows `· plan` in collapsed sidebar header
-
-### Plan Viewer
-
-When an architect session produces a plan, it is cached in the current session plan store. The plan is accessible from the sidebar (Load plan button) or the command palette (`Forge: View plan`). Missing plans show an informational toast.
-
-The plan viewer dialog renders the full plan as GitHub-flavored markdown with syntax highlighting:
-
-- **View tab** — Rendered markdown view with full formatting
-- **Edit tab** — Raw text editor for direct plan modification. Click **Save** to write changes back to the current session plan store
-- **Execute tab** — Opens the execution dialog with mode and model selection
-- **Export** — Exports the plan to a markdown file in the project directory
+The sidebar shows Forge's connection status and version. Captured plans live on the server in the `plansRepo` SQL store; the TUI no longer keeps a local archive or in-TUI editor.
 
 ### Execution Dialog
 
@@ -334,27 +296,19 @@ Two model selectors are available:
 
 **Execution Model:**
 - Opens a full model selection dialog with all available providers
-- Shows recently used models (last 10, 90-day TTL) for quick access
+- Shows recently used models for quick access (derived from your OpenCode sessions, recent Forge loops, OpenCode favorites, and the global default)
 - Displays model capabilities (reasoning, tools support) in descriptions
-- Defaults to last-used selection, falling back to `config.executionModel`
+- Defaults to the most recent Forge loop's selection, falling back to `config.executionModel`
 
 **Auditor Model:**
 - Same model selection interface
-- Defaults to last-used selection, falling back to `config.auditorModel` → `config.executionModel`
+- Defaults to the most recent Forge loop's auditor selection, falling back to `config.auditorModel` → `config.executionModel`
 
 #### Persistence
 
-Your selections are automatically saved in `tui_preferences` after launch:
-- Last-used mode and models are persisted per-project (30-day TTL)
-- Subsequent plan executions pre-fill with your previous choices
-- Recent models are tracked across all dialog interactions
+Selections live on the **OpenCode server**, not in a TUI-local cache. Every loop execution stamps the chosen execution + auditor model (and variants) into `workspace.create.extra.forgeLoop`, and the next time the dialog opens it derives defaults and recents from `workspace.list()` plus the session list. This means the picker is correct even when the TUI runs on a different host than the OpenCode server.
 
-### Command Palette
-
-The command palette registers two Forge commands:
-
-- `Forge: View plan` (`<leader>v`) — View cached plan for this session
-- `Forge: Load plan` (`<leader>i`) — Load an archived plan from disk
+The dialog tracks only loop-mode executions for recents / last-used defaults; `New session` and `Execute here` modes do not create a workspace, so they do not contribute to recents.
 
 ### Setup
 
@@ -379,7 +333,7 @@ The TUI provides a comprehensive model selection dialog when executing plans. Th
 
 Models are displayed in priority order:
 
-1. **Recent** — Last 10 models used across all dialogs (90-day TTL)
+1. **Recent** — Last 10 models, derived from the OpenCode session list, recent Forge loops, OpenCode favorites, and the global default
 2. **Connected providers** — Models from currently connected providers
 3. **Configured providers** — Models from providers defined in your OpenCode config
 4. **All models** — Remaining models sorted alphabetically by provider and model name
@@ -392,8 +346,7 @@ Each model shows:
 #### Quick Access
 
 - **"Use default"** option at the top to use config defaults
-- Recently used models are tracked automatically
-- Last-used selections are persisted per-project (30-day TTL)
+- Recently used models are derived from server-side data each time the dialog opens, so they reflect the latest state across all hosts the user has used.
 
 ### Configuration
 
@@ -429,7 +382,7 @@ Plan with a smart model, execute with a fast model. The architect agent research
 
 The architect is read-only and must output exactly one final plan between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers. Forge auto-captures that marked plan into SQL storage for the current session.
 
-The user can view the cached plan at any time from the **sidebar** (Load plan button) or the **command palette** (`Forge: View plan`). The plan viewer renders full GitHub-flavored markdown and supports inline editing — the user can modify the plan directly before approving.
+The captured plan is the source of truth for execution. The architect's own message in the chat history is the human-readable view; programmatic access is via the `plan-read` tool.
 
 ### Execution
 
@@ -466,8 +419,8 @@ Model selection follows this priority order:
 
 ### Troubleshooting
 
-- **No plan found** — Ensure the architect output included the forge plan markers, or open the Plan Viewer for the current session.
-- **TUI shows no plan** — The plan is session-scoped; use `Forge: View plan` in the session where the architect produced it.
+- **No plan found** — Ensure the architect output included the `<!-- forge-plan:start -->` / `<!-- forge-plan:end -->` markers; the capture hook only stores plans wrapped in those markers.
+- **TUI shows no plan** — Plans are session-scoped on the server; switch to the session where the architect produced the plan.
 - **Need logs** — Set `logging.enabled` to `true`, and optionally `logging.debug` for verbose output.
 
 ## Loop
@@ -587,7 +540,7 @@ If workspace creation or session binding fails at runtime — env var unset, Ope
 
 ### From the TUI
 
-- Loops are launched via the Execute tab in the Plan Viewer dialog (select Loop mode)
+- Loops are launched via the execution dialog (select Loop mode)
 - On hosts with workspace support, active loops appear as switchable workspaces alongside your main project
 
 ## Docker Sandbox

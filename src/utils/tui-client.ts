@@ -3,7 +3,6 @@ import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 import { appendFileSync, mkdirSync } from 'fs'
 import { dirname } from 'path'
 import { resolveLogPath } from '../storage'
-import { readPlan, readPlanForAnyProject, writePlan, deletePlan } from './tui-plan-store'
 import {
   fetchAvailableModels,
   readOpenCodeFavoriteModels,
@@ -121,9 +120,6 @@ export interface ForgeProjectClient {
   readonly projectId: string
 
   plan: {
-    read(sessionId: string): Promise<string | null>
-    write(sessionId: string, content: string): Promise<boolean>
-    delete(sessionId: string): Promise<boolean>
     /**
      * Execute workflow: forwards the user's chosen mode + models + plan to
      * the server. For loop mode the model selection is persisted on the
@@ -279,39 +275,6 @@ export async function connectForgeProject(
   }
 
   const plan: ForgeProjectClient['plan'] = {
-    async read(sessionId) {
-      const localPlan = projectId ? readPlan(projectId, sessionId) : readPlanForAnyProject(sessionId)
-      if (localPlan) {
-        tuiDebug(`plan.read local hit session=${sessionId} projectId=${projectId || 'any'}`)
-        return localPlan
-      }
-
-      const fallbackPlan = readPlanForAnyProject(sessionId)
-      if (fallbackPlan) {
-        tuiDebug(`plan.read any-project fallback hit session=${sessionId}`)
-        return fallbackPlan
-      }
-      tuiDebug(`plan.read miss session=${sessionId} projectId=${projectId || 'none'}`)
-      return null
-    },
-    async write(sessionId, content) {
-      if (!projectId) return false
-      try {
-        writePlan(projectId, sessionId, content)
-        return true
-      } catch {
-        return false
-      }
-    },
-    async delete(sessionId) {
-      if (!projectId) return false
-      try {
-        deletePlan(projectId, sessionId)
-        return true
-      } catch {
-        return false
-      }
-    },
     async execute(sessionId, req) {
       const parsedModel = parseModelString(req.executionModel)
 
