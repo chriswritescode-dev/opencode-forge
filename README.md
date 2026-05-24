@@ -268,7 +268,7 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 #### TUI
 - `tui.sidebar` - Show the forge sidebar widget in OpenCode TUI (default: `true`)
 - `tui.showVersion` - Show plugin version number in the sidebar title (default: `true`)
-- `tui.keybinds.executePlan` - Open the execution dialog for the current session's plan. Default: `<leader>e`.
+- `tui.keybinds.executePlan` - Open the execution dialog for the current session's plan. Default: `<leader>f` ("Forge"). Avoid `<leader>e` — that conflicts with opencode's built-in `editor_open` and your binding will be shadowed.
 
 ## TUI Plugin
 
@@ -280,7 +280,7 @@ The sidebar shows Forge's connection status and version. Captured plans live on 
 
 ### Execution Dialog
 
-Open the dialog from the command palette as `Forge: Execute plan` (default keybind `<leader>e`). The plan is sourced from the most recent architect message in the current session — the marked `<!-- forge-plan:start --> ... <!-- forge-plan:end -->` block is parsed out of the assistant's reply. If no marked plan exists in the session, the dialog will not open and you'll see a toast asking the architect to produce one first.
+Open the dialog from the command palette as `Forge: Execute plan` (default keybind `<leader>f`). The plan is sourced from the most recent architect message in the current session — the marked `<!-- forge-plan:start --> ... <!-- forge-plan:end -->` block is parsed out of the assistant's reply. If no marked plan exists in the session, the dialog will not open and you'll see a toast asking the architect to produce one first.
 
 The dialog provides full control over execution parameters:
 

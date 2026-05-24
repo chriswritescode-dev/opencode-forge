@@ -14,9 +14,10 @@
 
 import type { ExecutionPreferences } from './tui-execution-preferences'
 import type { PluginConfig } from '../types'
-import type { ModelInfo, SessionForRecents, WorkspaceForRecents } from './tui-models'
+import type { ModelInfo } from './tui-models'
 import { deriveRecentModels, flattenProviders, sortModelsByPriority } from './tui-models'
 import { resolveExecutionDialogDefaults } from './tui-execution-preferences'
+import type { ExecutionContext } from './tui-client'
 
 export interface ExecutionContextSnapshot {
   preferences: ExecutionPreferences | null
@@ -31,6 +32,41 @@ export interface ExecutionContextSnapshot {
     mode: string
     executionVariant: string
     auditorVariant: string
+  }
+}
+
+/**
+ * Builds an `ExecutionContextSnapshot` from a raw SDK load result. Single
+ * source of truth used by both the cache's `refresh()` and the inline
+ * fallback path in `ExecutePlanPanel` so the two never diverge.
+ */
+export function buildExecutionContextSnapshot(
+  projectId: string,
+  pluginConfig: PluginConfig,
+  result: ExecutionContext,
+): ExecutionContextSnapshot {
+  const allModelList = flattenProviders(result.models.providers as Parameters<typeof flattenProviders>[0])
+  const recents = deriveRecentModels(projectId, {
+    sessions: result.sessions,
+    workspaces: result.workspaces,
+    openCodeFavorites: result.openCodeFavorites,
+    openCodeDefault: result.openCodeDefault,
+  })
+  const sorted = sortModelsByPriority(allModelList, {
+    recents,
+    connectedProviderIds: result.models.connectedProviderIds || [],
+    configuredProviderIds: result.models.configuredProviderIds || [],
+  })
+  const defaults = resolveExecutionDialogDefaults(pluginConfig, result.preferences)
+
+  return {
+    preferences: result.preferences,
+    models: sorted,
+    modelsError: result.models.error,
+    connectedProviderIds: result.models.connectedProviderIds || [],
+    configuredProviderIds: result.models.configuredProviderIds || [],
+    recents,
+    defaults,
   }
 }
 
@@ -51,20 +87,6 @@ export interface ExecutionContextCache {
   onChange(listener: (snap: ExecutionContextSnapshot) => void): () => void
 }
 
-interface LoadExecutionContextResult {
-  preferences: ExecutionPreferences | null
-  models: {
-    providers: unknown[]
-    connectedProviderIds?: string[]
-    configuredProviderIds?: string[]
-    error?: string
-  }
-  sessions: SessionForRecents[]
-  workspaces: WorkspaceForRecents[]
-  openCodeFavorites: string[]
-  openCodeDefault: string | undefined
-}
-
 const RECENTS_CAP = 10
 
 /**
@@ -74,13 +96,13 @@ const RECENTS_CAP = 10
  * @param pluginConfig - Plugin config for resolving defaults
  * @param loadFn - Function to load execution context from the SDK. Must
  *   return sessions/workspaces/favorites/default alongside models +
- *   preferences; see `LoadExecutionContextResult`.
+ *   preferences; see `ExecutionContext`.
  * @returns Cache instance with snapshot/refresh/ensureLoaded/recordRecent/onChange methods
  */
 export function createExecutionContextCache(
   projectId: string,
   pluginConfig: PluginConfig,
-  loadFn: () => Promise<LoadExecutionContextResult>,
+  loadFn: () => Promise<ExecutionContext>,
 ): ExecutionContextCache {
   let currentSnapshot: ExecutionContextSnapshot | null = null
   let inFlightRefresh: Promise<ExecutionContextSnapshot> | null = null
@@ -94,32 +116,7 @@ export function createExecutionContextCache(
 
   async function refresh(): Promise<ExecutionContextSnapshot> {
     const result = await loadFn()
-
-    const allModelList = flattenProviders(result.models.providers as Parameters<typeof flattenProviders>[0])
-    const recents = deriveRecentModels(projectId, {
-      sessions: result.sessions,
-      workspaces: result.workspaces,
-      openCodeFavorites: result.openCodeFavorites,
-      openCodeDefault: result.openCodeDefault,
-    })
-    const sorted = sortModelsByPriority(allModelList, {
-      recents,
-      connectedProviderIds: result.models.connectedProviderIds || [],
-      configuredProviderIds: result.models.configuredProviderIds || [],
-    })
-
-    const defaults = resolveExecutionDialogDefaults(pluginConfig, result.preferences)
-
-    currentSnapshot = {
-      preferences: result.preferences,
-      models: sorted,
-      modelsError: result.models.error,
-      connectedProviderIds: result.models.connectedProviderIds || [],
-      configuredProviderIds: result.models.configuredProviderIds || [],
-      recents,
-      defaults,
-    }
-
+    currentSnapshot = buildExecutionContextSnapshot(projectId, pluginConfig, result)
     notifyListeners()
     return currentSnapshot!
   }

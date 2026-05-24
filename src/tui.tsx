@@ -15,7 +15,7 @@ type TuiKeybinds = {
 }
 
 const DEFAULT_KEYBINDS: TuiKeybinds = {
-  executePlan: '<leader>e',
+  executePlan: '<leader>f',
 }
 
 type TuiOptions = {
@@ -264,48 +264,53 @@ const tui: TuiPlugin = async (api) => {
     return (route as { params: { sessionID: string } }).params.sessionID
   }
 
-  if (api.command) {
-    api.command.register(() => [
-      {
-        title: 'Forge: Execute plan',
-        value: 'forge.plan.execute',
-        description: 'Open the execution dialog for the current session\'s plan',
-        category: 'Forge',
-        keybind: opts.keybinds.executePlan,
-        onSelect: async () => {
-          const sessionID = resolveSessionID()
-          if (!sessionID) {
-            api.ui.toast({ message: 'Open a session first', variant: 'info', duration: 3000 })
-            return
-          }
-          const currentClient = await ensureClient()
-          if (!currentClient) return
+  const runExecutePlan = async () => {
+    const sessionID = resolveSessionID()
+    if (!sessionID) {
+      api.ui.toast({ message: 'Open a session first', variant: 'info', duration: 3000 })
+      return
+    }
+    const currentClient = await ensureClient()
+    if (!currentClient) return
 
-          const planText = await fetchLatestPlanForSession(api.client, sessionID, directory)
-          if (!planText) {
-            api.ui.toast({
-              message: 'No plan in current session — have the architect emit one first',
-              variant: 'info',
-              duration: 4000,
-            })
-            return
-          }
+    const planText = await fetchLatestPlanForSession(api.client, sessionID, directory)
+    if (!planText) {
+      api.ui.toast({
+        message: 'No plan in current session — have the architect emit one first',
+        variant: 'info',
+        duration: 4000,
+      })
+      return
+    }
 
-          api.ui.dialog.setSize('xlarge')
-          api.ui.dialog.replace(() => (
-            <ExecutionDialog
-              api={api}
-              client={currentClient}
-              cache={executionContextCache()}
-              pluginConfig={pluginConfig}
-              planContent={planText}
-              sessionId={sessionID}
-            />
-          ))
-        },
-      },
-    ])
+    api.ui.dialog.setSize('xlarge')
+    api.ui.dialog.replace(() => (
+      <ExecutionDialog
+        api={api}
+        client={currentClient}
+        cache={executionContextCache()}
+        pluginConfig={pluginConfig}
+        planContent={planText}
+        sessionId={sessionID}
+      />
+    ))
   }
+
+  api.keymap.registerLayer({
+    commands: [
+      {
+        name: 'forge.plan.execute',
+        title: 'Forge: Execute plan',
+        desc: 'Open the execution dialog for the current session\'s plan',
+        category: 'Forge',
+        namespace: 'palette',
+        run: () => { void runExecutePlan() },
+      },
+    ],
+    bindings: opts.keybinds.executePlan
+      ? [{ key: opts.keybinds.executePlan, cmd: 'forge.plan.execute' }]
+      : [],
+  })
 
   api.slots.register({
     order: 150,
