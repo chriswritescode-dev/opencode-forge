@@ -446,7 +446,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
               {
                 fallbackModel: state.phase === 'auditing' || state.phase === 'final_auditing'
                   ? (state.auditorModel ?? state.executionModel ?? config.auditorModel ?? config.executionModel)
-                  : (state.executionModel ?? config.executionModel ?? config.loop?.model),
+                  : (state.executionModel ?? config.executionModel),
                 role: state.phase === 'auditing' || state.phase === 'final_auditing' ? 'auditor' : 'code',
               },
             )

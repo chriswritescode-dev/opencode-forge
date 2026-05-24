@@ -33,7 +33,6 @@
     "enabled": true,
     "defaultMaxIterations": 15,
     "cleanupWorktree": false,
-    "model": "",
     "stallTimeoutMs": 60000,
     "maxConsecutiveStalls": 5,  // 0 = disabled; default 5
     // Worktree loop completion logging (off by default)

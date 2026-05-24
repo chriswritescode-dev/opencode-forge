@@ -9,7 +9,7 @@ describe('resolveLoopModel', () => {
 
   it('returns undefined when modelFailed is true', () => {
     const mockLoopService = createMockLoopService({ active: true, modelFailed: true })
-    const config = { loop: { model: 'provider/model' } } as PluginConfig
+    const config = { executionModel: 'provider/model' } as PluginConfig
     const result = resolveLoopModel(config, mockLoopService, 'failed-worktree')
     expect(result).toBeUndefined()
   })
@@ -49,15 +49,6 @@ describe('resolveLoopModel', () => {
     expect(result).toEqual({ providerID: 'provider', modelID: 'exec-model' })
   })
 
-  it('ignores config.loop.model so opencode default remains the final fallback', () => {
-    const mockLoopService = createMockLoopService({ 
-      active: true,
-      modelFailed: false,
-    })
-    const config = { loop: { model: 'provider/loop-model' } } as PluginConfig
-    const result = resolveLoopModel(config, mockLoopService, 'test-loop')
-    expect(result).toBeUndefined()
-  })
 })
 
 describe('resolveLoopAuditorModel', () => {
@@ -73,7 +64,6 @@ describe('resolveLoopAuditorModel', () => {
     })
     const config = { 
       auditorModel: 'provider/config-auditor',
-      loop: { model: 'provider/loop-model' },
       executionModel: 'provider/exec-model',
     } as PluginConfig
     const result = resolveLoopAuditorModel(config, mockLoopService, 'test-loop')
@@ -87,7 +77,6 @@ describe('resolveLoopAuditorModel', () => {
     })
     const config = { 
       auditorModel: 'provider/config-auditor',
-      loop: { model: 'provider/loop-model' },
       executionModel: 'provider/exec-model',
     } as PluginConfig
     const result = resolveLoopAuditorModel(config, mockLoopService, 'test-loop')
@@ -100,20 +89,18 @@ describe('resolveLoopAuditorModel', () => {
     })
     const config = { 
       auditorModel: 'provider/config-auditor',
-      loop: { model: 'provider/loop-model' },
       executionModel: 'provider/exec-model',
     } as PluginConfig
     const result = resolveLoopAuditorModel(config, mockLoopService, 'test-loop')
     expect(result).toEqual({ providerID: 'provider', modelID: 'exec-model' })
   })
 
-  it('ignores config.auditorModel and config.loop.model without a stored state model or config.executionModel', () => {
+  it('ignores config.auditorModel without a stored state model or config.executionModel', () => {
     const mockLoopService = createMockLoopService({ 
       active: true,
     })
     const config = { 
       auditorModel: 'provider/config-auditor',
-      loop: { model: 'provider/loop-model' },
     } as PluginConfig
     const result = resolveLoopAuditorModel(config, mockLoopService, 'test-loop')
     expect(result).toBeUndefined()

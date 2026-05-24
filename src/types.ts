@@ -39,9 +39,6 @@ export interface LoopConfig {
   defaultMaxIterations?: number
   /** Clean up worktrees when loops complete. */
   cleanupWorktree?: boolean
-
-  /** Model to use for loop iterations. */
-  model?: string
   /** Timeout in ms before considering a loop stalled. */
   stallTimeoutMs?: number
   /** Worktree loop completion logging configuration. */
