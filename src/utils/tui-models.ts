@@ -318,6 +318,202 @@ export function getRecentModels(projectId: string, dbPathOverride?: string): str
 }
 
 /**
+ * Loose shape used by {@link deriveRecentModelsFromWorkspaces}. Matches the
+ * relevant subset of `Workspace` from `@opencode-ai/sdk/v2`, plus the Forge
+ * `extra.forgeLoop.{executionModel,auditorModel}` envelope written by
+ * `tui-client.ts` when starting a loop.
+ *
+ * Kept structural (not nominal) so the same helper can consume either:
+ * - the raw response of `client.experimental.workspace.list()`, or
+ * - a hand-crafted fixture in tests.
+ */
+export interface WorkspaceForRecents {
+  type: string
+  projectID?: string
+  timeUsed?: number | string
+  extra?: unknown | null
+}
+
+/**
+ * Pulls recent model fullnames (`provider/model`) out of the most recent Forge
+ * workspaces for `projectId`. Replaces the SQLite-backed `getRecentModels`
+ * read path for remote-server topologies: every loop creates a workspace whose
+ * `extra.forgeLoop` already carries the user's chosen models, so the server's
+ * `workspace.list` response is the canonical source.
+ *
+ * Behaviour:
+ * - Only `type === 'forge'` workspaces are considered.
+ * - If a workspace has `projectID` set, it must match `projectId` (other
+ *   projects' selections never leak in). Workspaces without `projectID` are
+ *   not filtered out (forward-compat with older entries).
+ * - Workspaces are sorted by `timeUsed` descending; non-finite values
+ *   (`"NaN"`, `"Infinity"`, missing) sort to the bottom (treated as 0).
+ * - Both `extra.forgeLoop.executionModel` and `extra.forgeLoop.auditorModel`
+ *   are collected, preserving the existing dual-record behaviour from
+ *   `recordRecentModel` (see `execute-plan-panel.tsx:324-325`).
+ * - Within a single workspace, executionModel is recorded before auditorModel.
+ * - Duplicates are dropped (first occurrence wins).
+ * - Result is capped at `options.max ?? RECENT_MODELS_MAX` entries.
+ */
+export function deriveRecentModelsFromWorkspaces(
+  projectId: string,
+  workspaces: ReadonlyArray<WorkspaceForRecents>,
+  options: { max?: number } = {},
+): string[] {
+  const max = options.max ?? RECENT_MODELS_MAX
+  if (max <= 0) return []
+
+  const toFiniteNumber = (value: unknown): number => {
+    const n = typeof value === 'number' ? value : Number(value)
+    return Number.isFinite(n) ? n : 0
+  }
+
+  const eligible = workspaces.filter((w) => {
+    if (w.type !== 'forge') return false
+    if (w.projectID !== undefined && w.projectID !== projectId) return false
+    return true
+  })
+
+  const sorted = [...eligible].sort((a, b) => toFiniteNumber(b.timeUsed) - toFiniteNumber(a.timeUsed))
+
+  const recents: string[] = []
+  const seen = new Set<string>()
+
+  const pushModel = (raw: unknown): boolean => {
+    if (typeof raw !== 'string' || raw.length === 0) return false
+    if (seen.has(raw)) return false
+    seen.add(raw)
+    recents.push(raw)
+    return recents.length >= max
+  }
+
+  for (const ws of sorted) {
+    const extra = ws.extra
+    if (typeof extra !== 'object' || extra === null) continue
+    const forgeLoop = (extra as { forgeLoop?: unknown }).forgeLoop
+    if (typeof forgeLoop !== 'object' || forgeLoop === null) continue
+
+    const exec = (forgeLoop as { executionModel?: unknown }).executionModel
+    if (pushModel(exec)) return recents
+
+    const audit = (forgeLoop as { auditorModel?: unknown }).auditorModel
+    if (pushModel(audit)) return recents
+  }
+
+  return recents
+}
+
+/**
+ * Loose shape matching the subset of `GlobalSession` / `Session` (from
+ * `@opencode-ai/sdk/v2`) needed by {@link deriveRecentModels}. Sessions
+ * carry the model the user picked the last time they prompted in that
+ * session, so the server-side session list is the canonical "recent models
+ * for this user" source (it covers every mode, not just Forge loops).
+ */
+export interface SessionForRecents {
+  projectID: string
+  model?: { providerID: string; id: string; variant?: string } | null
+  time: { updated: number }
+}
+
+export interface DeriveRecentModelsInputs {
+  /**
+   * Sessions from `client.experimental.session.list(...)`. Already sorted
+   * server-side by `time.updated` desc, but this helper re-sorts defensively.
+   */
+  sessions: ReadonlyArray<SessionForRecents>
+  /**
+   * Workspaces from `client.experimental.workspace.list()`. Only Forge
+   * workspaces contribute, and they carry the auditor model separately from
+   * the execution model — which is why this layer exists in addition to
+   * sessions (sessions only ever store the execution model in `Session.model`).
+   */
+  workspaces: ReadonlyArray<WorkspaceForRecents>
+  /**
+   * Model fullnames the user has explicitly favorited in OpenCode, if the
+   * TUI surfaces them. May be empty. See {@link readOpenCodeFavoriteModels}.
+   */
+  openCodeFavorites: ReadonlyArray<string>
+  /**
+   * The user's configured global default model (`api.state.config?.model`).
+   * Surfaced last so it's always selectable from the "Recent" group even if
+   * the user hasn't used it in any session yet.
+   */
+  openCodeDefault: string | undefined
+}
+
+/**
+ * Composes the "Recent" list shown at the top of the model picker from every
+ * remote-safe signal we have, in priority order:
+ *
+ *   1. Sessions for this project, sorted by `time.updated` desc
+ *      (`session.model.providerID/session.model.id`)
+ *   2. Forge workspaces for this project — picks up the *auditor* model,
+ *      which never lands on `Session.model`
+ *   3. OpenCode favorites (if any), in the order provided
+ *   4. OpenCode global default, if not already present
+ *
+ * Dedupes across layers; first occurrence wins. Caps at `max`
+ * (default `RECENT_MODELS_MAX`). Returns `[]` for `max <= 0`.
+ *
+ * This is the read replacement for the SQLite-backed `getRecentModels`.
+ * All four inputs are remote-safe: sessions and workspaces come from the
+ * server via the OpenCode SDK; favorites and default come from `api.state`
+ * which the TUI plugin already has synced.
+ */
+export function deriveRecentModels(
+  projectId: string,
+  inputs: DeriveRecentModelsInputs,
+  options: { max?: number } = {},
+): string[] {
+  const max = options.max ?? RECENT_MODELS_MAX
+  if (max <= 0) return []
+
+  const recents: string[] = []
+  const seen = new Set<string>()
+
+  const tryPush = (fullname: unknown): boolean => {
+    if (typeof fullname !== 'string' || fullname.length === 0) return false
+    if (seen.has(fullname)) return false
+    seen.add(fullname)
+    recents.push(fullname)
+    return recents.length >= max
+  }
+
+  const toFiniteNumber = (value: unknown): number => {
+    const n = typeof value === 'number' ? value : Number(value)
+    return Number.isFinite(n) ? n : 0
+  }
+
+  // 1. Sessions for this project, sorted by time.updated desc.
+  const sessionsForProject = inputs.sessions
+    .filter((s) => s.projectID === projectId && s.model)
+    .sort((a, b) => toFiniteNumber(b.time?.updated) - toFiniteNumber(a.time?.updated))
+
+  for (const session of sessionsForProject) {
+    const model = session.model
+    if (!model || typeof model.providerID !== 'string' || typeof model.id !== 'string') continue
+    if (model.providerID.length === 0 || model.id.length === 0) continue
+    if (tryPush(`${model.providerID}/${model.id}`)) return recents
+  }
+
+  // 2. Workspaces — primarily for the auditor model, which doesn't appear in sessions.
+  for (const fullname of deriveRecentModelsFromWorkspaces(projectId, inputs.workspaces, { max })) {
+    if (tryPush(fullname)) return recents
+  }
+
+  // 3. OpenCode favorites, in the order provided.
+  for (const fullname of inputs.openCodeFavorites) {
+    if (tryPush(fullname)) return recents
+  }
+
+  // 4. Global default, last.
+  tryPush(inputs.openCodeDefault)
+
+  return recents
+}
+
+/**
  * Records a model as recently used. Pushes to front and deduplicates.
  */
 export function recordRecentModel(projectId: string, modelFullName: string, dbPathOverride?: string): void {
