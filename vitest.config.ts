@@ -57,6 +57,7 @@ export default defineConfig({
       'test/utils/tui-client-loop-inline-plan.test.ts',
       'test/services/execution-attach-cleanup.test.ts',
       'test/tui/execute-plan-panel-busy.test.ts',
+      'test/tui/session-follow.test.ts',
       'test/hooks/plan-approval-dedupe.test.ts',
       'test/hooks/plan-approval-worktree-timing.test.ts',
       'test/services/select-initial-worktree-session.test.ts',
