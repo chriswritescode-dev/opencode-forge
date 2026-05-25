@@ -8,6 +8,7 @@ import { createExecutionContextCache } from './utils/tui-execution-context-cache
 import type { PluginConfig } from './types'
 import { connectForgeProject, type ForgeProjectClient } from './utils/tui-client'
 import { ExecutePlanPanel } from './tui/execute-plan-panel'
+import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/session-follow'
 import { fetchLatestPlanForSession } from './utils/plan-from-messages'
 
 type TuiKeybinds = {
@@ -178,6 +179,11 @@ const tui: TuiPlugin = async (api) => {
     keybinds: { ...DEFAULT_KEYBINDS, ...tuiConfig?.keybinds },
   }
 
+  // Auto-follow loop session rotations. Runs independently of the sidebar
+  // option so users with the sidebar disabled still get follow-on-rotation.
+  const detachSessionFollower = attachLoopSessionFollower(api)
+  api.lifecycle.onDispose(detachSessionFollower)
+
   if (!opts.sidebar) return
 
   const [client, setClient] = createSignal<ForgeProjectClient | null>(null)
@@ -258,14 +264,8 @@ const tui: TuiPlugin = async (api) => {
     return startClientConnection()
   }
 
-  function resolveSessionID(): string | null {
-    const route = api.route.current
-    if (route.name !== 'session') return null
-    return (route as { params: { sessionID: string } }).params.sessionID
-  }
-
   const runExecutePlan = async () => {
-    const sessionID = resolveSessionID()
+    const sessionID = getCurrentRouteSessionId(api)
     if (!sessionID) {
       api.ui.toast({ message: 'Open a session first', variant: 'info', duration: 3000 })
       return
