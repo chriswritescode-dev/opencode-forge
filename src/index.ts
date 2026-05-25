@@ -14,7 +14,7 @@ import { resolveSandboxContextForLoop } from './sandbox/context'
 import { createSandboxManager } from './sandbox/manager'
 import type { PluginConfig, CompactionConfig } from './types'
 import { createTools } from './tools'
-import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook, createPlanApprovalNudgeEventHook } from './hooks'
+import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from './hooks'
 import { createSandboxToolBeforeHook, createSandboxToolAfterHook } from './hooks/sandbox-tools'
 import type { ToolContext } from './tools'
 
@@ -407,9 +407,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
     })
     const planApprovalEventHook = createPlanApprovalEventHook(ctx)
-    const planApprovalNudgeEventHook = createPlanApprovalNudgeEventHook(ctx, {
-      architectAgentName: agents.architect.displayName,
-    })
     const planCaptureEventHook = createPlanCaptureEventHook(ctx)
     const sandboxBeforeHook = createSandboxToolBeforeHook({
       resolveSandboxForSession,
@@ -442,7 +439,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         await forgeSessionAttachHook(eventInput)
         await sessionHooks.onEvent(eventInput)
         await planApprovalEventHook(eventInput)
-        await planApprovalNudgeEventHook(eventInput)
       },
       'tool.execute.before': async (input, output) => {
         const resolved = await sessionLoopResolver.resolveActiveLoopForSession(input.sessionID)
