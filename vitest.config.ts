@@ -60,6 +60,8 @@ export default defineConfig({
       'test/tui/session-follow.test.ts',
       'test/hooks/plan-approval-dedupe.test.ts',
       'test/hooks/plan-approval-worktree-timing.test.ts',
+      'test/plan-capture.test.ts',
+      'test/utils/plan-from-messages.test.ts',
       'test/services/select-initial-worktree-session.test.ts',
       'test/plan-approval.test.ts',
       'test/api-model-preferences.test.ts',
