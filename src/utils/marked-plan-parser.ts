@@ -15,6 +15,10 @@ export type LatestMarkedPlanInspection =
   | { status: 'invalid'; reason: Exclude<MarkedPlanExtraction, { ok: true }>['reason']; messageId?: string }
   | { status: 'missing' }
 
+export type PastedPlanNormalization =
+  | { ok: true; planText: string; source: 'marked' | 'unmarked' }
+  | { ok: false; reason: 'empty' | 'multiple' | 'unterminated' }
+
 function countPlanMarkers(text: string): { startCount: number; endCount: number } {
   let startCount = 0
   let endCount = 0
@@ -80,6 +84,22 @@ export function extractMarkedPlan(text: string): MarkedPlanExtraction {
   }
   
   return { ok: true, planText }
+}
+
+export function normalizePastedPlanText(text: string): PastedPlanNormalization {
+  const trimmed = text.trim()
+  if (!trimmed) return { ok: false, reason: 'empty' }
+
+  const extraction = extractMarkedPlan(trimmed)
+  if (extraction.ok) {
+    return { ok: true, planText: extraction.planText, source: 'marked' }
+  }
+
+  if (extraction.reason === 'missing') {
+    return { ok: true, planText: trimmed, source: 'unmarked' }
+  }
+
+  return { ok: false, reason: extraction.reason }
 }
 
 export function sanitizePlanPaths(planText: string, projectDir: string | undefined): string {

@@ -1,1 +1,5 @@
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
+  msgpackr-extract: true
 onlyBuiltDependencies: '["better-sqlite3"]'

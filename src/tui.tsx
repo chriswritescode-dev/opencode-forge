@@ -10,6 +10,7 @@ import { connectForgeProject, type ForgeProjectClient } from './utils/tui-client
 import { ExecutePlanPanel } from './tui/execute-plan-panel'
 import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/session-follow'
 import { fetchLatestPlanForSession } from './utils/plan-from-messages'
+import { normalizePastedPlanText } from './utils/marked-plan-parser'
 
 type TuiKeybinds = {
   executePlan: string
@@ -264,6 +265,48 @@ const tui: TuiPlugin = async (api) => {
     return startClientConnection()
   }
 
+  const openExecutionDialog = (currentClient: ForgeProjectClient, sessionID: string, planContent: string) => {
+    api.ui.dialog.setSize('xlarge')
+    api.ui.dialog.replace(() => (
+      <ExecutionDialog
+        api={api}
+        client={currentClient}
+        cache={executionContextCache()}
+        pluginConfig={pluginConfig}
+        planContent={planContent}
+        sessionId={sessionID}
+      />
+    ))
+  }
+
+  const openPastePlanDialog = (currentClient: ForgeProjectClient, sessionID: string) => {
+    api.ui.dialog.setSize('large')
+    api.ui.dialog.replace(() => (
+      <api.ui.DialogPrompt
+        title="Paste plan"
+        placeholder="Paste a marked or unmarked implementation plan"
+        value=""
+        onConfirm={(value) => {
+          const normalized = normalizePastedPlanText(value)
+          if (!normalized.ok) {
+            api.ui.toast({
+              message: normalized.reason === 'empty'
+                ? 'Paste a plan before executing'
+                : `Invalid plan markers: ${normalized.reason}`,
+              variant: 'error',
+              duration: 4000,
+            })
+            openPastePlanDialog(currentClient, sessionID)
+            return
+          }
+
+          openExecutionDialog(currentClient, sessionID, normalized.planText)
+        }}
+        onCancel={() => api.ui.dialog.clear()}
+      />
+    ))
+  }
+
   const runExecutePlan = async () => {
     const sessionID = getCurrentRouteSessionId(api)
     if (!sessionID) {
@@ -276,24 +319,15 @@ const tui: TuiPlugin = async (api) => {
     const planText = await fetchLatestPlanForSession(api.client, sessionID, directory)
     if (!planText) {
       api.ui.toast({
-        message: 'No plan in current session — have the architect emit one first',
+        message: 'No plan in current session — paste one to execute',
         variant: 'info',
         duration: 4000,
       })
+      openPastePlanDialog(currentClient, sessionID)
       return
     }
 
-    api.ui.dialog.setSize('xlarge')
-    api.ui.dialog.replace(() => (
-      <ExecutionDialog
-        api={api}
-        client={currentClient}
-        cache={executionContextCache()}
-        pluginConfig={pluginConfig}
-        planContent={planText}
-        sessionId={sessionID}
-      />
-    ))
+    openExecutionDialog(currentClient, sessionID, planText)
   }
 
   api.keymap.registerLayer({
@@ -301,10 +335,27 @@ const tui: TuiPlugin = async (api) => {
       {
         name: 'forge.plan.execute',
         title: 'Forge: Execute plan',
-        desc: 'Open the execution dialog for the current session\'s plan',
+        desc: 'Open the execution dialog for the current session plan, or paste one if none is found',
         category: 'Forge',
         namespace: 'palette',
         run: () => { void runExecutePlan() },
+      },
+      {
+        name: 'forge.plan.executePasted',
+        title: 'Forge: Execute pasted plan',
+        desc: 'Paste a marked or unmarked plan and open the execution dialog',
+        category: 'Forge',
+        namespace: 'palette',
+        run: () => {
+          const sessionID = getCurrentRouteSessionId(api)
+          if (!sessionID) {
+            api.ui.toast({ message: 'Open a session first', variant: 'info', duration: 3000 })
+            return
+          }
+          void ensureClient().then((currentClient) => {
+            if (currentClient) openPastePlanDialog(currentClient, sessionID)
+          })
+        },
       },
     ],
     bindings: opts.keybinds.executePlan

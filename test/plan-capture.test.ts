@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'bun:test'
 import {
   extractMarkedPlan,
+  normalizePastedPlanText,
   messageText,
   inspectLatestMarkedPlan,
   PLAN_START_MARKER,
@@ -144,6 +145,96 @@ ${PLAN_END_MARKER}`
     expect(result.ok).toBe(false)
     if (!result.ok) {
       expect(result.reason).toBe('missing')
+    }
+  })
+})
+
+describe('normalizePastedPlanText', () => {
+  test('marked paste extracts plan body and excludes surrounding text', () => {
+    const text = `Some intro text
+
+${PLAN_START_MARKER}
+# Implementation Plan
+
+## Phase 1
+- Do thing one
+
+## Phase 2
+- Do thing two
+${PLAN_END_MARKER}
+
+Some outro text`
+
+    const result = normalizePastedPlanText(text)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.source).toBe('marked')
+      expect(result.planText).toContain('# Implementation Plan')
+      expect(result.planText).not.toContain(PLAN_START_MARKER)
+      expect(result.planText).not.toContain(PLAN_END_MARKER)
+      expect(result.planText).not.toContain('Some intro text')
+      expect(result.planText).not.toContain('Some outro text')
+    }
+  })
+
+  test('unmarked paste returns trimmed text unchanged', () => {
+    const text = `
+  # My Plan
+
+  A simple plan without markers.
+
+  - Step one
+  - Step two
+    `
+
+    const result = normalizePastedPlanText(text)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.source).toBe('unmarked')
+      expect(result.planText).toBe(text.trim())
+    }
+  })
+
+  test('empty string returns empty', () => {
+    const result = normalizePastedPlanText('')
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toBe('empty')
+    }
+  })
+
+  test('whitespace-only string returns empty', () => {
+    const result = normalizePastedPlanText('   \n  \n  ')
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toBe('empty')
+    }
+  })
+
+  test('malformed marked paste with only start marker returns unterminated', () => {
+    const text = `${PLAN_START_MARKER}
+Plan content without end`
+
+    const result = normalizePastedPlanText(text)
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toBe('unterminated')
+    }
+  })
+
+  test('malformed marked paste with multiple marked plans returns multiple', () => {
+    const text = `${PLAN_START_MARKER}
+Plan A
+${PLAN_END_MARKER}
+
+${PLAN_START_MARKER}
+Plan B
+${PLAN_END_MARKER}`
+
+    const result = normalizePastedPlanText(text)
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toBe('multiple')
     }
   })
 })
