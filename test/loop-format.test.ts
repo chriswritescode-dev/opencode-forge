@@ -1,7 +1,8 @@
 import { describe, test, expect } from 'bun:test'
-import { formatTokens, formatSessionOutput, formatAuditResult, formatUsageSummary } from '../src/utils/loop-format'
+import { formatTokens, formatSessionOutput, formatAuditResult, formatUsageSummary, formatSectionSummaries } from '../src/utils/loop-format'
 import type { LoopSessionOutput } from '../src/loop/session-output'
 import type { LoopUsageSummary } from '../src/loop/token-usage'
+import type { SectionDigestEntry } from '../src/loop/prompts'
 
 describe('formatTokens', () => {
   test('numbers less than 1000 returned as string', () => {
@@ -336,5 +337,66 @@ describe('formatUsageSummary', () => {
     const lines = formatUsageSummary(summary)
     expect(lines[0]).toContain('$0.0000')
     expect(lines[0]).toContain('0 in')
+  })
+})
+
+describe('formatSectionSummaries', () => {
+  test('formats two entries with all three fields', () => {
+    const sections: SectionDigestEntry[] = [
+      {
+        index: 0,
+        title: 'Auth',
+        summaryDone: 'Added login page and auth flow',
+        summaryDeviations: 'Used JWT instead of sessions',
+        summaryFollowUps: 'Add tests for edge cases',
+      },
+      {
+        index: 1,
+        title: 'Database',
+        summaryDone: 'Set up schema and migrations',
+        summaryDeviations: 'None',
+        summaryFollowUps: 'Add indexes for performance',
+      },
+    ]
+
+    const lines = formatSectionSummaries(sections)
+
+    const output = lines.join('\n')
+    expect(output).toContain('#### Section 1: Auth')
+    expect(output).toContain('**Done:**')
+    expect(output).toContain('Added login page and auth flow')
+    expect(output).toContain('**Deviations:**')
+    expect(output).toContain('Used JWT instead of sessions')
+    expect(output).toContain('**Follow-ups:**')
+    expect(output).toContain('Add tests for edge cases')
+    expect(output).toContain('#### Section 2: Database')
+    expect(output).toContain('Add indexes for performance')
+    // Entries separated by blank line
+    expect(output).toMatch(/Section 1: Auth[\s\S]*\n\n[\s\S]*Section 2: Database/)
+  })
+
+  test('entry with only summaryDone omits Deviations and Follow-ups', () => {
+    const sections: SectionDigestEntry[] = [
+      {
+        index: 0,
+        title: 'Auth',
+        summaryDone: 'Added login',
+        summaryDeviations: null,
+        summaryFollowUps: null,
+      },
+    ]
+
+    const lines = formatSectionSummaries(sections)
+    const output = lines.join('\n')
+    expect(output).toContain('#### Section 1: Auth')
+    expect(output).toContain('**Done:**')
+    expect(output).toContain('Added login')
+    expect(output).not.toContain('**Deviations:**')
+    expect(output).not.toContain('**Follow-ups:**')
+  })
+
+  test('returns empty array for empty input', () => {
+    const lines = formatSectionSummaries([])
+    expect(lines).toEqual([])
   })
 })

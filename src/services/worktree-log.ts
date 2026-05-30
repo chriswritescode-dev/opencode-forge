@@ -4,7 +4,8 @@ import { homedir } from 'os'
 import type { PluginConfig, Logger } from '../types'
 import { toContainerPath } from '../sandbox/path'
 import type { LoopUsageSummary } from '../loop/token-usage'
-import { formatUsageSummary } from '../utils/loop-format'
+import { formatUsageSummary, formatSectionSummaries } from '../utils/loop-format'
+import type { SectionDigestEntry } from '../loop/prompts'
 
 /**
  * Context for resolving worktree log target paths.
@@ -41,6 +42,8 @@ export interface WorktreeCompletionLogPayload {
   planText?: string | null
   /** Cumulative usage summary for the loop, if available. */
   usage?: LoopUsageSummary | null
+  /** Completed section digest entries, if available. */
+  sections?: SectionDigestEntry[] | null
 }
 
 /**
@@ -204,12 +207,19 @@ export function formatWorktreeCompletionEntry(
   },
   planText: string | null,
   usage?: LoopUsageSummary | null,
+  sections?: SectionDigestEntry[] | null,
 ): string {
   const timestamp = options.completionTimestamp.toISOString()
   const branchInfo = options.worktreeBranch ? `\n- **Branch:** ${options.worktreeBranch}` : ''
   const planSection = (planText?.trim()) || 'Plan unavailable'
   
   const usageSection = usage ? `\n### Usage\n\n${formatUsageSummary(usage).join('\n')}\n` : ''
+
+  const renderableSections = (sections ?? []).filter(s =>
+    Boolean(s.summaryDone?.trim() || s.summaryDeviations?.trim() || s.summaryFollowUps?.trim()))
+  const sectionsSection = renderableSections.length > 0
+    ? `\n### Sections\n\n${formatSectionSummaries(renderableSections).join('\n')}\n`
+    : ''
   
   return `# ${options.projectDir}
 
@@ -218,8 +228,7 @@ export function formatWorktreeCompletionEntry(
 - **Loop:** ${options.loopName}${branchInfo}
 - **Completed:** ${timestamp}
 - **Iteration:** ${options.iteration}
-${usageSection}
-### Plan
+${usageSection}${sectionsSection}### Plan
 
 ${planSection}
 
@@ -245,12 +254,13 @@ export function appendWorktreeLogEntry(
   planText?: string | null,
   logger?: Logger,
   usage?: LoopUsageSummary | null,
+  sections?: SectionDigestEntry[] | null,
 ): boolean {
   try {
     const dateKey = formatDateKey(options.completionTimestamp)
     const logFile = join(directory, `${dateKey}.md`)
 
-    const entry = formatWorktreeCompletionEntry(options, planText ?? null, usage)
+    const entry = formatWorktreeCompletionEntry(options, planText ?? null, usage, sections)
 
     appendFileSync(logFile, entry, 'utf-8')
     logger?.debug(`Worktree log: appended entry to ${logFile}`)
@@ -277,6 +287,7 @@ export function buildWorktreeCompletionPayload(
     worktreeBranch?: string
     dataDir?: string
     usage?: LoopUsageSummary | null
+    sections?: SectionDigestEntry[] | null
   },
   logger?: Logger,
 ): BuildWorktreeCompletionPayloadResult | null {
@@ -304,6 +315,7 @@ export function buildWorktreeCompletionPayload(
     iteration: options.iteration,
     worktreeBranch: options.worktreeBranch,
     usage: options.usage,
+    sections: options.sections,
   }
 
   return {
@@ -342,6 +354,7 @@ export function writeWorktreeCompletionLog(
     payload.planText,
     logger,
     payload.usage,
+    payload.sections,
   )
 }
 

@@ -92,7 +92,6 @@ describe('waitForSandboxReady', () => {
       worktree: true,
       worktreeBranch: null,
 
-      completionSummary: null,
       workspaceId: null,
       hostSessionId: null,
       executionModel: null,
@@ -109,8 +108,8 @@ describe('waitForSandboxReady', () => {
         worktree_branch, project_dir, max_iterations, iteration, audit_count,
         error_count, phase, execution_model, auditor_model,
         model_failed, sandbox, sandbox_container, started_at, completed_at,
-        termination_reason, completion_summary, workspace_id, host_session_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        termination_reason, workspace_id, host_session_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       row.projectId,
       row.loopName,
@@ -133,7 +132,6 @@ describe('waitForSandboxReady', () => {
       row.startedAt,
       row.completedAt,
       row.terminationReason,
-      row.completionSummary,
       row.workspaceId,
       row.hostSessionId
     )

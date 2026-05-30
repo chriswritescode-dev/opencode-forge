@@ -9,6 +9,7 @@ import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
 import { aggregateToUsageSummary } from '../utils/loop-format'
 import { sweepStaleForgeWorkspaces } from '../workspace/sweep-stale'
+import type { SectionDigestEntry } from '../loop/prompts'
 
 export interface TerminationSideEffectsContext {
   v2Client: OpencodeClient
@@ -17,6 +18,7 @@ export interface TerminationSideEffectsContext {
   sandboxManager?: ReturnType<typeof createSandboxManager>
   dataDir?: string
   getPlanText?: (loopName: string, sessionId: string) => string | null
+  getSectionDigest?: (state: LoopState) => SectionDigestEntry[]
   pendingTeardowns?: PendingTeardownRegistry
   loopsRepo?: LoopsRepo
   projectId?: string
@@ -71,6 +73,10 @@ function writeTerminationLog(
     : null
   const usage = usageAggregate ? aggregateToUsageSummary(usageAggregate) : null
 
+  const sectionDigest = ctx.getSectionDigest?.(state) ?? []
+  const sections = sectionDigest.filter(s =>
+    Boolean(s.summaryDone?.trim() || s.summaryDeviations?.trim() || s.summaryFollowUps?.trim()))
+
   const result = buildWorktreeCompletionPayload(
     ctx.getConfig(),
     {
@@ -81,6 +87,7 @@ function writeTerminationLog(
       worktreeBranch: state.worktreeBranch,
       dataDir: ctx.dataDir,
       usage,
+      sections: sections.length > 0 ? sections : undefined,
     },
     ctx.logger,
   )

@@ -13,7 +13,8 @@ import {
 import { buildLoopPermissionRuleset } from '../src/constants/loop'
 import type { LoopSessionOutput } from '../src/loop/session-output'
 import type { LoopUsageSummary } from '../src/loop/token-usage'
-import { formatUsageSummary } from '../src/utils/loop-format'
+import { formatUsageSummary, formatSectionSummaries } from '../src/utils/loop-format'
+import type { SectionDigestEntry } from '../src/loop/prompts'
 
 const TEST_DIR = '/tmp/opencode-worktree-log-test-' + Date.now()
 
@@ -994,5 +995,188 @@ describe('usage in worktree completion logs', () => {
     const content = readFileSync(expectedFile, 'utf-8')
     expect(content).not.toContain('### Usage')
     expect(content).toContain('### Plan')
+  })
+})
+
+describe('section summaries in worktree completion logs', () => {
+  let testLogDir: string
+  let testProjectDir: string
+
+  beforeEach(() => {
+    testLogDir = TEST_DIR + '-logs-' + Math.random().toString(36).slice(2)
+    testProjectDir = TEST_DIR + '-project-' + Math.random().toString(36).slice(2)
+    mkdirSync(testLogDir, { recursive: true })
+    mkdirSync(testProjectDir, { recursive: true })
+  })
+
+  afterEach(() => {
+    if (existsSync(testLogDir)) {
+      rmSync(testLogDir, { recursive: true, force: true })
+    }
+    if (existsSync(testProjectDir)) {
+      rmSync(testProjectDir, { recursive: true, force: true })
+    }
+  })
+
+  const sampleSections: SectionDigestEntry[] = [
+    {
+      index: 0,
+      title: 'Auth',
+      summaryDone: 'Added login',
+      summaryDeviations: 'None',
+      summaryFollowUps: 'Add tests',
+    },
+  ]
+
+  test('formatWorktreeCompletionEntry includes Sections section when sections are provided', () => {
+    const timestamp = new Date('2024-01-15T10:30:00Z')
+    const options = {
+      projectDir: '/path/to/project',
+      loopName: 'test-loop',
+      completionTimestamp: timestamp,
+      iteration: 3,
+    }
+
+    const result = formatWorktreeCompletionEntry(options, 'Test plan', null, sampleSections)
+
+    expect(result).toContain('### Sections')
+    expect(result).toContain('#### Section 1: Auth')
+    expect(result).toContain('Added login')
+    expect(result).toContain('### Plan')
+    expect(result).toContain('Test plan')
+  })
+
+  test('formatWorktreeCompletionEntry omits Sections section when sections is null', () => {
+    const timestamp = new Date('2024-01-15T10:30:00Z')
+    const options = {
+      projectDir: '/path/to/project',
+      loopName: 'test-loop',
+      completionTimestamp: timestamp,
+      iteration: 3,
+    }
+
+    const result = formatWorktreeCompletionEntry(options, 'Test plan', null, null)
+
+    expect(result).not.toContain('### Sections')
+    expect(result).toContain('### Plan')
+  })
+
+  test('formatWorktreeCompletionEntry omits Sections section when all fields are empty', () => {
+    const timestamp = new Date('2024-01-15T10:30:00Z')
+    const options = {
+      projectDir: '/path/to/project',
+      loopName: 'test-loop',
+      completionTimestamp: timestamp,
+      iteration: 3,
+    }
+
+    const emptySections: SectionDigestEntry[] = [
+      { index: 0, title: 'Auth', summaryDone: null, summaryDeviations: '   ', summaryFollowUps: '' },
+    ]
+
+    const result = formatWorktreeCompletionEntry(options, 'Test plan', null, emptySections)
+
+    expect(result).not.toContain('### Sections')
+    expect(result).toContain('### Plan')
+  })
+
+  test('appendWorktreeLogEntry writes sections to log file', () => {
+    const timestamp = new Date('2024-01-15T10:30:00Z')
+    const options = {
+      projectDir: '/path/to/project',
+      loopName: 'test-loop',
+      completionTimestamp: timestamp,
+      iteration: 3,
+    }
+
+    const result = appendWorktreeLogEntry(testLogDir, options, 'Test plan', undefined, undefined, sampleSections)
+    expect(result).toBe(true)
+
+    const expectedFile = join(testLogDir, '2024-01-15.md')
+    expect(existsSync(expectedFile)).toBe(true)
+
+    const content = readFileSync(expectedFile, 'utf-8')
+    expect(content).toContain('### Sections')
+    expect(content).toContain('#### Section 1: Auth')
+    expect(content).toContain('Added login')
+    expect(content).toContain('**Done:**')
+    expect(content).toContain('**Deviations:**')
+    expect(content).toContain('**Follow-ups:**')
+    expect(content).toContain('Add tests')
+  })
+
+  test('buildWorktreeCompletionPayload accepts and includes sections', () => {
+    const config: PluginConfig = {
+      loop: {
+        worktreeLogging: {
+          enabled: true,
+          directory: testLogDir,
+        },
+      },
+    }
+
+    const timestamp = new Date('2024-01-15T10:30:00Z')
+    const result = buildWorktreeCompletionPayload(config, {
+      projectDir: testProjectDir,
+      loopName: 'test-loop',
+      completionTimestamp: timestamp,
+      iteration: 3,
+      sections: sampleSections,
+    })
+
+    expect(result).not.toBeNull()
+    expect(result!.payload.sections).toEqual(sampleSections)
+  })
+
+  test('payload with sections is JSON serializable and round-trips', () => {
+    const config: PluginConfig = {
+      loop: {
+        worktreeLogging: {
+          enabled: true,
+          directory: testLogDir,
+        },
+      },
+    }
+
+    const timestamp = new Date('2024-01-15T10:30:00Z')
+    const result = buildWorktreeCompletionPayload(config, {
+      projectDir: testProjectDir,
+      loopName: 'test-loop',
+      completionTimestamp: timestamp,
+      iteration: 3,
+      sections: sampleSections,
+    })
+
+    expect(result).not.toBeNull()
+
+    const serialized = JSON.stringify(result!.payload)
+    expect(serialized).toContain('Auth')
+    expect(serialized).toContain('Added login')
+
+    const deserialized = JSON.parse(serialized)
+    expect(deserialized.sections).toEqual(sampleSections)
+  })
+
+  test('writeWorktreeCompletionLog persists sections from payload', () => {
+    const timestamp = new Date('2024-01-15T10:30:00Z')
+    const payload = {
+      logDirectory: testLogDir,
+      projectDir: '/path/to/project',
+      loopName: 'test-loop',
+      completionTimestamp: timestamp.toISOString(),
+      iteration: 5,
+      sections: sampleSections,
+    }
+
+    const result = writeWorktreeCompletionLog(payload)
+    expect(result).toBe(true)
+
+    const expectedFile = join(testLogDir, '2024-01-15.md')
+    expect(existsSync(expectedFile)).toBe(true)
+
+    const content = readFileSync(expectedFile, 'utf-8')
+    expect(content).toContain('### Sections')
+    expect(content).toContain('#### Section 1: Auth')
+    expect(content).toContain('Added login')
   })
 })

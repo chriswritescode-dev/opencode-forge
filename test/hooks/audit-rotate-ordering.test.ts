@@ -44,7 +44,6 @@ interface LoopRowObject {
   started_at: number
   completed_at: number | null
   termination_reason: string | null
-  completion_summary: string | null
   workspace_id: string | null
   host_session_id: string | null
 }
@@ -86,9 +85,8 @@ function createMockDatabase(): Database {
               started_at: args[18],
               completed_at: args[19],
               termination_reason: args[20],
-              completion_summary: args[21],
-              workspace_id: args[22],
-              host_session_id: args[23],
+              workspace_id: args[21],
+              host_session_id: args[22],
             })
             return { changes: 1 }
           }),

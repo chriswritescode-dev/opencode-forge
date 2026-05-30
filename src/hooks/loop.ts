@@ -74,6 +74,7 @@ export function createLoopEventHandler(
         sandboxManager,
         dataDir,
         getPlanText: loop.getPlanText,
+        getSectionDigest: loop.getCompletedSectionDigest,
         pendingTeardowns,
         loopsRepo,
         projectId,

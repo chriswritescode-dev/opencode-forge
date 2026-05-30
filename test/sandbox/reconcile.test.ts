@@ -63,7 +63,6 @@ describe('reconcileSandboxes', () => {
       worktree: true,
       worktreeBranch: null,
 
-      completionSummary: null,
       workspaceId: null,
       executionModel: null,
       auditorModel: null,

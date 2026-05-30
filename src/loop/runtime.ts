@@ -108,7 +108,7 @@ export interface Loop {
   setWorkspaceId(name: string, workspaceId: string): void
   incrementError(name: string): number
   resetError(name: string): void
-  terminateLoop(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
+  terminateLoop(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number }): void
   getOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[]
   getStallTimeoutMs(): number
   getMaxConsecutiveStalls(): number
@@ -2098,7 +2098,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     setWorkspaceId: (name: string, workspaceId: string) => loopService.setWorkspaceId(name, workspaceId),
     incrementError: (name: string) => loopService.incrementError(name),
     resetError: (name: string) => loopService.resetError(name),
-    terminateLoop: (name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }) => loopService.terminate(name, opts),
+    terminateLoop: (name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number }) => loopService.terminate(name, opts),
     getOutstandingFindings: (loopName?: string, severity?: 'bug' | 'warning') => loopService.getOutstandingFindings(loopName, severity),
     getStallTimeoutMs: () => loopService.getStallTimeoutMs(),
     getMaxConsecutiveStalls: () => loopService.getMaxConsecutiveStalls(),

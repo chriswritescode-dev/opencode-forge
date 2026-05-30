@@ -61,7 +61,7 @@ export interface LoopService {
   setStatus(name: string, status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'): void
   clearWorkspaceId(name: string): void
   setWorkspaceId(name: string, workspaceId: string): void
-  terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
+  terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number }): void
   replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void
   getSectionPlan(state: LoopState, index: number): SectionPlanRow | null
   getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null
@@ -105,7 +105,6 @@ export function rowToLoopState(row: LoopRow, large: LoopLargeFields | null): Loo
     modelFailed: row.modelFailed,
     sandbox: row.sandbox,
     sandboxContainer: row.sandboxContainer ?? undefined,
-    completionSummary: row.completionSummary ?? undefined,
     executionModel: row.executionModel ?? undefined,
     auditorModel: row.auditorModel ?? undefined,
     workspaceId: row.workspaceId ?? undefined,
@@ -154,8 +153,7 @@ export function createLoopService(
       startedAt: new Date(state.startedAt).getTime(),
       completedAt: state.completedAt ? new Date(state.completedAt).getTime() : null,
       terminationReason: state.terminationReason ?? null,
-      completionSummary: state.completionSummary ?? null,
-      workspaceId: state.workspaceId ?? null,
+    workspaceId: state.workspaceId ?? null,
       hostSessionId: state.hostSessionId ?? null,
       currentSectionIndex: state.currentSectionIndex,
       totalSections: state.totalSections,
@@ -392,7 +390,7 @@ export function createLoopService(
     notifyLoopChange('audit-result', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
-  function terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void {
+  function terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number }): void {
     const state = getAnyState(name)
     loopsRepo.terminate(projectId, name, opts)
     notifyLoopChange('terminate', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)

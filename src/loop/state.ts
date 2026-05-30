@@ -21,7 +21,6 @@ interface LoopStateBase {
   modelFailed?: boolean
   sandbox?: boolean
   sandboxContainer?: string
-  completionSummary?: string
   executionModel?: string
   auditorModel?: string
   workspaceId?: string
@@ -68,7 +67,6 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
     modelFailed: row.modelFailed,
     sandbox: row.sandbox,
     sandboxContainer: row.sandboxContainer ?? undefined,
-    completionSummary: row.completionSummary ?? undefined,
     executionModel: row.executionModel ?? undefined,
     auditorModel: row.auditorModel ?? undefined,
     workspaceId: row.workspaceId ?? undefined,
@@ -113,7 +111,6 @@ export function loopStateToRow(state: LoopState, projectId: string): Omit<LoopRo
     startedAt: new Date(state.startedAt).getTime(),
     completedAt: state.completedAt ? new Date(state.completedAt).getTime() : null,
     terminationReason: state.terminationReason ?? null,
-    completionSummary: state.completionSummary ?? null,
     workspaceId: state.workspaceId ?? null,
     hostSessionId: state.hostSessionId ?? null,
     currentSectionIndex: state.currentSectionIndex,

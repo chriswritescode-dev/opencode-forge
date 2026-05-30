@@ -177,7 +177,6 @@ describe('review section scoping', () => {
       startedAt: Date.now(),
       completedAt: null,
       terminationReason: null,
-      completionSummary: null,
       workspaceId: null,
       hostSessionId: null,
       currentSectionIndex: opts?.currentSectionIndex ?? 0,

@@ -102,7 +102,6 @@ describe('LoopsRepo', () => {
     startedAt: Date.now(),
     completedAt: null,
     terminationReason: null,
-    completionSummary: null,
     workspaceId: null,
     hostSessionId: null,
   }
@@ -249,14 +248,12 @@ describe('LoopsRepo', () => {
         status: 'completed',
         reason: 'completed',
         completedAt: now,
-        summary: 'Done!',
       })
       
       retrieved = repo.get(testRow.projectId, testRow.loopName)
       expect(retrieved!.status).toBe('completed')
       expect(retrieved!.completedAt).toBe(now)
       expect(retrieved!.terminationReason).toBe('completed')
-      expect(retrieved!.completionSummary).toBe('Done!')
     })
   })
 

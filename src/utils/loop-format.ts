@@ -2,10 +2,12 @@ import { formatTokens, truncate } from './format'
 import type { LoopSessionOutput } from '../loop'
 import type { LoopUsageSummary, TokenBreakdown } from '../loop/token-usage'
 import type { LoopUsageAggregate, LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
+import type { SectionDigestEntry } from '../loop/prompts'
 import { mergeUsageSummaries } from '../loop/token-usage'
 
 export { formatTokens } from './format'
 export type { LoopUsageSummary } from '../loop/token-usage'
+export type { SectionDigestEntry } from '../loop/prompts'
 
 /**
  * Build cumulative usage for a loop by merging persisted aggregate with live session output.
@@ -77,6 +79,19 @@ export function aggregateToUsageSummary(aggregate: LoopUsageAggregate): LoopUsag
     totalTokens,
     perModel,
   }
+}
+
+/** Format completed-section digest entries into deterministic markdown lines. */
+export function formatSectionSummaries(sections: SectionDigestEntry[]): string[] {
+  const lines: string[] = []
+  sections.forEach((s, i) => {
+    if (i > 0) lines.push('')
+    lines.push(`#### Section ${s.index + 1}: ${s.title}`)
+    if (s.summaryDone?.trim()) { lines.push('**Done:**'); lines.push(s.summaryDone.trim()) }
+    if (s.summaryDeviations?.trim()) { lines.push('**Deviations:**'); lines.push(s.summaryDeviations.trim()) }
+    if (s.summaryFollowUps?.trim()) { lines.push('**Follow-ups:**'); lines.push(s.summaryFollowUps.trim()) }
+  })
+  return lines
 }
 
 /** Format a LoopUsageSummary into deterministic total and per-model output */

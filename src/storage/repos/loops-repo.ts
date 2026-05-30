@@ -23,7 +23,6 @@ export interface LoopRow {
   startedAt: number
   completedAt: number | null
   terminationReason: string | null
-  completionSummary: string | null
   workspaceId: string | null
   hostSessionId: string | null
   currentSectionIndex: number
@@ -86,7 +85,6 @@ export interface LoopsRepo {
       status: Exclude<LoopRow['status'], 'running'>
       reason: string
       completedAt: number
-      summary?: string
     }
   ): void
   delete(projectId: string, loopName: string): void
@@ -119,7 +117,6 @@ function mapRow(row: LoopRowRaw): LoopRow {
     startedAt: row.started_at,
     completedAt: row.completed_at,
     terminationReason: row.termination_reason,
-    completionSummary: row.completion_summary,
     workspaceId: row.workspace_id,
     hostSessionId: row.host_session_id,
     currentSectionIndex: row.current_section_index,
@@ -152,7 +149,6 @@ interface LoopRowRaw {
   started_at: number
   completed_at: number | null
   termination_reason: string | null
-  completion_summary: string | null
   workspace_id: string | null
   host_session_id: string | null
   current_section_index: number
@@ -169,10 +165,10 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       worktree_branch, project_dir, max_iterations, iteration, audit_count,
       error_count, phase, execution_model, auditor_model,
       model_failed, sandbox, sandbox_container, started_at, completed_at,
-      termination_reason, completion_summary, workspace_id, host_session_id,
+      termination_reason, workspace_id, host_session_id,
       current_section_index, total_sections, final_audit_done,
       execution_variant, auditor_variant
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   const upsertLargeStmt = db.prepare(`
@@ -187,7 +183,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
            worktree_branch, project_dir, max_iterations, iteration, audit_count,
            error_count, phase, execution_model, auditor_model,
            model_failed, sandbox, sandbox_container, started_at, completed_at,
-           termination_reason, completion_summary, workspace_id, host_session_id,
+           termination_reason, workspace_id, host_session_id,
            current_section_index, total_sections, final_audit_done,
            execution_variant, auditor_variant
     FROM loops
@@ -205,7 +201,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
            worktree_branch, project_dir, max_iterations, iteration, audit_count,
            error_count, phase, execution_model, auditor_model,
            model_failed, sandbox, sandbox_container, started_at, completed_at,
-           termination_reason, completion_summary, workspace_id, host_session_id,
+           termination_reason, workspace_id, host_session_id,
            current_section_index, total_sections, final_audit_done,
            execution_variant, auditor_variant
     FROM loops
@@ -217,7 +213,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
            worktree_branch, project_dir, max_iterations, iteration, audit_count,
            error_count, phase, execution_model, auditor_model,
            model_failed, sandbox, sandbox_container, started_at, completed_at,
-           termination_reason, completion_summary, workspace_id, host_session_id,
+           termination_reason, workspace_id, host_session_id,
            current_section_index, total_sections, final_audit_done,
            execution_variant, auditor_variant
     FROM loops
@@ -314,7 +310,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       started_at = ?,
       completed_at = NULL,
       termination_reason = NULL,
-      completion_summary = NULL,
       current_section_index = ?,
       total_sections = ?,
       final_audit_done = ?
@@ -325,8 +320,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     UPDATE loops SET
       status = ?,
       completed_at = ?,
-      termination_reason = ?,
-      completion_summary = ?
+      termination_reason = ?
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -362,7 +356,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
         row.startedAt,
         row.completedAt,
         row.terminationReason,
-        row.completionSummary,
         row.workspaceId,
         row.hostSessionId,
         row.currentSectionIndex ?? 0,
@@ -513,10 +506,9 @@ export function createLoopsRepo(db: Database): LoopsRepo {
         status: Exclude<LoopRow['status'], 'running'>
         reason: string
         completedAt: number
-        summary?: string
       }
     ): void {
-      terminateStmt.run(opts.status, opts.completedAt, opts.reason, opts.summary ?? null, projectId, loopName)
+      terminateStmt.run(opts.status, opts.completedAt, opts.reason, projectId, loopName)
     },
 
     delete(projectId: string, loopName: string): void {

@@ -32,7 +32,6 @@ function makeRow(overrides: Partial<LoopRow> = {}): LoopRow {
     startedAt: Date.now(),
     completedAt: null,
     terminationReason: null,
-    completionSummary: null,
     workspaceId: null,
     hostSessionId: null,
     currentSectionIndex: 0,
@@ -80,7 +79,6 @@ describe('loopRowToState', () => {
   it('converts null optional strings to undefined', () => {
     const row = makeRow({
       terminationReason: null,
-      completionSummary: null,
       sandboxContainer: null,
       executionModel: null,
       auditorModel: null,
@@ -90,7 +88,6 @@ describe('loopRowToState', () => {
     })
     const state = loopRowToState(row)
     expect(state.terminationReason).toBeUndefined()
-    expect(state.completionSummary).toBeUndefined()
     expect(state.sandboxContainer).toBeUndefined()
     expect(state.executionModel).toBeUndefined()
     expect(state.auditorModel).toBeUndefined()
@@ -190,7 +187,6 @@ describe('loopStateToRow', () => {
     const state = loopRowToState(makeRow())
     const row = loopStateToRow(state, 'proj-1')
     expect(row.terminationReason).toBeNull()
-    expect(row.completionSummary).toBeNull()
     expect(row.sandboxContainer).toBeNull()
     expect(row.executionModel).toBeNull()
     expect(row.auditorModel).toBeNull()

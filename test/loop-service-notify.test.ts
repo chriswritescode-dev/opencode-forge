@@ -571,7 +571,6 @@ describe('LoopChangeNotifier', () => {
         startedAt: now,
         completedAt: null,
         terminationReason: null,
-        completionSummary: null,
         workspaceId: null,
         hostSessionId: null,
         loopId: 1,
