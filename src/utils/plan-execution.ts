@@ -169,6 +169,37 @@ export function extractLoopName(planContent: string): string {
 }
 
 /**
+ * Extracts skill names from a plan's `Skills:` line.
+ *
+ * Accepts the same prefixes as `extractExplicitLoopName`:
+ * - `Skills: tdd, diagnose`
+ * - `**Skills**: tdd, diagnose`
+ * - `- Skills: tdd`
+ * - `- **Skills**: tdd`
+ *
+ * Skips markdown headings (e.g. `## Skills`, `### Attached skills`).
+ * Each name is trimmed, surrounding backticks stripped, empty tokens dropped,
+ * and duplicates removed preserving first-seen order.
+ */
+export function extractPlanSkills(planContent: string): string[] {
+  const match = planContent.match(/^(?:\s*(?:-\s*)?)?(?:\*\*)?Skills(?:\*\*)?:\s*(.+)$/m)
+  if (!match?.[1]) return []
+
+  const seen = new Set<string>()
+  const result: string[] = []
+
+  for (const raw of match[1].split(',')) {
+    const name = raw.trim().replace(/^`|`$/g, '')
+    if (name && !seen.has(name)) {
+      seen.add(name)
+      result.push(name)
+    }
+  }
+
+  return result
+}
+
+/**
  * Extracts both display and execution names from plan content.
  * 
  * Returns a LoopNameResult with:

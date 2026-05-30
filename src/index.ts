@@ -498,6 +498,7 @@ READ-ONLY mode: no file edits, no destructive commands. Search and analyze only.
 When emitting the final plan:
 - Wrap the plan in \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` (each on its own line)
 - Include one plain machine-readable \`Loop Name: short-slug\` line near the top of the marked plan, immediately after the objective. Do not emit loop name as a markdown heading or bullet.
+- Optionally include a machine-readable \`Skills: name1, name2\` line near the top (immediately after Loop Name) to attach skills the code agent should load during the loop.
 - Use exactly one \`<!-- forge-section -->\` marker per executable phase; place it immediately before that phase's \`## Phase\` heading
 - Do not insert \`<!-- forge-section -->\` before \`### Files\`, \`### Edits\`, \`### Acceptance Criteria\`, or \`### Verification\`
 - Shared \`## Decisions\` / \`## Conventions\` / \`## Key Context\` blocks go after all sections (no preceding marker)

@@ -82,6 +82,13 @@ describe('Agent definitions', () => {
       expect(prompt).toContain('name the exact test file')
     })
 
+    test('architect prompt documents Skills: line in Plan Format', () => {
+      const prompt = architectAgent.systemPrompt
+      expect(prompt).toContain('Skills:')
+      expect(prompt).toContain('Skills: tdd, diagnose')
+      expect(prompt).toContain('immediately after the Loop Name')
+    })
+
     test('auditor-loop agent has stable metadata and primary mode', () => {
       expect(auditorLoopAgent.role).toBe('auditor-loop')
       expect(auditorLoopAgent.id).toBe('opencode-auditor-loop')

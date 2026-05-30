@@ -7,6 +7,7 @@ import {
   buildSectionContinuationPrompt,
   buildFinalAuditPrompt,
   buildFinalAuditFixPrompt,
+  buildSkillLoadDirective,
 } from '../../src/loop/prompts'
 import { SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../../src/loop/section-summary'
 import type { PromptContext, SectionDigestEntry } from '../../src/loop/prompts'
@@ -236,6 +237,27 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).toContain("Completed Sections' Summaries")
       expect(result).toContain('## Section 1: Section A')
       expect(result).toContain('### Done\nImplemented X')
+    })
+  })
+
+  describe('buildSkillLoadDirective', () => {
+    test('empty array returns empty string', () => {
+      expect(buildSkillLoadDirective([])).toBe('')
+    })
+
+    test('single skill produces directive with backtick-wrapped name', () => {
+      const result = buildSkillLoadDirective(['tdd'])
+      expect(result).toContain('## Attached skills')
+      expect(result).toContain('`tdd`')
+      expect(result).toContain('Skill tool')
+    })
+
+    test('multiple skills produces comma-separated backtick-wrapped list', () => {
+      const result = buildSkillLoadDirective(['tdd', 'diagnose'])
+      expect(result).toContain('## Attached skills')
+      expect(result).toContain('`tdd`')
+      expect(result).toContain('`diagnose`')
+      expect(result).toContain('Skill tool')
     })
   })
 

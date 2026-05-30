@@ -11,7 +11,9 @@ import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { createLoopEventHandler } from '../hooks'
 import type { SandboxManager } from '../sandbox/manager'
-import { extractPlanExecutionMetadata } from '../utils/plan-execution'
+import { extractPlanExecutionMetadata, extractPlanSkills } from '../utils/plan-execution'
+import { materializeSkillsIntoWorktree } from '../utils/skill-materializer'
+import { buildSkillLoadDirective } from '../loop/prompts'
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
 
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
@@ -888,6 +890,20 @@ export async function attachLoopToSession(
     } else {
       deps.loopsRepo.setTotalSections(ctx.projectId, loopName, 0)
       promptText = planText
+    }
+
+    // Skill materialization + directive prepending
+    const attachedSkills = extractPlanSkills(planText)
+    if (attachedSkills.length > 0) {
+      if (worktreeDir) {
+        try {
+          const res = materializeSkillsIntoWorktree({ worktreeDir, skills: attachedSkills, logger: deps.logger })
+          deps.logger.log(`attachLoopToSession: materialized skills copied=[${res.copied.join(',')}] missing=[${res.missing.join(',')}] for loop=${loopName}`)
+        } catch (err) {
+          deps.logger.error(`attachLoopToSession: skill materialization failed for ${loopName}`, err)
+        }
+      }
+      promptText = `${buildSkillLoadDirective(attachedSkills)}\n\n${promptText}`
     }
 
     // Wait for sandbox readiness in worktree+sandbox mode (after persistence)
