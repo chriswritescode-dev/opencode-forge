@@ -666,3 +666,15 @@ test('migration 131 is idempotent on re-opened databases', () => {
 
   db2.close()
 })
+
+test('migration 132 drops completion_summary from loops', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+  expect(cols.some(c => c.name === 'completion_summary')).toBe(false)
+  expect(cols.some(c => c.name === 'execution_variant')).toBe(true)
+  expect(cols.some(c => c.name === 'auditor_variant')).toBe(true)
+
+  db.close()
+})

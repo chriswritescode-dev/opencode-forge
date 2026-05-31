@@ -2,6 +2,7 @@ import type { LoopState } from './state'
 import type { ReviewFindingRow } from '../storage/repos/review-findings-repo'
 import type { SectionPlanRow } from '../storage/repos/section-plans-repo'
 import { SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../utils/section-summary'
+import { formatSectionSummaries, type FormatSectionSummariesOptions } from '../utils/loop-format'
 
 export interface SectionDigestEntry {
   index: number
@@ -19,6 +20,12 @@ export interface PromptContext {
   getCompletedSectionDigest(state: LoopState): SectionDigestEntry[]
 }
 
+const PROMPT_SECTION_SUMMARY_FORMAT: FormatSectionSummariesOptions = {
+  sectionHeadingLevel: 2,
+  labelStyle: 'heading',
+  labelHeadingLevel: 3,
+}
+
 function buildSandboxContextNoteFromFlag(sandbox: boolean): string {
   if (!sandbox) return ''
   return [
@@ -33,16 +40,6 @@ function buildSandboxContextNoteFromFlag(sandbox: boolean): string {
 
 function buildSandboxContextNote(state: LoopState): string {
   return buildSandboxContextNoteFromFlag(state.sandbox ?? false)
-}
-
-function formatSectionsSummary(digest: SectionDigestEntry[]): string {
-  return digest.map(s => {
-    let parts = `## Section ${s.index + 1}: ${s.title}`
-    if (s.summaryDone) parts += `\n### Done\n${s.summaryDone}`
-    if (s.summaryDeviations) parts += `\n### Deviations\n${s.summaryDeviations}`
-    if (s.summaryFollowUps) parts += `\n### Follow-ups\n${s.summaryFollowUps}`
-    return parts
-  }).join('\n\n')
 }
 
 export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, auditFindings?: string): string {
@@ -140,7 +137,7 @@ export function buildSectionInitialPromptText(input: {
   let header = `[Loop section ${idx + 1}/${input.totalSections} -- iteration ${input.iteration}/${input.maxIterations}]`
 
   if (digest.length > 0) {
-    header += `\n\n### Prior Sections' Summaries\n${formatSectionsSummary(digest)}`
+    header += `\n\n### Prior Sections' Summaries\n${formatSectionSummaries(digest, PROMPT_SECTION_SUMMARY_FORMAT).join('\n')}`
   }
 
   header += `\n\n## Section plan\n${input.sectionContent}`
@@ -158,7 +155,7 @@ export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): s
   let header = `[Loop section audit ${idx + 1}/${total}]`
 
   if (digest.length > 0) {
-    header += `\n\n### Prior Sections' Summaries\n${formatSectionsSummary(digest)}`
+    header += `\n\n### Prior Sections' Summaries\n${formatSectionSummaries(digest, PROMPT_SECTION_SUMMARY_FORMAT).join('\n')}`
   }
 
   header += `\n\n## Section under audit\n${section.content}`
@@ -180,7 +177,7 @@ export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopSt
   let header = `[Loop section ${idx + 1}/${total} -- iteration ${iter}/${maxIter} (continuation)]`
 
   if (digest.length > 0) {
-    header += `\n\n### Prior Sections' Summaries\n${formatSectionsSummary(digest)}`
+    header += `\n\n### Prior Sections' Summaries\n${formatSectionSummaries(digest, PROMPT_SECTION_SUMMARY_FORMAT).join('\n')}`
   }
 
   header += `\n\n## Section plan\n${section.content}`
@@ -204,7 +201,7 @@ export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, a
   header += `\n\n## Master Plan\n${planText}`
 
   if (digest.length > 0) {
-    header += `\n\n### Completed Sections' Summaries\n${formatSectionsSummary(digest)}`
+    header += `\n\n### Completed Sections' Summaries\n${formatSectionSummaries(digest, PROMPT_SECTION_SUMMARY_FORMAT).join('\n')}`
   }
 
   header += `\n\n---\n## Final auditor feedback\n${auditText}`
@@ -228,7 +225,7 @@ export function buildFinalAuditPrompt(ctx: PromptContext, state: LoopState): str
   header += `\n\n## Master Plan\n${planText}`
 
   if (digest.length > 0) {
-    header += `\n\n### Completed Sections' Summaries\n${formatSectionsSummary(digest)}`
+    header += `\n\n### Completed Sections' Summaries\n${formatSectionSummaries(digest, PROMPT_SECTION_SUMMARY_FORMAT).join('\n')}`
   }
 
   header += `\n\n---\nFinal audit instructions:\n- Verify the master plan's top-level Verification commands and acceptance criteria.\n- Use the per-section ### Deviations entries to interpret discrepancies. If a discrepancy is explained by a deviation, accept it unless it materially breaks the master plan's top-level Verification.\n- Write findings with sectionIndex pointing to the section you believe contains the bug. Use crossSection: true only when the bug spans multiple sections.\n- The loop terminates automatically when there are no outstanding bug-severity findings. Do not write findings unless they describe real, blocking issues.`

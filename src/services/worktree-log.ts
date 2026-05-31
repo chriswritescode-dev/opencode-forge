@@ -215,10 +215,9 @@ export function formatWorktreeCompletionEntry(
   
   const usageSection = usage ? `\n### Usage\n\n${formatUsageSummary(usage).join('\n')}\n` : ''
 
-  const renderableSections = (sections ?? []).filter(s =>
-    Boolean(s.summaryDone?.trim() || s.summaryDeviations?.trim() || s.summaryFollowUps?.trim()))
-  const sectionsSection = renderableSections.length > 0
-    ? `\n### Sections\n\n${formatSectionSummaries(renderableSections).join('\n')}\n`
+  const sectionLines = formatSectionSummaries(sections ?? [])
+  const sectionsSection = sectionLines.length > 0
+    ? `\n### Sections\n\n${sectionLines.join('\n')}\n`
     : ''
   
   return `# ${options.projectDir}
@@ -357,5 +356,4 @@ export function writeWorktreeCompletionLog(
     payload.sections,
   )
 }
-
 

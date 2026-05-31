@@ -58,7 +58,6 @@ describe('review section scoping', () => {
         started_at           INTEGER NOT NULL,
         completed_at         INTEGER,
         termination_reason   TEXT,
-        completion_summary   TEXT,
         workspace_id         TEXT,
         host_session_id      TEXT,
         audit_session_id     TEXT,

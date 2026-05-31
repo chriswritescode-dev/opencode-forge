@@ -9,6 +9,12 @@ export { formatTokens } from './format'
 export type { LoopUsageSummary } from '../loop/token-usage'
 export type { SectionDigestEntry } from '../loop/prompts'
 
+export interface FormatSectionSummariesOptions {
+  sectionHeadingLevel?: number
+  labelStyle?: 'bold' | 'heading'
+  labelHeadingLevel?: number
+}
+
 /**
  * Build cumulative usage for a loop by merging persisted aggregate with live session output.
  * Prevents double-counting by checking if the current session is already persisted.
@@ -81,15 +87,38 @@ export function aggregateToUsageSummary(aggregate: LoopUsageAggregate): LoopUsag
   }
 }
 
+function hasSectionSummaryContent(section: SectionDigestEntry): boolean {
+  return Boolean(section.summaryDone?.trim() || section.summaryDeviations?.trim() || section.summaryFollowUps?.trim())
+}
+
+function formatHeading(level: number, text: string): string {
+  return `${'#'.repeat(level)} ${text}`
+}
+
+function pushSectionSummaryField(lines: string[], label: string, value: string | null, options: Required<FormatSectionSummariesOptions>): void {
+  const trimmed = value?.trim()
+  if (!trimmed) return
+
+  lines.push(options.labelStyle === 'heading'
+    ? formatHeading(options.labelHeadingLevel, label)
+    : `**${label}:**`)
+  lines.push(trimmed)
+}
+
 /** Format completed-section digest entries into deterministic markdown lines. */
-export function formatSectionSummaries(sections: SectionDigestEntry[]): string[] {
+export function formatSectionSummaries(sections: SectionDigestEntry[], options: FormatSectionSummariesOptions = {}): string[] {
+  const resolvedOptions: Required<FormatSectionSummariesOptions> = {
+    sectionHeadingLevel: options.sectionHeadingLevel ?? 4,
+    labelStyle: options.labelStyle ?? 'bold',
+    labelHeadingLevel: options.labelHeadingLevel ?? 3,
+  }
   const lines: string[] = []
-  sections.forEach((s, i) => {
+  sections.filter(hasSectionSummaryContent).forEach((s, i) => {
     if (i > 0) lines.push('')
-    lines.push(`#### Section ${s.index + 1}: ${s.title}`)
-    if (s.summaryDone?.trim()) { lines.push('**Done:**'); lines.push(s.summaryDone.trim()) }
-    if (s.summaryDeviations?.trim()) { lines.push('**Deviations:**'); lines.push(s.summaryDeviations.trim()) }
-    if (s.summaryFollowUps?.trim()) { lines.push('**Follow-ups:**'); lines.push(s.summaryFollowUps.trim()) }
+    lines.push(formatHeading(resolvedOptions.sectionHeadingLevel, `Section ${s.index + 1}: ${s.title}`))
+    pushSectionSummaryField(lines, 'Done', s.summaryDone, resolvedOptions)
+    pushSectionSummaryField(lines, 'Deviations', s.summaryDeviations, resolvedOptions)
+    pushSectionSummaryField(lines, 'Follow-ups', s.summaryFollowUps, resolvedOptions)
   })
   return lines
 }

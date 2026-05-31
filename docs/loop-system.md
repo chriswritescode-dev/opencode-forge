@@ -73,7 +73,6 @@ interface LoopState {
   modelFailed?: boolean              // Whether model error occurred
   sandbox?: boolean                  // Whether using Docker sandbox
   sandboxContainer?: string          // Container name if sandboxed
-  completionSummary?: string         // Summary of loop completion
   executionModel?: string            // Model used for execution
   auditorModel?: string              // Model used for auditing
   workspaceId?: string               // OpenCode workspace ID
@@ -202,6 +201,7 @@ In user-facing language, a plan is decomposed into **milestones** — ordered un
 - `currentSectionIndex` / `totalSections` columns on the loop row
 - `<!-- forge-section -->` markers in the architect plan output
 - `section-read` tool reads the current or specified milestone
+- Completed milestone summaries live on `section_plans.summary_done`, `summary_deviations`, and `summary_follow_ups`, then render into worktree completion logs under `### Sections`
 
 Decomposition is a one-shot preprocessing step at loop start (`services/deterministic-decomposer.ts`), not a runtime loop phase. Once milestones exist, the loop advances through them via `advance-section` transitions inside the `auditing` phase. When the `final_auditing` phase reports outstanding bug findings, the loop rotates to a coding session in "final-audit fix" mode — the code agent fixes the reported findings without rewinding to a specific section, and on idle the loop transitions straight back to `final_auditing` for re-verification.
 

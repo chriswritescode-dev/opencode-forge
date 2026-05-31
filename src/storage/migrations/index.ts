@@ -298,5 +298,14 @@ export const migrations: Migration[] = [
       db.run(loadSql('131_add_loop_model_variants.sql'))
     },
   },
+  {
+    id: '132',
+    description: 'Drop completion_summary column from loops table',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      if (!cols.some((c) => c.name === 'completion_summary')) return
+      db.run(loadSql('132_drop_completion_summary_from_loops.sql'))
+    },
+  },
 
 ]

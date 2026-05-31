@@ -73,10 +73,6 @@ function writeTerminationLog(
     : null
   const usage = usageAggregate ? aggregateToUsageSummary(usageAggregate) : null
 
-  const sectionDigest = ctx.getSectionDigest?.(state) ?? []
-  const sections = sectionDigest.filter(s =>
-    Boolean(s.summaryDone?.trim() || s.summaryDeviations?.trim() || s.summaryFollowUps?.trim()))
-
   const result = buildWorktreeCompletionPayload(
     ctx.getConfig(),
     {
@@ -87,7 +83,7 @@ function writeTerminationLog(
       worktreeBranch: state.worktreeBranch,
       dataDir: ctx.dataDir,
       usage,
-      sections: sections.length > 0 ? sections : undefined,
+      sections: ctx.getSectionDigest?.(state),
     },
     ctx.logger,
   )
