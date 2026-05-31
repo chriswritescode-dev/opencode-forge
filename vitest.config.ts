@@ -10,6 +10,7 @@ export default defineConfig({
   },
   test: {
     include: [
+      'test/agents.test.ts',
       'test/constants/loop.test.ts',
       'test/deterministic-decomposer.test.ts',
       'test/hooks/audit-rotate-ordering.test.ts',
@@ -47,6 +48,7 @@ export default defineConfig({
       'test/sandbox/context.test.ts',
       'test/sandbox/reconcile.test.ts',
       'test/utils/sandbox-ready.test.ts',
+      'test/utils/skill-materializer.test.ts',
       'test/loop-service.test.ts',
       'test/loop-service-notify.test.ts',
       'test/boot-sandbox-preserve.test.ts',

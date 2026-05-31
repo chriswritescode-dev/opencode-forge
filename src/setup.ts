@@ -10,7 +10,7 @@ function resolveBundledConfigPath(): string {
   return join(pluginDir, '..', 'forge-config.jsonc')
 }
 
-function resolveConfigDir(): string {
+export function resolveConfigDir(): string {
   const defaultBase = join(homedir(), platform() === 'win32' ? 'AppData' : '.config')
   const xdgConfigHome = process.env['XDG_CONFIG_HOME'] || defaultBase
   return join(xdgConfigHome, 'opencode')

@@ -220,6 +220,12 @@ export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, a
   return header + buildSandboxContextNote(state)
 }
 
+export function buildSkillLoadDirective(skills: string[]): string {
+  if (skills.length === 0) return ''
+  const list = skills.map(s => `\`${s}\``).join(', ')
+  return `## Attached skills\nThis plan attaches the following skills: ${list}.\nBefore implementing, call the Skill tool to load each one. They provide required workflows for this plan and persist through compaction.`
+}
+
 export function buildFinalAuditPrompt(ctx: PromptContext, state: LoopState): string {
   const planText = ctx.getPlanTextForState(state) ?? 'Plan not found in plan store.'
   const digest = ctx.getCompletedSectionDigest(state)

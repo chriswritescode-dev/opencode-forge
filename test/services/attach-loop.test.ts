@@ -723,4 +723,79 @@ describe('attachLoopToSession', () => {
     expect(row!.executionVariant).toBe('thinking-max')
     expect(row!.auditorVariant).toBe('audit-high')
   })
+
+  test('plan with Skills: line prepends skill directive to prompt', async () => {
+    const { deps, promptAsyncMock } = buildDeps()
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+
+    const planText = '# Skill Plan\n\nSkills: tdd\n\nDo something with TDD.'
+
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        sessionId: 'sess_skill',
+        workspaceId: 'ws_skill',
+        worktreeDir: '/tmp/wt/skill',
+        loopName: 'skill-loop',
+        displayName: 'Skill Loop',
+        executionName: 'skill-loop',
+        maxIterations: 10,
+        sandboxEnabled: false,
+        planText,
+        selectSession: false,
+        selectSessionTiming: 'after-prompt',
+        startWatchdog: false,
+      },
+    )
+
+    expect(result.ok).toBe(true)
+
+    // The prompt sent to the code agent should include the skill directive
+    expect(promptAsyncMock).toHaveBeenCalledTimes(1)
+    const promptCallArgs = promptAsyncMock.mock.calls[0][0]
+    expect(promptCallArgs.agent).toBe('code')
+    const promptText = promptCallArgs.parts[0].text
+    expect(promptText).toContain('## Attached skills')
+    expect(promptText).toContain('`tdd`')
+    // The original plan text should still be present after the directive
+    expect(promptText).toContain('# Skill Plan')
+  })
+
+  test('plan without Skills: line does not include skill directive', async () => {
+    const { deps, promptAsyncMock } = buildDeps()
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+
+    const planText = '# No Skill Plan\n\nDo something without skills.'
+
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        sessionId: 'sess_noskill',
+        workspaceId: 'ws_noskill',
+        worktreeDir: '/tmp/wt/noskill',
+        loopName: 'noskill-loop',
+        displayName: 'No Skill Loop',
+        executionName: 'noskill-loop',
+        maxIterations: 10,
+        sandboxEnabled: false,
+        planText,
+        selectSession: false,
+        selectSessionTiming: 'after-prompt',
+        startWatchdog: false,
+      },
+    )
+
+    expect(result.ok).toBe(true)
+
+    expect(promptAsyncMock).toHaveBeenCalledTimes(1)
+    const promptCallArgs = promptAsyncMock.mock.calls[0][0]
+    const promptText = promptCallArgs.parts[0].text
+    expect(promptText).not.toContain('## Attached skills')
+    // The original plan text should be present unchanged
+    expect(promptText).toContain('# No Skill Plan')
+  })
 })

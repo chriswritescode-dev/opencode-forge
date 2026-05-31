@@ -2,6 +2,7 @@ import { describe, test, expect } from 'vitest'
 import {
   extractPlanTitle,
   extractPlanExecutionMetadata,
+  extractPlanSkills,
   extractLoopName,
   extractLoopNames,
   sanitizeLoopName,
@@ -241,6 +242,78 @@ describe('Plan Execution Utilities', () => {
 
     test('Handles special characters correctly', () => {
       expect(sanitizeLoopName('API v2.0 Migration')).toBe('api-v2-0-migration')
+    })
+  })
+
+  describe('extractPlanSkills', () => {
+    test('Extracts single skill', () => {
+      expect(extractPlanSkills('Skills: tdd')).toEqual(['tdd'])
+    })
+
+    test('Extracts multiple comma-separated skills', () => {
+      expect(extractPlanSkills('Skills: tdd, diagnose, prototype')).toEqual(['tdd', 'diagnose', 'prototype'])
+    })
+
+    test('Parses **Skills**: bold prefix', () => {
+      expect(extractPlanSkills('**Skills**: tdd, diagnose')).toEqual(['tdd', 'diagnose'])
+    })
+
+    test('Parses - Skills: list prefix', () => {
+      expect(extractPlanSkills('- Skills: tdd')).toEqual(['tdd'])
+    })
+
+    test('Parses - **Skills**: bold list prefix', () => {
+      expect(extractPlanSkills('- **Skills**: tdd')).toEqual(['tdd'])
+    })
+
+    test('Strips backticks from skill names', () => {
+      expect(extractPlanSkills('Skills: `tdd`, `diagnose`')).toEqual(['tdd', 'diagnose'])
+    })
+
+    test('Mixes backtick and non-backtick names', () => {
+      expect(extractPlanSkills('Skills: `tdd`, diagnose')).toEqual(['tdd', 'diagnose'])
+    })
+
+    test('Deduplicates duplicate names preserving first-seen order', () => {
+      expect(extractPlanSkills('Skills: tdd, diagnose, tdd')).toEqual(['tdd', 'diagnose'])
+    })
+
+    test('Handles the example from spec', () => {
+      expect(extractPlanSkills('Skills: `tdd`, diagnose , tdd')).toEqual(['tdd', 'diagnose'])
+    })
+
+    test('Trims whitespace around skill names', () => {
+      expect(extractPlanSkills('Skills:   tdd  ,  diagnose  ')).toEqual(['tdd', 'diagnose'])
+    })
+
+    test('Returns [] when no Skills: line exists', () => {
+      expect(extractPlanSkills('# My Plan\n\nSome content')).toEqual([])
+    })
+
+    test('Returns [] for empty input', () => {
+      expect(extractPlanSkills('')).toEqual([])
+    })
+
+    test('Does NOT match markdown heading ## Skills', () => {
+      const plan = '## Skills\n\n- tdd\n- diagnose'
+      expect(extractPlanSkills(plan)).toEqual([])
+    })
+
+    test('Does NOT match markdown heading ### Skills to load', () => {
+      const plan = '### Skills to load\n\n- tdd\n- diagnose'
+      expect(extractPlanSkills(plan)).toEqual([])
+    })
+
+    test('Handles leading whitespace', () => {
+      expect(extractPlanSkills('  Skills: tdd')).toEqual(['tdd'])
+    })
+
+    test('Handles leading whitespace with bold', () => {
+      expect(extractPlanSkills('  **Skills**: tdd')).toEqual(['tdd'])
+    })
+
+    test('Handles leading whitespace with bullet and bold', () => {
+      expect(extractPlanSkills('  - **Skills**: tdd')).toEqual(['tdd'])
     })
   })
 })
