@@ -69,6 +69,16 @@ export interface WorktreeLogTarget {
   permissionPath: string | null
 }
 
+/** Returns true when worktree completion logging is enabled in config. */
+export function isWorktreeLoggingEnabled(config: PluginConfig): boolean {
+  return Boolean(config.loop?.worktreeLogging?.enabled)
+}
+
+/** Build an optional `### <heading>` markdown block, or '' when there are no lines. */
+function optionalMarkdownSection(heading: string, lines: string[]): string {
+  return lines.length > 0 ? `\n### ${heading}\n\n${lines.join('\n')}\n` : ''
+}
+
 /**
  * Normalizes a configured log directory string by expanding home-directory shorthand.
  * - `~` becomes the current user's home directory
@@ -213,12 +223,8 @@ export function formatWorktreeCompletionEntry(
   const branchInfo = options.worktreeBranch ? `\n- **Branch:** ${options.worktreeBranch}` : ''
   const planSection = (planText?.trim()) || 'Plan unavailable'
   
-  const usageSection = usage ? `\n### Usage\n\n${formatUsageSummary(usage).join('\n')}\n` : ''
-
-  const sectionLines = formatSectionSummaries(sections ?? [])
-  const sectionsSection = sectionLines.length > 0
-    ? `\n### Sections\n\n${sectionLines.join('\n')}\n`
-    : ''
+  const usageSection = optionalMarkdownSection('Usage', usage ? formatUsageSummary(usage) : [])
+  const sectionsSection = optionalMarkdownSection('Sections', formatSectionSummaries(sections ?? []))
   
   return `# ${options.projectDir}
 
@@ -290,8 +296,7 @@ export function buildWorktreeCompletionPayload(
   },
   logger?: Logger,
 ): BuildWorktreeCompletionPayloadResult | null {
-  const worktreeLogging = config.loop?.worktreeLogging
-  if (!worktreeLogging?.enabled) {
+  if (!isWorktreeLoggingEnabled(config)) {
     logger?.debug('Worktree logging: disabled, skipping')
     return null
   }

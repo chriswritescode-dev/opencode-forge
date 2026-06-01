@@ -153,7 +153,7 @@ export function createLoopService(
       startedAt: new Date(state.startedAt).getTime(),
       completedAt: state.completedAt ? new Date(state.completedAt).getTime() : null,
       terminationReason: state.terminationReason ?? null,
-    workspaceId: state.workspaceId ?? null,
+      workspaceId: state.workspaceId ?? null,
       hostSessionId: state.hostSessionId ?? null,
       currentSectionIndex: state.currentSectionIndex,
       totalSections: state.totalSections,

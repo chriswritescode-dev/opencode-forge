@@ -26,6 +26,11 @@ const PROMPT_SECTION_SUMMARY_FORMAT: FormatSectionSummariesOptions = {
   labelHeadingLevel: 3,
 }
 
+function sectionSummariesBlock(digest: SectionDigestEntry[], heading: string): string {
+  if (digest.length === 0) return ''
+  return `\n\n### ${heading}\n${formatSectionSummaries(digest, PROMPT_SECTION_SUMMARY_FORMAT).join('\n')}`
+}
+
 function buildSandboxContextNoteFromFlag(sandbox: boolean): string {
   if (!sandbox) return ''
   return [
@@ -136,9 +141,7 @@ export function buildSectionInitialPromptText(input: {
   const digest = input.completedSectionDigest ?? []
   let header = `[Loop section ${idx + 1}/${input.totalSections} -- iteration ${input.iteration}/${input.maxIterations}]`
 
-  if (digest.length > 0) {
-    header += `\n\n### Prior Sections' Summaries\n${formatSectionSummaries(digest, PROMPT_SECTION_SUMMARY_FORMAT).join('\n')}`
-  }
+  header += sectionSummariesBlock(digest, "Prior Sections' Summaries")
 
   header += `\n\n## Section plan\n${input.sectionContent}`
 
@@ -154,9 +157,7 @@ export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): s
   const digest = ctx.getCompletedSectionDigest(state)
   let header = `[Loop section audit ${idx + 1}/${total}]`
 
-  if (digest.length > 0) {
-    header += `\n\n### Prior Sections' Summaries\n${formatSectionSummaries(digest, PROMPT_SECTION_SUMMARY_FORMAT).join('\n')}`
-  }
+  header += sectionSummariesBlock(digest, "Prior Sections' Summaries")
 
   header += `\n\n## Section under audit\n${section.content}`
 
@@ -176,9 +177,7 @@ export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopSt
   const digest = ctx.getCompletedSectionDigest(state)
   let header = `[Loop section ${idx + 1}/${total} -- iteration ${iter}/${maxIter} (continuation)]`
 
-  if (digest.length > 0) {
-    header += `\n\n### Prior Sections' Summaries\n${formatSectionSummaries(digest, PROMPT_SECTION_SUMMARY_FORMAT).join('\n')}`
-  }
+  header += sectionSummariesBlock(digest, "Prior Sections' Summaries")
 
   header += `\n\n## Section plan\n${section.content}`
   header += `\n\n---\n## Auditor feedback from previous attempt\n${auditText}`
@@ -200,9 +199,7 @@ export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, a
   let header = `[Final-audit fix -- iteration ${state.iteration}/${state.maxIterations}]`
   header += `\n\n## Master Plan\n${planText}`
 
-  if (digest.length > 0) {
-    header += `\n\n### Completed Sections' Summaries\n${formatSectionSummaries(digest, PROMPT_SECTION_SUMMARY_FORMAT).join('\n')}`
-  }
+  header += sectionSummariesBlock(digest, "Completed Sections' Summaries")
 
   header += `\n\n---\n## Final auditor feedback\n${auditText}`
 
@@ -224,9 +221,7 @@ export function buildFinalAuditPrompt(ctx: PromptContext, state: LoopState): str
   let header = `[Final integration audit]`
   header += `\n\n## Master Plan\n${planText}`
 
-  if (digest.length > 0) {
-    header += `\n\n### Completed Sections' Summaries\n${formatSectionSummaries(digest, PROMPT_SECTION_SUMMARY_FORMAT).join('\n')}`
-  }
+  header += sectionSummariesBlock(digest, "Completed Sections' Summaries")
 
   header += `\n\n---\nFinal audit instructions:\n- Verify the master plan's top-level Verification commands and acceptance criteria.\n- Use the per-section ### Deviations entries to interpret discrepancies. If a discrepancy is explained by a deviation, accept it unless it materially breaks the master plan's top-level Verification.\n- Write findings with sectionIndex pointing to the section you believe contains the bug. Use crossSection: true only when the bug spans multiple sections.\n- The loop terminates automatically when there are no outstanding bug-severity findings. Do not write findings unless they describe real, blocking issues.`
 

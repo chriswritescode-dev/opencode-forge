@@ -7,7 +7,6 @@ import { mergeUsageSummaries } from '../loop/token-usage'
 
 export { formatTokens } from './format'
 export type { LoopUsageSummary } from '../loop/token-usage'
-export type { SectionDigestEntry } from '../loop/prompts'
 
 export interface FormatSectionSummariesOptions {
   sectionHeadingLevel?: number
@@ -87,39 +86,36 @@ export function aggregateToUsageSummary(aggregate: LoopUsageAggregate): LoopUsag
   }
 }
 
-function hasSectionSummaryContent(section: SectionDigestEntry): boolean {
-  return Boolean(section.summaryDone?.trim() || section.summaryDeviations?.trim() || section.summaryFollowUps?.trim())
+const DEFAULT_SECTION_SUMMARY_FORMAT: Required<FormatSectionSummariesOptions> = {
+  sectionHeadingLevel: 4,
+  labelStyle: 'bold',
+  labelHeadingLevel: 3,
 }
 
 function formatHeading(level: number, text: string): string {
   return `${'#'.repeat(level)} ${text}`
 }
 
-function pushSectionSummaryField(lines: string[], label: string, value: string | null, options: Required<FormatSectionSummariesOptions>): void {
-  const trimmed = value?.trim()
-  if (!trimmed) return
-
-  lines.push(options.labelStyle === 'heading'
-    ? formatHeading(options.labelHeadingLevel, label)
-    : `**${label}:**`)
-  lines.push(trimmed)
-}
-
 /** Format completed-section digest entries into deterministic markdown lines. */
 export function formatSectionSummaries(sections: SectionDigestEntry[], options: FormatSectionSummariesOptions = {}): string[] {
-  const resolvedOptions: Required<FormatSectionSummariesOptions> = {
-    sectionHeadingLevel: options.sectionHeadingLevel ?? 4,
-    labelStyle: options.labelStyle ?? 'bold',
-    labelHeadingLevel: options.labelHeadingLevel ?? 3,
-  }
+  const opts = { ...DEFAULT_SECTION_SUMMARY_FORMAT, ...options }
   const lines: string[] = []
-  sections.filter(hasSectionSummaryContent).forEach((s, i) => {
-    if (i > 0) lines.push('')
-    lines.push(formatHeading(resolvedOptions.sectionHeadingLevel, `Section ${s.index + 1}: ${s.title}`))
-    pushSectionSummaryField(lines, 'Done', s.summaryDone, resolvedOptions)
-    pushSectionSummaryField(lines, 'Deviations', s.summaryDeviations, resolvedOptions)
-    pushSectionSummaryField(lines, 'Follow-ups', s.summaryFollowUps, resolvedOptions)
-  })
+  for (const s of sections) {
+    const fields: string[] = []
+    const pushField = (label: string, value: string | null) => {
+      const trimmed = value?.trim()
+      if (!trimmed) return
+      fields.push(opts.labelStyle === 'heading' ? formatHeading(opts.labelHeadingLevel, label) : `**${label}:**`)
+      fields.push(trimmed)
+    }
+    pushField('Done', s.summaryDone)
+    pushField('Deviations', s.summaryDeviations)
+    pushField('Follow-ups', s.summaryFollowUps)
+    if (fields.length === 0) continue
+    if (lines.length > 0) lines.push('')
+    lines.push(formatHeading(opts.sectionHeadingLevel, `Section ${s.index + 1}: ${s.title}`))
+    lines.push(...fields)
+  }
   return lines
 }
 

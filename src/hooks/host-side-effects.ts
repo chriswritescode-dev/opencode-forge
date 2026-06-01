@@ -3,7 +3,7 @@ import type { LoopState, TerminationReason } from '../loop'
 import type { Logger, PluginConfig } from '../types'
 import type { createSandboxManager } from '../sandbox/manager'
 import { terminationReasonToString } from '../loop'
-import { buildWorktreeCompletionPayload, writeWorktreeCompletionLog } from '../services/worktree-log'
+import { buildWorktreeCompletionPayload, writeWorktreeCompletionLog, isWorktreeLoggingEnabled } from '../services/worktree-log'
 import type { PendingTeardownRegistry } from '../workspace/pending-teardown'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
@@ -62,6 +62,7 @@ function writeTerminationLog(
   ctx: TerminationSideEffectsContext,
 ): void {
   if (!state.worktree) return
+  if (!isWorktreeLoggingEnabled(ctx.getConfig())) return
 
   const projectDir = state.projectDir ?? state.worktreeDir
   const planText = ctx.getPlanText?.(state.loopName, state.sessionId)

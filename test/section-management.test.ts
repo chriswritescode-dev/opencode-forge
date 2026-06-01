@@ -203,7 +203,7 @@ describe('LoopService section management', () => {
         startedAt: Date.now(),
         completedAt: null,
         terminationReason: null,
-          workspaceId: null,
+        workspaceId: null,
         hostSessionId: null,
         currentSectionIndex: 0,
         totalSections: 0,
