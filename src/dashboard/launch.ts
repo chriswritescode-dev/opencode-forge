@@ -54,7 +54,7 @@ export function startDashboardServer(options: StartDashboardOptions = {}): Dashb
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const port = basePort + attempt
     try {
-      const server = Bun.serve({ port, fetch: handler })
+      const server = Bun.serve({ hostname: 'localhost', port, fetch: handler })
       const boundPort = server.port ?? port
       return {
         url: `http://localhost:${boundPort}`,
