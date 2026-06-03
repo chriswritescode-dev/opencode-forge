@@ -83,4 +83,37 @@ describe('renderDashboardHtml', () => {
 
     expect(html).toContain('lastData')
   })
+
+  test('renders a master-detail layout with project sidebar and detail pane', () => {
+    const html = renderDashboardHtml()
+
+    expect(html).toContain('dash-layout')
+    expect(html).toContain('project-sidebar')
+    expect(html).toContain('project-detail')
+  })
+
+  test('tracks the selected project in state', () => {
+    const html = renderDashboardHtml()
+
+    expect(html).toContain('selectedProjectId')
+  })
+
+  test('sidebar project items toggle the selected project on click', () => {
+    const html = renderDashboardHtml()
+
+    expect(html).toContain('project-nav-item')
+    expect(html).toMatch(/selectedProjectId\s*=\s*pid/)
+  })
+
+  test('shows loop counts per project in the sidebar', () => {
+    const html = renderDashboardHtml()
+
+    expect(html).toContain('project-nav-count')
+  })
+
+  test('renders an empty state when no loops match filters', () => {
+    const html = renderDashboardHtml()
+
+    expect(html).toContain('empty-state')
+  })
 })
