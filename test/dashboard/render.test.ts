@@ -116,4 +116,32 @@ describe('renderDashboardHtml', () => {
 
     expect(html).toContain('empty-state')
   })
+
+  test('inline client script is syntactically valid JavaScript', () => {
+    const html = renderDashboardHtml()
+    const match = html.match(/<script>([\s\S]*?)<\/script>/)
+
+    expect(match).not.toBeNull()
+    const script = match![1]
+    expect(() => new Function(script)).not.toThrow()
+  })
+
+  test('derives the sidebar label from the last path segment', () => {
+    const html = renderDashboardHtml()
+    const match = html.match(/<script>([\s\S]*?)<\/script>/)
+    const script = match![1]
+
+    const lastSegment = new Function(
+      'rawPath',
+      script.replace(/[\s\S]*?(var rawSegments = [\s\S]*?navName\.title = rawPath;)[\s\S]*/, `
+        var navName = { textContent: '', title: '' };
+        $1
+        return navName.textContent;
+      `)
+    )
+
+    expect(lastSegment('/Users/chris/development/opencode-forge')).toBe('opencode-forge')
+    expect(lastSegment('simple-id')).toBe('simple-id')
+    expect(lastSegment('')).toBe('')
+  })
 })

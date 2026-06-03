@@ -242,8 +242,9 @@ export function renderDashboardHtml(): string {
 
         var navName = document.createElement('span');
         navName.className = 'project-nav-name';
-        var rawPath = entry.proj.projectDir || entry.proj.projectId;
-        navName.textContent = rawPath.split(/[/\\]/).filter(Boolean).pop() || rawPath;
+        var rawPath = entry.proj.projectDir || entry.proj.projectId || '';
+        var rawSegments = rawPath.split('/').filter(Boolean);
+        navName.textContent = rawSegments.length ? rawSegments[rawSegments.length - 1] : rawPath;
         navName.title = rawPath;
         navItem.appendChild(navName);
 
