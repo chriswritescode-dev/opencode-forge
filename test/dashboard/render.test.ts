@@ -39,4 +39,48 @@ describe('renderDashboardHtml', () => {
     // We check that the pattern ".innerHTML =" does NOT appear anywhere.
     expect(html).not.toMatch(/\.innerHTML\s*=/)
   })
+
+  test('status badges are rendered as clickable filter badges', () => {
+    const html = renderDashboardHtml()
+
+    expect(html).toContain('badge-filter')
+    expect(html).toContain('activeStatuses')
+  })
+
+  test('defines active filter styling', () => {
+    const html = renderDashboardHtml()
+
+    expect(html).toContain('badge-active')
+  })
+
+  test('status filter uses OR membership check', () => {
+    const html = renderDashboardHtml()
+
+    expect(html).toMatch(/activeStatuses\.has\(/)
+  })
+
+  test('renders a search input', () => {
+    const html = renderDashboardHtml()
+
+    expect(html).toContain('id="loop-search"')
+  })
+
+  test('search input has styling', () => {
+    const html = renderDashboardHtml()
+
+    expect(html).toContain('search-input')
+  })
+
+  test('search binds an input handler that sets searchText', () => {
+    const html = renderDashboardHtml()
+
+    expect(html).toMatch(new RegExp("addEventListener\\(\\s*['\"]input['\"]"))
+    expect(html).toContain('searchText')
+  })
+
+  test('caches last payload for filter re-render', () => {
+    const html = renderDashboardHtml()
+
+    expect(html).toContain('lastData')
+  })
 })

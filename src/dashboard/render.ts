@@ -20,6 +20,17 @@ export function renderDashboardHtml(): string {
     padding: 4px 10px; border-radius: 12px; font-size: 0.8rem;
     background: #21262d; color: #c9d1d9;
   }
+  .totals .badge-filter { cursor: pointer; user-select: none; }
+  .totals .badge-filter:hover { background: #30363d; }
+  .totals .badge-active { background: #1f6feb; color: #fff; }
+  .search-input {
+    width: 100%; max-width: 360px; margin-bottom: 16px;
+    padding: 6px 10px; border-radius: 6px;
+    border: 1px solid #30363d; background: #0d1117; color: #c9d1d9;
+    font-size: 0.85rem;
+  }
+  .search-input::placeholder { color: #484f58; }
+  .search-input:focus { outline: none; border-color: #1f6feb; }
   .project { margin-bottom: 24px; border: 1px solid #30363d; border-radius: 8px; padding: 12px 16px; background: #161b22; }
   .project-header { font-weight: 600; font-size: 1.1rem; margin-bottom: 10px; color: #58a6ff; }
   .loop {
@@ -65,11 +76,15 @@ export function renderDashboardHtml(): string {
 <body>
   <h1>Forge Dashboard</h1>
   <div id="totals-bar" class="totals"></div>
+  <input id="loop-search" class="search-input" type="text" placeholder="Filter loops by name…" autocomplete="off">
   <div id="timestamp" class="timestamp"></div>
   <div id="forge-dashboard"></div>
 <script>
   (function(){
     var expanded = new Set();
+    var activeStatuses = new Set();
+    var searchText = '';
+    var lastData = null;
 
     function load() {
       fetch('/api/data', { cache: 'no-store' })
@@ -91,6 +106,14 @@ export function renderDashboardHtml(): string {
       return 'status-badge status-' + status;
     }
 
+    function loopMatchesFilters(lp, proj) {
+      var statusOk = activeStatuses.size === 0 || activeStatuses.has(lp.status);
+      if (!statusOk) return false;
+      if (!searchText) return true;
+      var hay = ((lp.loopName || '') + ' ' + (proj.projectDir || proj.projectId || '')).toLowerCase();
+      return hay.indexOf(searchText) !== -1;
+    }
+
     function sectionStatusClass(s) {
       return 'section-status section-' + s;
     }
@@ -101,6 +124,7 @@ export function renderDashboardHtml(): string {
     }
 
     function render(data) {
+      lastData = data;
       var mount = document.getElementById('forge-dashboard');
       if (!mount) return;
       mount.textContent = '';
@@ -119,10 +143,20 @@ export function renderDashboardHtml(): string {
           ['Errored', t.errored],
           ['Stalled', t.stalled],
         ];
+        var statusKey = { Running:'running', Completed:'completed', Cancelled:'cancelled', Errored:'errored', Stalled:'stalled' };
         for (var i = 0; i < totalLabels.length; i++) {
+          var label = totalLabels[i][0];
+          var key = statusKey[label];
           var b = document.createElement('span');
-          b.className = 'badge';
-          b.textContent = totalLabels[i][0] + ': ' + totalLabels[i][1];
+          b.className = key ? 'badge badge-filter' + (activeStatuses.has(key) ? ' badge-active' : '') : 'badge';
+          b.textContent = label + ': ' + totalLabels[i][1];
+          if (key) {
+            b.addEventListener('click', function(k){ return function(){
+              if (activeStatuses.has(k)) activeStatuses.delete(k);
+              else activeStatuses.add(k);
+              render(data);
+            }; }(key));
+          }
           totalsBar.appendChild(b);
         }
       }
@@ -144,10 +178,14 @@ export function renderDashboardHtml(): string {
         header.textContent = proj.projectDir || proj.projectId;
         projEl.appendChild(header);
 
-        // Loops
+        var loopFragment = document.createDocumentFragment();
+        var matchedLoops = 0;
+
         for (var l = 0; l < proj.loops.length; l++) {
           var dashLoop = proj.loops[l];
           var lp = dashLoop.loop;
+          if (!loopMatchesFilters(lp, proj)) continue;
+          matchedLoops++;
           var key = proj.projectId + '::' + lp.loopName;
           var isExpanded = expanded.has(key);
 
@@ -332,9 +370,11 @@ export function renderDashboardHtml(): string {
             loopEl.appendChild(detail);
           }
 
-          projEl.appendChild(loopEl);
+          loopFragment.appendChild(loopEl);
         }
 
+        if (matchedLoops === 0) continue;
+        projEl.appendChild(loopFragment);
         mount.appendChild(projEl);
       }
     }
@@ -352,6 +392,14 @@ export function renderDashboardHtml(): string {
       var hours = Math.floor(minutes / 60);
       minutes = minutes % 60;
       return hours + 'h ' + minutes + 'm';
+    }
+
+    var searchEl = document.getElementById('loop-search');
+    if (searchEl) {
+      searchEl.addEventListener('input', function() {
+        searchText = (searchEl.value || '').trim().toLowerCase();
+        lastData && render(lastData);
+      });
     }
 
     // Initial load + poll
