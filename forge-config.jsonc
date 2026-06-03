@@ -54,7 +54,13 @@
   // TUI sidebar widget configuration
   "tui": {
     "sidebar": true,
-    "showVersion": true
+    "showVersion": true,
+    // Optional keybinds for Forge palette commands. Leave a value empty to
+    // register the command without a default binding (run it from the palette).
+    "keybinds": {
+      "executePlan": "<leader>f",
+      "dashboard": ""
+    }
   },
 
   // TTL in ms for completed/cancelled loops before cleanup. Default: 604800000 (7 days)

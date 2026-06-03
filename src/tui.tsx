@@ -9,15 +9,18 @@ import type { PluginConfig } from './types'
 import { connectForgeProject, type ForgeProjectClient } from './utils/tui-client'
 import { ExecutePlanPanel } from './tui/execute-plan-panel'
 import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/session-follow'
+import { openInBrowser, startDashboardServer, type DashboardServerHandle } from './dashboard/launch'
 import { fetchLatestPlanForSession } from './utils/plan-from-messages'
 import { normalizePastedPlanText } from './utils/marked-plan-parser'
 
 type TuiKeybinds = {
   executePlan: string
+  dashboard: string
 }
 
 const DEFAULT_KEYBINDS: TuiKeybinds = {
   executePlan: '<leader>f',
+  dashboard: '',
 }
 
 type TuiOptions = {
@@ -184,6 +187,56 @@ const tui: TuiPlugin = async (api) => {
   // option so users with the sidebar disabled still get follow-on-rotation.
   const detachSessionFollower = attachLoopSessionFollower(api)
   api.lifecycle.onDispose(detachSessionFollower)
+
+  // Dashboard command. Registered independently of the sidebar option so it is
+  // available even when the sidebar is disabled. The HTTP server is started
+  // in-process on first use and reused on subsequent invocations.
+  let dashboardServer: DashboardServerHandle | null = null
+  const runOpenDashboard = () => {
+    if (!dashboardServer) {
+      try {
+        dashboardServer = startDashboardServer()
+      } catch (err) {
+        api.ui.toast({
+          message: err instanceof Error ? err.message : 'Failed to start dashboard',
+          variant: 'error',
+          duration: 5000,
+        })
+        return
+      }
+    }
+    const opened = openInBrowser(dashboardServer.url)
+    api.ui.toast({
+      message: opened
+        ? `Forge dashboard: ${dashboardServer.url}`
+        : `Forge dashboard running at ${dashboardServer.url}`,
+      variant: 'info',
+      duration: 5000,
+    })
+  }
+
+  api.lifecycle.onDispose(() => {
+    if (dashboardServer) {
+      dashboardServer.stop()
+      dashboardServer = null
+    }
+  })
+
+  api.keymap.registerLayer({
+    commands: [
+      {
+        name: 'forge.dashboard',
+        title: 'Forge: Open dashboard',
+        desc: 'Start the Forge dashboard server and open it in the browser',
+        category: 'Forge',
+        namespace: 'palette',
+        run: () => { runOpenDashboard() },
+      },
+    ],
+    bindings: opts.keybinds.dashboard
+      ? [{ key: opts.keybinds.dashboard, cmd: 'forge.dashboard' }]
+      : [],
+  })
 
   if (!opts.sidebar) return
 
