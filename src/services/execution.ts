@@ -30,6 +30,7 @@ import {
   type PromptAgent,
 } from '../loop/in-flight-guard'
 import { getRestartability, type RestartBlockedReason } from '../loop/restartability'
+import { resolveHostSessionDirectory } from '../utils/resolve-project-root'
 
 // ============================================================================
 // Surface Types - Identifies the caller boundary
@@ -828,6 +829,13 @@ export async function attachLoopToSession(
     // Non-fatal — proceed.
   }
 
+  // The plugin instance handling this tool call may be bound to a worktree
+  // directory, so ctx.directory is not a reliable project root. Resolve the
+  // real project directory from the host session that launched the loop, and
+  // only fall back to ctx.directory when that lookup is unavailable.
+  const resolvedProjectDir =
+    (await resolveHostSessionDirectory(deps.v2, input.hostSessionId, ctx.directory, deps.logger)) ?? ctx.directory
+
   try {
     // Persist loop state
     const state: import('../loop/state').LoopState = {
@@ -835,7 +843,7 @@ export async function attachLoopToSession(
       sessionId,
       loopName,
       worktreeDir: worktreeDir ?? ctx.directory,
-      projectDir: ctx.directory,
+      projectDir: resolvedProjectDir,
       worktreeBranch,
       iteration: 1,
       maxIterations,

@@ -86,6 +86,7 @@
   },
   "scripts": {
     "build": "bun scripts/build.ts",
+    "dashboard": "bun scripts/dashboard.ts",
     "lint": "eslint .",
     "prepublishOnly": "pnpm build",
     "test": "vitest run",
