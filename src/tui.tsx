@@ -11,6 +11,7 @@ import { ExecutePlanPanel } from './tui/execute-plan-panel'
 import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/session-follow'
 import { openInBrowser, startDashboardServer, type DashboardServerHandle } from './dashboard/launch'
 import { fetchLatestPlanForSession } from './utils/plan-from-messages'
+import { readPlan } from './utils/tui-plan-store'
 import { normalizePastedPlanText } from './utils/marked-plan-parser'
 
 type TuiKeybinds = {
@@ -369,7 +370,20 @@ const tui: TuiPlugin = async (api) => {
     const currentClient = await ensureClient()
     if (!currentClient) return
 
-    const planText = await fetchLatestPlanForSession(api.client, sessionID, directory)
+    // Prefer the persisted captured plan (written by Phase 3 server-side
+    // capture) so that a plan survives message compaction, SDK limit
+    // changes, or transient read failures.
+    let planText: string | null = null
+    if (currentClient.projectId) {
+      planText = readPlan(currentClient.projectId, sessionID)
+    }
+
+    // Fall back to parsing chat messages (covers legacy sessions and
+    // plans that were never captured server-side).
+    if (!planText) {
+      planText = await fetchLatestPlanForSession(api.client, sessionID, directory)
+    }
+
     if (!planText) {
       api.ui.toast({
         message: 'No plan in current session — paste one to execute',

@@ -130,14 +130,15 @@ export function messageText(message: PlanCaptureMessage): string {
   return textParts.join('\n')
 }
 
-export function inspectLatestMarkedPlan(messages: PlanCaptureMessage[]): LatestMarkedPlanInspection {
-  const repaired = inspectLatestPlanCompletedByLaterEndMarker(messages)
-  if (repaired) return repaired
-
+function inspectLatestMarkedPlanForRole(
+  messages: PlanCaptureMessage[],
+  role: 'assistant' | 'user',
+  firstOnly?: boolean,
+): LatestMarkedPlanInspection {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]
     
-    if (message.info.role !== 'assistant') {
+    if (message.info.role !== role) {
       continue
     }
     
@@ -159,9 +160,26 @@ export function inspectLatestMarkedPlan(messages: PlanCaptureMessage[]): LatestM
         messageId: message.info.id,
       }
     }
+
+    // When firstOnly is set, stop at the first matching role message even if no
+    // markers are found — prevents scanning older messages of the same role.
+    if (firstOnly) {
+      return { status: 'missing' }
+    }
   }
   
   return { status: 'missing' }
+}
+
+export function inspectLatestMarkedPlan(messages: PlanCaptureMessage[]): LatestMarkedPlanInspection {
+  const repaired = inspectLatestPlanCompletedByLaterEndMarker(messages)
+  if (repaired) return repaired
+
+  return inspectLatestMarkedPlanForRole(messages, 'assistant')
+}
+
+export function inspectLatestPastedPlan(messages: PlanCaptureMessage[]): LatestMarkedPlanInspection {
+  return inspectLatestMarkedPlanForRole(messages, 'user', true)
 }
 
 function inspectLatestPlanCompletedByLaterEndMarker(messages: PlanCaptureMessage[]): LatestMarkedPlanInspection | null {

@@ -3,7 +3,7 @@ import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { Logger } from '../types'
 import type { PlanCaptureMessage } from '../utils/marked-plan-parser'
 import type { PluginInput } from '@opencode-ai/plugin'
-import { extractMarkedPlan, inspectLatestMarkedPlan, sanitizePlanPaths } from '../utils/marked-plan-parser'
+import { extractMarkedPlan, inspectLatestMarkedPlan, inspectLatestPastedPlan, sanitizePlanPaths } from '../utils/marked-plan-parser'
 
 export interface CaptureLatestPlanDeps {
   v2: ToolContext['v2']
@@ -131,5 +131,31 @@ export async function captureLatestPlanForSession(
   }
 
   deps.logger.log(`plan-capture: no valid marked plan found in session ${sessionID}`)
+  return { status: 'not-found' }
+}
+
+export async function capturePastedPlanForSession(
+  deps: CaptureLatestPlanDeps,
+  sessionID: string
+): Promise<CaptureLatestPlanResult> {
+  const read = await readRecentMessages(deps, sessionID)
+  if (read.status === 'read-failed') return read
+  if (read.status === 'missing') {
+    deps.logger.log(`plan-capture: no messages found for session ${sessionID}`)
+    return { status: 'not-found' }
+  }
+
+  const inspection = inspectLatestPastedPlan(read.messages)
+
+  if (inspection.status === 'found') {
+    return writeCapturedPlanForSession(deps, sessionID, inspection.planText, inspection.messageId)
+  }
+
+  if (inspection.status === 'invalid') {
+    deps.logger.log(`plan-capture: invalid pasted plan in session ${sessionID}: ${inspection.reason}`)
+    return { status: 'invalid', reason: inspection.reason }
+  }
+
+  deps.logger.log(`plan-capture: no valid pasted plan found in session ${sessionID}`)
   return { status: 'not-found' }
 }
