@@ -26,7 +26,7 @@ export async function cleanupLoopWorktree(
       result.removed = true
       input.logger.log(`${input.logPrefix}: worktree directory already removed ${input.worktreeDir}`)
       try {
-        const gitCommonDir = execSync('git rev-parse --git-common-dir', { cwd: input.worktreeDir, encoding: 'utf-8' }).trim()
+        const gitCommonDir = execSync('git rev-parse --git-common-dir', { cwd: input.worktreeDir, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
         const gitRoot = resolve(input.worktreeDir, gitCommonDir, '..')
         spawnSync('git', ['worktree', 'prune'], { cwd: gitRoot, encoding: 'utf-8' })
       } catch {
@@ -44,7 +44,7 @@ export async function cleanupLoopWorktree(
 
     let gitCommonDir: string
     try {
-      gitCommonDir = execSync('git rev-parse --git-common-dir', { cwd: input.worktreeDir, encoding: 'utf-8' }).trim()
+      gitCommonDir = execSync('git rev-parse --git-common-dir', { cwd: input.worktreeDir, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
     } catch (err) {
       if (isNotGitRepositoryError(err)) {
         rmSync(input.worktreeDir, { recursive: true, force: true })

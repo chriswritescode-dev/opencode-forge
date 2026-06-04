@@ -73,6 +73,7 @@ export function fetchLoopsList(projectId: string, dbPathOverride?: string): Loop
   let db: Database | null = null
   try {
     db = new Database(dbPath, { readonly: true })
+    db.run('PRAGMA busy_timeout=5000')
     const loopsRepo = createLoopsRepo(db)
     const sectionPlansRepo = createSectionPlansRepo(db)
 

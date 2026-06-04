@@ -49,6 +49,7 @@ export function startDashboardServer(options: StartDashboardOptions = {}): Dashb
   const basePort = options.port ?? DEFAULT_PORT
   const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS
   const db = new Database(dbPath, { readonly: true })
+  db.run('PRAGMA busy_timeout=5000')
   const handler = createRequestHandler(db)
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {

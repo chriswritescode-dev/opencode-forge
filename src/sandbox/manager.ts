@@ -44,10 +44,12 @@ export function createSandboxManager(
       const gitDirResult = spawnSync('git', ['rev-parse', '--git-dir'], {
         cwd: projectDir,
         encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
       })
       const commonDirResult = spawnSync('git', ['rev-parse', '--git-common-dir'], {
         cwd: projectDir,
         encoding: 'utf-8',
+        stdio: ['ignore', 'pipe', 'ignore'],
       })
       if (gitDirResult.status !== 0 || commonDirResult.status !== 0 || !gitDirResult.stdout || !commonDirResult.stdout) return []
 
