@@ -39,7 +39,7 @@ export interface LoopService {
   deleteState(name: string): void
   registerLoopSession(sessionId: string, loopName: string): void
   resolveLoopName(sessionId: string): string | null
-  buildContinuationPrompt(state: LoopState, auditFindings?: string): string
+  buildContinuationPrompt(state: LoopState, auditFindings?: string, outstandingBugs?: ReviewFindingRow[]): string
   buildAuditPrompt(state: LoopState): string
   listActive(): LoopState[]
   listRecent(): LoopState[]
@@ -74,9 +74,9 @@ export interface LoopService {
 
   buildSectionInitialPrompt(state: LoopState): string
   buildSectionAuditPrompt(state: LoopState): string
-  buildSectionContinuationPrompt(state: LoopState, auditText: string): string
+  buildSectionContinuationPrompt(state: LoopState, auditText: string, outstandingBugs?: ReviewFindingRow[]): string
   buildFinalAuditPrompt(state: LoopState): string
-  buildFinalAuditFixPrompt(state: LoopState, auditText: string): string
+  buildFinalAuditFixPrompt(state: LoopState, auditText: string, outstandingBugs?: ReviewFindingRow[]): string
   completeSection(loopName: string, index: number, summary: { done: string | null; deviations: string | null; followUps: string | null }): void
   incrementSectionAttempts(loopName: string, index: number): void
   resetSectionForRewind(loopName: string, index: number): void
@@ -258,8 +258,8 @@ export function createLoopService(
 
   const _promptCtx: PromptContext = { getPlanTextForState, getOutstandingFindings, formatReviewFindings, getSectionPlan, getCompletedSectionDigest, getCoderDecisions, getFindingRecurrence }
 
-  function buildContinuationPrompt(state: LoopState, auditFindings?: string): string {
-    return _buildContinuationPrompt(_promptCtx, state, auditFindings)
+  function buildContinuationPrompt(state: LoopState, auditFindings?: string, outstandingBugs?: ReviewFindingRow[]): string {
+    return _buildContinuationPrompt(_promptCtx, state, auditFindings, outstandingBugs)
   }
 
   function getPlanTextForState(state: LoopState): string | null {
@@ -500,16 +500,16 @@ export function createLoopService(
     return _buildSectionAuditPrompt(_promptCtx, state)
   }
 
-  function buildSectionContinuationPrompt(state: LoopState, auditText: string): string {
-    return _buildSectionContinuationPrompt(_promptCtx, state, auditText)
+  function buildSectionContinuationPrompt(state: LoopState, auditText: string, outstandingBugs?: ReviewFindingRow[]): string {
+    return _buildSectionContinuationPrompt(_promptCtx, state, auditText, outstandingBugs)
   }
 
   function buildFinalAuditPrompt(state: LoopState): string {
     return _buildFinalAuditPrompt(_promptCtx, state)
   }
 
-  function buildFinalAuditFixPrompt(state: LoopState, auditText: string): string {
-    return _buildFinalAuditFixPrompt(_promptCtx, state, auditText)
+  function buildFinalAuditFixPrompt(state: LoopState, auditText: string, outstandingBugs?: ReviewFindingRow[]): string {
+    return _buildFinalAuditFixPrompt(_promptCtx, state, auditText, outstandingBugs)
   }
 
   function completeSection(loopName: string, index: number, summary: { done: string | null; deviations: string | null; followUps: string | null }): void {

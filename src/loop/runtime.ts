@@ -1513,8 +1513,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (currentState.totalSections > 0) {
         const idx = currentState.currentSectionIndex
         const sectionSummary = loopService.parseSectionSummary(auditText || '')
-        const sectionBugFindings = loopService.getOutstandingFindings(loopName, 'bug')
-          .filter(f => f.sectionIndex === idx)
+        const sectionAllBugFindings = loopService.getOutstandingFindings(loopName, 'bug')
+        const sectionBugFindings = sectionAllBugFindings.filter(f => f.sectionIndex === idx)
 
         if (sectionSummary && sectionBugFindings.length === 0) {
           logger.log(`Loop: section ${idx} audit clean, marking completed`)
@@ -1587,7 +1587,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
         loopService.incrementSectionAttempts(loopName, idx)
 
-        loopService.bumpFindingRecurrence(loopName, loopService.getOutstandingFindings(loopName, 'bug').filter(f => f.sectionIndex === idx))
+        loopService.bumpFindingRecurrence(loopName, sectionBugFindings)
 
         loopService.setLastAuditResult(loopName, auditText || '')
         loopService.replaceSession(loopName, {
@@ -1596,7 +1596,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           iteration: nextIter,
         })
 
-        const continuationPrompt = loopService.buildSectionContinuationPrompt(currentState, auditText || '')
+        const continuationPrompt = loopService.buildSectionContinuationPrompt(currentState, auditText || '', sectionAllBugFindings)
         await rotateAndSendContinuation(
           loopName,
           currentState,
@@ -1622,11 +1622,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         return
       }
 
-      loopService.bumpFindingRecurrence(loopName, loopService.getOutstandingFindings(loopName, 'bug'))
+      const outstandingBugs = loopService.getOutstandingFindings(loopName, 'bug')
+      loopService.bumpFindingRecurrence(loopName, outstandingBugs)
 
       const continuationPrompt = loopService.buildContinuationPrompt(
         { ...currentState, iteration: nextIteration },
         auditText || undefined,
+        outstandingBugs,
       )
 
       await rotateAndSendContinuation(
@@ -1737,8 +1739,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
       // Dirty final audit: rotate to a coding session that fixes the findings,
       // then on coding idle return straight to final_auditing (no section rewind).
-      const outstandingBugCount = loopService.getOutstandingFindings(loopName, 'bug').length
-      logger.log(`Loop: final audit dirty (${outstandingBugCount} outstanding bug findings), rotating to coding for fix for ${loopName}`)
+      const outstandingBugs = loopService.getOutstandingFindings(loopName, 'bug')
+      logger.log(`Loop: final audit dirty (${outstandingBugs.length} outstanding bug findings), rotating to coding for fix for ${loopName}`)
 
       const nextIter = (currentState.iteration ?? 0) + 1
       if ((currentState.maxIterations ?? 0) > 0 && nextIter > currentState.maxIterations) {
@@ -1751,9 +1753,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (auditText) loopService.setLastAuditResult(loopName, auditText)
 
       // Bump recurrence counts for outstanding bugs so escalation surfaces after N consecutive final-audit dirty cycles.
-      loopService.bumpFindingRecurrence(loopName, loopService.getOutstandingFindings(loopName, 'bug'))
+      loopService.bumpFindingRecurrence(loopName, outstandingBugs)
 
-      const fixPrompt = loopService.buildFinalAuditFixPrompt(currentState, auditText || '')
+      const fixPrompt = loopService.buildFinalAuditFixPrompt(currentState, auditText || '', outstandingBugs)
 
       let newCodeSessionId: string
       try {

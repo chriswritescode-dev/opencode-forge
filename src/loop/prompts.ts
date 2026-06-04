@@ -49,9 +49,9 @@ function formatSectionsSummary(digest: SectionDigestEntry[]): string {
   }).join('\n\n')
 }
 
-function getEscalatedFindings(ctx: PromptContext, state: LoopState): { file: string; line: number; count: number }[] {
+function getEscalatedFindings(ctx: PromptContext, state: LoopState, outstandingBugs?: ReviewFindingRow[]): { file: string; line: number; count: number }[] {
   const loopName = state.loopName
-  const bugFindings = ctx.getOutstandingFindings(loopName, 'bug')
+  const bugFindings = outstandingBugs ?? ctx.getOutstandingFindings(loopName, 'bug')
   const recurrence = ctx.getFindingRecurrence(loopName)
   const escalated: { file: string; line: number; count: number }[] = []
   for (const f of bugFindings) {
@@ -64,8 +64,8 @@ function getEscalatedFindings(ctx: PromptContext, state: LoopState): { file: str
   return escalated
 }
 
-function buildRecurringFindingsCoderBlock(ctx: PromptContext, state: LoopState): string {
-  const escalated = getEscalatedFindings(ctx, state)
+function buildRecurringFindingsCoderBlock(ctx: PromptContext, state: LoopState, outstandingBugs?: ReviewFindingRow[]): string {
+  const escalated = getEscalatedFindings(ctx, state, outstandingBugs)
   if (escalated.length === 0) return ''
   const lines = escalated.map(e => `- \`${e.file}:${e.line}\` (recurred ${e.count}×)`)
   return `\n\n---\n## ⚠️ Recurring blocking findings\nThese findings have recurred across multiple audits without resolution. For EACH: either fix it definitively, OR if it is intentional/correct, document the reasoning and the exact passing verification method in your coder-decisions block so the auditor can verify and clear it.\n\n${lines.join('\n')}`
@@ -78,9 +78,17 @@ function buildRecurringFindingsAuditorBlock(ctx: PromptContext, state: LoopState
   return `## ⚠️ Recurring findings — re-evaluate\nThese findings have recurred ${escalated.length}× across audits. For each, re-check the coder decisions block above and reproduce the coder's verification method. If the coder's documented decision/verification resolves it, DELETE it with review-delete. Only keep it if it is genuinely, verifiably still broken (state the precise scenario).\n\n${lines.join('\n')}`
 }
 
-export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, auditFindings?: string): string {
+function coderDecisionsAuditorBody(coderDecisions: string): string {
+  return `## Coder decisions & verification notes (this iteration)\nThe coding agent recorded the following. Use it to evaluate correctness. If a finding is explained by a documented decision, or you can reproduce the coder's passing verification method (e.g., required env vars), DELETE that finding with review-delete instead of re-reporting it.\n\n${coderDecisions}`
+}
+
+function buildCoderDecisionsAuditorBlock(coderDecisions: string | null): string {
+  return coderDecisions ? `\n\n---\n${coderDecisionsAuditorBody(coderDecisions)}` : ''
+}
+
+export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, auditFindings?: string, outstandingBugs?: ReviewFindingRow[]): string {
   if (state.totalSections > 0) {
-    return buildSectionContinuationPrompt(ctx, state, auditFindings || '')
+    return buildSectionContinuationPrompt(ctx, state, auditFindings || '', outstandingBugs)
   }
 
   let systemLine = `Loop iteration ${String(state.iteration)}`
@@ -102,7 +110,7 @@ export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, au
     prompt += `\n\n---\n⚠️ Outstanding Review Findings (${String(outstandingFindings.length)})\n\nThese review findings are blocking loop completion. Fix these issues so they pass the next audit review.\n\n${findingKeys}`
   }
 
-  prompt += buildRecurringFindingsCoderBlock(ctx, state)
+  prompt += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
 
   return prompt + buildSandboxContextNote(state) + CODER_DECISIONS_INSTRUCTION
 }
@@ -131,14 +139,7 @@ export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
   ]
 
   if (coderDecisions) {
-    parts.push(
-      '',
-      '---',
-      '## Coder decisions & verification notes (this iteration)',
-      'The coding agent recorded the following. Use it to evaluate correctness. If a finding is explained by a documented decision, or you can reproduce the coder\'s passing verification method (e.g., required env vars), DELETE that finding with review-delete instead of re-reporting it.',
-      '',
-      coderDecisions,
-    )
+    parts.push('', '---', coderDecisionsAuditorBody(coderDecisions))
   }
 
   parts.push(
@@ -220,10 +221,7 @@ export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): s
 
   header += `\n\n## Section under audit\n${section.content}`
 
-  const coderDecisions = ctx.getCoderDecisions(state.loopName)
-  if (coderDecisions) {
-    header += `\n\n---\n## Coder decisions & verification notes (this iteration)\nThe coding agent recorded the following. Use it to evaluate correctness. If a finding is explained by a documented decision, or you can reproduce the coder's passing verification method (e.g., required env vars), DELETE that finding with review-delete instead of re-reporting it.\n\n${coderDecisions}`
-  }
+  header += buildCoderDecisionsAuditorBlock(ctx.getCoderDecisions(state.loopName))
 
   header += `\n\n---\nAudit instructions:\n- Use review-read to see findings for this section.\n- Delete resolved findings.\n- Write severity: bug findings for unmet acceptance criteria or failed verification (defaults to current section_index).\n- When the section is clear, end your response with:\n${SECTION_SUMMARY_START_MARKER}\n### Done\n- bullets describing what was implemented\n### Deviations\n- bullets describing places implementation differs from this section plan, with reasons (or "none")\n### Follow-ups\n- bullets noting items deferred to later sections (or "none")\n${SECTION_SUMMARY_END_MARKER}`
 
@@ -235,7 +233,7 @@ export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): s
   return header + buildSandboxContextNote(state)
 }
 
-export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopState, auditText: string): string {
+export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopState, auditText: string, outstandingBugs?: ReviewFindingRow[]): string {
   const idx = state.currentSectionIndex
   const total = state.totalSections
   const iter = state.iteration
@@ -253,19 +251,19 @@ export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopSt
   header += `\n\n## Section plan\n${section.content}`
   header += `\n\n---\n## Auditor feedback from previous attempt\n${auditText}`
 
-  const outstandingFindings = ctx.getOutstandingFindings(state.loopName, 'bug')
+  const outstandingFindings = (outstandingBugs ?? ctx.getOutstandingFindings(state.loopName, 'bug'))
     .filter(f => f.sectionIndex === idx)
   if (outstandingFindings.length > 0) {
     const findingKeys = outstandingFindings.map(f => `- \`${f.file}:${f.line}\``).join('\n')
     header += `\n\n---\n## Outstanding findings\n${findingKeys}`
   }
 
-  header += buildRecurringFindingsCoderBlock(ctx, state)
+  header += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
 
   return header + buildSandboxContextNote(state) + CODER_DECISIONS_INSTRUCTION
 }
 
-export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, auditText: string): string {
+export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, auditText: string, outstandingBugs?: ReviewFindingRow[]): string {
   const planText = ctx.getPlanTextForState(state) ?? 'Plan not found in plan store.'
   const digest = ctx.getCompletedSectionDigest(state)
 
@@ -278,7 +276,7 @@ export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, a
 
   header += `\n\n---\n## Final auditor feedback\n${auditText}`
 
-  const outstandingFindings = ctx.getOutstandingFindings(state.loopName, 'bug')
+  const outstandingFindings = outstandingBugs ?? ctx.getOutstandingFindings(state.loopName, 'bug')
   if (outstandingFindings.length > 0) {
     const findingKeys = outstandingFindings.map(f => `- \`${f.file}:${f.line}\``).join('\n')
     header += `\n\n---\n## Outstanding findings (${outstandingFindings.length})\n${findingKeys}`
@@ -286,7 +284,7 @@ export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, a
 
   header += `\n\n---\nInstructions:\n- The full plan has already been implemented. The final integration audit reported the bugs above.\n- Fix the reported bugs. Scope your changes to what the findings require.\n- Once you are done, the final audit will be re-run automatically against the entire codebase.`
 
-  header += buildRecurringFindingsCoderBlock(ctx, state)
+  header += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
 
   return header + buildSandboxContextNote(state) + CODER_DECISIONS_INSTRUCTION
 }
@@ -294,7 +292,6 @@ export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, a
 export function buildFinalAuditPrompt(ctx: PromptContext, state: LoopState): string {
   const planText = ctx.getPlanTextForState(state) ?? 'Plan not found in plan store.'
   const digest = ctx.getCompletedSectionDigest(state)
-  const coderDecisions = ctx.getCoderDecisions(state.loopName)
 
   let header = `[Final integration audit]`
   header += `\n\n## Master Plan\n${planText}`
@@ -303,9 +300,7 @@ export function buildFinalAuditPrompt(ctx: PromptContext, state: LoopState): str
     header += `\n\n### Completed Sections' Summaries\n${formatSectionsSummary(digest)}`
   }
 
-  if (coderDecisions) {
-    header += `\n\n---\n## Coder decisions & verification notes (this iteration)\nThe coding agent recorded the following. Use it to evaluate correctness. If a finding is explained by a documented decision, or you can reproduce the coder's passing verification method (e.g., required env vars), DELETE that finding with review-delete instead of re-reporting it.\n\n${coderDecisions}`
-  }
+  header += buildCoderDecisionsAuditorBlock(ctx.getCoderDecisions(state.loopName))
 
   header += `\n\n---\nFinal audit instructions:\n- Verify the master plan's top-level Verification commands and acceptance criteria.\n- Use the per-section ### Deviations entries to interpret discrepancies. If a discrepancy is explained by a deviation, accept it unless it materially breaks the master plan's top-level Verification.\n- Write findings with sectionIndex pointing to the section you believe contains the bug. Use crossSection: true only when the bug spans multiple sections.\n- The loop terminates automatically when there are no outstanding bug-severity findings. Do not write findings unless they describe real, blocking issues.`
 

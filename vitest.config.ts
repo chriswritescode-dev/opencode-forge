@@ -46,6 +46,8 @@ export default defineConfig({
       'test/workspace/sweep-stale.test.ts',
       'test/sandbox-docker.test.ts',
       'test/sandbox-manager.test.ts',
+      'test/sandbox-tools.test.ts',
+      'test/sandbox-path.test.ts',
       'test/sandbox/manager.test.ts',
       'test/sandbox/context.test.ts',
       'test/sandbox/reconcile.test.ts',
