@@ -222,6 +222,74 @@ describe('sandbox tool hooks', () => {
     })
   })
 
+  describe('host fallback for absolute out-of-mount paths', () => {
+    test('glob with absolute path outside mount is not intercepted (host fallback)', async () => {
+      const input = {
+        tool: 'glob',
+        sessionID: TEST_SESSION_ID,
+        callID: 'glob-fallback-1',
+      }
+      const output = {
+        args: {
+          pattern: '*.txt',
+          path: '/var/lib/opencode/tool-output',
+        },
+        title: '',
+        output: 'HOST_NATIVE',
+        metadata: undefined,
+      }
+
+      await beforeHook(input as never, output as never)
+      await afterHook({ ...input, args: output.args } as never, output as never)
+
+      expect(output.output).toBe('HOST_NATIVE')
+    })
+
+    test('grep with absolute path outside mount is not intercepted (host fallback)', async () => {
+      const input = {
+        tool: 'grep',
+        sessionID: TEST_SESSION_ID,
+        callID: 'grep-fallback-1',
+      }
+      const output = {
+        args: {
+          pattern: 'test',
+          path: '/var/lib/opencode/tool-output',
+        },
+        title: '',
+        output: 'HOST_NATIVE',
+        metadata: undefined,
+      }
+
+      await beforeHook(input as never, output as never)
+      await afterHook({ ...input, args: output.args } as never, output as never)
+
+      expect(output.output).toBe('HOST_NATIVE')
+    })
+
+    test('grep with relative path is still intercepted', async () => {
+      const input = {
+        tool: 'grep',
+        sessionID: TEST_SESSION_ID,
+        callID: 'grep-relative-1',
+      }
+      const output = {
+        args: {
+          pattern: 'console.log',
+          path: 'src',
+        },
+        title: '',
+        output: '',
+        metadata: undefined,
+      }
+
+      await beforeHook(input as never, output as never)
+      await afterHook({ ...input, args: output.args } as never, output as never)
+
+      expect(output.output).toContain('Found')
+    })
+  })
+
   describe('bash passthrough', () => {
     test('hook ignores bash tool entirely (handled by plugin tool override)', async () => {
       const hook = createSandboxToolBeforeHook({

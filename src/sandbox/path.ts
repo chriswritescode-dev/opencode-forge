@@ -16,6 +16,10 @@ export function toContainerPath(hostPath: string, hostDir: string): string {
   return hostPath
 }
 
+export function isInsideWorkspace(p: string, hostDir: string): boolean {
+  return hasPrefix(p, hostDir) || hasPrefix(p, CONTAINER_WORKSPACE)
+}
+
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }

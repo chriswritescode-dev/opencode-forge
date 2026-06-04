@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach, mock, vi } from 'bun:test'
 import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
@@ -40,7 +40,7 @@ interface MockClientState {
   selectCalls: Array<{ sessionID: string; workspace?: string }>
   deleteThrows: boolean
   abortCalls: string[]
-  promptCalls: Array<{ sessionID: string; agent?: string; variant?: string }>
+  promptCalls: Array<{ sessionID: string; agent?: string; variant?: string; text?: string }>
   promptAsyncFailCount?: number
   messagesResult: Array<{ info: { role: string; finish?: string }; parts: Array<{ type: string; text?: string }> }> | null
   messagesBySession?: Map<string, Array<{ info: { role: string; finish?: string }; parts: Array<{ type: string; text?: string }> }>>
@@ -54,7 +54,12 @@ function createMockV2Client(state: MockClientState): OpencodeClient {
         return { error: null, data: { id: 'sess' } }
       },
       promptAsync: async (params) => {
-        state.promptCalls.push({ sessionID: (params as any).sessionID ?? '', agent: (params as any).agent, variant: (params as any).variant })
+        state.promptCalls.push({
+          sessionID: (params as any).sessionID ?? '',
+          agent: (params as any).agent,
+          variant: (params as any).variant,
+          text: (params as any).parts?.[0]?.text ?? (params as any).prompt ?? '',
+        })
         if (state.promptAsyncFailCount && state.promptAsyncFailCount > 0) {
           state.promptAsyncFailCount--
           return { error: { name: 'TestError', data: { message: 'simulated model failure' } }, data: null }
@@ -1359,6 +1364,360 @@ describe('stall handling terminates with stall timeout when configured cap is re
       // After model fails, fallback without model should NOT send variant
       const fallbackPrompts = codePrompts.filter(c => !c.variant)
       expect(fallbackPrompts.length).toBeGreaterThan(0)
+    })
+  })
+
+  describe('user interjections', () => {
+    test('interjection text appears in continuation prompt after dirty audit', async () => {
+      const { loop, clientState } = createRuntime()
+      clientState.messagesResult = [
+        {
+          info: { role: 'assistant', finish: 'stop' },
+          parts: [{ type: 'text', text: 'Audit found issues.' }],
+        },
+      ]
+
+      const state = makeState({
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+      })
+      loopService.setState(state.loopName, state)
+
+      // Add a bug finding so the audit is dirty and transitions back to coding
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/test.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Test bug',
+      })
+
+      // Record a user interjection before the idle event
+      const result = loop.recordUserMessage(state.sessionId, 'please use approach X')
+      expect(result).toBe(true)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: state.sessionId,
+        },
+      })
+
+      // Find code prompts sent after the interjection
+      const codePrompts = clientState.promptCalls.filter(c => c.agent === 'code')
+      expect(codePrompts.length).toBeGreaterThan(0)
+
+      // The last code prompt should contain the interjection text
+      const lastCodePrompt = codePrompts[codePrompts.length - 1]
+      expect(lastCodePrompt.text).toContain('please use approach X')
+      expect(lastCodePrompt.text).toContain('User interjection (live)')
+    })
+
+    test('consumption: interjection included only on first send and removed after success', async () => {
+      const { loop, clientState } = createRuntime()
+      clientState.messagesResult = [
+        {
+          info: { role: 'assistant', finish: 'stop' },
+          parts: [{ type: 'text', text: 'Audit found issues.' }],
+        },
+      ]
+
+      const state = makeState({
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+      })
+      loopService.setState(state.loopName, state)
+
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/test.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Test bug',
+      })
+
+      // Record interjection and tick once
+      loop.recordUserMessage(state.sessionId, 'please use approach X')
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: state.sessionId,
+        },
+      })
+
+      // The first code prompt sent should contain the interjection
+      const codePrompts = clientState.promptCalls.filter(c => c.agent === 'code')
+      expect(codePrompts.length).toBeGreaterThanOrEqual(1)
+      const firstCodePrompt = codePrompts[0]
+      expect(firstCodePrompt.text).toContain('please use approach X')
+      expect(firstCodePrompt.text).toContain('User interjection (live)')
+
+      // Verify no duplicate interjection sections (consumption prevents re-injection)
+      expect(firstCodePrompt.text).toBeDefined()
+      const matches = firstCodePrompt.text!.match(/User interjection \(live\)/g)
+      expect(matches).toHaveLength(1)
+
+      // After the first successful continuation send, the interjection entries were
+      // removed from the store. Now drive a second continuation through the full
+      // coding → audit → dirty → code cycle to verify the consumed interjection
+      // is NOT re-injected on subsequent prompts.
+
+      // Clear the idle-gate so the next idle event is accepted
+      sessionsAwaitingBusy.clear()
+
+      // Second tick: idle on the coding session → creates an audit session and sends audit prompt
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: 'sess',
+        },
+      })
+
+      // Clear the idle-gate again so the audit idle event is accepted
+      sessionsAwaitingBusy.clear()
+
+      // Third tick: idle on the audit session → processes audit result → dirty →
+      // rotateAndSendContinuation → sends a code continuation WITHOUT interjection
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: 'sess',
+        },
+      })
+
+      // The second code prompt must NOT contain the consumed interjection
+      const allCodePrompts = clientState.promptCalls.filter(c => c.agent === 'code')
+      expect(allCodePrompts.length).toBeGreaterThanOrEqual(2)
+      const secondCodePrompt = allCodePrompts[1]
+      expect(secondCodePrompt.text).not.toContain('please use approach X')
+      expect(secondCodePrompt.text).not.toContain('User interjection (live)')
+    })
+
+    test('dedup: loop-generated prompt prefix is rejected', async () => {
+      const { loop } = createRuntime()
+      const state = makeState({ phase: 'coding', iteration: 2 })
+      loopService.setState(state.loopName, state)
+
+      const result = loop.recordUserMessage(state.sessionId, '[Loop iteration 2 / 5]')
+      expect(result).toBe(false)
+    })
+
+    test('inactive guard: unknown session returns false', async () => {
+      const { loop } = createRuntime()
+      const result = loop.recordUserMessage('unknown-session', 'hi')
+      expect(result).toBe(false)
+    })
+
+    test('inactive guard: non-active loop returns false', async () => {
+      const { loop } = createRuntime()
+      const state = makeState({ phase: 'coding', status: 'completed' })
+      loopService.setState(state.loopName, state)
+
+      const result = loop.recordUserMessage(state.sessionId, 'hello')
+      expect(result).toBe(false)
+    })
+
+    test('recordUserMessage trims whitespace and rejects empty text', async () => {
+      const { loop } = createRuntime()
+      const state = makeState({ phase: 'coding' })
+      loopService.setState(state.loopName, state)
+
+      const result1 = loop.recordUserMessage(state.sessionId, '   ')
+      expect(result1).toBe(false)
+
+      const result2 = loop.recordUserMessage(state.sessionId, '')
+      expect(result2).toBe(false)
+    })
+
+    test('retry after failed send includes interjection and consumes on success', async () => {
+      const { loop, clientState } = createRuntime()
+      clientState.messagesResult = [
+        {
+          info: { role: 'assistant', finish: 'stop' },
+          parts: [{ type: 'text', text: 'Audit found issues.' }],
+        },
+      ]
+
+      const state = makeState({
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+      })
+      loopService.setState(state.loopName, state)
+
+      // Add a bug finding so the audit is dirty and rotates to coding continuation
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/test.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Test bug',
+      })
+
+      // Queue an interjection before the idle event
+      loop.recordUserMessage(state.sessionId, 'please use approach X')
+
+      // Make all 3 promptAsync calls from sendPromptWithFallback fail
+      // (2 model attempts + 1 fallback). The 4th call (retry) succeeds.
+      clientState.promptAsyncFailCount = 3
+
+      // Use fake timers so the retry timeout (2000ms) is controlled without a real wait.
+      // Real-time waits allow stray pending timers from earlier tests to fire after
+      // their database has been closed, causing unhandled rejections.
+      vi.useFakeTimers()
+      try {
+        // Trigger idle → audits dirty → rotates to coding continuation → send fails → retry scheduled
+        await loop.tick({
+          type: 'session.status',
+          properties: {
+            status: { type: 'idle' },
+            sessionID: state.sessionId,
+          },
+        })
+
+        // The initial code prompts from sendPromptWithFallback should all include interjection
+        const initialCodePrompts = clientState.promptCalls.filter(c => c.agent === 'code')
+        expect(initialCodePrompts.length).toBe(3)
+        for (const call of initialCodePrompts) {
+          expect(call.text).toContain('please use approach X')
+          expect(call.text).toContain('User interjection (live)')
+        }
+
+        // Advance past the 2000ms retry delay to fire the scheduled retry
+        await vi.advanceTimersByTimeAsync(2500)
+
+        // The retry should have fired and sent one more code prompt
+        const allCodePrompts = clientState.promptCalls.filter(c => c.agent === 'code')
+        expect(allCodePrompts.length).toBe(4)
+
+        const retryPrompt = allCodePrompts[3]
+        expect(retryPrompt.text).toContain('please use approach X')
+        expect(retryPrompt.text).toContain('User interjection (live)')
+
+        // Verify no duplicate interjection sections (consumption prevents re-injection)
+        const matches = retryPrompt.text!.match(/User interjection \(live\)/g)
+        expect(matches).toHaveLength(1)
+      } finally {
+        // Clean up the loop's watchdog interval and any other timers before restoring real timers
+        loop.clearLoopTimers(state.loopName)
+        vi.useRealTimers()
+      }
+    })
+  })
+
+  describe('coder decisions in final-audit fix', () => {
+    test('final-audit fix coding parses coder-decisions and renders into subsequent final audit prompt', async () => {
+      const { loop, clientState, logs } = createRuntime()
+      const loopName = 'test-loop-cd-fix'
+
+      // Create a loop in final_auditing phase with outstanding bugs
+      const state = makeState({
+        loopName,
+        sessionId: 'final-audit-session',
+        phase: 'final_auditing',
+        totalSections: 0,
+        auditCount: 1,
+        iteration: 1,
+        maxIterations: 5,
+      })
+      loopService.setState(state.loopName, state)
+
+      // Add a bug finding so the final audit is dirty and triggers a fix
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/test.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Test bug found during final audit',
+      })
+
+      // Step 1: Set auditor response and trigger final audit phase
+      clientState.messagesResult = [
+        {
+          info: { role: 'assistant', finish: 'stop' },
+          parts: [{ type: 'text', text: 'Final audit found issues.' }],
+        },
+      ]
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: 'final-audit-session',
+        },
+      })
+
+      // After the first tick, the loop should have transitioned to coding with a fix prompt
+      const fixCodePrompts = clientState.promptCalls.filter(c => c.agent === 'code')
+      expect(fixCodePrompts.length).toBeGreaterThan(0)
+      const fixPromptText = fixCodePrompts[fixCodePrompts.length - 1].text ?? ''
+      expect(fixPromptText).toContain('[Final-audit fix')
+
+      // Verify the loop state after first tick
+      const stateAfterFirstTick = loopService.getActiveState(loopName)
+      expect(stateAfterFirstTick).not.toBeNull()
+      expect(stateAfterFirstTick!.phase).toBe('coding')
+      expect(stateAfterFirstTick!.sessionId).toBe('sess')
+
+      // Step 2: Set coding assistant response WITH coder-decisions markers
+      clientState.messagesResult = [
+        {
+          info: { role: 'assistant', finish: 'stop' },
+          parts: [{
+            type: 'text',
+            text: `Fixed the bug.\n<!-- coder-decisions:start -->\n### Decisions\n- Chose approach X\n### Verification\n- FOO=bar pnpm test\n### Notes for auditor\n- none\n<!-- coder-decisions:end -->`,
+          }],
+        },
+      ]
+
+      const auditorPromptsBefore = clientState.promptCalls.filter(c => c.agent === 'auditor-loop').length
+
+      // Send a busy event to clear the idle-gate (prompt was sent during the first tick)
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'busy' },
+          sessionID: 'sess',
+        },
+      })
+
+      // Now send the idle event to trigger runCodingPhase
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: 'sess',
+        },
+      })
+
+      // Verify the loop transitioned to final_auditing
+      const stateAfterSecondTick = loopService.getActiveState(loopName)
+      expect(stateAfterSecondTick).not.toBeNull()
+      expect(stateAfterSecondTick!.phase).toBe('final_auditing')
+
+      // The final audit prompt should have been sent with coder decisions
+      const auditorPromptsAfter = clientState.promptCalls.filter(c => c.agent === 'auditor-loop')
+      expect(auditorPromptsAfter.length).toBeGreaterThan(auditorPromptsBefore)
+      const finalAuditPrompt = auditorPromptsAfter[auditorPromptsAfter.length - 1]?.text ?? ''
+      expect(finalAuditPrompt).toContain('Coder decisions & verification notes')
+      expect(finalAuditPrompt).toContain('Chose approach X')
+      expect(finalAuditPrompt).toContain('FOO=bar pnpm test')
     })
   })
 })

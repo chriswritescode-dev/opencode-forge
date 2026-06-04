@@ -204,6 +204,20 @@ When reviewing sections, accept deviations from the plan IF they are documented 
 ## Section Attribution
 
 When writing findings for a sectioned loop, always include the appropriate \`sectionIndex\` to attribute the finding to a specific section. Use \`crossSection: true\` only when the finding spans multiple sections.
+
+## Coder Decisions
+
+The audit prompt may include a "Coder decisions & verification notes" block containing the coding agent's documented decisions and verification commands. Before re-reporting a finding that the coder documented:
+1. Reproduce the coder's documented verification method (e.g. required env vars, exact commands).
+2. If the finding is explained by the documented decision/verification, DELETE it with review-delete instead of re-writing it.
+
+## Recurring Findings
+
+The audit prompt may flag findings that have RECURRED across multiple audits without resolution. When you see a "Recurring findings — re-evaluate" section:
+- For each listed finding, check the coder decisions block to see if the coder documented a decision or verification method for it.
+- If the coder's documented decision/verification resolves the finding, DELETE it with review-delete.
+- Only keep a recurring finding if it is genuinely, verifiably still broken — and state the precise scenario under which it manifests.
+- Do NOT mechanically re-write the same finding across audit rounds. If it was not fixed and the coder did not document a resolution, you may re-report it — but be specific about what remains wrong.
 `
 
 const FINAL_AUDIT_ADDENDUM = `

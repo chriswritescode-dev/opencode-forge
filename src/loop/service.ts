@@ -17,6 +17,7 @@ import {
 } from './prompts'
 import { parseSectionSummary as _parseSectionSummary } from './section-summary'
 import { generateUniqueName } from './name-uniqueness'
+import { bumpRecurrence as _bumpRecurrence, findingRecurrenceKey as _findingRecurrenceKey } from './finding-recurrence'
 
 export const MAX_RETRIES = 3
 const STALL_TIMEOUT_MS = 60_000
@@ -48,6 +49,9 @@ export interface LoopService {
   terminateAll(): Promise<void>
   hasOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): boolean
   getOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[]
+  setCoderDecisions(name: string, decisions: string | null): void
+  bumpFindingRecurrence(name: string, findings: ReviewFindingRow[]): void
+  resetSectionRecurrence(name: string, sectionIndex: number): void
   generateUniqueLoopName(baseName: string): string
   getPlanText(loopName: string, sessionId: string): string | null
   incrementError(name: string): number
@@ -130,6 +134,8 @@ export function createLoopService(
   sectionPlansRepo?: SectionPlansRepo,
 ): LoopService {
   const notifyLoopChange: LoopChangeNotifier = notify ?? (() => {})
+  const coderDecisionsByLoop = new Map<string, string>()
+  const findingRecurrenceByLoop = new Map<string, Map<string, number>>()
 
   function stateToRow(state: LoopState): LoopRow {
     return {
@@ -211,6 +217,8 @@ export function createLoopService(
     const state = getAnyState(name)
     loopsRepo.delete(projectId, name)
     plansRepo.deleteForLoop(projectId, name)
+    coderDecisionsByLoop.delete(name)
+    findingRecurrenceByLoop.delete(name)
     notifyLoopChange('delete', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
@@ -243,7 +251,12 @@ export function createLoopService(
     notifyLoopChange('rotate', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
-  const _promptCtx: PromptContext = { getPlanTextForState, getOutstandingFindings, formatReviewFindings, getSectionPlan, getCompletedSectionDigest }
+  function getFindingRecurrence(loopName?: string): Map<string, number> {
+    if (!loopName) return new Map()
+    return findingRecurrenceByLoop.get(loopName) ?? new Map()
+  }
+
+  const _promptCtx: PromptContext = { getPlanTextForState, getOutstandingFindings, formatReviewFindings, getSectionPlan, getCompletedSectionDigest, getCoderDecisions, getFindingRecurrence }
 
   function buildContinuationPrompt(state: LoopState, auditFindings?: string): string {
     return _buildContinuationPrompt(_promptCtx, state, auditFindings)
@@ -255,6 +268,11 @@ export function createLoopService(
 
   function getPlanText(loopName: string, sessionId: string): string | null {
     return plansRepo.getForLoopOrSession(projectId, loopName, sessionId)?.content ?? null
+  }
+
+  function getCoderDecisions(loopName?: string): string | null {
+    if (!loopName) return null
+    return coderDecisionsByLoop.get(loopName) ?? null
   }
 
   function formatReviewFindings(loopName?: string): string {
@@ -326,8 +344,11 @@ export function createLoopService(
         reason: 'shutdown',
         completedAt: now,
       })
+      coderDecisionsByLoop.delete(state.loopName)
       notifyLoopChange('terminate', state.loopName, { projectDir: state.projectDir, worktreeDir: state.worktreeDir })
     }
+    coderDecisionsByLoop.clear()
+    findingRecurrenceByLoop.clear()
     logger.log(`Loop: terminated ${String(active.length)} active loop(s)`)
   }
 
@@ -346,6 +367,33 @@ export function createLoopService(
     const allNames = [...existing, ...active].map((s) => s.loopName)
     
     return generateUniqueName(baseName, allNames)
+  }
+
+  function setCoderDecisions(name: string, decisions: string | null): void {
+    if (!decisions) {
+      coderDecisionsByLoop.delete(name)
+    } else {
+      coderDecisionsByLoop.set(name, decisions)
+    }
+  }
+
+  function bumpFindingRecurrence(name: string, findings: ReviewFindingRow[]): void {
+    const prev = findingRecurrenceByLoop.get(name) ?? new Map()
+    const keys = findings.map(f => _findingRecurrenceKey(f))
+    findingRecurrenceByLoop.set(name, _bumpRecurrence(prev, keys))
+  }
+
+  function resetSectionRecurrence(name: string, sectionIndex: number): void {
+    const prev = findingRecurrenceByLoop.get(name)
+    if (!prev) return
+    const prefix = `${sectionIndex}:`
+    const next = new Map<string, number>()
+    for (const [key, count] of prev) {
+      if (!key.startsWith(prefix)) {
+        next.set(key, count)
+      }
+    }
+    findingRecurrenceByLoop.set(name, next)
   }
 
   function incrementError(name: string): number {
@@ -395,6 +443,8 @@ export function createLoopService(
   function terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void {
     const state = getAnyState(name)
     loopsRepo.terminate(projectId, name, opts)
+    coderDecisionsByLoop.delete(name)
+    findingRecurrenceByLoop.delete(name)
     notifyLoopChange('terminate', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
@@ -524,6 +574,9 @@ export function createLoopService(
     terminateAll,
     hasOutstandingFindings,
     getOutstandingFindings,
+    setCoderDecisions,
+    bumpFindingRecurrence,
+    resetSectionRecurrence,
     generateUniqueLoopName,
     getPlanText,
     incrementError,

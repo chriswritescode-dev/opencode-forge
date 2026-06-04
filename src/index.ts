@@ -23,6 +23,7 @@ import { createSessionLoopResolver } from './services/session-loop-resolver'
 import { createPlanCaptureEventHook } from './hooks/plan-capture'
 import { createForgeSessionAttachHook, createForgeSessionMessageAttachHook } from './hooks/forge-session-attach'
 import { createLoopPermissionRejectHook } from './hooks/loop-permission'
+import { createInterjectionCaptureHook } from './hooks/interjection-capture'
 
 export interface CreateParentSessionLookupOptions {
   v2: ReturnType<typeof createV2Client>
@@ -225,6 +226,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       try {
         sandboxManager = createSandboxManager(dockerService, {
           image: config.sandbox?.image ?? 'oc-forge-sandbox:latest',
+          dataDir,
           ...(config.sandbox?.resources ? { resources: config.sandbox.resources } : {}),
         }, logger)
         logger.log('Docker sandbox manager initialized')
@@ -354,6 +356,11 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       logger,
     })
 
+    const interjectionCaptureHook = createInterjectionCaptureHook({
+      recordUserMessage: (sessionId, text) => loopHandler.loop.recordUserMessage(sessionId, text),
+      logger,
+    })
+
     const parentSessionLookup = createParentSessionLookup({ v2, directory, loop: loopHandler.loop, logger })
     const sessionDirectoryLookup = createSessionDirectoryLookup({ v2, directory, loop: loopHandler.loop })
     const sessionLoopResolver = createSessionLoopResolver({
@@ -424,6 +431,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       'chat.message': async (input, output) => {
         await forgeSessionMessageAttachHook(input)
         await sessionHooks.onMessage(input, output)
+        await interjectionCaptureHook(input as { sessionID?: string }, output as { parts?: Array<{ type: string; text?: string }> })
       },
       event: async (input) => {
         const eventInput = input as { event: { type: string; properties?: Record<string, unknown> } }
