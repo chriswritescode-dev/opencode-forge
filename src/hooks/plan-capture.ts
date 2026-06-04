@@ -1,5 +1,5 @@
 import type { ToolContext } from '../tools/types'
-import { captureLatestPlanForSession, captureMarkedPlanTextForSession, capturePastedPlanForSession } from '../services/plan-capture'
+import { captureLatestPlanForSession, captureMarkedPlanTextForSession } from '../services/plan-capture'
 import { PLAN_END_MARKER, PLAN_START_MARKER } from '../utils/marked-plan-parser'
 import { PLAN_EXECUTION_LABELS } from '../utils/plan-execution'
 import { hashPlanText } from '../utils/plan-hash'
@@ -30,23 +30,19 @@ function isMessageUpdatedEvent(event: PlanCaptureEvent): event is MessageUpdated
 
 const PLAN_KEY_CAP = 1000
 
-// Caps an in-memory dedup Set so a long-lived process cannot grow it without
-// bound; clearing on overflow only risks an occasional duplicate prompt/capture.
-function trackKey(set: Set<string>, key: string): void {
-  if (set.size > PLAN_KEY_CAP) set.clear()
-  set.add(key)
+// Caps an in-memory map so a long-lived process cannot grow it without bound;
+// clearing on overflow only risks an occasional duplicate prompt.
+function trackEntry<K, V>(map: Map<K, V>, key: K, value: V): void {
+  if (map.size > PLAN_KEY_CAP) map.clear()
+  map.set(key, value)
 }
 
+// Dedupes architect prompts by `${sessionID}:${planHash}`.
 const promptedPlanKeys = new Set<string>()
-// Tracks plans pre-captured by the streaming branch so the completion handler
-// can distinguish "already current because streaming just wrote it" from
-// "already current from prior storage" and prompt accordingly.
-const streamingCapturedPlanKeys = new Set<string>()
-// Message ids whose streamed text parts were observed, and (subset) those whose
-// parts contained both plan markers. Lets the completion handler skip a
-// session.messages() fetch for messages positively seen without any markers.
-const seenPartMessageIds = new Set<string>()
-const markerPartMessageIds = new Set<string>()
+// Plans captured by the streaming branch, keyed by `${sessionID}:${messageID}`,
+// awaiting the message's completion so the (role-aware) completion handler can
+// prompt the architect without re-reading the conversation.
+const pendingUserPastePlans = new Map<string, string>()
 
 export function createPlanCaptureEventHook(ctx: ToolContext) {
   const { v2, input: { client }, logger, plansRepo, projectId, directory } = ctx
@@ -59,15 +55,11 @@ export function createPlanCaptureEventHook(ctx: ToolContext) {
     const sessionID = event.properties?.sessionID
     const part = event.properties?.part
     if (!sessionID || part?.type !== 'text' || !part.text) return
-    const partKey = part.messageID ? `${sessionID}:${part.messageID}` : null
-    if (partKey) trackKey(seenPartMessageIds, partKey)
     if (!part.text.includes(PLAN_START_MARKER)) return
     if (!part.text.includes(PLAN_END_MARKER)) return
-    if (partKey) trackKey(markerPartMessageIds, partKey)
 
     // Skip capture if session has an active loop (prevents user-pasted plans
-    // from being captured during loops and avoids bypassing the loop guard
-    // in handleUserMessageCompleted)
+    // from being captured during loops).
     const loop = ctx.loop
     if (loop) {
       const loopName = loop.resolveLoopName(sessionID)
@@ -83,10 +75,13 @@ export function createPlanCaptureEventHook(ctx: ToolContext) {
         part.messageID
       )
 
+      // Stash freshly captured plans so the completion handler can prompt the
+      // architect once it knows the message role (this event carries no role).
       if (result.status === 'captured') {
         logger.log(`plan-capture: captured marked plan from message part for session ${sessionID}`)
-        const planKey = `${sessionID}:${hashPlanText(result.planText)}`
-        trackKey(streamingCapturedPlanKeys, planKey)
+        if (part.messageID) {
+          trackEntry(pendingUserPastePlans, `${sessionID}:${part.messageID}`, result.planText)
+        }
       } else if (result.status === 'invalid') {
         logger.log(`plan-capture: streaming branch saw invalid plan for session ${sessionID}: ${result.reason}`)
       }
@@ -128,74 +123,18 @@ export function createPlanCaptureEventHook(ctx: ToolContext) {
     const sessionID = event.properties?.sessionID
     const info = event.properties?.info
 
-    if (!sessionID || info?.role !== 'user' || typeof info?.time?.completed !== 'number') return
+    if (!sessionID || info?.role !== 'user' || typeof info?.time?.completed !== 'number' || !info.id) return
 
-    // Skip if session has an active loop
-    const loop = ctx.loop
-    if (loop) {
-      const loopName = loop.resolveLoopName(sessionID)
-      const state = loopName ? loop.getActiveState(loopName) : null
-      if (state?.active) {
-        logger.log(`plan-capture: session ${sessionID} has active loop, skipping user paste capture`)
-        return
-      }
-    }
-
-    // If the streaming branch already observed this message's text parts and
-    // none contained plan markers, there is nothing to capture — skip the
-    // session.messages() fetch entirely. When no parts were observed (e.g. the
-    // message arrived without part events), fall through and fetch as before.
-    const partKey = info?.id ? `${sessionID}:${info.id}` : null
-    if (partKey && seenPartMessageIds.has(partKey) && !markerPartMessageIds.has(partKey)) {
-      seenPartMessageIds.delete(partKey)
-      logger.log(`plan-capture: message ${info?.id} had no plan markers in streamed parts, skipping fetch`)
-      return
-    }
-    if (partKey) {
-      seenPartMessageIds.delete(partKey)
-      markerPartMessageIds.delete(partKey)
-    }
+    // The streaming branch already captured any pasted plan and stashed it under
+    // this message id. Now that we know the role is `user`, prompt the architect.
+    const stashKey = `${sessionID}:${info.id}`
+    const planText = pendingUserPastePlans.get(stashKey)
+    if (!planText) return
+    pendingUserPastePlans.delete(stashKey)
 
     try {
-      const result = await capturePastedPlanForSession(
-        { v2, client, plansRepo, projectId, directory, logger },
-        sessionID
-      )
-
-      if (result.status === 'captured') {
-        logger.log(`plan-capture: captured pasted plan from user message for session ${sessionID}`)
-        await triggerPasteApprovalQuestion(sessionID, result.planText)
-      } else if (result.status === 'already-current') {
-        const planKey = `${sessionID}:${hashPlanText(result.planText)}`
-        if (streamingCapturedPlanKeys.has(planKey)) {
-          // Streaming branch pre-captured this plan but did not prompt;
-          // treat as freshly captured and prompt now.
-          streamingCapturedPlanKeys.delete(planKey)
-          logger.log(`plan-capture: streaming pre-captured plan for session ${sessionID}, prompting now`)
-          await triggerPasteApprovalQuestion(sessionID, result.planText)
-        } else {
-          // Plan was already stored prior to this event flow — skip prompt
-          // to avoid re-prompting the same plan on every user message.
-          logger.log(`plan-capture: plan already stored for session ${sessionID}, skipping prompt`)
-        }
-      } else if (result.status === 'invalid') {
-        logger.log(`plan-capture: invalid pasted plan in session ${sessionID}: ${result.reason}`)
-        ctx.v2.tui?.publish({
-          directory: ctx.directory,
-          body: {
-            type: 'tui.toast.show',
-            properties: {
-              title: 'Forge plan execution',
-              message: `Invalid pasted plan markers: ${result.reason}`,
-              variant: 'error',
-              duration: 5000,
-            },
-          },
-        }).catch((err: unknown) => {
-          logger.error('plan-capture: failed to publish error toast', err as Error)
-        })
-      }
-      // already-current, not-found, read-failed: return without prompting
+      logger.log(`plan-capture: user-pasted plan completed for session ${sessionID}, prompting architect`)
+      await triggerPasteApprovalQuestion(sessionID, planText)
     } catch (error) {
       logCaptureError(sessionID, error)
     }
@@ -207,7 +146,8 @@ export function createPlanCaptureEventHook(ctx: ToolContext) {
       logger.log(`plan-capture: already prompted for plan ${planKey}, skipping`)
       return
     }
-    trackKey(promptedPlanKeys, planKey)
+    if (promptedPlanKeys.size > PLAN_KEY_CAP) promptedPlanKeys.clear()
+    promptedPlanKeys.add(planKey)
 
     const optionsList = PLAN_EXECUTION_LABELS.join(', ')
     const prompt = `A user pasted an implementation plan into this session. The plan has already been captured. Do NOT re-plan or modify it. Immediately call the \`question\` tool exactly once to ask how to execute it, with these three options as labels: ${optionsList}. Ask only this question and take no other action.`

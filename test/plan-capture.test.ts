@@ -9,7 +9,7 @@ import {
   PLAN_END_MARKER,
   type PlanCaptureMessage,
 } from '../src/utils/marked-plan-parser'
-import { captureMarkedPlanTextForSession, captureLatestPlanForSession, capturePastedPlanForSession } from '../src/services/plan-capture'
+import { captureMarkedPlanTextForSession, captureLatestPlanForSession } from '../src/services/plan-capture'
 import { createPlanCaptureEventHook } from '../src/hooks/plan-capture'
 
 describe('extractMarkedPlan', () => {
@@ -691,204 +691,6 @@ describe('captureLatestPlanForSession legacy client fallback', () => {
   })
 })
 
-describe('capturePastedPlanForSession', () => {
-  function createFakePlansRepo() {
-    const plans = new Map<string, { content: string; updatedAt: number }>()
-    return {
-      writeForSession: (_projectId: string, sessionId: string, content: string) => {
-        plans.set(sessionId, { content, updatedAt: Date.now() })
-      },
-      getForSession: (_projectId: string, sessionId: string) => {
-        const row = plans.get(sessionId)
-        if (!row) return null
-        return { projectId: 'test-project', loopName: null, sessionId, content: row.content, updatedAt: row.updatedAt }
-      },
-    }
-  }
-
-  const logger = {
-    log: () => {},
-    error: () => {},
-    debug: () => {},
-  }
-
-  test('captures a valid pasted plan from the newest user message', async () => {
-    const plansRepo = createFakePlansRepo()
-    const deps = {
-      v2: { session: { messages: async () => ({
-        data: [{
-          info: { role: 'user', id: 'msg-1' },
-          parts: [{ type: 'text', text: `${PLAN_START_MARKER}\n# Pasted Plan\n\n## Step 1\n- Do it\n${PLAN_END_MARKER}` }],
-        }],
-      }) } },
-      client: { session: { messages: async () => ({ data: [] }) } },
-      plansRepo,
-      projectId: 'test-project',
-      directory: '/tmp/project',
-      logger,
-    }
-
-    const result = await capturePastedPlanForSession(deps as any, 'session-pp-1')
-    expect(result.status).toBe('captured')
-    if (result.status === 'captured') {
-      expect(result.planText).toBe('# Pasted Plan\n\n## Step 1\n- Do it')
-    }
-    expect(plansRepo.getForSession('test-project', 'session-pp-1')?.content).toBe('# Pasted Plan\n\n## Step 1\n- Do it')
-  })
-
-  test('returns already-current when identical plan is already stored', async () => {
-    const plansRepo = createFakePlansRepo()
-    const planText = `${PLAN_START_MARKER}\n# Same Plan\n\nContent\n${PLAN_END_MARKER}`
-    const messageData = [{
-      info: { role: 'user', id: 'msg-same' },
-      parts: [{ type: 'text', text: planText }],
-    }]
-    const deps = {
-      v2: { session: { messages: async () => ({ data: messageData }) } },
-      client: { session: { messages: async () => ({ data: [] }) } },
-      plansRepo,
-      projectId: 'test-project',
-      directory: '/tmp/project',
-      logger,
-    }
-
-    // First call captures
-    const first = await capturePastedPlanForSession(deps as any, 'session-pp-same')
-    expect(first.status).toBe('captured')
-
-    // Second call with same content should be already-current
-    const second = await capturePastedPlanForSession(deps as any, 'session-pp-same')
-    expect(second.status).toBe('already-current')
-    if (second.status === 'already-current') {
-      expect(second.planText).toBe('# Same Plan\n\nContent')
-    }
-  })
-
-  test('returns not-found when user message has no markers', async () => {
-    const plansRepo = createFakePlansRepo()
-    const deps = {
-      v2: { session: { messages: async () => ({
-        data: [{
-          info: { role: 'user', id: 'msg-nope' },
-          parts: [{ type: 'text', text: 'Just some plain text without markers' }],
-        }],
-      }) } },
-      client: { session: { messages: async () => ({ data: [] }) } },
-      plansRepo,
-      projectId: 'test-project',
-      directory: '/tmp/project',
-      logger,
-    }
-
-    const result = await capturePastedPlanForSession(deps as any, 'session-pp-nope')
-    expect(result.status).toBe('not-found')
-    expect(plansRepo.getForSession('test-project', 'session-pp-nope')).toBeNull()
-  })
-
-  test('returns not-found when newest user message has no markers but older user message has a plan', async () => {
-    const plansRepo = createFakePlansRepo()
-    const deps = {
-      v2: { session: { messages: async () => ({
-        data: [
-          {
-            info: { role: 'user', id: 'msg-old' },
-            parts: [{ type: 'text', text: `${PLAN_START_MARKER}\nOlder Plan\n${PLAN_END_MARKER}` }],
-          },
-          {
-            info: { role: 'user', id: 'msg-newest' },
-            parts: [{ type: 'text', text: 'Just plain text without markers' }],
-          },
-        ],
-      }) } },
-      client: { session: { messages: async () => ({ data: [] }) } },
-      plansRepo,
-      projectId: 'test-project',
-      directory: '/tmp/project',
-      logger,
-    }
-
-    const result = await capturePastedPlanForSession(deps as any, 'session-pp-regression')
-    // Should NOT capture the older plan — only the newest user message is considered
-    expect(result.status).toBe('not-found')
-    expect(plansRepo.getForSession('test-project', 'session-pp-regression')).toBeNull()
-  })
-
-  test('returns invalid on malformed markers in user message', async () => {
-    const plansRepo = createFakePlansRepo()
-    const deps = {
-      v2: { session: { messages: async () => ({
-        data: [{
-          info: { role: 'user', id: 'msg-bad' },
-          parts: [{ type: 'text', text: `${PLAN_START_MARKER}\nNo end marker` }],
-        }],
-      }) } },
-      client: { session: { messages: async () => ({ data: [] }) } },
-      plansRepo,
-      projectId: 'test-project',
-      directory: '/tmp/project',
-      logger,
-    }
-
-    const result = await capturePastedPlanForSession(deps as any, 'session-pp-bad')
-    expect(result.status).toBe('invalid')
-    if (result.status === 'invalid') {
-      expect(result.reason).toBe('unterminated')
-    }
-    expect(plansRepo.getForSession('test-project', 'session-pp-bad')).toBeNull()
-  })
-
-  test('returns not-found when messages array is empty', async () => {
-    const plansRepo = createFakePlansRepo()
-    const deps = {
-      v2: { session: { messages: async () => ({ data: [] }) } },
-      client: { session: { messages: async () => ({ data: [] }) } },
-      plansRepo,
-      projectId: 'test-project',
-      directory: '/tmp/project',
-      logger,
-    }
-
-    const result = await capturePastedPlanForSession(deps as any, 'session-pp-empty')
-    expect(result.status).toBe('not-found')
-  })
-
-  test('falls back to legacy client when v2 returns empty data', async () => {
-    const plansRepo = createFakePlansRepo()
-    const deps = {
-      v2: { session: { messages: async () => ({ data: [] }) } },
-      client: { session: { messages: async () => ({
-        data: [{
-          info: { role: 'user', id: 'msg-fb' },
-          parts: [{ type: 'text', text: `${PLAN_START_MARKER}\nFallback Pasted Plan\n${PLAN_END_MARKER}` }],
-        }],
-      }) } },
-      plansRepo,
-      projectId: 'test-project',
-      directory: '/tmp/project',
-      logger,
-    }
-
-    const result = await capturePastedPlanForSession(deps as any, 'session-pp-fb')
-    expect(result.status).toBe('captured')
-    expect(plansRepo.getForSession('test-project', 'session-pp-fb')?.content).toBe('Fallback Pasted Plan')
-  })
-
-  test('returns not-found when both v2 and legacy return empty', async () => {
-    const plansRepo = createFakePlansRepo()
-    const deps = {
-      v2: { session: { messages: async () => ({ data: [] }) } },
-      client: { session: { messages: async () => ({ data: [] }) } },
-      plansRepo,
-      projectId: 'test-project',
-      directory: '/tmp/project',
-      logger,
-    }
-
-    const result = await capturePastedPlanForSession(deps as any, 'session-pp-both-empty')
-    expect(result.status).toBe('not-found')
-  })
-})
-
 describe('plan capture trigger on assistant message completion', () => {
   function createFakePlansRepo() {
     const plans = new Map<string, { content: string; updatedAt: number }>()
@@ -931,7 +733,7 @@ describe('plan capture trigger on assistant message completion', () => {
     expect(plansRepo.getForSession('test-project', 'session-mu-1')?.content).toBe('# Completed Plan\n\n## Verification\n- bun test')
   })
 
-  test('ignores message.updated when role is user and no markers present (no plan written)', async () => {
+  test('user message.updated with no stashed plan does not fetch or write', async () => {
     const plansRepo = createFakePlansRepo()
     let messagesCalls = 0
     const hook = createPlanCaptureEventHook({
@@ -948,10 +750,10 @@ describe('plan capture trigger on assistant message completion', () => {
 
     await hook({ event: { type: 'message.updated', properties: { sessionID: 'session-mu-user', info: { role: 'user', id: 'msg', time: { created: 1, completed: 2 } } } } })
 
-    // No plan written because messages are empty
+    // Nothing was captured server-side; the completion handler only prompts
+    // from the streaming stash, so it never re-reads the conversation.
     expect(plansRepo.getForSession('test-project', 'session-mu-user')).toBeNull()
-    // User messages are now handled, so messages are fetched
-    expect(messagesCalls).toBeGreaterThanOrEqual(1)
+    expect(messagesCalls).toBe(0)
   })
 
   test('ignores message.updated when time.completed is undefined (streaming, not finished)', async () => {
@@ -1070,304 +872,139 @@ describe('user paste capture trigger', () => {
     }
   }
 
-  test('(a) captures plan and prompts architect on user message with valid plan', async () => {
+  function streamingEvent(sessionID: string, messageID: string, text: string) {
+    return { event: { type: 'message.part.updated', properties: { sessionID, part: { type: 'text', messageID, text } } } }
+  }
+
+  function userCompletionEvent(sessionID: string, id: string) {
+    return { event: { type: 'message.updated', properties: { sessionID, info: { role: 'user', id, time: { created: 1, completed: 2 } } } } }
+  }
+
+  const architectCount = (calls: Array<{ agent?: string }>) => calls.filter(c => c.agent === 'architect').length
+
+  test('(a) streaming captures the plan; user completion prompts the architect', async () => {
     const promptAsyncCalls: Array<{ agent?: string }> = []
-    const ctx = makeHookCtx({
-      messagesData: [{
-        info: { role: 'user', id: 'msg-user-a' },
-        parts: [{ type: 'text', text: MARKED_PLAN }],
-      }],
-      promptAsyncCalls,
-    })
+    const ctx = makeHookCtx({ promptAsyncCalls })
     const hook = createPlanCaptureEventHook(ctx as any)
 
-    await hook({
-      event: {
-        type: 'message.updated',
-        properties: {
-          sessionID: 'session-up-a',
-          info: { role: 'user', id: 'msg-user-a', time: { created: 1, completed: 2 } },
-        },
-      },
-    })
-
-    // Plan should be captured
+    await hook(streamingEvent('session-up-a', 'msg-user-a', MARKED_PLAN) as any)
+    // Streaming captured the plan into the store
     expect(ctx.plansRepo.getForSession('test-project', 'session-up-a')?.content).toBe(EXPECTED_PLAN)
-    // promptAsync should have been called with agent: 'architect'
-    expect(promptAsyncCalls.length).toBeGreaterThanOrEqual(1)
-    const architectCall = promptAsyncCalls.find(c => c.agent === 'architect')
-    expect(architectCall).toBeDefined()
+
+    await hook(userCompletionEvent('session-up-a', 'msg-user-a') as any)
+    expect(architectCount(promptAsyncCalls)).toBe(1)
   })
 
-  test('(b) firing same event again does not prompt a second time (already-current)', async () => {
+  test('(b) completing the same message twice prompts only once', async () => {
     const promptAsyncCalls: Array<{ agent?: string }> = []
-    const ctx = makeHookCtx({
-      messagesData: [{
-        info: { role: 'user', id: 'msg-user-b' },
-        parts: [{ type: 'text', text: MARKED_PLAN }],
-      }],
-      promptAsyncCalls,
-    })
+    const ctx = makeHookCtx({ promptAsyncCalls })
     const hook = createPlanCaptureEventHook(ctx as any)
 
-    // First call: capture + prompt
-    await hook({
-      event: {
-        type: 'message.updated',
-        properties: {
-          sessionID: 'session-up-b',
-          info: { role: 'user', id: 'msg-user-b', time: { created: 1, completed: 2 } },
-        },
-      },
-    })
-    const firstPromptCount = promptAsyncCalls.filter(c => c.agent === 'architect').length
-    expect(firstPromptCount).toBe(1)
+    await hook(streamingEvent('session-up-b', 'msg-user-b', MARKED_PLAN) as any)
 
-    // Second call with same event: no new prompt
-    await hook({
-      event: {
-        type: 'message.updated',
-        properties: {
-          sessionID: 'session-up-b',
-          info: { role: 'user', id: 'msg-user-b', time: { created: 1, completed: 2 } },
-        },
-      },
-    })
-    const secondPromptCount = promptAsyncCalls.filter(c => c.agent === 'architect').length
-    expect(secondPromptCount).toBe(1)
+    await hook(userCompletionEvent('session-up-b', 'msg-user-b') as any)
+    expect(architectCount(promptAsyncCalls)).toBe(1)
+
+    await hook(userCompletionEvent('session-up-b', 'msg-user-b') as any)
+    expect(architectCount(promptAsyncCalls)).toBe(1)
   })
 
-  test('(c) user message without markers does not write or prompt', async () => {
+  test('(c) user message without markers does not capture or prompt', async () => {
     const promptAsyncCalls: Array<{ agent?: string }> = []
-    const ctx = makeHookCtx({
-      messagesData: [{
-        info: { role: 'user', id: 'msg-user-c' },
-        parts: [{ type: 'text', text: 'Just some plain text with no markers' }],
-      }],
-      promptAsyncCalls,
-    })
+    const ctx = makeHookCtx({ promptAsyncCalls })
     const hook = createPlanCaptureEventHook(ctx as any)
 
-    await hook({
-      event: {
-        type: 'message.updated',
-        properties: {
-          sessionID: 'session-up-c',
-          info: { role: 'user', id: 'msg-user-c', time: { created: 1, completed: 2 } },
-        },
-      },
-    })
+    await hook(streamingEvent('session-up-c', 'msg-user-c', 'Just some plain text with no markers') as any)
+    await hook(userCompletionEvent('session-up-c', 'msg-user-c') as any)
 
     expect(ctx.plansRepo.getForSession('test-project', 'session-up-c')).toBeNull()
     expect(promptAsyncCalls.length).toBe(0)
   })
 
-  test('(d) when loop is active, no capture and no prompt', async () => {
+  test('(d) when loop is active, streaming does not capture and completion does not prompt', async () => {
     const promptAsyncCalls: Array<{ agent?: string }> = []
     const ctx = makeHookCtx({
-      messagesData: [{
-        info: { role: 'user', id: 'msg-user-d' },
-        parts: [{ type: 'text', text: MARKED_PLAN }],
-      }],
       promptAsyncCalls,
       resolveLoopName: () => 'my-loop',
       getActiveState: () => ({ active: true, sessionId: 'session-up-d' }),
     })
     const hook = createPlanCaptureEventHook(ctx as any)
 
-    await hook({
-      event: {
-        type: 'message.updated',
-        properties: {
-          sessionID: 'session-up-d',
-          info: { role: 'user', id: 'msg-user-d', time: { created: 1, completed: 2 } },
-        },
-      },
-    })
+    await hook(streamingEvent('session-up-d', 'msg-user-d', MARKED_PLAN) as any)
+    await hook(userCompletionEvent('session-up-d', 'msg-user-d') as any)
 
     expect(ctx.plansRepo.getForSession('test-project', 'session-up-d')).toBeNull()
     expect(promptAsyncCalls.length).toBe(0)
   })
 
-  test('(f) newest user message without markers does not capture older user plan', async () => {
+  test('(e) completing a markerless message does not prompt for an earlier message\u2019s plan', async () => {
     const promptAsyncCalls: Array<{ agent?: string }> = []
-    const ctx = makeHookCtx({
-      messagesData: [
-        {
-          info: { role: 'user', id: 'msg-old-f' },
-          parts: [{ type: 'text', text: MARKED_PLAN }],
-        },
-        {
-          info: { role: 'user', id: 'msg-newest-f' },
-          parts: [{ type: 'text', text: 'Just some plain text without markers' }],
-        },
-      ],
-      promptAsyncCalls,
-    })
+    const ctx = makeHookCtx({ promptAsyncCalls })
     const hook = createPlanCaptureEventHook(ctx as any)
 
-    await hook({
-      event: {
-        type: 'message.updated',
-        properties: {
-          sessionID: 'session-up-f',
-          info: { role: 'user', id: 'msg-newest-f', time: { created: 1, completed: 2 } },
-        },
-      },
-    })
+    // An earlier message streamed a plan (stashed under its own id)...
+    await hook(streamingEvent('session-up-e', 'msg-old-e', MARKED_PLAN) as any)
+    // ...but a different, markerless message completes.
+    await hook(userCompletionEvent('session-up-e', 'msg-newest-e') as any)
 
-    // Should NOT capture the older plan — only the newest user message is considered
-    expect(ctx.plansRepo.getForSession('test-project', 'session-up-f')).toBeNull()
+    // The newer message has nothing stashed, so no prompt fires.
     expect(promptAsyncCalls.length).toBe(0)
   })
 
-  test('(e) user message without time.completed is ignored', async () => {
+  test('(f) user message without time.completed is ignored', async () => {
     const promptAsyncCalls: Array<{ agent?: string }> = []
-    let messagesCalls = 0
-    const ctx = makeHookCtx({
-      messagesData: [{
-        info: { role: 'user', id: 'msg-user-e' },
-        parts: [{ type: 'text', text: MARKED_PLAN }],
-      }],
-      promptAsyncCalls,
-    })
-    // Override v2.session.messages to track calls
-    ctx.v2.session.messages = async () => {
-      messagesCalls++
-      return { data: [] }
-    }
+    const ctx = makeHookCtx({ promptAsyncCalls })
     const hook = createPlanCaptureEventHook(ctx as any)
 
-    await hook({
-      event: {
-        type: 'message.updated',
-        properties: {
-          sessionID: 'session-up-e',
-          info: { role: 'user', id: 'msg-user-e', time: { created: 1 } }, // no completed
-        },
-      },
-    })
+    await hook(streamingEvent('session-up-f', 'msg-user-f', MARKED_PLAN) as any)
+    // Completion event arrives without time.completed (still streaming)
+    await hook({ event: { type: 'message.updated', properties: { sessionID: 'session-up-f', info: { role: 'user', id: 'msg-user-f', time: { created: 1 } } } } } as any)
 
-    expect(ctx.plansRepo.getForSession('test-project', 'session-up-e')).toBeNull()
-    expect(messagesCalls).toBe(0)
     expect(promptAsyncCalls.length).toBe(0)
   })
 
-  test('(g) streaming path captures user paste + completion handler prompts architect once', async () => {
+  test('(g) streaming then user completion prompts architect exactly once', async () => {
     const promptAsyncCalls: Array<{ agent?: string }> = []
-    const ctx = makeHookCtx({
-      messagesData: [{
-        info: { role: 'user', id: 'msg-stream-g' },
-        parts: [{ type: 'text', text: MARKED_PLAN }],
-      }],
-      promptAsyncCalls,
-    })
+    const ctx = makeHookCtx({ promptAsyncCalls })
     const hook = createPlanCaptureEventHook(ctx as any)
 
-    // Simulate message.part.updated with a complete user-pasted marked plan
-    // (the streaming path fires first with the full text containing both markers)
-    await hook({
-      event: {
-        type: 'message.part.updated',
-        properties: {
-          sessionID: 'session-stream-g',
-          part: { type: 'text', messageID: 'msg-stream-g', text: MARKED_PLAN },
-        },
-      },
-    })
-
-    // Plan should be stored by streaming path
+    await hook(streamingEvent('session-stream-g', 'msg-stream-g', MARKED_PLAN) as any)
     expect(ctx.plansRepo.getForSession('test-project', 'session-stream-g')?.content).toBe(EXPECTED_PLAN)
 
-    // Now simulate message.updated completing the user message
-    await hook({
-      event: {
-        type: 'message.updated',
-        properties: {
-          sessionID: 'session-stream-g',
-          info: { role: 'user', id: 'msg-stream-g', time: { created: 1, completed: 2 } },
-        },
-      },
-    })
+    await hook(userCompletionEvent('session-stream-g', 'msg-stream-g') as any)
 
-    // Plan should still be the same (deduped write — already-current)
     expect(ctx.plansRepo.getForSession('test-project', 'session-stream-g')?.content).toBe(EXPECTED_PLAN)
-    // Architect should be prompted exactly once (streaming pre-capture tracks the plan
-    // key so the completion handler treats already-current as freshly captured and prompts)
-    const architectCalls = promptAsyncCalls.filter(c => c.agent === 'architect')
-    expect(architectCalls.length).toBe(1)
+    expect(architectCount(promptAsyncCalls)).toBe(1)
   })
 
-  test('(h) streaming path with active loop: no capture, no prompt', async () => {
+  test('(h) streaming with an active loop: no capture, no prompt', async () => {
     const promptAsyncCalls: Array<{ agent?: string }> = []
     const ctx = makeHookCtx({
-      messagesData: [{
-        info: { role: 'user', id: 'msg-loop-h' },
-        parts: [{ type: 'text', text: MARKED_PLAN }],
-      }],
       promptAsyncCalls,
       resolveLoopName: () => 'test-loop',
       getActiveState: () => ({ active: true, sessionId: 'session-loop-h' }),
     })
     const hook = createPlanCaptureEventHook(ctx as any)
 
-    // Simulate message.part.updated with a complete user-pasted marked plan
-    await hook({
-      event: {
-        type: 'message.part.updated',
-        properties: {
-          sessionID: 'session-loop-h',
-          part: { type: 'text', messageID: 'msg-loop-h', text: MARKED_PLAN },
-        },
-      },
-    })
-
-    // Plan should NOT be stored (loop guard in streaming path blocks capture)
+    await hook(streamingEvent('session-loop-h', 'msg-loop-h', MARKED_PLAN) as any)
     expect(ctx.plansRepo.getForSession('test-project', 'session-loop-h')).toBeNull()
 
-    // Simulate message.updated completing the user message
-    await hook({
-      event: {
-        type: 'message.updated',
-        properties: {
-          sessionID: 'session-loop-h',
-          info: { role: 'user', id: 'msg-loop-h', time: { created: 1, completed: 2 } },
-        },
-      },
-    })
-
-    // Still no plan stored, and no prompt fired
+    await hook(userCompletionEvent('session-loop-h', 'msg-loop-h') as any)
     expect(ctx.plansRepo.getForSession('test-project', 'session-loop-h')).toBeNull()
     expect(promptAsyncCalls.length).toBe(0)
   })
 
-  test('(i) pre-seeded plan in repo: already-current without streaming pre-capture does not prompt', async () => {
+  test('(i) re-pasting an already-stored plan does not prompt (already-current is not stashed)', async () => {
     const promptAsyncCalls: Array<{ agent?: string }> = []
-    const ctx = makeHookCtx({
-      messagesData: [{
-        info: { role: 'user', id: 'msg-pre-i' },
-        parts: [{ type: 'text', text: MARKED_PLAN }],
-      }],
-      promptAsyncCalls,
-    })
-    // Pre-seed the plansRepo with the same plan content before any event fires
+    const ctx = makeHookCtx({ promptAsyncCalls })
     ctx.plansRepo.writeForSession('test-project', 'session-pre-i', EXPECTED_PLAN)
     const hook = createPlanCaptureEventHook(ctx as any)
 
-    // Fire the user completion event
-    await hook({
-      event: {
-        type: 'message.updated',
-        properties: {
-          sessionID: 'session-pre-i',
-          info: { role: 'user', id: 'msg-pre-i', time: { created: 1, completed: 2 } },
-        },
-      },
-    })
+    // Streaming sees the same plan content that is already stored -> already-current
+    await hook(streamingEvent('session-pre-i', 'msg-pre-i', MARKED_PLAN) as any)
+    await hook(userCompletionEvent('session-pre-i', 'msg-pre-i') as any)
 
-    // Plan should already be stored (pre-seeded, still the same content)
     expect(ctx.plansRepo.getForSession('test-project', 'session-pre-i')?.content).toBe(EXPECTED_PLAN)
-    // No prompt should be sent — the plan was already stored before this event
     expect(promptAsyncCalls.length).toBe(0)
   })
 })

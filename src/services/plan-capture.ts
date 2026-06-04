@@ -3,7 +3,7 @@ import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { Logger } from '../types'
 import type { PlanCaptureMessage } from '../utils/marked-plan-parser'
 import type { PluginInput } from '@opencode-ai/plugin'
-import { extractMarkedPlan, inspectLatestMarkedPlan, inspectLatestPastedPlan, sanitizePlanPaths } from '../utils/marked-plan-parser'
+import { extractMarkedPlan, inspectLatestMarkedPlan, sanitizePlanPaths } from '../utils/marked-plan-parser'
 
 export interface CaptureLatestPlanDeps {
   v2: ToolContext['v2']
@@ -108,11 +108,9 @@ async function readRecentMessages(
   }
 }
 
-async function captureInspectedPlanForSession(
+export async function captureLatestPlanForSession(
   deps: CaptureLatestPlanDeps,
-  sessionID: string,
-  inspect: (messages: PlanCaptureMessage[]) => ReturnType<typeof inspectLatestMarkedPlan>,
-  label: string
+  sessionID: string
 ): Promise<CaptureLatestPlanResult> {
   const read = await readRecentMessages(deps, sessionID)
   if (read.status === 'read-failed') return read
@@ -121,31 +119,17 @@ async function captureInspectedPlanForSession(
     return { status: 'not-found' }
   }
 
-  const inspection = inspect(read.messages)
+  const inspection = inspectLatestMarkedPlan(read.messages)
 
   if (inspection.status === 'found') {
     return writeCapturedPlanForSession(deps, sessionID, inspection.planText, inspection.messageId)
   }
 
   if (inspection.status === 'invalid') {
-    deps.logger.log(`plan-capture: invalid ${label} plan in session ${sessionID}: ${inspection.reason}`)
+    deps.logger.log(`plan-capture: invalid marked plan in session ${sessionID}: ${inspection.reason}`)
     return { status: 'invalid', reason: inspection.reason }
   }
 
-  deps.logger.log(`plan-capture: no valid ${label} plan found in session ${sessionID}`)
+  deps.logger.log(`plan-capture: no valid marked plan found in session ${sessionID}`)
   return { status: 'not-found' }
-}
-
-export async function captureLatestPlanForSession(
-  deps: CaptureLatestPlanDeps,
-  sessionID: string
-): Promise<CaptureLatestPlanResult> {
-  return captureInspectedPlanForSession(deps, sessionID, inspectLatestMarkedPlan, 'marked')
-}
-
-export async function capturePastedPlanForSession(
-  deps: CaptureLatestPlanDeps,
-  sessionID: string
-): Promise<CaptureLatestPlanResult> {
-  return captureInspectedPlanForSession(deps, sessionID, inspectLatestPastedPlan, 'pasted')
 }
