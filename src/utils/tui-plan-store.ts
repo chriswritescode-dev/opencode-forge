@@ -9,12 +9,11 @@
 
 import { Database } from 'bun:sqlite'
 import { existsSync } from 'fs'
-import { join } from 'path'
-import { resolveDataDir } from '../storage'
+import { resolveForgeDbPath, openForgeDatabaseReadonly } from '../storage'
 import { createPlansRepo } from '../storage/repos/plans-repo'
 
 function getDbPath(): string {
-  return join(resolveDataDir(), 'forge.db')
+  return resolveForgeDbPath()
 }
 
 /**
@@ -27,7 +26,7 @@ export function readPlan(projectId: string, sessionId: string): string | null {
 
   let db: Database | null = null
   try {
-    db = new Database(dbPath, { readonly: true })
+    db = openForgeDatabaseReadonly(dbPath)
     const plansRepo = createPlansRepo(db)
     const row = plansRepo.getForSession(projectId, sessionId)
     return row?.content ?? null
@@ -51,7 +50,7 @@ export function readPlanForAnyProject(sessionId: string): { projectId: string; c
 
   let db: Database | null = null
   try {
-    db = new Database(dbPath, { readonly: true })
+    db = openForgeDatabaseReadonly(dbPath)
     const stmt = db.prepare(
       'SELECT project_id, content FROM plans WHERE session_id = ? ORDER BY updated_at DESC LIMIT 1'
     )

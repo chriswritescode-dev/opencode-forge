@@ -7,6 +7,7 @@
 
 import { Database } from 'bun:sqlite'
 import { existsSync } from 'fs'
+import { openForgeDatabaseReadonly } from '../storage'
 
 export interface WaitForSandboxOptions {
   projectId: string
@@ -42,8 +43,7 @@ export async function waitForSandboxReady(opts: WaitForSandboxOptions): Promise<
 
   let db: Database | null = null
   try {
-    db = new Database(dbPath, { readonly: true })
-    db.run('PRAGMA busy_timeout=5000')
+    db = openForgeDatabaseReadonly(dbPath)
 
     while (true) {
       // Query for loop sandbox_container from loops table

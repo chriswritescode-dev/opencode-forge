@@ -23,6 +23,21 @@ export function resolveLogPath(): string {
   return join(resolveDataDir(), 'logs', 'forge.log')
 }
 
+export function resolveForgeDbPath(): string {
+  return join(resolveDataDir(), 'forge.db')
+}
+
+/**
+ * Opens the Forge database read-only with a busy timeout so concurrent reads
+ * (e.g. from the TUI or dashboard) coexist safely with the server's writer.
+ * The caller owns the connection and must close it.
+ */
+export function openForgeDatabaseReadonly(dbPath: string = resolveForgeDbPath()): Database {
+  const db = new Database(dbPath, { readonly: true })
+  db.run('PRAGMA busy_timeout=5000')
+  return db
+}
+
 function runMigrations(db: Database): void {
   db.run(`
     CREATE TABLE IF NOT EXISTS migrations (

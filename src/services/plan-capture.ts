@@ -108,9 +108,11 @@ async function readRecentMessages(
   }
 }
 
-export async function captureLatestPlanForSession(
+async function captureInspectedPlanForSession(
   deps: CaptureLatestPlanDeps,
-  sessionID: string
+  sessionID: string,
+  inspect: (messages: PlanCaptureMessage[]) => ReturnType<typeof inspectLatestMarkedPlan>,
+  label: string
 ): Promise<CaptureLatestPlanResult> {
   const read = await readRecentMessages(deps, sessionID)
   if (read.status === 'read-failed') return read
@@ -119,43 +121,31 @@ export async function captureLatestPlanForSession(
     return { status: 'not-found' }
   }
 
-  const inspection = inspectLatestMarkedPlan(read.messages)
+  const inspection = inspect(read.messages)
 
   if (inspection.status === 'found') {
     return writeCapturedPlanForSession(deps, sessionID, inspection.planText, inspection.messageId)
   }
 
   if (inspection.status === 'invalid') {
-    deps.logger.log(`plan-capture: invalid marked plan in session ${sessionID}: ${inspection.reason}`)
+    deps.logger.log(`plan-capture: invalid ${label} plan in session ${sessionID}: ${inspection.reason}`)
     return { status: 'invalid', reason: inspection.reason }
   }
 
-  deps.logger.log(`plan-capture: no valid marked plan found in session ${sessionID}`)
+  deps.logger.log(`plan-capture: no valid ${label} plan found in session ${sessionID}`)
   return { status: 'not-found' }
+}
+
+export async function captureLatestPlanForSession(
+  deps: CaptureLatestPlanDeps,
+  sessionID: string
+): Promise<CaptureLatestPlanResult> {
+  return captureInspectedPlanForSession(deps, sessionID, inspectLatestMarkedPlan, 'marked')
 }
 
 export async function capturePastedPlanForSession(
   deps: CaptureLatestPlanDeps,
   sessionID: string
 ): Promise<CaptureLatestPlanResult> {
-  const read = await readRecentMessages(deps, sessionID)
-  if (read.status === 'read-failed') return read
-  if (read.status === 'missing') {
-    deps.logger.log(`plan-capture: no messages found for session ${sessionID}`)
-    return { status: 'not-found' }
-  }
-
-  const inspection = inspectLatestPastedPlan(read.messages)
-
-  if (inspection.status === 'found') {
-    return writeCapturedPlanForSession(deps, sessionID, inspection.planText, inspection.messageId)
-  }
-
-  if (inspection.status === 'invalid') {
-    deps.logger.log(`plan-capture: invalid pasted plan in session ${sessionID}: ${inspection.reason}`)
-    return { status: 'invalid', reason: inspection.reason }
-  }
-
-  deps.logger.log(`plan-capture: no valid pasted plan found in session ${sessionID}`)
-  return { status: 'not-found' }
+  return captureInspectedPlanForSession(deps, sessionID, inspectLatestPastedPlan, 'pasted')
 }

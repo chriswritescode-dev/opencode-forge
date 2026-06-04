@@ -7,14 +7,13 @@
 
 import { Database } from 'bun:sqlite'
 import { existsSync } from 'fs'
-import { join } from 'path'
-import { resolveDataDir } from '../storage'
+import { resolveForgeDbPath, openForgeDatabaseReadonly } from '../storage'
 import { createLoopsRepo } from '../storage/repos/loops-repo'
 import { createSectionPlansRepo } from '../storage/repos/section-plans-repo'
 import type { LoopInfo } from './tui-models'
 
 function getDbPath(): string {
-  return join(resolveDataDir(), 'forge.db')
+  return resolveForgeDbPath()
 }
 
 const cap200 = (s: string | null | undefined): string | null =>
@@ -72,7 +71,7 @@ export function fetchLoopsList(projectId: string, dbPathOverride?: string): Loop
 
   let db: Database | null = null
   try {
-    db = new Database(dbPath, { readonly: true })
+    db = openForgeDatabaseReadonly(dbPath)
     const loopsRepo = createLoopsRepo(db)
     const sectionPlansRepo = createSectionPlansRepo(db)
 

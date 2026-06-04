@@ -2,6 +2,7 @@ import type { ToolContext } from '../tools/types'
 import type { Hooks } from '@opencode-ai/plugin'
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
 import { extractPlanExecutionMetadata, PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
+import { hashPlanText } from '../utils/plan-hash'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext } from '../services/execution'
 
 function publishPlanApprovalToast(
@@ -115,14 +116,6 @@ async function resolveBlockedLoopToolState(
   return null
 }
 
-function hashApprovalPlan(planText: string): string {
-  let hash = 5381
-  for (let i = 0; i < planText.length; i += 1) {
-    hash = ((hash << 5) + hash) ^ planText.charCodeAt(i)
-  }
-  return (hash >>> 0).toString(36)
-}
-
 function claimApprovalCall(ctx: ToolContext, input: { sessionID: string }, label: string, planKey: string): boolean {
   let processed = processedApprovalCalls.get(ctx)
   if (!processed) {
@@ -145,7 +138,7 @@ function resolveCurrentSessionPlan(ctx: ToolContext, sessionID: string): { conte
   if (!plan) return null
   return {
     content: plan.content,
-    key: hashApprovalPlan(plan.content),
+    key: hashPlanText(plan.content),
   }
 }
 

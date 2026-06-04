@@ -1,4 +1,4 @@
-export { initializeDatabase, closeDatabase, resolveDataDir, resolveLogPath } from './database'
+export { initializeDatabase, closeDatabase, resolveDataDir, resolveLogPath, resolveForgeDbPath, openForgeDatabaseReadonly } from './database'
 
 export { createLoopsRepo } from './repos/loops-repo'
 export type { LoopRow } from './repos/loops-repo'

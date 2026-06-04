@@ -31,6 +31,7 @@ import {
 } from '../loop/in-flight-guard'
 import { getRestartability, type RestartBlockedReason } from '../loop/restartability'
 import { resolveHostSessionDirectory } from '../utils/resolve-project-root'
+import { hashPlanText } from '../utils/plan-hash'
 
 // ============================================================================
 // Surface Types - Identifies the caller boundary
@@ -1062,11 +1063,6 @@ export async function attachLoopToSession(
 export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): ForgeExecutionService {
   
   const inFlightLoopStarts = new Map<string, Promise<ForgeExecutionResponse<LoopStartedResult>>>()
-  function hashPlanForDedupe(text: string): string {
-    let h = 5381
-    for (let i = 0; i < text.length; i += 1) h = ((h << 5) + h) ^ text.charCodeAt(i)
-    return (h >>> 0).toString(36)
-  }
 
   async function handlePlanNewSession(
     ctx: ForgeExecutionRequestContext,
@@ -1236,7 +1232,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const uniqueLoopName = deps.loop.generateUniqueLoopName(command.loopName ?? executionName)
 
     // In-flight dedupe: suppress concurrent starts for the same source
-    const dedupeKey = `${ctx.projectId}::${command.hostSessionId ?? ctx.sourceSessionId ?? ''}::${hashPlanForDedupe(planText)}`
+    const dedupeKey = `${ctx.projectId}::${command.hostSessionId ?? ctx.sourceSessionId ?? ''}::${hashPlanText(planText)}`
     const existing = inFlightLoopStarts.get(dedupeKey)
     if (existing) {
       deps.logger.log(`handleStartLoop: dedupe — concurrent start suppressed for key=${dedupeKey}`)
