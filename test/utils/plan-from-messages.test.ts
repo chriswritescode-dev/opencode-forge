@@ -20,6 +20,13 @@ function assistantMessage(text: string, id = 'msg-1'): { info: { role: string; i
   }
 }
 
+function userMessage(text: string, id = 'msg-user-1'): { info: { role: string; id: string }; parts: Array<{ type: string; text: string }> } {
+  return {
+    info: { role: 'user', id },
+    parts: [{ type: 'text', text }],
+  }
+}
+
 const VALID_PLAN = [
   PLAN_START_MARKER,
   '# Implementation Plan',
@@ -149,5 +156,39 @@ describe('fetchLatestPlanForSession', () => {
     expect(debug).toHaveBeenCalled()
     const args = debug.mock.calls[0]
     expect(typeof args[0]).toBe('string')
+  })
+
+  test('finds user-pasted plan when only user messages contain a marked plan (fallback)', async () => {
+    const messages = mock(async () => ({
+      data: [userMessage(`${PLAN_START_MARKER}\nUser Pasted Plan\n${PLAN_END_MARKER}`, 'msg-user')],
+    }))
+    const client = makeClient(messages)
+    const debug = mock(() => {})
+    const result = await fetchLatestPlanForSession(client, 'sess-1', '/tmp/proj', { debug })
+    expect(result).toBe('User Pasted Plan')
+    expect(debug).toHaveBeenCalled()
+  })
+
+  test('finds user-pasted plan when no assistant plan exists', async () => {
+    const messages = mock(async () => ({
+      data: [userMessage(`${PLAN_START_MARKER}\nUser Pasted Plan\n${PLAN_END_MARKER}`, 'msg-user')],
+    }))
+    const client = makeClient(messages)
+    const result = await fetchLatestPlanForSession(client, 'sess-1', '/tmp/proj')
+    // After fix: should find the user-pasted plan
+    expect(result).toBe('User Pasted Plan')
+  })
+
+  test('prefers assistant plan over user-pasted plan when both exist', async () => {
+    const messages = mock(async () => ({
+      data: [
+        userMessage(`${PLAN_START_MARKER}\nUser Plan\n${PLAN_END_MARKER}`, 'msg-user'),
+        assistantMessage(`${PLAN_START_MARKER}\nAssistant Plan\n${PLAN_END_MARKER}`, 'msg-assistant'),
+      ],
+    }))
+    const client = makeClient(messages)
+    const result = await fetchLatestPlanForSession(client, 'sess-1', '/tmp/proj')
+    // Assistant plan should take priority
+    expect(result).toBe('Assistant Plan')
   })
 })

@@ -1,19 +1,21 @@
 /**
- * TUI helper that fetches the latest marked plan for a session by reading
- * the assistant's chat history over the OpenCode SDK and running the same
- * parser the server uses (`inspectLatestMarkedPlan`).
+ * TUI helper that fetches the latest plan for a session by reading chat
+ * history over the OpenCode SDK and running the same parser the server
+ * uses.  Checks assistant messages first (the normal case); falls back to
+ * user-pasted plans so that a plan a user pasted into chat input — captured
+ * server-side by Phase 3 — is also discoverable when the TUI user triggers
+ * {@code forge.plan.execute}.
  *
- * Used by the standalone execution-dialog trigger introduced in Phase D
- * (when the in-TUI plan viewer was removed). Returning `null` covers all
- * non-found cases (network failure, no messages, no marked plan, invalid
- * marked plan) so the caller can toast a single "no plan in current
- * session" message — the precise reason ends up in the log via the
- * provided `debug` callback when supplied.
+ * Returning `null` covers all non-found cases (network failure, no messages,
+ * no marked plan, invalid marked plan) so the caller can toast a single
+ * "no plan in current session" message — the precise reason ends up in the
+ * log via the provided `debug` callback when supplied.
  */
 
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import {
   inspectLatestMarkedPlan,
+  inspectLatestPastedPlan,
   type PlanCaptureMessage,
 } from './marked-plan-parser'
 
@@ -61,15 +63,29 @@ export async function fetchLatestPlanForSession(
     return null
   }
 
-  const inspection = inspectLatestMarkedPlan(messages)
-  if (inspection.status === 'found') {
-    debug(`fetchLatestPlanForSession: found plan in session ${sessionID} (message ${inspection.messageId ?? 'unknown'})`)
-    return inspection.planText
+  // Prefer assistant-generated plans (the normal case).
+  const assistantInspection = inspectLatestMarkedPlan(messages)
+  if (assistantInspection.status === 'found') {
+    debug(`fetchLatestPlanForSession: found plan in session ${sessionID} (message ${assistantInspection.messageId ?? 'unknown'})`)
+    return assistantInspection.planText
   }
-  if (inspection.status === 'invalid') {
-    debug(`fetchLatestPlanForSession: invalid marked plan in session ${sessionID}: ${inspection.reason}`)
+  if (assistantInspection.status === 'invalid') {
+    debug(`fetchLatestPlanForSession: invalid marked plan in session ${sessionID}: ${assistantInspection.reason}`)
     return null
   }
-  debug(`fetchLatestPlanForSession: no marked plan in session ${sessionID}`)
+
+  // Fallback: check the newest user message for a pasted plan (Phase 3
+  // server-side capture writes these into user messages).
+  const pastedInspection = inspectLatestPastedPlan(messages)
+  if (pastedInspection.status === 'found') {
+    debug(`fetchLatestPlanForSession: found pasted plan in session ${sessionID} (message ${pastedInspection.messageId ?? 'unknown'})`)
+    return pastedInspection.planText
+  }
+  if (pastedInspection.status === 'invalid') {
+    debug(`fetchLatestPlanForSession: invalid pasted plan in session ${sessionID}: ${pastedInspection.reason}`)
+    return null
+  }
+
+  debug(`fetchLatestPlanForSession: no marked or pasted plan in session ${sessionID}`)
   return null
 }

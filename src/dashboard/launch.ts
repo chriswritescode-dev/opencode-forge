@@ -1,8 +1,6 @@
-import { Database } from 'bun:sqlite'
 import { existsSync } from 'fs'
-import { join } from 'path'
 import { platform } from 'os'
-import { resolveDataDir } from '../storage/database'
+import { resolveForgeDbPath, openForgeDatabaseReadonly } from '../storage/database'
 import { createRequestHandler } from './server'
 
 export interface DashboardServerHandle {
@@ -23,7 +21,7 @@ const DEFAULT_MAX_ATTEMPTS = 10
 export function resolveDashboardDbPath(explicit?: string): string {
   if (explicit) return explicit
   if (process.env.FORGE_DB) return process.env.FORGE_DB
-  return join(resolveDataDir(), 'forge.db')
+  return resolveForgeDbPath()
 }
 
 function isAddrInUse(err: unknown): boolean {
@@ -48,7 +46,7 @@ export function startDashboardServer(options: StartDashboardOptions = {}): Dashb
 
   const basePort = options.port ?? DEFAULT_PORT
   const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS
-  const db = new Database(dbPath, { readonly: true })
+  const db = openForgeDatabaseReadonly(dbPath)
   const handler = createRequestHandler(db)
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
