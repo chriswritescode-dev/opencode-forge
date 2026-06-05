@@ -68,14 +68,14 @@ function buildRecurringFindingsCoderBlock(ctx: PromptContext, state: LoopState, 
   const escalated = getEscalatedFindings(ctx, state, outstandingBugs)
   if (escalated.length === 0) return ''
   const lines = escalated.map(e => `- \`${e.file}:${e.line}\` (recurred ${e.count}×)`)
-  return `\n\n---\n## ⚠️ Recurring blocking findings\nThese findings have recurred across multiple audits without resolution. For EACH: either fix it definitively, OR if it is intentional/correct, document the reasoning and the exact passing verification method in your coder-decisions block so the auditor can verify and clear it.\n\n${lines.join('\n')}`
+  return `\n\n---\n##  Recurring blocking findings\nThese findings have recurred across multiple audits without resolution. For EACH: either fix it definitively, OR if it is intentional/correct, document the reasoning and the exact passing verification method in your coder-decisions block so the auditor can verify and clear it.\n\n${lines.join('\n')}`
 }
 
 function buildRecurringFindingsAuditorBlock(ctx: PromptContext, state: LoopState): string {
   const escalated = getEscalatedFindings(ctx, state)
   if (escalated.length === 0) return ''
   const lines = escalated.map(e => `- \`${e.file}:${e.line}\` (${e.count}×)`)
-  return `## ⚠️ Recurring findings — re-evaluate\nThese findings have recurred ${escalated.length}× across audits. For each, re-check the coder decisions block above and reproduce the coder's verification method. If the coder's documented decision/verification resolves it, DELETE it with review-delete. Only keep it if it is genuinely, verifiably still broken (state the precise scenario).\n\n${lines.join('\n')}`
+  return `##  Recurring findings — re-evaluate\nThese findings have recurred across audits. For each, re-check the coder decisions block above and reproduce the coder's verification method. If the coder's documented decision/verification resolves it, DELETE it with review-delete. Only keep it if it is genuinely, verifiably still broken (state the precise scenario).\n\n${lines.join('\n')}`
 }
 
 function coderDecisionsAuditorBody(coderDecisions: string): string {
@@ -107,7 +107,7 @@ export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, au
   const outstandingFindings = ctx.getOutstandingFindings(state.loopName)
   if (outstandingFindings.length > 0) {
     const findingKeys = outstandingFindings.map((f) => `- \`${f.file}:${f.line}\``).join('\n')
-    prompt += `\n\n---\n⚠️ Outstanding Review Findings (${String(outstandingFindings.length)})\n\nThese review findings are blocking loop completion. Fix these issues so they pass the next audit review.\n\n${findingKeys}`
+    prompt += `\n\n---\n Outstanding Review Findings (${String(outstandingFindings.length)})\n\nThese review findings are blocking loop completion. Fix these issues so they pass the next audit review.\n\n${findingKeys}`
   }
 
   prompt += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
