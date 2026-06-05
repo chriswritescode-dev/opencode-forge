@@ -24,6 +24,7 @@ import { createPlanCaptureEventHook } from './hooks/plan-capture'
 import { createForgeSessionAttachHook, createForgeSessionMessageAttachHook } from './hooks/forge-session-attach'
 import { createLoopPermissionRejectHook } from './hooks/loop-permission'
 
+
 export interface CreateParentSessionLookupOptions {
   v2: ReturnType<typeof createV2Client>
   directory: string
@@ -225,6 +226,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       try {
         sandboxManager = createSandboxManager(dockerService, {
           image: config.sandbox?.image ?? 'oc-forge-sandbox:latest',
+          dataDir,
           ...(config.sandbox?.resources ? { resources: config.sandbox.resources } : {}),
         }, logger)
         logger.log('Docker sandbox manager initialized')

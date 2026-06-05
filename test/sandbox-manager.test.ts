@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 import { execSync } from 'child_process'
@@ -255,6 +255,25 @@ describe('SandboxManager', () => {
       const active = manager.getActive('test')
       expect(active).not.toBeNull()
       expect(active?.containerName).toBe('forge-test')
+    })
+
+    test('mounts the host bash-output dir read-only when dataDir is configured', async () => {
+      const dataDir = mkdtempSync(join(tmpdir(), 'forge-data-'))
+      try {
+        const mockDocker = createMockDockerService()
+        const manager = createSandboxManager(
+          mockDocker as unknown as DockerService,
+          { image: 'oc-forge-sandbox:latest', dataDir },
+          createMockLogger(),
+        )
+        await manager.start('test', '/path')
+        const mounts = mockDocker.getCreateContainerCalls()[0][3] ?? []
+        const bashOut = join(dataDir, 'bash-output')
+        expect(mounts).toContain(`${bashOut}:${bashOut}:ro`)
+        expect(existsSync(bashOut)).toBe(true)
+      } finally {
+        rmSync(dataDir, { recursive: true, force: true })
+      }
     })
 
     test('mounts linked worktree git metadata writable', async () => {

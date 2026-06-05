@@ -1,7 +1,9 @@
+import { isAbsolute } from 'path'
 import type { Hooks } from '@opencode-ai/plugin'
 import type { Logger } from '../types'
 import type { SandboxContext } from '../sandbox/context'
 import { executeSandboxGlob, executeSandboxGrep } from '../sandbox/exec-fs'
+import { isInsideWorkspace } from '../sandbox/path'
 
 interface SandboxToolHookDeps {
   resolveSandboxForSession: (sessionID: string) => Promise<SandboxContext | null>
@@ -25,6 +27,17 @@ export function createSandboxToolBeforeHook(deps: SandboxToolHookDeps): Hooks['t
     }
 
     const { docker, containerName, hostDir } = sandbox
+
+    const requestedPath = output.args?.path
+    if (
+      (input.tool === 'glob' || input.tool === 'grep') &&
+      typeof requestedPath === 'string' &&
+      isAbsolute(requestedPath) &&
+      !isInsideWorkspace(requestedPath, hostDir)
+    ) {
+      deps.logger.debug(`[sandbox-hook] ${input.tool} path '${requestedPath}' is outside the workspace mount; deferring to host execution`)
+      return
+    }
 
     if (input.tool === 'glob') {
       const args = output.args
