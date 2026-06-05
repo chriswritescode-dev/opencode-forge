@@ -102,7 +102,9 @@ describe('renderDashboardHtml', () => {
     const html = renderDashboardHtml()
 
     expect(html).toContain('project-nav-item')
-    expect(html).toMatch(/selectedProjectId\s*=\s*pid/)
+    // Sidebar click routes through navigate(), which assigns the selected project
+    expect(html).toMatch(/navigate\(pid,\s*null\)/)
+    expect(html).toMatch(/function navigate\(projectId, loopName\)[\s\S]*?selectedProjectId\s*=\s*projectId/)
   })
 
   test('shows loop counts per project in the sidebar', () => {
@@ -176,8 +178,10 @@ describe('renderDashboardHtml', () => {
   test('renders a loop list that navigates to a single-loop detail', () => {
     const html = renderDashboardHtml()
 
-    // The click handler in buildLoopRow captures lp.loopName as 'name' and sets selectedLoopName = name
-    expect(html).toMatch(/selectedLoopName\s*=\s*name/)
+    // buildLoopRow's click handler captures lp.loopName as 'name' and routes through navigate()
+    expect(html).toMatch(/navigate\(selectedProjectId,\s*name\)/)
+    // navigate() is the single source that sets the selected loop
+    expect(html).toMatch(/function navigate\(projectId, loopName\)[\s\S]*?selectedLoopName\s*=\s*loopName/)
     // Detail view has a back-to-loops control
     expect(html).toContain('back-to-loops')
   })

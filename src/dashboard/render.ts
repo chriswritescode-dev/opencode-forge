@@ -81,7 +81,6 @@ export function renderDashboardHtml(): string {
   .finding-bug { color: #f85149; }
   .finding-warning { color: #d29922; }
   .usage-row { padding: 2px 0; color: #8b949e; }
-  pre { background: #0d1117; padding: 8px; border-radius: 4px; max-height: 200px; overflow: auto; font-size: 0.75rem; color: #8b949e; white-space: pre-wrap; word-break: break-word; border: 1px solid #30363d; margin-top: 4px; }
   .timestamp { font-size: 0.75rem; color: #484f58; margin-bottom: 12px; }
   .error-text { color: #f85149; }
   .dim { color: #484f58; }
@@ -152,11 +151,6 @@ export function renderDashboardHtml(): string {
       return 'section-status section-' + s;
     }
 
-    function escapeHtml(str) {
-      if (str == null) return '';
-      return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-
     function parseLoopHash(hash) {
       var out = { projectId: null, loopName: null };
       var raw = (hash || '').replace(/^#/, '');
@@ -184,6 +178,13 @@ export function renderDashboardHtml(): string {
         suppressHashChange = true;
         location.hash = next;
       }
+    }
+
+    function navigate(projectId, loopName) {
+      selectedProjectId = projectId;
+      selectedLoopName = loopName;
+      syncHash();
+      render(lastData);
     }
 
     function render(data) {
@@ -305,12 +306,7 @@ export function renderDashboardHtml(): string {
         navItem.appendChild(navCount);
 
         navItem.addEventListener('click', function(pid) {
-          return function() {
-            selectedProjectId = pid;
-            selectedLoopName = null;
-            syncHash();
-            render(data);
-          };
+          return function() { navigate(pid, null); };
         }(entry.proj.projectId));
 
         sidebar.appendChild(navItem);
@@ -329,10 +325,10 @@ export function renderDashboardHtml(): string {
       projEl.appendChild(header);
 
       if (activeLoop) {
-        projEl.appendChild(buildLoopDetail(data, selectedEntry.proj, activeLoop));
+        projEl.appendChild(buildLoopDetail(activeLoop));
       } else {
         for (var dl = 0; dl < selectedEntry.loops.length; dl++) {
-          projEl.appendChild(buildLoopRow(data, selectedEntry.proj, selectedEntry.loops[dl]));
+          projEl.appendChild(buildLoopRow(selectedEntry.loops[dl]));
         }
       }
 
@@ -343,54 +339,54 @@ export function renderDashboardHtml(): string {
       syncHash();
     }
 
-    function buildLoopRow(data, proj, dashLoop) {
+    function appendLoopSummary(dashLoop, badgeTarget, infoTarget) {
       var lp = dashLoop.loop;
-      var loopRow = document.createElement('div');
-      loopRow.className = 'loop-row';
 
       var badge = document.createElement('span');
       badge.className = statusClass(lp.status);
       badge.textContent = lp.status;
-      loopRow.appendChild(badge);
+      badgeTarget.appendChild(badge);
 
-      var info = document.createElement('span');
-      info.className = 'loop-info';
       var nameStrong = document.createElement('strong');
       nameStrong.textContent = lp.loopName;
-      info.appendChild(nameStrong);
+      infoTarget.appendChild(nameStrong);
 
-      var infoParts = [];
-      infoParts.push('phase: ' + lp.phase);
-      infoParts.push('iteration ' + lp.iteration + '/' + lp.maxIterations);
-      infoParts.push('section ' + lp.currentSectionIndex + '/' + lp.totalSections);
-
-      var duration = formatDuration(lp);
-      if (duration) infoParts.push(duration);
-
-      info.appendChild(document.createTextNode(' — ' + infoParts.join(', ')));
+      var infoParts = [
+        'phase: ' + lp.phase,
+        'iteration ' + lp.iteration + '/' + lp.maxIterations,
+        'section ' + lp.currentSectionIndex + '/' + lp.totalSections,
+      ];
+      if (dashLoop.duration) infoParts.push(dashLoop.duration);
+      infoTarget.appendChild(document.createTextNode(' — ' + infoParts.join(', ')));
 
       if (lp.terminationReason) {
-        info.appendChild(document.createTextNode(' — '));
+        infoTarget.appendChild(document.createTextNode(' — '));
         var termSpan = document.createElement('span');
         termSpan.className = 'error-text';
         termSpan.textContent = lp.terminationReason;
-        info.appendChild(termSpan);
+        infoTarget.appendChild(termSpan);
       }
+    }
+
+    function buildLoopRow(dashLoop) {
+      var loopRow = document.createElement('div');
+      loopRow.className = 'loop-row';
+
+      var info = document.createElement('span');
+      info.className = 'loop-info';
+
+      appendLoopSummary(dashLoop, loopRow, info);
 
       loopRow.appendChild(info);
 
       loopRow.addEventListener('click', function(name) {
-        return function() {
-          selectedLoopName = name;
-          syncHash();
-          render(data);
-        };
-      }(lp.loopName));
+        return function() { navigate(selectedProjectId, name); };
+      }(dashLoop.loop.loopName));
 
       return loopRow;
     }
 
-    function buildLoopDetail(data, proj, dashLoop) {
+    function buildLoopDetail(dashLoop) {
       var lp = dashLoop.loop;
 
       var loopEl = document.createElement('div');
@@ -400,43 +396,14 @@ export function renderDashboardHtml(): string {
       var backEl = document.createElement('div');
       backEl.className = 'back-to-loops';
       backEl.textContent = '← Back to loops';
-      backEl.addEventListener('click', function() {
-        selectedLoopName = null;
-        syncHash();
-        render(data);
-      });
+      backEl.addEventListener('click', function() { navigate(selectedProjectId, null); });
       loopEl.appendChild(backEl);
 
       // Loop detail header
       var detailHeader = document.createElement('div');
       detailHeader.className = 'loop-detail-header';
 
-      var badge = document.createElement('span');
-      badge.className = statusClass(lp.status);
-      badge.textContent = lp.status;
-      detailHeader.appendChild(badge);
-
-      var nameStrong = document.createElement('strong');
-      nameStrong.textContent = lp.loopName;
-      detailHeader.appendChild(nameStrong);
-
-      var infoParts = [];
-      infoParts.push('phase: ' + lp.phase);
-      infoParts.push('iteration ' + lp.iteration + '/' + lp.maxIterations);
-      infoParts.push('section ' + lp.currentSectionIndex + '/' + lp.totalSections);
-
-      var duration = formatDuration(lp);
-      if (duration) infoParts.push(duration);
-
-      detailHeader.appendChild(document.createTextNode(' — ' + infoParts.join(', ')));
-
-      if (lp.terminationReason) {
-        detailHeader.appendChild(document.createTextNode(' — '));
-        var termSpan = document.createElement('span');
-        termSpan.className = 'error-text';
-        termSpan.textContent = lp.terminationReason;
-        detailHeader.appendChild(termSpan);
-      }
+      appendLoopSummary(dashLoop, detailHeader, detailHeader);
 
       loopEl.appendChild(detailHeader);
 
@@ -574,21 +541,6 @@ export function renderDashboardHtml(): string {
 
       loopEl.appendChild(detail);
       return loopEl;
-    }
-
-    function formatDuration(lp) {
-      var start = lp.startedAt;
-      var end = lp.completedAt || Date.now();
-      var ms = end - start;
-      if (ms <= 0) return '';
-      var seconds = Math.floor(ms / 1000);
-      if (seconds < 60) return seconds + 's';
-      var minutes = Math.floor(seconds / 60);
-      seconds = seconds % 60;
-      if (minutes < 60) return minutes + 'm ' + seconds + 's';
-      var hours = Math.floor(minutes / 60);
-      minutes = minutes % 60;
-      return hours + 'h ' + minutes + 'm';
     }
 
     var searchEl = document.getElementById('loop-search');

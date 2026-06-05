@@ -159,6 +159,11 @@ describe('formatDuration', () => {
   it('handles exact minutes', () => {
     expect(formatDuration(180)).toBe('3m 0s')
   })
+
+  it('formats hours+minutes for durations over an hour', () => {
+    expect(formatDuration(3661)).toBe('1h 1m')
+    expect(formatDuration(7200)).toBe('2h 0m')
+  })
 })
 
 describe('computeElapsedSeconds', () => {
