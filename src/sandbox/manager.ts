@@ -1,10 +1,12 @@
 import type { DockerService } from './docker'
 import type { Logger, SandboxResources } from '../types'
-import { resolve } from 'path'
+import { join, resolve } from 'path'
+import { mkdirSync } from 'fs'
 import { spawnSync } from 'child_process'
 
 export interface SandboxManagerConfig {
   image: string
+  dataDir?: string
   resources?: SandboxResources
 }
 
@@ -38,6 +40,17 @@ export function createSandboxManager(
   logger: Logger,
 ): SandboxManager {
   const activeSandboxes = new Map<string, ActiveSandbox>()
+
+  function outputMounts(): string[] {
+    if (!config.dataDir) return []
+    const dir = join(config.dataDir, 'bash-output')
+    try {
+      mkdirSync(dir, { recursive: true })
+    } catch (err) {
+      logger.log(`[sandbox] could not ensure bash-output dir ${dir}: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    return [`${dir}:${dir}:ro`]
+  }
 
   function detectGitMount(projectDir: string): string[] {
     try {
@@ -99,7 +112,7 @@ export function createSandboxManager(
       })
       return { containerName }
     }
-    const extraMounts = detectGitMount(absoluteProjectDir)
+    const extraMounts = [...detectGitMount(absoluteProjectDir), ...outputMounts()]
     if (extraMounts.length > 0) {
       logger.log(`Sandbox: mounting git metadata: ${extraMounts.join(', ')}`)
     }

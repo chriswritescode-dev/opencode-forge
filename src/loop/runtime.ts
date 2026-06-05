@@ -34,6 +34,8 @@ import { nextTransition } from './transitions'
 import { summarizeAssistantUsage, type UsageAttribution } from './token-usage'
 import { loopRegistry } from '../utils/loop-registry'
 
+import { parseCoderDecisions } from '../utils/coder-decisions'
+
 export interface LoopEvent {
   type: string
   properties?: Record<string, unknown>
@@ -110,6 +112,8 @@ export interface Loop {
   resetError(name: string): void
   terminateLoop(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
   getOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[]
+  bumpFindingRecurrence(name: string, findings: ReviewFindingRow[]): void
+  resetSectionRecurrence(name: string, sectionIndex: number): void
   getStallTimeoutMs(): number
   getMaxConsecutiveStalls(): number
 
@@ -120,6 +124,7 @@ export interface Loop {
   buildSectionAuditPrompt(state: LoopState): string
   buildSectionContinuationPrompt(state: LoopState, auditText: string): string
   buildFinalAuditPrompt(state: LoopState): string
+  buildFinalAuditFixPrompt(state: LoopState, auditText: string): string
 
   // Plan and section methods
   getPlanText(loopName: string, sessionId: string): string | null
@@ -168,7 +173,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
   const loopRetainedSessions = new Map<string, RetainedSessionMeta[]>()
   const SESSION_RETENTION = 0
-
   function withStateLock<T>(loopName: string, fn: () => Promise<T>): Promise<T> {
     const prev = stateLocks.get(loopName) ?? Promise.resolve()
     const nextPromise = prev.catch(() => undefined).then(() => fn())
@@ -1238,6 +1242,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'coding')
 
+    // Parse coder decisions from the coding assistant's response and store for the audit prompt.
+    // This must happen before the pendingFinalAuditFix early return so that decisions emitted
+    // during a final-audit fix coding session reach the subsequent final audit prompt.
+    loopService.setCoderDecisions(loopName, parseCoderDecisions(assistantInfo.text))
+
     // If this coding pass was a final-audit fix, skip the per-section audit and
     // transition straight back to final_auditing.
     if (pendingFinalAuditFix.has(loopName)) {
@@ -1352,11 +1361,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         const recovered = await recoverFromMissingWorkspace(loopName, currentState, created.auditSessionId, 'during audit prompt recovery')
         currentState = loopService.getActiveState(loopName) ?? currentState
         if (recovered.recovered || !currentState.workspaceId) {
+          const auditPromptText = loopService.buildAuditPrompt(currentState)
           const retryResult = await promptAuditSessionWithFallback({
             sessionId: created.auditSessionId,
             worktreeDir: currentState.worktreeDir,
             workspaceId: currentState.workspaceId,
-            prompt: loopService.buildAuditPrompt(currentState),
+            prompt: auditPromptText,
             auditorModel,
             auditorVariant: currentState.auditorVariant,
           })
@@ -1370,17 +1380,18 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       const retryFn = async () => {
         const fresh = loopService.getActiveState(loopName)
         if (!fresh?.active) throw new Error('loop_cancelled')
+        const auditPromptText = loopService.buildAuditPrompt(fresh)
         try {
           await withInFlightGuard(loopName, created.auditSessionId, 'auditor-loop', logger, async () => {
-            const retry = await promptAuditSessionWithFallback({
+            const retryResult = await promptAuditSessionWithFallback({
               sessionId: created.auditSessionId,
               worktreeDir: fresh.worktreeDir,
               workspaceId: fresh.workspaceId,
-              prompt: loopService.buildAuditPrompt(fresh),
+              prompt: auditPromptText,
               auditorModel,
               auditorVariant: fresh.auditorVariant,
             })
-            if (!retry.ok) throw retry.error
+            if (!retryResult.ok) throw retryResult.error
           })
         } catch (err) {
           if (err instanceof ConcurrentPromptError) { logger.log('Loop: failed to send audit prompt — retry rejected as concurrent prompt (prior guard active), skipping'); return }
@@ -1467,11 +1478,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (currentState.totalSections > 0) {
         const idx = currentState.currentSectionIndex
         const sectionSummary = loopService.parseSectionSummary(auditText || '')
-        const sectionBugFindings = loopService.getOutstandingFindings(loopName, 'bug')
-          .filter(f => f.sectionIndex === idx)
+        const sectionAllBugFindings = loopService.getOutstandingFindings(loopName, 'bug')
+        const sectionBugFindings = sectionAllBugFindings.filter(f => f.sectionIndex === idx)
 
         if (sectionSummary && sectionBugFindings.length === 0) {
           logger.log(`Loop: section ${idx} audit clean, marking completed`)
+
+          // Reset recurrence for this section so resolved findings don't falsely escalate later
+          loopService.resetSectionRecurrence(loopName, idx)
 
           loopService.setLastAuditResult(loopName, auditText || '')
           loopService.completeSection(loopName, idx, sectionSummary)
@@ -1538,6 +1552,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
         loopService.incrementSectionAttempts(loopName, idx)
 
+        loopService.bumpFindingRecurrence(loopName, sectionBugFindings)
+
         loopService.setLastAuditResult(loopName, auditText || '')
         loopService.replaceSession(loopName, {
           newSessionId: currentState.sessionId,
@@ -1545,7 +1561,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           iteration: nextIter,
         })
 
-        const continuationPrompt = loopService.buildSectionContinuationPrompt(currentState, auditText || '')
+        const continuationPrompt = loopService.buildSectionContinuationPrompt(currentState, auditText || '', sectionAllBugFindings)
         await rotateAndSendContinuation(
           loopName,
           currentState,
@@ -1571,9 +1587,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         return
       }
 
+      const outstandingBugs = loopService.getOutstandingFindings(loopName, 'bug')
+      loopService.bumpFindingRecurrence(loopName, outstandingBugs)
+
       const continuationPrompt = loopService.buildContinuationPrompt(
         { ...currentState, iteration: nextIteration },
         auditText || undefined,
+        outstandingBugs,
       )
 
       await rotateAndSendContinuation(
@@ -1684,8 +1704,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
       // Dirty final audit: rotate to a coding session that fixes the findings,
       // then on coding idle return straight to final_auditing (no section rewind).
-      const outstandingBugCount = loopService.getOutstandingFindings(loopName, 'bug').length
-      logger.log(`Loop: final audit dirty (${outstandingBugCount} outstanding bug findings), rotating to coding for fix for ${loopName}`)
+      const outstandingBugs = loopService.getOutstandingFindings(loopName, 'bug')
+      logger.log(`Loop: final audit dirty (${outstandingBugs.length} outstanding bug findings), rotating to coding for fix for ${loopName}`)
 
       const nextIter = (currentState.iteration ?? 0) + 1
       if ((currentState.maxIterations ?? 0) > 0 && nextIter > currentState.maxIterations) {
@@ -1697,7 +1717,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       // Persist the audit text so recovery paths can rebuild the fix prompt if needed.
       if (auditText) loopService.setLastAuditResult(loopName, auditText)
 
-      const fixPrompt = loopService.buildFinalAuditFixPrompt(currentState, auditText || '')
+      // Bump recurrence counts for outstanding bugs so escalation surfaces after N consecutive final-audit dirty cycles.
+      loopService.bumpFindingRecurrence(loopName, outstandingBugs)
+
+      const fixPrompt = loopService.buildFinalAuditFixPrompt(currentState, auditText || '', outstandingBugs)
 
       let newCodeSessionId: string
       try {
@@ -2100,6 +2123,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     resetError: (name: string) => loopService.resetError(name),
     terminateLoop: (name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }) => loopService.terminate(name, opts),
     getOutstandingFindings: (loopName?: string, severity?: 'bug' | 'warning') => loopService.getOutstandingFindings(loopName, severity),
+    bumpFindingRecurrence: (name: string, findings: ReviewFindingRow[]) => loopService.bumpFindingRecurrence(name, findings),
+    resetSectionRecurrence: (name: string, sectionIndex: number) => loopService.resetSectionRecurrence(name, sectionIndex),
     getStallTimeoutMs: () => loopService.getStallTimeoutMs(),
     getMaxConsecutiveStalls: () => loopService.getMaxConsecutiveStalls(),
 
@@ -2110,6 +2135,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     buildSectionAuditPrompt: (state: LoopState) => loopService.buildSectionAuditPrompt(state),
     buildSectionContinuationPrompt: (state: LoopState, auditText: string) => loopService.buildSectionContinuationPrompt(state, auditText),
     buildFinalAuditPrompt: (state: LoopState) => loopService.buildFinalAuditPrompt(state),
+    buildFinalAuditFixPrompt: (state: LoopState, auditText: string) => loopService.buildFinalAuditFixPrompt(state, auditText),
 
     // Plan and section methods (delegated from loopService)
     getPlanText: (loopName: string, sessionId: string) => loopService.getPlanText(loopName, sessionId),

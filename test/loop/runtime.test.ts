@@ -40,7 +40,7 @@ interface MockClientState {
   selectCalls: Array<{ sessionID: string; workspace?: string }>
   deleteThrows: boolean
   abortCalls: string[]
-  promptCalls: Array<{ sessionID: string; agent?: string; variant?: string }>
+  promptCalls: Array<{ sessionID: string; agent?: string; variant?: string; text?: string }>
   promptAsyncFailCount?: number
   messagesResult: Array<{ info: { role: string; finish?: string }; parts: Array<{ type: string; text?: string }> }> | null
   messagesBySession?: Map<string, Array<{ info: { role: string; finish?: string }; parts: Array<{ type: string; text?: string }> }>>
@@ -54,7 +54,12 @@ function createMockV2Client(state: MockClientState): OpencodeClient {
         return { error: null, data: { id: 'sess' } }
       },
       promptAsync: async (params) => {
-        state.promptCalls.push({ sessionID: (params as any).sessionID ?? '', agent: (params as any).agent, variant: (params as any).variant })
+        state.promptCalls.push({
+          sessionID: (params as any).sessionID ?? '',
+          agent: (params as any).agent,
+          variant: (params as any).variant,
+          text: (params as any).parts?.[0]?.text ?? (params as any).prompt ?? '',
+        })
         if (state.promptAsyncFailCount && state.promptAsyncFailCount > 0) {
           state.promptAsyncFailCount--
           return { error: { name: 'TestError', data: { message: 'simulated model failure' } }, data: null }
@@ -1359,6 +1364,107 @@ describe('stall handling terminates with stall timeout when configured cap is re
       // After model fails, fallback without model should NOT send variant
       const fallbackPrompts = codePrompts.filter(c => !c.variant)
       expect(fallbackPrompts.length).toBeGreaterThan(0)
+    })
+  })
+
+  describe('coder decisions in final-audit fix', () => {
+    test('final-audit fix coding parses coder-decisions and renders into subsequent final audit prompt', async () => {
+      const { loop, clientState, logs } = createRuntime()
+      const loopName = 'test-loop-cd-fix'
+
+      // Create a loop in final_auditing phase with outstanding bugs
+      const state = makeState({
+        loopName,
+        sessionId: 'final-audit-session',
+        phase: 'final_auditing',
+        totalSections: 0,
+        auditCount: 1,
+        iteration: 1,
+        maxIterations: 5,
+      })
+      loopService.setState(state.loopName, state)
+
+      // Add a bug finding so the final audit is dirty and triggers a fix
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/test.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Test bug found during final audit',
+      })
+
+      // Step 1: Set auditor response and trigger final audit phase
+      clientState.messagesResult = [
+        {
+          info: { role: 'assistant', finish: 'stop' },
+          parts: [{ type: 'text', text: 'Final audit found issues.' }],
+        },
+      ]
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: 'final-audit-session',
+        },
+      })
+
+      // After the first tick, the loop should have transitioned to coding with a fix prompt
+      const fixCodePrompts = clientState.promptCalls.filter(c => c.agent === 'code')
+      expect(fixCodePrompts.length).toBeGreaterThan(0)
+      const fixPromptText = fixCodePrompts[fixCodePrompts.length - 1].text ?? ''
+      expect(fixPromptText).toContain('[Final-audit fix')
+
+      // Verify the loop state after first tick
+      const stateAfterFirstTick = loopService.getActiveState(loopName)
+      expect(stateAfterFirstTick).not.toBeNull()
+      expect(stateAfterFirstTick!.phase).toBe('coding')
+      expect(stateAfterFirstTick!.sessionId).toBe('sess')
+
+      // Step 2: Set coding assistant response WITH coder-decisions markers
+      clientState.messagesResult = [
+        {
+          info: { role: 'assistant', finish: 'stop' },
+          parts: [{
+            type: 'text',
+            text: `Fixed the bug.\n<!-- coder-decisions:start -->\n### Decisions\n- Chose approach X\n### Verification\n- FOO=bar pnpm test\n### Notes for auditor\n- none\n<!-- coder-decisions:end -->`,
+          }],
+        },
+      ]
+
+      const auditorPromptsBefore = clientState.promptCalls.filter(c => c.agent === 'auditor-loop').length
+
+      // Send a busy event to clear the idle-gate (prompt was sent during the first tick)
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'busy' },
+          sessionID: 'sess',
+        },
+      })
+
+      // Now send the idle event to trigger runCodingPhase
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: 'sess',
+        },
+      })
+
+      // Verify the loop transitioned to final_auditing
+      const stateAfterSecondTick = loopService.getActiveState(loopName)
+      expect(stateAfterSecondTick).not.toBeNull()
+      expect(stateAfterSecondTick!.phase).toBe('final_auditing')
+
+      // The final audit prompt should have been sent with coder decisions
+      const auditorPromptsAfter = clientState.promptCalls.filter(c => c.agent === 'auditor-loop')
+      expect(auditorPromptsAfter.length).toBeGreaterThan(auditorPromptsBefore)
+      const finalAuditPrompt = auditorPromptsAfter[auditorPromptsAfter.length - 1]?.text ?? ''
+      expect(finalAuditPrompt).toContain('Coder decisions & verification notes')
+      expect(finalAuditPrompt).toContain('Chose approach X')
+      expect(finalAuditPrompt).toContain('FOO=bar pnpm test')
     })
   })
 })

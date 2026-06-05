@@ -2,6 +2,8 @@ import type { LoopState } from './state'
 import type { ReviewFindingRow } from '../storage/repos/review-findings-repo'
 import type { SectionPlanRow } from '../storage/repos/section-plans-repo'
 import { SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../utils/section-summary'
+import { CODER_DECISIONS_INSTRUCTION } from '../utils/coder-decisions'
+import { findingRecurrenceKey, RECURRENCE_ESCALATION_THRESHOLD } from './finding-recurrence'
 
 export interface SectionDigestEntry {
   index: number
@@ -17,6 +19,8 @@ export interface PromptContext {
   formatReviewFindings(loopName?: string): string
   getSectionPlan(state: LoopState, index: number): SectionPlanRow | null
   getCompletedSectionDigest(state: LoopState): SectionDigestEntry[]
+  getCoderDecisions(loopName?: string): string | null
+  getFindingRecurrence(loopName?: string): Map<string, number>
 }
 
 function buildSandboxContextNoteFromFlag(sandbox: boolean): string {
@@ -45,9 +49,46 @@ function formatSectionsSummary(digest: SectionDigestEntry[]): string {
   }).join('\n\n')
 }
 
-export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, auditFindings?: string): string {
+function getEscalatedFindings(ctx: PromptContext, state: LoopState, outstandingBugs?: ReviewFindingRow[]): { file: string; line: number; count: number }[] {
+  const loopName = state.loopName
+  const bugFindings = outstandingBugs ?? ctx.getOutstandingFindings(loopName, 'bug')
+  const recurrence = ctx.getFindingRecurrence(loopName)
+  const escalated: { file: string; line: number; count: number }[] = []
+  for (const f of bugFindings) {
+    const key = findingRecurrenceKey(f)
+    const count = recurrence.get(key) ?? 0
+    if (count >= RECURRENCE_ESCALATION_THRESHOLD) {
+      escalated.push({ file: f.file, line: f.line, count })
+    }
+  }
+  return escalated
+}
+
+function buildRecurringFindingsCoderBlock(ctx: PromptContext, state: LoopState, outstandingBugs?: ReviewFindingRow[]): string {
+  const escalated = getEscalatedFindings(ctx, state, outstandingBugs)
+  if (escalated.length === 0) return ''
+  const lines = escalated.map(e => `- \`${e.file}:${e.line}\` (recurred ${e.count}×)`)
+  return `\n\n---\n## ⚠️ Recurring blocking findings\nThese findings have recurred across multiple audits without resolution. For EACH: either fix it definitively, OR if it is intentional/correct, document the reasoning and the exact passing verification method in your coder-decisions block so the auditor can verify and clear it.\n\n${lines.join('\n')}`
+}
+
+function buildRecurringFindingsAuditorBlock(ctx: PromptContext, state: LoopState): string {
+  const escalated = getEscalatedFindings(ctx, state)
+  if (escalated.length === 0) return ''
+  const lines = escalated.map(e => `- \`${e.file}:${e.line}\` (${e.count}×)`)
+  return `## ⚠️ Recurring findings — re-evaluate\nThese findings have recurred ${escalated.length}× across audits. For each, re-check the coder decisions block above and reproduce the coder's verification method. If the coder's documented decision/verification resolves it, DELETE it with review-delete. Only keep it if it is genuinely, verifiably still broken (state the precise scenario).\n\n${lines.join('\n')}`
+}
+
+function coderDecisionsAuditorBody(coderDecisions: string): string {
+  return `## Coder decisions & verification notes (this iteration)\nThe coding agent recorded the following. Use it to evaluate correctness. If a finding is explained by a documented decision, or you can reproduce the coder's passing verification method (e.g., required env vars), DELETE that finding with review-delete instead of re-reporting it.\n\n${coderDecisions}`
+}
+
+function buildCoderDecisionsAuditorBlock(coderDecisions: string | null): string {
+  return coderDecisions ? `\n\n---\n${coderDecisionsAuditorBody(coderDecisions)}` : ''
+}
+
+export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, auditFindings?: string, outstandingBugs?: ReviewFindingRow[]): string {
   if (state.totalSections > 0) {
-    return buildSectionContinuationPrompt(ctx, state, auditFindings || '')
+    return buildSectionContinuationPrompt(ctx, state, auditFindings || '', outstandingBugs)
   }
 
   let systemLine = `Loop iteration ${String(state.iteration)}`
@@ -69,7 +110,9 @@ export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, au
     prompt += `\n\n---\n⚠️ Outstanding Review Findings (${String(outstandingFindings.length)})\n\nThese review findings are blocking loop completion. Fix these issues so they pass the next audit review.\n\n${findingKeys}`
   }
 
-  return prompt + buildSandboxContextNote(state)
+  prompt += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
+
+  return prompt + buildSandboxContextNote(state) + CODER_DECISIONS_INSTRUCTION
 }
 
 export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
@@ -83,8 +126,9 @@ export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
   const branchInfo = state.worktreeBranch ? ` (branch: ${state.worktreeBranch})` : ''
   const planText = ctx.getPlanTextForState(state) ?? 'Plan not found in plan store.'
   const reviewFindings = ctx.formatReviewFindings(state.loopName)
+  const coderDecisions = ctx.getCoderDecisions(state.loopName)
 
-  return [
+  const parts: string[] = [
     `Post-iteration ${String(state.iteration)} code review${branchInfo}.`,
     '',
     'Implementation plan:',
@@ -92,6 +136,13 @@ export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
     '',
     'Existing review findings:',
     reviewFindings,
+  ]
+
+  if (coderDecisions) {
+    parts.push('', '---', coderDecisionsAuditorBody(coderDecisions))
+  }
+
+  parts.push(
     '',
     'Review the code changes against the plan phases and verify per-phase acceptance criteria are met.',
     'Review the code changes in this worktree. Focus on bugs, logic errors, missing error handling, and convention violations.',
@@ -106,7 +157,14 @@ export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
     '- Outstanding `bug` findings block loop termination. The loop cannot complete while any `bug` finding remains.',
     '',
     'This is an automated loop — do not direct the agent to "create a plan" or "present for approval." Just report findings directly.',
-  ].join('\n') + buildSandboxContextNote(state)
+  )
+
+  const recurringBlock = buildRecurringFindingsAuditorBlock(ctx, state)
+  if (recurringBlock) {
+    parts.push('', recurringBlock)
+  }
+
+  return parts.join('\n') + buildSandboxContextNote(state)
 }
 
 export function buildSectionInitialPrompt(ctx: PromptContext, state: LoopState): string {
@@ -145,7 +203,7 @@ export function buildSectionInitialPromptText(input: {
 
   header += `\n\n## Section plan\n${input.sectionContent}`
 
-  return header + buildSandboxContextNoteFromFlag(input.sandbox ?? false)
+  return header + buildSandboxContextNoteFromFlag(input.sandbox ?? false) + CODER_DECISIONS_INSTRUCTION
 }
 
 export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): string {
@@ -163,12 +221,19 @@ export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): s
 
   header += `\n\n## Section under audit\n${section.content}`
 
+  header += buildCoderDecisionsAuditorBlock(ctx.getCoderDecisions(state.loopName))
+
   header += `\n\n---\nAudit instructions:\n- Use review-read to see findings for this section.\n- Delete resolved findings.\n- Write severity: bug findings for unmet acceptance criteria or failed verification (defaults to current section_index).\n- When the section is clear, end your response with:\n${SECTION_SUMMARY_START_MARKER}\n### Done\n- bullets describing what was implemented\n### Deviations\n- bullets describing places implementation differs from this section plan, with reasons (or "none")\n### Follow-ups\n- bullets noting items deferred to later sections (or "none")\n${SECTION_SUMMARY_END_MARKER}`
+
+  const recurringBlock = buildRecurringFindingsAuditorBlock(ctx, state)
+  if (recurringBlock) {
+    header += `\n\n${recurringBlock}`
+  }
 
   return header + buildSandboxContextNote(state)
 }
 
-export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopState, auditText: string): string {
+export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopState, auditText: string, outstandingBugs?: ReviewFindingRow[]): string {
   const idx = state.currentSectionIndex
   const total = state.totalSections
   const iter = state.iteration
@@ -186,17 +251,19 @@ export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopSt
   header += `\n\n## Section plan\n${section.content}`
   header += `\n\n---\n## Auditor feedback from previous attempt\n${auditText}`
 
-  const outstandingFindings = ctx.getOutstandingFindings(state.loopName, 'bug')
+  const outstandingFindings = (outstandingBugs ?? ctx.getOutstandingFindings(state.loopName, 'bug'))
     .filter(f => f.sectionIndex === idx)
   if (outstandingFindings.length > 0) {
     const findingKeys = outstandingFindings.map(f => `- \`${f.file}:${f.line}\``).join('\n')
     header += `\n\n---\n## Outstanding findings\n${findingKeys}`
   }
 
-  return header + buildSandboxContextNote(state)
+  header += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
+
+  return header + buildSandboxContextNote(state) + CODER_DECISIONS_INSTRUCTION
 }
 
-export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, auditText: string): string {
+export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, auditText: string, outstandingBugs?: ReviewFindingRow[]): string {
   const planText = ctx.getPlanTextForState(state) ?? 'Plan not found in plan store.'
   const digest = ctx.getCompletedSectionDigest(state)
 
@@ -209,7 +276,7 @@ export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, a
 
   header += `\n\n---\n## Final auditor feedback\n${auditText}`
 
-  const outstandingFindings = ctx.getOutstandingFindings(state.loopName, 'bug')
+  const outstandingFindings = outstandingBugs ?? ctx.getOutstandingFindings(state.loopName, 'bug')
   if (outstandingFindings.length > 0) {
     const findingKeys = outstandingFindings.map(f => `- \`${f.file}:${f.line}\``).join('\n')
     header += `\n\n---\n## Outstanding findings (${outstandingFindings.length})\n${findingKeys}`
@@ -217,7 +284,9 @@ export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, a
 
   header += `\n\n---\nInstructions:\n- The full plan has already been implemented. The final integration audit reported the bugs above.\n- Fix the reported bugs. Scope your changes to what the findings require.\n- Once you are done, the final audit will be re-run automatically against the entire codebase.`
 
-  return header + buildSandboxContextNote(state)
+  header += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
+
+  return header + buildSandboxContextNote(state) + CODER_DECISIONS_INSTRUCTION
 }
 
 export function buildFinalAuditPrompt(ctx: PromptContext, state: LoopState): string {
@@ -231,7 +300,14 @@ export function buildFinalAuditPrompt(ctx: PromptContext, state: LoopState): str
     header += `\n\n### Completed Sections' Summaries\n${formatSectionsSummary(digest)}`
   }
 
+  header += buildCoderDecisionsAuditorBlock(ctx.getCoderDecisions(state.loopName))
+
   header += `\n\n---\nFinal audit instructions:\n- Verify the master plan's top-level Verification commands and acceptance criteria.\n- Use the per-section ### Deviations entries to interpret discrepancies. If a discrepancy is explained by a deviation, accept it unless it materially breaks the master plan's top-level Verification.\n- Write findings with sectionIndex pointing to the section you believe contains the bug. Use crossSection: true only when the bug spans multiple sections.\n- The loop terminates automatically when there are no outstanding bug-severity findings. Do not write findings unless they describe real, blocking issues.`
+
+  const recurringBlock = buildRecurringFindingsAuditorBlock(ctx, state)
+  if (recurringBlock) {
+    header += `\n\n${recurringBlock}`
+  }
 
   return header + buildSandboxContextNote(state)
 }

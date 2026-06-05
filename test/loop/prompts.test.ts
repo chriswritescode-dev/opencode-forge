@@ -48,6 +48,8 @@ function makeCtx(overrides?: Partial<PromptContext>): PromptContext {
       startedAt: null, completedAt: null, createdAt: Date.now(),
     }),
     getCompletedSectionDigest: () => [],
+    getCoderDecisions: () => null,
+    getFindingRecurrence: () => new Map(),
     ...overrides,
   }
 }
@@ -58,7 +60,8 @@ describe('prompt builders (src/loop/prompts)', () => {
     test('continuation without findings - basic iteration info', () => {
       const ctx = makeCtx()
       const result = buildContinuationPrompt(ctx, { ...defaultState })
-      expect(result).toBe('[Loop iteration 1 / 5]')
+      expect(result).toContain('[Loop iteration 1 / 5]')
+      expect(result).toContain('coder-decisions:start')
     })
 
     test('continuation without findings - no max iterations', () => {
@@ -94,6 +97,42 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).toContain('Auditor feedback from previous attempt')
       expect(result).toContain('Audit feedback')
     })
+
+    test('includes recurring-findings escalation when count >= threshold (coder)', () => {
+      const findings: ReviewFindingRow[] = [
+        { file: 'src/bug.ts', line: 5, severity: 'bug', description: 'Recurring bug', scenario: null, loopName: 'test-loop', sectionIndex: null, projectId: 'p', createdAt: 0 },
+      ]
+      const recurrence = new Map<string, number>([['x:src/bug.ts:5', 3]])
+      const ctx = makeCtx({
+        getOutstandingFindings: (_loopName, severity) => severity === 'bug' ? findings : [],
+        getFindingRecurrence: () => recurrence,
+      })
+      const result = buildContinuationPrompt(ctx, { ...defaultState })
+      expect(result).toContain('Recurring blocking findings')
+      expect(result).toContain('src/bug.ts:5')
+      expect(result).toContain('recurred 3×')
+    })
+
+    test('omits recurring-findings escalation when count < threshold', () => {
+      const findings: ReviewFindingRow[] = [
+        { file: 'src/bug.ts', line: 5, severity: 'bug', description: 'Recurring bug', scenario: null, loopName: 'test-loop', sectionIndex: null, projectId: 'p', createdAt: 0 },
+      ]
+      const recurrence = new Map<string, number>([['x:src/bug.ts:5', 2]])
+      const ctx = makeCtx({
+        getOutstandingFindings: (_loopName, severity) => severity === 'bug' ? findings : [],
+        getFindingRecurrence: () => recurrence,
+      })
+      const result = buildContinuationPrompt(ctx, { ...defaultState })
+      expect(result).not.toContain('Recurring blocking findings')
+    })
+
+    test('omits recurring-findings escalation when no findings', () => {
+      const ctx = makeCtx({
+        getFindingRecurrence: () => new Map([['x:src/other.ts:1', 5]]),
+      })
+      const result = buildContinuationPrompt(ctx, { ...defaultState })
+      expect(result).not.toContain('Recurring blocking findings')
+    })
   })
 
   describe('buildAuditPrompt', () => {
@@ -126,6 +165,50 @@ describe('prompt builders (src/loop/prompts)', () => {
       const ctx = makeCtx()
       const result = buildAuditPrompt(ctx, { ...sectionState, phase: 'final_auditing' })
       expect(result).toContain('[Final integration audit]')
+    })
+
+    test('includes coder decisions block when present (non-section)', () => {
+      const ctx = makeCtx({
+        getCoderDecisions: () => '### Decisions\n- Chose X over Y\n### Verification\n- `pnpm test`\n### Notes\n- None',
+      })
+      const result = buildAuditPrompt(ctx, { ...defaultState, iteration: 2 })
+      expect(result).toContain('Coder decisions & verification notes')
+      expect(result).toContain('Chose X over Y')
+      expect(result).toContain('DELETE that finding with review-delete')
+    })
+
+    test('omits coder decisions block when null (non-section)', () => {
+      const ctx = makeCtx()
+      const result = buildAuditPrompt(ctx, { ...defaultState, iteration: 2 })
+      expect(result).not.toContain('Coder decisions & verification notes')
+      expect(result).not.toContain('DELETE that finding with review-delete')
+    })
+
+    test('includes recurring-findings escalation when count >= threshold (auditor)', () => {
+      const findings: ReviewFindingRow[] = [
+        { file: 'src/bug.ts', line: 5, severity: 'bug', description: 'Recurring bug', scenario: null, loopName: 'test-loop', sectionIndex: null, projectId: 'p', createdAt: 0 },
+      ]
+      const recurrence = new Map<string, number>([['x:src/bug.ts:5', 3]])
+      const ctx = makeCtx({
+        getOutstandingFindings: (_loopName, severity) => severity === 'bug' ? findings : [],
+        getFindingRecurrence: () => recurrence,
+      })
+      const result = buildAuditPrompt(ctx, { ...defaultState, iteration: 2 })
+      expect(result).toContain('Recurring findings — re-evaluate')
+      expect(result).toContain('src/bug.ts:5')
+    })
+
+    test('omits recurring-findings escalation when count < threshold (auditor)', () => {
+      const findings: ReviewFindingRow[] = [
+        { file: 'src/bug.ts', line: 5, severity: 'bug', description: 'Recurring bug', scenario: null, loopName: 'test-loop', sectionIndex: null, projectId: 'p', createdAt: 0 },
+      ]
+      const recurrence = new Map<string, number>([['x:src/bug.ts:5', 2]])
+      const ctx = makeCtx({
+        getOutstandingFindings: (_loopName, severity) => severity === 'bug' ? findings : [],
+        getFindingRecurrence: () => recurrence,
+      })
+      const result = buildAuditPrompt(ctx, { ...defaultState, iteration: 2 })
+      expect(result).not.toContain('Recurring findings — re-evaluate')
     })
   })
 
@@ -177,6 +260,21 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).toContain("Prior Sections' Summaries")
       expect(result).toContain('## Section 1: Previous')
       expect(result).toContain('### Done\nCompleted')
+    })
+
+    test('section audit includes coder decisions block when present', () => {
+      const ctx = makeCtx({
+        getCoderDecisions: () => '### Decisions\n- Used caching',
+      })
+      const result = buildSectionAuditPrompt(ctx, { ...sectionState })
+      expect(result).toContain('Coder decisions & verification notes')
+      expect(result).toContain('Used caching')
+    })
+
+    test('section audit omits coder decisions block when null', () => {
+      const ctx = makeCtx()
+      const result = buildSectionAuditPrompt(ctx, { ...sectionState })
+      expect(result).not.toContain('Coder decisions & verification notes')
     })
   })
 
@@ -236,6 +334,24 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).toContain("Completed Sections' Summaries")
       expect(result).toContain('## Section 1: Section A')
       expect(result).toContain('### Done\nImplemented X')
+    })
+
+    test('includes coder decisions when present', () => {
+      const ctx = makeCtx({
+        getCoderDecisions: () => '### Decisions\n- Chose Y\n### Verification\n- FOO=bar pnpm test',
+      })
+      const result = buildFinalAuditPrompt(ctx, { ...sectionState })
+      expect(result).toContain('Coder decisions & verification notes')
+      expect(result).toContain('Chose Y')
+      expect(result).toContain('FOO=bar pnpm test')
+    })
+
+    test('omits coder decisions section when null', () => {
+      const ctx = makeCtx({
+        getCoderDecisions: () => null,
+      })
+      const result = buildFinalAuditPrompt(ctx, { ...sectionState })
+      expect(result).not.toContain('Coder decisions & verification notes')
     })
   })
 

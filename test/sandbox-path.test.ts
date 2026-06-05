@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test'
-import { toContainerPath, rewriteOutput } from '../src/sandbox/path'
+import { toContainerPath, rewriteOutput, isInsideWorkspace } from '../src/sandbox/path'
 
 describe('toContainerPath', () => {
   test('converts host path to container path', () => {
@@ -30,6 +30,40 @@ describe('toContainerPath', () => {
   test('does not match /workspace-foo as /workspace', () => {
     const result = toContainerPath('/workspace-foo/file.ts', '/home/user/project')
     expect(result).toBe('/workspace-foo/file.ts')
+  })
+})
+
+describe('isInsideWorkspace', () => {
+  test('returns true for exact hostDir', () => {
+    expect(isInsideWorkspace('/home/user/project', '/home/user/project')).toBe(true)
+  })
+
+  test('returns true for a path under hostDir', () => {
+    expect(isInsideWorkspace('/home/user/project/src/a.ts', '/home/user/project')).toBe(true)
+  })
+
+  test('returns true for exact /workspace', () => {
+    expect(isInsideWorkspace('/workspace', '/home/user/project')).toBe(true)
+  })
+
+  test('returns true for a path under /workspace', () => {
+    expect(isInsideWorkspace('/workspace/src/a.ts', '/home/user/project')).toBe(true)
+  })
+
+  test('returns false for unrelated absolute path', () => {
+    expect(isInsideWorkspace('/usr/bin/node', '/home/user/project')).toBe(false)
+  })
+
+  test('returns false for tool-output directory', () => {
+    expect(isInsideWorkspace('/home/user/.local/share/opencode/tool-output/x', '/home/user/project')).toBe(false)
+  })
+
+  test('returns false for sibling with shared prefix', () => {
+    expect(isInsideWorkspace('/home/user/project-extra/a.ts', '/home/user/project')).toBe(false)
+  })
+
+  test('returns false for /workspace-foo sibling', () => {
+    expect(isInsideWorkspace('/workspace-foo/a.ts', '/home/user/project')).toBe(false)
   })
 })
 
