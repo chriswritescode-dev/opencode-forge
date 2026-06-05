@@ -57,11 +57,6 @@ export function renderDashboardHtml(): string {
     border: 1px solid #30363d; border-radius: 6px; margin-bottom: 8px;
     background: #0d1117; overflow: hidden;
   }
-  .loop-header {
-    display: flex; align-items: center; gap: 10px; padding: 8px 12px;
-    cursor: pointer; user-select: none;
-  }
-  .loop-header:hover { background: #161b22; }
   .status-badge {
     display: inline-block; padding: 2px 8px; border-radius: 10px;
     font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
@@ -73,7 +68,6 @@ export function renderDashboardHtml(): string {
   .status-stalled { background: #d29922; color: #fff; }
   .loop-info { font-size: 0.85rem; color: #8b949e; flex: 1; }
   .loop-info strong { color: #c9d1d9; }
-  .expand-icon { color: #484f58; font-size: 0.8rem; width: 16px; text-align: center; }
   .loop-detail { padding: 8px 12px 12px; border-top: 1px solid #30363d; font-size: 0.85rem; }
   .loop-detail h4 { color: #f0f6fc; margin: 8px 0 4px; font-size: 0.95rem; }
   .loop-detail h4:first-child { margin-top: 0; }
@@ -91,6 +85,25 @@ export function renderDashboardHtml(): string {
   .timestamp { font-size: 0.75rem; color: #484f58; margin-bottom: 12px; }
   .error-text { color: #f85149; }
   .dim { color: #484f58; }
+  .resizable-block {
+    resize: both; overflow: auto;
+    min-height: 120px; height: 60vh; max-height: none;
+    border: 1px solid #30363d; border-radius: 4px;
+    background: #0d1117; padding: 8px; margin-top: 4px;
+  }
+  pre.resizable-block { white-space: pre-wrap; word-break: break-word; font-size: 0.78rem; color: #8b949e; }
+  .loop-row {
+    display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+    cursor: pointer; user-select: none; border: 1px solid #30363d;
+    border-radius: 6px; margin-bottom: 8px; background: #0d1117;
+  }
+  .loop-row:hover { background: #161b22; }
+  .back-to-loops {
+    display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+    color: #58a6ff; font-size: 0.85rem; margin-bottom: 12px; user-select: none;
+  }
+  .back-to-loops:hover { color: #79c0ff; }
+  .loop-detail-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 </style>
 </head>
 <body>
@@ -101,11 +114,11 @@ export function renderDashboardHtml(): string {
   <div id="forge-dashboard"></div>
 <script>
   (function(){
-    var expanded = new Set();
     var activeStatuses = new Set();
     var searchText = '';
     var lastData = null;
     var selectedProjectId = null;
+    var selectedLoopName = null;
 
     function load() {
       fetch('/api/data', { cache: 'no-store' })
@@ -142,6 +155,35 @@ export function renderDashboardHtml(): string {
     function escapeHtml(str) {
       if (str == null) return '';
       return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function parseLoopHash(hash) {
+      var out = { projectId: null, loopName: null };
+      var raw = (hash || '').replace(/^#/, '');
+      if (!raw) return out;
+      var slash = raw.indexOf('/');
+      if (slash === -1) { out.projectId = decodeURIComponent(raw); return out; }
+      out.projectId = decodeURIComponent(raw.slice(0, slash));
+      var lp = raw.slice(slash + 1);
+      out.loopName = lp ? decodeURIComponent(lp) : null;
+      return out;
+    }
+
+    function buildLoopHash(projectId, loopName) {
+      if (!projectId) return '';
+      var h = '#' + encodeURIComponent(projectId);
+      if (loopName) h += '/' + encodeURIComponent(loopName);
+      return h;
+    }
+
+    var suppressHashChange = false;
+
+    function syncHash() {
+      var next = buildLoopHash(selectedProjectId, selectedLoopName);
+      if (('#' + (location.hash || '').replace(/^#/, '')) !== ('#' + next.replace(/^#/, ''))) {
+        suppressHashChange = true;
+        location.hash = next;
+      }
     }
 
     function render(data) {
@@ -218,6 +260,15 @@ export function renderDashboardHtml(): string {
       if (!selectedEntry) {
         selectedEntry = matchedByProject[0];
         selectedProjectId = selectedEntry.proj.projectId;
+        selectedLoopName = null;
+      }
+
+      var activeLoop = null;
+      if (selectedLoopName) {
+        for (var k = 0; k < selectedEntry.loops.length; k++) {
+          if (selectedEntry.loops[k].loop.loopName === selectedLoopName) { activeLoop = selectedEntry.loops[k]; break; }
+        }
+        if (!activeLoop) { selectedLoopName = null; }
       }
 
       var layout = document.createElement('div');
@@ -256,6 +307,8 @@ export function renderDashboardHtml(): string {
         navItem.addEventListener('click', function(pid) {
           return function() {
             selectedProjectId = pid;
+            selectedLoopName = null;
+            syncHash();
             render(data);
           };
         }(entry.proj.projectId));
@@ -275,36 +328,30 @@ export function renderDashboardHtml(): string {
       header.textContent = selectedEntry.proj.projectDir || selectedEntry.proj.projectId;
       projEl.appendChild(header);
 
-      for (var dl = 0; dl < selectedEntry.loops.length; dl++) {
-        projEl.appendChild(buildLoopEl(data, selectedEntry.proj, selectedEntry.loops[dl]));
+      if (activeLoop) {
+        projEl.appendChild(buildLoopDetail(data, selectedEntry.proj, activeLoop));
+      } else {
+        for (var dl = 0; dl < selectedEntry.loops.length; dl++) {
+          projEl.appendChild(buildLoopRow(data, selectedEntry.proj, selectedEntry.loops[dl]));
+        }
       }
 
       detailPane.appendChild(projEl);
       layout.appendChild(detailPane);
       mount.appendChild(layout);
+
+      syncHash();
     }
 
-    function buildLoopEl(data, proj, dashLoop) {
+    function buildLoopRow(data, proj, dashLoop) {
       var lp = dashLoop.loop;
-      var key = proj.projectId + '::' + lp.loopName;
-      var isExpanded = expanded.has(key);
-
-      var loopEl = document.createElement('div');
-      loopEl.className = 'loop';
-
-      // ── Header (clickable) ──
-      var loopHeader = document.createElement('div');
-      loopHeader.className = 'loop-header';
-
-      var expandIcon = document.createElement('span');
-      expandIcon.className = 'expand-icon';
-      expandIcon.textContent = isExpanded ? '▼' : '▶';
-      loopHeader.appendChild(expandIcon);
+      var loopRow = document.createElement('div');
+      loopRow.className = 'loop-row';
 
       var badge = document.createElement('span');
       badge.className = statusClass(lp.status);
       badge.textContent = lp.status;
-      loopHeader.appendChild(badge);
+      loopRow.appendChild(badge);
 
       var info = document.createElement('span');
       info.className = 'loop-info';
@@ -330,146 +377,202 @@ export function renderDashboardHtml(): string {
         info.appendChild(termSpan);
       }
 
-      loopHeader.appendChild(info);
+      loopRow.appendChild(info);
 
-      loopHeader.addEventListener('click', function(k) {
+      loopRow.addEventListener('click', function(name) {
         return function() {
-          if (expanded.has(k)) expanded.delete(k);
-          else expanded.add(k);
+          selectedLoopName = name;
+          syncHash();
           render(data);
         };
-      }(key));
+      }(lp.loopName));
 
-      loopEl.appendChild(loopHeader);
+      return loopRow;
+    }
 
-      // ── Detail (expanded) ──
-      if (isExpanded) {
-        var detail = document.createElement('div');
-        detail.className = 'loop-detail';
+    function buildLoopDetail(data, proj, dashLoop) {
+      var lp = dashLoop.loop;
 
-        // Completion summary
-        if (lp.completionSummary) {
-          var cs = document.createElement('div');
-          cs.textContent = lp.completionSummary;
-          detail.appendChild(cs);
-        }
+      var loopEl = document.createElement('div');
+      loopEl.className = 'loop';
 
-        // Sections
-        if (dashLoop.sections && dashLoop.sections.length > 0) {
-          var secTitle = document.createElement('h4');
-          secTitle.textContent = 'Sections';
-          detail.appendChild(secTitle);
-          for (var s = 0; s < dashLoop.sections.length; s++) {
-            var sec = dashLoop.sections[s];
-            var secRow = document.createElement('div');
-            secRow.className = 'section-row';
-            var secBadge = document.createElement('span');
-            secBadge.className = sectionStatusClass(sec.status);
-            secBadge.textContent = sec.status;
-            secRow.appendChild(secBadge);
-            var secLabel = document.createElement('span');
-            secLabel.textContent = '#' + sec.sectionIndex + ' ' + sec.title + ' (attempts: ' + sec.attempts + ')';
-            secRow.appendChild(secLabel);
-            detail.appendChild(secRow);
-          }
-        }
+      // Back to loops
+      var backEl = document.createElement('div');
+      backEl.className = 'back-to-loops';
+      backEl.textContent = '← Back to loops';
+      backEl.addEventListener('click', function() {
+        selectedLoopName = null;
+        syncHash();
+        render(data);
+      });
+      loopEl.appendChild(backEl);
 
-        // Findings
-        if (dashLoop.findings && dashLoop.findings.length > 0) {
-          var fTitle = document.createElement('h4');
-          fTitle.textContent = 'Findings (' + dashLoop.findings.length + ')';
-          detail.appendChild(fTitle);
+      // Loop detail header
+      var detailHeader = document.createElement('div');
+      detailHeader.className = 'loop-detail-header';
 
-          // Group by severity
-          var bugs = [];
-          var warnings = [];
-          for (var f = 0; f < dashLoop.findings.length; f++) {
-            var finding = dashLoop.findings[f];
-            if (finding.severity === 'bug') bugs.push(finding);
-            else warnings.push(finding);
-          }
+      var badge = document.createElement('span');
+      badge.className = statusClass(lp.status);
+      badge.textContent = lp.status;
+      detailHeader.appendChild(badge);
 
-          if (bugs.length > 0) {
-            var bugsTitle = document.createElement('div');
-            bugsTitle.className = 'finding finding-bug';
-            bugsTitle.textContent = 'Bugs:';
-            detail.appendChild(bugsTitle);
-            for (var fb = 0; fb < bugs.length; fb++) {
-              var bEl = document.createElement('div');
-              bEl.className = 'finding finding-bug';
-              bEl.textContent = bugs[fb].file + ':' + bugs[fb].line + ' — ' + bugs[fb].description;
-              if (bugs[fb].scenario) {
-                bEl.textContent += ' (' + bugs[fb].scenario + ')';
-              }
-              detail.appendChild(bEl);
-            }
-          }
+      var nameStrong = document.createElement('strong');
+      nameStrong.textContent = lp.loopName;
+      detailHeader.appendChild(nameStrong);
 
-          if (warnings.length > 0) {
-            var wTitle = document.createElement('div');
-            wTitle.className = 'finding finding-warning';
-            wTitle.textContent = 'Warnings:';
-            detail.appendChild(wTitle);
-            for (var fw = 0; fw < warnings.length; fw++) {
-              var wEl = document.createElement('div');
-              wEl.className = 'finding finding-warning';
-              wEl.textContent = warnings[fw].file + ':' + warnings[fw].line + ' — ' + warnings[fw].description;
-              if (warnings[fw].scenario) {
-                wEl.textContent += ' (' + warnings[fw].scenario + ')';
-              }
-              detail.appendChild(wEl);
-            }
-          }
-        }
+      var infoParts = [];
+      infoParts.push('phase: ' + lp.phase);
+      infoParts.push('iteration ' + lp.iteration + '/' + lp.maxIterations);
+      infoParts.push('section ' + lp.currentSectionIndex + '/' + lp.totalSections);
 
-        // Usage
-        if (dashLoop.usage) {
-          var u = dashLoop.usage;
-          var uTitle = document.createElement('h4');
-          uTitle.textContent = 'Usage';
-          detail.appendChild(uTitle);
+      var duration = formatDuration(lp);
+      if (duration) infoParts.push(duration);
 
-          var totalRow = document.createElement('div');
-          totalRow.className = 'usage-row';
-          totalRow.textContent = 'Total cost: $' + u.totalCost.toFixed(6) + ', tokens: ' + u.totalInputTokens + ' in / ' + u.totalOutputTokens + ' out (reasoning: ' + u.totalReasoningTokens + ', cache R: ' + u.totalCacheReadTokens + ' W: ' + u.totalCacheWriteTokens + '), messages: ' + u.totalMessageCount;
-          detail.appendChild(totalRow);
+      detailHeader.appendChild(document.createTextNode(' — ' + infoParts.join(', ')));
 
-          var modelKeys = Object.keys(u.byModel);
-          if (modelKeys.length > 0) {
-            for (var mk = 0; mk < modelKeys.length; mk++) {
-              var model = modelKeys[mk];
-              var m = u.byModel[model];
-              var modelRow = document.createElement('div');
-              modelRow.className = 'usage-row';
-              modelRow.textContent = '  ' + model + ': $' + m.cost.toFixed(6) + ', ' + m.inputTokens + ' in / ' + m.outputTokens + ' out (reasoning: ' + m.reasoningTokens + ', cache R: ' + m.cacheReadTokens + ' W: ' + m.cacheWriteTokens + '), messages: ' + m.messageCount;
-              detail.appendChild(modelRow);
-            }
-          }
-        }
-
-        // Last audit result
-        if (dashLoop.lastAuditResult) {
-          var laTitle = document.createElement('h4');
-          laTitle.textContent = 'Last Audit Result';
-          detail.appendChild(laTitle);
-          var laPre = document.createElement('pre');
-          laPre.textContent = dashLoop.lastAuditResult;
-          detail.appendChild(laPre);
-        }
-
-        // Plan
-        if (dashLoop.plan) {
-          var planTitle = document.createElement('h4');
-          planTitle.textContent = 'Plan';
-          detail.appendChild(planTitle);
-          var planPre = document.createElement('pre');
-          planPre.textContent = dashLoop.plan;
-          detail.appendChild(planPre);
-        }
-
-        loopEl.appendChild(detail);
+      if (lp.terminationReason) {
+        detailHeader.appendChild(document.createTextNode(' — '));
+        var termSpan = document.createElement('span');
+        termSpan.className = 'error-text';
+        termSpan.textContent = lp.terminationReason;
+        detailHeader.appendChild(termSpan);
       }
 
+      loopEl.appendChild(detailHeader);
+
+      // Detail body
+      var detail = document.createElement('div');
+      detail.className = 'loop-detail';
+
+      // Completion summary (resizable)
+      if (lp.completionSummary) {
+        var cs = document.createElement('div');
+        cs.className = 'resizable-block';
+        cs.textContent = lp.completionSummary;
+        detail.appendChild(cs);
+      }
+
+      // Sections
+      if (dashLoop.sections && dashLoop.sections.length > 0) {
+        var secTitle = document.createElement('h4');
+        secTitle.textContent = 'Sections';
+        detail.appendChild(secTitle);
+        for (var s = 0; s < dashLoop.sections.length; s++) {
+          var sec = dashLoop.sections[s];
+          var secRow = document.createElement('div');
+          secRow.className = 'section-row';
+          var secBadge = document.createElement('span');
+          secBadge.className = sectionStatusClass(sec.status);
+          secBadge.textContent = sec.status;
+          secRow.appendChild(secBadge);
+          var secLabel = document.createElement('span');
+          secLabel.textContent = '#' + sec.sectionIndex + ' ' + sec.title + ' (attempts: ' + sec.attempts + ')';
+          secRow.appendChild(secLabel);
+          detail.appendChild(secRow);
+        }
+      }
+
+      // Findings (resizable)
+      if (dashLoop.findings && dashLoop.findings.length > 0) {
+        var fTitle = document.createElement('h4');
+        fTitle.textContent = 'Findings (' + dashLoop.findings.length + ')';
+        detail.appendChild(fTitle);
+
+        var findingsBlock = document.createElement('div');
+        findingsBlock.className = 'resizable-block';
+
+        // Group by severity
+        var bugs = [];
+        var warnings = [];
+        for (var f = 0; f < dashLoop.findings.length; f++) {
+          var finding = dashLoop.findings[f];
+          if (finding.severity === 'bug') bugs.push(finding);
+          else warnings.push(finding);
+        }
+
+        if (bugs.length > 0) {
+          var bugsTitle = document.createElement('div');
+          bugsTitle.className = 'finding finding-bug';
+          bugsTitle.textContent = 'Bugs:';
+          findingsBlock.appendChild(bugsTitle);
+          for (var fb = 0; fb < bugs.length; fb++) {
+            var bEl = document.createElement('div');
+            bEl.className = 'finding finding-bug';
+            bEl.textContent = bugs[fb].file + ':' + bugs[fb].line + ' — ' + bugs[fb].description;
+            if (bugs[fb].scenario) {
+              bEl.textContent += ' (' + bugs[fb].scenario + ')';
+            }
+            findingsBlock.appendChild(bEl);
+          }
+        }
+
+        if (warnings.length > 0) {
+          var wTitle = document.createElement('div');
+          wTitle.className = 'finding finding-warning';
+          wTitle.textContent = 'Warnings:';
+          findingsBlock.appendChild(wTitle);
+          for (var fw = 0; fw < warnings.length; fw++) {
+            var wEl = document.createElement('div');
+            wEl.className = 'finding finding-warning';
+            wEl.textContent = warnings[fw].file + ':' + warnings[fw].line + ' — ' + warnings[fw].description;
+            if (warnings[fw].scenario) {
+              wEl.textContent += ' (' + warnings[fw].scenario + ')';
+            }
+            findingsBlock.appendChild(wEl);
+          }
+        }
+
+        detail.appendChild(findingsBlock);
+      }
+
+      // Usage
+      if (dashLoop.usage) {
+        var u = dashLoop.usage;
+        var uTitle = document.createElement('h4');
+        uTitle.textContent = 'Usage';
+        detail.appendChild(uTitle);
+
+        var totalRow = document.createElement('div');
+        totalRow.className = 'usage-row';
+        totalRow.textContent = 'Total cost: $' + u.totalCost.toFixed(6) + ', tokens: ' + u.totalInputTokens + ' in / ' + u.totalOutputTokens + ' out (reasoning: ' + u.totalReasoningTokens + ', cache R: ' + u.totalCacheReadTokens + ' W: ' + u.totalCacheWriteTokens + '), messages: ' + u.totalMessageCount;
+        detail.appendChild(totalRow);
+
+        var modelKeys = Object.keys(u.byModel);
+        if (modelKeys.length > 0) {
+          for (var mk = 0; mk < modelKeys.length; mk++) {
+            var model = modelKeys[mk];
+            var m = u.byModel[model];
+            var modelRow = document.createElement('div');
+            modelRow.className = 'usage-row';
+            modelRow.textContent = '  ' + model + ': $' + m.cost.toFixed(6) + ', ' + m.inputTokens + ' in / ' + m.outputTokens + ' out (reasoning: ' + m.reasoningTokens + ', cache R: ' + m.cacheReadTokens + ' W: ' + m.cacheWriteTokens + '), messages: ' + m.messageCount;
+            detail.appendChild(modelRow);
+          }
+        }
+      }
+
+      // Last audit result (resizable pre)
+      if (dashLoop.lastAuditResult) {
+        var laTitle = document.createElement('h4');
+        laTitle.textContent = 'Last Audit Result';
+        detail.appendChild(laTitle);
+        var laPre = document.createElement('pre');
+        laPre.className = 'resizable-block';
+        laPre.textContent = dashLoop.lastAuditResult;
+        detail.appendChild(laPre);
+      }
+
+      // Plan (resizable pre)
+      if (dashLoop.plan) {
+        var planTitle = document.createElement('h4');
+        planTitle.textContent = 'Plan';
+        detail.appendChild(planTitle);
+        var planPre = document.createElement('pre');
+        planPre.className = 'resizable-block';
+        planPre.textContent = dashLoop.plan;
+        detail.appendChild(planPre);
+      }
+
+      loopEl.appendChild(detail);
       return loopEl;
     }
 
@@ -496,7 +599,18 @@ export function renderDashboardHtml(): string {
       });
     }
 
+    window.addEventListener('hashchange', function() {
+      if (suppressHashChange) { suppressHashChange = false; return; }
+      var parsed = parseLoopHash(location.hash);
+      selectedProjectId = parsed.projectId;
+      selectedLoopName = parsed.loopName;
+      if (lastData) render(lastData);
+    });
+
     // Initial load + poll
+    var initial = parseLoopHash(location.hash);
+    if (initial.projectId) selectedProjectId = initial.projectId;
+    if (initial.loopName) selectedLoopName = initial.loopName;
     load();
     setInterval(load, 5000);
   })();
