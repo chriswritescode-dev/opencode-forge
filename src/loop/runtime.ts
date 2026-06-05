@@ -653,6 +653,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return true
   }
 
+  function bumpDirtyAuditRecurrence(loopName: string, bugFindings: ReviewFindingRow[], sectionIndex?: number): void {
+    const findings = sectionIndex === undefined ? bugFindings : bugFindings.filter(f => f.sectionIndex === sectionIndex)
+    loopService.bumpFindingRecurrence(loopName, findings)
+  }
+
   /**
    * Shared: reset error count after a successful (non-error) iteration.
    */
@@ -1552,7 +1557,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
         loopService.incrementSectionAttempts(loopName, idx)
 
-        loopService.bumpFindingRecurrence(loopName, sectionBugFindings)
+        bumpDirtyAuditRecurrence(loopName, sectionAllBugFindings, idx)
 
         loopService.setLastAuditResult(loopName, auditText || '')
         loopService.replaceSession(loopName, {
@@ -1588,7 +1593,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       }
 
       const outstandingBugs = loopService.getOutstandingFindings(loopName, 'bug')
-      loopService.bumpFindingRecurrence(loopName, outstandingBugs)
+      bumpDirtyAuditRecurrence(loopName, outstandingBugs)
 
       const continuationPrompt = loopService.buildContinuationPrompt(
         { ...currentState, iteration: nextIteration },
@@ -1717,8 +1722,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       // Persist the audit text so recovery paths can rebuild the fix prompt if needed.
       if (auditText) loopService.setLastAuditResult(loopName, auditText)
 
-      // Bump recurrence counts for outstanding bugs so escalation surfaces after N consecutive final-audit dirty cycles.
-      loopService.bumpFindingRecurrence(loopName, outstandingBugs)
+      bumpDirtyAuditRecurrence(loopName, outstandingBugs)
 
       const fixPrompt = loopService.buildFinalAuditFixPrompt(currentState, auditText || '', outstandingBugs)
 

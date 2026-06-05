@@ -78,12 +78,10 @@ function buildRecurringFindingsAuditorBlock(ctx: PromptContext, state: LoopState
   return `##  Recurring findings — re-evaluate\nThese findings have recurred across audits. For each, re-check the coder decisions block above and reproduce the coder's verification method. If the coder's documented decision/verification resolves it, DELETE it with review-delete. Only keep it if it is genuinely, verifiably still broken (state the precise scenario).\n\n${lines.join('\n')}`
 }
 
-function coderDecisionsAuditorBody(coderDecisions: string): string {
-  return `## Coder decisions & verification notes (this iteration)\nThe coding agent recorded the following. Use it to evaluate correctness. If a finding is explained by a documented decision, or you can reproduce the coder's passing verification method (e.g., required env vars), DELETE that finding with review-delete instead of re-reporting it.\n\n${coderDecisions}`
-}
-
-function buildCoderDecisionsAuditorBlock(coderDecisions: string | null): string {
-  return coderDecisions ? `\n\n---\n${coderDecisionsAuditorBody(coderDecisions)}` : ''
+function buildCoderDecisionsAuditorBlock(coderDecisions: string | null, includeSeparator = true): string {
+  if (!coderDecisions) return ''
+  const separator = includeSeparator ? '\n\n---\n' : ''
+  return `${separator}## Coder decisions & verification notes (this iteration)\nThe coding agent recorded the following. Use it to evaluate correctness. If a finding is explained by a documented decision, or you can reproduce the coder's passing verification method (e.g., required env vars), DELETE that finding with review-delete instead of re-reporting it.\n\n${coderDecisions}`
 }
 
 export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, auditFindings?: string, outstandingBugs?: ReviewFindingRow[]): string {
@@ -139,7 +137,7 @@ export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
   ]
 
   if (coderDecisions) {
-    parts.push('', '---', coderDecisionsAuditorBody(coderDecisions))
+    parts.push('', '---', buildCoderDecisionsAuditorBlock(coderDecisions, false))
   }
 
   parts.push(

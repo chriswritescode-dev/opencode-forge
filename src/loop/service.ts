@@ -17,7 +17,7 @@ import {
 } from './prompts'
 import { parseSectionSummary as _parseSectionSummary } from './section-summary'
 import { generateUniqueName } from './name-uniqueness'
-import { bumpRecurrence as _bumpRecurrence, findingRecurrenceKey as _findingRecurrenceKey } from './finding-recurrence'
+import { bumpRecurrence, findingRecurrenceKey } from './finding-recurrence'
 
 export const MAX_RETRIES = 3
 const STALL_TIMEOUT_MS = 60_000
@@ -379,8 +379,8 @@ export function createLoopService(
 
   function bumpFindingRecurrence(name: string, findings: ReviewFindingRow[]): void {
     const prev = findingRecurrenceByLoop.get(name) ?? new Map()
-    const keys = findings.map(f => _findingRecurrenceKey(f))
-    findingRecurrenceByLoop.set(name, _bumpRecurrence(prev, keys))
+    const keys = findings.map(f => findingRecurrenceKey(f))
+    findingRecurrenceByLoop.set(name, bumpRecurrence(prev, keys))
   }
 
   function resetSectionRecurrence(name: string, sectionIndex: number): void {
