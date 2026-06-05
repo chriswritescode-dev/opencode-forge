@@ -10,6 +10,7 @@ import type { LoopRow } from '../storage'
 import type { SectionPlanRow } from '../storage'
 import type { ReviewFindingRow } from '../storage'
 import type { LoopUsageAggregate } from '../storage'
+import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 
 export interface DashboardLoop {
   loop: LoopRow
@@ -18,6 +19,7 @@ export interface DashboardLoop {
   sections: SectionPlanRow[]
   findings: ReviewFindingRow[]
   usage: LoopUsageAggregate | null
+  duration: string | null
 }
 
 export interface DashboardProject {
@@ -87,8 +89,10 @@ export function collectDashboardData(db: Database): DashboardPayload {
       const sections = sectionPlansRepo.list(projectId, loopName)
       const findings = reviewFindingsRepo.listByLoopName(projectId, loopName)
       const usage = loopSessionUsageRepo.getAggregate(projectId, loopName)
+      const elapsedSeconds = computeElapsedSeconds(loop.startedAt, loop.completedAt ?? undefined)
+      const duration = elapsedSeconds > 0 ? formatDuration(elapsedSeconds) : null
 
-      return { loop, lastAuditResult, plan, sections, findings, usage }
+      return { loop, lastAuditResult, plan, sections, findings, usage, duration }
     })
 
     projects.push({ projectId, projectDir, loops: dashboardLoops })

@@ -168,6 +168,26 @@ describe('collectDashboardData', () => {
     expect(payload.totals.running).toBe(1)
   })
 
+  test('computes a human-readable duration from started/completed timestamps', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    const projectId = 'p1'
+
+    loopsRepo.insert(
+      makeLoopRow({
+        projectId,
+        loopName: 'timed-loop',
+        status: 'completed',
+        startedAt: 1000,
+        completedAt: 1000 + 125_000,
+      }),
+      { lastAuditResult: null },
+    )
+
+    const payload = collectDashboardData(db!)
+
+    expect(payload.projects[0].loops[0].duration).toBe('2m 5s')
+  })
+
   // ─── Cycle 3: running-first ordering ────────────────────────────────
 
   test('running loop sorts before completed (running-first ordering)', () => {

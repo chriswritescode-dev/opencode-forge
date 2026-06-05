@@ -102,7 +102,9 @@ describe('renderDashboardHtml', () => {
     const html = renderDashboardHtml()
 
     expect(html).toContain('project-nav-item')
-    expect(html).toMatch(/selectedProjectId\s*=\s*pid/)
+    // Sidebar click routes through navigate(), which assigns the selected project
+    expect(html).toMatch(/navigate\(pid,\s*null\)/)
+    expect(html).toMatch(/function navigate\(projectId, loopName\)[\s\S]*?selectedProjectId\s*=\s*projectId/)
   })
 
   test('shows loop counts per project in the sidebar', () => {
@@ -143,5 +145,67 @@ describe('renderDashboardHtml', () => {
     expect(lastSegment('/Users/chris/development/opencode-forge')).toBe('opencode-forge')
     expect(lastSegment('simple-id')).toBe('simple-id')
     expect(lastSegment('')).toBe('')
+  })
+
+  test('defines selectedLoopName state and hash sync', () => {
+    const html = renderDashboardHtml()
+
+    expect(html).toContain('selectedLoopName')
+    expect(html).toContain('hashchange')
+    expect(html).toContain('location.hash')
+  })
+
+  test('parseLoopHash/buildLoopHash round-trip', () => {
+    const html = renderDashboardHtml()
+    const match = html.match(/<script>([\s\S]*?)<\/script>/)
+    const script = match![1]
+
+    const parseLoopHashSrc = script.match(/function parseLoopHash\(hash\) \{[\s\S]*?\n    \}/)![0]
+    const buildLoopHashSrc = script.match(/function buildLoopHash\(projectId, loopName\) \{[\s\S]*?\n    \}/)![0]
+
+    const helpers = new Function(
+      parseLoopHashSrc + '\n' + buildLoopHashSrc + '\nreturn { parseLoopHash, buildLoopHash };'
+    )()
+
+    expect(helpers.buildLoopHash('/Users/x/proj', 'my-loop'))
+      .toBe('#' + encodeURIComponent('/Users/x/proj') + '/' + encodeURIComponent('my-loop'))
+    expect(helpers.parseLoopHash(helpers.buildLoopHash('/Users/x/proj', 'my-loop')))
+      .toEqual({ projectId: '/Users/x/proj', loopName: 'my-loop' })
+    expect(helpers.parseLoopHash('')).toEqual({ projectId: null, loopName: null })
+    expect(helpers.buildLoopHash(null, null)).toBe('')
+  })
+
+  test('renders a loop list that navigates to a single-loop detail', () => {
+    const html = renderDashboardHtml()
+
+    // buildLoopRow's click handler captures lp.loopName as 'name' and routes through navigate()
+    expect(html).toMatch(/navigate\(selectedProjectId,\s*name\)/)
+    // navigate() is the single source that sets the selected loop
+    expect(html).toMatch(/function navigate\(projectId, loopName\)[\s\S]*?selectedLoopName\s*=\s*loopName/)
+    // Detail view has a back-to-loops control
+    expect(html).toContain('back-to-loops')
+  })
+
+  test('defines resizable block styling for long-text areas', () => {
+    const html = renderDashboardHtml()
+
+    expect(html).toContain('resizable-block')
+    expect(html).toContain('resize: both')
+  })
+
+  test('clears selected loop when switching projects', () => {
+    const html = renderDashboardHtml()
+
+    // Sidebar click handler resets selectedLoopName to null when switching projects
+    expect(html).toMatch(/selectedLoopName\s*=\s*null/)
+  })
+
+  test('clears selected loop name when falling back to first visible project', () => {
+    const html = renderDashboardHtml()
+
+    // When the selected project is filtered out or missing, render() falls back
+    // to matchedByProject[0] and must also clear selectedLoopName to avoid
+    // opening a same-named loop from an unrelated project.
+    expect(html).toMatch(/if\s*\(!selectedEntry\)\s*\{[\s\S]*?selectedLoopName\s*=\s*null/)
   })
 })
