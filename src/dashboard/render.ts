@@ -1,3 +1,5 @@
+import { MARKED_SOURCE } from './marked-source'
+
 export function renderDashboardHtml(): string {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -5,6 +7,7 @@ export function renderDashboardHtml(): string {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Forge Dashboard</title>
+<script>${MARKED_SOURCE}</script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -91,6 +94,41 @@ export function renderDashboardHtml(): string {
     background: #0d1117; padding: 8px; margin-top: 4px;
   }
   pre.resizable-block { white-space: pre-wrap; word-break: break-word; font-size: 0.78rem; color: #8b949e; }
+  .markdown-content { font-size: 0.85rem; line-height: 1.6; color: #c9d1d9; }
+  .markdown-content h1 { font-size: 1.3rem; margin: 16px 0 8px; color: #f0f6fc; border-bottom: 1px solid #30363d; padding-bottom: 4px; }
+  .markdown-content h2 { font-size: 1.15rem; margin: 14px 0 6px; color: #f0f6fc; border-bottom: 1px solid #21262d; padding-bottom: 3px; }
+  .markdown-content h3 { font-size: 1.05rem; margin: 12px 0 5px; color: #f0f6fc; }
+  .markdown-content h4 { font-size: 0.95rem; margin: 10px 0 4px; color: #f0f6fc; }
+  .markdown-content p { margin: 6px 0; }
+  .markdown-content ul, .markdown-content ol { margin: 4px 0; padding-left: 20px; }
+  .markdown-content li { margin: 2px 0; }
+  .markdown-content code {
+    background: #21262d; border-radius: 3px; padding: 1px 5px;
+    font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, Consolas, monospace;
+    font-size: 0.78rem; color: #f0f6fc;
+  }
+  .markdown-content pre {
+    background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+    padding: 12px; overflow-x: auto; margin: 8px 0;
+  }
+  .markdown-content pre code {
+    background: none; padding: 0; border-radius: 0;
+    font-size: 0.78rem; color: #c9d1d9; line-height: 1.5;
+  }
+  .markdown-content blockquote {
+    border-left: 3px solid #30363d; padding-left: 12px; margin: 8px 0;
+    color: #8b949e;
+  }
+  .markdown-content table { border-collapse: collapse; margin: 8px 0; font-size: 0.8rem; }
+  .markdown-content th, .markdown-content td {
+    border: 1px solid #30363d; padding: 4px 8px; text-align: left;
+  }
+  .markdown-content th { background: #161b22; color: #f0f6fc; font-weight: 600; }
+  .markdown-content hr { border: none; border-top: 1px solid #30363d; margin: 12px 0; }
+  .markdown-content strong { color: #f0f6fc; }
+  .markdown-content a { color: #58a6ff; text-decoration: none; }
+  .markdown-content a:hover { text-decoration: underline; }
+  .markdown-content img { max-width: 100%; border-radius: 4px; }
   .loop-row {
     display: flex; align-items: center; gap: 10px; padding: 8px 12px;
     cursor: pointer; user-select: none; border: 1px solid #30363d;
@@ -103,6 +141,12 @@ export function renderDashboardHtml(): string {
   }
   .back-to-loops:hover { color: #79c0ff; }
   .loop-detail-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .markdown-scrollable {
+    max-height: 320px; overflow-y: auto;
+    border: 1px solid #30363d; border-radius: 6px;
+    padding: 8px 12px; margin-top: 4px;
+  }
+  .loop-detail .section-label { color: #d29922; }
 </style>
 </head>
 <body>
@@ -411,12 +455,19 @@ export function renderDashboardHtml(): string {
       var detail = document.createElement('div');
       detail.className = 'loop-detail';
 
-      // Completion summary (resizable)
+      // Completion summary (markdown)
       if (lp.completionSummary) {
+        var csLabel = document.createElement('h4');
+        csLabel.className = 'section-label';
+        csLabel.textContent = 'Completion Summary';
+        detail.appendChild(csLabel);
+        var csWrap = document.createElement('div');
+        csWrap.className = 'markdown-scrollable';
         var cs = document.createElement('div');
-        cs.className = 'resizable-block';
-        cs.textContent = lp.completionSummary;
-        detail.appendChild(cs);
+        cs.className = 'markdown-content';
+        cs.innerHTML = marked.parse(lp.completionSummary);
+        csWrap.appendChild(cs);
+        detail.appendChild(csWrap);
       }
 
       // Sections
@@ -517,26 +568,34 @@ export function renderDashboardHtml(): string {
         }
       }
 
-      // Last audit result (resizable pre)
+      // Last audit result (markdown)
       if (dashLoop.lastAuditResult) {
         var laTitle = document.createElement('h4');
+        laTitle.className = 'section-label';
         laTitle.textContent = 'Last Audit Result';
         detail.appendChild(laTitle);
-        var laPre = document.createElement('pre');
-        laPre.className = 'resizable-block';
-        laPre.textContent = dashLoop.lastAuditResult;
-        detail.appendChild(laPre);
+        var laWrap = document.createElement('div');
+        laWrap.className = 'markdown-scrollable';
+        var laDiv = document.createElement('div');
+        laDiv.className = 'markdown-content';
+        laDiv.innerHTML = marked.parse(dashLoop.lastAuditResult);
+        laWrap.appendChild(laDiv);
+        detail.appendChild(laWrap);
       }
 
-      // Plan (resizable pre)
+      // Plan (markdown)
       if (dashLoop.plan) {
         var planTitle = document.createElement('h4');
+        planTitle.className = 'section-label';
         planTitle.textContent = 'Plan';
         detail.appendChild(planTitle);
-        var planPre = document.createElement('pre');
-        planPre.className = 'resizable-block';
-        planPre.textContent = dashLoop.plan;
-        detail.appendChild(planPre);
+        var planWrap = document.createElement('div');
+        planWrap.className = 'markdown-scrollable';
+        var planDiv = document.createElement('div');
+        planDiv.className = 'markdown-content';
+        planDiv.innerHTML = marked.parse(dashLoop.plan);
+        planWrap.appendChild(planDiv);
+        detail.appendChild(planWrap);
       }
 
       loopEl.appendChild(detail);
