@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test'
+import { describe, test, expect } from 'vitest'
 import { findPartialMatch, filterByPartial } from '../src/utils/partial-match'
 
 interface TestItem {

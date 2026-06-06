@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test'
+import { describe, test, expect } from 'vitest'
 import { createTools } from '../../src/tools'
 import type { ToolContext } from '../../src/tools/types'
 

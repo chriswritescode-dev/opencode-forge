@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
@@ -486,10 +486,10 @@ describe('runtime re-provisioning updates state.workspaceId', () => {
       ],
     }
 
-    const wsCreateMock = mock(async () => ({
+    const wsCreateMock = vi.fn(async () => ({
       data: { id: 'ws_new', directory: '/tmp/wt/new', branch: 'opencode/new' },
     }))
-    const warpMock = mock(async () => ({ error: null }))
+    const warpMock = vi.fn(async () => ({ error: null }))
 
     const v2Client = {
       ...createMockV2Client(clientState),

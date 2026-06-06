@@ -1,18 +1,55 @@
-import BetterSqlite3 from 'better-sqlite3'
+import { createRequire } from 'module'
+const require = createRequire(import.meta.url)
+const { DatabaseSync } = require('node:sqlite')
 
-class Database extends BetterSqlite3 {
-  constructor(pathOrHandle) {
-    super(pathOrHandle)
+class Database {
+  #db
+  #path
+  constructor(pathOrHandle, options) {
+    this.#path = pathOrHandle == null ? ':memory:' : pathOrHandle
+    this.#db = new DatabaseSync(this.#path, {
+      open: true,
+      readOnly: options?.readonly ?? false,
+    })
   }
 
+  get name() { return this.#path }
+
   run(sql, ...params) {
-    // If parameters are provided, use prepare for parameterized queries
     if (params.length > 0) {
-      const stmt = this.prepare(sql)
+      const stmt = this.#db.prepare(sql)
+      if (params.length === 1 && Array.isArray(params[0])) {
+        return stmt.run(...params[0])
+      }
       return stmt.run(...params)
     }
-    // Otherwise use exec for multi-statement SQL (CREATE TABLE, etc.)
-    return this.exec(sql)
+    return this.#db.exec(sql)
+  }
+
+  exec(sql) {
+    return this.#db.exec(sql)
+  }
+
+  prepare(sql) {
+    return this.#db.prepare(sql)
+  }
+
+  transaction(fn) {
+    return (...args) => {
+      this.#db.exec('BEGIN')
+      try {
+        const result = fn(...args)
+        this.#db.exec('COMMIT')
+        return result
+      } catch (err) {
+        this.#db.exec('ROLLBACK')
+        throw err
+      }
+    }
+  }
+
+  close() {
+    return this.#db.close()
   }
 }
 

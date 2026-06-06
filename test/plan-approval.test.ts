@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-// Database is resolved via vitest alias to better-sqlite3 at runtime
+// Database is resolved via vitest alias to bun:sqlite at runtime
 import { existsSync, mkdirSync, rmSync, writeFileSync, statSync } from 'fs'
 import { execSync, spawnSync } from 'child_process'
 import { join } from 'path'

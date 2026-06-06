@@ -1,4 +1,4 @@
-import { describe, it, expect, mock } from 'bun:test'
+import { describe, it, expect } from 'vitest'
 import { createLoop } from '../src/loop/runtime'
 import type { LoopChangeNotifier } from '../src/loop/service'
 import type { LoopsRepo } from '../src/storage/repos/loops-repo'

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test'
+import { describe, it, expect } from 'vitest'
 import { resolveLoopModel, resolveLoopAuditorModel, formatDuration, computeElapsedSeconds } from '../src/utils/loop-helpers'
 import type { PluginConfig } from '../src/types'
 

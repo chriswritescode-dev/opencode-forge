@@ -1,4 +1,4 @@
-import { describe, test, expect, mock } from 'bun:test'
+import { describe, test, expect, vi } from 'vitest'
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 import {
   fetchAvailableModels,
@@ -19,7 +19,7 @@ import {
 } from '../src/utils/tui-models'
 
 function createMockApi(configProviders?: string[], providerListFn?: any): TuiPluginApi {
-  const listFn = providerListFn ?? mock(() => Promise.resolve({ data: { all: [], connected: [] } }))
+  const listFn = providerListFn ?? vi.fn(() => Promise.resolve({ data: { all: [], connected: [] } }))
   return {
     state: {
       config: {
@@ -35,9 +35,9 @@ function createMockApi(configProviders?: string[], providerListFn?: any): TuiPlu
       },
     } as any,
     ui: {
-      toast: mock(() => {}),
+      toast: vi.fn(() => {}),
       dialog: {
-        clear: mock(() => {}),
+        clear: vi.fn(() => {}),
       },
     },
     theme: {
@@ -76,7 +76,7 @@ describe('fetchAvailableModels', () => {
       },
     ]
 
-    const providerListMock = mock(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
+    const providerListMock = vi.fn(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
     const mockApi = createMockApi(['anthropic'], providerListMock)
 
     const result = await fetchAvailableModels(mockApi)
@@ -93,7 +93,7 @@ describe('fetchAvailableModels', () => {
   })
 
   test('returns empty providers array when no providers exist', async () => {
-    const providerListMock = mock(() => Promise.resolve({ data: { all: [], connected: [] } }))
+    const providerListMock = vi.fn(() => Promise.resolve({ data: { all: [], connected: [] } }))
     const mockApi = createMockApi([], providerListMock)
 
     const result = await fetchAvailableModels(mockApi)
@@ -104,7 +104,7 @@ describe('fetchAvailableModels', () => {
   })
 
   test('returns error when API returns error', async () => {
-    const providerListMock = mock(() => Promise.resolve({
+    const providerListMock = vi.fn(() => Promise.resolve({
       error: {
         data: { message: 'Authentication failed' },
         name: 'APIError',
@@ -120,7 +120,7 @@ describe('fetchAvailableModels', () => {
   })
 
   test('returns error when API throws', async () => {
-    const providerListMock = mock(() => Promise.reject(new Error('Network error')))
+    const providerListMock = vi.fn(() => Promise.reject(new Error('Network error')))
     const mockApi = createMockApi(['openai'], providerListMock)
 
     const result = await fetchAvailableModels(mockApi)
@@ -131,7 +131,7 @@ describe('fetchAvailableModels', () => {
   })
 
   test('returns error when no data returned', async () => {
-    const providerListMock = mock(() => Promise.resolve({ data: null }))
+    const providerListMock = vi.fn(() => Promise.resolve({ data: null }))
     const mockApi = createMockApi(['google'], providerListMock)
 
     const result = await fetchAvailableModels(mockApi)
@@ -150,7 +150,7 @@ describe('fetchAvailableModels', () => {
       },
     ]
 
-    const providerListMock = mock(() => Promise.resolve({ data: { all: mockProviders, connected: ['empty-provider'] } }))
+    const providerListMock = vi.fn(() => Promise.resolve({ data: { all: mockProviders, connected: ['empty-provider'] } }))
     const mockApi = createMockApi([], providerListMock)
 
     const result = await fetchAvailableModels(mockApi)
@@ -184,7 +184,7 @@ describe('fetchAvailableModels', () => {
       },
     ]
 
-    const providerListMock = mock(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
+    const providerListMock = vi.fn(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
     const mockApi = createMockApi([], providerListMock)
 
     const result = await fetchAvailableModels(mockApi)
@@ -216,7 +216,7 @@ describe('fetchAvailableModels', () => {
       },
     ]
 
-    const providerListMock = mock(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
+    const providerListMock = vi.fn(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
     const mockApi = createMockApi([], providerListMock)
 
     const result = await fetchAvailableModels(mockApi)
@@ -595,7 +595,7 @@ describe('fetchAvailableModels with variants', () => {
       },
     ]
 
-    const providerListMock = mock(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
+    const providerListMock = vi.fn(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
     const mockApi = createMockApi(['anthropic'], providerListMock)
 
     const result = await fetchAvailableModels(mockApi)
