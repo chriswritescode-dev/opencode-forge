@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test'
+import { describe, it, expect } from 'vitest'
 import { createLoopWatchdog } from '../src/hooks/watchdog'
 import type { LoopState } from '../src/loop/state'
 

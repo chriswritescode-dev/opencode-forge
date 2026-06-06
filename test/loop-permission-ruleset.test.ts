@@ -1,4 +1,4 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test'
+import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../src/constants/loop'
 import { createLoopPermissionRejectHook, __resetLoopPermissionCache } from '../src/hooks/loop-permission'
 import { createAuditSession } from '../src/utils/audit-session'
@@ -136,8 +136,8 @@ describe('buildAuditSessionPermissionRuleset', () => {
 describe('createAuditSession passes audit permission rules into session creation', () => {
   test('session.create receives permission equal to buildAuditSessionPermissionRuleset()', async () => {
     const expectedPermission = buildAuditSessionPermissionRuleset({ sandbox: false })
-    const mockCreate = mock(async (params: any) => ({ data: { id: 'audit-session' }, error: null }))
-    const mockGet = mock(async () => ({ data: { permission: expectedPermission }, error: null }))
+    const mockCreate = vi.fn(async (params: any) => ({ data: { id: 'audit-session' }, error: null }))
+    const mockGet = vi.fn(async () => ({ data: { permission: expectedPermission }, error: null }))
     const mockV2 = {
       session: {
         create: mockCreate,
@@ -145,7 +145,7 @@ describe('createAuditSession passes audit permission rules into session creation
       },
     } as any
 
-    const logger = { log: mock(), error: mock() } as unknown as Logger
+    const logger = { log: vi.fn(), error: vi.fn() } as unknown as Logger
 
     await createAuditSession({
       v2: mockV2,
@@ -174,8 +174,8 @@ describe('createAuditSession passes audit permission rules into session creation
 describe('createLoopSessionWithWorkspace passes loop permission rules into session creation', () => {
   test('session.create receives permission exactly equal to buildLoopPermissionRuleset()', async () => {
     const expectedPermission = buildLoopPermissionRuleset()
-    const mockCreate = mock(async (params: any) => ({ data: { id: 'loop-session' }, error: null }))
-    const mockGet = mock(async () => ({ data: {} }))
+    const mockCreate = vi.fn(async (params: any) => ({ data: { id: 'loop-session' }, error: null }))
+    const mockGet = vi.fn(async () => ({ data: {} }))
     const mockV2 = {
       session: {
         create: mockCreate,
@@ -183,7 +183,7 @@ describe('createLoopSessionWithWorkspace passes loop permission rules into sessi
       },
     } as any
 
-    const logger = { log: mock(), error: mock() } as unknown as Logger
+    const logger = { log: vi.fn(), error: vi.fn() } as unknown as Logger
 
     await createLoopSessionWithWorkspace({
       v2: mockV2,
@@ -208,10 +208,10 @@ describe('createLoopSessionWithWorkspace passes loop permission rules into sessi
 
 describe('createLoopPermissionRejectHook', () => {
   test('does not update subagent session permissions when the session is outside an active loop', async () => {
-    const mockGet = mock(async () => ({ data: { permission: buildLoopPermissionRuleset() } }))
-    const mockUpdate = mock(async () => ({ data: {}, error: null }))
-    const mockResolve = mock(async () => null)
-    const logger = { log: mock(), error: mock(), debug: mock() } as unknown as Logger
+    const mockGet = vi.fn(async () => ({ data: { permission: buildLoopPermissionRuleset() } }))
+    const mockUpdate = vi.fn(async () => ({ data: {}, error: null }))
+    const mockResolve = vi.fn(async () => null)
+    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
 
     const hook = createLoopPermissionRejectHook({
       v2: {
@@ -247,9 +247,9 @@ describe('createLoopPermissionRejectHook', () => {
 
   test('copies active loop parent permissions onto child subagent sessions', async () => {
     const parentPermission = buildLoopPermissionRuleset({ sandbox: true })
-    const mockGet = mock(async () => ({ data: { permission: parentPermission } }))
-    const mockUpdate = mock(async () => ({ data: {}, error: null }))
-    const logger = { log: mock(), error: mock(), debug: mock() } as unknown as Logger
+    const mockGet = vi.fn(async () => ({ data: { permission: parentPermission } }))
+    const mockUpdate = vi.fn(async () => ({ data: {}, error: null }))
+    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
 
     const hook = createLoopPermissionRejectHook({
       v2: {
@@ -259,7 +259,7 @@ describe('createLoopPermissionRejectHook', () => {
         },
       } as any,
       sessionLoopResolver: {
-        resolveActiveLoopForSession: mock(async () => ({
+        resolveActiveLoopForSession: vi.fn(async () => ({
           loopName: 'active-loop',
           active: true,
           worktreeDir: '/repo/.worktrees/active-loop',
@@ -294,14 +294,14 @@ describe('createLoopPermissionRejectHook', () => {
   })
 
   test('falls back to worktree-only rules when parent permissions are unavailable for a non-sandbox loop', async () => {
-    const mockGet = mock(async () => ({ data: {} }))
-    const mockUpdate = mock(async () => ({ data: {}, error: null }))
-    const logger = { log: mock(), error: mock(), debug: mock() } as unknown as Logger
+    const mockGet = vi.fn(async () => ({ data: {} }))
+    const mockUpdate = vi.fn(async () => ({ data: {}, error: null }))
+    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
 
     const hook = createLoopPermissionRejectHook({
       v2: { session: { get: mockGet, update: mockUpdate } } as any,
       sessionLoopResolver: {
-        resolveActiveLoopForSession: mock(async () => ({
+        resolveActiveLoopForSession: vi.fn(async () => ({
           loopName: 'active-loop',
           active: true,
           worktreeDir: '/repo/.worktrees/active-loop',
@@ -328,14 +328,14 @@ describe('createLoopPermissionRejectHook', () => {
 
   test('is idempotent: firing twice for the same child session results in a single session.update call', async () => {
     const parentPermission = buildLoopPermissionRuleset({ sandbox: true })
-    const mockGet = mock(async () => ({ data: { permission: parentPermission } }))
-    const mockUpdate = mock(async () => ({ data: {}, error: null }))
-    const logger = { log: mock(), error: mock(), debug: mock() } as unknown as Logger
+    const mockGet = vi.fn(async () => ({ data: { permission: parentPermission } }))
+    const mockUpdate = vi.fn(async () => ({ data: {}, error: null }))
+    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
 
     const hook = createLoopPermissionRejectHook({
       v2: { session: { get: mockGet, update: mockUpdate } } as any,
       sessionLoopResolver: {
-        resolveActiveLoopForSession: mock(async () => ({
+        resolveActiveLoopForSession: vi.fn(async () => ({
           loopName: 'active-loop',
           active: true,
           worktreeDir: '/repo/.worktrees/active-loop',

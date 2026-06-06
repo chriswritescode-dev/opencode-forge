@@ -108,7 +108,7 @@ describe('createForgeWorkspaceAdapter', () => {
   it('create invokes git worktree add and creates worktree directory', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo-'))
     try {
-      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
         logger,
@@ -130,7 +130,7 @@ describe('createForgeWorkspaceAdapter', () => {
   it('create uses info.extra.projectDirectory as the git cwd, ignoring deps', async () => {
     const realRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-projdir-'))
     try {
-      execSync('git init && git commit --allow-empty -m init', { cwd: realRepo, encoding: 'utf-8' })
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: realRepo, encoding: 'utf-8' })
       const adapter = createForgeWorkspaceAdapter({ dataDir: tmpDataDir, logger })
       const configured = adapter.configure({
         id: 'ws-1', type: 'forge', name: '', branch: null, directory: null,
@@ -182,7 +182,7 @@ describe('createForgeWorkspaceAdapter', () => {
   it('create ensures parent worktree directory exists before calling git', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo2-'))
     try {
-      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
       const nestedDataDir = join(tmpDataDir, 'nested', 'deep')
       const adapter = createForgeWorkspaceAdapter({
         dataDir: nestedDataDir,
@@ -204,7 +204,7 @@ describe('createForgeWorkspaceAdapter', () => {
   it('create starts sandbox after creating the worktree', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo-sandbox-'))
     try {
-      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
       const sandboxManager = {
         start: vi.fn().mockResolvedValue({ containerName: 'forge-sandbox-loop' }),
         stop: vi.fn().mockResolvedValue(undefined),
@@ -228,7 +228,7 @@ describe('createForgeWorkspaceAdapter', () => {
   it('create cleans up worktree and sandbox when sandbox start fails', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo-sandbox-fail-'))
     try {
-      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
       const sandboxManager = {
         start: vi.fn().mockRejectedValue(new Error('docker unavailable')),
         stop: vi.fn().mockResolvedValue(undefined),
@@ -252,7 +252,7 @@ describe('createForgeWorkspaceAdapter', () => {
   it('remove runs git worktree remove and prune', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo3-'))
     try {
-      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
         logger,
@@ -276,7 +276,7 @@ describe('createForgeWorkspaceAdapter', () => {
   it('remove is idempotent: skips remove when directory does not exist', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo4-'))
     try {
-      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
       const adapter = createForgeWorkspaceAdapter({
         dataDir: tmpDataDir,
         logger,

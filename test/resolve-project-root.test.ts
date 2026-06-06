@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test'
+import { describe, test, expect } from 'vitest'
 import { resolveHostSessionDirectory } from '../src/utils/resolve-project-root'
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 

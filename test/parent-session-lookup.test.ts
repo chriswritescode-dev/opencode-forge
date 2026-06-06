@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { createParentSessionLookup, type CreateParentSessionLookupOptions } from '../src/index'
 import type { Logger } from '../src/types'
 

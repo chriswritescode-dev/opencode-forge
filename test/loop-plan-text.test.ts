@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { initializeDatabase } from '../src/storage'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'

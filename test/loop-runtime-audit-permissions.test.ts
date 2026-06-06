@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import Database from 'better-sqlite3'
+import Database from 'bun:sqlite'
 type DB = InstanceType<typeof Database>
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'

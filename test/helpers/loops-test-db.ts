@@ -3,6 +3,7 @@ import { migrations } from '../../src/storage/migrations'
 type TestDatabase = {
   prepare(sql: string): { run(...params: unknown[]): unknown }
   exec(sql: string): unknown
+  run(sql: string, ...params: unknown[]): unknown
 }
 
 /**

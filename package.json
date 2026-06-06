@@ -46,6 +46,9 @@
   ],
   "license": "MIT",
   "homepage": "https://github.com/chriswritescode-dev/opencode-forge",
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "dependencies": {
     "@opencode-ai/plugin": "1.15.5",
     "@opencode-ai/sdk": "1.15.5",
@@ -73,7 +76,6 @@
     "@types/node": "^25.6.0",
     "@typescript-eslint/eslint-plugin": "^8.58.0",
     "@typescript-eslint/parser": "^8.58.0",
-    "better-sqlite3": "^12.9.0",
     "bun-types": "latest",
     "eslint": "^10.2.0",
     "eslint-plugin-solid": "^0.14.5",
@@ -90,14 +92,12 @@
     "lint": "eslint .",
     "prepublishOnly": "pnpm build",
     "test": "vitest run",
-    "test:bun": "bun test --max-concurrency=1",
     "typecheck": "tsc --noEmit",
     "docs:api": "typedoc",
     "docs": "pnpm docs:api"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "better-sqlite3",
       "esbuild",
       "msgpackr-extract"
     ]

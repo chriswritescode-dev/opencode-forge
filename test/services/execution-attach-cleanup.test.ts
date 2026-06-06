@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
-import Database from 'better-sqlite3'
+import Database from 'bun:sqlite'
 import { mkdtempSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'

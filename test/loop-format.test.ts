@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test'
+import { describe, test, expect } from 'vitest'
 import { formatTokens, formatSessionOutput, formatAuditResult, formatUsageSummary } from '../src/utils/loop-format'
 import type { LoopSessionOutput } from '../src/loop/session-output'
 import type { LoopUsageSummary } from '../src/loop/token-usage'

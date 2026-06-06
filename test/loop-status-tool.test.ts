@@ -15,7 +15,7 @@ import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
-import Database from 'better-sqlite3'
+import Database from 'bun:sqlite'
 import { setupLoopsTestDb } from './helpers/loops-test-db'
 
 const TEST_DIR = '/tmp/opencode-loop-status-test-' + Date.now()

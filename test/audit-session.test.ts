@@ -1,22 +1,22 @@
-import { describe, test, expect, mock } from 'bun:test'
+import { describe, test, expect, vi } from 'vitest'
 import { createAuditSession, promptAuditSession } from '../src/utils/audit-session'
 import { buildAuditSessionPermissionRuleset } from '../src/constants/loop'
 import type { Logger } from '../src/types'
 
 interface MockV2Client {
   session: {
-    create: ReturnType<typeof mock<(params: any) => Promise<{ data?: { id: string }; error?: unknown }>>>
-    promptAsync: ReturnType<typeof mock<(params: any) => Promise<{ data?: unknown; error?: unknown }>>>
-    delete: ReturnType<typeof mock<(params: any) => Promise<void>>>
+    create: ReturnType<typeof vi.fn<(params: any) => Promise<{ data?: { id: string }; error?: unknown }>>>
+    promptAsync: ReturnType<typeof vi.fn<(params: any) => Promise<{ data?: unknown; error?: unknown }>>>
+    delete: ReturnType<typeof vi.fn<(params: any) => Promise<void>>>
   }
 }
 
 function createMockV2Client(): MockV2Client {
   return {
     session: {
-      create: mock(() => Promise.resolve({ data: { id: 'sess_mock_123' } })),
-      promptAsync: mock(() => Promise.resolve({ data: {} })),
-      delete: mock(() => Promise.resolve()),
+      create: vi.fn(() => Promise.resolve({ data: { id: 'sess_mock_123' } })),
+      promptAsync: vi.fn(() => Promise.resolve({ data: {} })),
+      delete: vi.fn(() => Promise.resolve()),
     },
   }
 }
@@ -24,7 +24,7 @@ function createMockV2Client(): MockV2Client {
 describe('createAuditSession', () => {
   test('creates session with correct audit ruleset', async () => {
     const mockV2 = createMockV2Client()
-    const logger = { log: mock(), error: mock() } as unknown as Logger
+    const logger = { log: vi.fn(), error: vi.fn() } as unknown as Logger
 
     const result = await createAuditSession({
       v2: mockV2 as any,
@@ -48,8 +48,8 @@ describe('createAuditSession', () => {
 
   test('returns null on session creation error', async () => {
     const mockV2 = createMockV2Client()
-    mockV2.session.create = mock(() => Promise.resolve({ error: new Error('create failed') }))
-    const logger = { log: mock(), error: mock() } as unknown as Logger
+    mockV2.session.create = vi.fn(() => Promise.resolve({ error: new Error('create failed') }))
+    const logger = { log: vi.fn(), error: vi.fn() } as unknown as Logger
 
     const result = await createAuditSession({
       v2: mockV2 as any,
@@ -68,7 +68,7 @@ describe('createAuditSession', () => {
 
   test('uses non-sandbox ruleset when isSandbox is false', async () => {
     const mockV2 = createMockV2Client()
-    const logger = { log: mock(), error: mock() } as unknown as Logger
+    const logger = { log: vi.fn(), error: vi.fn() } as unknown as Logger
 
     await createAuditSession({
       v2: mockV2 as any,
@@ -88,7 +88,7 @@ describe('createAuditSession', () => {
 
   test('creates audit session as top-level session even when previous code session exists', async () => {
     const mockV2 = createMockV2Client()
-    const logger = { log: mock(), error: mock() } as unknown as Logger
+    const logger = { log: vi.fn(), error: vi.fn() } as unknown as Logger
 
     await createAuditSession({
       v2: mockV2 as any,
@@ -110,7 +110,7 @@ describe('createAuditSession', () => {
 
   test('formats title with section context for sectioned loops', async () => {
     const mockV2 = createMockV2Client()
-    const logger = { log: mock(), error: mock() } as unknown as Logger
+    const logger = { log: vi.fn(), error: vi.fn() } as unknown as Logger
 
     await createAuditSession({
       v2: mockV2 as any,
@@ -132,7 +132,7 @@ describe('createAuditSession', () => {
 describe('promptAuditSession', () => {
   test('returns ok:true on success', async () => {
     const mockV2 = createMockV2Client()
-    mockV2.session.promptAsync = mock(() => Promise.resolve({ data: {} }))
+    mockV2.session.promptAsync = vi.fn(() => Promise.resolve({ data: {} }))
 
     const result = await promptAuditSession(mockV2 as any, {
       sessionId: 'sess_audit_123',
@@ -147,7 +147,7 @@ describe('promptAuditSession', () => {
   test('returns ok:false on error', async () => {
     const mockV2 = createMockV2Client()
     const testError = new Error('prompt failed')
-    mockV2.session.promptAsync = mock(() => Promise.resolve({ error: testError }))
+    mockV2.session.promptAsync = vi.fn(() => Promise.resolve({ error: testError }))
 
     const result = await promptAuditSession(mockV2 as any, {
       sessionId: 'sess_audit_123',
@@ -160,7 +160,7 @@ describe('promptAuditSession', () => {
 
   test('passes auditorModel when provided', async () => {
     const mockV2 = createMockV2Client()
-    mockV2.session.promptAsync = mock(() => Promise.resolve({ data: {} }))
+    mockV2.session.promptAsync = vi.fn(() => Promise.resolve({ data: {} }))
 
     await promptAuditSession(mockV2 as any, {
       sessionId: 'sess_audit_123',

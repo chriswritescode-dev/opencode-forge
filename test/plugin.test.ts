@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { createForgePlugin } from '../src/index'
 import { mkdirSync, rmSync, existsSync, writeFileSync } from 'fs'
 import { join } from 'path'

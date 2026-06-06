@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { mkdtempSync } from 'fs'
 import { join } from 'path'
@@ -147,8 +147,8 @@ describe('attachLoopToSession', () => {
       sectionPlansRepo,
     )
 
-    const promptAsyncMock = mock(async () => ({ error: null }))
-    const tuiSelectSessionMock = mock(async () => undefined)
+    const promptAsyncMock = vi.fn(async () => ({ error: null }))
+    const tuiSelectSessionMock = vi.fn(async () => undefined)
 
     const deps = {
       projectId: PROJECT_ID,
@@ -162,17 +162,17 @@ describe('attachLoopToSession', () => {
       dataDir: '/tmp',
       v2: {
         session: {
-          create: mock(async () => ({ data: { id: 'new-session' } })),
-          get: mock(async () => ({ data: {} })),
-          update: mock(async () => ({ data: {} })),
+          create: vi.fn(async () => ({ data: { id: 'new-session' } })),
+          get: vi.fn(async () => ({ data: {} })),
+          update: vi.fn(async () => ({ data: {} })),
           promptAsync: promptAsyncMock,
-          abort: mock(async () => ({})),
-          delete: mock(async () => ({})),
-          messages: mock(async () => ({ data: [] })),
-          status: mock(async () => ({ data: {} })),
+          abort: vi.fn(async () => ({})),
+          delete: vi.fn(async () => ({})),
+          messages: vi.fn(async () => ({ data: [] })),
+          status: vi.fn(async () => ({ data: {} })),
         },
         tui: {
-          publish: mock(() => {}),
+          publish: vi.fn(() => {}),
           selectSession: tuiSelectSessionMock,
         },
       },
@@ -183,15 +183,15 @@ describe('attachLoopToSession', () => {
       loop: loopService as any,
       loopHandler: {
         runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-        startWatchdog: mock(() => {}),
+        startWatchdog: vi.fn(() => {}),
         clearLoopTimers: noopFn,
       },
       sandboxManager: null,
       workspaceStatusRegistry: {
-        recordEvent: mock(() => {}),
-        getStatus: mock(() => 'connected' as const),
-        awaitConnected: mock(async () => ({ connected: true, elapsedMs: 0, source: 'cached' as const })),
-        primeFromSnapshot: mock(() => {}),
+        recordEvent: vi.fn(() => {}),
+        getStatus: vi.fn(() => 'connected' as const),
+        awaitConnected: vi.fn(async () => ({ connected: true, elapsedMs: 0, source: 'cached' as const })),
+        primeFromSnapshot: vi.fn(() => {}),
       },
     }
 
@@ -249,7 +249,7 @@ describe('attachLoopToSession', () => {
   test('onStarted callback is invoked after state persistence', async () => {
     const { deps } = buildDeps()
 
-    const onStartedSpy = mock(() => {})
+    const onStartedSpy = vi.fn(() => {})
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -328,7 +328,7 @@ describe('attachLoopToSession', () => {
     const originalDeleteState = deps.loop.deleteState.bind(deps.loop)
     deps.loop.deleteState = (...args: any[]) => { deleteStateCalled = true; return originalDeleteState(...args) }
 
-    ;(deps.loop as any).setState = mock((...args: any[]) => {
+    ;(deps.loop as any).setState = vi.fn((...args: any[]) => {
       throw new Error('setState: loop "my-feature" already exists')
     })
 

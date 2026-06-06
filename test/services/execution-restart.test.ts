@@ -13,9 +13,8 @@ import type { PlansRepo } from '../../src/storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import type { SectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import type { LoopService } from '../../src/loop/service'
-const Database = require('better-sqlite3')
+import Database from 'bun:sqlite'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
-type Database = ReturnType<typeof Database>
 
 const mockLogger: Logger = {
   log: () => {},
