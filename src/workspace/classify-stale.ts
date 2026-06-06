@@ -9,15 +9,10 @@
  */
 
 import type { LoopsRepo } from '../storage/repos/loops-repo'
+import type { ForgeWorkspaceEntry } from './forge-worktree'
 import { getForgeWorkspaceLoopName } from './forge-worktree'
 
-export const PENDING_ATTACH_GRACE_MS = 5 * 60 * 1000
-
-export interface ForgeWorkspaceEntry {
-  id: string
-  type?: string | null
-  extra?: Record<string, unknown> | null
-}
+const PENDING_ATTACH_GRACE_MS = 5 * 60 * 1000
 
 export type ClassifyAction =
   | { action: 'keep'; reason: 'running' | 'pending-attach' | 'pending-start' | 'not-forge' | 'no-loop-name' | 'no-project-directory' | 'wrong-project' }
@@ -47,7 +42,7 @@ export function isPendingAttachWorkspace(
   return nowMs - startedAt <= graceMs
 }
 
-export function isPendingStartWorkspace(
+function isPendingStartWorkspace(
   entry: ForgeWorkspaceEntry,
   options: ClassifyForgeWorkspaceOptions = {},
 ): boolean {

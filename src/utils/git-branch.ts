@@ -1,6 +1,6 @@
 import type { LoopState } from '../loop'
 
-export type FindingScope =
+type FindingScope =
   | { kind: 'loop'; loopName: string }
   | { kind: 'none' }
 
@@ -22,7 +22,7 @@ export interface LoopScopeResolver {
  * @param sessionId - Optional session ID to resolve loop state directly
  * @returns The resolved finding scope
  */
-export function resolveFindingScope(
+function resolveFindingScope(
   directory: string,
   loopService: LoopScopeResolver,
   sessionId?: string,

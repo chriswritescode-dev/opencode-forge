@@ -15,7 +15,7 @@ import type { WorkspaceStatusRegistry } from '../utils/workspace-status-registry
 export interface ForgeWorkspaceEntry {
   id: string
   name?: string
-  type?: string
+  type?: string | null
   branch?: string | null
   directory?: string | null
   extra?: Record<string, unknown> | null
@@ -29,7 +29,7 @@ export function getForgeWorkspaceLoopName(entry: Pick<ForgeWorkspaceEntry, 'extr
 /**
  * Look up existing forge workspaces by loop name.
  */
-export async function findExistingForgeWorkspaces(
+async function findExistingForgeWorkspaces(
   client: OpencodeClient,
   loopName: string,
   logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void },
@@ -50,7 +50,7 @@ export async function findExistingForgeWorkspaces(
   }
 }
 
-export function workspaceMatchesLoop(entry: ForgeWorkspaceEntry, loopName: string): boolean {
+function workspaceMatchesLoop(entry: ForgeWorkspaceEntry, loopName: string): boolean {
   if (entry.type !== 'forge') return false
   if (entry.name === loopName) return true
   return getForgeWorkspaceLoopName(entry) === loopName

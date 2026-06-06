@@ -155,7 +155,7 @@ export function renderDashboardHtml(): string {
   <input id="loop-search" class="search-input" type="text" placeholder="Filter by loop name or project…" autocomplete="off">
   <div id="timestamp" class="timestamp"></div>
   <div id="forge-dashboard"></div>
-<script>
+<script id="forge-app">
   (function(){
     var activeStatuses = new Set();
     var searchText = '';
@@ -430,6 +430,35 @@ export function renderDashboardHtml(): string {
       return loopRow;
     }
 
+    // Cache of rendered markdown sections, keyed by loop name + section label.
+    // Reusing the live wrapper element across renders avoids re-parsing
+    // unchanged markdown and preserves the user's scroll position.
+    var markdownCache = {};
+
+    function appendMarkdownSection(parent, cacheKey, label, src) {
+      if (!src) return;
+      var title = document.createElement('h4');
+      title.className = 'section-label';
+      title.textContent = label;
+      parent.appendChild(title);
+
+      var cached = markdownCache[cacheKey];
+      if (cached && cached.src === src) {
+        parent.appendChild(cached.wrap);
+        return;
+      }
+
+      var wrap = document.createElement('div');
+      wrap.className = 'markdown-scrollable';
+      var content = document.createElement('div');
+      content.className = 'markdown-content';
+      content.innerHTML = marked.parse(src);
+      wrap.appendChild(content);
+      parent.appendChild(wrap);
+
+      markdownCache[cacheKey] = { src: src, wrap: wrap };
+    }
+
     function buildLoopDetail(dashLoop) {
       var lp = dashLoop.loop;
 
@@ -455,20 +484,10 @@ export function renderDashboardHtml(): string {
       var detail = document.createElement('div');
       detail.className = 'loop-detail';
 
+      var mdKey = lp.loopName + '::';
+
       // Completion summary (markdown)
-      if (lp.completionSummary) {
-        var csLabel = document.createElement('h4');
-        csLabel.className = 'section-label';
-        csLabel.textContent = 'Completion Summary';
-        detail.appendChild(csLabel);
-        var csWrap = document.createElement('div');
-        csWrap.className = 'markdown-scrollable';
-        var cs = document.createElement('div');
-        cs.className = 'markdown-content';
-        cs.innerHTML = marked.parse(lp.completionSummary);
-        csWrap.appendChild(cs);
-        detail.appendChild(csWrap);
-      }
+      appendMarkdownSection(detail, mdKey + 'completionSummary', 'Completion Summary', lp.completionSummary);
 
       // Sections
       if (dashLoop.sections && dashLoop.sections.length > 0) {
@@ -569,34 +588,10 @@ export function renderDashboardHtml(): string {
       }
 
       // Last audit result (markdown)
-      if (dashLoop.lastAuditResult) {
-        var laTitle = document.createElement('h4');
-        laTitle.className = 'section-label';
-        laTitle.textContent = 'Last Audit Result';
-        detail.appendChild(laTitle);
-        var laWrap = document.createElement('div');
-        laWrap.className = 'markdown-scrollable';
-        var laDiv = document.createElement('div');
-        laDiv.className = 'markdown-content';
-        laDiv.innerHTML = marked.parse(dashLoop.lastAuditResult);
-        laWrap.appendChild(laDiv);
-        detail.appendChild(laWrap);
-      }
+      appendMarkdownSection(detail, mdKey + 'lastAuditResult', 'Last Audit Result', dashLoop.lastAuditResult);
 
       // Plan (markdown)
-      if (dashLoop.plan) {
-        var planTitle = document.createElement('h4');
-        planTitle.className = 'section-label';
-        planTitle.textContent = 'Plan';
-        detail.appendChild(planTitle);
-        var planWrap = document.createElement('div');
-        planWrap.className = 'markdown-scrollable';
-        var planDiv = document.createElement('div');
-        planDiv.className = 'markdown-content';
-        planDiv.innerHTML = marked.parse(dashLoop.plan);
-        planWrap.appendChild(planDiv);
-        detail.appendChild(planWrap);
-      }
+      appendMarkdownSection(detail, mdKey + 'plan', 'Plan', dashLoop.plan);
 
       loopEl.appendChild(detail);
       return loopEl;

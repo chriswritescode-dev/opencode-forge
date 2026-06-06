@@ -73,7 +73,7 @@ export function addTokens(a: TokenBreakdown, b: TokenBreakdown): TokenBreakdown 
 }
 
 /** Default model label when no metadata or fallback is available */
-export const DEFAULT_MODEL_LABEL = 'default/session model'
+const DEFAULT_MODEL_LABEL = 'default/session model'
 
 /**
  * Extract model label from message info, falling back to provided model or default.

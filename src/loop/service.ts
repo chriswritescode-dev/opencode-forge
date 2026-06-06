@@ -87,7 +87,7 @@ export interface LoopService {
   setTotalSections(loopName: string, total: number): void
 }
 
-export function rowToLoopState(row: LoopRow, large: LoopLargeFields | null): LoopState {
+function rowToLoopState(row: LoopRow, large: LoopLargeFields | null): LoopState {
   return {
     active: row.status === 'running',
     sessionId: row.currentSessionId,
@@ -611,6 +611,3 @@ export function createLoopService(
     setTotalSections,
   }
 }
-
-// Re-export generateUniqueName for backward compatibility
-export { generateUniqueName } from './name-uniqueness'
