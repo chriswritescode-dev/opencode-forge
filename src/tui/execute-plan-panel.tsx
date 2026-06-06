@@ -62,7 +62,7 @@ export function ExecutePlanPanel(props: {
   const [modelsLoaded, setModelsLoaded] = createSignal(!!initialSnapshot)
   const [busy, setBusy] = createSignal(false)
   const [loopName] = createSignal(
-    props.initialLoopName ?? extractPlanExecutionMetadata(props.planContent).executionName,
+    props.initialLoopName ?? extractPlanExecutionMetadata(untrack(() => props.planContent)).executionName,
   )
 
   const selectedModelInfo = (target: 'execution' | 'auditor') => {
