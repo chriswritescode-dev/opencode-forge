@@ -14,6 +14,18 @@ writeFileSync(versionPath, versionContent, 'utf-8')
 
 console.log(`Version ${version} written to src/version.ts`)
 
+console.log('Generating dashboard marked-source...')
+const markedMinPath = join(__dirname, '..', 'src', 'dashboard', 'marked.min.js')
+const markedSourcePath = join(__dirname, '..', 'src', 'dashboard', 'marked-source.ts')
+const markedRaw = readFileSync(markedMinPath, 'utf-8')
+// Use JSON.stringify for proper JS string escaping (handles backticks, $, quotes, etc.)
+const markedEscaped = JSON.stringify(markedRaw)
+const markedSourceContent = `// Auto-generated from marked.min.js. Do not edit.
+export const MARKED_SOURCE: string = ${markedEscaped};
+`
+writeFileSync(markedSourcePath, markedSourceContent, 'utf-8')
+console.log('Dashboard marked-source generated.')
+
 console.log('Compiling main code...')
 execSync('tsc -p tsconfig.build.json', {
   cwd: join(__dirname, '..'),

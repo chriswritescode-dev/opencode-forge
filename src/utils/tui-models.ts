@@ -10,7 +10,7 @@
 
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 
-export interface ModelKey {
+interface ModelKey {
   providerID: string
   modelID: string
 }
@@ -92,7 +92,7 @@ export interface ModelSortOptions {
 /**
  * Converts a ModelKey to its full name representation.
  */
-export function toFullModelName(key: ModelKey): string {
+function toFullModelName(key: ModelKey): string {
   return `${key.providerID}/${key.modelID}`
 }
 
@@ -100,7 +100,7 @@ export function toFullModelName(key: ModelKey): string {
  * Normalizes an unknown input to a ModelKey if possible.
  * Returns null for malformed values.
  */
-export function normalizeModelKey(input: unknown): ModelKey | null {
+function normalizeModelKey(input: unknown): ModelKey | null {
   if (!input || typeof input !== 'object') return null
   const obj = input as Record<string, unknown>
   if (typeof obj.providerID !== 'string' || typeof obj.modelID !== 'string') return null

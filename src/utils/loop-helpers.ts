@@ -5,7 +5,7 @@ import { parseModelString } from './model-fallback'
 type ModelRef = { providerID: string; modelID: string }
 type LoopModelRole = 'code' | 'auditor'
 
-export interface LoopModelSelection {
+interface LoopModelSelection {
   model: ModelRef | undefined
   source: string
 }
@@ -18,7 +18,7 @@ function firstParsedModel(candidates: Array<[string, string | undefined]>): Loop
   return { model: undefined, source: 'default/session model' }
 }
 
-export function resolveLoopModelSelection(
+function resolveLoopModelSelection(
   config: PluginConfig,
   state: LoopState | null | undefined,
   role: LoopModelRole,

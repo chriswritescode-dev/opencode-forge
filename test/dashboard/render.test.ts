@@ -34,10 +34,14 @@ describe('renderDashboardHtml', () => {
   test('does not use innerHTML for content injection', () => {
     const html = renderDashboardHtml()
 
-    // The script must not assign innerHTML for dynamic content.
-    // Allow only if it's for static template initialization (none expected).
-    // We check that the pattern ".innerHTML =" does NOT appear anywhere.
-    expect(html).not.toMatch(/\.innerHTML\s*=/)
+    // The script must not assign innerHTML for dynamic content, with one
+    // exception: rendered markdown is assigned from marked.parse(...), which
+    // produces trusted HTML from forge-owned plan/audit/summary content.
+    const innerHtmlAssignments = html.match(/\.innerHTML\s*=[^;\n]*/g) || []
+    const disallowed = innerHtmlAssignments.filter(
+      (assignment) => !/\.innerHTML\s*=\s*marked\.parse\(/.test(assignment),
+    )
+    expect(disallowed).toEqual([])
   })
 
   test('status badges are rendered as clickable filter badges', () => {
@@ -121,7 +125,7 @@ describe('renderDashboardHtml', () => {
 
   test('inline client script is syntactically valid JavaScript', () => {
     const html = renderDashboardHtml()
-    const match = html.match(/<script>([\s\S]*?)<\/script>/)
+    const match = html.match(/<script id="forge-app">([\s\S]*?)<\/script>/)
 
     expect(match).not.toBeNull()
     const script = match![1]
@@ -130,7 +134,7 @@ describe('renderDashboardHtml', () => {
 
   test('derives the sidebar label from the last path segment', () => {
     const html = renderDashboardHtml()
-    const match = html.match(/<script>([\s\S]*?)<\/script>/)
+    const match = html.match(/<script id="forge-app">([\s\S]*?)<\/script>/)
     const script = match![1]
 
     const lastSegment = new Function(
@@ -157,7 +161,7 @@ describe('renderDashboardHtml', () => {
 
   test('parseLoopHash/buildLoopHash round-trip', () => {
     const html = renderDashboardHtml()
-    const match = html.match(/<script>([\s\S]*?)<\/script>/)
+    const match = html.match(/<script id="forge-app">([\s\S]*?)<\/script>/)
     const script = match![1]
 
     const parseLoopHashSrc = script.match(/function parseLoopHash\(hash\) \{[\s\S]*?\n    \}/)![0]
@@ -207,5 +211,58 @@ describe('renderDashboardHtml', () => {
     // to matchedByProject[0] and must also clear selectedLoopName to avoid
     // opening a same-named loop from an unrelated project.
     expect(html).toMatch(/if\s*\(!selectedEntry\)\s*\{[\s\S]*?selectedLoopName\s*=\s*null/)
+  })
+
+  test('caches rendered markdown so unchanged sections are not re-parsed or rebuilt', () => {
+    const html = renderDashboardHtml()
+    const match = html.match(/<script id="forge-app">([\s\S]*?)<\/script>/)
+    const script = match![1]
+
+    const cacheDeclSrc = script.match(/var markdownCache = \{\};/)![0]
+    const appendSrc = script.match(/function appendMarkdownSection\(parent, cacheKey, label, src\) \{[\s\S]*?\n    \}/)![0]
+
+    // Fake DOM that counts marked.parse calls and tracks appended children.
+    const harness = new Function(
+      'parseImpl',
+      `
+      var parseCalls = 0;
+      var marked = { parse: function(src) { parseCalls++; return parseImpl(src); } };
+      function makeEl() {
+        return {
+          className: '', textContent: '', innerHTML: '', children: [],
+          appendChild: function(c) { this.children.push(c); return c; },
+        };
+      }
+      var document = { createElement: function() { return makeEl(); } };
+      ${cacheDeclSrc}
+      ${appendSrc}
+      return {
+        run: function(key, src) {
+          var parent = makeEl();
+          appendMarkdownSection(parent, key, 'Plan', src);
+          return parent;
+        },
+        stats: function() { return { parseCalls: parseCalls }; },
+      };
+      `,
+    )((src: string) => '<p>' + src + '</p>')
+
+    // First render of a section parses once and caches the wrapper.
+    const first = harness.run('loopA::plan', '# Plan v1')
+    const firstWrap = first.children[first.children.length - 1]
+    expect(harness.stats().parseCalls).toBe(1)
+
+    // Re-render with identical source reuses the SAME wrapper node (scroll preserved)
+    // and does not call marked.parse again.
+    const second = harness.run('loopA::plan', '# Plan v1')
+    const secondWrap = second.children[second.children.length - 1]
+    expect(harness.stats().parseCalls).toBe(1)
+    expect(secondWrap).toBe(firstWrap)
+
+    // Changed source re-parses and produces a fresh wrapper.
+    const third = harness.run('loopA::plan', '# Plan v2')
+    const thirdWrap = third.children[third.children.length - 1]
+    expect(harness.stats().parseCalls).toBe(2)
+    expect(thirdWrap).not.toBe(firstWrap)
   })
 })
