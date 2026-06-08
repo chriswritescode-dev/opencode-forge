@@ -162,11 +162,25 @@ export function renderDashboardHtml(): string {
     var lastData = null;
     var selectedProjectId = null;
     var selectedLoopName = null;
+    var lastDataHash = '';
+
+    function dataHash(data) {
+      return JSON.stringify(data, function(k, v) {
+        if (k === 'generatedAt') return undefined;
+        return v;
+      });
+    }
 
     function load() {
       fetch('/api/data', { cache: 'no-store' })
         .then(function(r) { return r.json(); })
-        .then(function(data) { render(data); })
+        .then(function(data) {
+          var hash = dataHash(data);
+          if (hash !== lastDataHash) {
+            lastDataHash = hash;
+            render(data);
+          }
+        })
         .catch(function(err) {
           var mount = document.getElementById('forge-dashboard');
           if (mount) {
