@@ -52,7 +52,7 @@ export function renderDashboardHtml(): string {
   .project-nav-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #58a6ff; font-weight: 600; }
   .project-nav-item.selected .project-nav-name { color: #79c0ff; }
   .project-nav-count { font-size: 0.7rem; padding: 1px 7px; border-radius: 9px; background: #30363d; color: #c9d1d9; }
-  .project-nav-running { width: 8px; height: 8px; border-radius: 50%; background: #1f6feb; flex: 0 0 8px; }
+  .project-nav-running { width: 8px; height: 8px; border-radius: 50%; background: #fe7d37; flex: 0 0 8px; box-shadow: 0 0 6px #fe7d3780; }
   .project { margin-bottom: 24px; border: 1px solid #30363d; border-radius: 8px; padding: 12px 16px; background: #161b22; }
   .project-header { font-weight: 600; font-size: 1.1rem; margin-bottom: 10px; color: #58a6ff; }
   .empty-state { padding: 24px; color: #8b949e; font-size: 0.9rem; text-align: center; }
@@ -177,6 +177,20 @@ export function renderDashboardHtml(): string {
             mount.appendChild(errEl);
           }
         });
+    }
+
+    function fmtTime(ts) {
+      if (!ts || ts === 0) return '';
+      var d = new Date(ts);
+      var pad = function(n) { return n < 10 ? '0' + n : String(n); };
+      var month = pad(d.getMonth() + 1);
+      var day = pad(d.getDate());
+      var year = d.getFullYear();
+      var hours = d.getHours();
+      var ampm = hours >= 12 ? 'PM' : 'AM';
+      hours = hours % 12;
+      if (hours === 0) hours = 12;
+      return month + '-' + day + '-' + year + ' ' + hours + ':' + pad(d.getMinutes()) + ' ' + ampm;
     }
 
     function statusClass(status) {
@@ -396,12 +410,20 @@ export function renderDashboardHtml(): string {
       infoTarget.appendChild(nameStrong);
 
       var infoParts = [
+        fmtTime(lp.startedAt),
         'phase: ' + lp.phase,
         'iteration ' + lp.iteration + '/' + lp.maxIterations,
         'section ' + lp.currentSectionIndex + '/' + lp.totalSections,
       ];
       if (dashLoop.duration) infoParts.push(dashLoop.duration);
       infoTarget.appendChild(document.createTextNode(' — ' + infoParts.join(', ')));
+      if (lp.status !== 'running' && lp.completedAt) {
+        infoTarget.appendChild(document.createTextNode(' — '));
+        var doneSpan = document.createElement('span');
+        doneSpan.className = 'dim';
+        doneSpan.textContent = 'done: ' + fmtTime(lp.completedAt);
+        infoTarget.appendChild(doneSpan);
+      }
 
       if (lp.terminationReason) {
         infoTarget.appendChild(document.createTextNode(' — '));
