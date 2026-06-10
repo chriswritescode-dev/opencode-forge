@@ -207,15 +207,17 @@ describe('review-read', () => {
     db.close()
   })
 
-  test('lists all findings when no args provided', async () => {
+  test('outside a loop returns only non-loop findings', async () => {
     const result = await tools['review-read'].execute(
       {},
       { sessionID: 'test-session', directory: TEST_DIR } as any
     )
 
-    expect(result).toContain('4 review findings')
+    expect(result).toContain('2 review findings')
     expect(result).toContain('src/file1.ts:10')
     expect(result).toContain('src/file2.ts:20')
+    expect(result).not.toContain('Alpha loop bug')
+    expect(result).not.toContain('Beta loop warning')
   })
 
   test('filters by file when file arg provided', async () => {

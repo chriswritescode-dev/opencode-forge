@@ -231,6 +231,8 @@ describe('renderDashboardHtml', () => {
         return {
           className: '', textContent: '', innerHTML: '', children: [],
           appendChild: function(c) { this.children.push(c); return c; },
+          setAttribute: function() {},
+          addEventListener: function() {},
         };
       }
       var document = { createElement: function() { return makeEl(); } };

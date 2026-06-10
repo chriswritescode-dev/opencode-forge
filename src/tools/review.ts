@@ -11,7 +11,9 @@ function resolveLoopNameForToolContext(
   if (!toolCtx?.sessionID) {
     return undefined
   }
-  return loop.resolveLoopName(toolCtx.sessionID) ?? undefined
+  // Preserve null (session exists but is not in a loop) so reads/deletes scope to
+  // the non-loop bucket instead of falling through to all findings.
+  return loop.resolveLoopName(toolCtx.sessionID)
 }
 
 export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
@@ -77,7 +79,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
     }),
 
     'review-read': tool({
-      description: 'Retrieve code review findings. No args lists all findings. Use file to filter by file path. Use pattern for regex search. Automatically scoped to current section when running in a sectioned loop. Use crossSection: true to read only cross-section findings (sectionIndex null). Use allSections: true to list findings from all sections.',
+      description: 'Retrieve code review findings. No args lists findings for the current scope; outside a loop only non-loop findings are returned. Use file to filter by file path. Use pattern for regex search. Automatically scoped to current section when running in a sectioned loop. Use crossSection: true to read only cross-section findings (sectionIndex null). Use allSections: true to list findings from all sections.',
       args: {
         file: z.string().optional().describe('Filter findings by file path'),
         pattern: z.string().optional().describe('Regex pattern to search across findings'),
