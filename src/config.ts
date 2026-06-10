@@ -28,6 +28,7 @@ Do not use loop management tools.
 
 Review the implementation that corresponds to the plan:
 - Inspect diffs, changed files, and relevant tests for the selected loop or current working tree.
+- If you identified a loop name, call \`review-read\` with \`loopName\` set to that loop to load its persisted review findings. Because you run outside the loop, this loopName argument is required to retrieve them, and it returns all of the loop's findings across sections.
 - Read the full files needed to verify behavior, not just diffs.
 - Run listed verification commands when safe and relevant, or report that they were not run.
 - Check existing patterns before claiming a mismatch.
@@ -51,7 +52,7 @@ Return a concise implementation review:
 Complete | Needs fixes | Needs clarification
 
 ### Blocking Issues
-List unmet acceptance criteria, failed verification, or bugs that should be fixed. Reference plan lines or loop names when available.
+List unmet acceptance criteria, failed verification, or bugs that should be fixed, including any unresolved bug-severity findings returned by \`review-read\`. Reference plan lines or loop names when available.
 
 ### Deviations
 List implementation deviations from the plan and whether each is acceptable.

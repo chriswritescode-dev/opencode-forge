@@ -220,6 +220,18 @@ describe('review-read', () => {
     expect(result).not.toContain('Beta loop warning')
   })
 
+  test('loopName targets a specific loop from outside that loop', async () => {
+    const result = await tools['review-read'].execute(
+      { loopName: 'alpha' },
+      { sessionID: 'test-session', directory: TEST_DIR } as any
+    )
+
+    expect(result).toContain('1 review finding')
+    expect(result).toContain('Alpha loop bug')
+    expect(result).not.toContain('Beta loop warning')
+    expect(result).not.toContain('src/file1.ts:10')
+  })
+
   test('filters by file when file arg provided', async () => {
     const result = await tools['review-read'].execute(
       { file: 'src/file1.ts' },

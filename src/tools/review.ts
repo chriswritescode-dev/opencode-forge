@@ -79,22 +79,27 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
     }),
 
     'review-read': tool({
-      description: 'Retrieve code review findings. No args lists findings for the current scope; outside a loop only non-loop findings are returned. Use file to filter by file path. Use pattern for regex search. Automatically scoped to current section when running in a sectioned loop. Use crossSection: true to read only cross-section findings (sectionIndex null). Use allSections: true to list findings from all sections.',
+      description: 'Retrieve code review findings. No args lists findings for the current scope; outside a loop only non-loop findings are returned. Use loopName to target a specific loop (e.g. a completed loop you are reviewing from outside it), which returns all of that loop\'s findings across sections. Use file to filter by file path. Use pattern for regex search. Automatically scoped to current section when running in a sectioned loop. Use crossSection: true to read only cross-section findings (sectionIndex null). Use allSections: true to list findings from all sections.',
       args: {
+        loopName: z.string().optional().describe('Target findings from a specific loop by name, overriding the session-resolved scope. Returns all of that loop\'s sections.'),
         file: z.string().optional().describe('Filter findings by file path'),
         pattern: z.string().optional().describe('Regex pattern to search across findings'),
         crossSection: z.boolean().optional().describe('Return only cross-section findings (sectionIndex null) instead of current section.'),
         allSections: z.boolean().optional().describe('Return all findings across all sections, ignoring current section scoping.'),
       },
       execute: async (args, toolCtx) => {
-        const loopName = resolveLoopNameForToolContext(loop, toolCtx)
+        const explicitLoop = args.loopName !== undefined
+        const loopName = explicitLoop
+          ? args.loopName
+          : resolveLoopNameForToolContext(loop, toolCtx)
         let findings = loopName !== undefined
           ? reviewFindingsRepo.listByLoopName(projectId, loopName)
           : reviewFindingsRepo.listAll(projectId)
 
         // Filter by section scope when in a sectioned loop
         // During final_auditing, return all sections so the auditor can see cross-section findings
-        if (loopName && !args.allSections) {
+        // An explicit loopName targets another loop, so its sections are all returned
+        if (loopName && !explicitLoop && !args.allSections) {
           const loopState = loop.getActiveState(loopName)
           if (loopState && loopState.totalSections > 0 && loopState.phase !== 'final_auditing') {
             if (args.crossSection) {
@@ -105,6 +110,8 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
               findings = findings.filter((f) => f.sectionIndex === loopState.currentSectionIndex)
             }
           }
+        } else if (explicitLoop && args.crossSection) {
+          findings = findings.filter((f) => f.sectionIndex === null)
         }
 
         if (args.file) {

@@ -298,6 +298,31 @@ describe('review section scoping', () => {
       expect(result).not.toContain('Section 0 bug')
       expect(result).toContain('Section 1 warning')
     })
+
+    test('explicit loopName returns all sections when read from outside the loop', async () => {
+      reviewFindingsRepo.write({
+        projectId,
+        file: 'src/a.ts',
+        line: 10,
+        severity: 'bug',
+        description: 'Section 0 bug',
+        loopName: 'scoped-loop',
+        sectionIndex: 0,
+      })
+      reviewFindingsRepo.write({
+        projectId,
+        file: 'src/b.ts',
+        line: 20,
+        severity: 'warning',
+        description: 'Section 1 warning',
+        loopName: 'scoped-loop',
+        sectionIndex: 1,
+      })
+
+      const result = await tools['review-read'].execute({ loopName: 'scoped-loop' }, makeToolContext('outside-session'))
+      expect(result).toContain('Section 0 bug')
+      expect(result).toContain('Section 1 warning')
+    })
   })
 
   describe('review-write: auto-injects section index', () => {
