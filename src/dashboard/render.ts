@@ -147,7 +147,18 @@ export function renderDashboardHtml(): string {
     padding: 8px 12px; margin-top: 4px;
   }
   .loop-detail .section-label { color: #d29922; }
-</style>
+  .markdown-heading-row {
+    display: flex; align-items: center; gap: 8px; margin: 8px 0 4px;
+  }
+  .markdown-heading-row:first-child { margin-top: 0; }
+  .markdown-heading-row h4 { margin: 0; }
+  .copy-btn {
+    background: #21262d; color: #8b949e; border: 1px solid #30363d;
+    border-radius: 4px; padding: 1px 8px; font-size: 0.72rem;
+    cursor: pointer; user-select: none; line-height: 1.5;
+    font-family: inherit; flex-shrink: 0;
+  }
+  .copy-btn:hover { background: #30363d; color: #c9d1d9; }</style>
 </head>
 <body>
   <h1>Forge Dashboard</h1>
@@ -473,12 +484,38 @@ export function renderDashboardHtml(): string {
 
     function appendMarkdownSection(parent, cacheKey, label, src) {
       if (!src) return;
+
+      var cached = markdownCache[cacheKey];
+
+      // Heading row with copy button
+      var headingRow = document.createElement('div');
+      headingRow.className = 'markdown-heading-row';
+
       var title = document.createElement('h4');
       title.className = 'section-label';
       title.textContent = label;
-      parent.appendChild(title);
+      headingRow.appendChild(title);
 
-      var cached = markdownCache[cacheKey];
+      var copyBtn = document.createElement('button');
+      copyBtn.className = 'copy-btn';
+      copyBtn.textContent = 'Copy';
+      copyBtn.setAttribute('aria-label', 'Copy ' + label + ' as markdown');
+      copyBtn.addEventListener('click', function(btn, originalLabel) {
+        return function(e) {
+          e.stopPropagation();
+          navigator.clipboard.writeText(src).then(function() {
+            btn.textContent = 'Copied!';
+            setTimeout(function() { btn.textContent = originalLabel; }, 2000);
+          }).catch(function() {
+            btn.textContent = 'Failed';
+            setTimeout(function() { btn.textContent = originalLabel; }, 2000);
+          });
+        };
+      }(copyBtn, 'Copy'));
+      headingRow.appendChild(copyBtn);
+
+      parent.appendChild(headingRow);
+
       if (cached && cached.src === src) {
         parent.appendChild(cached.wrap);
         return;
