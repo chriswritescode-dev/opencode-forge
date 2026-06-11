@@ -5,8 +5,7 @@ import { spawnSync } from 'child_process'
 import type { WorkspaceAdapter, WorkspaceInfo } from '@opencode-ai/plugin'
 import type { Logger } from '../types'
 import type { SandboxManager } from '../sandbox/manager'
-import { slugify } from '../utils/logger'
-import { forgeBranchName, forgeWorktreeDir, gitBranchExists } from './forge-naming'
+import { forgeBranchName, forgeWorktreeDir, forgeWorktreeSlug, gitBranchExists } from './forge-naming'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 
 
@@ -53,7 +52,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
     const extra = (info.extra ?? {}) as { loopName?: unknown }
     const raw = typeof extra.loopName === 'string' ? extra.loopName : ''
     if (!raw) throw new Error('forge workspace adapter: extra.loopName is required')
-    return slugify(raw).slice(0, 60)
+    return forgeWorktreeSlug(raw)
   }
 
   function deriveProjectDirectory(info: WorkspaceInfo): string {

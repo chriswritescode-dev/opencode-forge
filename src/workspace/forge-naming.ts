@@ -12,7 +12,7 @@ import { slugify } from '../utils/logger'
  * restart guard probes for.
  */
 export function forgeWorktreeSlug(loopName: string): string {
-  return slugify(loopName).slice(0, 60)
+  return slugify(loopName)
 }
 
 export function forgeBranchName(loopName: string): string {
@@ -36,4 +36,21 @@ export function gitBranchExists(repoDir: string, branch: string): boolean {
     { cwd: repoDir, encoding: 'utf-8' },
   )
   return res.status === 0
+}
+
+/**
+ * Reports whether a loop's scratch branch still exists, so a loop whose worktree
+ * directory was pruned can still be restarted by recreating the worktree from the
+ * branch. Prefers the persisted branch name and falls back to the canonical
+ * `forge/<loopName>` derivation used by the workspace adapter.
+ */
+export function loopBranchExists(
+  state: { loopName: string; worktreeBranch?: string; projectDir?: string },
+  fallbackDir: string,
+): boolean {
+  const repoDir = state.projectDir || fallbackDir
+  const branch = state.worktreeBranch && state.worktreeBranch.length > 0
+    ? state.worktreeBranch
+    : forgeBranchName(state.loopName)
+  return gitBranchExists(repoDir, branch)
 }

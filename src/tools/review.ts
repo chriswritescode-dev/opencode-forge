@@ -1,20 +1,8 @@
 import { tool } from '@opencode-ai/plugin'
 import type { ToolContext } from './types'
-import { injectScopeField } from '../utils/git-branch'
+import { injectScopeField, resolveScopedLoopName } from '../utils/git-branch'
 
 const z = tool.schema
-
-function resolveLoopNameForToolContext(
-  loop: { resolveLoopName(sessionId: string): string | null },
-  toolCtx?: { sessionID?: string },
-): string | null | undefined {
-  if (!toolCtx?.sessionID) {
-    return undefined
-  }
-  // Preserve null (session exists but is not in a loop) so reads/deletes scope to
-  // the non-loop bucket instead of falling through to all findings.
-  return loop.resolveLoopName(toolCtx.sessionID)
-}
 
 export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
   const { reviewFindingsRepo, projectId, logger } = ctx
@@ -89,12 +77,11 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
       },
       execute: async (args, toolCtx) => {
         const explicitLoop = args.loopName !== undefined
-        const loopName = explicitLoop
-          ? args.loopName
-          : resolveLoopNameForToolContext(loop, toolCtx)
-        let findings = loopName !== undefined
-          ? reviewFindingsRepo.listByLoopName(projectId, loopName)
-          : reviewFindingsRepo.listAll(projectId)
+        const executionDirectory = toolCtx?.directory ?? toolCtx?.worktree ?? ctx.directory
+        const loopName: string | null = explicitLoop
+          ? (args.loopName ?? null)
+          : resolveScopedLoopName(executionDirectory, loop, toolCtx?.sessionID)
+        let findings = reviewFindingsRepo.listByLoopName(projectId, loopName)
 
         // Filter by section scope when in a sectioned loop
         // During final_auditing, return all sections so the auditor can see cross-section findings
@@ -159,7 +146,8 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         crossSection: z.boolean().optional().describe('Set to true to delete cross-section findings (sectionIndex=null). Overrides sectionIndex.'),
       },
       execute: async (args, toolCtx) => {
-        const loopName = resolveLoopNameForToolContext(loop, toolCtx)
+        const executionDirectory = toolCtx?.directory ?? toolCtx?.worktree ?? ctx.directory
+        const loopName = resolveScopedLoopName(executionDirectory, loop, toolCtx?.sessionID)
         let sectionIndex: number | null | undefined = args.sectionIndex
 
         if (args.crossSection === true) {
@@ -171,9 +159,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
           }
         }
 
-        const deleted = loopName !== undefined
-          ? reviewFindingsRepo.delete(projectId, args.file, args.line, { loopName, sectionIndex })
-          : reviewFindingsRepo.delete(projectId, args.file, args.line)
+        const deleted = reviewFindingsRepo.delete(projectId, args.file, args.line, { loopName, sectionIndex })
         if (!deleted) {
           return `No review finding found at ${args.file}:${args.line}`
         }

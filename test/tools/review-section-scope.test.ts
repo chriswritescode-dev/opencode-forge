@@ -555,4 +555,46 @@ describe('review section scoping', () => {
       expect(result).not.toContain('Section 0 B')
     })
   })
+
+  describe('scope resolves via directory when caller session is not the loop session (subagent)', () => {
+    beforeEach(() => {
+      // Loop owned by 'coder-session'; its worktree directory is tempDir.
+      insertLoop('audit-loop', { currentSectionIndex: 0, totalSections: 2, sessionId: 'coder-session' })
+    })
+
+    test('review-read from an unmapped session still sees the loop section findings', async () => {
+      reviewFindingsRepo.write({
+        projectId,
+        file: 'src/a.ts',
+        line: 10,
+        severity: 'bug',
+        description: 'Loop section 0 bug',
+        loopName: 'audit-loop',
+        sectionIndex: 0,
+      })
+
+      // Session not registered to any loop, but running in the loop's worktree dir.
+      const result = await tools['review-read'].execute({}, makeToolContext('audit-subagent-session'))
+      expect(result).toContain('Loop section 0 bug')
+    })
+
+    test('review-delete from an unmapped session clears the loop section finding', async () => {
+      reviewFindingsRepo.write({
+        projectId,
+        file: 'src/a.ts',
+        line: 10,
+        severity: 'bug',
+        description: 'Loop section 0 bug',
+        loopName: 'audit-loop',
+        sectionIndex: 0,
+      })
+
+      const result = await tools['review-delete'].execute(
+        { file: 'src/a.ts', line: 10 },
+        makeToolContext('audit-subagent-session'),
+      )
+      expect(result).toContain('Deleted review finding')
+      expect(reviewFindingsRepo.listByLoopName(projectId, 'audit-loop')).toHaveLength(0)
+    })
+  })
 })

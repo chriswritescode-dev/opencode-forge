@@ -9,6 +9,7 @@ import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecution
 import { captureLatestPlanForSession } from '../services/plan-capture'
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
 import { getRestartability } from '../loop/restartability'
+import { loopBranchExists } from '../workspace/forge-naming'
 
 const z = tool.schema
 
@@ -353,12 +354,14 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           }
 
           // Add restartability display
-          const restartability = getRestartability(state)
+          const restartability = getRestartability(state, {
+            branchExists: () => loopBranchExists(state, ctx.directory),
+          })
           if (!restartability.restartable) {
             if (restartability.restartBlockedReason === 'completed') {
               statusLines.push('Restart: not available (completed)')
-            } else if (restartability.restartBlockedReason === 'missing_worktree') {
-              statusLines.push(`Restart blocked: worktree directory no longer exists at ${state.worktreeDir}`)
+            } else if (restartability.restartBlockedMessage) {
+              statusLines.push(`Restart blocked: ${restartability.restartBlockedMessage}`)
             }
           } else {
             statusLines.push(`Restart: available with loop-status name=${state.loopName} restart=true`)
@@ -465,10 +468,12 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         }
 
         // Add restartability display for active loops using shared helper
-        const restartability = getRestartability(state)
+        const restartability = getRestartability(state, {
+          branchExists: () => loopBranchExists(state, ctx.directory),
+        })
         if (!restartability.restartable) {
-          if (restartability.restartBlockedReason === 'missing_worktree') {
-            statusLines.push(`Restart blocked: worktree directory no longer exists at ${state.worktreeDir}`)
+          if (restartability.restartBlockedMessage) {
+            statusLines.push(`Restart blocked: ${restartability.restartBlockedMessage}`)
           }
         } else if (restartability.restartRequiresForce) {
           statusLines.push('Restart: available with force=true')

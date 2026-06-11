@@ -47,6 +47,25 @@ function resolveFindingScope(
 }
 
 /**
+ * Resolves the loop name owning the current tool context, using the same
+ * resolution order as finding writes: sessionId first, then a directory match
+ * against active loops. Returns null when the context is not inside any loop.
+ *
+ * Read/delete and write paths MUST share this resolver so a finding written
+ * under a loop is always visible and deletable from that loop — even when the
+ * caller's session is not the loop's registered session (e.g. an audit
+ * subagent), in which case the directory fallback still resolves the loop.
+ */
+export function resolveScopedLoopName(
+  directory: string,
+  loopService: LoopScopeResolver,
+  sessionId?: string,
+): string | null {
+  const scope = resolveFindingScope(directory, loopService, sessionId)
+  return scope.kind === 'loop' ? scope.loopName : null
+}
+
+/**
  * Injects the loopName scope field into a JSON object for review findings.
  * Resolution order:
  * 1. If sessionId is provided, use the loop state for that session

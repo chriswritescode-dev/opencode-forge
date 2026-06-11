@@ -30,25 +30,8 @@ import {
   type PromptAgent,
 } from '../loop/in-flight-guard'
 import { getRestartability, type RestartBlockedReason } from '../loop/restartability'
-import { forgeBranchName, gitBranchExists } from '../workspace/forge-naming'
+import { loopBranchExists } from '../workspace/forge-naming'
 import { resolveHostSessionDirectory } from '../utils/resolve-project-root'
-
-/**
- * Reports whether a loop's scratch branch still exists, so a loop whose worktree
- * directory was pruned can still be restarted by recreating the worktree from the
- * branch. Prefers the persisted branch name and falls back to the canonical
- * `forge/<loopName>` derivation used by the workspace adapter.
- */
-function loopBranchExists(
-  state: { loopName: string; worktreeBranch?: string; projectDir?: string },
-  fallbackDir: string,
-): boolean {
-  const repoDir = state.projectDir || fallbackDir
-  const branch = state.worktreeBranch && state.worktreeBranch.length > 0
-    ? state.worktreeBranch
-    : forgeBranchName(state.loopName)
-  return gitBranchExists(repoDir, branch)
-}
 
 /**
  * A freshly created + warped loop session can transiently report "Session not
@@ -1775,16 +1758,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       let newSessionId: string | undefined
 
-      if (restartSandbox && deps.sandboxManager) {
-        try {
-          const sbxResult = await deps.sandboxManager.start(stoppedState.loopName, stoppedState.worktreeDir)
-          deps.logger.log(`loop-restart: started sandbox container ${sbxResult.containerName}`)
-        } catch (err) {
-          deps.logger.error('loop-restart: failed to start sandbox container', err)
-          return { ok: false, error: 'Restart failed: could not start sandbox container.' }
-        }
-      }
-
       if (stoppedState.worktree) {
         const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
         const ws = await createBuiltinWorktreeWorkspace(deps.v2, {
@@ -1795,6 +1768,16 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         stoppedState.workspaceId = ws.workspaceId
         stoppedState.worktreeDir = ws.directory
         stoppedState.worktreeBranch = ws.branch
+      }
+
+      if (restartSandbox && deps.sandboxManager) {
+        try {
+          const sbxResult = await deps.sandboxManager.start(stoppedState.loopName, stoppedState.worktreeDir)
+          deps.logger.log(`loop-restart: started sandbox container ${sbxResult.containerName}`)
+        } catch (err) {
+          deps.logger.error('loop-restart: failed to start sandbox container', err)
+          return { ok: false, error: 'Restart failed: could not start sandbox container.' }
+        }
       }
 
       // Unified session creation for restart (always a single code session)
