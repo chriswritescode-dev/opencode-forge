@@ -30,7 +30,40 @@ import {
   type PromptAgent,
 } from '../loop/in-flight-guard'
 import { getRestartability, type RestartBlockedReason } from '../loop/restartability'
+import { forgeBranchName, gitBranchExists } from '../workspace/forge-naming'
 import { resolveHostSessionDirectory } from '../utils/resolve-project-root'
+
+/**
+ * Reports whether a loop's scratch branch still exists, so a loop whose worktree
+ * directory was pruned can still be restarted by recreating the worktree from the
+ * branch. Prefers the persisted branch name and falls back to the canonical
+ * `forge/<loopName>` derivation used by the workspace adapter.
+ */
+function loopBranchExists(
+  state: { loopName: string; worktreeBranch?: string; projectDir?: string },
+  fallbackDir: string,
+): boolean {
+  const repoDir = state.projectDir || fallbackDir
+  const branch = state.worktreeBranch && state.worktreeBranch.length > 0
+    ? state.worktreeBranch
+    : forgeBranchName(state.loopName)
+  return gitBranchExists(repoDir, branch)
+}
+
+/**
+ * A freshly created + warped loop session can transiently report "Session not
+ * found" (and, less often, "Workspace not found") before it is durably
+ * registered — the `session.created` event lags the synchronous `create()`
+ * return. Such failures are retryable; a real misconfiguration is not.
+ */
+function isTransientSessionError(err: unknown): boolean {
+  const msg = err instanceof Error
+    ? err.message
+    : typeof err === 'string'
+      ? err
+      : (() => { try { return JSON.stringify(err ?? '') } catch { return String(err) } })()
+  return /Session not found/i.test(msg) || /Workspace not found/i.test(msg)
+}
 
 // ============================================================================
 // Surface Types - Identifies the caller boundary
@@ -1547,7 +1580,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
       }
       
-      const restartability = getRestartability(state, { worktreeExists: existsSync })
+      const restartability = getRestartability(state, {
+        worktreeExists: existsSync,
+        branchExists: () => loopBranchExists(state, _ctx.directory),
+      })
       
       return {
         loopName: state.loopName,
@@ -1680,7 +1716,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       return fail('not_found', 404, `No loop found for "${name}".`, undefined, allStates.map(s => s.loopName))
     }
     
-    const restartability = getRestartability(stoppedState, { force: command.force, worktreeExists: existsSync })
+    const restartability = getRestartability(stoppedState, {
+      force: command.force,
+      worktreeExists: existsSync,
+      branchExists: () => loopBranchExists(stoppedState, ctx.directory),
+    })
     
     if (!restartability.restartable) {
       return fail('conflict', 409, restartability.restartBlockedMessage!)
@@ -1782,6 +1822,16 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         stoppedState.workspaceId = undefined
         bindFailed = true
       }
+
+      // Navigate the TUI to the recreated worktree session and wait for the
+      // workspace to connect, mirroring handleStartLoop. Without this the loop
+      // restarts and runs but its workspace never connects/focuses in the TUI.
+      await selectInitialWorktreeSession(newSessionId, createResult.boundWorkspaceId, 'on restart', {
+        selectSession: true,
+        logger: deps.logger,
+        workspaceStatusRegistry: deps.workspaceStatusRegistry,
+        selectSessionFn: (sel) => selectSessionWithFallback(deps, sel),
+      })
 
       // Unified section extraction on restart — preserve existing progress if sections exist
       const maxSections = 12
@@ -1907,12 +1957,27 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
       }
 
-      const { result: promptResult } = await retryWithModelFallback(
-        () => sendRestartPrompt(loopModel!),
-        () => sendRestartPrompt(),
-        loopModel,
-        deps.logger,
-      )
+      // Retry the prompt with backoff: a just-created + warped session can briefly
+      // report "Session not found" before it is durably registered. Without this,
+      // a transient race tore the restart down and reverted the loop to terminal.
+      // (Workspace connection was already awaited via selectInitialWorktreeSession.)
+      const RESTART_PROMPT_MAX_ATTEMPTS = 4
+      let promptResult: { data?: unknown; error?: unknown } = { error: new Error('restart prompt not attempted') }
+      for (let attempt = 1; attempt <= RESTART_PROMPT_MAX_ATTEMPTS; attempt++) {
+        const { result } = await retryWithModelFallback(
+          () => sendRestartPrompt(loopModel!),
+          () => sendRestartPrompt(),
+          loopModel,
+          deps.logger,
+        )
+        promptResult = result
+        if (!result.error || !isTransientSessionError(result.error) || attempt === RESTART_PROMPT_MAX_ATTEMPTS) {
+          break
+        }
+        const backoffMs = 250 * attempt
+        deps.logger.log(`loop-restart: new session not ready yet (attempt ${attempt}/${RESTART_PROMPT_MAX_ATTEMPTS}); retrying prompt in ${backoffMs}ms`)
+        await new Promise((resolve) => setTimeout(resolve, backoffMs))
+      }
 
       if (promptResult.error) {
         const isConcurrent = promptResult.error instanceof ConcurrentPromptError

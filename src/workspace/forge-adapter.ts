@@ -6,6 +6,7 @@ import type { WorkspaceAdapter, WorkspaceInfo } from '@opencode-ai/plugin'
 import type { Logger } from '../types'
 import type { SandboxManager } from '../sandbox/manager'
 import { slugify } from '../utils/logger'
+import { forgeBranchName, forgeWorktreeDir, gitBranchExists } from './forge-naming'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 
 
@@ -131,8 +132,8 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
       return {
         ...info,
         name: loopName,
-        branch: `forge/${loopName}`,
-        directory: join(dataDir, 'worktrees', loopName),
+        branch: forgeBranchName(loopName),
+        directory: forgeWorktreeDir(dataDir, loopName),
       }
     },
     async create(info) {
@@ -148,11 +149,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
       }
 
       // Detect orphan state from a prior failed run: branch may exist without a live worktree.
-      const branchExists = spawnSync(
-        'git',
-        ['show-ref', '--verify', '--quiet', `refs/heads/${info.branch}`],
-        { cwd: projectDir, encoding: 'utf-8' },
-      ).status === 0
+      const branchExists = gitBranchExists(projectDir, info.branch)
 
       // Prune dead worktree records first so `git worktree add` can re-use an orphaned branch.
       spawnSync('git', ['worktree', 'prune'], { cwd: projectDir, encoding: 'utf-8' })
