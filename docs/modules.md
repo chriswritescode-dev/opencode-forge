@@ -433,7 +433,7 @@ Cross-cutting helpers (~25 files) organized by concern:
 | Sessions | `audit-session.ts`, `session-titles.ts` | Session naming |
 | TUI | `tui-client.ts`, `tui-plan-store.ts`, `tui-loop-store.ts`, `tui-execution-preferences.ts`, `tui-execution-context-cache.ts`, `tui-models.ts` | TUI RPC, storage, preferences, models |
 | Workspace | `worktree-cleanup.ts`, `workspace-listing.ts`, `workspace-status-registry.ts` | Worktree/workspace lifecycle |
-| Misc | `partial-match.ts`, `model-fallback.ts`, `git-branch.ts`, `busy-guard.ts`, `sandbox-ready.ts`, `format.ts` | Various helpers |
+| Misc | `partial-match.ts`, `model-fallback.ts`, `busy-guard.ts`, `sandbox-ready.ts`, `format.ts` | Various helpers |
 
 ---
 

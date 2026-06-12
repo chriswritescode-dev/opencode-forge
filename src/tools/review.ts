@@ -1,12 +1,27 @@
 import { tool } from '@opencode-ai/plugin'
 import type { ToolContext } from './types'
-import { injectScopeField, resolveScopedLoopName } from '../utils/git-branch'
 
 const z = tool.schema
 
 export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
   const { reviewFindingsRepo, projectId, logger } = ctx
   const loop = ctx.loop
+
+  /**
+   * Resolve the loop owning the current tool context using the single canonical
+   * resolver (`resolveActiveLoopForSession`), which follows parent-session hops.
+   * Read, write, and delete MUST share this so a finding written under a loop —
+   * even from a descendant session such as an audit subagent — is always
+   * visible and deletable from that loop. Returns null outside any active loop.
+   */
+  async function resolveLoopName(toolCtx?: { sessionID?: string }): Promise<string | null> {
+    const sessionId = toolCtx?.sessionID
+    if (!sessionId) return null
+    const resolved = await ctx.resolveActiveLoopForSession(sessionId)
+    const loopName = resolved?.loopName ?? null
+    logger.log(`review-scope: session=${sessionId} resolved loop=${loopName ?? 'none'}`)
+    return loopName
+  }
 
   return {
     'review-write': tool({
@@ -33,8 +48,13 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
           sectionIndex: null as number | null,
         }
 
-        const executionDirectory = toolCtx?.directory ?? toolCtx?.worktree ?? ctx.directory
-        injectScopeField(row, executionDirectory, loop, toolCtx?.sessionID)
+        row.loopName = await resolveLoopName(toolCtx)
+        if (row.loopName) {
+          const loopState = loop.getActiveState(row.loopName)
+          if (loopState && loopState.totalSections > 0) {
+            row.sectionIndex = loopState.currentSectionIndex
+          }
+        }
 
         // Apply explicit section index or crossSection override
         if (args.crossSection) {
@@ -61,7 +81,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
           return `Finding already exists at ${args.file}:${args.line}. Only review-delete (auditor only) can remove an existing finding.`
         }
         
-        logger.log(`review-write: stored finding at ${args.file}:${args.line} (${args.severity})${row.sectionIndex !== null ? ` for section ${row.sectionIndex}` : ''}`)
+        logger.log(`review-write: stored finding at ${args.file}:${args.line} (${args.severity}) loop=${row.loopName ?? 'none'}${row.sectionIndex !== null ? ` section ${row.sectionIndex}` : ''}`)
         return `Stored review finding at ${args.file}:${args.line} (${args.severity})${row.sectionIndex !== null ? ` for section ${row.sectionIndex}` : ''}`
       },
     }),
@@ -76,11 +96,11 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         allSections: z.boolean().optional().describe('Return all findings across all sections, ignoring current section scoping.'),
       },
       execute: async (args, toolCtx) => {
-        const explicitLoop = args.loopName !== undefined
-        const executionDirectory = toolCtx?.directory ?? toolCtx?.worktree ?? ctx.directory
+        const trimmedLoop = typeof args.loopName === 'string' ? args.loopName.trim() : ''
+        const explicitLoop = trimmedLoop !== ''
         const loopName: string | null = explicitLoop
-          ? (args.loopName ?? null)
-          : resolveScopedLoopName(executionDirectory, loop, toolCtx?.sessionID)
+          ? trimmedLoop
+          : await resolveLoopName(toolCtx)
         let findings = reviewFindingsRepo.listByLoopName(projectId, loopName)
 
         // Filter by section scope when in a sectioned loop
@@ -146,24 +166,25 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         crossSection: z.boolean().optional().describe('Set to true to delete cross-section findings (sectionIndex=null). Overrides sectionIndex.'),
       },
       execute: async (args, toolCtx) => {
-        const executionDirectory = toolCtx?.directory ?? toolCtx?.worktree ?? ctx.directory
-        const loopName = resolveScopedLoopName(executionDirectory, loop, toolCtx?.sessionID)
+        const loopName = await resolveLoopName(toolCtx)
         let sectionIndex: number | null | undefined = args.sectionIndex
 
         if (args.crossSection === true) {
           sectionIndex = null
         } else if (sectionIndex === undefined && loopName) {
           const loopState = loop.getActiveState(loopName)
-          if (loopState && loopState.totalSections > 0) {
+          if (loopState && loopState.totalSections > 0 && loopState.phase !== 'final_auditing') {
             sectionIndex = loopState.currentSectionIndex
           }
         }
 
+        const sectionLabel = sectionIndex === undefined ? 'any' : sectionIndex === null ? 'cross-section' : String(sectionIndex)
         const deleted = reviewFindingsRepo.delete(projectId, args.file, args.line, { loopName, sectionIndex })
         if (!deleted) {
+          logger.log(`review-delete: no finding at ${args.file}:${args.line} for loop=${loopName ?? 'none'} section=${sectionLabel}`)
           return `No review finding found at ${args.file}:${args.line}`
         }
-        logger.log(`review-delete: deleted finding at ${args.file}:${args.line}`)
+        logger.log(`review-delete: deleted finding at ${args.file}:${args.line} loop=${loopName ?? 'none'} section=${sectionLabel}`)
         return `Deleted review finding at ${args.file}:${args.line}`
       },
     }),

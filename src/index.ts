@@ -399,6 +399,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       workspaceStatusRegistry,
       pendingTeardowns,
       resolveSandboxForSession,
+      resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
     }
 
     const tools = createTools(ctx)

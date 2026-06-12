@@ -206,6 +206,42 @@ describe('classifyForgeWorkspace', () => {
     expect(result).toEqual({ action: 'remove-registration-only', reason: 'restartable', loopName: 'test-loop' })
   })
 
+  test('cancelled loop with freshly-created workspace → keep/pending-start (restart in progress)', () => {
+    const nowMs = 10_000
+    const entry = {
+      id: 'ws1',
+      type: 'forge',
+      extra: {
+        loopName: 'test-loop',
+        projectDirectory,
+        workspaceCreatedAt: nowMs - 1_000,
+      },
+    }
+    const loopsRepo = createMockLoopsRepo({
+      get: vi.fn().mockReturnValue({ projectId, loopName: 'test-loop', status: 'cancelled' }),
+    })
+    const result = classifyForgeWorkspace(entry, loopsRepo, projectId, projectDirectory, { nowMs, pendingAttachGraceMs: 5_000 })
+    expect(result).toEqual({ action: 'keep', reason: 'pending-start' })
+  })
+
+  test('cancelled loop with expired workspace timestamp → remove-registration-only/restartable', () => {
+    const nowMs = 10_000
+    const entry = {
+      id: 'ws1',
+      type: 'forge',
+      extra: {
+        loopName: 'test-loop',
+        projectDirectory,
+        workspaceCreatedAt: nowMs - 10_000,
+      },
+    }
+    const loopsRepo = createMockLoopsRepo({
+      get: vi.fn().mockReturnValue({ projectId, loopName: 'test-loop', status: 'cancelled' }),
+    })
+    const result = classifyForgeWorkspace(entry, loopsRepo, projectId, projectDirectory, { nowMs, pendingAttachGraceMs: 5_000 })
+    expect(result).toEqual({ action: 'remove-registration-only', reason: 'restartable', loopName: 'test-loop' })
+  })
+
   test('errored loop → remove-registration-only/restartable', () => {
     const entry = {
       id: 'ws1',

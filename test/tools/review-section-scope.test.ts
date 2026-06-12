@@ -9,6 +9,7 @@ import { createReviewFindingsRepo } from '../../src/storage/repos/review-finding
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopService } from '../../src/loop/service'
 import { createReviewTools } from '../../src/tools/review'
+import { createSessionLoopResolver } from '../../src/services/session-loop-resolver'
 import type { Logger } from '../../src/types'
 
 const mockLogger: Logger = {
@@ -27,9 +28,11 @@ describe('review section scoping', () => {
   let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
   let loopService: ReturnType<typeof createLoopService>
   let tools: ReturnType<typeof createReviewTools>
+  let parentSessions: Record<string, string>
   const projectId = 'test-project'
 
   beforeEach(() => {
+    parentSessions = {}
     tempDir = mkdtempSync(join(tmpdir(), 'review-section-scope-test-'))
     dbPath = join(tempDir, 'test.db')
     db = new Database(dbPath)
@@ -137,6 +140,12 @@ describe('review section scoping', () => {
     reviewFindingsRepo = createReviewFindingsRepo(db)
     sectionPlansRepo = createSectionPlansRepo(db)
     loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger, undefined, undefined, undefined, sectionPlansRepo)
+    const sessionLoopResolver = createSessionLoopResolver({
+      loop: loopService,
+      getParentSessionId: async (sessionId: string) => parentSessions[sessionId] ?? null,
+      getSessionDirectory: async () => tempDir,
+      logger: mockLogger,
+    })
     const ctx = {
       reviewFindingsRepo,
       plansRepo,
@@ -145,6 +154,7 @@ describe('review section scoping', () => {
       logger: mockLogger,
       loop: loopService,
       directory: tempDir,
+      resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
     } as any
     tools = createReviewTools(ctx)
   })
@@ -154,7 +164,7 @@ describe('review section scoping', () => {
     try { rmSync(tempDir, { recursive: true, force: true }) } catch { /* ignore */ }
   })
 
-  function insertLoop(loopName: string, opts?: { currentSectionIndex?: number; totalSections?: number; sessionId?: string }) {
+  function insertLoop(loopName: string, opts?: { currentSectionIndex?: number; totalSections?: number; sessionId?: string; phase?: 'coding' | 'auditing' | 'final_auditing' }) {
     loopsRepo.insert({
       projectId,
       loopName,
@@ -168,7 +178,7 @@ describe('review section scoping', () => {
       iteration: 1,
       auditCount: 0,
       errorCount: 0,
-      phase: 'coding',
+      phase: opts?.phase ?? 'coding',
       executionModel: null,
       auditorModel: null,
       modelFailed: false,
@@ -270,6 +280,30 @@ describe('review section scoping', () => {
       const result = await tools['review-read'].execute({ allSections: true }, makeToolContext('scoped-loop-session'))
       expect(result).toContain('Section 0 bug')
       expect(result).toContain('Section 1 warning')
+    })
+
+    test('explicit empty loopName falls back to session scope, not the non-loop bucket', async () => {
+      reviewFindingsRepo.write({
+        projectId,
+        file: 'src/a.ts',
+        line: 10,
+        severity: 'bug',
+        description: 'Loop section 0 bug',
+        loopName: 'scoped-loop',
+        sectionIndex: 0,
+      })
+      reviewFindingsRepo.write({
+        projectId,
+        file: 'src/orphan.ts',
+        line: 99,
+        severity: 'warning',
+        description: 'Orphaned non-loop finding',
+        loopName: null,
+      })
+
+      const result = await tools['review-read'].execute({ loopName: '   ' }, makeToolContext('scoped-loop-session'))
+      expect(result).toContain('Loop section 0 bug')
+      expect(result).not.toContain('Orphaned non-loop finding')
     })
 
     test('handles different current section index', async () => {
@@ -462,6 +496,52 @@ describe('review section scoping', () => {
     })
   })
 
+  describe('review-delete during final audit mirrors review-read (all sections)', () => {
+    beforeEach(() => {
+      insertLoop('final-loop', { currentSectionIndex: 4, totalSections: 5, phase: 'final_auditing' })
+    })
+
+    test('deletes a finding from an earlier section the auditor can see', async () => {
+      reviewFindingsRepo.write({
+        projectId,
+        file: 'src/a.ts',
+        line: 10,
+        severity: 'bug',
+        description: 'Earlier section bug',
+        loopName: 'final-loop',
+        sectionIndex: 0,
+      })
+
+      const result = await tools['review-delete'].execute(
+        { file: 'src/a.ts', line: 10 },
+        makeToolContext('final-loop-session')
+      )
+
+      expect(result).toContain('Deleted review finding')
+      expect(reviewFindingsRepo.listByLoopName(projectId, 'final-loop')).toHaveLength(0)
+    })
+
+    test('deletes a cross-section finding without crossSection flag', async () => {
+      reviewFindingsRepo.write({
+        projectId,
+        file: 'src/b.ts',
+        line: 20,
+        severity: 'bug',
+        description: 'Cross-section bug',
+        loopName: 'final-loop',
+        sectionIndex: null,
+      })
+
+      const result = await tools['review-delete'].execute(
+        { file: 'src/b.ts', line: 20 },
+        makeToolContext('final-loop-session')
+      )
+
+      expect(result).toContain('Deleted review finding')
+      expect(reviewFindingsRepo.listByLoopName(projectId, 'final-loop')).toHaveLength(0)
+    })
+  })
+
   describe('different sections can report findings on same file:line', () => {
     test('two different sections can have findings on the same file:line', () => {
       const r1 = reviewFindingsRepo.write({
@@ -556,13 +636,15 @@ describe('review section scoping', () => {
     })
   })
 
-  describe('scope resolves via directory when caller session is not the loop session (subagent)', () => {
+  describe('scope resolves via parent-session hop when caller is a subagent', () => {
     beforeEach(() => {
-      // Loop owned by 'coder-session'; its worktree directory is tempDir.
+      // Loop owned by 'coder-session'. The audit subagent is a child session
+      // whose parent is the loop's registered session.
       insertLoop('audit-loop', { currentSectionIndex: 0, totalSections: 2, sessionId: 'coder-session' })
+      parentSessions['audit-subagent-session'] = 'coder-session'
     })
 
-    test('review-read from an unmapped session still sees the loop section findings', async () => {
+    test('review-read from a subagent session still sees the loop section findings', async () => {
       reviewFindingsRepo.write({
         projectId,
         file: 'src/a.ts',
@@ -573,12 +655,30 @@ describe('review section scoping', () => {
         sectionIndex: 0,
       })
 
-      // Session not registered to any loop, but running in the loop's worktree dir.
+      // Child session not registered to any loop; resolves via its parent.
       const result = await tools['review-read'].execute({}, makeToolContext('audit-subagent-session'))
       expect(result).toContain('Loop section 0 bug')
     })
 
-    test('review-delete from an unmapped session clears the loop section finding', async () => {
+    test('review-write from a subagent session scopes the finding to the loop', async () => {
+      const result = await tools['review-write'].execute(
+        {
+          file: 'src/a.ts',
+          line: 10,
+          severity: 'bug',
+          description: 'Subagent-written bug',
+        },
+        makeToolContext('audit-subagent-session'),
+      )
+      expect(result).toContain('Stored review finding')
+
+      const findings = reviewFindingsRepo.listByLoopName(projectId, 'audit-loop')
+      expect(findings).toHaveLength(1)
+      expect(findings[0].loopName).toBe('audit-loop')
+      expect(findings[0].sectionIndex).toBe(0)
+    })
+
+    test('review-delete from a subagent session clears the loop section finding', async () => {
       reviewFindingsRepo.write({
         projectId,
         file: 'src/a.ts',

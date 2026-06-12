@@ -56,4 +56,11 @@ export interface ToolContext {
   pendingTeardowns: import('../workspace/pending-teardown').PendingTeardownRegistry
   /** Resolves the active sandbox context for a session, or null when no sandbox is active. */
   resolveSandboxForSession: (sessionID: string) => Promise<SandboxContext | null>
+  /**
+   * Resolves the active loop owning a session, following parent-session hops.
+   * This is the single canonical loop-resolution utility shared by hooks and
+   * tools so a finding written from any descendant session (e.g. an audit
+   * subagent) is correctly scoped to its loop.
+   */
+  resolveActiveLoopForSession: (sessionID: string) => Promise<import('../services/session-loop-resolver').ResolvedLoop | null>
 }

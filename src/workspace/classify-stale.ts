@@ -121,8 +121,19 @@ export function classifyForgeWorkspace(
   }
 
   // Check 10: non-running restartable loops (cancelled, errored, stalled)
-  // Remove registration only, preserve worktree for restart
+  // Remove registration only, preserve worktree for restart.
+  //
+  // A restart recreates the workspace while the loop row is still terminal and
+  // only flips it to 'running' after awaiting workspace connection. The
+  // session.created event for the new session fires inside that window, so a
+  // freshly-created workspace must be kept (its workspaceCreatedAt is recent);
+  // otherwise this safety net tears down the workspace mid-restart and the
+  // restart prompt fails with "Workspace not found". Genuinely stale terminal
+  // workspaces carry an old timestamp and fall through to removal.
   if (row.status === 'cancelled' || row.status === 'errored' || row.status === 'stalled') {
+    if (isPendingStartWorkspace(entry, options)) {
+      return { action: 'keep', reason: 'pending-start' }
+    }
     return { action: 'remove-registration-only', reason: 'restartable', loopName }
   }
 

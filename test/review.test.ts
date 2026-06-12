@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
 import type { Database } from 'bun:sqlite'
 import { createReviewTools } from '../src/tools/review'
 import { createLoopService } from '../src/loop/service'
+import { createSessionLoopResolver } from '../src/services/session-loop-resolver'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
@@ -26,6 +27,12 @@ const mockLogger: Logger = {
 function createToolContext(db: Database, reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>, loopService: ReturnType<typeof createLoopService>) {
   const plansRepo = createPlansRepo(db)
   const loopsRepo = createLoopsRepo(db)
+  const sessionLoopResolver = createSessionLoopResolver({
+    loop: loopService,
+    getParentSessionId: async () => null,
+    getSessionDirectory: async () => TEST_DIR,
+    logger: mockLogger,
+  })
   return {
     reviewFindingsRepo,
     plansRepo,
@@ -34,6 +41,7 @@ function createToolContext(db: Database, reviewFindingsRepo: ReturnType<typeof c
     logger: mockLogger,
     loop: loopService,
     directory: TEST_DIR,
+    resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
   } as any
 }
 
