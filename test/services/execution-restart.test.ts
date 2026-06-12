@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync } from 'fs'
+import { execFileSync } from 'child_process'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
@@ -111,6 +112,8 @@ describe('handleLoopRestart from stall_timeout', () => {
       phase: opts.phase as any,
       executionModel: null,
       auditorModel: null,
+      executionVariant: null,
+      auditorVariant: null,
       modelFailed: false,
       sandbox: false,
       sandboxContainer: null,
@@ -823,6 +826,8 @@ describe('handleLoopRestart restartability rules', () => {
     active: boolean
     worktree: boolean
     worktreeDir: string
+    worktreeBranch: string | null
+    projectDir: string
     workspaceId: string | null
   }> = {}) {
     const defaults = {
@@ -836,6 +841,8 @@ describe('handleLoopRestart restartability rules', () => {
       active: false,
       worktree: false,
       worktreeDir: '/tmp/test-worktree',
+      worktreeBranch: null as string | null,
+      projectDir: '/tmp',
       workspaceId: null as string | null,
     }
     const opts = { ...defaults, ...overrides }
@@ -846,8 +853,8 @@ describe('handleLoopRestart restartability rules', () => {
       currentSessionId: 'session-old',
       worktree: opts.worktree,
       worktreeDir: opts.worktreeDir,
-      worktreeBranch: null,
-      projectDir: '/tmp',
+      worktreeBranch: opts.worktreeBranch,
+      projectDir: opts.projectDir,
       maxIterations: 10,
       iteration: opts.iteration,
       auditCount: 0,
@@ -855,6 +862,8 @@ describe('handleLoopRestart restartability rules', () => {
       phase: opts.phase as any,
       executionModel: null,
       auditorModel: null,
+      executionVariant: null,
+      auditorVariant: null,
       modelFailed: false,
       sandbox: false,
       sandboxContainer: null,
@@ -870,7 +879,7 @@ describe('handleLoopRestart restartability rules', () => {
     }, { lastAuditResult: null })
   }
 
-  async function createMockService() {
+  async function createMockService(opts?: { sandboxManager?: unknown }) {
     const noopFn = () => {}
     const mockLoopService: Partial<LoopService> = {
       listActive: () => loopService.listActive(),
@@ -889,6 +898,7 @@ describe('handleLoopRestart restartability rules', () => {
     const sessionCreateSpy = vi.fn().mockResolvedValue({ data: { id: 'new-session-restart' } })
     const sessionPromptAsyncSpy = vi.fn().mockResolvedValue({})
     const workspaceCreateSpy = vi.fn().mockResolvedValue({ data: { id: 'ws-new', directory: '/tmp', branch: 'main' } })
+    const tuiSelectSessionSpy = vi.fn().mockResolvedValue({})
 
     const mockV2Client = {
       session: {
@@ -910,7 +920,7 @@ describe('handleLoopRestart restartability rules', () => {
         },
         session: { list: async () => ({ data: [] }) },
       },
-      tui: { publish: async () => ({}), selectSession: async () => ({}) },
+      tui: { publish: async () => ({}), selectSession: tuiSelectSessionSpy },
       worktree: { create: async () => ({ data: { directory: '/tmp/wt', branch: 'main' } }) },
     }
 
@@ -949,6 +959,7 @@ describe('handleLoopRestart restartability rules', () => {
       sectionPlansRepo,
       workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
       pendingTeardowns: mockPendingTeardowns as any,
+      sandboxManager: opts?.sandboxManager as any,
     })
 
     return {
@@ -956,6 +967,7 @@ describe('handleLoopRestart restartability rules', () => {
       sessionCreateSpy,
       sessionPromptAsyncSpy,
       workspaceCreateSpy,
+      tuiSelectSessionSpy,
     }
   }
 
@@ -1086,6 +1098,167 @@ describe('handleLoopRestart restartability rules', () => {
     expect(workspaceCreateSpy).not.toHaveBeenCalled()
 
     const newState = loopService.getActiveState('missing-worktree-loop')
+    expect(newState).toBeNull()
+  })
+
+  test('missing worktree but surviving branch allows restart (recreates worktree from branch)', async () => {
+    const loopName = 'branch-survives-loop'
+    // Real repo whose forge/<loopName> branch outlives the pruned worktree directory.
+    const repoDir = mkdtempSync(join(tmpdir(), 'restart-branch-repo-'))
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repoDir, encoding: 'utf-8' })
+    git('init', '-q')
+    git('-c', 'user.email=t@t.co', '-c', 'user.name=test', 'commit', '--allow-empty', '-q', '-m', 'init')
+    git('branch', `forge/${loopName}`)
+
+    const missingDir = join(tmpdir(), `pruned-worktree-${Date.now()}`)
+    insertLoop({
+      loopName,
+      status: 'cancelled',
+      terminationReason: 'user_aborted',
+      worktree: true,
+      worktreeDir: missingDir,
+      projectDir: repoDir,
+      phase: 'coding',
+    })
+
+    const { service, sessionCreateSpy, workspaceCreateSpy, tuiSelectSessionSpy } = await createMockService()
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: repoDir },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: loopName },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    // Restart proceeded: a fresh worktree workspace was requested and a new code session created.
+    expect(workspaceCreateSpy).toHaveBeenCalled()
+    expect(sessionCreateSpy).toHaveBeenCalled()
+
+    // TUI was navigated to the recreated workspace+session so it connects/focuses.
+    expect(tuiSelectSessionSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ workspace: 'ws-new' }),
+    )
+
+    const newState = loopService.getActiveState(loopName)
+    expect(newState?.active).toBe(true)
+  })
+
+  test('sandbox starts after the worktree is recreated, using the refreshed directory', async () => {
+    const loopName = 'sandbox-order-loop'
+    const repoDir = mkdtempSync(join(tmpdir(), 'restart-sandbox-repo-'))
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repoDir, encoding: 'utf-8' })
+    git('init', '-q')
+    git('-c', 'user.email=t@t.co', '-c', 'user.name=test', 'commit', '--allow-empty', '-q', '-m', 'init')
+    git('branch', `forge/${loopName}`)
+
+    const missingDir = join(tmpdir(), `pruned-sandbox-worktree-${Date.now()}`)
+    insertLoop({
+      loopName,
+      status: 'cancelled',
+      terminationReason: 'user_aborted',
+      worktree: true,
+      worktreeDir: missingDir,
+      projectDir: repoDir,
+      phase: 'coding',
+    })
+
+    const sandboxStartSpy = vi.fn().mockResolvedValue({ containerName: 'forge-sandbox' })
+    const sandboxManager = {
+      start: sandboxStartSpy,
+      docker: { containerName: () => 'forge-sandbox' },
+    }
+
+    const { service, workspaceCreateSpy } = await createMockService({ sandboxManager })
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: repoDir },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: loopName },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    // Sandbox started with the recreated worktree directory, not the pruned one.
+    expect(sandboxStartSpy).toHaveBeenCalledWith(loopName, '/tmp')
+
+    // And only after the worktree workspace was recreated.
+    expect(workspaceCreateSpy).toHaveBeenCalled()
+    expect(Math.min(...sandboxStartSpy.mock.invocationCallOrder))
+      .toBeGreaterThan(Math.min(...workspaceCreateSpy.mock.invocationCallOrder))
+  })
+
+  test('retries a transient "Session not found" on restart prompt instead of rolling back', async () => {
+    const loopName = 'transient-session-loop'
+    insertLoop({
+      loopName,
+      status: 'cancelled',
+      terminationReason: 'user_aborted',
+      worktree: false,
+      phase: 'coding',
+    })
+
+    const { service, sessionPromptAsyncSpy } = await createMockService()
+    // First outer attempt (2 model tries + 1 fallback) fails with a transient
+    // not-found; the next attempt after backoff succeeds.
+    let calls = 0
+    sessionPromptAsyncSpy.mockImplementation(async () => {
+      calls += 1
+      if (calls <= 3) {
+        return { error: { name: 'NotFoundError', data: { message: `Session not found: ses_x` } } }
+      }
+      return {}
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: loopName },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(calls).toBeGreaterThan(3)
+
+    const newState = loopService.getActiveState(loopName)
+    expect(newState?.active).toBe(true)
+    expect(newState?.terminationReason).toBeFalsy()
+  })
+
+  test('rolls back to previous state when restart prompt keeps failing', async () => {
+    const loopName = 'persistent-fail-loop'
+    insertLoop({
+      loopName,
+      status: 'cancelled',
+      terminationReason: 'user_aborted',
+      worktree: false,
+      phase: 'coding',
+    })
+
+    const { service, sessionPromptAsyncSpy } = await createMockService()
+    sessionPromptAsyncSpy.mockResolvedValue({
+      error: { name: 'NotFoundError', data: { message: 'Session not found: ses_x' } },
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: loopName },
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.message).toContain('could not send prompt')
+
+    const newState = loopService.getActiveState(loopName)
     expect(newState).toBeNull()
   })
 })

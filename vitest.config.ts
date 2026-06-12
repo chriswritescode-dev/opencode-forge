@@ -31,6 +31,7 @@ export default defineConfig({
       'test/loop/state-mapper.test.ts',
       'test/loop/prompts.test.ts',
       'test/loop/transitions.test.ts',
+      'test/loop/restartability.test.ts',
       'test/loop/in-flight-guard.test.ts',
       'test/loop/runtime.test.ts',
       'test/loop/start.test.ts',

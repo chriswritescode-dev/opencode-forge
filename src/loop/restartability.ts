@@ -24,13 +24,19 @@ export interface RestartabilityResult {
  * 
  * Rules:
  * - Completed loops cannot restart (checked by status field and terminationReason)
- * - Missing worktree blocks restart
+ * - Missing worktree blocks restart ONLY when the scratch branch is also gone;
+ *   if the branch survives, restart recreates the worktree from it
  * - Active/running loops require force
  * - All other terminal states (cancelled, errored, stalled) are restartable without force
+ *
+ * @param opts.branchExists Lazy predicate that reports whether the loop's scratch
+ *   branch still exists. It is only consulted when the worktree directory is
+ *   missing, so callers may safely back it with a git probe. When omitted, a
+ *   missing worktree directory blocks restart (legacy behavior).
  */
 export function getRestartability(
   state: LoopState,
-  opts?: { force?: boolean; worktreeExists?: (path: string) => boolean }
+  opts?: { force?: boolean; worktreeExists?: (path: string) => boolean; branchExists?: () => boolean }
 ): RestartabilityResult {
   const worktreeExists = opts?.worktreeExists ?? existsSync
   
@@ -57,13 +63,17 @@ export function getRestartability(
     }
   }
   
-  // Missing worktree blocks restart
+  // Missing worktree directory: the forge scratch branch is never deleted, so if
+  // it survives, restart recreates the worktree from it (git worktree add <branch>).
+  // Only block when the branch is also gone — then the work is truly unrecoverable.
   if (state.worktree && state.worktreeDir && !worktreeExists(state.worktreeDir)) {
-    return {
-      restartable: false,
-      restartRequiresForce: false,
-      restartBlockedReason: 'missing_worktree',
-      restartBlockedMessage: `Cannot restart "${state.loopName}": worktree directory no longer exists at ${state.worktreeDir}.`,
+    if (!opts?.branchExists?.()) {
+      return {
+        restartable: false,
+        restartRequiresForce: false,
+        restartBlockedReason: 'missing_worktree',
+        restartBlockedMessage: `Cannot restart "${state.loopName}": worktree directory no longer exists at ${state.worktreeDir} and its branch is gone.`,
+      }
     }
   }
   

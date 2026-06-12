@@ -1993,7 +1993,7 @@ describe('loop-status restartability display', () => {
       name: loopName,
     }, { sessionID: 'test-session' } as any)
     
-    expect(result).toContain(`Restart blocked: worktree directory no longer exists at ${worktreeDir}`)
+    expect(result).toContain(`Restart blocked: Cannot restart "${loopName}": worktree directory no longer exists at ${worktreeDir} and its branch is gone.`)
   })
 
   test('active loop shows Restart: available with force=true', async () => {
