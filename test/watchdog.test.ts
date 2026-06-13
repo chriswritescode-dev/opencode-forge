@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test'
 import { createLoopWatchdog } from '../src/hooks/watchdog'
 import type { LoopState } from '../src/loop/state'
+import { createFakeForgeClient } from './helpers/fake-client'
 
 function createState(overrides?: Partial<LoopState>): LoopState {
   return {
@@ -54,13 +55,7 @@ function createMockLoopService(overrides?: {
 }
 
 function createMockClient(statusImpl: () => Promise<any>) {
-  const stub = async () => undefined as any
-  return {
-    session: { create: stub, get: stub, update: stub, messages: stub, status: statusImpl, promptAsync: stub, abort: stub, delete: stub },
-    workspace: { create: stub, list: stub, status: stub, syncList: stub, remove: stub, warp: stub },
-    tui: { publish: stub, selectSession: stub },
-    sync: { start: stub },
-  }
+  return createFakeForgeClient({ session: { status: statusImpl } }).client
 }
 
 describe('createLoopWatchdog', () => {

@@ -1,7 +1,6 @@
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2'
 import type { PluginInput } from '@opencode-ai/plugin'
-import type { Logger } from '../types'
 import { ForgeClientError, type ForgeClient, type ForgeClientErrorKind } from './port'
 
 // ── Error classification ─────────────────────────────────────────────────────
@@ -81,7 +80,7 @@ async function withVoid(
 
 // ── Factory ──────────────────────────────────────────────────────────────────
 
-export function createForgeClient(v2: OpencodeClient, _logger?: Logger | Console): ForgeClient {
+export function createForgeClient(v2: OpencodeClient): ForgeClient {
   // ── session namespace ────────────────────────────────────────────────────
   const session: ForgeClient['session'] = {
     create: (params) => withData('session.create', v2.session.create(params)),
@@ -165,9 +164,8 @@ export function createForgeClient(v2: OpencodeClient, _logger?: Logger | Console
  */
 export function createForgeClientFromPluginInput(
   pluginInput: PluginInput,
-  _logger?: Logger | Console,
 ): ForgeClient {
-  return createForgeClient(createV2ClientFromPluginInput(pluginInput), _logger)
+  return createForgeClient(createV2ClientFromPluginInput(pluginInput))
 }
 
 // ── Legacy client adapter ────────────────────────────────────────────────────

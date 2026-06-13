@@ -677,7 +677,7 @@ describe('handleStartLoop select-session ordering', () => {
     return { client, mockLoopHandler, mockSandboxManager, resolveSelect, rejectSelect, selectPromise }
   }
 
-  test('onStarted fires only after selectSessionWithFallback resolves', async () => {
+  test('onStarted fires only after selectSessionBestEffort resolves', async () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'exec-ordering-resolve-'))
     const db = new Database(join(tempDir, 'test.db'))
     setupLoopsTestDb(db)

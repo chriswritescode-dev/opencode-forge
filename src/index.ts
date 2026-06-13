@@ -195,7 +195,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     })
     logger.log(`Initializing plugin for directory: ${directory}, projectId: ${projectId}`)
 
-    const forgeClient = createForgeClientFromPluginInput(input, logger)
+    const forgeClient = createForgeClientFromPluginInput(input)
 
     const dataDir = config.dataDir || resolveDataDir()
 

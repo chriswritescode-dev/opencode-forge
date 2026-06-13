@@ -872,8 +872,6 @@ export async function attachLoopToSession(
 // ============================================================================
 
 export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): ForgeExecutionService {
-  const _fc: ForgeClient = deps.client
-  
   const inFlightLoopStarts = new Map<string, Promise<ForgeExecutionResponse<LoopStartedResult>>>()
   function hashPlanForDedupe(text: string): string {
     let h = 5381
@@ -1102,7 +1100,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         sandboxContainer = null
       }
       if (createdWorkspaceId) {
-        await _fc.workspace.remove({ id: createdWorkspaceId }).catch(() => {})
+        await deps.client.workspace.remove({ id: createdWorkspaceId }).catch(() => {})
       }
       if (hostWorktreeDir) {
         const { cleanupLoopWorktree } = await import('../utils/worktree-cleanup')
@@ -1140,7 +1138,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       // Create builtin worktree workspace (single call — no separate worktree.create)
       const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
-      const ws = await createBuiltinWorktreeWorkspace(_fc, {
+      const ws = await createBuiltinWorktreeWorkspace(deps.client, {
         loopName: uniqueLoopName,
         directory: ctx.directory,
       }, deps.logger, deps.workspaceStatusRegistry)
@@ -1161,7 +1159,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       // Create single code session
       const createResult = await createLoopSessionWithWorkspace({
-        client: _fc,
+        client: deps.client,
         title: sessionTitle,
         directory: hostWorktreeDir!,
         permission: permissionRuleset,
@@ -1558,7 +1556,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       if (stoppedState.worktree) {
         const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
-      const ws = await createBuiltinWorktreeWorkspace(_fc, {
+      const ws = await createBuiltinWorktreeWorkspace(deps.client, {
           loopName: stoppedState.loopName,
           directory: stoppedState.projectDir || ctx.directory,
         }, deps.logger, deps.workspaceStatusRegistry)
@@ -1580,7 +1578,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       // Unified session creation for restart (always a single code session)
       const createResult = await createLoopSessionWithWorkspace({
-        client: _fc,
+        client: deps.client,
         title: formatLoopSessionTitle(stoppedState.loopName, {
           iteration: stoppedState.iteration ?? 0,
           currentSectionIndex: stoppedState.currentSectionIndex ?? 0,

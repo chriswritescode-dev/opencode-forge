@@ -8,7 +8,7 @@ import { createReviewFindingsRepo } from '../../src/storage/repos/review-finding
 import { createLoopService } from '../../src/loop/service'
 import type { Logger } from '../../src/types'
 import type { LoopState } from '../../src/loop/state'
-import type { ForgeClient } from '../../src/client/port'
+import { createFakeForgeClient } from '../helpers/fake-client'
 
 interface Database {
   run: (sql: string) => void
@@ -269,51 +269,27 @@ function createMockDatabase(): Database {
   }
 }
 
-interface CallRecord {
-  kind: string
-  args: unknown
-}
-
 /**
- * Build a ForgeClient from the same tracker so all call records are unified.
+ * Build a ForgeClient fake whose recorded calls are unified, so call ordering
+ * across namespaces can be asserted.
  * @param lastRole - The role of the last message in the messages response ('assistant' or 'user')
  */
-function forgeFromTracker(tracker: CallRecord[], lastRole: 'assistant' | 'user' = 'assistant'): ForgeClient {
-  return {
+function makeRotationFake(lastRole: 'assistant' | 'user' = 'assistant') {
+  return createFakeForgeClient({
     session: {
-      create: vi.fn(async (params: any) => { tracker.push({ kind: 'create', args: params }); return { id: 'new-code-1' } }),
-      get: vi.fn(async () => ({ id: 'sess' })),
-      update: vi.fn(async () => {}),
-      messages: vi.fn(async (params: any) => {
-        tracker.push({ kind: 'messages', args: params })
-        return [
-          { info: { role: 'user' }, parts: [{ type: 'text', text: 'test' }] },
-          ...(lastRole === 'assistant'
-            ? [{ info: { role: 'assistant' as const, finish: 'stop' as const }, parts: [{ type: 'text' as const, text: 'response' }] }]
-            : []),
-        ]
-      }),
-      status: vi.fn(async () => ({})),
-      promptAsync: vi.fn(async (params: any) => { tracker.push({ kind: 'prompt', args: params }) }),
-      abort: vi.fn(async () => {}),
-      delete: vi.fn(async (params: any) => { tracker.push({ kind: 'delete', args: params }) }),
+      create: async () => ({ id: 'new-code-1' }),
+      get: async () => ({ id: 'sess' }),
+      messages: async () => [
+        { info: { role: 'user' }, parts: [{ type: 'text', text: 'test' }] },
+        ...(lastRole === 'assistant'
+          ? [{ info: { role: 'assistant' as const, finish: 'stop' as const }, parts: [{ type: 'text' as const, text: 'response' }] }]
+          : []),
+      ],
     },
     workspace: {
-      create: vi.fn(async (params: any) => { tracker.push({ kind: 'workspace-create', args: params }); return { id: 'ws-1' } }),
-      list: vi.fn(async () => []),
-      status: vi.fn(async () => ({})),
-      syncList: vi.fn(async () => {}),
-      remove: vi.fn(async () => {}),
-      warp: vi.fn(async (params: any) => { tracker.push({ kind: 'restore', args: params }) }),
+      create: async () => ({ id: 'ws-1' }),
     },
-    tui: {
-      publish: vi.fn(async () => {}),
-      selectSession: vi.fn(async () => {}),
-    },
-    sync: {
-      start: vi.fn(async () => {}),
-    },
-  } as unknown as ForgeClient
+  })
 }
 
 describe('audit→code rotation ordering', () => {
@@ -323,7 +299,6 @@ describe('audit→code rotation ordering', () => {
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
   let loopService: ReturnType<typeof createLoopService>
   let tempDir: string
-  let callTracker: CallRecord[]
   const projectId = 'test-project'
 
   const mockLogger: Logger = {
@@ -347,7 +322,6 @@ describe('audit→code rotation ordering', () => {
     reviewFindingsRepo = createReviewFindingsRepo(db as any)
 
     loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger)
-    callTracker = []
   })
 
   afterEach(() => {
@@ -405,7 +379,7 @@ describe('audit→code rotation ordering', () => {
 
     // Create mock that returns successful assistant response to exercise the
     // successful audit→code rotation path (not the error continuation path)
-    const successCallTracker: CallRecord[] = []
+    const { client, calls } = makeRotationFake()
     // Use default successful assistant response (no error) to test the
     // !assistantErrorDetected branch in handleAuditingPhase
 
@@ -415,7 +389,7 @@ describe('audit→code rotation ordering', () => {
       plansRepo,
       reviewFindingsRepo,
       projectId,
-      forgeFromTracker(successCallTracker),
+      client,
       mockLogger,
       () => ({ loop: { model: 'test/test-model' } }),
       undefined,
@@ -432,10 +406,10 @@ describe('audit→code rotation ordering', () => {
       },
     })
 
-    const createIndex = successCallTracker.findIndex(c => c.kind === 'create')
-    const restoreIndex = successCallTracker.findIndex(c => c.kind === 'restore')
-    const deleteIndex = successCallTracker.findIndex(c =>
-      c.kind === 'delete' && (c.args as any).sessionID === 'audit-1'
+    const createIndex = calls.findIndex(c => c.method === 'session.create')
+    const restoreIndex = calls.findIndex(c => c.method === 'workspace.warp')
+    const deleteIndex = calls.findIndex(c =>
+      c.method === 'session.delete' && (c.params as any).sessionID === 'audit-1'
     )
 
     expect(createIndex).toBeGreaterThanOrEqual(0)
@@ -446,9 +420,9 @@ describe('audit→code rotation ordering', () => {
     expect(createIndex).toBeLessThan(restoreIndex)
     expect(restoreIndex).toBeLessThan(deleteIndex)
 
-    const restoreCall = successCallTracker.find(c => c.kind === 'restore')
-    expect((restoreCall?.args as any).id).toBe('ws-1')
-    expect((restoreCall?.args as any).sessionID).toBe('new-code-1')
+    const restoreCall = calls.find(c => c.method === 'workspace.warp')
+    expect((restoreCall?.params as any).id).toBe('ws-1')
+    expect((restoreCall?.params as any).sessionID).toBe('new-code-1')
   })
 
   test('audit failure rotation: create→bind→delete order', async () => {
@@ -484,7 +458,7 @@ describe('audit→code rotation ordering', () => {
     loopService.registerLoopSession('audit-fail-1', loopName)
 
     // Create a separate mock for failure path - no assistant message so it triggers rotation
-    const failureCallTracker: CallRecord[] = []
+    const { client, calls } = makeRotationFake('user')
 
     const { createLoopEventHandler } = await import('../../src/hooks/loop')
     const handler = createLoopEventHandler(
@@ -492,7 +466,7 @@ describe('audit→code rotation ordering', () => {
       plansRepo,
       reviewFindingsRepo,
       projectId,
-      forgeFromTracker(failureCallTracker, 'user'),
+      client,
       mockLogger,
       () => ({ loop: { model: 'test/test-model' } }),
       undefined,
@@ -509,10 +483,10 @@ describe('audit→code rotation ordering', () => {
       },
     })
 
-    const createIndex = failureCallTracker.findIndex(c => c.kind === 'create')
-    const restoreIndex = failureCallTracker.findIndex(c => c.kind === 'restore')
-    const deleteIndex = failureCallTracker.findIndex(c =>
-      c.kind === 'delete' && (c.args as any).sessionID === 'audit-fail-1'
+    const createIndex = calls.findIndex(c => c.method === 'session.create')
+    const restoreIndex = calls.findIndex(c => c.method === 'workspace.warp')
+    const deleteIndex = calls.findIndex(c =>
+      c.method === 'session.delete' && (c.params as any).sessionID === 'audit-fail-1'
     )
 
     expect(createIndex).toBeGreaterThanOrEqual(0)
@@ -523,7 +497,7 @@ describe('audit→code rotation ordering', () => {
     expect(createIndex).toBeLessThan(restoreIndex)
     expect(restoreIndex).toBeLessThan(deleteIndex)
 
-    const restoreCall = failureCallTracker.find(c => c.kind === 'restore')
-    expect((restoreCall?.args as any).id).toBe('ws-1')
+    const restoreCall = calls.find(c => c.method === 'workspace.warp')
+    expect((restoreCall?.params as any).id).toBe('ws-1')
   })
 })
