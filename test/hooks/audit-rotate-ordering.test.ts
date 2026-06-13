@@ -8,6 +8,7 @@ import { createReviewFindingsRepo } from '../../src/storage/repos/review-finding
 import { createLoopService } from '../../src/loop/service'
 import type { Logger } from '../../src/types'
 import type { LoopState } from '../../src/loop/state'
+import type { ForgeClient } from '../../src/client/port'
 
 interface Database {
   run: (sql: string) => void
@@ -273,86 +274,46 @@ interface CallRecord {
   args: unknown
 }
 
-interface MockV2Client {
-  session: {
-    create: ReturnType<typeof vi.fn<(params: any) => Promise<{ data?: { id: string }; error?: unknown }>>>
-    promptAsync: ReturnType<typeof vi.fn<(params: any) => Promise<{ data?: unknown; error?: unknown }>>>
-    delete: ReturnType<typeof vi.fn<(params: any) => Promise<{ data?: boolean }>>>
-    get: ReturnType<typeof vi.fn<(params: any) => Promise<{ data?: { permission?: unknown }; error?: unknown }>>>
-    messages: ReturnType<typeof vi.fn<(params: any) => Promise<{ data?: any[]; error?: unknown }>>>
-    abort: ReturnType<typeof vi.fn<(params: any) => Promise<void>>>
-  }
-  experimental: {
-    workspace: {
-      create: ReturnType<typeof vi.fn<(params: any) => Promise<{ data?: { id: string }; error?: unknown }>>>
-      warp: ReturnType<typeof vi.fn<(params: any) => Promise<{ data?: unknown; error?: unknown }>>>
-    }
-  }
-  tui: {
-    selectSession: ReturnType<typeof vi.fn<(params: any) => Promise<void>>>
-    publish: ReturnType<typeof vi.fn<(params: any) => Promise<void>>>
-  }
-}
-
-interface MockClient {
-  session: {
-    create: ReturnType<typeof vi.fn<(params: any) => Promise<{ data?: { id: string } }>>>
-    messages: ReturnType<typeof vi.fn<(params: any) => Promise<{ data?: any[] }>>>
-    promptAsync: ReturnType<typeof vi.fn<(params: any) => Promise<{ data?: unknown; error?: unknown }>>>
-  }
-}
-
-function createMockV2Client(callTracker?: CallRecord[], messagesRole?: 'assistant' | 'user'): MockV2Client {
-  const tracker = callTracker ?? []
-  const lastRole = messagesRole ?? 'assistant'
+/**
+ * Build a ForgeClient from the same tracker so all call records are unified.
+ * @param lastRole - The role of the last message in the messages response ('assistant' or 'user')
+ */
+function forgeFromTracker(tracker: CallRecord[], lastRole: 'assistant' | 'user' = 'assistant'): ForgeClient {
   return {
     session: {
-      create: vi.fn(async (params: any) => {
-        tracker.push({ kind: 'create', args: params })
-        return { data: { id: 'new-code-1' } }
+      create: vi.fn(async (params: any) => { tracker.push({ kind: 'create', args: params }); return { id: 'new-code-1' } }),
+      get: vi.fn(async () => ({ id: 'sess' })),
+      update: vi.fn(async () => {}),
+      messages: vi.fn(async (params: any) => {
+        tracker.push({ kind: 'messages', args: params })
+        return [
+          { info: { role: 'user' }, parts: [{ type: 'text', text: 'test' }] },
+          ...(lastRole === 'assistant'
+            ? [{ info: { role: 'assistant' as const, finish: 'stop' as const }, parts: [{ type: 'text' as const, text: 'response' }] }]
+            : []),
+        ]
       }),
-      promptAsync: vi.fn(async (params: any) => {
-        tracker.push({ kind: 'prompt', args: params })
-        return { data: {} }
-      }),
-      delete: vi.fn(async (params: any) => {
-        tracker.push({ kind: 'delete', args: params })
-        return { data: true }
-      }),
-      get: vi.fn(async () => ({ data: { permission: {} } })),
-      messages: vi.fn(async () => ({ data: [
-        { info: { role: 'user' }, parts: [{ type: 'text', text: 'test' }] },
-        ...(lastRole === 'assistant' ? [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'audit findings: none' }] }] : []),
-      ] })),
+      status: vi.fn(async () => ({})),
+      promptAsync: vi.fn(async (params: any) => { tracker.push({ kind: 'prompt', args: params }) }),
       abort: vi.fn(async () => {}),
+      delete: vi.fn(async (params: any) => { tracker.push({ kind: 'delete', args: params }) }),
     },
-    experimental: {
-      workspace: {
-        create: vi.fn(async (params: any) => {
-          tracker.push({ kind: 'workspace-create', args: params })
-          return { data: { id: 'ws-1' } }
-        }),
-        warp: vi.fn(async (params: any) => {
-          tracker.push({ kind: 'restore', args: params })
-          return { data: {} }
-        }),
-      },
+    workspace: {
+      create: vi.fn(async (params: any) => { tracker.push({ kind: 'workspace-create', args: params }); return { id: 'ws-1' } }),
+      list: vi.fn(async () => []),
+      status: vi.fn(async () => ({})),
+      syncList: vi.fn(async () => {}),
+      remove: vi.fn(async () => {}),
+      warp: vi.fn(async (params: any) => { tracker.push({ kind: 'restore', args: params }) }),
     },
     tui: {
-      selectSession: vi.fn(async () => {}),
       publish: vi.fn(async () => {}),
+      selectSession: vi.fn(async () => {}),
     },
-  }
-}
-
-function createMockClient(): MockClient {
-  return {
-    session: {
-      create: vi.fn(() => Promise.resolve({ data: { id: 'sess_mock_123' } })),
-      messages: vi.fn(() => Promise.resolve({ data: [] })),
-      promptAsync: vi.fn(() => Promise.resolve({ data: {} })),
+    sync: {
+      start: vi.fn(async () => {}),
     },
-  }
+  } as unknown as ForgeClient
 }
 
 describe('audit→code rotation ordering', () => {
@@ -362,8 +323,6 @@ describe('audit→code rotation ordering', () => {
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
   let loopService: ReturnType<typeof createLoopService>
   let tempDir: string
-  let mockV2: MockV2Client
-  let mockClient: MockClient
   let callTracker: CallRecord[]
   const projectId = 'test-project'
 
@@ -389,8 +348,6 @@ describe('audit→code rotation ordering', () => {
 
     loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger)
     callTracker = []
-    mockV2 = createMockV2Client(callTracker)
-    mockClient = createMockClient()
   })
 
   afterEach(() => {
@@ -449,7 +406,6 @@ describe('audit→code rotation ordering', () => {
     // Create mock that returns successful assistant response to exercise the
     // successful audit→code rotation path (not the error continuation path)
     const successCallTracker: CallRecord[] = []
-    const successMockV2 = createMockV2Client(successCallTracker, 'assistant')
     // Use default successful assistant response (no error) to test the
     // !assistantErrorDetected branch in handleAuditingPhase
 
@@ -459,8 +415,7 @@ describe('audit→code rotation ordering', () => {
       plansRepo,
       reviewFindingsRepo,
       projectId,
-      mockClient as any,
-      successMockV2 as any,
+      forgeFromTracker(successCallTracker),
       mockLogger,
       () => ({ loop: { model: 'test/test-model' } }),
       undefined,
@@ -530,7 +485,6 @@ describe('audit→code rotation ordering', () => {
 
     // Create a separate mock for failure path - no assistant message so it triggers rotation
     const failureCallTracker: CallRecord[] = []
-    const failureMockV2 = createMockV2Client(failureCallTracker, 'user')
 
     const { createLoopEventHandler } = await import('../../src/hooks/loop')
     const handler = createLoopEventHandler(
@@ -538,8 +492,7 @@ describe('audit→code rotation ordering', () => {
       plansRepo,
       reviewFindingsRepo,
       projectId,
-      mockClient as any,
-      failureMockV2 as any,
+      forgeFromTracker(failureCallTracker, 'user'),
       mockLogger,
       () => ({ loop: { model: 'test/test-model' } }),
       undefined,

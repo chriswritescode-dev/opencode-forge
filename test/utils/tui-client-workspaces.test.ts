@@ -47,7 +47,7 @@ describe('listConnectedWorkspaces', () => {
   })
 
   it('calls list() after syncList even when syncList resolves with no data', async () => {
-    const syncList = vi.fn().mockResolvedValue({ data: undefined })
+    const syncList = vi.fn().mockResolvedValue(undefined)
     const api = createWorkspaceApi({ syncList })
 
     const result = await listConnectedWorkspaces(api)
@@ -123,7 +123,7 @@ describe('listConnectedWorkspaces', () => {
   })
 
   it('sorts entries from list() by timeUsed desc, not syncList result', async () => {
-    const syncList = vi.fn().mockResolvedValue({ data: [{ id: 'ws-sync' }] })
+    const syncList = vi.fn().mockResolvedValue(undefined)
     const api = createWorkspaceApi({ syncList })
 
     const result = await listConnectedWorkspaces(api)

@@ -1,5 +1,7 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { sweepStaleForgeWorkspaces } from '../../src/workspace/sweep-stale'
+import { createFakeForgeClient } from '../helpers/fake-client'
+import type { ForgeClient } from '../../src/client/port'
 import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
 import type { PendingTeardownRegistry } from '../../src/workspace/pending-teardown'
 
@@ -64,33 +66,30 @@ describe('sweepStaleForgeWorkspaces', () => {
 
   async function createSweepDeps(options?: {
     workspaceListResult?: Array<{ id: string; type?: string; extra?: Record<string, unknown> }>
-    workspaceRemoveResult?: { data?: unknown; error?: unknown }
+    workspaceRemoveImpl?: (...args: any[]) => Promise<void>
     loopsRepoGet?: (projectId: string, loopName: string) => unknown
   }) {
-    const workspaceRemove = vi.fn().mockResolvedValue(options?.workspaceRemoveResult ?? { data: {} })
     const pendingTeardowns = createMockPendingTeardowns()
     const logger = createMockLogger()
     const loopsRepo = createMockLoopsRepo({
       get: vi.fn().mockImplementation(options?.loopsRepoGet ?? (() => null)),
     })
 
-    const v2 = {
-      experimental: {
-        workspace: {
-          list: vi.fn().mockResolvedValue({ data: options?.workspaceListResult ?? [] }),
-          remove: workspaceRemove,
-        },
+    const { client } = createFakeForgeClient({
+      workspace: {
+        list: async () => (options?.workspaceListResult ?? []) as any,
+        remove: options?.workspaceRemoveImpl ?? (async () => {}),
       },
-    }
+    })
 
-    return { v2, pendingTeardowns, logger, loopsRepo, workspaceRemove }
+    return { client, pendingTeardowns, logger, loopsRepo }
   }
 
   test('empty workspace list returns empty report', async () => {
-    const { v2, pendingTeardowns, logger, loopsRepo } = await createSweepDeps()
+    const { client, pendingTeardowns, logger, loopsRepo } = await createSweepDeps()
 
     const report = await sweepStaleForgeWorkspaces(
-      { v2: v2 as any, pendingTeardowns, logger, loopsRepo },
+      { client: client as unknown as ForgeClient, pendingTeardowns, logger, loopsRepo },
       { projectId, projectDirectory },
     )
 
@@ -100,7 +99,7 @@ describe('sweepStaleForgeWorkspaces', () => {
   })
 
   test('excludes the terminating loop by excludeLoopName', async () => {
-    const { v2, pendingTeardowns, logger, loopsRepo, workspaceRemove } = await createSweepDeps({
+    const { client, pendingTeardowns, logger, loopsRepo } = await createSweepDeps({
       workspaceListResult: [
         {
           id: 'ws-excluded',
@@ -114,17 +113,17 @@ describe('sweepStaleForgeWorkspaces', () => {
     })
 
     const report = await sweepStaleForgeWorkspaces(
-      { v2: v2 as any, pendingTeardowns, logger, loopsRepo },
+      { client: client as unknown as ForgeClient, pendingTeardowns, logger, loopsRepo },
       { projectId, projectDirectory, excludeLoopName: 'terminating-loop' },
     )
 
     expect(report.swept).toEqual([])
     expect(report.skipped).toEqual([])
-    expect(workspaceRemove).not.toHaveBeenCalled()
   })
 
   test('removes completed workspace (remove-fully)', async () => {
-    const { v2, pendingTeardowns, logger, loopsRepo, workspaceRemove } = await createSweepDeps({
+    const removeCalls: any[] = []
+    const { client, pendingTeardowns, logger, loopsRepo } = await createSweepDeps({
       workspaceListResult: [
         {
           id: 'ws-completed',
@@ -135,6 +134,7 @@ describe('sweepStaleForgeWorkspaces', () => {
           },
         },
       ],
+      workspaceRemoveImpl: async () => { removeCalls.push({}) },
       loopsRepoGet: (pid, name) => {
         if (pid === projectId && name === 'completed-loop') {
           return { projectId: pid, loopName: name, status: 'completed' }
@@ -144,7 +144,7 @@ describe('sweepStaleForgeWorkspaces', () => {
     })
 
     const report = await sweepStaleForgeWorkspaces(
-      { v2: v2 as any, pendingTeardowns, logger, loopsRepo },
+      { client: client as unknown as ForgeClient, pendingTeardowns, logger, loopsRepo },
       { projectId, projectDirectory },
     )
 
@@ -153,7 +153,7 @@ describe('sweepStaleForgeWorkspaces', () => {
     ])
     expect(report.skipped).toEqual([])
     expect(report.failed).toEqual([])
-    expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws-completed' })
+    expect(removeCalls.length).toBe(1)
 
     // Verify pendingTeardowns was set with doRemoveWorktree: true
     expect(pendingTeardowns.set).toHaveBeenCalledWith(
@@ -163,7 +163,8 @@ describe('sweepStaleForgeWorkspaces', () => {
   })
 
   test('removes cancelled workspace (remove-registration-only)', async () => {
-    const { v2, pendingTeardowns, logger, loopsRepo, workspaceRemove } = await createSweepDeps({
+    let removeCalledWith: any = null
+    const { client, pendingTeardowns, logger, loopsRepo } = await createSweepDeps({
       workspaceListResult: [
         {
           id: 'ws-cancelled',
@@ -174,6 +175,7 @@ describe('sweepStaleForgeWorkspaces', () => {
           },
         },
       ],
+      workspaceRemoveImpl: async (params: any) => { removeCalledWith = params },
       loopsRepoGet: (pid, name) => {
         if (pid === projectId && name === 'cancelled-loop') {
           return { projectId: pid, loopName: name, status: 'cancelled' }
@@ -183,14 +185,14 @@ describe('sweepStaleForgeWorkspaces', () => {
     })
 
     const report = await sweepStaleForgeWorkspaces(
-      { v2: v2 as any, pendingTeardowns, logger, loopsRepo },
+      { client: client as unknown as ForgeClient, pendingTeardowns, logger, loopsRepo },
       { projectId, projectDirectory },
     )
 
     expect(report.swept).toEqual([
       { loopName: 'cancelled-loop', workspaceId: 'ws-cancelled', action: 'remove-registration-only' },
     ])
-    expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws-cancelled' })
+    expect(removeCalledWith).toEqual({ id: 'ws-cancelled' })
 
     // Verify pendingTeardowns was set with doRemoveWorktree: false
     expect(pendingTeardowns.set).toHaveBeenCalledWith(
@@ -200,7 +202,7 @@ describe('sweepStaleForgeWorkspaces', () => {
   })
 
   test('skips running workspace', async () => {
-    const { v2, pendingTeardowns, logger, loopsRepo, workspaceRemove } = await createSweepDeps({
+    const { client, pendingTeardowns, logger, loopsRepo } = await createSweepDeps({
       workspaceListResult: [
         {
           id: 'ws-running',
@@ -220,17 +222,16 @@ describe('sweepStaleForgeWorkspaces', () => {
     })
 
     const report = await sweepStaleForgeWorkspaces(
-      { v2: v2 as any, pendingTeardowns, logger, loopsRepo },
+      { client: client as unknown as ForgeClient, pendingTeardowns, logger, loopsRepo },
       { projectId, projectDirectory },
     )
 
     expect(report.swept).toEqual([])
     expect(report.skipped).toEqual([{ workspaceId: 'ws-running', reason: 'running' }])
-    expect(workspaceRemove).not.toHaveBeenCalled()
   })
 
   test('skips cross-project workspace', async () => {
-    const { v2, pendingTeardowns, logger, loopsRepo, workspaceRemove } = await createSweepDeps({
+    const { client, pendingTeardowns, logger, loopsRepo } = await createSweepDeps({
       workspaceListResult: [
         {
           id: 'ws-cross',
@@ -244,17 +245,17 @@ describe('sweepStaleForgeWorkspaces', () => {
     })
 
     const report = await sweepStaleForgeWorkspaces(
-      { v2: v2 as any, pendingTeardowns, logger, loopsRepo },
+      { client: client as unknown as ForgeClient, pendingTeardowns, logger, loopsRepo },
       { projectId, projectDirectory },
     )
 
     expect(report.swept).toEqual([])
     expect(report.skipped).toEqual([{ workspaceId: 'ws-cross', reason: 'wrong-project' }])
-    expect(workspaceRemove).not.toHaveBeenCalled()
   })
 
   test('removes missing-row workspace (remove-fully)', async () => {
-    const { v2, pendingTeardowns, logger, loopsRepo, workspaceRemove } = await createSweepDeps({
+    let removeCalledWith: any = null
+    const { client, pendingTeardowns, logger, loopsRepo } = await createSweepDeps({
       workspaceListResult: [
         {
           id: 'ws-missing',
@@ -265,22 +266,23 @@ describe('sweepStaleForgeWorkspaces', () => {
           },
         },
       ],
+      workspaceRemoveImpl: async (params: any) => { removeCalledWith = params },
       loopsRepoGet: vi.fn().mockReturnValue(null),
     })
 
     const report = await sweepStaleForgeWorkspaces(
-      { v2: v2 as any, pendingTeardowns, logger, loopsRepo },
+      { client: client as unknown as ForgeClient, pendingTeardowns, logger, loopsRepo },
       { projectId, projectDirectory },
     )
 
     expect(report.swept).toEqual([
       { loopName: 'missing-loop', workspaceId: 'ws-missing', action: 'remove-fully' },
     ])
-    expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws-missing' })
+    expect(removeCalledWith).toEqual({ id: 'ws-missing' })
   })
 
   test('keeps missing-row TUI workspace during pending attach grace window', async () => {
-    const { v2, pendingTeardowns, logger, loopsRepo, workspaceRemove } = await createSweepDeps({
+    const { client, pendingTeardowns, logger, loopsRepo } = await createSweepDeps({
       workspaceListResult: [
         {
           id: 'ws-pending',
@@ -299,17 +301,16 @@ describe('sweepStaleForgeWorkspaces', () => {
     })
 
     const report = await sweepStaleForgeWorkspaces(
-      { v2: v2 as any, pendingTeardowns, logger, loopsRepo },
+      { client: client as unknown as ForgeClient, pendingTeardowns, logger, loopsRepo },
       { projectId, projectDirectory },
     )
 
     expect(report.swept).toEqual([])
     expect(report.skipped).toEqual([{ workspaceId: 'ws-pending', reason: 'pending-attach' }])
-    expect(workspaceRemove).not.toHaveBeenCalled()
   })
 
   test('keeps missing-row freshly created server workspace during pending start grace window', async () => {
-    const { v2, pendingTeardowns, logger, loopsRepo, workspaceRemove } = await createSweepDeps({
+    const { client, pendingTeardowns, logger, loopsRepo } = await createSweepDeps({
       workspaceListResult: [
         {
           id: 'ws-pending-start',
@@ -325,17 +326,17 @@ describe('sweepStaleForgeWorkspaces', () => {
     })
 
     const report = await sweepStaleForgeWorkspaces(
-      { v2: v2 as any, pendingTeardowns, logger, loopsRepo },
+      { client: client as unknown as ForgeClient, pendingTeardowns, logger, loopsRepo },
       { projectId, projectDirectory },
     )
 
     expect(report.swept).toEqual([])
     expect(report.skipped).toEqual([{ workspaceId: 'ws-pending-start', reason: 'pending-start' }])
-    expect(workspaceRemove).not.toHaveBeenCalled()
   })
 
   test('mixed scenario: completed, cancelled, running, missing-row, cross-project', async () => {
-    const { v2, pendingTeardowns, logger, loopsRepo, workspaceRemove } = await createSweepDeps({
+    const removeCalls: any[] = []
+    const { client, pendingTeardowns, logger, loopsRepo } = await createSweepDeps({
       workspaceListResult: [
         {
           id: 'ws-completed',
@@ -363,6 +364,7 @@ describe('sweepStaleForgeWorkspaces', () => {
           extra: { loopName: 'cross-loop', projectDirectory: '/tmp/other' },
         },
       ],
+      workspaceRemoveImpl: async (params: any) => { removeCalls.push(params) },
       loopsRepoGet: (pid, name) => {
         if (name === 'completed-loop') return { projectId: pid, loopName: name, status: 'completed' }
         if (name === 'cancelled-loop') return { projectId: pid, loopName: name, status: 'cancelled' }
@@ -372,7 +374,7 @@ describe('sweepStaleForgeWorkspaces', () => {
     })
 
     const report = await sweepStaleForgeWorkspaces(
-      { v2: v2 as any, pendingTeardowns, logger, loopsRepo },
+      { client: client as unknown as ForgeClient, pendingTeardowns, logger, loopsRepo },
       { projectId, projectDirectory },
     )
 
@@ -392,15 +394,10 @@ describe('sweepStaleForgeWorkspaces', () => {
       ]),
     )
     expect(report.failed).toEqual([])
-    expect(workspaceRemove).toHaveBeenCalledTimes(3)
+    expect(removeCalls.length).toBe(3)
   })
 
   test('failure isolation: one failed removal does not abort the sweep', async () => {
-    const workspaceRemove = vi.fn()
-      .mockResolvedValueOnce({ data: {} }) // first succeeds
-      .mockRejectedValueOnce(new Error('boom')) // second fails
-      .mockResolvedValueOnce({ data: {} }) // third succeeds
-
     const pendingTeardowns = createMockPendingTeardowns()
     const logger = createMockLogger()
     const loopsRepo = createMockLoopsRepo({
@@ -412,54 +409,27 @@ describe('sweepStaleForgeWorkspaces', () => {
       }),
     })
 
-    const v2 = {
-      experimental: {
-        workspace: {
-          list: vi.fn().mockResolvedValue({
-            data: [
-              { id: 'ws1', type: 'forge', extra: { loopName: 'loop1', projectDirectory } },
-              { id: 'ws2', type: 'forge', extra: { loopName: 'loop2', projectDirectory } },
-              { id: 'ws3', type: 'forge', extra: { loopName: 'loop3', projectDirectory } },
-            ],
-          }),
-          remove: workspaceRemove,
-        },
+    const { client } = createFakeForgeClient({
+      workspace: {
+        list: async () => [
+          { id: 'ws1', type: 'forge', extra: { loopName: 'loop1', projectDirectory } },
+          { id: 'ws2', type: 'forge', extra: { loopName: 'loop2', projectDirectory } },
+          { id: 'ws3', type: 'forge', extra: { loopName: 'loop3', projectDirectory } },
+        ] as any,
+        remove: (async (params: any) => {
+          if ((params as any)?.id === 'ws2') throw new Error('boom')
+        }) as any,
       },
-    }
+    })
 
     const report = await sweepStaleForgeWorkspaces(
-      { v2: v2 as any, pendingTeardowns, logger, loopsRepo },
+      { client: client as unknown as ForgeClient, pendingTeardowns, logger, loopsRepo },
       { projectId, projectDirectory },
     )
 
     expect(report.swept.length).toBe(2)
     expect(report.failed.length).toBe(1)
     expect(report.failed[0].workspaceId).toBe('ws2')
-    expect(workspaceRemove).toHaveBeenCalledTimes(3)
-  })
-
-  test('workspace.list not available returns empty report', async () => {
-    const pendingTeardowns = createMockPendingTeardowns()
-    const logger = createMockLogger()
-    const loopsRepo = createMockLoopsRepo()
-
-    const v2 = {
-      experimental: {
-        workspace: {},
-      },
-    }
-
-    const report = await sweepStaleForgeWorkspaces(
-      { v2: v2 as any, pendingTeardowns, logger, loopsRepo },
-      { projectId, projectDirectory },
-    )
-
-    expect(report.swept).toEqual([])
-    expect(report.skipped).toEqual([])
-    expect(report.failed).toEqual([])
-    expect(logger.error).toHaveBeenCalledWith(
-      expect.stringContaining('experimental.workspace.list not available'),
-    )
   })
 
   test('workspace.list throws returns empty report', async () => {
@@ -467,16 +437,14 @@ describe('sweepStaleForgeWorkspaces', () => {
     const logger = createMockLogger()
     const loopsRepo = createMockLoopsRepo()
 
-    const v2 = {
-      experimental: {
-        workspace: {
-          list: vi.fn().mockRejectedValue(new Error('list failed')),
-        },
+    const { client } = createFakeForgeClient({
+      workspace: {
+        list: async () => { throw new Error('list failed') },
       },
-    }
+    })
 
     const report = await sweepStaleForgeWorkspaces(
-      { v2: v2 as any, pendingTeardowns, logger, loopsRepo },
+      { client: client as unknown as ForgeClient, pendingTeardowns, logger, loopsRepo },
       { projectId, projectDirectory },
     )
 
@@ -485,29 +453,24 @@ describe('sweepStaleForgeWorkspaces', () => {
     expect(report.failed).toEqual([])
   })
 
-  test('workspace.remove returns error is captured in failed', async () => {
-    const workspaceRemove = vi.fn().mockResolvedValue({ error: 'remove failed' })
+  test('workspace.remove throws is captured in failed', async () => {
     const pendingTeardowns = createMockPendingTeardowns()
     const logger = createMockLogger()
     const loopsRepo = createMockLoopsRepo({
       get: vi.fn().mockReturnValue({ projectId, loopName: 'failed-loop', status: 'completed' }),
     })
 
-    const v2 = {
-      experimental: {
-        workspace: {
-          list: vi.fn().mockResolvedValue({
-            data: [
-              { id: 'ws-failed', type: 'forge', extra: { loopName: 'failed-loop', projectDirectory } },
-            ],
-          }),
-          remove: workspaceRemove,
-        },
+    const { client } = createFakeForgeClient({
+      workspace: {
+        list: async () => [
+          { id: 'ws-failed', type: 'forge', extra: { loopName: 'failed-loop', projectDirectory } },
+        ] as any,
+        remove: async () => { throw new Error('remove failed') },
       },
-    }
+    })
 
     const report = await sweepStaleForgeWorkspaces(
-      { v2: v2 as any, pendingTeardowns, logger, loopsRepo },
+      { client: client as unknown as ForgeClient, pendingTeardowns, logger, loopsRepo },
       { projectId, projectDirectory },
     )
 

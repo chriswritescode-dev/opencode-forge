@@ -1,6 +1,6 @@
 import type { Plugin, PluginInput, Hooks } from '@opencode-ai/plugin'
 import { join } from 'path'
-import { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2'
+import type { ForgeClient, SessionGetParams } from './client/port'
 import { buildAgents } from './agents'
 import { createConfigHandler } from './config'
 import { createSessionHooks, createLoopEventHandler } from './hooks'
@@ -17,6 +17,7 @@ import { createTools } from './tools'
 import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from './hooks'
 import { createSandboxToolBeforeHook, createSandboxToolAfterHook } from './hooks/sandbox-tools'
 import type { ToolContext } from './tools'
+import { createForgeClientFromPluginInput } from './client/sdk-adapter'
 
 import { LRUCache } from './utils/lru-cache'
 import { createSessionLoopResolver } from './services/session-loop-resolver'
@@ -26,7 +27,7 @@ import { createLoopPermissionRejectHook } from './hooks/loop-permission'
 
 
 export interface CreateParentSessionLookupOptions {
-  v2: ReturnType<typeof createV2Client>
+  client: ForgeClient
   directory: string
   loop: import('./loop').Loop
   logger: ReturnType<typeof createLogger>
@@ -36,7 +37,7 @@ export interface CreateParentSessionLookupOptions {
 const PARENT_LOOKUP_NEGATIVE_TTL_MS = 15000
 
 export function createParentSessionLookup({
-  v2,
+  client,
   directory,
   loop,
   logger,
@@ -56,9 +57,7 @@ export function createParentSessionLookup({
       negativeCache.delete(sessionId)
     }
 
-    type SessionGetInput = Parameters<typeof v2.session.get>[0]
-
-    const attempts: Array<{ label: string; directory?: string; input: SessionGetInput }> = []
+    const attempts: Array<{ label: string; directory?: string; input: Record<string, unknown> }> = []
 
     const seenDirectories = new Set<string>()
     const activeLoops = loop.listActive()
@@ -70,12 +69,12 @@ export function createParentSessionLookup({
       attempts.push({
         label: `loop:${state.loopName}`,
         directory: state.worktreeDir,
-        input: { sessionID: sessionId, directory: state.worktreeDir, ...workspaceParam } as SessionGetInput,
+        input: { sessionID: sessionId, directory: state.worktreeDir, ...workspaceParam },
       })
       if (state.workspaceId) {
         attempts.push({
           label: `loop-ws:${state.loopName}`,
-          input: { sessionID: sessionId, workspace: state.workspaceId } as SessionGetInput,
+          input: { sessionID: sessionId, workspace: state.workspaceId },
         })
       }
     }
@@ -84,7 +83,7 @@ export function createParentSessionLookup({
       attempts.push({
         label: 'host',
         directory,
-        input: { sessionID: sessionId, directory } as SessionGetInput,
+        input: { sessionID: sessionId, directory },
       })
     }
 
@@ -92,9 +91,9 @@ export function createParentSessionLookup({
 
     for (const attempt of attempts) {
       try {
-        const result = await v2.session.get(attempt.input)
-        if (result.data) {
-          const parentId = result.data.parentID ?? null
+        const session = await client.session.get(attempt.input as SessionGetParams)
+        if (session) {
+          const parentId = session.parentID ?? null
           cache.set(sessionId, parentId)
           return parentId
         }
@@ -113,13 +112,13 @@ export function createParentSessionLookup({
 }
 
 export interface CreateSessionDirectoryLookupOptions {
-  v2: ReturnType<typeof createV2Client>
+  client: ForgeClient
   directory: string
   loop: import('./loop').Loop
 }
 
 export function createSessionDirectoryLookup({
-  v2,
+  client,
   directory,
   loop,
 }: CreateSessionDirectoryLookupOptions): (sessionId: string) => Promise<string | null> {
@@ -130,9 +129,7 @@ export function createSessionDirectoryLookup({
       return cache.get(sessionId) ?? null
     }
 
-    type SessionGetInput = Parameters<typeof v2.session.get>[0]
-
-    const attempts: Array<{ label: string; directory?: string; input: SessionGetInput }> = []
+    const attempts: Array<{ label: string; directory?: string; input: Record<string, unknown> }> = []
 
     const seenDirectories = new Set<string>()
     const activeLoops = loop.listActive()
@@ -144,12 +141,12 @@ export function createSessionDirectoryLookup({
       attempts.push({
         label: `loop:${state.loopName}`,
         directory: state.worktreeDir,
-        input: { sessionID: sessionId, directory: state.worktreeDir, ...workspaceParam } as SessionGetInput,
+        input: { sessionID: sessionId, directory: state.worktreeDir, ...workspaceParam },
       })
       if (state.workspaceId) {
         attempts.push({
           label: `loop-ws:${state.loopName}`,
-          input: { sessionID: sessionId, workspace: state.workspaceId } as SessionGetInput,
+          input: { sessionID: sessionId, workspace: state.workspaceId },
         })
       }
     }
@@ -158,16 +155,16 @@ export function createSessionDirectoryLookup({
       attempts.push({
         label: 'host',
         directory,
-        input: { sessionID: sessionId, directory } as SessionGetInput,
+        input: { sessionID: sessionId, directory },
       })
     }
 
     for (const attempt of attempts) {
       try {
-        const result = await v2.session.get(attempt.input)
-        if (result.data?.directory) {
-          cache.set(sessionId, result.data.directory)
-          return result.data.directory
+        const session = await client.session.get(attempt.input as SessionGetParams)
+        if (session && session.directory) {
+          cache.set(sessionId, session.directory)
+          return session.directory
         }
       } catch {
         // fall through to next attempt
@@ -187,25 +184,8 @@ export function createSessionDirectoryLookup({
  */
 export function createForgePlugin(config: PluginConfig): Plugin {
   return async (input: PluginInput): Promise<Hooks> => {
-    const { directory, project, client } = input
+    const { directory, project } = input
     const projectId = project.id
-
-    const serverUrl = input.serverUrl
-    
-    // Extract legacy fetch and auth headers from the plugin-provided client so
-    // the v2 client can dispatch in-process AND satisfy the server's Basic auth
-    // requirement (introduced for keychain-backed auth in TUI/server).
-    const legacyHttp = (client as unknown as { _client?: { getConfig: () => { fetch?: typeof fetch; headers?: Headers } } })._client
-    const legacyConfig = legacyHttp?.getConfig?.()
-    const legacyFetch = legacyConfig?.fetch
-    const legacyAuthHeader = legacyConfig?.headers?.get?.('authorization') ?? legacyConfig?.headers?.get?.('Authorization')
-    const v2ClientConfig: Parameters<typeof createV2Client>[0] = {
-      baseUrl: serverUrl.toString(),
-      directory,
-      ...(legacyFetch ? { fetch: legacyFetch } : {}),
-      ...(legacyAuthHeader ? { headers: { Authorization: legacyAuthHeader } } : {}),
-    }
-    const v2 = createV2Client(v2ClientConfig)
 
     const loggingConfig = config.logging
     const logger = createLogger({
@@ -214,7 +194,8 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       debug: loggingConfig?.debug ?? false,
     })
     logger.log(`Initializing plugin for directory: ${directory}, projectId: ${projectId}`)
-    logger.log(`v2 client fetch: ${legacyFetch ? 'in-process' : 'globalThis'}; auth: ${legacyAuthHeader ? 'inherited' : 'none'}`)
+
+    const forgeClient = createForgeClientFromPluginInput(input, logger)
 
     const dataDir = config.dataDir || resolveDataDir()
 
@@ -276,7 +257,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       logger.debug(`[notifyLoopChange] reason=${reason} loop=${loopName} dirs=${targetDirectories.join(',')} projectId=${projectId}`)
     }
 
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, v2, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo)
 
     const agents = buildAgents()
 
@@ -329,8 +310,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       config,
       logger,
       dataDir,
-      v2,
-      legacyClient: client,
+      client: forgeClient,
       plansRepo,
       loopsRepo,
       loopHandler,
@@ -342,22 +322,22 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       pendingTeardowns,
     }
     const forgeSessionAttachHook = createForgeSessionAttachHook({
-      v2,
+      client: forgeClient,
       execDeps: forgeAttachExecDeps,
       projectId,
       directory,
       logger,
     })
     const forgeSessionMessageAttachHook = createForgeSessionMessageAttachHook({
-      v2,
+      client: forgeClient,
       execDeps: forgeAttachExecDeps,
       projectId,
       directory,
       logger,
     })
 
-    const parentSessionLookup = createParentSessionLookup({ v2, directory, loop: loopHandler.loop, logger })
-    const sessionDirectoryLookup = createSessionDirectoryLookup({ v2, directory, loop: loopHandler.loop })
+    const parentSessionLookup = createParentSessionLookup({ client: forgeClient, directory, loop: loopHandler.loop, logger })
+    const sessionDirectoryLookup = createSessionDirectoryLookup({ client: forgeClient, directory, loop: loopHandler.loop })
     const sessionLoopResolver = createSessionLoopResolver({
       loop: loopHandler.loop,
       getParentSessionId: parentSessionLookup,
@@ -365,7 +345,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       logger,
     })
     const loopPermissionRejectHook = createLoopPermissionRejectHook({
-      v2,
+      client: forgeClient,
       sessionLoopResolver,
       directory,
       logger,
@@ -387,9 +367,8 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       dataDir,
       loopHandler,
       loop: loopHandler.loop,
-      v2,
+      client: forgeClient,
       cleanup,
-      input,
       sandboxManager,
       plansRepo,
       reviewFindingsRepo,

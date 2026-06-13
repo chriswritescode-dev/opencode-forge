@@ -26,7 +26,7 @@ function isMessageUpdatedEvent(event: PlanCaptureEvent): event is MessageUpdated
 }
 
 export function createPlanCaptureEventHook(ctx: ToolContext) {
-  const { v2, input: { client }, logger, plansRepo, projectId, directory } = ctx
+  const { client, logger, plansRepo, projectId, directory } = ctx
 
   function logCaptureError(sessionID: string, error: unknown) {
     logger.error(`plan-capture: hook failed for session ${sessionID}`, error as Error)
@@ -66,7 +66,6 @@ export function createPlanCaptureEventHook(ctx: ToolContext) {
     try {
       const result = await captureLatestPlanForSession(
         {
-          v2,
           client,
           plansRepo,
           projectId,

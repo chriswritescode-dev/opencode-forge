@@ -1,7 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdirSync } from 'fs'
-import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import { createLoopService } from '../src/loop/service'
 import type { LoopState } from '../src/loop/state'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
@@ -17,6 +15,23 @@ import { join } from 'path'
 import { randomUUID } from 'crypto'
 import Database from 'better-sqlite3'
 import { setupLoopsTestDb } from './helpers/loops-test-db'
+import { createFakeForgeClient } from './helpers/fake-client'
+import { createPendingTeardownRegistry } from '../src/workspace/pending-teardown'
+import type { WorkspaceStatusRegistry } from '../src/utils/workspace-status-registry'
+
+/**
+ * Creates a workspace status registry where awaitConnected resolves immediately.
+ * This avoids 5s timeouts when the execution service waits for workspace
+ * connection events that mock clients never fire.
+ */
+function createNoWaitWorkspaceStatusRegistry(): WorkspaceStatusRegistry {
+  return {
+    recordEvent: () => {},
+    getStatus: () => 'connected' as const,
+    awaitConnected: async () => ({ connected: true, elapsedMs: 0, source: 'cached' as const }),
+    primeFromSnapshot: () => {},
+  }
+}
 
 const TEST_DIR = '/tmp/opencode-loop-status-test-' + Date.now()
 
@@ -27,87 +42,6 @@ function createTestDb(): { db: Database; path: string } {
   setupLoopsTestDb(db)
 
   return { db, path }
-}
-
-function createMockV2Client(overrides?: Partial<OpencodeClient>): OpencodeClient {
-  return {
-    session: {
-      create: vi.fn(async (params) => ({
-        data: { id: 'mock-session-' + Date.now(), title: params.title },
-        error: null,
-      })),
-      promptAsync: vi.fn(async () => ({ data: {}, error: null })),
-      abort: vi.fn(async () => ({ data: {}, error: null })),
-      status: vi.fn(async () => ({ data: {}, error: null })),
-      delete: vi.fn(async () => ({ data: {}, error: null })),
-      messages: vi.fn(async () => ({ data: [], error: null })),
-      get: vi.fn(async () => ({ data: {}, error: null })),
-    },
-    worktree: {
-      create: vi.fn(async () => ({ data: { name: 'mock', directory: '/tmp/mock', branch: 'main' }, error: null })),
-      remove: vi.fn(async () => ({ data: {}, error: null })),
-    },
-    experimental: {
-      workspace: {
-        create: vi.fn(async () => ({
-          data: { id: 'mock-workspace-' + Date.now(), directory: TEST_DIR + '/worktree', branch: 'opencode/loop-test-loop' },
-          error: null,
-        })),
-        warp: vi.fn(async () => ({ data: {}, error: null })),
-        list: vi.fn(async () => ({ data: [], error: null })),
-        status: vi.fn(async () => ({ data: [], error: null })),
-        syncList: vi.fn(async () => ({ data: {}, error: null })),
-        remove: vi.fn(async () => ({ data: {}, error: null })),
-      },
-    },
-    tui: {
-      selectSession: vi.fn(async () => ({ data: {}, error: null })),
-      publish: vi.fn(async () => ({ data: {}, error: null })),
-    },
-    ...overrides,
-  } as unknown as OpencodeClient
-}
-
-function createMockTuiApi(overrides?: Partial<TuiPluginApi>): TuiPluginApi {
-  return {
-    client: createMockV2Client(),
-    state: {
-      path: {
-        directory: TEST_DIR,
-      },
-    },
-    ui: {
-      toast: vi.fn(() => {}),
-      dialog: {
-        clear: vi.fn(() => {}),
-        replace: vi.fn(() => {}),
-        setSize: vi.fn(() => {}),
-      },
-    },
-    theme: {
-      current: {
-        text: 'white',
-        textMuted: 'gray',
-        border: 'blue',
-        info: 'cyan',
-        success: 'green',
-        warning: 'yellow',
-        error: 'red',
-        markdownText: 'white',
-      },
-    },
-    route: {
-      navigate: vi.fn(() => {}),
-      current: { name: 'session', params: {} },
-    },
-    event: {
-      on: vi.fn(() => () => {}),
-    },
-    app: {
-      version: 'local',
-    },
-    ...overrides,
-  } as TuiPluginApi
 }
 
 describe('loop-status tool restart path', () => {
@@ -157,8 +91,7 @@ describe('loop-status tool restart path', () => {
   }
 
   test('force-restart preserves workspaceId and hostSessionId', async () => {
-    const mockApi = createMockTuiApi()
-    const v2Client = mockApi.client as unknown as OpencodeClient
+    const { client: forgeClient } = createFakeForgeClient()
     const logger = createLogger({ enabled: false, file: '' })
     
     const loopsRepo = createLoopsRepo(db)
@@ -176,9 +109,11 @@ describe('loop-status tool restart path', () => {
       sessionId: oldSessionId,
     } as LoopState)
     
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -202,22 +137,22 @@ describe('loop-status tool restart path', () => {
     expect(result).toContain('Restarted loop')
     
     // Verify new session was created with workspaceID
-    const createCalls = ((v2Client.session.create as any)).mock.calls
+    const createCalls = ((forgeClient.session.create as any)).mock.calls
     expect(createCalls.length).toBeGreaterThan(0)
     const lastCreateCall = createCalls[createCalls.length - 1][0]
     // Restart creates a FRESH workspace, so directory points to the new workspace directory
-    expect(lastCreateCall.workspaceID).toMatch(/^mock-workspace-/)
+    expect(lastCreateCall.workspaceID).toMatch(/^ws_fake_/)
     expect(lastCreateCall.title).toContain(loopName)
     expect(lastCreateCall).not.toHaveProperty('parentID')
 
     // Verify workspace binding was called with the fresh workspace id
-    expect((v2Client.experimental?.workspace?.warp as any)).toHaveBeenCalled()
+    expect((forgeClient.workspace.warp as any)).toHaveBeenCalled()
 
     // Verify persisted state has a fresh workspaceId (new on every restart)
     // and preserves hostSessionId
     const newState = loopService.getActiveState(loopName)
     expect(newState).toBeDefined()
-    expect(newState?.workspaceId).toMatch(/^mock-workspace-/)
+    expect(newState?.workspaceId).toMatch(/^ws_fake_/)
     expect(newState?.workspaceId).not.toBe(workspaceId) // fresh workspace, not old one
     expect(newState?.hostSessionId).toBe(hostSessionId)
     // Suppress unused variable warning for worktreeDir
@@ -225,8 +160,7 @@ describe('loop-status tool restart path', () => {
   })
 
   test('force-restart during auditing phase prevents double-rotation', async () => {
-    const mockApi = createMockTuiApi()
-    const v2Client = mockApi.client as unknown as OpencodeClient
+    const { client: forgeClient } = createFakeForgeClient()
     const logger = createLogger({ enabled: false, file: '' })
     
     const loopsRepo = createLoopsRepo(db)
@@ -250,9 +184,11 @@ describe('loop-status tool restart path', () => {
       worktreeBranch: 'opencode/loop-test-loop2',
     } as LoopState)
     
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -276,7 +212,7 @@ describe('loop-status tool restart path', () => {
     await restartPromise
     
     // Verify only one new session was created (not multiple)
-    const createCalls = ((v2Client.session.create as any)).mock.calls
+    const createCalls = ((forgeClient.session.create as any)).mock.calls
     // Should have exactly one create call for the restart
     expect(createCalls.length).toBe(1)
     const createArgs = createCalls[0][0]
@@ -288,8 +224,18 @@ describe('loop-status tool restart path', () => {
   })
 
   test('force-restart clears workspaceId but preserves hostSessionId when bind fails', async () => {
-    const mockApi = createMockTuiApi()
-    const v2Client = mockApi.client as unknown as OpencodeClient
+    const toastCalls: Array<{ variant?: string; message?: string }> = []
+    const { client: forgeClient } = createFakeForgeClient({
+      workspace: {
+        warp: async () => { throw new Error('workspace gone') },
+      },
+      tui: {
+        publish: async (opts: any) => {
+          const props = opts?.body?.properties ?? {}
+          toastCalls.push({ variant: props.variant, message: props.message })
+        },
+      },
+    })
     const logger = createLogger({ enabled: false, file: '' })
 
     const loopsRepo = createLoopsRepo(db)
@@ -309,21 +255,11 @@ describe('loop-status tool restart path', () => {
       worktreeDir,
     } as LoopState)
 
-    // Override warp to throw
-    ;(v2Client.experimental!.workspace!.warp as any) = vi.fn(async () => {
-      throw new Error('workspace gone')
-    })
-
-    const toastCalls: Array<{ variant?: string; message?: string }> = []
-    ;(v2Client.tui!.publish as any) = vi.fn(async (opts: any) => {
-      const props = opts?.body?.properties ?? {}
-      toastCalls.push({ variant: props.variant, message: props.message })
-      return { data: {}, error: null }
-    })
-
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -344,7 +280,7 @@ describe('loop-status tool restart path', () => {
 
     expect(result).toContain('Restarted loop')
 
-    const createCalls = ((v2Client.session.create as any)).mock.calls
+    const createCalls = ((forgeClient.session.create as any)).mock.calls
     expect(createCalls.length).toBeGreaterThan(0)
     const createArgs = createCalls[0][0]
     expect(createArgs).not.toHaveProperty('parentID')
@@ -364,8 +300,7 @@ describe('loop-status tool restart path', () => {
   })
 
   test('non-force restart (inactive loop) preserves metadata', async () => {
-    const mockApi = createMockTuiApi()
-    const v2Client = mockApi.client as unknown as OpencodeClient
+    const { client: forgeClient } = createFakeForgeClient()
     const logger = createLogger({ enabled: false, file: '' })
     
     const loopsRepo = createLoopsRepo(db)
@@ -385,9 +320,11 @@ describe('loop-status tool restart path', () => {
       terminationReason: 'cancelled',
     } as LoopState)
     
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -412,12 +349,12 @@ describe('loop-status tool restart path', () => {
     // Verify new state has fresh workspace (created on every restart)
     // hostSessionId is preserved for post-completion TUI redirect
     const newState = loopService.getActiveState(loopName)
-    expect(newState?.workspaceId).toMatch(/^mock-workspace-/)
+    expect(newState?.workspaceId).toMatch(/^ws_fake_/)
     expect(newState?.workspaceId).not.toBe(workspaceId)
     expect(newState?.hostSessionId).toBe(hostSessionId)
 
     // Verify restart session was created without parentID
-    const createCalls = ((v2Client.session.create as any)).mock.calls
+    const createCalls = ((forgeClient.session.create as any)).mock.calls
     expect(createCalls.length).toBeGreaterThan(0)
     const createArgs = createCalls[0][0]
     expect(createArgs).not.toHaveProperty('parentID')
@@ -426,8 +363,7 @@ describe('loop-status tool restart path', () => {
   })
 
   test('force-restart errored loop without workspace includes permission ruleset', async () => {
-    const mockApi = createMockTuiApi()
-    const v2Client = mockApi.client as unknown as OpencodeClient
+    const { client: forgeClient } = createFakeForgeClient()
     const logger = createLogger({ enabled: false, file: '' })
 
     const loopsRepo = createLoopsRepo(db)
@@ -467,9 +403,11 @@ describe('loop-status tool restart path', () => {
       completedAt: new Date().toISOString(),
     } as LoopState)
 
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -488,7 +426,7 @@ describe('loop-status tool restart path', () => {
       force: true,
     }, { sessionID: 'test-session' } as any)
 
-    const createCalls = ((v2Client.session.create as any)).mock.calls
+    const createCalls = ((forgeClient.session.create as any)).mock.calls
     expect(createCalls.length).toBeGreaterThan(0)
 
     // Find the session.create call that has permission property
@@ -500,8 +438,7 @@ describe('loop-status tool restart path', () => {
   })
 
   test('non-force restart of final_audit_retry_exhausted succeeds without force', async () => {
-    const mockApi = createMockTuiApi()
-    const v2Client = mockApi.client as unknown as OpencodeClient
+    const { client: forgeClient } = createFakeForgeClient()
     const logger = createLogger({ enabled: false, file: '' })
 
     const loopsRepo = createLoopsRepo(db)
@@ -541,9 +478,11 @@ describe('loop-status tool restart path', () => {
       completedAt: new Date().toISOString(),
     } as LoopState)
 
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -576,14 +515,14 @@ describe('loop-status tool restart path', () => {
     expect(newState?.finalAuditDone).toBe(false)
 
     // Verify promptAsync was called with auditor-loop agent using auditor model
-    const promptCalls = ((v2Client.session.promptAsync as any)).mock.calls
+    const promptCalls = ((forgeClient.session.promptAsync as any)).mock.calls
     expect(promptCalls.length).toBeGreaterThan(0)
     const lastPromptCall = promptCalls[promptCalls.length - 1][0]
     expect(lastPromptCall.agent).toBe('auditor-loop')
     expect(lastPromptCall.model).toEqual({ providerID: 'provider', modelID: 'auditor-model' })
 
     // Verify session creation uses audit permissions, not loop permissions
-    const createCalls = ((v2Client.session.create as any)).mock.calls
+    const createCalls = ((forgeClient.session.create as any)).mock.calls
     expect(createCalls.length).toBeGreaterThan(0)
     const callWithPermission = createCalls.find((call: any[]) =>
       call[0]?.permission !== undefined
@@ -593,8 +532,7 @@ describe('loop-status tool restart path', () => {
   })
 
   test('forced restart of final_audit_retry_exhausted resumes at final_auditing', async () => {
-    const mockApi = createMockTuiApi()
-    const v2Client = mockApi.client as unknown as OpencodeClient
+    const { client: forgeClient } = createFakeForgeClient()
     const logger = createLogger({ enabled: false, file: '' })
 
     const loopsRepo = createLoopsRepo(db)
@@ -634,9 +572,11 @@ describe('loop-status tool restart path', () => {
       completedAt: new Date().toISOString(),
     } as LoopState)
 
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -669,14 +609,14 @@ describe('loop-status tool restart path', () => {
     expect(newState?.finalAuditDone).toBe(false)
 
     // Verify promptAsync was called with auditor-loop agent using auditor model
-    const promptCalls = ((v2Client.session.promptAsync as any)).mock.calls
+    const promptCalls = ((forgeClient.session.promptAsync as any)).mock.calls
     expect(promptCalls.length).toBeGreaterThan(0)
     const lastPromptCall = promptCalls[promptCalls.length - 1][0]
     expect(lastPromptCall.agent).toBe('auditor-loop')
     expect(lastPromptCall.model).toEqual({ providerID: 'provider', modelID: 'auditor-model' })
 
     // Verify session creation uses audit permissions, not loop permissions
-    const createCalls = ((v2Client.session.create as any)).mock.calls
+    const createCalls = ((forgeClient.session.create as any)).mock.calls
     expect(createCalls.length).toBeGreaterThan(0)
     const callWithPermission = createCalls.find((call: any[]) =>
       call[0]?.permission !== undefined
@@ -702,60 +642,10 @@ describe('loop-status cumulative usage', () => {
     db.close()
   })
 
-  function createMockV2ClientWithMessages(messages: Array<{ role: string; cost?: number; tokens?: any; model?: string }>): OpencodeClient {
-    return {
-      session: {
-        create: vi.fn(async (params) => ({
-          data: { id: 'mock-session-' + Date.now(), title: params.title },
-          error: null,
-        })),
-        promptAsync: vi.fn(async () => ({ data: {}, error: null })),
-        abort: vi.fn(async () => ({ data: {}, error: null })),
-        status: vi.fn(async () => ({ data: {}, error: null })),
-        delete: vi.fn(async () => ({ data: {}, error: null })),
-        messages: vi.fn(async () => ({
-          data: messages.map((m, i) => ({
-            id: `msg-${i}`,
-            role: m.role,
-            parts: [{ type: 'text' as const, text: 'test' }],
-            info: {
-              role: m.role,
-              cost: m.cost ?? 0,
-              tokens: m.tokens ?? { input: 100, output: 50, reasoning: 20, cache: { read: 10, write: 5 } },
-              model: m.model,
-            },
-          })),
-          error: null,
-        })),
-        get: vi.fn(async () => ({ data: { summary: { additions: 10, deletions: 5, files: 2 } }, error: null })),
-      },
-      worktree: {
-        create: vi.fn(async () => ({ data: { name: 'mock', directory: '/tmp/mock', branch: 'main' }, error: null })),
-        remove: vi.fn(async () => ({ data: {}, error: null })),
-      },
-      experimental: {
-        workspace: {
-          create: vi.fn(async () => ({
-            data: { id: 'mock-workspace-' + Date.now(), directory: TEST_DIR + '/worktree', branch: 'opencode/loop-test' },
-            error: null,
-          })),
-          warp: vi.fn(async () => ({ data: {}, error: null })),
-          list: vi.fn(async () => ({ data: [], error: null })),
-          status: vi.fn(async () => ({ data: [], error: null })),
-          syncList: vi.fn(async () => ({ data: {}, error: null })),
-          remove: vi.fn(async () => ({ data: {}, error: null })),
-        },
-      },
-      tui: {
-        selectSession: vi.fn(async () => ({ data: {}, error: null })),
-        publish: vi.fn(async () => ({ data: {}, error: null })),
-      },
-    } as unknown as OpencodeClient
-  }
+  // (createMockV2ClientWithMessages removed - use createFakeForgeClient with session overrides instead)
 
   test('cumulative usage appears in detailed status for inactive loop', async () => {
-    const mockApi = createMockTuiApi()
-    const v2Client = mockApi.client as unknown as OpencodeClient
+    const { client: forgeClient } = createFakeForgeClient()
     const logger = createLogger({ enabled: false, file: '' })
     
     const loopsRepo = createLoopsRepo(db)
@@ -813,9 +703,11 @@ describe('loop-status cumulative usage', () => {
       capturedAt: Date.now(),
     })
     
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -840,8 +732,7 @@ describe('loop-status cumulative usage', () => {
   })
 
   test('cumulative usage appears in detailed status for active loop', async () => {
-    const mockApi = createMockTuiApi()
-    const v2Client = mockApi.client as unknown as OpencodeClient
+    const { client: forgeClient } = createFakeForgeClient()
     const logger = createLogger({ enabled: false, file: '' })
     
     const loopsRepo = createLoopsRepo(db)
@@ -897,9 +788,11 @@ describe('loop-status cumulative usage', () => {
       capturedAt: Date.now() - 10000,
     })
     
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -923,8 +816,7 @@ describe('loop-status cumulative usage', () => {
   })
 
   test('per-model totals appear in cumulative usage', async () => {
-    const mockApi = createMockTuiApi()
-    const v2Client = mockApi.client as unknown as OpencodeClient
+    const { client: forgeClient } = createFakeForgeClient()
     const logger = createLogger({ enabled: false, file: '' })
     
     const loopsRepo = createLoopsRepo(db)
@@ -998,9 +890,11 @@ describe('loop-status cumulative usage', () => {
       },
     ])
     
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -1024,10 +918,14 @@ describe('loop-status cumulative usage', () => {
   })
 
   test('live current session is merged when not persisted', async () => {
-    const mockApi = createMockTuiApi()
-    const v2Client = createMockV2ClientWithMessages([
-      { role: 'assistant', cost: 0.02, tokens: { input: 2000, output: 1000, reasoning: 200, cache: { read: 50, write: 25 } }, model: 'anthropic/claude-3-5-sonnet' },
-    ])
+    const { client: forgeClient } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { id: 'msg-0', role: 'assistant', parts: [{ type: 'text' as const, text: 'test' }], info: { role: 'assistant', cost: 0.02, tokens: { input: 2000, output: 1000, reasoning: 200, cache: { read: 50, write: 25 } }, model: 'anthropic/claude-3-5-sonnet' } },
+        ],
+        get: async () => ({ summary: { additions: 10, deletions: 5, files: 2 } } as any),
+      },
+    })
     const logger = createLogger({ enabled: false, file: '' })
     
     const loopsRepo = createLoopsRepo(db)
@@ -1083,9 +981,11 @@ describe('loop-status cumulative usage', () => {
       capturedAt: Date.now() - 10000,
     })
     
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -1112,10 +1012,14 @@ describe('loop-status cumulative usage', () => {
   })
 
   test('already-persisted current session is not double-counted', async () => {
-    const mockApi = createMockTuiApi()
-    const v2Client = createMockV2ClientWithMessages([
-      { role: 'assistant', cost: 0.03, tokens: { input: 3000, output: 1500, reasoning: 300, cache: { read: 75, write: 40 } }, model: 'anthropic/claude-3-5-sonnet' },
-    ])
+    const { client: forgeClient } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { id: 'msg-0', role: 'assistant', parts: [{ type: 'text' as const, text: 'test' }], info: { role: 'assistant', cost: 0.03, tokens: { input: 3000, output: 1500, reasoning: 300, cache: { read: 75, write: 40 } }, model: 'anthropic/claude-3-5-sonnet' } },
+        ],
+        get: async () => ({ summary: { additions: 10, deletions: 5, files: 2 } } as any),
+      },
+    })
     const logger = createLogger({ enabled: false, file: '' })
     
     const loopsRepo = createLoopsRepo(db)
@@ -1188,9 +1092,11 @@ describe('loop-status cumulative usage', () => {
       },
     ])
     
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -1218,10 +1124,14 @@ describe('loop-status cumulative usage', () => {
   })
 
   test('cumulative usage appears from live usage even when no persisted aggregate exists', async () => {
-    const mockApi = createMockTuiApi()
-    const v2Client = createMockV2ClientWithMessages([
-      { role: 'assistant', cost: 0.015, tokens: { input: 1500, output: 750, reasoning: 150, cache: { read: 40, write: 20 } }, model: 'anthropic/claude-3-5-sonnet' },
-    ])
+    const { client: forgeClient } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { id: 'msg-0', role: 'assistant', parts: [{ type: 'text' as const, text: 'test' }], info: { role: 'assistant', cost: 0.015, tokens: { input: 1500, output: 750, reasoning: 150, cache: { read: 40, write: 20 } }, model: 'anthropic/claude-3-5-sonnet' } },
+        ],
+        get: async () => ({ summary: { additions: 10, deletions: 5, files: 2 } } as any),
+      },
+    })
     const logger = createLogger({ enabled: false, file: '' })
     
     const loopsRepo = createLoopsRepo(db)
@@ -1262,9 +1172,11 @@ describe('loop-status cumulative usage', () => {
     
     // NO persisted usage inserted
     
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -1289,10 +1201,14 @@ describe('loop-status cumulative usage', () => {
   })
 
   test('inactive loop merges live final session when not persisted', async () => {
-    const mockApi = createMockTuiApi()
-    const v2Client = createMockV2ClientWithMessages([
-      { role: 'assistant', cost: 0.025, tokens: { input: 2500, output: 1250, reasoning: 250, cache: { read: 60, write: 30 } }, model: 'anthropic/claude-3-5-sonnet' },
-    ])
+    const { client: forgeClient } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { id: 'msg-0', role: 'assistant', parts: [{ type: 'text' as const, text: 'test' }], info: { role: 'assistant', cost: 0.025, tokens: { input: 2500, output: 1250, reasoning: 250, cache: { read: 60, write: 30 } }, model: 'anthropic/claude-3-5-sonnet' } },
+        ],
+        get: async () => ({ summary: { additions: 10, deletions: 5, files: 2 } } as any),
+      },
+    })
     const logger = createLogger({ enabled: false, file: '' })
     
     const loopsRepo = createLoopsRepo(db)
@@ -1350,9 +1266,11 @@ describe('loop-status cumulative usage', () => {
       capturedAt: Date.now() - 10000,
     })
     
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -1379,10 +1297,14 @@ describe('loop-status cumulative usage', () => {
   })
 
   test('inactive loop uses persisted-only when final session is already persisted', async () => {
-    const mockApi = createMockTuiApi()
-    const v2Client = createMockV2ClientWithMessages([
-      { role: 'assistant', cost: 0.035, tokens: { input: 3500, output: 1750, reasoning: 350, cache: { read: 90, write: 45 } }, model: 'anthropic/claude-3-5-sonnet' },
-    ])
+    const { client: forgeClient } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { id: 'msg-0', role: 'assistant', parts: [{ type: 'text' as const, text: 'test' }], info: { role: 'assistant', cost: 0.035, tokens: { input: 3500, output: 1750, reasoning: 350, cache: { read: 90, write: 45 } }, model: 'anthropic/claude-3-5-sonnet' } },
+        ],
+        get: async () => ({ summary: { additions: 10, deletions: 5, files: 2 } } as any),
+      },
+    })
     const logger = createLogger({ enabled: false, file: '' })
     
     const loopsRepo = createLoopsRepo(db)
@@ -1457,9 +1379,11 @@ describe('loop-status cumulative usage', () => {
       },
     ])
     
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -1487,11 +1411,15 @@ describe('loop-status cumulative usage', () => {
   })
 
   test('active loop attributes live usage to executionModel when messages lack model metadata', async () => {
-    const mockApi = createMockTuiApi()
     // Messages WITHOUT model field - should fall back to loop state's executionModel
-    const v2Client = createMockV2ClientWithMessages([
-      { role: 'assistant', cost: 0.02, tokens: { input: 2000, output: 1000, reasoning: 200, cache: { read: 50, write: 25 } } },
-    ])
+    const { client: forgeClient } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { id: 'msg-0', role: 'assistant', parts: [{ type: 'text' as const, text: 'test' }], info: { role: 'assistant', cost: 0.02, tokens: { input: 2000, output: 1000, reasoning: 200, cache: { read: 50, write: 25 } } } },
+        ],
+        get: async () => ({ summary: { additions: 10, deletions: 5, files: 2 } } as any),
+      },
+    })
     const logger = createLogger({ enabled: false, file: '' })
     
     const loopsRepo = createLoopsRepo(db)
@@ -1530,9 +1458,11 @@ describe('loop-status cumulative usage', () => {
       finalAuditDone: false,
     } as any)
     
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -1557,11 +1487,15 @@ describe('loop-status cumulative usage', () => {
   })
 
   test('active loop in auditing phase attributes live usage to auditorModel when messages lack model metadata', async () => {
-    const mockApi = createMockTuiApi()
     // Messages WITHOUT model field - should fall back to loop state's auditorModel
-    const v2Client = createMockV2ClientWithMessages([
-      { role: 'assistant', cost: 0.025, tokens: { input: 2500, output: 1250, reasoning: 250, cache: { read: 60, write: 30 } } },
-    ])
+    const { client: forgeClient } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { id: 'msg-0', role: 'assistant', parts: [{ type: 'text' as const, text: 'test' }], info: { role: 'assistant', cost: 0.025, tokens: { input: 2500, output: 1250, reasoning: 250, cache: { read: 60, write: 30 } } } },
+        ],
+        get: async () => ({ summary: { additions: 10, deletions: 5, files: 2 } } as any),
+      },
+    })
     const logger = createLogger({ enabled: false, file: '' })
     
     const loopsRepo = createLoopsRepo(db)
@@ -1600,9 +1534,11 @@ describe('loop-status cumulative usage', () => {
       finalAuditDone: false,
     } as any)
     
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -1643,47 +1579,10 @@ describe('loop-status restartability display', () => {
     db.close()
   })
 
-  function createMockV2ClientWithWorktreeCheck(worktreeDir: string): OpencodeClient {
-    return {
-      session: {
-        create: vi.fn(async (params) => ({
-          data: { id: 'mock-session-' + Date.now(), title: params.title },
-          error: null,
-        })),
-        promptAsync: vi.fn(async () => ({ data: {}, error: null })),
-        abort: vi.fn(async () => ({ data: {}, error: null })),
-        status: vi.fn(async () => ({ data: {}, error: null })),
-        delete: vi.fn(async () => ({ data: {}, error: null })),
-        messages: vi.fn(async () => ({ data: [], error: null })),
-        get: vi.fn(async () => ({ data: {}, error: null })),
-      },
-      worktree: {
-        create: vi.fn(async () => ({ data: { name: 'mock', directory: '/tmp/mock', branch: 'main' }, error: null })),
-        remove: vi.fn(async () => ({ data: {}, error: null })),
-      },
-      experimental: {
-        workspace: {
-          create: vi.fn(async () => ({
-            data: { id: 'mock-workspace-' + Date.now(), directory: TEST_DIR + '/worktree', branch: 'opencode/loop-test' },
-            error: null,
-          })),
-          warp: vi.fn(async () => ({ data: {}, error: null })),
-          list: vi.fn(async () => ({ data: [], error: null })),
-          status: vi.fn(async () => ({ data: [], error: null })),
-          syncList: vi.fn(async () => ({ data: {}, error: null })),
-          remove: vi.fn(async () => ({ data: {}, error: null })),
-        },
-      },
-      tui: {
-        selectSession: vi.fn(async () => ({ data: {}, error: null })),
-        publish: vi.fn(async () => ({ data: {}, error: null })),
-      },
-    } as unknown as OpencodeClient
-  }
+  // (createMockV2ClientWithWorktreeCheck removed - use createFakeForgeClient instead)
 
   test('inactive cancelled loop with worktree shows Restart: available', async () => {
-    const mockApi = createMockTuiApi()
-    const v2Client = mockApi.client as unknown as OpencodeClient
+    const { client: forgeClient } = createFakeForgeClient()
     const logger = createLogger({ enabled: false, file: '' })
     
     const loopsRepo = createLoopsRepo(db)
@@ -1722,9 +1621,11 @@ describe('loop-status restartability display', () => {
       completedAt: new Date().toISOString(),
     } as any)
     
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -1745,8 +1646,7 @@ describe('loop-status restartability display', () => {
   })
 
   test('inactive errored loop with worktree shows Restart: available', async () => {
-    const mockApi = createMockTuiApi()
-    const v2Client = mockApi.client as unknown as OpencodeClient
+    const { client: forgeClient } = createFakeForgeClient()
     const logger = createLogger({ enabled: false, file: '' })
     
     const loopsRepo = createLoopsRepo(db)
@@ -1785,9 +1685,11 @@ describe('loop-status restartability display', () => {
       completedAt: new Date().toISOString(),
     } as any)
     
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -1808,8 +1710,7 @@ describe('loop-status restartability display', () => {
   })
 
   test('inactive stalled loop with worktree shows Restart: available', async () => {
-    const mockApi = createMockTuiApi()
-    const v2Client = mockApi.client as unknown as OpencodeClient
+    const { client: forgeClient } = createFakeForgeClient()
     const logger = createLogger({ enabled: false, file: '' })
     
     const loopsRepo = createLoopsRepo(db)
@@ -1848,9 +1749,11 @@ describe('loop-status restartability display', () => {
       completedAt: new Date().toISOString(),
     } as any)
     
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -1871,8 +1774,7 @@ describe('loop-status restartability display', () => {
   })
 
   test('completed loop shows Restart: not available (completed)', async () => {
-    const mockApi = createMockTuiApi()
-    const v2Client = mockApi.client as unknown as OpencodeClient
+    const { client: forgeClient } = createFakeForgeClient()
     const logger = createLogger({ enabled: false, file: '' })
     
     const loopsRepo = createLoopsRepo(db)
@@ -1911,9 +1813,11 @@ describe('loop-status restartability display', () => {
       completedAt: new Date().toISOString(),
     } as any)
     
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -1934,8 +1838,7 @@ describe('loop-status restartability display', () => {
   })
 
   test('loop with missing worktree shows Restart blocked message', async () => {
-    const mockApi = createMockTuiApi()
-    const v2Client = mockApi.client as unknown as OpencodeClient
+    const { client: forgeClient } = createFakeForgeClient()
     const logger = createLogger({ enabled: false, file: '' })
     
     const loopsRepo = createLoopsRepo(db)
@@ -1974,9 +1877,11 @@ describe('loop-status restartability display', () => {
       completedAt: new Date().toISOString(),
     } as any)
     
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,
@@ -1997,8 +1902,7 @@ describe('loop-status restartability display', () => {
   })
 
   test('active loop shows Restart: available with force=true', async () => {
-    const mockApi = createMockTuiApi()
-    const v2Client = mockApi.client as unknown as OpencodeClient
+    const { client: forgeClient } = createFakeForgeClient()
     const logger = createLogger({ enabled: false, file: '' })
     
     const loopsRepo = createLoopsRepo(db)
@@ -2035,9 +1939,11 @@ describe('loop-status restartability display', () => {
       finalAuditDone: false,
     } as any)
     
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockApi as any, v2Client, logger, () => ({}), undefined, dbPath)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
     const tools = createLoopTools({
-      v2: v2Client,
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
       directory: TEST_DIR,
       config: {},
       loopService,

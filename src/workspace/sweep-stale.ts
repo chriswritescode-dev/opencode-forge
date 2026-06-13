@@ -8,7 +8,7 @@
  * The sweep is fire-and-forget: failures are logged but never block the teardown.
  */
 
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
+import type { ForgeClient } from '../client/port'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { PendingTeardownRegistry } from './pending-teardown'
 import type { Logger } from '../types'
@@ -19,7 +19,7 @@ import { getForgeWorkspaceLoopName } from './forge-worktree'
 import { removeForgeWorkspaceWithContext } from './remove-with-context'
 
 export interface SweepStaleDeps {
-  v2: OpencodeClient
+  client: ForgeClient
   loopsRepo: LoopsRepo
   pendingTeardowns: PendingTeardownRegistry
   logger: Logger
@@ -41,7 +41,7 @@ export interface SweepStaleReport {
 /**
  * Sweep stale forge workspaces in the same project.
  *
- * - Lists all workspaces via v2.experimental.workspace.list()
+ * - Lists all workspaces via client.workspace.list()
  * - Filters to forge workspaces in the same projectDirectory
  * - Excludes the terminating loop's own workspace (excludeLoopName)
  * - Classifies each entry via classifyForgeWorkspace
@@ -54,23 +54,16 @@ export async function sweepStaleForgeWorkspaces(
   deps: SweepStaleDeps,
   input: SweepStaleInput,
 ): Promise<SweepStaleReport> {
-  const { v2, loopsRepo, pendingTeardowns, logger } = deps
+  const { client, loopsRepo, pendingTeardowns, logger } = deps
   const { projectId, projectDirectory, excludeLoopName, reasonLabel = 'orphan-sweep' } = input
 
   const swept: SweepStaleReport['swept'] = []
   const skipped: SweepStaleReport['skipped'] = []
   const failed: SweepStaleReport['failed'] = []
 
-  const workspaceApi = v2.experimental?.workspace
-  if (!workspaceApi || typeof workspaceApi.list !== 'function') {
-    logger.error('[sweep-stale] experimental.workspace.list not available; skipping sweep')
-    return { swept, skipped, failed }
-  }
-
   let entries: ForgeWorkspaceEntry[]
   try {
-    const result = await workspaceApi.list()
-    const dataList = ((result as { data?: unknown[] } | undefined)?.data ?? []) as Array<{ id?: unknown; type?: unknown; extra?: unknown }>
+    const dataList = (await client.workspace.list() ?? []) as Array<{ id?: unknown; type?: unknown; extra?: unknown }>
     entries = dataList
       .filter((e) => e.id && typeof e.id === 'string')
       .map((e) => ({
@@ -100,7 +93,7 @@ export async function sweepStaleForgeWorkspaces(
 
     // Attempt removal
     const removeResult = await removeForgeWorkspaceWithContext(
-      { v2, pendingTeardowns, logger },
+      { client, pendingTeardowns, logger },
       {
         workspaceId: entry.id,
         loopName: action.loopName,

@@ -3,6 +3,7 @@ import { describe, test, expect, beforeEach, vi } from 'vitest'
 const mockAttachLoop = vi.fn().mockResolvedValue({ ok: true, loopName: 'test-loop' })
 
 import { createForgeSessionAttachHook, createForgeSessionMessageAttachHook } from '../../src/hooks/forge-session-attach'
+import { createFakeForgeClient } from '../helpers/fake-client'
 
 describe('createForgeSessionAttachHook', () => {
   beforeEach(() => {
@@ -11,7 +12,7 @@ describe('createForgeSessionAttachHook', () => {
   })
 
   function buildHookDeps(overrides?: {
-    workspaceList?: () => Promise<{ data?: unknown[] }>
+    workspaceList?: () => Promise<unknown[]>
     workspaceRemove?: ReturnType<typeof vi.fn>
     tuiPublish?: ReturnType<typeof vi.fn>
     sessionGet?: ReturnType<typeof vi.fn>
@@ -24,21 +25,21 @@ describe('createForgeSessionAttachHook', () => {
     const loggerErrorSpy = overrides?.loggerErrorSpy ?? vi.fn()
     const loggerLogSpy = overrides?.loggerLogSpy ?? vi.fn()
 
-    return {
-      v2: {
-        experimental: {
-          workspace: {
-            list: overrides?.workspaceList ?? vi.fn().mockResolvedValue({ data: [] }),
-            remove: overrides?.workspaceRemove ?? vi.fn().mockResolvedValue({ data: {} }),
-          },
-        },
-        tui: {
-          publish: overrides?.tuiPublish ?? vi.fn().mockResolvedValue({ data: {} }),
-        },
-        session: {
-          get: overrides?.sessionGet ?? vi.fn().mockResolvedValue({ data: null }),
-        },
+    const { client } = createFakeForgeClient({
+      workspace: {
+        list: overrides?.workspaceList ?? (async () => []),
+        remove: overrides?.workspaceRemove ?? (async () => {}),
       },
+      tui: {
+        publish: overrides?.tuiPublish ?? (async () => {}),
+      },
+      session: {
+        get: overrides?.sessionGet ?? (async () => { throw Object.assign(new Error('not found'), { kind: 'not-found' }) }),
+      },
+    })
+
+    return {
+      client,
       execDeps: {
         plansRepo: {
           getForSession: overrides?.plansRepoGetForSession ?? vi.fn().mockReturnValue(null),
@@ -69,28 +70,26 @@ describe('createForgeSessionAttachHook', () => {
     const getForSessionMock = vi.fn().mockReturnValue({ content: '# Plan\n\nDo stuff.' })
     const loopsRepoGetMock = vi.fn().mockReturnValue(null)
     const deps = buildHookDeps({
-      workspaceList: vi.fn().mockResolvedValue({
-        data: [
-          {
-            id: 'ws_forge',
-            type: 'forge',
-            directory: '/tmp/wt/forge',
-            extra: {
-              loopName: 'my-feature',
-              projectDirectory: '/tmp/wt/forge',
-              forgeLoop: {
-                hostSessionId: 'host_sess',
-                title: 'My Feature',
-                executionModel: 'prov/exec',
-                auditorModel: 'prov/aud',
-                planSource: 'stored',
-                maxIterations: 50,
-                sandboxEnabled: false,
-              },
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_forge',
+          type: 'forge',
+          directory: '/tmp/wt/forge',
+          extra: {
+            loopName: 'my-feature',
+            projectDirectory: '/tmp/wt/forge',
+            forgeLoop: {
+              hostSessionId: 'host_sess',
+              title: 'My Feature',
+              executionModel: 'prov/exec',
+              auditorModel: 'prov/aud',
+              planSource: 'stored',
+              maxIterations: 50,
+              sandboxEnabled: false,
             },
           },
-        ],
-      }),
+        },
+      ]),
       plansRepoGetForSession: getForSessionMock,
       loopsRepoGet: loopsRepoGetMock,
     })
@@ -126,32 +125,28 @@ describe('createForgeSessionAttachHook', () => {
     const loopsRepoGetMock = vi.fn().mockReturnValue(null)
     const deps = buildHookDeps({
       sessionGet: vi.fn().mockResolvedValue({
-        data: {
-          id: 'new_sess',
-          workspaceID: 'ws_inline',
-          directory: '/tmp/wt/inline',
-          projectID: 'proj_1',
-        },
+        id: 'new_sess',
+        workspaceID: 'ws_inline',
+        directory: '/tmp/wt/inline',
+        projectID: 'proj_1',
       }),
-      workspaceList: vi.fn().mockResolvedValue({
-        data: [
-          {
-            id: 'ws_inline',
-            type: 'forge',
-            directory: '/tmp/wt/inline',
-            extra: {
-              loopName: 'inline-loop',
-              forgeLoop: {
-                title: 'Inline Loop',
-                planSource: 'inline',
-                planText: '# Inline Plan\n\nInline stuff.',
-                initialPromptOwner: 'tui',
-                pendingAttachStartedAt: Date.now(),
-              },
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_inline',
+          type: 'forge',
+          directory: '/tmp/wt/inline',
+          extra: {
+            loopName: 'inline-loop',
+            forgeLoop: {
+              title: 'Inline Loop',
+              planSource: 'inline',
+              planText: '# Inline Plan\n\nInline stuff.',
+              initialPromptOwner: 'tui',
+              pendingAttachStartedAt: Date.now(),
             },
           },
-        ],
-      }),
+        },
+      ]),
       loopsRepoGet: loopsRepoGetMock,
     })
 
@@ -183,32 +178,28 @@ describe('createForgeSessionAttachHook', () => {
     const deps = buildHookDeps({
       sandboxManager: { restore, getActive },
       sessionGet: vi.fn().mockResolvedValue({
-        data: {
-          id: 'new_sess',
-          workspaceID: 'ws_inline',
-          directory: '/tmp/wt/inline',
-          projectID: 'proj_1',
-        },
+        id: 'new_sess',
+        workspaceID: 'ws_inline',
+        directory: '/tmp/wt/inline',
+        projectID: 'proj_1',
       }),
-      workspaceList: vi.fn().mockResolvedValue({
-        data: [
-          {
-            id: 'ws_inline',
-            type: 'forge',
-            directory: '/tmp/wt/inline',
-            extra: {
-              loopName: 'inline-loop',
-              forgeLoop: {
-                title: 'Inline Loop',
-                planSource: 'inline',
-                planText: '# Inline Plan\n\nInline stuff.',
-                initialPromptOwner: 'tui',
-                pendingAttachStartedAt: Date.now(),
-              },
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_inline',
+          type: 'forge',
+          directory: '/tmp/wt/inline',
+          extra: {
+            loopName: 'inline-loop',
+            forgeLoop: {
+              title: 'Inline Loop',
+              planSource: 'inline',
+              planText: '# Inline Plan\n\nInline stuff.',
+              initialPromptOwner: 'tui',
+              pendingAttachStartedAt: Date.now(),
             },
           },
-        ],
-      }),
+        },
+      ]),
       loopsRepoGet: vi.fn().mockReturnValue(null),
     })
 
@@ -224,39 +215,35 @@ describe('createForgeSessionAttachHook', () => {
   })
 
   test('chat.message fallback removes expired pending attach workspace without binding', async () => {
-    const workspaceRemove = vi.fn().mockResolvedValue({ data: {} })
-    const tuiPublish = vi.fn().mockResolvedValue({ data: {} })
+    const workspaceRemove = vi.fn().mockResolvedValue(undefined)
+    const tuiPublish = vi.fn().mockResolvedValue(undefined)
     const deps = buildHookDeps({
       workspaceRemove,
       tuiPublish,
       sessionGet: vi.fn().mockResolvedValue({
-        data: {
-          id: 'new_sess',
-          workspaceID: 'ws_expired',
-          directory: '/tmp/wt/expired',
-          projectID: 'proj_1',
-        },
+        id: 'new_sess',
+        workspaceID: 'ws_expired',
+        directory: '/tmp/wt/expired',
+        projectID: 'proj_1',
       }),
-      workspaceList: vi.fn().mockResolvedValue({
-        data: [
-          {
-            id: 'ws_expired',
-            type: 'forge',
-            directory: '/tmp/wt/expired',
-            extra: {
-              loopName: 'expired-loop',
-              projectDirectory: '/tmp/wt/expired',
-              forgeLoop: {
-                title: 'Expired Loop',
-                planSource: 'inline',
-                planText: '# Inline Plan',
-                initialPromptOwner: 'tui',
-                pendingAttachStartedAt: Date.now() - (10 * 60 * 1000),
-              },
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_expired',
+          type: 'forge',
+          directory: '/tmp/wt/expired',
+          extra: {
+            loopName: 'expired-loop',
+            projectDirectory: '/tmp/wt/expired',
+            forgeLoop: {
+              title: 'Expired Loop',
+              planSource: 'inline',
+              planText: '# Inline Plan',
+              initialPromptOwner: 'tui',
+              pendingAttachStartedAt: Date.now() - (10 * 60 * 1000),
             },
           },
-        ],
-      }),
+        },
+      ]),
     })
 
     const handler = createForgeSessionMessageAttachHook(deps as any)
@@ -279,7 +266,7 @@ describe('createForgeSessionAttachHook', () => {
   })
 
   test('attach conflict with restartable terminal row removes registration only', async () => {
-    const workspaceRemove = vi.fn().mockResolvedValue({ data: {} })
+    const workspaceRemove = vi.fn().mockResolvedValue(undefined)
     const loopsRepoGet = vi.fn()
       .mockReturnValueOnce(null)
       .mockReturnValueOnce({ projectId: 'proj_1', loopName: 'race-loop', status: 'cancelled' })
@@ -287,24 +274,22 @@ describe('createForgeSessionAttachHook', () => {
     const deps = buildHookDeps({
       workspaceRemove,
       loopsRepoGet,
-      workspaceList: vi.fn().mockResolvedValue({
-        data: [
-          {
-            id: 'ws_race',
-            type: 'forge',
-            directory: '/tmp/wt/race',
-            extra: {
-              loopName: 'race-loop',
-              projectDirectory: '/tmp/wt/race',
-              forgeLoop: {
-                title: 'Race Loop',
-                planSource: 'inline',
-                planText: '# Plan',
-              },
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_race',
+          type: 'forge',
+          directory: '/tmp/wt/race',
+          extra: {
+            loopName: 'race-loop',
+            projectDirectory: '/tmp/wt/race',
+            forgeLoop: {
+              title: 'Race Loop',
+              planSource: 'inline',
+              planText: '# Plan',
             },
           },
-        ],
-      }),
+        },
+      ]),
     })
 
     const handler = createForgeSessionAttachHook(deps as any)
@@ -332,31 +317,27 @@ describe('createForgeSessionAttachHook', () => {
     const deps = buildHookDeps({
       loopsRepoGet,
       sessionGet: vi.fn().mockResolvedValue({
-        data: {
-          id: 'new_sess',
-          workspaceID: 'ws_inline',
-          directory: '/tmp/wt/inline',
-          projectID: 'proj_1',
-        },
+        id: 'new_sess',
+        workspaceID: 'ws_inline',
+        directory: '/tmp/wt/inline',
+        projectID: 'proj_1',
       }),
-      workspaceList: vi.fn().mockResolvedValue({
-        data: [
-          {
-            id: 'ws_inline',
-            type: 'forge',
-            directory: '/tmp/wt/inline',
-            extra: {
-              loopName: 'inline-loop',
-              forgeLoop: {
-                title: 'Inline Loop',
-                planSource: 'inline',
-                planText: '# Inline Plan\n\nInline stuff.',
-                initialPromptOwner: 'tui',
-              },
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_inline',
+          type: 'forge',
+          directory: '/tmp/wt/inline',
+          extra: {
+            loopName: 'inline-loop',
+            forgeLoop: {
+              title: 'Inline Loop',
+              planSource: 'inline',
+              planText: '# Inline Plan\n\nInline stuff.',
+              initialPromptOwner: 'tui',
             },
           },
-        ],
-      }),
+        },
+      ]),
     })
 
     const handler = createForgeSessionMessageAttachHook(deps as any)
@@ -368,24 +349,22 @@ describe('createForgeSessionAttachHook', () => {
 
   test('inline planSource resolves planText inline', async () => {
     const deps = buildHookDeps({
-      workspaceList: vi.fn().mockResolvedValue({
-        data: [
-          {
-            id: 'ws_inline',
-            type: 'forge',
-            directory: '/tmp/wt/inline',
-            extra: {
-              loopName: 'inline-loop',
-              projectDirectory: '/tmp/wt/inline',
-              forgeLoop: {
-                title: 'Inline Loop',
-                planSource: 'inline',
-                planText: '# Inline Plan\n\nInline stuff.',
-              },
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_inline',
+          type: 'forge',
+          directory: '/tmp/wt/inline',
+          extra: {
+            loopName: 'inline-loop',
+            projectDirectory: '/tmp/wt/inline',
+            forgeLoop: {
+              title: 'Inline Loop',
+              planSource: 'inline',
+              planText: '# Inline Plan\n\nInline stuff.',
             },
           },
-        ],
-      }),
+        },
+      ]),
     })
 
     const handler = createForgeSessionAttachHook(deps as any)
@@ -406,7 +385,7 @@ describe('createForgeSessionAttachHook', () => {
 
   test('workspace not found returns silently', async () => {
     const deps = buildHookDeps({
-      workspaceList: vi.fn().mockResolvedValue({ data: [] }),
+      workspaceList: vi.fn().mockResolvedValue([]),
     })
 
     const handler = createForgeSessionAttachHook(deps as any)
@@ -425,16 +404,14 @@ describe('createForgeSessionAttachHook', () => {
 
   test('non-forge workspace returns silently', async () => {
     const deps = buildHookDeps({
-      workspaceList: vi.fn().mockResolvedValue({
-        data: [
-          {
-            id: 'ws_worktree',
-            type: 'worktree',
-            directory: '/tmp/wt/worktree',
-            extra: {},
-          },
-        ],
-      }),
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_worktree',
+          type: 'worktree',
+          directory: '/tmp/wt/worktree',
+          extra: {},
+        },
+      ]),
     })
 
     const handler = createForgeSessionAttachHook(deps as any)
@@ -453,20 +430,18 @@ describe('createForgeSessionAttachHook', () => {
 
   test('unrelated event type (session.updated) returns silently', async () => {
     const deps = buildHookDeps({
-      workspaceList: vi.fn().mockResolvedValue({
-        data: [
-          {
-            id: 'ws_test',
-            type: 'forge',
-            directory: '/tmp/wt/test',
-            extra: {
-              loopName: 'test-loop',
-              projectDirectory: '/tmp/wt/test',
-              forgeLoop: {},
-            },
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_test',
+          type: 'forge',
+          directory: '/tmp/wt/test',
+          extra: {
+            loopName: 'test-loop',
+            projectDirectory: '/tmp/wt/test',
+            forgeLoop: {},
           },
-        ],
-      }),
+        },
+      ]),
     })
 
     const handler = createForgeSessionAttachHook(deps as any)
@@ -485,19 +460,17 @@ describe('createForgeSessionAttachHook', () => {
 
   test('missing sessionId/workspaceId returns silently', async () => {
     const deps = buildHookDeps({
-      workspaceList: vi.fn().mockResolvedValue({
-        data: [
-          {
-            id: 'ws_test',
-            type: 'forge',
-            directory: '/tmp/wt/test',
-            extra: {
-              loopName: 'test-loop',
-              forgeLoop: {},
-            },
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_test',
+          type: 'forge',
+          directory: '/tmp/wt/test',
+          extra: {
+            loopName: 'test-loop',
+            forgeLoop: {},
           },
-        ],
-      }),
+        },
+      ]),
     })
 
     const handler = createForgeSessionAttachHook(deps as any)
@@ -523,16 +496,14 @@ describe('createForgeSessionAttachHook', () => {
 
   test('no forgeLoop extra returns silently', async () => {
     const deps = buildHookDeps({
-      workspaceList: vi.fn().mockResolvedValue({
-        data: [
-          {
-            id: 'ws_no_extra',
-            type: 'forge',
-            directory: '/tmp/wt/no-extra',
-            extra: {},
-          },
-        ],
-      }),
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_no_extra',
+          type: 'forge',
+          directory: '/tmp/wt/no-extra',
+          extra: {},
+        },
+      ]),
     })
 
     const handler = createForgeSessionAttachHook(deps as any)
@@ -550,24 +521,22 @@ describe('createForgeSessionAttachHook', () => {
   })
 
   test('missing-row workspace with loopName but no forgeLoop config is removed as stale', async () => {
-    const workspaceRemove = vi.fn().mockResolvedValue({ data: {} })
-    const tuiPublish = vi.fn().mockResolvedValue({ data: {} })
+    const workspaceRemove = vi.fn().mockResolvedValue(undefined)
+    const tuiPublish = vi.fn().mockResolvedValue(undefined)
     const deps = buildHookDeps({
       workspaceRemove,
       tuiPublish,
-      workspaceList: vi.fn().mockResolvedValue({
-        data: [
-          {
-            id: 'ws_no_config',
-            type: 'forge',
-            directory: '/tmp/wt/no-config',
-            extra: {
-              loopName: 'no-config-loop',
-              projectDirectory: '/tmp/wt/no-config',
-            },
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_no_config',
+          type: 'forge',
+          directory: '/tmp/wt/no-config',
+          extra: {
+            loopName: 'no-config-loop',
+            projectDirectory: '/tmp/wt/no-config',
           },
-        ],
-      }),
+        },
+      ]),
     })
 
     const handler = createForgeSessionAttachHook(deps as any)
@@ -592,26 +561,24 @@ describe('createForgeSessionAttachHook', () => {
 
   test('stored plan missing logs error, removes orphan workspace, and publishes toast', async () => {
     const loggerErrorSpy = vi.fn()
-    const workspaceRemove = vi.fn().mockResolvedValue({ data: {} })
-    const tuiPublish = vi.fn().mockResolvedValue({ data: {} })
+    const workspaceRemove = vi.fn().mockResolvedValue(undefined)
+    const tuiPublish = vi.fn().mockResolvedValue(undefined)
     const deps = buildHookDeps({
-      workspaceList: vi.fn().mockResolvedValue({
-        data: [
-          {
-            id: 'ws_stored',
-            type: 'forge',
-            directory: '/tmp/wt/stored',
-            extra: {
-              loopName: 'stored-loop',
-              projectDirectory: '/tmp/wt/stored',
-              forgeLoop: {
-                planSource: 'stored',
-                hostSessionId: 'host_sess',
-              },
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_stored',
+          type: 'forge',
+          directory: '/tmp/wt/stored',
+          extra: {
+            loopName: 'stored-loop',
+            projectDirectory: '/tmp/wt/stored',
+            forgeLoop: {
+              planSource: 'stored',
+              hostSessionId: 'host_sess',
             },
           },
-        ],
-      }),
+        },
+      ]),
       plansRepoGetForSession: vi.fn().mockReturnValue(null),
       loggerErrorSpy,
       workspaceRemove,
@@ -651,24 +618,22 @@ describe('createForgeSessionAttachHook', () => {
   test('empty-string cfg.hostSessionId falls through to event sessionId for plan lookup', async () => {
     const plansRepoGetForSession = vi.fn().mockReturnValue({ content: '# Plan\n\nFrom event session.' })
     const deps = buildHookDeps({
-      workspaceList: vi.fn().mockResolvedValue({
-        data: [
-          {
-            id: 'ws_empty_host',
-            type: 'forge',
-            directory: '/tmp/wt/empty-host',
-            extra: {
-              loopName: 'empty-host-loop',
-              projectDirectory: '/tmp/wt/empty-host',
-              forgeLoop: {
-                hostSessionId: '',
-                title: 'Empty Host',
-                planSource: 'stored',
-              },
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_empty_host',
+          type: 'forge',
+          directory: '/tmp/wt/empty-host',
+          extra: {
+            loopName: 'empty-host-loop',
+            projectDirectory: '/tmp/wt/empty-host',
+            forgeLoop: {
+              hostSessionId: '',
+              title: 'Empty Host',
+              planSource: 'stored',
             },
           },
-        ],
-      }),
+        },
+      ]),
       plansRepoGetForSession,
     })
 
@@ -692,28 +657,26 @@ describe('createForgeSessionAttachHook', () => {
 
   test('attachLoopToSession throw is caught, logged, and orphan workspace removed', async () => {
     const loggerErrorSpy = vi.fn()
-    const workspaceRemove = vi.fn().mockResolvedValue({ data: {} })
-    const tuiPublish = vi.fn().mockResolvedValue({ data: {} })
+    const workspaceRemove = vi.fn().mockResolvedValue(undefined)
+    const tuiPublish = vi.fn().mockResolvedValue(undefined)
     mockAttachLoop.mockRejectedValueOnce(new Error('boom'))
     const deps = buildHookDeps({
-      workspaceList: vi.fn().mockResolvedValue({
-        data: [
-          {
-            id: 'ws_err',
-            type: 'forge',
-            directory: '/tmp/wt/err',
-            extra: {
-              loopName: 'err-loop',
-              projectDirectory: '/tmp/wt/err',
-              forgeLoop: {
-                title: 'Err Loop',
-                planSource: 'inline',
-                planText: '# Plan',
-              },
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_err',
+          type: 'forge',
+          directory: '/tmp/wt/err',
+          extra: {
+            loopName: 'err-loop',
+            projectDirectory: '/tmp/wt/err',
+            forgeLoop: {
+              title: 'Err Loop',
+              planSource: 'inline',
+              planText: '# Plan',
             },
           },
-        ],
-      }),
+        },
+      ]),
       loggerErrorSpy,
       workspaceRemove,
       tuiPublish,
@@ -741,28 +704,26 @@ describe('createForgeSessionAttachHook', () => {
   })
 
   test('attachLoopToSession returns ok:false (non-already_attached) triggers orphan cleanup', async () => {
-    const workspaceRemove = vi.fn().mockResolvedValue({ data: {} })
-    const tuiPublish = vi.fn().mockResolvedValue({ data: {} })
+    const workspaceRemove = vi.fn().mockResolvedValue(undefined)
+    const tuiPublish = vi.fn().mockResolvedValue(undefined)
     mockAttachLoop.mockResolvedValueOnce({ ok: false, code: 'prompt_failed', message: 'prompt blew up' })
     const deps = buildHookDeps({
-      workspaceList: vi.fn().mockResolvedValue({
-        data: [
-          {
-            id: 'ws_fail',
-            type: 'forge',
-            directory: '/tmp/wt/fail',
-            extra: {
-              loopName: 'fail-loop',
-              projectDirectory: '/tmp/wt/fail',
-              forgeLoop: {
-                title: 'Fail Loop',
-                planSource: 'inline',
-                planText: '# Plan',
-              },
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_fail',
+          type: 'forge',
+          directory: '/tmp/wt/fail',
+          extra: {
+            loopName: 'fail-loop',
+            projectDirectory: '/tmp/wt/fail',
+            forgeLoop: {
+              title: 'Fail Loop',
+              planSource: 'inline',
+              planText: '# Plan',
             },
           },
-        ],
-      }),
+        },
+      ]),
       workspaceRemove,
       tuiPublish,
     })
@@ -792,28 +753,26 @@ describe('createForgeSessionAttachHook', () => {
   })
 
   test('attachLoopToSession returns already_attached does NOT remove workspace', async () => {
-    const workspaceRemove = vi.fn().mockResolvedValue({ data: {} })
-    const tuiPublish = vi.fn().mockResolvedValue({ data: {} })
+    const workspaceRemove = vi.fn().mockResolvedValue(undefined)
+    const tuiPublish = vi.fn().mockResolvedValue(undefined)
     mockAttachLoop.mockResolvedValueOnce({ ok: false, code: 'already_attached', message: 'already attached' })
     const deps = buildHookDeps({
-      workspaceList: vi.fn().mockResolvedValue({
-        data: [
-          {
-            id: 'ws_dup',
-            type: 'forge',
-            directory: '/tmp/wt/dup',
-            extra: {
-              loopName: 'dup-loop',
-              projectDirectory: '/tmp/wt/dup',
-              forgeLoop: {
-                title: 'Dup Loop',
-                planSource: 'inline',
-                planText: '# Plan',
-              },
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_dup',
+          type: 'forge',
+          directory: '/tmp/wt/dup',
+          extra: {
+            loopName: 'dup-loop',
+            projectDirectory: '/tmp/wt/dup',
+            forgeLoop: {
+              title: 'Dup Loop',
+              planSource: 'inline',
+              planText: '# Plan',
             },
           },
-        ],
-      }),
+        },
+      ]),
       workspaceRemove,
       tuiPublish,
     })
@@ -840,28 +799,26 @@ describe('createForgeSessionAttachHook', () => {
       .mockReturnValueOnce({ projectId: 'proj_1', loopName: 'my-feature', status: 'running' })
 
     const deps = buildHookDeps({
-      workspaceList: vi.fn().mockResolvedValue({
-        data: [
-          {
-            id: 'ws_forge',
-            type: 'forge',
-            directory: '/tmp/wt/forge',
-            extra: {
-              loopName: 'my-feature',
-              projectDirectory: '/tmp/wt/forge',
-              forgeLoop: {
-                hostSessionId: 'host_sess',
-                title: 'My Feature',
-                executionModel: 'prov/exec',
-                auditorModel: 'prov/aud',
-                planSource: 'stored',
-                maxIterations: 50,
-                sandboxEnabled: false,
-              },
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_forge',
+          type: 'forge',
+          directory: '/tmp/wt/forge',
+          extra: {
+            loopName: 'my-feature',
+            projectDirectory: '/tmp/wt/forge',
+            forgeLoop: {
+              hostSessionId: 'host_sess',
+              title: 'My Feature',
+              executionModel: 'prov/exec',
+              auditorModel: 'prov/aud',
+              planSource: 'stored',
+              maxIterations: 50,
+              sandboxEnabled: false,
             },
           },
-        ],
-      }),
+        },
+      ]),
       plansRepoGetForSession: vi.fn().mockReturnValue({ content: '# Plan\n\nDo stuff.' }),
       loopsRepoGet: loopsRepoGetMock,
       loggerErrorSpy,
@@ -902,29 +859,27 @@ describe('createForgeSessionAttachHook', () => {
       loopName: 'restart-loop',
       status,
     })
-    const workspaceRemove = vi.fn().mockResolvedValue({ data: {} })
-    const tuiPublish = vi.fn().mockResolvedValue({ data: {} })
+    const workspaceRemove = vi.fn().mockResolvedValue(undefined)
+    const tuiPublish = vi.fn().mockResolvedValue(undefined)
     const loggerLogSpy = vi.fn()
 
     const deps = buildHookDeps({
-      workspaceList: vi.fn().mockResolvedValue({
-        data: [
-          {
-            id: 'ws_restart',
-            type: 'forge',
-            directory: '/tmp/wt/restart',
-            extra: {
-              loopName: 'restart-loop',
-              projectDirectory: '/tmp/wt/restart',
-              forgeLoop: {
-                title: 'Restart',
-                planSource: 'inline',
-                planText: '# Plan',
-              },
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_restart',
+          type: 'forge',
+          directory: '/tmp/wt/restart',
+          extra: {
+            loopName: 'restart-loop',
+            projectDirectory: '/tmp/wt/restart',
+            forgeLoop: {
+              title: 'Restart',
+              planSource: 'inline',
+              planText: '# Plan',
             },
           },
-        ],
-      }),
+        },
+      ]),
       loopsRepoGet: loopsRepoGetMock,
       workspaceRemove,
       tuiPublish,
@@ -990,28 +945,26 @@ describe('createForgeSessionAttachHook', () => {
     const loopsRepoGetMock = vi.fn().mockReturnValue(null)
 
     const deps = buildHookDeps({
-      workspaceList: vi.fn().mockResolvedValue({
-        data: [
-          {
-            id: 'ws_forge',
-            type: 'forge',
-            directory: '/tmp/wt/forge',
-            extra: {
-              loopName: 'my-feature',
-              projectDirectory: '/tmp/wt/forge',
-              forgeLoop: {
-                hostSessionId: 'host_sess',
-                title: 'My Feature',
-                executionModel: 'prov/exec',
-                auditorModel: 'prov/aud',
-                planSource: 'stored',
-                maxIterations: 50,
-                sandboxEnabled: false,
-              },
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_forge',
+          type: 'forge',
+          directory: '/tmp/wt/forge',
+          extra: {
+            loopName: 'my-feature',
+            projectDirectory: '/tmp/wt/forge',
+            forgeLoop: {
+              hostSessionId: 'host_sess',
+              title: 'My Feature',
+              executionModel: 'prov/exec',
+              auditorModel: 'prov/aud',
+              planSource: 'stored',
+              maxIterations: 50,
+              sandboxEnabled: false,
             },
           },
-        ],
-      }),
+        },
+      ]),
       plansRepoGetForSession: vi.fn().mockReturnValue({ content: '# Plan\n\nDo stuff.' }),
       loopsRepoGet: loopsRepoGetMock,
       loggerErrorSpy,
@@ -1068,7 +1021,7 @@ describe('createForgeSessionAttachHook', () => {
         },
       },
     }
-    const workspaceList = vi.fn().mockResolvedValue({ data: [forgeWorkspaceWithForgeLoop] })
+    const workspaceList = vi.fn().mockResolvedValue([forgeWorkspaceWithForgeLoop])
     const deps = buildHookDeps({ workspaceList })
 
     const handler = createForgeSessionAttachHook(deps as any)
@@ -1102,7 +1055,7 @@ describe('createForgeSessionAttachHook', () => {
         },
       },
     }
-    const workspaceList = vi.fn().mockResolvedValue({ data: [forgeWorkspaceWithForgeLoop] })
+    const workspaceList = vi.fn().mockResolvedValue([forgeWorkspaceWithForgeLoop])
     const deps = buildHookDeps({ workspaceList })
 
     const handler = createForgeSessionAttachHook(deps as any)
@@ -1123,24 +1076,22 @@ describe('createForgeSessionAttachHook', () => {
   test('uses sessionInfo.projectID for loopsRepo.get and attachLoopToSession ctx', async () => {
     const loopsRepoGet = vi.fn().mockReturnValue(null)
     const plansRepoGetForSession = vi.fn().mockReturnValue({ content: 'plan text' })
-    const workspaceList = vi.fn().mockResolvedValue({
-      data: [
-        {
-          id: 'ws_forge_pid',
-          type: 'forge',
-          directory: '/tmp/wt/pid',
-          extra: {
-            loopName: 'demo',
-            projectDirectory: '/tmp/wt/pid',
-            forgeLoop: {
-              hostSessionId: 'host_sess',
-              title: 'Demo Loop',
-              planSource: 'stored',
-            },
+    const workspaceList = vi.fn().mockResolvedValue([
+      {
+        id: 'ws_forge_pid',
+        type: 'forge',
+        directory: '/tmp/wt/pid',
+        extra: {
+          loopName: 'demo',
+          projectDirectory: '/tmp/wt/pid',
+          forgeLoop: {
+            hostSessionId: 'host_sess',
+            title: 'Demo Loop',
+            planSource: 'stored',
           },
         },
-      ],
-    })
+      },
+    ])
     const deps = buildHookDeps({
       loopsRepoGet,
       plansRepoGetForSession,
@@ -1169,24 +1120,22 @@ describe('createForgeSessionAttachHook', () => {
   test('falls back to deps.projectId when sessionInfo.projectID is missing', async () => {
     const loopsRepoGet = vi.fn().mockReturnValue(null)
     const plansRepoGetForSession = vi.fn().mockReturnValue({ content: 'plan text' })
-    const workspaceList = vi.fn().mockResolvedValue({
-      data: [
-        {
-          id: 'ws_forge_fb',
-          type: 'forge',
-          directory: '/tmp/wt/fb',
-          extra: {
-            loopName: 'fallback-loop',
-            projectDirectory: '/tmp/wt/fb',
-            forgeLoop: {
-              hostSessionId: 'host_sess',
-              title: 'Fallback Loop',
-              planSource: 'stored',
-            },
+    const workspaceList = vi.fn().mockResolvedValue([
+      {
+        id: 'ws_forge_fb',
+        type: 'forge',
+        directory: '/tmp/wt/fb',
+        extra: {
+          loopName: 'fallback-loop',
+          projectDirectory: '/tmp/wt/fb',
+          forgeLoop: {
+            hostSessionId: 'host_sess',
+            title: 'Fallback Loop',
+            planSource: 'stored',
           },
         },
-      ],
-    })
+      },
+    ])
     const deps = buildHookDeps({
       loopsRepoGet,
       plansRepoGetForSession,
@@ -1213,8 +1162,8 @@ describe('createForgeSessionAttachHook', () => {
   })
 
   test('publishes a tui.toast when workspace is unfindable after retry', async () => {
-    const workspaceList = vi.fn().mockResolvedValue({ data: [] })
-    const tuiPublish = vi.fn().mockResolvedValue({ data: {} })
+    const workspaceList = vi.fn().mockResolvedValue([])
+    const tuiPublish = vi.fn().mockResolvedValue(undefined)
     const deps = buildHookDeps({ workspaceList, tuiPublish })
 
     const handler = createForgeSessionAttachHook(deps as any)
@@ -1244,8 +1193,8 @@ describe('createForgeSessionAttachHook', () => {
   })
 
   test('does not publish a toast when sessionInfo.directory is missing', async () => {
-    const workspaceList = vi.fn().mockResolvedValue({ data: [] })
-    const tuiPublish = vi.fn().mockResolvedValue({ data: {} })
+    const workspaceList = vi.fn().mockResolvedValue([])
+    const tuiPublish = vi.fn().mockResolvedValue(undefined)
     const deps = buildHookDeps({ workspaceList, tuiPublish })
 
     const handler = createForgeSessionAttachHook(deps as any)
@@ -1266,25 +1215,23 @@ describe('createForgeSessionAttachHook', () => {
   test('attach hook prefers inline planText over stored plan when both are available', async () => {
     const plansRepoGetForSession = vi.fn().mockReturnValue({ content: 'STALE_PRIOR_PLAN_TEXT' })
     const deps = buildHookDeps({
-      workspaceList: vi.fn().mockResolvedValue({
-        data: [
-          {
-            id: 'ws_inline_vs_stored',
-            type: 'forge',
-            directory: '/tmp/wt/inline-vs-stored',
-            extra: {
-              loopName: 'my-plan',
-              projectDirectory: '/tmp/wt/inline-vs-stored',
-              forgeLoop: {
-                hostSessionId: 'ses_host',
-                title: 'My Plan',
-                planSource: 'inline',
-                planText: 'FRESH_PLAN_TEXT',
-              },
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_inline_vs_stored',
+          type: 'forge',
+          directory: '/tmp/wt/inline-vs-stored',
+          extra: {
+            loopName: 'my-plan',
+            projectDirectory: '/tmp/wt/inline-vs-stored',
+            forgeLoop: {
+              hostSessionId: 'ses_host',
+              title: 'My Plan',
+              planSource: 'inline',
+              planText: 'FRESH_PLAN_TEXT',
             },
           },
-        ],
-      }),
+        },
+      ]),
       plansRepoGetForSession,
     })
 

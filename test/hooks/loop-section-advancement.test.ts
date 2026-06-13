@@ -11,7 +11,6 @@ import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoopEventHandler } from '../../src/hooks/loop'
 import type { Logger, PluginConfig } from '../../src/types'
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 
 const mockLogger: Logger = {
   log: () => {},
@@ -135,7 +134,7 @@ describe('Loop Section Advancement', () => {
     plansRepo = createPlansRepo(db)
     reviewFindingsRepo = createReviewFindingsRepo(db)
     sectionPlansRepo = createSectionPlansRepo(db)
-    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger, undefined, undefined, undefined, sectionPlansRepo)
+    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger, undefined, undefined, sectionPlansRepo)
   })
 
   afterEach(() => {

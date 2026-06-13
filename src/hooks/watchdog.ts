@@ -1,6 +1,6 @@
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import type { LoopService, LoopState, TerminationReason } from '../loop'
 import type { Logger } from '../types'
+import type { ForgeClient } from '../client/port'
 
 export type LoopWatchdogStallReason =
   | 'non_busy_status'
@@ -52,13 +52,14 @@ function formatError(err: unknown): string {
 
 export function createLoopWatchdog(input: {
   loopService: Pick<LoopService, 'getActiveState' | 'getStallTimeoutMs' | 'getMaxConsecutiveStalls' | 'resolveLoopName'>
-  v2Client: OpencodeClient
+  client: ForgeClient
   logger: Logger
   recover(loopName: string, state: LoopState, context: LoopWatchdogRecoveryContext): Promise<void>
   terminate(loopName: string, state: LoopState, reason: TerminationReason): Promise<void>
   statusRetryAttempts?: number
   statusRetryBackoffMs?: number
 }): LoopWatchdog {
+  const { client } = input
   const lastActivityTime = new Map<string, number>()
   const stallWatchdogs = new Map<string, NodeJS.Timeout>()
   const consecutiveStalls = new Map<string, number>()
@@ -89,8 +90,8 @@ export function createLoopWatchdog(input: {
     let lastErr: unknown = null
     for (let i = 0; i < attempts; i++) {
       try {
-        const r = await input.v2Client.session.status({ directory })
-        return { ok: true, data: (r.data ?? {}) as Record<string, SessionStatusSnapshot> }
+        const data = await client.session.status({ directory })
+        return { ok: true, data: (data ?? {}) as Record<string, SessionStatusSnapshot> }
       } catch (err) {
         lastErr = err
         if (i < attempts - 1) {

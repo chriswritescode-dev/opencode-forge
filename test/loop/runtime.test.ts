@@ -10,7 +10,7 @@ import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-re
 import { createLoopSessionUsageRepo, type LoopSessionUsageRepo } from '../../src/storage/repos/loop-session-usage-repo'
 import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
-import { createLoop, type Loop, type LoopRuntimeDeps } from '../../src/loop/runtime'
+import { createLoop, type Loop } from '../../src/loop/runtime'
 import { sessionsAwaitingBusy } from '../../src/loop/idle-gate'
 import {
   markPromptInFlight,
@@ -19,7 +19,9 @@ import {
   __resetInFlightGuard,
 } from '../../src/loop/in-flight-guard'
 import type { Logger, PluginConfig, LoopConfig } from '../../src/types'
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
+import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
+import type { ForgeClient } from '../../src/client/port'
+import { setupLoopsTestDb } from '../helpers/loops-test-db'
 
 const PROJECT_ID = 'test-project'
 
@@ -33,86 +35,6 @@ const mockConfig: PluginConfig = {
   },
 }
 
-interface MockClientState {
-  createCalls: Array<Record<string, unknown>>
-  deleteCalls: Array<{ sessionID: string; directory: string }>
-  publishCalls: Array<{ directory: string; body: unknown }>
-  selectCalls: Array<{ sessionID: string; workspace?: string }>
-  deleteThrows: boolean
-  abortCalls: string[]
-  promptCalls: Array<{ sessionID: string; agent?: string; variant?: string; text?: string }>
-  promptAsyncFailCount?: number
-  messagesResult: Array<{ info: { role: string; finish?: string }; parts: Array<{ type: string; text?: string }> }> | null
-  messagesBySession?: Map<string, Array<{ info: { role: string; finish?: string }; parts: Array<{ type: string; text?: string }> }>>
-}
-
-function createMockV2Client(state: MockClientState): OpencodeClient {
-  return {
-    session: {
-      create: async (params) => {
-        state.createCalls.push(params as Record<string, unknown>)
-        return { error: null, data: { id: 'sess' } }
-      },
-      promptAsync: async (params) => {
-        state.promptCalls.push({
-          sessionID: (params as any).sessionID ?? '',
-          agent: (params as any).agent,
-          variant: (params as any).variant,
-          text: (params as any).parts?.[0]?.text ?? (params as any).prompt ?? '',
-        })
-        if (state.promptAsyncFailCount && state.promptAsyncFailCount > 0) {
-          state.promptAsyncFailCount--
-          return { error: { name: 'TestError', data: { message: 'simulated model failure' } }, data: null }
-        }
-        return { error: null, data: null }
-      },
-      status: async () => ({ error: null, data: {} }),
-      abort: async (params) => {
-        state.abortCalls.push((params as any).sessionID)
-        return {}
-      },
-      delete: async (params) => {
-        state.deleteCalls.push(params as { sessionID: string; directory: string })
-        if (state.deleteThrows) throw new Error('delete failed')
-        return { error: undefined }
-      },
-      messages: async (params) => {
-        const sessionID = (params as any)?.sessionID as string | undefined
-        if (sessionID && state.messagesBySession?.has(sessionID)) {
-          return {
-            error: null,
-            data: state.messagesBySession.get(sessionID) as any,
-          }
-        }
-        return {
-          error: null,
-          data: (state.messagesResult ?? []) as any,
-        }
-      },
-      get: async () => ({ error: null, data: {} }),
-    },
-    tui: {
-      publish: async (params) => {
-        state.publishCalls.push(params as { directory: string; body: unknown })
-      },
-      selectSession: async (params) => {
-        state.selectCalls.push(params as { sessionID: string; workspace?: string })
-      },
-    },
-    worktree: {
-      create: async () => ({ error: null, data: { directory: '/tmp/wt', branch: 'b' } }),
-      remove: async () => {},
-    },
-    experimental: {
-      workspace: {
-        warp: async () => ({ error: null }),
-        list: async () => ({ error: null, data: [] }),
-        status: async () => ({ error: null, data: [] }),
-      },
-    },
-  } as unknown as OpencodeClient
-}
-
 function createCapturingLogger(): { logger: Logger; logs: Array<{ level: string; message: string }> } {
   const logs: Array<{ level: string; message: string }> = []
   const logger: Logger = {
@@ -123,121 +45,6 @@ function createCapturingLogger(): { logger: Logger; logs: Array<{ level: string;
   return { logger, logs }
 }
 
-const DB_SCHEMA = `
-CREATE TABLE loops (
-  project_id           TEXT NOT NULL,
-  loop_name            TEXT NOT NULL,
-  status               TEXT NOT NULL,
-  current_session_id   TEXT NOT NULL,
-  worktree             INTEGER NOT NULL,
-  worktree_dir         TEXT NOT NULL,
-  session_directory    TEXT,
-  worktree_branch      TEXT,
-  project_dir          TEXT NOT NULL,
-  max_iterations       INTEGER NOT NULL,
-  iteration            INTEGER NOT NULL DEFAULT 0,
-  audit_count          INTEGER NOT NULL DEFAULT 0,
-  error_count          INTEGER NOT NULL DEFAULT 0,
-  phase                TEXT NOT NULL,
-  execution_model      TEXT,
-  auditor_model        TEXT,
-  model_failed         INTEGER NOT NULL DEFAULT 0,
-  sandbox              INTEGER NOT NULL DEFAULT 0,
-  sandbox_container    TEXT,
-  started_at           INTEGER NOT NULL,
-  completed_at         INTEGER,
-  termination_reason   TEXT,
-  completion_summary   TEXT,
-  workspace_id         TEXT,
-  host_session_id      TEXT,
-  audit_session_id     TEXT,
-  current_section_index INTEGER NOT NULL DEFAULT 0,
-  total_sections       INTEGER NOT NULL DEFAULT 0,
-  final_audit_done     INTEGER NOT NULL DEFAULT 0,
-  final_audit_attempts INTEGER NOT NULL DEFAULT 0,
-  execution_variant    TEXT,
-  auditor_variant      TEXT,
-  PRIMARY KEY (project_id, loop_name)
-)
-`
-
-const LOOP_LARGE_FIELDS_SCHEMA = `
-CREATE TABLE loop_large_fields (
-  project_id          TEXT NOT NULL,
-  loop_name           TEXT NOT NULL,
-  last_audit_result   TEXT,
-  PRIMARY KEY (project_id, loop_name),
-  FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
-)
-`
-
-const PLANS_SCHEMA = `
-CREATE TABLE plans (
-  project_id   TEXT NOT NULL,
-  loop_name    TEXT,
-  session_id   TEXT,
-  content      TEXT NOT NULL,
-  updated_at   INTEGER NOT NULL,
-  CHECK (loop_name IS NOT NULL OR session_id IS NOT NULL),
-  CHECK (NOT (loop_name IS NOT NULL AND session_id IS NOT NULL)),
-  UNIQUE (project_id, loop_name),
-  UNIQUE (project_id, session_id)
-)
-`
-
-const REVIEW_FINDINGS_SCHEMA = `
-CREATE TABLE review_findings (
-  project_id TEXT NOT NULL,
-  loop_name TEXT NOT NULL DEFAULT '',
-  file TEXT NOT NULL,
-  line INTEGER NOT NULL,
-  severity TEXT NOT NULL,
-  description TEXT NOT NULL,
-  scenario TEXT,
-  created_at INTEGER NOT NULL,
-  section_index INTEGER,
-  PRIMARY KEY (project_id, loop_name, file, line, section_index)
-)
-`
-
-const SECTION_PLANS_SCHEMA = `
-CREATE TABLE section_plans (
-  project_id TEXT NOT NULL,
-  loop_name TEXT NOT NULL,
-  section_index INTEGER NOT NULL,
-  title TEXT NOT NULL,
-  content TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','in_progress','completed','failed')),
-  attempts INTEGER NOT NULL DEFAULT 0,
-  started_at INTEGER,
-  completed_at INTEGER,
-  summary_done TEXT,
-  summary_deviations TEXT,
-  summary_follow_ups TEXT,
-  created_at INTEGER NOT NULL,
-  PRIMARY KEY (project_id, loop_name, section_index)
-)
-`
-
-const LOOP_SESSION_USAGE_SCHEMA = `
-CREATE TABLE loop_session_usage (
-  project_id TEXT NOT NULL,
-  loop_name TEXT NOT NULL,
-  session_id TEXT NOT NULL,
-  role TEXT NOT NULL,
-  model TEXT NOT NULL,
-  cost REAL NOT NULL DEFAULT 0,
-  input_tokens INTEGER NOT NULL DEFAULT 0,
-  output_tokens INTEGER NOT NULL DEFAULT 0,
-  reasoning_tokens INTEGER NOT NULL DEFAULT 0,
-  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-  message_count INTEGER NOT NULL DEFAULT 1,
-  captured_at INTEGER NOT NULL,
-  PRIMARY KEY (project_id, loop_name, session_id, model)
-)
-`
-
 describe('Loop Runtime', () => {
   let db: Database
   let loopService: ReturnType<typeof createLoopService>
@@ -247,17 +54,12 @@ describe('Loop Runtime', () => {
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
   let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
   let loopSessionUsageRepo: LoopSessionUsageRepo
+  let currentLoop: Loop | null = null
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-runtime-test-'))
     db = new Database(join(tempDir, 'test.db'))
-
-    db.exec(DB_SCHEMA)
-    db.exec(LOOP_LARGE_FIELDS_SCHEMA)
-    db.exec(PLANS_SCHEMA)
-    db.exec(REVIEW_FINDINGS_SCHEMA)
-    db.exec(SECTION_PLANS_SCHEMA)
-    db.exec(LOOP_SESSION_USAGE_SCHEMA)
+    setupLoopsTestDb(db)
 
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
@@ -273,7 +75,6 @@ describe('Loop Runtime', () => {
       { log: () => {}, error: () => {}, debug: () => {} },
       undefined,
       undefined,
-      undefined,
       sectionPlansRepo,
     )
 
@@ -282,6 +83,10 @@ describe('Loop Runtime', () => {
   })
 
   afterEach(() => {
+    if (currentLoop) {
+      currentLoop.clearAllRetryTimeouts()
+      currentLoop = null
+    }
     db.close()
     try {
       rmSync(tempDir, { recursive: true, force: true })
@@ -322,23 +127,12 @@ describe('Loop Runtime', () => {
   }
 
   function createRuntime(overrides: {
-    v2Client?: OpencodeClient
+    client?: ForgeClient
     loopConfig?: Partial<PluginConfig>
     serviceLoopConfig?: LoopConfig
     withUsageRepo?: boolean
-  } = {}): { loop: Loop; clientState: MockClientState; logger: Logger; logs: Array<{ level: string; message: string }> } {
-    const clientState: MockClientState = {
-      deleteCalls: [],
-      createCalls: [],
-      publishCalls: [],
-      selectCalls: [],
-      deleteThrows: false,
-      abortCalls: [],
-      promptCalls: [],
-      messagesResult: null,
-    }
-
-    const v2Client = overrides.v2Client ?? createMockV2Client(clientState)
+  } = {}): { loop: Loop; calls: RecordedCall[]; logger: Logger; logs: Array<{ level: string; message: string }> } {
+    const forge = overrides.client ? { client: overrides.client, calls: [] as RecordedCall[] } : createFakeForgeClient()
     const { logger, logs } = createCapturingLogger()
     const config: PluginConfig = { ...mockConfig, ...(overrides.loopConfig ?? {}) }
 
@@ -348,8 +142,7 @@ describe('Loop Runtime', () => {
       reviewFindingsRepo,
       sectionPlansRepo,
       projectId: PROJECT_ID,
-      client: { client: {} as any } as any,
-      v2Client,
+      client: forge.client,
       logger,
       getConfig: () => config,
       sandboxManager: undefined,
@@ -357,23 +150,24 @@ describe('Loop Runtime', () => {
       loopSessionUsageRepo: overrides.withUsageRepo ? loopSessionUsageRepo : undefined,
     })
 
-    return { loop, clientState, logger, logs }
+    currentLoop = loop
+    return { loop, calls: forge.calls, logger, logs }
   }
 
   describe('idle coding session advances to auditing', () => {
     test('idle event on a coding phase transitions to auditing phase', async () => {
-      const { loop, clientState } = createRuntime()
-      clientState.messagesResult = [
-        {
-          info: { role: 'assistant', finish: 'stop' },
-          parts: [{ type: 'text', text: 'Audit passed.' }],
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
+          ],
         },
-      ]
+      })
+      const { loop } = createRuntime({ client })
 
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
@@ -392,17 +186,15 @@ describe('Loop Runtime', () => {
     })
 
     test('does not transition to auditing when latest coding message is still user prompt', async () => {
-      const { loop, clientState } = createRuntime()
-      clientState.messagesResult = [
-        {
-          info: { role: 'assistant', finish: 'stop' },
-          parts: [{ type: 'text', text: 'Older code response.' }],
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Older code response.' }] },
+            { info: { role: 'user' }, parts: [{ type: 'text', text: 'Latest code prompt that was not answered.' }] },
+          ],
         },
-        {
-          info: { role: 'user' },
-          parts: [{ type: 'text', text: 'Latest code prompt that was not answered.' }],
-        },
-      ]
+      })
+      const { loop } = createRuntime({ client })
 
       const state = makeState({
         phase: 'coding',
@@ -423,34 +215,33 @@ describe('Loop Runtime', () => {
       expect(updatedState).not.toBeNull()
       expect(updatedState!.phase).toBe('coding')
 
-      expect(clientState.promptCalls.some((call) => call.agent === 'auditor-loop')).toBe(false)
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls.length).toBe(0)
 
-      const hasCodePrompt = clientState.promptCalls.some((call) => call.agent === 'code')
-      expect(hasCodePrompt).toBe(false)
+      const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+      expect(codeCalls.length).toBe(0)
     })
   })
 
   describe('clean non-sectioned audit terminates completed', () => {
     test('audit session returning clean assistant message terminates with completed', async () => {
-      const { loop, clientState } = createRuntime()
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear. No issues found.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client })
 
       const state = makeState({
         phase: 'auditing',
         totalSections: 0,
-
         auditCount: 0,
         iteration: 1,
         maxIterations: 3,
       })
       loopService.setState(state.loopName, state)
-
-      // Mock the audit session's assistant message (clean result with no findings)
-      clientState.messagesResult = [
-        {
-          info: { role: 'assistant', finish: 'stop' },
-          parts: [{ type: 'text', text: 'All clear. No issues found.' }],
-        },
-      ]
 
       await loop.tick({
         type: 'session.status',
@@ -470,36 +261,16 @@ describe('Loop Runtime', () => {
 
 describe('runtime re-provisioning updates state.workspaceId', () => {
   test('ensureWorkspaceForLoop provisions workspace and sets workspaceId', async () => {
-    const clientState: MockClientState = {
-      deleteCalls: [],
-      createCalls: [],
-      publishCalls: [],
-      selectCalls: [],
-      deleteThrows: false,
-      abortCalls: [],
-      promptCalls: [],
-      messagesResult: [
-        {
-          info: { role: 'assistant', finish: 'stop' },
-          parts: [{ type: 'text', text: 'Audit passed.' }],
-        },
-      ],
-    }
-
-    const wsCreateMock = mock(async () => ({
-      data: { id: 'ws_new', directory: '/tmp/wt/new', branch: 'opencode/new' },
-    }))
-    const warpMock = mock(async () => ({ error: null }))
-
-    const v2Client = {
-      ...createMockV2Client(clientState),
-      experimental: {
-        workspace: {
-          create: wsCreateMock,
-          warp: warpMock,
-        },
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
+        ],
       },
-    } as unknown as OpencodeClient
+      workspace: {
+        create: async () => ({ id: 'ws_new', directory: '/tmp/wt/new', branch: 'opencode/new' }),
+      },
+    })
 
     const { logger } = createCapturingLogger()
     const config: PluginConfig = { ...mockConfig }
@@ -510,13 +281,13 @@ describe('runtime re-provisioning updates state.workspaceId', () => {
       reviewFindingsRepo,
       sectionPlansRepo,
       projectId: PROJECT_ID,
-      client: { client: {} as any } as any,
-      v2Client,
+      client,
       logger,
       getConfig: () => config,
       sandboxManager: undefined,
       dataDir: tempDir,
     })
+    currentLoop = loop
 
     const state = makeState({
       phase: 'coding',
@@ -541,26 +312,11 @@ describe('runtime re-provisioning updates state.workspaceId', () => {
     const afterState = loopService.getAnyState(state.loopName)
     expect(afterState).not.toBeNull()
     expect(afterState!.workspaceId).toBe('ws_new')
-
-    // createBuiltinWorktreeWorkspace was invoked (proves internal state mutation occurred)
-    expect(wsCreateMock).toHaveBeenCalledTimes(1)
-    expect(wsCreateMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: 'forge',
-        extra: expect.objectContaining({
-          loopName: 'test-loop',
-          projectDirectory: expect.any(String),
-          workspaceCreatedAt: expect.any(Number),
-        }),
-      }),
-    )
   })
 })
 
 describe('stall handling terminates with stall timeout when configured cap is reached', () => {
     test('repeated stall recovery attempts eventually terminate with stall_timeout', async () => {
-      // Create a runtime with low stall limits for testing
-      // Need to also configure the loopService with matching stall settings
       const stallConfig: LoopConfig = {
         stallTimeoutMs: 50,
         maxConsecutiveStalls: 2,
@@ -574,22 +330,10 @@ describe('stall handling terminates with stall timeout when configured cap is re
         { log: () => {}, error: () => {}, debug: () => {} },
         stallConfig,
         undefined,
-        undefined,
         sectionPlansRepo,
       )
 
-      const clientState: MockClientState = {
-        deleteCalls: [],
-        createCalls: [],
-        publishCalls: [],
-        selectCalls: [],
-        deleteThrows: false,
-        abortCalls: [],
-        promptCalls: [],
-        messagesResult: null,
-      }
-
-      const v2Client = createMockV2Client(clientState)
+      const { client, calls } = createFakeForgeClient()
       const { logger, logs } = createCapturingLogger()
       const config: PluginConfig = { ...mockConfig }
 
@@ -599,19 +343,18 @@ describe('stall handling terminates with stall timeout when configured cap is re
         reviewFindingsRepo,
         sectionPlansRepo,
         projectId: PROJECT_ID,
-        client: { client: {} as any } as any,
-        v2Client,
+        client,
         logger,
         getConfig: () => config,
         sandboxManager: undefined,
         dataDir: tempDir,
         loopConfig: stallConfig,
       })
+      currentLoop = loop
 
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-
       })
       loopService.setState(state.loopName, state)
 
@@ -638,18 +381,18 @@ describe('stall handling terminates with stall timeout when configured cap is re
     test('rejects audit prompt while code prompt in-flight', async () => {
       markPromptInFlight('test-loop', 'other-session-id', 'code')
 
-      const { loop, clientState, logger, logs } = createRuntime()
-      clientState.messagesResult = [
-        {
-          info: { role: 'assistant', finish: 'stop' },
-          parts: [{ type: 'text', text: 'Audit passed.' }],
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
+          ],
         },
-      ]
+      })
+      const { loop, logger, logs } = createRuntime({ client })
 
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
@@ -676,18 +419,18 @@ describe('stall handling terminates with stall timeout when configured cap is re
     test('rejects duplicate auditor prompt for same audit session', async () => {
       markPromptInFlight('test-loop', 'sess', 'auditor-loop')
 
-      const { loop, clientState, logs } = createRuntime()
-      clientState.messagesResult = [
-        {
-          info: { role: 'assistant', finish: 'stop' },
-          parts: [{ type: 'text', text: 'Implementation complete.' }],
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Implementation complete.' }] },
+          ],
         },
-      ]
+      })
+      const { loop, logs } = createRuntime({ client })
 
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
@@ -705,8 +448,8 @@ describe('stall handling terminates with stall timeout when configured cap is re
       )
       expect(hasGuardError).toBe(true)
 
-      const auditorPrompts = clientState.promptCalls.filter((c) => c.agent === 'auditor-loop')
-      expect(auditorPrompts).toHaveLength(0)
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls).toHaveLength(0)
 
       const prior = getPromptInFlight('test-loop')
       expect(prior).toBeDefined()
@@ -755,39 +498,23 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('clears in-flight when promptAsync throws a transient error', async () => {
-      const clientState: MockClientState = {
-        deleteCalls: [],
-        createCalls: [],
-        publishCalls: [],
-        selectCalls: [],
-        deleteThrows: false,
-        abortCalls: [],
-        promptCalls: [],
-        messagesResult: [
-          {
-            info: { role: 'assistant', finish: 'stop' },
-            parts: [{ type: 'text', text: 'Implementation complete.' }],
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Implementation complete.' }] },
+          ],
+          promptAsync: async (params: any) => {
+            if (params?.agent === 'code' && params?.sessionID === 'loop-session-id') {
+              throw new Error('transient transport error')
+            }
           },
-        ],
-      }
-
-      const v2Client = createMockV2Client(clientState)
-      const origPromptAsync = v2Client.session.promptAsync
-      let promptCallCount = 0
-      ;(v2Client as any).session.promptAsync = async (params: any) => {
-        promptCallCount++
-        if (params?.agent === 'code' && params?.sessionID === 'loop-session-id') {
-          throw new Error('transient transport error')
-        }
-        return origPromptAsync(params)
-      }
-
-      const { loop, logs } = createRuntime({ v2Client })
+        },
+      })
+      const { loop, logs } = createRuntime({ client })
 
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
@@ -804,18 +531,18 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('clears in-flight on prompt completion', async () => {
-      const { loop, clientState } = createRuntime()
-      clientState.messagesResult = [
-        {
-          info: { role: 'assistant', finish: 'stop' },
-          parts: [{ type: 'text', text: 'All clear.' }],
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear.' }] },
+          ],
         },
-      ]
+      })
+      const { loop } = createRuntime({ client })
 
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
@@ -834,18 +561,18 @@ describe('stall handling terminates with stall timeout when configured cap is re
     test('handlePromptError short-circuits on ConcurrentPromptError, preserving loop active state', async () => {
       markPromptInFlight('test-loop', 'other-session-id', 'code')
 
-      const { loop, clientState, logs } = createRuntime()
-      clientState.messagesResult = [
-        {
-          info: { role: 'assistant', finish: 'stop' },
-          parts: [{ type: 'text', text: 'Audit passed.' }],
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
+          ],
         },
-      ]
+      })
+      const { loop, logs } = createRuntime({ client })
 
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
@@ -871,52 +598,49 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
   describe('session retention', () => {
     test('queues session for retention on coding phase transition', async () => {
-      const { loop, clientState } = createRuntime()
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client })
 
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
 
-      clientState.messagesResult = [
-        {
-          info: { role: 'assistant', finish: 'stop' },
-          parts: [{ type: 'text', text: 'All clear.' }],
-        },
-      ]
-
-      // Trigger a single rotation: coding→audit
       await loop.tick({
         type: 'session.status',
         properties: { status: { type: 'idle' }, sessionID: state.sessionId },
       })
 
-      expect(clientState.deleteCalls.map((call) => call.sessionID)).toContain(state.sessionId)
+      const deleteCalls = calls.filter(c => c.method === 'session.delete')
+      expect(deleteCalls.map((c: any) => c.params.sessionID)).toContain(state.sessionId)
     })
 
     test('tolerates delete failure without crashing', async () => {
-      const { loop, clientState, logger, logs } = createRuntime()
-      clientState.deleteThrows = true
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear.' }] },
+          ],
+          delete: async () => { throw new Error('delete failed') },
+        },
+      })
+      const { loop, logger, logs } = createRuntime({ client })
 
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
 
-      clientState.messagesResult = [
-        {
-          info: { role: 'assistant', finish: 'stop' },
-          parts: [{ type: 'text', text: 'All clear.' }],
-        },
-      ]
-
-      // Trigger a rotation; delete error should be caught and logged
       await loop.tick({
         type: 'session.status',
         properties: { status: { type: 'idle' }, sessionID: state.sessionId },
@@ -930,22 +654,21 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('terminate flushes retained sessions', async () => {
-      const { loop, clientState } = createRuntime()
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client })
 
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
-
         auditCount: 0,
       })
       loopService.setState(state.loopName, state)
-
-      clientState.messagesResult = [
-        {
-          info: { role: 'assistant', finish: 'stop' },
-          parts: [{ type: 'text', text: 'All clear.' }],
-        },
-      ]
 
       // First rotation: coding→audit
       await loop.tick({
@@ -953,12 +676,11 @@ describe('stall handling terminates with stall timeout when configured cap is re
         properties: { status: { type: 'idle' }, sessionID: state.sessionId },
       })
 
-      // After tick, state changed to auditing with session='sess'
       // Terminate the loop: terminateLoop should clean up retained sessions
       await loop.cancel(state.loopName)
 
-      // Check that v2Client.session.delete was called for the old coding session
-      const deletedSids = clientState.deleteCalls.map((c) => c.sessionID)
+      const deleteCalls = calls.filter(c => c.method === 'session.delete')
+      const deletedSids = deleteCalls.map((c: any) => c.params.sessionID)
       expect(deletedSids).toContain(state.sessionId)
     })
   })
@@ -982,8 +704,12 @@ describe('stall handling terminates with stall timeout when configured cap is re
     }
 
     test('code session rotation captures usage with state.executionModel', async () => {
-      const { loop, clientState, logs } = createRuntime({ withUsageRepo: true })
-      clientState.messagesResult = [mockAssistantMessage(0.001, { input: 100, output: 50, reasoning: 10 })]
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [mockAssistantMessage(0.001, { input: 100, output: 50, reasoning: 10 })],
+        },
+      })
+      const { loop, logs } = createRuntime({ client, withUsageRepo: true })
 
       const state = makeState({
         phase: 'coding',
@@ -1007,8 +733,12 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('audit termination captures usage with state.auditorModel', async () => {
-      const { loop, clientState } = createRuntime({ withUsageRepo: true })
-      clientState.messagesResult = [mockAssistantMessage(0.002, { input: 200, output: 100, reasoning: 20 })]
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [mockAssistantMessage(0.002, { input: 200, output: 100, reasoning: 20 })],
+        },
+      })
+      const { loop } = createRuntime({ client, withUsageRepo: true })
 
       const state = makeState({
         phase: 'auditing',
@@ -1035,8 +765,12 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('state models take precedence over current config', async () => {
-      const { loop, clientState } = createRuntime({ withUsageRepo: true })
-      clientState.messagesResult = [mockAssistantMessage(0.001, { input: 150, output: 75, reasoning: 15 })]
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [mockAssistantMessage(0.001, { input: 150, output: 75, reasoning: 15 })],
+        },
+      })
+      const { loop } = createRuntime({ client, withUsageRepo: true })
 
       const state = makeState({
         phase: 'coding',
@@ -1058,23 +792,12 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('capture failure logs error but does not block termination', async () => {
-      const clientState: MockClientState = {
-        deleteCalls: [],
-        createCalls: [],
-        publishCalls: [],
-        selectCalls: [],
-        deleteThrows: false,
-        abortCalls: [],
-        promptCalls: [],
-        messagesResult: null,
-      }
-
-      const v2Client = createMockV2Client(clientState)
-      ;(v2Client.session.messages as any) = async () => {
-        throw new Error('messages fetch failed')
-      }
-
-      const { loop, logs } = createRuntime({ v2Client, withUsageRepo: true })
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => { throw new Error('messages fetch failed') },
+        },
+      })
+      const { loop, logs } = createRuntime({ client, withUsageRepo: true })
 
       const state = makeState({ phase: 'coding' })
       loopService.setState(state.loopName, state)
@@ -1090,13 +813,16 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('retained sessions preserve role and model: code session retained, audit session enqueued', async () => {
-      const { loop, clientState } = createRuntime({ withUsageRepo: true })
-
-      // Set up per-session messages
-      clientState.messagesBySession = new Map()
-      clientState.messagesBySession.set('coding-session-1', [
+      const messagesBySession = new Map<string, Array<Record<string, unknown>>>()
+      messagesBySession.set('coding-session-1', [
         mockAssistantMessage(0.001, { input: 100, output: 50, reasoning: 10 }),
       ])
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async (params: any) => messagesBySession.get(params.sessionID) ?? [],
+        },
+      })
+      const { loop } = createRuntime({ client, withUsageRepo: true })
 
       const state = makeState({
         phase: 'coding',
@@ -1119,7 +845,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(afterFirstTick.phase).toBe('auditing')
 
       // Set up messages for the audit session
-      clientState.messagesBySession.set(afterFirstTick.sessionId, [
+      messagesBySession.set(afterFirstTick.sessionId, [
         mockAssistantMessage(0.002, { input: 200, output: 100, reasoning: 20 }),
       ])
 
@@ -1131,7 +857,6 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(usage!.byModel['state/exec-model'].inputTokens).toBe(100)
 
       // Now terminate the loop while in auditing phase
-      // This should capture the audit session with auditor role
       await loop.cancel(state.loopName)
 
       // Wait for async capture
@@ -1146,10 +871,12 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('retained audit session cleaned up on termination with correct attribution', async () => {
-      const { loop, clientState } = createRuntime({ withUsageRepo: true })
-      clientState.messagesResult = [
-        mockAssistantMessage(0.002, { input: 200, output: 100, reasoning: 20 }),
-      ]
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [mockAssistantMessage(0.002, { input: 200, output: 100, reasoning: 20 })],
+        },
+      })
+      const { loop } = createRuntime({ client, withUsageRepo: true })
 
       // Start in auditing phase
       const state = makeState({
@@ -1183,10 +910,12 @@ describe('stall handling terminates with stall timeout when configured cap is re
     })
 
     test('retained sessions cleaned up on clearLoopTimers with correct attribution', async () => {
-      const { loop, clientState } = createRuntime({ withUsageRepo: true })
-      clientState.messagesResult = [
-        mockAssistantMessage(0.001, { input: 150, output: 75, reasoning: 15 }),
-      ]
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [mockAssistantMessage(0.001, { input: 150, output: 75, reasoning: 15 })],
+        },
+      })
+      const { loop } = createRuntime({ client, withUsageRepo: true })
 
       const state = makeState({
         phase: 'coding',
@@ -1218,13 +947,14 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
   describe('variant dispatch', () => {
     test('coding prompt sends executionVariant from loop state', async () => {
-      const { loop, clientState } = createRuntime()
-      clientState.messagesResult = [
-        {
-          info: { role: 'assistant', finish: 'stop' },
-          parts: [{ type: 'text', text: 'Audit passed.' }],
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
+          ],
         },
-      ]
+      })
+      const { loop } = createRuntime({ client })
 
       const state = makeState({
         phase: 'auditing',
@@ -1254,21 +984,22 @@ describe('stall handling terminates with stall timeout when configured cap is re
       })
 
       // After auditing phase processes dirty audit, it transitions to coding and sends code prompts
-      const codePrompts = clientState.promptCalls.filter(c => c.agent === 'code')
+      const codePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
       expect(codePrompts.length).toBeGreaterThan(0)
       for (const call of codePrompts) {
-        expect(call.variant).toBe('thinking-max')
+        expect((call.params as any)?.variant).toBe('thinking-max')
       }
     })
 
     test('auditor prompt sends auditorVariant from loop state', async () => {
-      const { loop, clientState } = createRuntime()
-      clientState.messagesResult = [
-        {
-          info: { role: 'assistant', finish: 'stop' },
-          parts: [{ type: 'text', text: 'Audit passed.' }],
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
+          ],
         },
-      ]
+      })
+      const { loop } = createRuntime({ client })
 
       const state = makeState({
         phase: 'coding',
@@ -1288,32 +1019,28 @@ describe('stall handling terminates with stall timeout when configured cap is re
       })
 
       // The auditor prompt should have the auditorVariant
-      const auditorPrompts = clientState.promptCalls.filter(c => c.agent === 'auditor-loop')
+      const auditorPrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
       expect(auditorPrompts.length).toBeGreaterThan(0)
       for (const call of auditorPrompts) {
-        expect(call.variant).toBe('audit-high')
+        expect((call.params as any)?.variant).toBe('audit-high')
       }
     })
 
     test('model fallback omits variant when model is undefined', async () => {
-      const clientState: MockClientState = {
-        deleteCalls: [],
-        createCalls: [],
-        publishCalls: [],
-        selectCalls: [],
-        deleteThrows: false,
-        abortCalls: [],
-        promptCalls: [],
-        promptAsyncFailCount: 2,
-        messagesResult: [
-          {
-            info: { role: 'assistant', finish: 'stop' },
-            parts: [{ type: 'text', text: 'Audit passed.' }],
+      let failCount = 2
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
+          ],
+          promptAsync: async (params: any) => {
+            if (failCount > 0) {
+              failCount--
+              throw Object.assign(new Error('simulated model failure'), { name: 'TestError', data: { message: 'simulated model failure' } })
+            }
           },
-        ],
-      }
-
-      const v2Client = createMockV2Client(clientState)
+        },
+      })
       const { logger } = createCapturingLogger()
       const config: PluginConfig = { ...mockConfig, executionModel: 'test/model' }
 
@@ -1323,13 +1050,13 @@ describe('stall handling terminates with stall timeout when configured cap is re
         reviewFindingsRepo,
         sectionPlansRepo,
         projectId: PROJECT_ID,
-        client: { client: {} as any } as any,
-        v2Client,
+        client,
         logger,
         getConfig: () => config,
         sandboxManager: undefined,
         dataDir: tempDir,
       })
+      currentLoop = loop
 
       const state = makeState({
         phase: 'auditing',
@@ -1359,17 +1086,24 @@ describe('stall handling terminates with stall timeout when configured cap is re
       })
 
       // Model-based attempts should have been made (and failed)
-      const codePrompts = clientState.promptCalls.filter(c => c.agent === 'code')
+      const codePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
       expect(codePrompts.length).toBeGreaterThan(0)
       // After model fails, fallback without model should NOT send variant
-      const fallbackPrompts = codePrompts.filter(c => !c.variant)
+      const fallbackPrompts = codePrompts.filter(c => !(c.params as any)?.variant)
       expect(fallbackPrompts.length).toBeGreaterThan(0)
     })
   })
 
   describe('coder decisions in final-audit fix', () => {
     test('final-audit fix coding parses coder-decisions and renders into subsequent final audit prompt', async () => {
-      const { loop, clientState, logs } = createRuntime()
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Final audit found issues.' }] },
+          ],
+        },
+      })
+      const { loop, logs } = createRuntime({ client })
       const loopName = 'test-loop-cd-fix'
 
       // Create a loop in final_auditing phase with outstanding bugs
@@ -1395,13 +1129,6 @@ describe('stall handling terminates with stall timeout when configured cap is re
       })
 
       // Step 1: Set auditor response and trigger final audit phase
-      clientState.messagesResult = [
-        {
-          info: { role: 'assistant', finish: 'stop' },
-          parts: [{ type: 'text', text: 'Final audit found issues.' }],
-        },
-      ]
-
       await loop.tick({
         type: 'session.status',
         properties: {
@@ -1411,19 +1138,19 @@ describe('stall handling terminates with stall timeout when configured cap is re
       })
 
       // After the first tick, the loop should have transitioned to coding with a fix prompt
-      const fixCodePrompts = clientState.promptCalls.filter(c => c.agent === 'code')
+      const fixCodePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
       expect(fixCodePrompts.length).toBeGreaterThan(0)
-      const fixPromptText = fixCodePrompts[fixCodePrompts.length - 1].text ?? ''
+      const fixPromptText = (fixCodePrompts[fixCodePrompts.length - 1].params as any)?.parts?.[0]?.text ?? ''
       expect(fixPromptText).toContain('[Final-audit fix')
 
       // Verify the loop state after first tick
       const stateAfterFirstTick = loopService.getActiveState(loopName)
       expect(stateAfterFirstTick).not.toBeNull()
       expect(stateAfterFirstTick!.phase).toBe('coding')
-      expect(stateAfterFirstTick!.sessionId).toBe('sess')
+      const codeSessionId = stateAfterFirstTick!.sessionId
 
-      // Step 2: Set coding assistant response WITH coder-decisions markers
-      clientState.messagesResult = [
+      // Step 2: Change messages for the coding assistant response WITH coder-decisions markers
+      ;(client.session.messages as any).mockImplementation(async () => [
         {
           info: { role: 'assistant', finish: 'stop' },
           parts: [{
@@ -1431,16 +1158,16 @@ describe('stall handling terminates with stall timeout when configured cap is re
             text: `Fixed the bug.\n<!-- coder-decisions:start -->\n### Decisions\n- Chose approach X\n### Verification\n- FOO=bar pnpm test\n### Notes for auditor\n- none\n<!-- coder-decisions:end -->`,
           }],
         },
-      ]
+      ])
 
-      const auditorPromptsBefore = clientState.promptCalls.filter(c => c.agent === 'auditor-loop').length
+      const auditorPromptsBefore = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop').length
 
       // Send a busy event to clear the idle-gate (prompt was sent during the first tick)
       await loop.tick({
         type: 'session.status',
         properties: {
           status: { type: 'busy' },
-          sessionID: 'sess',
+          sessionID: codeSessionId,
         },
       })
 
@@ -1449,7 +1176,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
         type: 'session.status',
         properties: {
           status: { type: 'idle' },
-          sessionID: 'sess',
+          sessionID: codeSessionId,
         },
       })
 
@@ -1459,12 +1186,13 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(stateAfterSecondTick!.phase).toBe('final_auditing')
 
       // The final audit prompt should have been sent with coder decisions
-      const auditorPromptsAfter = clientState.promptCalls.filter(c => c.agent === 'auditor-loop')
+      const auditorPromptsAfter = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
       expect(auditorPromptsAfter.length).toBeGreaterThan(auditorPromptsBefore)
-      const finalAuditPrompt = auditorPromptsAfter[auditorPromptsAfter.length - 1]?.text ?? ''
-      expect(finalAuditPrompt).toContain('Coder decisions & verification notes')
-      expect(finalAuditPrompt).toContain('Chose approach X')
-      expect(finalAuditPrompt).toContain('FOO=bar pnpm test')
+      const finalAuditPrompt = auditorPromptsAfter[auditorPromptsAfter.length - 1]?.params as any
+      const finalAuditPromptText = finalAuditPrompt?.parts?.[0]?.text ?? ''
+      expect(finalAuditPromptText).toContain('Coder decisions & verification notes')
+      expect(finalAuditPromptText).toContain('Chose approach X')
+      expect(finalAuditPromptText).toContain('FOO=bar pnpm test')
     })
   })
 })

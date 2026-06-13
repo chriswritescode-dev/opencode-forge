@@ -12,12 +12,12 @@ import type { LoopState } from '../src/loop/state'
 import { createLoop } from '../src/loop/runtime'
 import { buildAuditSessionPermissionRuleset } from '../src/constants/loop'
 import type { Logger, PluginConfig } from '../src/types'
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import { setupLoopsTestDb } from './helpers/loops-test-db'
+import { createFakeForgeClient } from './helpers/fake-client'
 
 const PROJECT_ID = 'test-project'
 
-describe('Legacy audit fallback permissions', () => {
+describe('Audit session permissions', () => {
   let db: DB
   let tempDir: string
   let loopsRepo: ReturnType<typeof createLoopsRepo>
@@ -71,39 +71,39 @@ describe('Legacy audit fallback permissions', () => {
     }
   }
 
-  test('fallback includes buildAuditSessionPermissionRuleset()', async () => {
-    const legacyCreateCalls: Array<Record<string, unknown>> = []
+  test('audit session includes buildAuditSessionPermissionRuleset()', async () => {
+    const createCalls: Array<Record<string, unknown>> = []
 
-    const pluginClient = {
+    const { client } = createFakeForgeClient({
       session: {
-        create: vi.fn(async (input: any) => {
-          legacyCreateCalls.push(input)
-          return { data: { id: 'legacy-audit' }, error: null }
-        }),
-        promptAsync: vi.fn(async () => ({ data: {}, error: null })),
-        messages: vi.fn(async () => ({ data: [], error: null })),
+        create: async (input: any) => {
+          createCalls.push(input)
+          return { id: 'audit-session' }
+        },
+        get: async () => ({ id: 'ses_fake_1', permission: null }),
+        status: async () => ({}),
+        promptAsync: async () => {},
+        messages: async () => [
+          {
+            info: { role: 'assistant', finish: 'stop' },
+            parts: [{ type: 'text', text: 'All clear.' }],
+          },
+        ],
+        abort: async () => {},
+        delete: async () => {},
+        update: async () => {},
       },
-    }
-
-    const v2Client = {
-      session: {
-        create: vi.fn(async () => ({ error: new Error('v2 down'), data: undefined })),
-        get: vi.fn(async () => ({ data: {}, error: null })),
-        promptAsync: vi.fn(async () => ({ data: {}, error: null })),
-        abort: vi.fn(async () => ({ data: {}, error: null })),
-        messages: vi.fn(async () => ({
-          data: [
-            {
-              info: { role: 'assistant', finish: 'stop' },
-              parts: [{ type: 'text', text: 'All clear.' }],
-            },
-          ],
-          error: null,
-        })),
-        status: vi.fn(async () => ({ data: {}, error: null })),
-        delete: vi.fn(async () => ({ data: {}, error: null })),
+      workspace: {
+        warp: async () => {},
+        list: async () => [],
+        remove: async () => {},
+        status: async () => ({}),
       },
-    } as unknown as OpencodeClient
+      tui: {
+        publish: async () => {},
+        selectSession: async () => {},
+      },
+    })
 
     const logger: Logger = {
       log: () => {},
@@ -137,8 +137,7 @@ describe('Legacy audit fallback permissions', () => {
       reviewFindingsRepo,
       sectionPlansRepo,
       projectId: PROJECT_ID,
-      client: pluginClient as any,
-      v2Client,
+      client,
       logger,
       getConfig: () => config,
       sandboxManager: undefined,
@@ -165,12 +164,12 @@ describe('Legacy audit fallback permissions', () => {
       },
     })
 
-    expect(legacyCreateCalls.length).toBeGreaterThan(0)
+    expect(createCalls.length).toBeGreaterThan(0)
 
-    const callBody = legacyCreateCalls[0] as any
-    expect(callBody.body).toBeDefined()
-    expect(callBody.body.permission).toEqual(buildAuditSessionPermissionRuleset({ sandbox: false }))
-    expect(callBody.body.permission).toContainEqual({
+    // With the ForgeClient port, create params are passed directly (not wrapped in { body })
+    const callParams = createCalls[0] as any
+    expect(callParams.permission).toEqual(buildAuditSessionPermissionRuleset({ sandbox: false }))
+    expect(callParams.permission).toContainEqual({
       permission: 'external_directory',
       pattern: '*',
       action: 'deny',

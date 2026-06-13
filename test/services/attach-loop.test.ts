@@ -9,6 +9,7 @@ import { createReviewFindingsRepo } from '../../src/storage/repos/review-finding
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopService } from '../../src/loop/service'
 import type { Logger } from '../../src/types'
+import { createFakeForgeClient } from '../helpers/fake-client'
 
 const noopFn = () => {}
 
@@ -147,8 +148,18 @@ describe('attachLoopToSession', () => {
       sectionPlansRepo,
     )
 
-    const promptAsyncMock = mock(async () => ({ error: null }))
+    const promptAsyncMock = mock(async () => {})
     const tuiSelectSessionMock = mock(async () => undefined)
+
+    const fakeClient = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-session' }),
+        promptAsync: promptAsyncMock,
+      },
+      tui: {
+        selectSession: tuiSelectSessionMock,
+      },
+    })
 
     const deps = {
       projectId: PROJECT_ID,
@@ -160,22 +171,7 @@ describe('attachLoopToSession', () => {
       },
       logger: { log: () => {}, error: () => {}, debug: () => {} } as Logger,
       dataDir: '/tmp',
-      v2: {
-        session: {
-          create: mock(async () => ({ data: { id: 'new-session' } })),
-          get: mock(async () => ({ data: {} })),
-          update: mock(async () => ({ data: {} })),
-          promptAsync: promptAsyncMock,
-          abort: mock(async () => ({})),
-          delete: mock(async () => ({})),
-          messages: mock(async () => ({ data: [] })),
-          status: mock(async () => ({ data: {} })),
-        },
-        tui: {
-          publish: mock(() => {}),
-          selectSession: tuiSelectSessionMock,
-        },
-      },
+      client: fakeClient.client,
       plansRepo,
       loopsRepo,
       reviewFindingsRepo,
@@ -195,7 +191,7 @@ describe('attachLoopToSession', () => {
       },
     }
 
-    return { deps, loopsRepo, plansRepo, sectionPlansRepo, loopService, promptAsyncMock, tuiSelectSessionMock }
+    return { deps, loopsRepo, plansRepo, sectionPlansRepo, loopService, promptAsyncMock, tuiSelectSessionMock, fakeClient }
   }
 
   test('disabled mode persists state and sends code-agent prompt', async () => {
@@ -287,8 +283,8 @@ describe('attachLoopToSession', () => {
   test('prompt failure returns ok:false and cleans up state', async () => {
     const { deps, loopsRepo, promptAsyncMock } = buildDeps()
 
-    // Make promptAsync return an error
-    promptAsyncMock.mockImplementationOnce(async () => ({ error: new Error('network timeout') }))
+    // Make promptAsync throw an error (port contract: throws on failure)
+    promptAsyncMock.mockImplementationOnce(async () => { throw new Error('network timeout') })
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -650,8 +646,7 @@ describe('attachLoopToSession', () => {
   test('attachLoopToSession does NOT call session.update for permission repair on any surface', async () => {
     const surfaces: Array<'tui' | 'tool' | 'approval-hook'> = ['tui', 'tool', 'approval-hook']
     for (const surface of surfaces) {
-      const { deps } = buildDeps()
-      const sessionUpdateMock = deps.v2.session.update
+      const { deps, fakeClient } = buildDeps()
       const { attachLoopToSession } = await import('../../src/services/execution')
       await attachLoopToSession(
         deps as any,
@@ -675,7 +670,7 @@ describe('attachLoopToSession', () => {
         },
       )
       // Assert: session.update was NEVER called (no permission repair)
-      expect(sessionUpdateMock).not.toHaveBeenCalled()
+      expect(fakeClient.client.session.update).not.toHaveBeenCalled()
     }
   })
 

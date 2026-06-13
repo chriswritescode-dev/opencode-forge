@@ -1,11 +1,11 @@
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
+import type { ForgeClient } from '../client/port'
 import type { Logger } from '../types'
 import type { WorkspaceStatusRegistry } from '../utils/workspace-status-registry'
 import { bindSessionToWorkspace } from '../workspace/forge-worktree'
 import { buildLoopPermissionRuleset } from '../constants/loop'
 
 interface CreateLoopSessionInput {
-  v2: OpencodeClient
+  client: ForgeClient
   title: string
   directory: string
   permission?: ReturnType<typeof buildLoopPermissionRuleset>
@@ -13,7 +13,6 @@ interface CreateLoopSessionInput {
   loopName?: string
   logPrefix: string
   logger: Logger | Console
-  legacyClient?: import('@opencode-ai/sdk').OpencodeClient
   workspaceStatusRegistry?: WorkspaceStatusRegistry
 }
 
@@ -27,6 +26,7 @@ interface CreateLoopSessionResult {
 export async function createLoopSessionWithWorkspace(
   input: CreateLoopSessionInput,
 ): Promise<CreateLoopSessionResult | null> {
+  const { client } = input
   const createParams: {
     title: string
     directory: string
@@ -44,46 +44,12 @@ export async function createLoopSessionWithWorkspace(
   const _sessionStart = Date.now()
   input.logger.log(`[warp] session.create.start loopName="${input.loopName ?? 'unknown'}" logPrefix="${input.logPrefix}"${input.workspaceId ? ` workspaceId=${input.workspaceId}` : ''}`)
 
-  // Try v2 SDK first
-  const createResult = await input.v2.session.create(createParams)
-  if (createResult.error || !createResult.data) {
-    const errorMsg = createResult.error instanceof Error ? createResult.error.message : String(createResult.error)
-    if (errorMsg.includes('Unable to connect')) {
-      input.logger.log(`${input.logPrefix}: v2 SDK unavailable, falling back to legacy SDK`)
-    } else {
-      input.logger.error(`${input.logPrefix}: failed to create session via v2 SDK`, createResult.error)
-    }
-
-    // Fallback to legacy SDK if available
-    if (input.legacyClient) {
-      try {
-        const legacyResult = await input.legacyClient.session.create({
-          body: {
-            title: input.title,
-            ...(input.permission ? { permission: input.permission } : {}),
-          },
-          query: {
-            directory: input.directory,
-          },
-        } as Parameters<typeof input.legacyClient.session.create>[0])
-
-        const session = legacyResult.data as { id?: string } | undefined
-        if (session?.id) {
-          input.logger.log(`${input.logPrefix}: created session via legacy SDK fallback`)
-          sessionId = session.id
-        } else {
-          input.logger.error(`${input.logPrefix}: legacy SDK returned no session ID`)
-          return null
-        }
-      } catch (err) {
-        input.logger.error(`${input.logPrefix}: legacy SDK failed`, err)
-        return null
-      }
-    } else {
-      return null
-    }
-  } else {
-    sessionId = createResult.data.id
+  try {
+    const session = await client.session.create(createParams)
+    sessionId = session.id
+  } catch (err) {
+    input.logger.error(`${input.logPrefix}: failed to create session`, err)
+    return null
   }
 
   input.logger.log(`[warp] session.create.complete loopName="${input.loopName ?? 'unknown'}" logPrefix="${input.logPrefix}" sessionId=${sessionId}${input.workspaceId ? ` workspaceId=${input.workspaceId}` : ''} elapsedMs=${Date.now() - _sessionStart}`)
@@ -97,7 +63,7 @@ export async function createLoopSessionWithWorkspace(
     const _bindStart = Date.now()
     try {
       input.logger.log(`[warp] bind.start loopName="${input.loopName ?? 'unknown'}" workspaceId=${input.workspaceId} sessionId=${result.sessionId}`)
-      await bindSessionToWorkspace(input.v2, input.workspaceId, result.sessionId, input.logger, { loopName: input.loopName }, input.workspaceStatusRegistry)
+      await bindSessionToWorkspace(client, input.workspaceId, result.sessionId, input.logger, { loopName: input.loopName }, input.workspaceStatusRegistry)
       result.boundWorkspaceId = input.workspaceId
       input.logger.log(`${input.logPrefix}: workspace ${input.workspaceId} bound to session ${result.sessionId}`)
       input.logger.log(`[warp] bind.complete loopName="${input.loopName ?? 'unknown'}" workspaceId=${input.workspaceId} sessionId=${result.sessionId} elapsedMs=${Date.now() - _bindStart}`)
@@ -113,7 +79,7 @@ export async function createLoopSessionWithWorkspace(
 }
 
 interface WorkspaceDetachedToastInput {
-  v2: OpencodeClient
+  client: ForgeClient
   directory: string
   loopName: string
   variant?: 'warning'
@@ -122,13 +88,12 @@ interface WorkspaceDetachedToastInput {
 }
 
 export function publishWorkspaceDetachedToast(input: WorkspaceDetachedToastInput): void {
-  if (!input.v2.tui) return
-
+  const { client } = input
   const message = input.context
     ? `Workspace attachment lost ${input.context}; session continues without workspace grouping.`
     : 'Workspace attachment lost; session continues without workspace grouping.'
 
-  input.v2.tui.publish({
+  client.tui.publish({
     directory: input.directory,
     body: {
       type: 'tui.toast.show',
@@ -139,7 +104,7 @@ export function publishWorkspaceDetachedToast(input: WorkspaceDetachedToastInput
         duration: 5000,
       },
     },
-  }).catch((err) => {
+  }).catch((err: unknown) => {
     input.logger.error('Loop: failed to publish workspace-detached toast', err)
   })
 }

@@ -1,11 +1,11 @@
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
+import type { ForgeClient } from '../client/port'
 import type { Logger } from '../types'
 import { createLoopSessionWithWorkspace } from './loop-session'
 import { buildAuditSessionPermissionRuleset } from '../constants/loop'
 import { formatAuditSessionTitle } from './session-titles'
 
 interface RunAuditSessionInput {
-  v2: OpencodeClient
+  client: ForgeClient
   loopName: string
   iteration: number
   currentSectionIndex: number
@@ -28,9 +28,10 @@ interface RunAuditSessionResult {
 export async function createAuditSession(
   input: RunAuditSessionInput,
 ): Promise<RunAuditSessionResult | null> {
+  const { client } = input
   const permission = buildAuditSessionPermissionRuleset({ sandbox: input.isSandbox })
   const created = await createLoopSessionWithWorkspace({
-    v2: input.v2,
+    client,
     title: formatAuditSessionTitle(input.loopName, {
       iteration: input.iteration,
       currentSectionIndex: input.currentSectionIndex,
@@ -53,7 +54,7 @@ export async function createAuditSession(
 }
 
 export async function promptAuditSession(
-  v2: OpencodeClient,
+  client: ForgeClient,
   input: {
     sessionId: string
     worktreeDir: string
@@ -64,16 +65,19 @@ export async function promptAuditSession(
   },
 ): Promise<{ ok: true } | { ok: false; error: unknown }> {
   const parts = [{ type: 'text' as const, text: input.prompt }]
-  const result = await v2.session.promptAsync({
-    sessionID: input.sessionId,
-    directory: input.worktreeDir,
-    ...(input.workspaceId ? { workspace: input.workspaceId } : {}),
-    agent: 'auditor-loop',
-    parts,
-    ...(input.auditorModel ? { model: input.auditorModel } : {}),
-    ...(input.auditorVariant ? { variant: input.auditorVariant } : {}),
-  })
-  if (result.error) return { ok: false, error: result.error }
-  return { ok: true }
+  try {
+    await client.session.promptAsync({
+      sessionID: input.sessionId,
+      directory: input.worktreeDir,
+      ...(input.workspaceId ? { workspace: input.workspaceId } : {}),
+      agent: 'auditor-loop',
+      parts,
+      ...(input.auditorModel ? { model: input.auditorModel } : {}),
+      ...(input.auditorVariant ? { variant: input.auditorVariant } : {}),
+    })
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error }
+  }
 }
 

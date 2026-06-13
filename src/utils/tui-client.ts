@@ -19,6 +19,7 @@ import { fetchLoopsList } from './tui-loop-store'
 import { decomposeDeterministically } from '../services/deterministic-decomposer'
 import { buildSectionInitialPromptText } from '../loop/prompts'
 import { extractPlanExecutionMetadata, sanitizeLoopName } from './plan-execution'
+import { createForgeClient } from '../client/sdk-adapter'
 
 export type ApiExecutionMode = 'new-session' | 'execute-here' | 'loop'
 
@@ -334,7 +335,7 @@ export async function connectForgeProject(
           pendingAttachStartedAt: createdAt,
         }
         try {
-          await removeExistingForgeLoopWorkspaces(api.client, loopName, {
+          await removeExistingForgeLoopWorkspaces(createForgeClient(api.client), loopName, {
             log: (message) => tuiDebug(`plan.execute(loop): ${message}`),
             error: (message, err) => tuiDebug(`plan.execute(loop): ${message} ${err instanceof Error ? err.message : String(err)}`),
           })

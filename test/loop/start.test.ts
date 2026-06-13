@@ -9,10 +9,10 @@ import { createReviewFindingsRepo } from '../../src/storage/repos/review-finding
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
-import { createLoop, type Loop, type LoopRuntimeDeps } from '../../src/loop/runtime'
+import { createLoop, type Loop } from '../../src/loop/runtime'
 import { sessionsAwaitingBusy } from '../../src/loop/idle-gate'
 import type { Logger, PluginConfig } from '../../src/types'
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
+import type { ForgeClient } from '../../src/client/port'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
 
 const PROJECT_ID = 'test-project'
@@ -27,26 +27,34 @@ const mockConfig: PluginConfig = {
   },
 }
 
-function createMockV2Client(): OpencodeClient {
+function createMockForgeClient(): ForgeClient {
   return {
     session: {
-      create: async () => ({ error: null, data: { id: 'sess' } }),
-      promptAsync: async () => ({ error: null, data: null }),
-      status: async () => ({ error: null, data: {} }),
-      abort: async () => ({}),
-      delete: async () => ({ error: undefined }),
-      messages: async () => ({ error: null, data: [] }),
-      get: async () => ({ error: null, data: {} }),
+      create: async () => ({ id: 'sess' }) as any,
+      promptAsync: async () => {},
+      status: async () => ({}) as any,
+      abort: async () => {},
+      delete: async () => {},
+      messages: async () => [],
+      get: async () => ({}) as any,
+      update: async () => {},
+    },
+    workspace: {
+      create: async () => ({ id: '', directory: '/tmp/wt', branch: 'b' }) as any,
+      list: async () => [],
+      status: async () => ({}) as any,
+      syncList: async () => {},
+      remove: async () => {},
+      warp: async () => {},
     },
     tui: {
       publish: async () => {},
       selectSession: async () => {},
     },
-    worktree: {
-      create: async () => ({ error: null, data: { directory: '/tmp/wt', branch: 'b' } }),
-      remove: async () => {},
+    sync: {
+      start: async () => {},
     },
-  } as unknown as OpencodeClient
+  }
 }
 
 function createCapturingLogger(): { logger: Logger; logs: Array<{ level: string; message: string }> } {
@@ -181,7 +189,6 @@ describe('Loop Runtime start()', () => {
       { log: () => {}, error: () => {}, debug: () => {} },
       undefined,
       undefined,
-      undefined,
       sectionPlansRepo,
     )
 
@@ -234,8 +241,7 @@ describe('Loop Runtime start()', () => {
       reviewFindingsRepo,
       sectionPlansRepo,
       projectId: PROJECT_ID,
-      client: {} as any,
-      v2Client: createMockV2Client(),
+      client: createMockForgeClient(),
       logger,
       getConfig: () => mockConfig,
     })

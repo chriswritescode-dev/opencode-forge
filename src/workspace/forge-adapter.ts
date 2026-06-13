@@ -11,7 +11,7 @@ import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 
 /**
  * Runtime context for a forge workspace teardown. Populated by the caller
- * (loop termination side-effects, etc.) before `experimental.workspace.remove`
+ * (loop termination side-effects, etc.) before `client.workspace.remove`
  * is invoked so the adapter can produce informative commit messages.
  *
  * When no context is registered (orphan sweep, TUI delete without an active

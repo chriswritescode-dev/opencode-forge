@@ -37,7 +37,7 @@ describe('LoopService section management', () => {
     plansRepo = createPlansRepo(db)
     reviewFindingsRepo = createReviewFindingsRepo(db)
     sectionPlansRepo = createSectionPlansRepo(db)
-    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger, undefined, undefined, undefined, sectionPlansRepo)
+    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger, undefined, undefined, sectionPlansRepo)
   })
 
   afterEach(() => {
@@ -381,7 +381,7 @@ describe('section-read tool contract', () => {
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     const sectionPlansRepo = createSectionPlansRepo(db)
-    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'proj', mockLogger, undefined, undefined, undefined, sectionPlansRepo)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, 'proj', mockLogger, undefined, undefined, sectionPlansRepo)
 
     // Insert a test loop with sections
     loopsRepo.insert({

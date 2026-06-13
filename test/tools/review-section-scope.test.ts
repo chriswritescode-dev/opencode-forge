@@ -139,7 +139,7 @@ describe('review section scoping', () => {
     plansRepo = createPlansRepo(db)
     reviewFindingsRepo = createReviewFindingsRepo(db)
     sectionPlansRepo = createSectionPlansRepo(db)
-    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger, undefined, undefined, undefined, sectionPlansRepo)
+    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger, undefined, undefined, sectionPlansRepo)
     const sessionLoopResolver = createSessionLoopResolver({
       loop: loopService,
       getParentSessionId: async (sessionId: string) => parentSessions[sessionId] ?? null,

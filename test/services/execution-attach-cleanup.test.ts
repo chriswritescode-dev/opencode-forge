@@ -10,6 +10,7 @@ import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-re
 import { createLoopService } from '../../src/loop/service'
 import type { Logger } from '../../src/types'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { createFakeForgeClient } from '../helpers/fake-client'
 
 const noopFn = () => {}
 
@@ -48,8 +49,7 @@ describe('attachLoopToSession', () => {
       sectionPlansRepo,
     )
 
-    const promptAsyncMock = vi.fn().mockResolvedValue({ error: null })
-    const tuiSelectSessionMock = vi.fn().mockResolvedValue(undefined)
+    const { client } = createFakeForgeClient()
 
     const deps = {
       projectId: PROJECT_ID,
@@ -61,22 +61,7 @@ describe('attachLoopToSession', () => {
       },
       logger: { log: () => {}, error: () => {}, debug: () => {} } as Logger,
       dataDir: '/tmp',
-      v2: {
-        session: {
-          create: vi.fn().mockResolvedValue({ data: { id: 'new-session' } }),
-          get: vi.fn().mockResolvedValue({ data: {} }),
-          update: vi.fn().mockResolvedValue({ data: {} }),
-          promptAsync: promptAsyncMock,
-          abort: vi.fn().mockResolvedValue({}),
-          delete: vi.fn().mockResolvedValue({}),
-          messages: vi.fn().mockResolvedValue({ data: [] }),
-          status: vi.fn().mockResolvedValue({ data: {} }),
-        },
-        tui: {
-          publish: vi.fn(),
-          selectSession: tuiSelectSessionMock,
-        },
-      },
+      client,
       plansRepo,
       loopsRepo,
       reviewFindingsRepo,

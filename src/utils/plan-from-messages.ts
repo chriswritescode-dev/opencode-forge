@@ -11,7 +11,7 @@
  * provided `debug` callback when supplied.
  */
 
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
+import type { ForgeClient } from '../client/port'
 import {
   inspectLatestMarkedPlan,
   type PlanCaptureMessage,
@@ -31,7 +31,7 @@ export interface FetchLatestPlanForSessionDeps {
 const DEFAULT_LIMIT = 20
 
 export async function fetchLatestPlanForSession(
-  client: OpencodeClient,
+  client: ForgeClient,
   sessionID: string,
   directory: string | undefined,
   deps: FetchLatestPlanForSessionDeps = {},
@@ -41,16 +41,11 @@ export async function fetchLatestPlanForSession(
 
   let messages: PlanCaptureMessage[]
   try {
-    const result = await client.session.messages({
+    const data = await client.session.messages({
       sessionID,
       ...(directory ? { directory } : {}),
       limit,
     })
-    if ((result as { error?: unknown }).error) {
-      debug(`fetchLatestPlanForSession: messages returned error for session ${sessionID}: ${String((result as { error?: unknown }).error)}`)
-      return null
-    }
-    const data = (result as { data?: unknown[] }).data
     if (!data || data.length === 0) {
       debug(`fetchLatestPlanForSession: no messages for session ${sessionID}`)
       return null
