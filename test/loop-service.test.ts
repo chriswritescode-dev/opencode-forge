@@ -42,7 +42,6 @@ describe('Loop', () => {
       projectId,
       logger: mockLogger,
       client: {} as any,
-      v2Client: {} as any,
       getConfig: () => ({} as any),
     })
   })

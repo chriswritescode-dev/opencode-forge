@@ -146,8 +146,8 @@ describe('withInFlightGuard', () => {
 
   test('passes through return value when no concurrent prompt is in-flight', async () => {
     const { logger } = createMockLogger()
-    const result = await withInFlightGuard('loopA', 'sess-1', 'code', logger, async () => ({ data: 'ok' }))
-    expect(result).toEqual({ data: 'ok' })
+    const result = await withInFlightGuard('loopA', 'sess-1', 'code', logger, async () => 'ok')
+    expect(result).toEqual('ok')
     expect(getPromptInFlight('loopA')).toBeUndefined()
   })
 

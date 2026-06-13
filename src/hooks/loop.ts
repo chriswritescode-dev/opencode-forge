@@ -1,5 +1,4 @@
-import type { PluginInput } from '@opencode-ai/plugin'
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
+import type { ForgeClient } from '../client/port'
 import type { LoopChangeNotifier, TerminationReason } from '../loop'
 import { createLoop, isWorkspaceNotFoundError } from '../loop'
 import type { Logger, PluginConfig, LoopConfig } from '../types'
@@ -39,8 +38,7 @@ export function createLoopEventHandler(
   plansRepo: PlansRepo,
   reviewFindingsRepo: ReviewFindingsRepo,
   projectId: string,
-  client: PluginInput['client'],
-  v2Client: OpencodeClient,
+  forgeClient: ForgeClient,
   logger: Logger,
   getConfig: () => PluginConfig,
   sandboxManager?: ReturnType<typeof createSandboxManager>,
@@ -56,8 +54,7 @@ export function createLoopEventHandler(
     plansRepo,
     reviewFindingsRepo,
     projectId,
-    client,
-    v2Client,
+    client: forgeClient,
     logger,
     getConfig,
     sandboxManager,
@@ -68,7 +65,7 @@ export function createLoopEventHandler(
     loopSessionUsageRepo,
     onTerminated: async (state, reason) => {
       await performTerminationSideEffects(state, reason, state.sessionId, {
-        v2Client,
+        client: forgeClient,
         logger,
         getConfig,
         sandboxManager,

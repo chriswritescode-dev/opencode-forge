@@ -12,7 +12,7 @@ import type { LoopState } from '../../src/loop/state'
 import { createLoopEventHandler } from '../../src/hooks/loop'
 import { markPromptSent, clearPromptPending, sessionsAwaitingBusy, isAwaitingBusy, isAwaitingBusyExpired, AWAITING_BUSY_TIMEOUT_MS } from '../../src/loop/idle-gate'
 import type { Logger, PluginConfig } from '../../src/types'
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
+import { createFakeForgeClient } from '../helpers/fake-client'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
 
 const PROJECT_ID = 'test-project'
@@ -22,46 +22,8 @@ const mockConfig: PluginConfig = {
   auditorModel: 'test/auditor',
   loop: {
     enabled: true,
-    model: 'test/loop',
     defaultMaxIterations: 5,
   },
-}
-
-type DeleteCall = { sessionID: string; directory: string }
-type PublishCall = { directory: string; body: unknown }
-
-interface MockClientState {
-  deleteCalls: DeleteCall[]
-  publishCalls: PublishCall[]
-  deleteThrows: boolean
-}
-
-function createMockV2Client(state: MockClientState): OpencodeClient {
-  return {
-    session: {
-      create: async () => ({ error: null, data: { id: 'sess' } }),
-      promptAsync: async () => ({ error: null, data: null }),
-      status: async () => ({ error: null, data: {} }),
-      abort: async () => {},
-      delete: async (params: DeleteCall) => {
-        state.deleteCalls.push(params)
-        if (state.deleteThrows) throw new Error('delete failed')
-        return { error: undefined }
-      },
-      messages: async () => ({ error: null, data: [] }),
-      get: async () => ({ error: null, data: {} }),
-    },
-    tui: {
-      publish: async (params: PublishCall) => {
-        state.publishCalls.push(params)
-      },
-      selectSession: async () => {},
-    },
-    worktree: {
-      create: async () => ({ error: null, data: { directory: '/tmp/wt', branch: 'b' } }),
-      remove: async () => {},
-    },
-  } as unknown as OpencodeClient
 }
 
 describe('Loop Event Idle Gate', () => {
@@ -90,7 +52,6 @@ describe('Loop Event Idle Gate', () => {
       reviewFindingsRepo,
       PROJECT_ID,
       { log: () => {}, error: () => {}, debug: () => {} },
-      undefined,
       undefined,
       undefined,
       sectionPlansRepo,
@@ -143,18 +104,16 @@ describe('Loop Event Idle Gate', () => {
     return { logger, logs }
   }
 
-  function createHandler(v2Client?: OpencodeClient) {
-    const clientState: MockClientState = { deleteCalls: [], publishCalls: [], deleteThrows: false }
-    const mockClient = v2Client ?? createMockV2Client(clientState)
+  function createHandler() {
     const { logger } = createCapturingLogger()
+    const { client: forgeClient } = createFakeForgeClient()
 
     return createLoopEventHandler(
       loopsRepo,
       plansRepo,
       reviewFindingsRepo,
       PROJECT_ID,
-      { client: {} as any },
-      mockClient,
+      forgeClient,
       logger,
       () => mockConfig,
       undefined,

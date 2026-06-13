@@ -10,7 +10,7 @@ function publishPlanApprovalToast(
   variant: 'success' | 'error' | 'info',
   message: string,
 ): void {
-  ctx.v2.tui?.publish({
+  ctx.client.tui.publish({
     directory: ctx.directory,
     body: {
       type: 'tui.toast.show',
@@ -28,35 +28,13 @@ function publishPlanApprovalToast(
 
 async function abortApprovalSourceSession(ctx: ToolContext, sessionID: string): Promise<boolean> {
   const logger = ctx.logger
-  const legacyClient = ctx.input?.client
-  if (legacyClient?.session) {
-    try {
-      logger.log(`Plan approval: awaiting legacy session.abort for ${sessionID}`)
-      const result = await legacyClient.session.abort({
-        path: { id: sessionID },
-        query: { directory: ctx.directory },
-      } as Parameters<typeof legacyClient.session.abort>[0])
-      if ((result as { error?: unknown })?.error) {
-        logger.error('Plan approval: legacy session.abort returned error', (result as { error?: unknown }).error)
-      } else {
-        logger.log(`Plan approval: legacy session.abort resolved for ${sessionID}`)
-        return true
-      }
-    } catch (err) {
-      logger.error('Plan approval: legacy session.abort threw', err)
-    }
-  }
   try {
-    logger.log(`Plan approval: awaiting v2.session.abort for ${sessionID}`)
-    const v2Result = await ctx.v2.session.abort({ sessionID, directory: ctx.directory })
-    if ((v2Result as { error?: unknown })?.error) {
-      logger.error('Plan approval: v2.session.abort returned error', (v2Result as { error?: unknown }).error)
-      return false
-    }
-    logger.log(`Plan approval: v2.session.abort resolved for ${sessionID}`)
+    logger.log(`Plan approval: awaiting session.abort for ${sessionID}`)
+    await ctx.client.session.abort({ sessionID, directory: ctx.directory })
+    logger.log(`Plan approval: session.abort resolved for ${sessionID}`)
     return true
   } catch (err) {
-    logger.error('Plan approval: v2.session.abort threw', err)
+    logger.error('Plan approval: session.abort threw', err)
     return false
   }
 }
@@ -269,8 +247,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlock
             config,
             logger,
             dataDir: ctx.dataDir,
-            v2: ctx.v2,
-            legacyClient: ctx.input?.client,
+            client: ctx.client,
             plansRepo: ctx.plansRepo,
             loopsRepo: ctx.loopsRepo,
             loopHandler: ctx.loopHandler,
@@ -365,8 +342,8 @@ export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlock
 }
 
 export function createPlanApprovalEventHook(ctx: ToolContext) {
-  const { v2, logger } = ctx
-  
+  const { logger } = ctx
+
   return async (eventInput: { event: { type: string; properties?: Record<string, unknown> } }) => {
     if (eventInput.event?.type !== 'session.status') return
 
@@ -375,68 +352,42 @@ export function createPlanApprovalEventHook(ctx: ToolContext) {
 
     const sessionID = eventInput.event.properties?.sessionID as string
     if (!sessionID) return
-    
+
     const pending = pendingExecutions.get(sessionID)
     if (!pending) return
-    
+
     pendingExecutions.delete(sessionID)
-    
+
     const planRef = pending.planText
       ? `\n\nImplementation Plan:\n${pending.planText}`
       : '\n\nPlan reference: Execute the implementation plan from this conversation. Review all phases above and implement each one.'
-    
+
     const executeHerePrompt = `The architect agent has created an implementation plan. You are now the code agent taking over this session. Your job is to execute the plan — edit files, run commands, create tests, and implement every phase. Do NOT just describe or summarize the changes. Actually make them.${planRef}`
-    
-    const legacyClient = ctx.input?.client
 
-    // Try legacy client first (in-process fetch, always reliable)
-    if (legacyClient) {
-      try {
-        logger.log(`createPlanApprovalEventHook: trying legacy promptAsync for ${sessionID}`)
-        const { result, usedModel } = await retryWithModelFallback(
-          () => legacyClient.session.promptAsync({
-            path: { id: sessionID },
-            query: { directory: pending.directory },
-            body: {
-              agent: 'code',
-              parts: [{ type: 'text' as const, text: executeHerePrompt }],
-              ...(pending.executionModel ? { model: pending.executionModel } : {}),
-            },
-          } as Parameters<typeof legacyClient.session.promptAsync>[0]) as unknown as Promise<{ data?: unknown; error?: unknown }>,
-          () => legacyClient.session.promptAsync({
-            path: { id: sessionID },
-            query: { directory: pending.directory },
-            body: {
-              agent: 'code',
-              parts: [{ type: 'text' as const, text: executeHerePrompt }],
-            },
-          } as Parameters<typeof legacyClient.session.promptAsync>[0]) as unknown as Promise<{ data?: unknown; error?: unknown }>,
-          pending.executionModel,
-          logger,
-        )
-        if (!(result as { error?: unknown })?.error) {
-          const modelInfo = usedModel ? `${usedModel.providerID}/${usedModel.modelID}` : 'default'
-          logger.log(`Plan approval: switched to code agent via legacy client (model: ${modelInfo})`)
-          return
-        }
-        logger.error('createPlanApprovalEventHook: legacy promptAsync returned error', (result as { error?: unknown }).error)
-      } catch (err) {
-        logger.error('createPlanApprovalEventHook: legacy promptAsync threw', err)
-      }
-    }
+    // Wraps port-style call (throws on error) into envelope pattern for retryWithModelFallback
+    const promptAsyncEnvelope = (params: {
+      sessionID: string
+      directory: string
+      agent: string
+      parts: Array<{ type: 'text'; text: string }>
+      model?: { providerID: string; modelID: string }
+    }): Promise<{ data?: unknown; error?: unknown }> =>
+      ctx.client.session.promptAsync(params).then(
+        () => ({ data: {} as unknown }),
+        (err) => ({ data: undefined, error: err }),
+      )
 
-    // Fallback to v2
     try {
-      logger.log(`createPlanApprovalEventHook: falling back to v2 promptAsync for ${sessionID}`)
+      logger.log(`createPlanApprovalEventHook: prompting session ${sessionID}`)
       const { result, usedModel } = await retryWithModelFallback(
-        () => v2.session.promptAsync({
+        () => promptAsyncEnvelope({
           sessionID,
           directory: pending.directory,
           agent: 'code',
           parts: [{ type: 'text' as const, text: executeHerePrompt }],
           ...(pending.executionModel ? { model: pending.executionModel } : {}),
         }),
-        () => v2.session.promptAsync({
+        () => promptAsyncEnvelope({
           sessionID,
           directory: pending.directory,
           agent: 'code',
@@ -446,13 +397,13 @@ export function createPlanApprovalEventHook(ctx: ToolContext) {
         logger,
       )
       if ((result as { error?: unknown })?.error) {
-        logger.error('Plan approval: v2 promptAsync returned error', (result as { error?: unknown }).error)
+        logger.error('Plan approval: promptAsync returned error', (result as { error?: unknown }).error)
         return
       }
       const modelInfo = usedModel ? `${usedModel.providerID}/${usedModel.modelID}` : 'default'
-      logger.log(`Plan approval: switched to code agent via v2 client (model: ${modelInfo})`)
+      logger.log(`Plan approval: switched to code agent (model: ${modelInfo})`)
     } catch (err) {
-      logger.error('createPlanApprovalEventHook: v2 promptAsync threw', err)
+      logger.error('createPlanApprovalEventHook: promptAsync threw', err)
     }
   }
 }

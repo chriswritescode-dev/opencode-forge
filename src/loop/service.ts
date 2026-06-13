@@ -1,5 +1,4 @@
 import type { Logger, LoopConfig } from '../types'
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import type { LoopsRepo, LoopRow, LoopLargeFields } from '../storage/repos/loops-repo'
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo, ReviewFindingRow } from '../storage/repos/review-findings-repo'
@@ -130,7 +129,6 @@ export function createLoopService(
   logger: Logger,
   loopConfig?: LoopConfig,
   notify?: LoopChangeNotifier,
-  _v2Client?: OpencodeClient,
   sectionPlansRepo?: SectionPlansRepo,
 ): LoopService {
   const notifyLoopChange: LoopChangeNotifier = notify ?? (() => {})

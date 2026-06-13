@@ -6,7 +6,9 @@
  */
 
 import type { PluginConfig, Logger } from '../types'
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
+import type { ForgeClient } from '../client/port'
+import { ForgeClientError } from '../client/port'
+
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { createLoopEventHandler } from '../hooks'
@@ -391,8 +393,7 @@ export interface ForgeExecutionServiceDeps {
   config: PluginConfig
   logger: Logger | Console
   dataDir: string
-  v2: OpencodeClient
-  legacyClient?: import('@opencode-ai/sdk').OpencodeClient
+  client: ForgeClient
   plansRepo: PlansRepo
   loopsRepo: LoopsRepo
   loopHandler?: ReturnType<typeof createLoopEventHandler>
@@ -474,240 +475,53 @@ async function resolvePlanSource(
 }
 
 // ============================================================================
-// Fallback Helpers for Legacy Plugin SDK
+// Port-based helpers
 // ============================================================================
 
-interface SessionCreateInput {
-  title: string
-  directory: string
-  permission?: ReturnType<typeof import('../constants/loop').buildLoopPermissionRuleset>
-}
-
-interface SessionCreateResult {
-  data?: { id: string }
-  error?: unknown
-}
-
-interface SessionPromptInput {
-  sessionID: string
-  directory: string
-  parts: Array<{ type: 'text'; text: string }>
-  agent: string
-  model?: { providerID: string; modelID: string }
-  workspace?: string
-}
-
-interface SessionPromptResult {
-  data?: unknown
-  error?: unknown
-}
-
-async function createSessionWithFallback(
-  deps: ForgeExecutionServiceDeps,
-  input: SessionCreateInput,
-): Promise<SessionCreateResult> {
-  // Try v2 SDK first
-  try {
-    const result = await deps.v2.session.create({
-      title: input.title,
-      directory: input.directory,
-      ...(input.permission ? { permission: input.permission } : {}),
-    })
-    
-    if (result.data) {
-      return { data: result.data }
-    }
-    
-    if (result.error) {
-      const errorMsg = result.error instanceof Error ? result.error.message : String(result.error)
-      if (errorMsg.includes('Unable to connect')) {
-        deps.logger.log('createSessionWithFallback: v2 SDK unavailable, falling back to legacy SDK')
-      } else {
-        deps.logger.error('createSessionWithFallback: v2 SDK error', result.error)
-      }
-    }
-  } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : String(err)
-    if (errorMsg.includes('Unable to connect')) {
-      deps.logger.log('createSessionWithFallback: v2 SDK threw connection error, falling back to legacy SDK')
-    } else {
-      deps.logger.error('createSessionWithFallback: v2 SDK threw error', err)
-    }
-  }
-  
-  // Fallback to legacy SDK
-  if (!deps.legacyClient) {
-    deps.logger.error('createSessionWithFallback: no legacy SDK available')
-    return { error: new Error('No legacy SDK available') }
-  }
-  
-  try {
-    const result = await deps.legacyClient.session.create({
-      body: {
-        title: input.title,
-        ...(input.permission ? { permission: input.permission } : {}),
-      },
-      query: {
-        directory: input.directory,
-      },
-    } as Parameters<typeof deps.legacyClient.session.create>[0])
-    
-    const session = result.data as { id?: string } | undefined
-    if (session?.id) {
-      return { data: { id: session.id } }
-    }
-    
-    return { error: new Error('Legacy SDK returned no session ID') }
-  } catch (err) {
-    deps.logger.error('createSessionWithFallback: legacy SDK failed', err)
-    return { error: err }
-  }
-}
-
-async function promptSessionWithFallback(
-  deps: ForgeExecutionServiceDeps,
-  input: SessionPromptInput,
-  model?: { providerID: string; modelID: string },
-): Promise<{ result: SessionPromptResult; usedModel?: typeof model }> {
-  // Try v2 SDK first
-  try {
-    const result = await deps.v2.session.promptAsync({
-      sessionID: input.sessionID,
-      directory: input.directory,
-      parts: input.parts,
-      agent: input.agent,
-      ...(model ? { model } : {}),
-      ...(input.workspace ? { workspace: input.workspace } : {}),
-    })
-    
-    if (!result.error) {
-      return { result: { data: result.data }, usedModel: model }
-    }
-    
-    const errorMsg = result.error instanceof Error ? result.error.message : String(result.error)
-    if (errorMsg.includes('Unable to connect')) {
-      deps.logger.log('promptSessionWithFallback: v2 SDK unavailable, falling back to legacy SDK')
-    } else {
-      deps.logger.error('promptSessionWithFallback: v2 SDK error', result.error)
-    }
-  } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : String(err)
-    if (errorMsg.includes('Unable to connect')) {
-      deps.logger.log('promptSessionWithFallback: v2 SDK threw connection error, falling back to legacy SDK')
-    } else {
-      deps.logger.error('promptSessionWithFallback: v2 SDK threw error', err)
-    }
-  }
-  
-  // Fallback to legacy SDK
-  if (!deps.legacyClient) {
-    deps.logger.error('promptSessionWithFallback: no legacy SDK available')
-    return { result: { error: new Error('No legacy SDK available') }, usedModel: model }
-  }
-  
-  try {
-    const legacyResult = await deps.legacyClient.session.promptAsync({
-      path: { id: input.sessionID },
-      query: {
-        directory: input.directory,
-        ...(input.workspace ? { workspace: input.workspace } : {}),
-      },
-      body: {
-        agent: input.agent,
-        parts: input.parts,
-        ...(model ? { model } : {}),
-      },
-    } as Parameters<typeof deps.legacyClient.session.promptAsync>[0])
-    
-    // Legacy SDK returns { data, request, response }
-    const legacyData = legacyResult as { data?: unknown }
-    if (!legacyData.data) {
-      return { result: { error: new Error('Legacy SDK returned no data') }, usedModel: model }
-    }
-    
-    return { result: { data: legacyData.data }, usedModel: model }
-  } catch (err) {
-    deps.logger.error('promptSessionWithFallback: legacy SDK failed', err)
-    return { result: { error: err }, usedModel: model }
-  }
-}
-
-async function selectSessionWithFallback(
-  deps: ForgeExecutionServiceDeps,
+/**
+ * Best-effort TUI navigation: try `selectSession` (with retries), fall back to
+ * `tui.publish` with a `tui.session.select` event. There is no legacy/fallback
+ * path — the port client is the only client.
+ */
+async function selectSessionBestEffort(
+  client: ForgeClient,
+  directory: string,
+  logger: Logger | Console,
   selection: { sessionID: string; workspace?: string },
 ): Promise<void> {
   const maxAttempts = 3
   const backoffMs = 250
 
-  async function attemptSelectSession(attempt: number): Promise<{ ok: boolean; retryable: boolean }> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      await deps.v2.tui!.selectSession({
+      await client.tui.selectSession({
         sessionID: selection.sessionID,
         ...(selection.workspace ? { workspace: selection.workspace } : {}),
       })
-      deps.logger.log(`[warp] select.v2.selectSession ok attempt=${attempt}`)
-      return { ok: true, retryable: false }
+      logger.log(`[warp] select.session ok attempt=${attempt}`)
+      return
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
-      deps.logger.log(`[warp] select.v2.selectSession failed attempt=${attempt} error="${errorMsg}"`)
-      const retryable = errorMsg.includes('Unable to connect')
-      if (retryable) {
-        deps.logger.log('selectSessionWithFallback: v2 TUI unavailable, will retry then fall back to publish')
+      logger.log(`[warp] select.session failed attempt=${attempt} error="${errorMsg}"`)
+      if (err instanceof ForgeClientError && err.kind === 'connection') {
+        logger.log(`selectSessionBestEffort: TUI connection error, will retry then fall back to publish`)
+        if (attempt < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, backoffMs))
+        }
+      } else if (err instanceof ForgeClientError && err.kind === 'unavailable') {
+        logger.log(`selectSessionBestEffort: TUI unavailable, skipping retry and falling back to publish`)
+        break // Exit loop immediately to reach publish fallback
       } else {
-        deps.logger.error('selectSessionWithFallback: v2 TUI error', err)
-      }
-      return { ok: false, retryable }
-    }
-  }
-
-  if (deps.v2.tui) {
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const result = await attemptSelectSession(attempt)
-      if (result.ok) return
-      if (!result.retryable) break
-      if (attempt < maxAttempts) {
-        await new Promise(resolve => setTimeout(resolve, backoffMs))
+        logger.error('selectSessionBestEffort: TUI error', err)
+        break
       }
     }
-  } else {
-    deps.logger.log('[warp] select.v2.selectSession skipped reason=no-v2-tui')
   }
 
+  // Fall back to publish-based TUI navigation
   try {
-    if (!deps.v2.tui) {
-      deps.logger.log('[warp] select.v2.publish skipped reason=no-v2-tui')
-    } else {
-      await deps.v2.tui.publish({
-        directory: deps.directory,
-        body: {
-          type: 'tui.session.select',
-          properties: {
-            sessionID: selection.sessionID,
-            ...(selection.workspace ? { workspace: selection.workspace } : {}),
-          },
-        },
-      })
-      deps.logger.log('[warp] select.v2.publish ok')
-      return
-    }
-  } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : String(err)
-    deps.logger.log(`[warp] select.v2.publish failed error="${errorMsg}"`)
-    if (errorMsg.includes('Unable to connect')) {
-      deps.logger.log('selectSessionWithFallback: v2 TUI publish unavailable, falling back to legacy SDK')
-    } else {
-      deps.logger.error('selectSessionWithFallback: v2 TUI publish error', err)
-    }
-  }
-
-  if (!deps.legacyClient?.tui) {
-    deps.logger.log('[warp] select.legacy.publish skipped reason=no-legacy-tui')
-    deps.logger.error('selectSessionWithFallback: no legacy TUI available')
-    return
-  }
-
-  try {
-    await deps.legacyClient.tui.publish({
+    await client.tui.publish({
+      directory,
       body: {
         type: 'tui.session.select',
         properties: {
@@ -715,12 +529,16 @@ async function selectSessionWithFallback(
           ...(selection.workspace ? { workspace: selection.workspace } : {}),
         },
       },
-    } as unknown as Parameters<typeof deps.legacyClient.tui.publish>[0])
-    deps.logger.log('[warp] select.legacy.publish ok')
+    })
+    logger.log('[warp] select.publish ok')
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err)
-    deps.logger.log(`[warp] select.legacy.publish failed error="${errorMsg}"`)
-    deps.logger.error('selectSessionWithFallback: legacy TUI failed', err)
+    logger.log(`[warp] select.publish failed error="${errorMsg}"`)
+    if (err instanceof ForgeClientError && err.kind === 'unavailable') {
+      logger.log('selectSessionBestEffort: TUI publish unavailable')
+    } else {
+      logger.error('selectSessionBestEffort: TUI publish error', err)
+    }
   }
 }
 
@@ -850,7 +668,7 @@ export async function attachLoopToSession(
   // real project directory from the host session that launched the loop, and
   // only fall back to ctx.directory when that lookup is unavailable.
   const resolvedProjectDir =
-    (await resolveHostSessionDirectory(deps.v2, input.hostSessionId, ctx.directory, deps.logger)) ?? ctx.directory
+    (await resolveHostSessionDirectory(deps.client, input.hostSessionId, ctx.directory, deps.logger)) ?? ctx.directory
 
   try {
     // Persist loop state
@@ -953,7 +771,7 @@ export async function attachLoopToSession(
         ? { workspace: workspaceId, sessionID: sessionId }
         : { sessionID: sessionId }
 
-      selectSessionWithFallback(deps, selection).catch((err: unknown) => {
+      selectSessionBestEffort(deps.client, deps.directory, deps.logger, selection).catch((err: unknown) => {
         deps.logger.error('attachLoopToSession: failed to navigate TUI (early)', err as Error)
       })
     }
@@ -971,56 +789,34 @@ export async function attachLoopToSession(
     const promptParts = [{ type: 'text' as const, text: promptText }]
     const workspaceParam = workspaceId ? { workspace: workspaceId } : {}
 
-    let promptResult: { result: SessionPromptResult; usedModel?: typeof loopModel }
-
-    if (loopModel) {
-      promptResult = await retryWithModelFallback(
-        async () => {
-          markPromptSent(loopName, sessionId, deps.logger)
-          const { result } = await promptSessionWithFallback(
-            deps,
-            {
-              sessionID: sessionId,
-              directory: sessionDir,
-              parts: promptParts,
-              agent: 'code',
-              ...workspaceParam,
-            },
-            loopModel,
-          )
-          return result
-        },
-        async () => {
-          markPromptSent(loopName, sessionId, deps.logger)
-          const { result } = await promptSessionWithFallback(
-            deps,
-            {
-              sessionID: sessionId,
-              directory: sessionDir,
-              parts: promptParts,
-              agent: 'code',
-              ...workspaceParam,
-            },
-            undefined,
-          )
-          return result
-        },
-        loopModel,
-        deps.logger as unknown as Console,
-      )
-    } else {
+    async function sendPromptCall(model?: { providerID: string; modelID: string }): Promise<{ error?: unknown }> {
       markPromptSent(loopName, sessionId, deps.logger)
-      promptResult = await promptSessionWithFallback(
-        deps,
-        {
+      try {
+        await deps.client.session.promptAsync({
           sessionID: sessionId,
           directory: sessionDir,
           parts: promptParts,
           agent: 'code',
           ...workspaceParam,
-        },
+          ...(model ? { model } : {}),
+        })
+        return {}
+      } catch (err) {
+        return { error: err }
+      }
+    }
+
+    let promptResult: { result: { error?: unknown }; usedModel?: { providerID: string; modelID: string } | undefined }
+
+    if (loopModel) {
+      promptResult = await retryWithModelFallback(
+        () => sendPromptCall(loopModel),
+        () => sendPromptCall(undefined),
         loopModel,
+        deps.logger as unknown as Console,
       )
+    } else {
+      promptResult = { result: await sendPromptCall(undefined), usedModel: undefined }
     }
 
     if (promptResult.result.error) {
@@ -1041,14 +837,14 @@ export async function attachLoopToSession(
         ? { workspace: workspaceId, sessionID: sessionId }
         : { sessionID: sessionId }
 
-      selectSessionWithFallback(deps, selection).catch((err: unknown) => {
+      selectSessionBestEffort(deps.client, deps.directory, deps.logger, selection).catch((err: unknown) => {
         deps.logger.error('attachLoopToSession: failed to navigate TUI', err as Error)
       })
     }
 
     // Abort source session if requested
     if (abortSourceSessionOnSuccess && ctx.sourceSessionId) {
-      deps.v2.session.abort({ sessionID: ctx.sourceSessionId }).catch((err: unknown) => {
+      deps.client.session.abort({ sessionID: ctx.sourceSessionId }).catch((err: unknown) => {
         deps.logger.error('attachLoopToSession: failed to abort source session', err as Error)
       })
     }
@@ -1076,7 +872,6 @@ export async function attachLoopToSession(
 // ============================================================================
 
 export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): ForgeExecutionService {
-  
   const inFlightLoopStarts = new Map<string, Promise<ForgeExecutionResponse<LoopStartedResult>>>()
   function hashPlanForDedupe(text: string): string {
     let h = 5381
@@ -1098,52 +893,54 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const executionModel = command.executionModel ?? deps.config.executionModel
     const parsedModel = parseModelString(executionModel)
     
-    // Create new session with fallback
-    const createResult = await createSessionWithFallback(deps, {
-      title: sessionTitle,
-      directory: ctx.directory,
-    })
-    
-    if (!createResult.data) {
-      deps.logger.error('handlePlanNewSession: failed to create session', createResult.error)
+    // Create new session
+    let sessionId: string
+    try {
+      const session = await deps.client.session.create({
+        title: sessionTitle,
+        directory: ctx.directory,
+      })
+      sessionId = session.id
+    } catch (err) {
+      deps.logger.error('handlePlanNewSession: failed to create session', err)
       return fail('internal_error', 500, 'Failed to create session')
     }
-    
-    const sessionId = createResult.data.id
     deps.logger.log(`handlePlanNewSession: created session=${sessionId}`)
     
     // Navigate TUI if requested with early timing
     if (command.lifecycle?.selectSession && command.lifecycle.selectSessionTiming === 'after-create') {
-      selectSessionWithFallback(deps, { sessionID: sessionId }).catch((err: unknown) => {
+      selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: sessionId }).catch((err: unknown) => {
         deps.logger.error('handlePlanNewSession: failed to navigate TUI (early)', err as Error)
       })
     }
     
-    // Prompt code agent with fallback
-    const { result: promptResult, usedModel: actualModel } = await promptSessionWithFallback(
-      deps,
-      {
+    // Prompt code agent
+    let promptError: unknown = null
+    try {
+      await deps.client.session.promptAsync({
         sessionID: sessionId,
         directory: ctx.directory,
         parts: [{ type: 'text' as const, text: planText }],
         agent: 'code',
-      },
-      parsedModel!,
-    )
+        model: parsedModel!,
+      })
+    } catch (err) {
+      promptError = err
+    }
     
-    if (promptResult.error) {
-      deps.logger.error('handlePlanNewSession: failed to prompt session', promptResult.error)
+    if (promptError) {
+      deps.logger.error('handlePlanNewSession: failed to prompt session', promptError)
       
       // Delete created session if requested
       if (command.lifecycle?.deleteSessionOnPromptFailure) {
-        await deps.v2.session.delete({ sessionID: sessionId, directory: ctx.directory }).catch((err: unknown) => {
+        await deps.client.session.delete({ sessionID: sessionId, directory: ctx.directory }).catch((err: unknown) => {
           deps.logger.error('handlePlanNewSession: failed to delete failed session', err as Error)
         })
       }
       
       // Return to source session if requested
       if (command.lifecycle?.returnToSourceOnPromptFailure && ctx.sourceSessionId) {
-        selectSessionWithFallback(deps, { sessionID: ctx.sourceSessionId }).catch((err: unknown) => {
+        selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: ctx.sourceSessionId }).catch((err: unknown) => {
           deps.logger.error('handlePlanNewSession: failed to return to source session', err as Error)
         })
       }
@@ -1153,20 +950,20 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     
     // Navigate TUI if requested with default/post-prompt timing
     if (command.lifecycle?.selectSession && command.lifecycle.selectSessionTiming !== 'after-create') {
-      selectSessionWithFallback(deps, { sessionID: sessionId }).catch((err: unknown) => {
+      selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: sessionId }).catch((err: unknown) => {
         deps.logger.error('handlePlanNewSession: failed to navigate TUI', err as Error)
       })
     }
     
     // Abort source session if requested
     if (command.lifecycle?.abortSourceSession && ctx.sourceSessionId) {
-      deps.v2.session.abort({ sessionID: ctx.sourceSessionId }).catch((err: unknown) => {
+      deps.client.session.abort({ sessionID: ctx.sourceSessionId }).catch((err: unknown) => {
         deps.logger.error('handlePlanNewSession: failed to abort source session', err as Error)
       })
     }
     
-    const modelUsed = actualModel
-      ? `${actualModel.providerID}/${actualModel.modelID}`
+    const modelUsed = parsedModel
+      ? `${parsedModel.providerID}/${parsedModel.modelID}`
       : null
     
     return ok({
@@ -1198,25 +995,27 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     // Build execute-here prompt
     const executeHerePrompt = `The architect agent has created an implementation plan in this conversation above. You are now the code agent taking over this session. Your job is to execute the plan — edit files, run commands, create tests, and implement every phase. Do NOT just describe or summarize the changes. Actually make them.\n\nPlan reference: ${planText}`
     
-    // Prompt code agent in target session with fallback
-    const { result: promptResult, usedModel: actualModel } = await promptSessionWithFallback(
-      deps,
-      {
+    // Prompt code agent in target session
+    let promptError: unknown = null
+    try {
+      await deps.client.session.promptAsync({
         sessionID: command.targetSessionId,
         directory: ctx.directory,
         parts: [{ type: 'text' as const, text: executeHerePrompt }],
         agent: 'code',
-      },
-      parsedModel,
-    )
+        ...(parsedModel ? { model: parsedModel } : {}),
+      })
+    } catch (err) {
+      promptError = err
+    }
     
-    if (promptResult.error) {
-      deps.logger.error('handlePlanHere: execute-here execution failed', promptResult.error)
+    if (promptError) {
+      deps.logger.error('handlePlanHere: execute-here execution failed', promptError)
       return fail('prompt_failed', 502, 'Failed to execute here')
     }
     
-    const modelUsed = actualModel
-      ? `${actualModel.providerID}/${actualModel.modelID}`
+    const modelUsed = parsedModel
+      ? `${parsedModel.providerID}/${parsedModel.modelID}`
       : null
     
     return ok({
@@ -1289,7 +1088,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
     const rollbackLoopStart = async (): Promise<void> => {
       if (createdSessionId) {
-        await deps.v2.session.abort({ sessionID: createdSessionId }).catch(() => {})
+        await deps.client.session.abort({ sessionID: createdSessionId }).catch(() => {})
       }
       if (loopStatePersisted) {
         deps.loop.deleteState(uniqueLoopName)
@@ -1301,10 +1100,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         sandboxContainer = null
       }
       if (createdWorkspaceId) {
-        const workspaceApi = deps.v2.experimental?.workspace
-        if (workspaceApi?.remove) {
-          await workspaceApi.remove({ id: createdWorkspaceId }).catch(() => {})
-        }
+        await deps.client.workspace.remove({ id: createdWorkspaceId }).catch(() => {})
       }
       if (hostWorktreeDir) {
         const { cleanupLoopWorktree } = await import('../utils/worktree-cleanup')
@@ -1329,7 +1125,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           selectSession: command.lifecycle?.selectSession,
           logger: deps.logger,
           workspaceStatusRegistry: deps.workspaceStatusRegistry,
-          selectSessionFn: (sel) => selectSessionWithFallback(deps, sel),
+          selectSessionFn: (sel) => selectSessionBestEffort(deps.client, deps.directory, deps.logger, sel),
         })
       }
 
@@ -1342,7 +1138,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       // Create builtin worktree workspace (single call — no separate worktree.create)
       const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
-      const ws = await createBuiltinWorktreeWorkspace(deps.v2, {
+      const ws = await createBuiltinWorktreeWorkspace(deps.client, {
         loopName: uniqueLoopName,
         directory: ctx.directory,
       }, deps.logger, deps.workspaceStatusRegistry)
@@ -1363,7 +1159,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       // Create single code session
       const createResult = await createLoopSessionWithWorkspace({
-        v2: deps.v2,
+        client: deps.client,
         title: sessionTitle,
         directory: hostWorktreeDir!,
         permission: permissionRuleset,
@@ -1730,7 +1526,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       if (stoppedState.active) {
         const latestState = deps.loop.getActiveState(stoppedState.loopName)
         if (latestState?.active) {
-          try { await deps.v2.session.abort({ sessionID: latestState.sessionId }) } catch {}
+          try { await deps.client.session.abort({ sessionID: latestState.sessionId }) } catch {}
           await deps.loopHandler!.clearLoopTimers(stoppedState.loopName)
           // Sync stoppedState with latest persisted values
           Object.assign(stoppedState, {
@@ -1760,7 +1556,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       if (stoppedState.worktree) {
         const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
-        const ws = await createBuiltinWorktreeWorkspace(deps.v2, {
+      const ws = await createBuiltinWorktreeWorkspace(deps.client, {
           loopName: stoppedState.loopName,
           directory: stoppedState.projectDir || ctx.directory,
         }, deps.logger, deps.workspaceStatusRegistry)
@@ -1782,7 +1578,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       // Unified session creation for restart (always a single code session)
       const createResult = await createLoopSessionWithWorkspace({
-        v2: deps.v2,
+        client: deps.client,
         title: formatLoopSessionTitle(stoppedState.loopName, {
           iteration: stoppedState.iteration ?? 0,
           currentSectionIndex: stoppedState.currentSectionIndex ?? 0,
@@ -1813,7 +1609,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         selectSession: true,
         logger: deps.logger,
         workspaceStatusRegistry: deps.workspaceStatusRegistry,
-        selectSessionFn: (sel) => selectSessionWithFallback(deps, sel),
+        selectSessionFn: (sel) => selectSessionBestEffort(deps.client, deps.directory, deps.logger, sel),
       })
 
       // Unified section extraction on restart — preserve existing progress if sections exist
@@ -1924,14 +1720,19 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             deps.logger,
             async () => {
               markPromptSent(stoppedState.loopName, effectiveSessionId, deps.logger)
-              return await deps.v2.session.promptAsync({
-                sessionID: effectiveSessionId,
-                directory: stoppedState.worktreeDir,
-                parts: [{ type: 'text' as const, text: promptText }],
-                agent: promptAgent,
-                ...(model ? { model, ...(restartVariant ? { variant: restartVariant } : {}) } : {}),
-                ...workspaceParam,
-              })
+              try {
+                await deps.client.session.promptAsync({
+                  sessionID: effectiveSessionId,
+                  directory: stoppedState.worktreeDir,
+                  parts: [{ type: 'text' as const, text: promptText }],
+                  agent: promptAgent,
+                  ...(model ? { model, ...(restartVariant ? { variant: restartVariant } : {}) } : {}),
+                  ...workspaceParam,
+                })
+                return {}
+              } catch (err) {
+                return { error: err }
+              }
             },
           )
         } catch (err) {
@@ -1996,7 +1797,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
     if (outcome.bindFailed) {
       publishWorkspaceDetachedToast({
-        v2: deps.v2,
+        client: deps.client,
         directory: stoppedState.projectDir ?? stoppedState.worktreeDir,
         loopName: stoppedState.loopName,
         logger: deps.logger,

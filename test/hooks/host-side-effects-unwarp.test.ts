@@ -33,16 +33,30 @@ function buildCtx(overrides?: {
   log?: ReturnType<typeof vi.fn>
   error?: ReturnType<typeof vi.fn>
 }) {
-  const tuiPublish = overrides?.tuiPublish ?? vi.fn().mockResolvedValue({ data: {} })
-  const workspaceRemove = overrides?.workspaceRemove ?? vi.fn().mockResolvedValue({ data: {} })
+  const tuiPublish = overrides?.tuiPublish ?? vi.fn().mockResolvedValue(undefined)
+  const workspaceRemove = overrides?.workspaceRemove ?? vi.fn().mockResolvedValue(undefined)
   const log = overrides?.log ?? vi.fn()
   const error = overrides?.error ?? vi.fn()
 
   return {
     ctx: {
-      v2Client: {
-        tui: { publish: tuiPublish },
-        experimental: { workspace: { remove: workspaceRemove } },
+      client: {
+        session: {} as any,
+        workspace: {
+          create: async () => ({ id: '' }) as any,
+          list: async () => [],
+          status: async () => ({}),
+          syncList: async () => {},
+          remove: workspaceRemove,
+          warp: async () => {},
+        },
+        tui: {
+          publish: tuiPublish,
+          selectSession: async () => {},
+        },
+        sync: {
+          start: async () => {},
+        },
       } as never,
       logger: { log, error, debug: () => {} },
       getConfig: () => ({}) as PluginConfig,
@@ -64,11 +78,9 @@ describe('performTerminationSideEffects unwarp', () => {
       const body = (arg as { body: { type: string } }).body
       if (body.type === 'tui.session.select') callOrder.push('select')
       if (body.type === 'tui.toast.show') callOrder.push('toast')
-      return { data: {} }
     })
     const workspaceRemove = vi.fn().mockImplementation(async () => {
       callOrder.push('remove')
-      return { data: {} }
     })
     const { ctx } = buildCtx({ tuiPublish, workspaceRemove })
 
@@ -118,7 +130,6 @@ describe('performTerminationSideEffects unwarp', () => {
     const tuiPublish = vi.fn().mockImplementation(async (arg: unknown) => {
       const body = (arg as { body: { type: string } }).body
       if (body.type === 'tui.session.select') throw new Error('publish failed')
-      return { data: {} }
     })
     const { ctx, workspaceRemove, error } = buildCtx({ tuiPublish })
 
@@ -145,39 +156,37 @@ describe('performTerminationSideEffects unwarp', () => {
   })
 
   test('sweep removes sibling completed forge workspace during teardown', async () => {
-    const tuiPublish = vi.fn().mockResolvedValue({ data: {} })
-    const workspaceRemove = vi.fn().mockResolvedValue({ data: {} })
-    const workspaceList = vi.fn().mockResolvedValue({
-      data: [
-        // The terminating loop's own workspace
-        {
-          id: 'ws_abc',
-          type: 'forge',
-          extra: {
-            loopName: 'feat-x',
-            projectDirectory: '/tmp/project',
-          },
+    const tuiPublish = vi.fn().mockResolvedValue(undefined)
+    const workspaceRemove = vi.fn().mockResolvedValue(undefined)
+    const workspaceList = vi.fn().mockResolvedValue([
+      // The terminating loop's own workspace
+      {
+        id: 'ws_abc',
+        type: 'forge',
+        extra: {
+          loopName: 'feat-x',
+          projectDirectory: '/tmp/project',
         },
-        // A sibling completed workspace that should be swept
-        {
-          id: 'ws_sibling_completed',
-          type: 'forge',
-          extra: {
-            loopName: 'sibling-completed-loop',
-            projectDirectory: '/tmp/project',
-          },
+      },
+      // A sibling completed workspace that should be swept
+      {
+        id: 'ws_sibling_completed',
+        type: 'forge',
+        extra: {
+          loopName: 'sibling-completed-loop',
+          projectDirectory: '/tmp/project',
         },
-        // A sibling running workspace that should be kept
-        {
-          id: 'ws_sibling_running',
-          type: 'forge',
-          extra: {
-            loopName: 'sibling-running-loop',
-            projectDirectory: '/tmp/project',
-          },
+      },
+      // A sibling running workspace that should be kept
+      {
+        id: 'ws_sibling_running',
+        type: 'forge',
+        extra: {
+          loopName: 'sibling-running-loop',
+          projectDirectory: '/tmp/project',
         },
-      ],
-    })
+      },
+    ])
 
     const loopsRepoGet = vi.fn().mockImplementation((projectId: string, loopName: string) => {
       if (loopName === 'sibling-completed-loop') return { projectId, loopName, status: 'completed' }
@@ -191,11 +200,25 @@ describe('performTerminationSideEffects unwarp', () => {
       clear: vi.fn(),
     }
 
+    const client = {
+      session: {} as any,
+      workspace: {
+        create: async () => ({ id: '' }) as any,
+        list: workspaceList,
+        status: async () => ({}),
+        syncList: async () => {},
+        remove: workspaceRemove,
+        warp: async () => {},
+      },
+      tui: {
+        publish: tuiPublish,
+        selectSession: async () => {},
+      },
+      sync: { start: async () => {} },
+    } as never
+
     const ctx = {
-      v2Client: {
-        tui: { publish: tuiPublish },
-        experimental: { workspace: { remove: workspaceRemove, list: workspaceList } },
-      } as never,
+      client,
       logger: { log: vi.fn(), error: vi.fn(), debug: () => {} },
       getConfig: () => ({}) as PluginConfig,
       pendingTeardowns: pendingTeardowns as never,
@@ -205,7 +228,8 @@ describe('performTerminationSideEffects unwarp', () => {
 
     await performTerminationSideEffects(buildState(), completed, 'sess_worktree', ctx)
 
-    // Verify the terminating loop's own workspace was removed
+    // Verify the terminating loop's own workspace was removed (via ForgeClient,
+    // which delegates to the workspaceRemove mock)
     expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_abc' })
 
     // Verify the sibling completed workspace was swept (excludeLoopName excludes feat-x)
@@ -226,14 +250,26 @@ describe('performTerminationSideEffects unwarp', () => {
   })
 
   test('sweep is skipped when loopsRepo or projectId not in ctx', async () => {
-    const tuiPublish = vi.fn().mockResolvedValue({ data: {} })
-    const workspaceRemove = vi.fn().mockResolvedValue({ data: {} })
-    const workspaceList = vi.fn().mockResolvedValue({ data: [] })
+    const tuiPublish = vi.fn().mockResolvedValue(undefined)
+    const workspaceRemove = vi.fn().mockResolvedValue(undefined)
+    const workspaceList = vi.fn().mockResolvedValue([])
 
     const ctx = {
-      v2Client: {
-        tui: { publish: tuiPublish },
-        experimental: { workspace: { remove: workspaceRemove, list: workspaceList } },
+      client: {
+        session: {} as any,
+        workspace: {
+          create: async () => ({ id: '' }) as any,
+          list: workspaceList,
+          status: async () => ({}),
+          syncList: async () => {},
+          remove: workspaceRemove,
+          warp: async () => {},
+        },
+        tui: {
+          publish: tuiPublish,
+          selectSession: async () => {},
+        },
+        sync: { start: async () => {} },
       } as never,
       logger: { log: vi.fn(), error: vi.fn(), debug: () => {} },
       getConfig: () => ({}) as PluginConfig,

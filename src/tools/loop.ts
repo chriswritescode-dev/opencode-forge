@@ -14,7 +14,7 @@ import { loopBranchExists } from '../workspace/forge-naming'
 const z = tool.schema
 
 export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
-  const { v2, loopHandler, config, logger } = ctx
+  const { loopHandler, config, logger } = ctx
 
   function makeService(sourceSessionId?: string) {
     const execCtx: ForgeExecutionRequestContext = {
@@ -29,8 +29,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
       config,
       logger,
       dataDir: ctx.dataDir,
-      v2: ctx.v2,
-      legacyClient: ctx.input?.client,
+      client: ctx.client,
       plansRepo: ctx.plansRepo,
       loopsRepo: ctx.loopsRepo,
       loopHandler: ctx.loopHandler,
@@ -62,8 +61,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         if (!args.plan) {
           const capture = await captureLatestPlanForSession(
             {
-              v2: ctx.v2,
-              client: ctx.input.client,
+              client: ctx.client,
               plansRepo: ctx.plansRepo,
               projectId: ctx.projectId,
               directory: ctx.directory,
@@ -246,11 +244,11 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           try {
             const uniqueDirs = [...new Set(active.map((s) => s.worktreeDir).filter(Boolean))]
             const results = await Promise.allSettled(
-              uniqueDirs.map((dir) => v2.session.status({ directory: dir })),
+              uniqueDirs.map((dir) => ctx.client.session.status({ directory: dir })),
             )
             for (const result of results) {
-              if (result.status === 'fulfilled' && result.value.data) {
-                Object.assign(statuses, result.value.data)
+              if (result.status === 'fulfilled' && result.value) {
+                Object.assign(statuses, result.value)
               }
             }
           } catch {
@@ -336,7 +334,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           }
 
           const sessionOutput = state.worktreeDir ? await fetchSessionOutput(
-            v2,
+            ctx.client,
             state.sessionId,
             state.worktreeDir,
             logger,
@@ -390,8 +388,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
         let sessionStatus = 'unknown'
         try {
-          const statusResult = await v2.session.status({ directory: state.worktreeDir })
-          const statuses = statusResult.data as Record<string, { type: string; attempt?: number; message?: string; next?: number }> | undefined
+          const statusResult = await ctx.client.session.status({ directory: state.worktreeDir })
+          const statuses = statusResult as Record<string, { type: string; attempt?: number; message?: string; next?: number }> | undefined
           // Check if any session registered to this loop is busy (main + child/subagent sessions)
           const isBusy = Object.entries(statuses ?? {}).some(([sid, s]) =>
             ctx.loop.resolveLoopName(sid) === state.loopName && s.type === 'busy',
@@ -442,7 +440,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         if (state.worktreeDir) {
           try {
             sessionOutput = await fetchSessionOutput(
-              v2,
+              ctx.client,
               state.sessionId,
               state.worktreeDir,
               logger,

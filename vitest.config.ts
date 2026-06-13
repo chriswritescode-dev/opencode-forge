@@ -85,6 +85,8 @@ export default defineConfig({
       'test/storage-migrations.test.ts',
       'test/worktree-log.test.ts',
       'test/plugin.test.ts',
+      'test/client/sdk-adapter.test.ts',
+      'test/helpers/fake-client.test.ts',
     ],
     globals: true,
   },

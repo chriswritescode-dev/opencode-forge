@@ -1,25 +1,21 @@
 import { test, expect } from 'bun:test'
 import { createLoopSessionWithWorkspace } from '../../src/utils/loop-session'
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import type { Logger } from '../../src/types'
 import { buildLoopPermissionRuleset } from '../../src/constants/loop'
+import { createFakeForgeClient } from '../helpers/fake-client'
+import { ForgeClientError } from '../../src/client/port'
 
 test('session.create body does NOT include workspace query param', async () => {
   let capturedParams: unknown
   const mockSessionCreate = (params: unknown) => {
     capturedParams = params
-    return Promise.resolve({ data: { id: 'session-123' } })
+    return { id: 'session-123' }
   }
-  const mockClient = {
+  const { client } = createFakeForgeClient({
     session: {
       create: mockSessionCreate,
     },
-    experimental: {
-      workspace: {
-        warp: () => Promise.resolve({ data: {} }),
-      },
-    },
-  } as unknown as OpencodeClient
+  })
 
   const logger: Logger | Console = {
     log: () => {},
@@ -28,7 +24,7 @@ test('session.create body does NOT include workspace query param', async () => {
   }
 
   await createLoopSessionWithWorkspace({
-    v2: mockClient,
+    client,
     title: 'Test Session',
     directory: '/test/dir',
     permission: buildLoopPermissionRuleset(),
@@ -47,18 +43,13 @@ test('No workspace field set even when workspaceId is undefined', async () => {
   let capturedParams: unknown
   const mockSessionCreate = (params: unknown) => {
     capturedParams = params
-    return Promise.resolve({ data: { id: 'session-123' } })
+    return { id: 'session-123' }
   }
-  const mockClient = {
+  const { client } = createFakeForgeClient({
     session: {
       create: mockSessionCreate,
     },
-    experimental: {
-      workspace: {
-        warp: () => Promise.resolve({ data: {} }),
-      },
-    },
-  } as unknown as OpencodeClient
+  })
 
   const logger: Logger | Console = {
     log: () => {},
@@ -67,7 +58,7 @@ test('No workspace field set even when workspaceId is undefined', async () => {
   }
 
   await createLoopSessionWithWorkspace({
-    v2: mockClient,
+    client,
     title: 'Test Session',
     directory: '/test/dir',
     permission: buildLoopPermissionRuleset(),
@@ -83,20 +74,14 @@ test('No workspace field set even when workspaceId is undefined', async () => {
 
 test('Bind failure path logs via input.logger', async () => {
   let capturedErrorArgs: unknown[] = []
-  const mockSessionCreate = () => Promise.resolve({ data: { id: 'session-123' } })
-  const mockWarp = () => Promise.resolve({
-    error: { name: 'NotFound', data: { message: 'not found' } },
-  })
-  const mockClient = {
+  const { client } = createFakeForgeClient({
     session: {
-      create: mockSessionCreate,
+      create: async () => ({ id: 'session-123' }),
     },
-    experimental: {
-      workspace: {
-        warp: mockWarp,
-      },
+    workspace: {
+      warp: async () => { throw new ForgeClientError({ kind: 'not-found', method: 'workspace.warp', message: 'not found' }) },
     },
-  } as unknown as OpencodeClient
+  })
 
   const logger: Logger | Console = {
     log: () => {},
@@ -105,7 +90,7 @@ test('Bind failure path logs via input.logger', async () => {
   }
 
   const result = await createLoopSessionWithWorkspace({
-    v2: mockClient,
+    client,
     title: 'Test Session',
     directory: '/test/dir',
     permission: buildLoopPermissionRuleset(),
@@ -124,18 +109,13 @@ test('Calling without permission omits permission from session.create body', asy
   let capturedParams: unknown
   const mockSessionCreate = (params: unknown) => {
     capturedParams = params
-    return Promise.resolve({ data: { id: 'session-456' } })
+    return { id: 'session-456' }
   }
-  const mockClient = {
+  const { client } = createFakeForgeClient({
     session: {
       create: mockSessionCreate,
     },
-    experimental: {
-      workspace: {
-        warp: () => Promise.resolve({ data: {} }),
-      },
-    },
-  } as unknown as OpencodeClient
+  })
 
   const logger: Logger | Console = {
     log: () => {},
@@ -144,7 +124,7 @@ test('Calling without permission omits permission from session.create body', asy
   }
 
   const result = await createLoopSessionWithWorkspace({
-    v2: mockClient,
+    client,
     title: 'No Permission Session',
     directory: '/test/dir',
     workspaceId: 'ws-1',
@@ -162,63 +142,13 @@ test('Calling without permission omits permission from session.create body', asy
   expect(result?.bindFailed).toBe(false)
 })
 
-test('Falls back to legacy SDK when v2 SDK fails and legacy is available', async () => {
-  let legacyCapturedBody: unknown
-  const mockV2Client = {
+test('Returns null when session.create fails', async () => {
+  const { client } = createFakeForgeClient({
     session: {
-      create: async () => ({ error: new Error('Unable to connect') }),
-      get: async () => ({ data: {} }),
+      create: async () => { throw new ForgeClientError({ kind: 'request', method: 'session.create', message: 'Unable to connect' }) },
     },
-    experimental: {
-      workspace: {
-        warp: () => Promise.resolve({ data: {} }),
-      },
-    },
-  } as unknown as OpencodeClient
-
-  const mockLegacyClient = {
-    session: {
-      create: async (args: unknown) => {
-        legacyCapturedBody = args
-        return { data: { id: 'legacy-session-789' } }
-      },
-    },
-  } as unknown
-
-  const logger: Logger | Console = {
-    log: () => {},
-    error: () => {},
-    debug: () => {},
-  }
-
-  const result = await createLoopSessionWithWorkspace({
-    v2: mockV2Client,
-    title: 'Fallback Session',
-    directory: '/test/dir',
-    permission: buildLoopPermissionRuleset(),
-    workspaceId: 'ws-1',
-    logPrefix: 'test',
-    logger,
-    legacyClient: mockLegacyClient as import('@opencode-ai/sdk').OpencodeClient,
   })
 
-  expect(result).toBeDefined()
-  expect(result?.sessionId).toBe('legacy-session-789')
-  expect(result?.bindFailed).toBe(false)
-})
-
-test('Returns null when v2 SDK fails and no legacy client available', async () => {
-  const mockV2Client = {
-    session: {
-      create: async () => ({ error: new Error('Unable to connect') }),
-    },
-    experimental: {
-      workspace: {
-        warp: () => Promise.resolve({ data: {} }),
-      },
-    },
-  } as unknown as OpencodeClient
-
   const logger: Logger | Console = {
     log: () => {},
     error: () => {},
@@ -226,7 +156,7 @@ test('Returns null when v2 SDK fails and no legacy client available', async () =
   }
 
   const result = await createLoopSessionWithWorkspace({
-    v2: mockV2Client,
+    client,
     title: 'No Fallback Session',
     directory: '/test/dir',
     logPrefix: 'test',
@@ -247,33 +177,21 @@ test('WorkspaceStatusRegistry primeFromSnapshot is called during bind', async ()
     },
   }
 
-  const mockWarpResult = {
-    data: {},
-  }
+  const mockStatusData = [
+    { workspaceID: 'ws-1', status: 'connected' },
+  ]
 
-  const mockStatusData = {
-    data: [
-      { workspaceID: 'ws-1', status: 'connected' },
-    ],
-  }
+  const mockListResult = [{ id: 'ws-1' }]
 
-  const mockListResult = {
-    data: [{ id: 'ws-1' }],
-  }
-
-  const mockClient = {
+  const { client } = createFakeForgeClient({
     session: {
-      create: async () => ({ data: { id: 'session-123' } }),
-      get: async () => ({ data: { permission: null } }),
+      create: async () => ({ id: 'session-123' }),
     },
-    experimental: {
-      workspace: {
-        warp: () => Promise.resolve(mockWarpResult),
-        list: () => Promise.resolve(mockListResult),
-        status: () => Promise.resolve(mockStatusData),
-      },
+    workspace: {
+      list: async () => mockListResult,
+      status: async () => mockStatusData,
     },
-  } as unknown as OpencodeClient
+  })
 
   const logger: Logger | Console = {
     log: () => {},
@@ -282,7 +200,7 @@ test('WorkspaceStatusRegistry primeFromSnapshot is called during bind', async ()
   }
 
   const result = await createLoopSessionWithWorkspace({
-    v2: mockClient,
+    client,
     title: 'Test Session',
     directory: '/test/dir',
     permission: buildLoopPermissionRuleset(),
@@ -308,16 +226,14 @@ test('createLoopSessionWithWorkspace does not emit [perm-diag] log entries', asy
     error: (msg: string) => { errorEntries.push(typeof msg === 'string' ? msg : String(msg)) },
     debug: () => {},
   }
-  const mockClient = {
+  const { client } = createFakeForgeClient({
     session: {
-      create: () => Promise.resolve({ data: { id: 's1' } }),
-      get: () => Promise.resolve({ data: { permission: [] } }),
+      create: async () => ({ id: 's1' }),
     },
-    experimental: { workspace: { warp: () => Promise.resolve({ data: {} }) } },
-  } as unknown as OpencodeClient
+  })
 
   await createLoopSessionWithWorkspace({
-    v2: mockClient,
+    client,
     title: 't',
     directory: '/d',
     permission: buildLoopPermissionRuleset(),

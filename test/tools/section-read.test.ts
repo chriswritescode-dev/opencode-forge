@@ -133,7 +133,7 @@ describe('section-read tool', () => {
     plansRepo = createPlansRepo(db)
     reviewFindingsRepo = createReviewFindingsRepo(db)
     sectionPlansRepo = createSectionPlansRepo(db)
-    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger, undefined, undefined, undefined, sectionPlansRepo)
+    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger, undefined, undefined, sectionPlansRepo)
   })
 
   afterEach(() => {

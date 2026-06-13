@@ -1,4 +1,4 @@
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
+import type { ForgeClient } from '../client/port'
 import type { Logger } from '../types'
 
 /**
@@ -16,14 +16,14 @@ import type { Logger } from '../types'
  * callers can fall back to a sensible default.
  */
 export async function resolveHostSessionDirectory(
-  v2: OpencodeClient,
+  client: ForgeClient,
   hostSessionId: string | undefined,
   fallbackDirectory: string,
   logger?: Logger,
 ): Promise<string | null> {
   if (!hostSessionId) return null
 
-  type SessionGetInput = Parameters<typeof v2.session.get>[0]
+  type SessionGetInput = Parameters<typeof client.session.get>[0]
 
   const attempts: SessionGetInput[] = [
     { sessionID: hostSessionId } as SessionGetInput,
@@ -32,8 +32,8 @@ export async function resolveHostSessionDirectory(
 
   for (const input of attempts) {
     try {
-      const result = await v2.session.get(input)
-      const dir = result.data?.directory
+      const session = await client.session.get(input)
+      const dir = session?.directory
       if (dir) return dir
     } catch {
       // fall through to next attempt

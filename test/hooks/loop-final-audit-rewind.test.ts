@@ -12,7 +12,6 @@ import { createLoopService, MAX_RETRIES } from '../../src/loop/service'
 import { createLoopEventHandler } from '../../src/hooks/loop'
 import { openForgeDatabase } from '../../src/storage/database'
 import type { Logger, PluginConfig } from '../../src/types'
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 
 const mockLogger: Logger = {
   log: () => {},
