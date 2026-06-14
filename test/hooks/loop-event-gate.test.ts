@@ -34,6 +34,7 @@ describe('Loop Event Idle Gate', () => {
   let plansRepo: ReturnType<typeof createPlansRepo>
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
   let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
+  let handler: ReturnType<typeof createLoopEventHandler> | null
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'loop-event-gate-test-'))
@@ -61,9 +62,11 @@ describe('Loop Event Idle Gate', () => {
   })
 
   afterEach(() => {
+    handler?.clearAllRetryTimeouts()
     db.close()
     rmSync(tempDir, { recursive: true, force: true })
     sessionsAwaitingBusy.clear()
+    handler = null
   })
 
   function makeState(overrides: Partial<LoopState> = {}): LoopState {
@@ -108,7 +111,7 @@ describe('Loop Event Idle Gate', () => {
     const { logger } = createCapturingLogger()
     const { client: forgeClient } = createFakeForgeClient()
 
-    return createLoopEventHandler(
+    handler = createLoopEventHandler(
       loopsRepo,
       plansRepo,
       reviewFindingsRepo,
@@ -119,6 +122,7 @@ describe('Loop Event Idle Gate', () => {
       undefined,
       tempDir,
     )
+    return handler
   }
 
   describe('busy event clears pending gate', () => {
