@@ -10,7 +10,7 @@ import type { ReviewFindingsRepo, ReviewFindingRow } from '../storage/repos/revi
 import type { SectionPlansRepo, SectionPlanRow } from '../storage/repos/section-plans-repo'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
 import { createLoopWatchdog, type LoopWatchdogStallInfo, type LoopWatchdogRecoveryContext } from '../hooks/watchdog'
-import { retryWithModelFallback } from '../utils/model-fallback'
+import { sendLoopPrompt } from './send-loop-prompt'
 import { resolveLoopModel, resolveLoopAuditorModel } from '../utils/loop-helpers'
 import type { createSandboxManager } from '../sandbox/manager'
 // worktree-completion imports moved to hooks/loop.ts (termination side-effects)
@@ -195,73 +195,49 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     if (agent === 'auditor-loop') {
       const auditorModel = input.model != null ? input.model : undefined
-
-      const sendFn = async (model?: { providerID: string; modelID: string }) => {
-        const freshState = loopService.getActiveState(loopName)
-        if (!freshState?.active) throw new Error('loop_cancelled')
-        try {
-          return await withInFlightGuard(loopName, sessionId, 'auditor-loop', logger, async () => {
-            markPromptSent(loopName, sessionId, logger)
-            const result = await promptAuditSession(client, {
-              sessionId,
-              worktreeDir: freshState.worktreeDir,
-              workspaceId: freshState.workspaceId,
-              prompt: promptText,
-              ...(model ? { auditorModel: model, ...(input.variant ? { auditorVariant: input.variant } : {}) } : {}),
-            })
-            return result.ok ? { data: true } : { error: result.error }
+      const { result, usedModel } = await sendLoopPrompt({
+        loopName, sessionId, agent: 'auditor-loop', logger,
+        primaryModel: auditorModel,
+        performPrompt: async (model) => {
+          const freshState = loopService.getActiveState(loopName)
+          if (!freshState?.active) throw new Error('loop_cancelled')
+          markPromptSent(loopName, sessionId, logger)
+          const r = await promptAuditSession(client, {
+            sessionId,
+            worktreeDir: freshState.worktreeDir,
+            workspaceId: freshState.workspaceId,
+            prompt: promptText,
+            ...(model ? { auditorModel: model, ...(input.variant ? { auditorVariant: input.variant } : {}) } : {}),
           })
-        } catch (err) {
-          if (err instanceof ConcurrentPromptError) return { error: err }
-          throw err
-        }
-      }
-
-      const { result, usedModel } = await retryWithModelFallback(() => sendFn(auditorModel), () => sendFn(undefined), auditorModel, logger)
-      if (result.error) {
-        if (result.error instanceof ConcurrentPromptError) {
-          return { error: result.error, usedModel }
-        }
-        clearPromptPending(loopName, logger)
-      }
+          return r.ok ? {} : { error: r.error }
+        },
+      })
       return { error: result.error, usedModel }
     }
 
     const effectiveModel = input.model != null ? input.model : resolveLoopModel(getConfig(), loopService, loopName)
-
-    const sendFn = async (model?: { providerID: string; modelID: string }) => {
-      const freshState = loopService.getActiveState(loopName)
-      if (!freshState?.active) throw new Error('loop_cancelled')
-      try {
-          return await withInFlightGuard(loopName, sessionId, 'code', logger, async () => {
-            markPromptSent(loopName, sessionId, logger)
-            try {
-              await client.session.promptAsync({
-                sessionID: sessionId,
-                directory: freshState.worktreeDir,
-                ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
-                agent: 'code',
-                parts: [{ type: 'text' as const, text: promptText }],
-                ...(model ? { model, ...(input.variant ? { variant: input.variant } : {}) } : {}),
-              })
-              return { data: true }
-            } catch (err) {
-              return { error: err }
-            }
+    const { result, usedModel } = await sendLoopPrompt({
+      loopName, sessionId, agent: 'code', logger,
+      primaryModel: effectiveModel,
+      performPrompt: async (model) => {
+        const freshState = loopService.getActiveState(loopName)
+        if (!freshState?.active) throw new Error('loop_cancelled')
+        markPromptSent(loopName, sessionId, logger)
+        try {
+          await client.session.promptAsync({
+            sessionID: sessionId,
+            directory: freshState.worktreeDir,
+            ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
+            agent: 'code',
+            parts: [{ type: 'text' as const, text: promptText }],
+            ...(model ? { model, ...(input.variant ? { variant: input.variant } : {}) } : {}),
           })
-      } catch (err) {
-        if (err instanceof ConcurrentPromptError) return { error: err }
-        throw err
-      }
-    }
-
-    const { result, usedModel } = await retryWithModelFallback(() => sendFn(effectiveModel), () => sendFn(undefined), effectiveModel, logger)
-    if (result.error) {
-      if (result.error instanceof ConcurrentPromptError) {
-        return { error: result.error, usedModel }
-      }
-      clearPromptPending(loopName, logger)
-    }
+          return {}
+        } catch (err) {
+          return { error: err }
+        }
+      },
+    })
     return { error: result.error, usedModel }
   }
 
