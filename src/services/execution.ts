@@ -14,7 +14,7 @@ import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { createLoopEventHandler } from '../hooks'
 import type { SandboxManager } from '../sandbox/manager'
 import { extractPlanExecutionMetadata } from '../utils/plan-execution'
-import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
+import { parseModelString } from '../utils/model-fallback'
 
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
 import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../constants/loop'
@@ -24,13 +24,10 @@ import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '.
 import { aggregateToUsageSummary } from '../utils/loop-format'
 import { join } from 'path'
 import { existsSync } from 'fs'
-import { decomposeDeterministically } from './deterministic-decomposer'
+import { applyPlanDecomposition } from './section-bootstrap'
+import { sendLoopPrompt } from '../loop/send-loop-prompt'
 import { markPromptSent, clearPromptPending, terminationStatusFor, parseTerminationReasonString } from '../loop'
-import {
-  withInFlightGuard,
-  ConcurrentPromptError,
-  type PromptAgent,
-} from '../loop/in-flight-guard'
+import { ConcurrentPromptError } from '../loop/in-flight-guard'
 import { getRestartability, type RestartBlockedReason } from '../loop/restartability'
 import { loopBranchExists } from '../workspace/forge-naming'
 import { resolveHostSessionDirectory } from '../utils/resolve-project-root'
@@ -715,20 +712,18 @@ export async function attachLoopToSession(
     })
 
     // === Section extraction ===
-
-    const maxSections = 12
-    const sections = decomposeDeterministically(planText, { maxSections })
+    const { totalSections } = applyPlanDecomposition({
+      projectId: ctx.projectId,
+      loopName,
+      planText,
+      loopsRepo: deps.loopsRepo,
+      sectionPlansRepo: deps.sectionPlansRepo,
+    })
     let promptText: string
-    if (sections.length > 0 && deps.sectionPlansRepo) {
-      deps.sectionPlansRepo.bulkInsert({ projectId: ctx.projectId, loopName, sections })
-      deps.loopsRepo.setTotalSections(ctx.projectId, loopName, sections.length)
-      deps.loopsRepo.setCurrentSectionIndex(ctx.projectId, loopName, 0)
-      deps.sectionPlansRepo.setStatus(ctx.projectId, loopName, 0, 'in_progress')
-      deps.sectionPlansRepo.setStartedAt(ctx.projectId, loopName, 0, Date.now())
-      const updatedState = { ...state, phase: 'coding' as const, currentSectionIndex: 0, totalSections: sections.length }
+    if (totalSections > 0) {
+      const updatedState = { ...state, phase: 'coding' as const, currentSectionIndex: 0, totalSections }
       promptText = deps.loop.buildSectionInitialPrompt(updatedState as import('../loop/state').LoopState)
     } else {
-      deps.loopsRepo.setTotalSections(ctx.projectId, loopName, 0)
       promptText = planText
     }
 
@@ -789,38 +784,32 @@ export async function attachLoopToSession(
     const promptParts = [{ type: 'text' as const, text: promptText }]
     const workspaceParam = workspaceId ? { workspace: workspaceId } : {}
 
-    async function sendPromptCall(model?: { providerID: string; modelID: string }): Promise<{ error?: unknown }> {
-      markPromptSent(loopName, sessionId, deps.logger)
-      try {
-        await deps.client.session.promptAsync({
-          sessionID: sessionId,
-          directory: sessionDir,
-          parts: promptParts,
-          agent: 'code',
-          ...workspaceParam,
-          ...(model ? { model } : {}),
-        })
-        return {}
-      } catch (err) {
-        return { error: err }
-      }
-    }
-
-    let promptResult: { result: { error?: unknown }; usedModel?: { providerID: string; modelID: string } | undefined }
-
-    if (loopModel) {
-      promptResult = await retryWithModelFallback(
-        () => sendPromptCall(loopModel),
-        () => sendPromptCall(undefined),
-        loopModel,
-        deps.logger as unknown as Console,
-      )
-    } else {
-      promptResult = { result: await sendPromptCall(undefined), usedModel: undefined }
-    }
+    const promptResult = await sendLoopPrompt({
+      loopName,
+      sessionId,
+      agent: 'code',
+      logger: deps.logger,
+      primaryModel: loopModel,
+      useInFlightGuard: false,
+      performPrompt: async (model) => {
+        markPromptSent(loopName, sessionId, deps.logger)
+        try {
+          await deps.client.session.promptAsync({
+            sessionID: sessionId,
+            directory: sessionDir,
+            parts: promptParts,
+            agent: 'code',
+            ...workspaceParam,
+            ...(model ? { model } : {}),
+          })
+          return {}
+        } catch (err) {
+          return { error: err }
+        }
+      },
+    })
 
     if (promptResult.result.error) {
-      clearPromptPending(loopName, deps.logger)
       deps.logger.error('attachLoopToSession: failed to send prompt', promptResult.result.error)
       deps.loop.deleteState(loopName)
       return { ok: false, code: 'prompt_failed', message: 'Loop session created but failed to send prompt' }
@@ -1613,28 +1602,19 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       })
 
       // Unified section extraction on restart — preserve existing progress if sections exist
-      const maxSections = 12
-      const planText = stoppedState.prompt ?? ''
-      const sections = decomposeDeterministically(planText, { maxSections })
-      if (sections.length > 0 && deps.sectionPlansRepo && !stoppedState.totalSections) {
-        // New sections being extracted (first-time or fresh)
-        deps.sectionPlansRepo.bulkInsert({
+      if (!stoppedState.totalSections) {
+        const planText = stoppedState.prompt ?? ''
+        const { totalSections } = applyPlanDecomposition({
           projectId: ctx.projectId,
           loopName: stoppedState.loopName,
-          sections,
+          planText,
+          loopsRepo: deps.loopsRepo,
+          sectionPlansRepo: deps.sectionPlansRepo,
         })
-
-        deps.loopsRepo.setTotalSections(ctx.projectId, stoppedState.loopName, sections.length)
-        deps.loopsRepo.setCurrentSectionIndex(ctx.projectId, stoppedState.loopName, 0)
-
-        deps.sectionPlansRepo.setStatus(ctx.projectId, stoppedState.loopName, 0, 'in_progress')
-        deps.sectionPlansRepo.setStartedAt(ctx.projectId, stoppedState.loopName, 0, Date.now())
-
-        stoppedState.currentSectionIndex = 0
-        stoppedState.totalSections = sections.length
-      } else if (!stoppedState.totalSections) {
-        deps.loopsRepo.setTotalSections(ctx.projectId, stoppedState.loopName, 0)
-        stoppedState.totalSections = 0
+        stoppedState.totalSections = totalSections
+        if (totalSections > 0) {
+          stoppedState.currentSectionIndex = 0
+        }
       }
       // else: existing totalSections preserved as-is
 
@@ -1711,33 +1691,20 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         ? stoppedState.auditorVariant
         : stoppedState.executionVariant
 
-      const sendRestartPrompt = async (model?: { providerID: string; modelID: string }) => {
+      const performRestartPrompt = async (model?: { providerID: string; modelID: string }): Promise<{ error?: unknown }> => {
+        markPromptSent(stoppedState.loopName, effectiveSessionId, deps.logger)
         try {
-          return await withInFlightGuard(
-            stoppedState.loopName,
-            effectiveSessionId,
-            promptAgent as PromptAgent,
-            deps.logger,
-            async () => {
-              markPromptSent(stoppedState.loopName, effectiveSessionId, deps.logger)
-              try {
-                await deps.client.session.promptAsync({
-                  sessionID: effectiveSessionId,
-                  directory: stoppedState.worktreeDir,
-                  parts: [{ type: 'text' as const, text: promptText }],
-                  agent: promptAgent,
-                  ...(model ? { model, ...(restartVariant ? { variant: restartVariant } : {}) } : {}),
-                  ...workspaceParam,
-                })
-                return {}
-              } catch (err) {
-                return { error: err }
-              }
-            },
-          )
+          await deps.client.session.promptAsync({
+            sessionID: effectiveSessionId,
+            directory: stoppedState.worktreeDir,
+            parts: [{ type: 'text' as const, text: promptText }],
+            agent: promptAgent,
+            ...(model ? { model, ...(restartVariant ? { variant: restartVariant } : {}) } : {}),
+            ...workspaceParam,
+          })
+          return {}
         } catch (err) {
-          if (err instanceof ConcurrentPromptError) return { error: err }
-          throw err
+          return { error: err }
         }
       }
 
@@ -1746,14 +1713,18 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // a transient race tore the restart down and reverted the loop to terminal.
       // (Workspace connection was already awaited via selectInitialWorktreeSession.)
       const RESTART_PROMPT_MAX_ATTEMPTS = 4
-      let promptResult: { data?: unknown; error?: unknown } = { error: new Error('restart prompt not attempted') }
+      let promptResult: { error?: unknown } = { error: new Error('restart prompt not attempted') }
       for (let attempt = 1; attempt <= RESTART_PROMPT_MAX_ATTEMPTS; attempt++) {
-        const { result } = await retryWithModelFallback(
-          () => sendRestartPrompt(loopModel!),
-          () => sendRestartPrompt(),
-          loopModel,
-          deps.logger,
-        )
+        const { result } = await sendLoopPrompt({
+          loopName: stoppedState.loopName,
+          sessionId: effectiveSessionId,
+          agent: promptAgent,
+          logger: deps.logger,
+          primaryModel: loopModel,
+          useInFlightGuard: true,
+          clearPendingOnError: false,
+          performPrompt: performRestartPrompt,
+        })
         promptResult = result
         if (!result.error || !isTransientSessionError(result.error) || attempt === RESTART_PROMPT_MAX_ATTEMPTS) {
           break
