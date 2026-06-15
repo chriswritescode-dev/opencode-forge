@@ -290,7 +290,7 @@ Choose from three execution modes:
 
 1. **New session** — Creates a fresh Code session and sends the plan as the initial prompt
 2. **Execute here** — Takes over the current session immediately with the plan
-3. **Loop** — Launches an iterative coding/auditing loop in an isolated git worktree (Docker sandbox used automatically when available)
+3. **Loop** — Prompts the architect to launch an iterative coding/auditing loop via the `loop` tool in an isolated git worktree (Docker sandbox used automatically when available)
 
 #### Model Selection
 
@@ -392,7 +392,7 @@ After the architect presents a summary, the user chooses an execution mode from 
 
 - **New session** — Creates a new Code session and sends the plan as the initial prompt.
 - **Execute here** — The code agent takes over the current session immediately with the plan.
-- **Loop** — Creates an isolated git worktree and launches an iterative coding/auditing loop. Docker sandbox is provisioned automatically when available; otherwise the loop runs in worktree-only mode.
+- **Loop** — The architect is prompted to launch an iterative coding/auditing loop via the `loop` tool, which creates an isolated git worktree and provisions a Docker sandbox when available.
 
 | Mode | When to choose it |
 |------|-------------------|
@@ -402,7 +402,7 @@ After the architect presents a summary, the user chooses an execution mode from 
 
 The dialog also lets you pick the execution model and auditor model at launch time. Those selections are remembered per project and pre-filled on later launches. Optional **variant selectors** accompany each model selector, letting you choose provider-specific reasoning or thinking-effort levels (e.g., `low`, `high`, `max`) when the model exposes them. Variant selections are also persisted per project.
 
-Execution is immediate — there are no additional LLM calls between approval and execution. The system intercepts the user's approval answer, reads the cached plan, and dispatches it programmatically to the code agent. The architect never processes the approval response.
+For New session and Execute here, execution is immediate — there are no additional LLM calls between approval and execution. The system intercepts the user's approval answer, reads the cached plan, and dispatches it programmatically to the code agent. The architect never processes the approval response. For Loop mode, the architect is instead instructed to launch the loop via the `loop` tool.
 
 ### Model Selection Priority
 
@@ -578,7 +578,7 @@ The image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, and jq.
 
 ### Usage
 
-Start a sandbox loop via the architect plan approval flow (select "Loop") or directly with the `loop` tool:
+Start a sandbox loop by selecting "Loop" in the execution dialog (the architect launches it via the `loop` tool) or by invoking the `loop` tool directly:
 
 ```
 loop

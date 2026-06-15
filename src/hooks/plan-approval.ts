@@ -2,7 +2,7 @@ import type { ToolContext } from '../tools/types'
 import type { Hooks } from '@opencode-ai/plugin'
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
 import { extractPlanExecutionMetadata, PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
-import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext } from '../services/execution'
+import { createForgeExecutionService, type ForgeExecutionRequestContext } from '../services/execution'
 
 function publishPlanApprovalToast(
   ctx: ToolContext,
@@ -214,7 +214,13 @@ export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlock
             return
           }
           
-          // Programmatic dispatch for "New session" and "Loop" paths
+          if (matchedLabel === 'Loop') {
+            output.output = `${output.output}\n\n<system-reminder>\nThe user selected "Loop". Launch the loop now by calling the \`loop\` tool with a short \`title\`. The implementation plan is already stored for this session, so you do not need to pass the plan text. Do not ask any further questions and do not call the question tool again — just call the \`loop\` tool.\n</system-reminder>`
+            logger.log('Plan approval: "Loop" selected — deferring to agent loop tool call (auto-dispatch removed)')
+            return
+          }
+          
+          // Programmatic dispatch for "New session" path
           const plan = resolveCurrentSessionPlan(ctx, input.sessionID)
           if (!plan) {
             publishPlanApprovalToast(ctx, input, 'error', 'Plan not found for execution')
@@ -224,7 +230,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlock
             return
           }
           const planText = plan.content
-          const { title, executionName } = extractPlanExecutionMetadata(planText)
+          const { title } = extractPlanExecutionMetadata(planText)
 
           if (matchedLabel && !claimApprovalCall(ctx, input, matchedLabel, plan.key)) {
             markApprovalHandled(output, true)
@@ -287,49 +293,6 @@ export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlock
             logger.log('Plan approval: "New session" — awaiting source session abort')
             const aborted = await abortApprovalSourceSession(ctx, input.sessionID)
             logger.log(`Plan approval: "New session" — abort completed (success=${aborted})`)
-            return
-          }
-          
-          if (matchedLabel === 'Loop') {
-            const uniqueLoopName = loop.generateUniqueLoopName(executionName)
-
-            logger.log(`Plan approval: "${matchedLabel}" — scheduling dispatch IIFE for loop "${uniqueLoopName}"`)
-
-            const executionModel = config.executionModel
-            const auditorModel = config.auditorModel
-
-            // Schedule dispatch FIRST
-            scheduleApprovalDispatch(matchedLabel, async () => {
-              logger.log(`Plan approval [${matchedLabel}]: starting service.dispatch for "${uniqueLoopName}"`)
-              const command = buildStartLoopCommand({
-                source: { kind: 'inline', planText },
-                title,
-                loopName: uniqueLoopName,
-                maxIterations: config.loop?.defaultMaxIterations ?? 0,
-                executionModel,
-                auditorModel,
-                hostSessionId: input.sessionID,
-                lifecycle: {
-                  selectSession: true,
-                  selectSessionTiming: 'after-create',
-                  startWatchdog: true,
-                  abortSourceSessionOnSuccess: false,
-                },
-              })
-              const result = await service.dispatch(execCtx, command)
-              logger.log(`Plan approval [${matchedLabel}]: service.dispatch returned ok=${result.ok}`)
-              if (!result.ok) {
-                logger.error('Plan approval: loop setup failed', result.error)
-                publishPlanApprovalToast(ctx, input, 'error', `Failed to start loop: ${result.error.message}`)
-                return
-              }
-              publishPlanApprovalToast(ctx, input, 'success', `Started loop: ${uniqueLoopName}`)
-              logger.log('Plan approval: loop setup complete')
-            }, logger)
-
-            logger.log(`Plan approval: "${matchedLabel}" — awaiting source session abort`)
-            const aborted = await abortApprovalSourceSession(ctx, input.sessionID)
-            logger.log(`Plan approval: "${matchedLabel}" — abort completed (success=${aborted})`)
             return
           }
           
