@@ -122,6 +122,24 @@ describe('createFakeForgeClient', () => {
     await expect(client.sync.start({ directory: '/tmp' })).resolves.toBeUndefined()
   })
 
+  test('session.list returns empty array', async () => {
+    const { client } = createFakeForgeClient()
+    const result = await client.session.list({ directory: '/tmp' })
+    expect(result).toEqual([])
+  })
+
+  test('project.list returns empty array', async () => {
+    const { client } = createFakeForgeClient()
+    const result = await client.project.list({ directory: '/tmp' })
+    expect(result).toEqual([])
+  })
+
+  test('provider.list returns empty all/connected', async () => {
+    const { client } = createFakeForgeClient()
+    const result = await client.provider.list({ directory: '/tmp' })
+    expect(result).toEqual({ all: [], connected: [] })
+  })
+
   // ── Overrides ─────────────────────────────────────────────────────────
 
   test('overrides take effect for session.create', async () => {

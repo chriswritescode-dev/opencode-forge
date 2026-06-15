@@ -30,6 +30,20 @@ export type WorkspaceCreateResult = NonNullable<Awaited<ReturnType<V2['experimen
 export type WorkspaceList = NonNullable<Awaited<ReturnType<V2['experimental']['workspace']['list']>>['data']>
 export type WorkspaceStatus = NonNullable<Awaited<ReturnType<V2['experimental']['workspace']['status']>>['data']>
 
+// ── Session list types (experimental) ───────────────────────────────────────
+// `list` lives under `experimental.session` in the SDK; the port hides that
+// placement so callers use a single `session` namespace.
+export type SessionListParams = NonNullable<Parameters<V2['experimental']['session']['list']>[0]>
+export type SessionList = NonNullable<Awaited<ReturnType<V2['experimental']['session']['list']>>['data']>
+
+// ── Project param/result types ───────────────────────────────────────────────
+export type ProjectListParams = NonNullable<Parameters<V2['project']['list']>[0]>
+export type ProjectList = NonNullable<Awaited<ReturnType<V2['project']['list']>>['data']>
+
+// ── Provider param/result types ──────────────────────────────────────────────
+export type ProviderListParams = NonNullable<Parameters<V2['provider']['list']>[0]>
+export type ProviderList = NonNullable<Awaited<ReturnType<V2['provider']['list']>>['data']>
+
 // ── TUI param types ──────────────────────────────────────────────────────────
 export type TuiPublishParams = NonNullable<Parameters<V2['tui']['publish']>[0]>
 export type TuiSelectSessionParams = NonNullable<Parameters<V2['tui']['selectSession']>[0]>
@@ -71,6 +85,7 @@ export interface ForgeClient {
     update(params: SessionUpdateParams): Promise<void>
     messages(params: SessionMessagesParams): Promise<SessionMessages>
     status(params?: SessionStatusParams): Promise<SessionStatus>
+    list(params?: SessionListParams): Promise<SessionList>
     promptAsync(params: SessionPromptAsyncParams): Promise<void>
     abort(params: SessionAbortParams): Promise<void>
     delete(params: SessionDeleteParams): Promise<void>
@@ -82,6 +97,12 @@ export interface ForgeClient {
     syncList(params?: WorkspaceSyncListParams): Promise<void>
     remove(params: WorkspaceRemoveParams): Promise<void>
     warp(params: WorkspaceWarpParams): Promise<void>
+  }
+  project: {
+    list(params?: ProjectListParams): Promise<ProjectList>
+  }
+  provider: {
+    list(params?: ProviderListParams): Promise<ProviderList>
   }
   tui: {
     publish(params: TuiPublishParams): Promise<void>

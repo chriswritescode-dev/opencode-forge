@@ -9,6 +9,7 @@
  */
 
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
+import type { ForgeClient } from '../client/port'
 
 interface ModelKey {
   providerID: string
@@ -151,25 +152,15 @@ export function readOpenCodeFavoriteModels(api: TuiPluginApi): string[] {
  * - Successful fetch with providers (may be empty if no providers have models)
  * - Failed fetch with an error message
  */
-export async function fetchAvailableModels(api: TuiPluginApi): Promise<FetchModelsResult> {
+export async function fetchAvailableModels(api: TuiPluginApi, client: ForgeClient): Promise<FetchModelsResult> {
   const directory = api.state.path.directory
   const configuredProviderIds = Object.keys(api.state.config?.provider ?? {})
   const favoriteModels = readOpenCodeFavoriteModels(api)
   try {
-    const result = await api.client.provider.list({ directory })
-    if (result.error) {
-      const errorMsg =
-        (result.error as { data?: { message?: string }; message?: string })?.data?.message
-        ?? (result.error as { message?: string })?.message
-        ?? 'Failed to fetch providers'
-      return { providers: [], connectedProviderIds: [], configuredProviderIds, favoriteModels, error: errorMsg }
-    }
-    if (!result.data) {
-      return { providers: [], connectedProviderIds: [], configuredProviderIds, favoriteModels, error: 'No provider data returned' }
-    }
+    const data = await client.provider.list({ directory })
     const providers: ProviderInfo[] = []
-    const allModels = result.data.all || []
-    const connected = result.data.connected || []
+    const allModels = data.all || []
+    const connected = data.connected || []
     for (const provider of allModels) {
       if (!connected.includes(provider.id)) continue
       const models: ModelInfo[] = []

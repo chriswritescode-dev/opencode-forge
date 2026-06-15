@@ -1,5 +1,6 @@
 import { describe, test, expect, mock } from 'bun:test'
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
+import { createForgeClient } from '../src/client/sdk-adapter'
 import {
   fetchAvailableModels,
   flattenProviders,
@@ -79,7 +80,7 @@ describe('fetchAvailableModels', () => {
     const providerListMock = mock(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
     const mockApi = createMockApi(['anthropic'], providerListMock)
 
-    const result = await fetchAvailableModels(mockApi)
+    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
 
     expect(result.error).toBeUndefined()
     expect(result.providers).toHaveLength(1)
@@ -96,7 +97,7 @@ describe('fetchAvailableModels', () => {
     const providerListMock = mock(() => Promise.resolve({ data: { all: [], connected: [] } }))
     const mockApi = createMockApi([], providerListMock)
 
-    const result = await fetchAvailableModels(mockApi)
+    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
 
     expect(result.error).toBeUndefined()
     expect(result.providers).toHaveLength(0)
@@ -112,7 +113,7 @@ describe('fetchAvailableModels', () => {
     }))
     const mockApi = createMockApi(['anthropic'], providerListMock)
 
-    const result = await fetchAvailableModels(mockApi)
+    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
 
     expect(result.providers).toHaveLength(0)
     expect(result.error).toBe('Authentication failed')
@@ -123,7 +124,7 @@ describe('fetchAvailableModels', () => {
     const providerListMock = mock(() => Promise.reject(new Error('Network error')))
     const mockApi = createMockApi(['openai'], providerListMock)
 
-    const result = await fetchAvailableModels(mockApi)
+    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
 
     expect(result.providers).toHaveLength(0)
     expect(result.error).toBe('Network error')
@@ -134,10 +135,10 @@ describe('fetchAvailableModels', () => {
     const providerListMock = mock(() => Promise.resolve({ data: null }))
     const mockApi = createMockApi(['google'], providerListMock)
 
-    const result = await fetchAvailableModels(mockApi)
+    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
 
     expect(result.providers).toHaveLength(0)
-    expect(result.error).toBe('No provider data returned')
+    expect(result.error).toBe('no data returned')
     expect(result.configuredProviderIds).toEqual(['google'])
   })
 
@@ -153,7 +154,7 @@ describe('fetchAvailableModels', () => {
     const providerListMock = mock(() => Promise.resolve({ data: { all: mockProviders, connected: ['empty-provider'] } }))
     const mockApi = createMockApi([], providerListMock)
 
-    const result = await fetchAvailableModels(mockApi)
+    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
 
     expect(result.error).toBeUndefined()
     expect(result.providers).toHaveLength(1)
@@ -187,7 +188,7 @@ describe('fetchAvailableModels', () => {
     const providerListMock = mock(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
     const mockApi = createMockApi([], providerListMock)
 
-    const result = await fetchAvailableModels(mockApi)
+    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
 
     expect(result.providers).toHaveLength(1)
     expect(result.providers[0].id).toBe('anthropic')
@@ -219,7 +220,7 @@ describe('fetchAvailableModels', () => {
     const providerListMock = mock(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
     const mockApi = createMockApi([], providerListMock)
 
-    const result = await fetchAvailableModels(mockApi)
+    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
 
     expect(result.providers).toHaveLength(1)
     expect(result.providers[0].models).toHaveLength(1)
@@ -598,7 +599,7 @@ describe('fetchAvailableModels with variants', () => {
     const providerListMock = mock(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
     const mockApi = createMockApi(['anthropic'], providerListMock)
 
-    const result = await fetchAvailableModels(mockApi)
+    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
 
     expect(result.providers[0].models[0].variants).toEqual({
       default: { name: 'Default' },

@@ -5,7 +5,7 @@ import { PLAN_EXECUTION_LABELS } from '../utils/plan-execution'
 import { extractPlanExecutionMetadata } from '../utils/plan-execution'
 import { buildDialogSelectOptions, getModelDisplayLabel, getAvailableModelVariants, getVariantDisplayLabel, normalizeVariantForModel, type ModelInfo } from '../utils/tui-models'
 import { resolveExecutionDialogDefaults } from '../utils/tui-execution-preferences'
-import { selectTuiSession, type ForgeProjectClient } from '../utils/tui-client'
+import { type ForgeProjectClient } from '../utils/tui-client'
 import { buildExecutionContextSnapshot, type ExecutionContextCache, type ExecutionContextSnapshot } from '../utils/tui-execution-context-cache'
 import { withBusyGuard } from '../utils/busy-guard'
 import type { PluginConfig } from '../types'
@@ -303,7 +303,7 @@ export function ExecutePlanPanel(props: {
     await props.onExecuted?.()
     props.client.workspaces.list().catch(() => {})
     if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop')) {
-      await selectTuiSession(props.api, result.sessionId, result.workspaceId)
+      await props.client.selectSession(result.sessionId, result.workspaceId)
     }
   }
 

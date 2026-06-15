@@ -221,6 +221,52 @@ describe('createForgeClient', () => {
     expect((err as ForgeClientError).kind).toBe('request')
     expect((err as ForgeClientError).message).toContain('concurrent prompt in progress')
   })
+
+  // ── project.list ──────────────────────────────────────────────────────
+  it('project.list resolves to data on success', async () => {
+    const list = vi.fn().mockResolvedValue({ data: [{ id: 'p1', worktree: '/wt' }], error: undefined })
+    const client = createForgeClient({ project: { list } } as unknown as OpencodeClient)
+
+    const result = await client.project.list({ directory: '/wt' })
+
+    expect(result).toEqual([{ id: 'p1', worktree: '/wt' }])
+    expect(list).toHaveBeenCalledWith({ directory: '/wt' })
+  })
+
+  // ── provider.list ─────────────────────────────────────────────────────
+  it('provider.list resolves to data on success', async () => {
+    const list = vi.fn().mockResolvedValue({ data: { all: [], connected: ['anthropic'] }, error: undefined })
+    const client = createForgeClient({ provider: { list } } as unknown as OpencodeClient)
+
+    const result = await client.provider.list({ directory: '/wt' })
+
+    expect(result).toEqual({ all: [], connected: ['anthropic'] })
+  })
+
+  // ── session.list (experimental) ──────────────────────────────────────
+  it('session.list resolves to data from experimental.session', async () => {
+    const list = vi.fn().mockResolvedValue({ data: [{ id: 'ses1' }], error: undefined })
+    const client = createForgeClient({ experimental: { session: { list } } } as unknown as OpencodeClient)
+
+    const result = await client.session.list({ directory: '/wt' })
+
+    expect(result).toEqual([{ id: 'ses1' }])
+    expect(list).toHaveBeenCalledWith({ directory: '/wt' })
+  })
+
+  it('session.list throws ForgeClientError with kind="unavailable" when experimental.session is missing', async () => {
+    const v2 = {
+      session: stubV2().session,
+      experimental: { workspace: stubV2().experimental!.workspace },
+    } as unknown as OpencodeClient
+    const client = createForgeClient(v2)
+
+    const err = await client.session.list({}).catch((e: unknown) => e)
+
+    expect(err).toBeInstanceOf(ForgeClientError)
+    expect((err as ForgeClientError).kind).toBe('unavailable')
+    expect((err as ForgeClientError).method).toBe('session.list')
+  })
 })
 
 describe('createV2ClientFromPluginInput', () => {

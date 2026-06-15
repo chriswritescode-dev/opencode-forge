@@ -10,8 +10,6 @@ import { connectForgeProject, type ForgeProjectClient } from './utils/tui-client
 import { ExecutePlanPanel } from './tui/execute-plan-panel'
 import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/session-follow'
 import { openInBrowser, startDashboardServer, type DashboardServerHandle } from './dashboard/launch'
-import { createForgeClient } from './client/sdk-adapter'
-import { fetchLatestPlanForSession } from './utils/plan-from-messages'
 import { normalizePastedPlanText } from './utils/marked-plan-parser'
 
 type TuiKeybinds = {
@@ -370,7 +368,7 @@ const tui: TuiPlugin = async (api) => {
     const currentClient = await ensureClient()
     if (!currentClient) return
 
-    const planText = await fetchLatestPlanForSession(createForgeClient(api.client), sessionID, directory)
+    const planText = await currentClient.loadLatestPlan(sessionID)
     if (!planText) {
       api.ui.toast({
         message: 'No plan in current session — paste one to execute',

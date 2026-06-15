@@ -116,6 +116,11 @@ export function createFakeForgeClient(
         async (_p: Record<string, unknown>) => ({}),
         overrides?.session?.status,
       ),
+      list: makeMethod(
+        'session.list',
+        async (_p: Record<string, unknown>) => [],
+        overrides?.session?.list,
+      ),
       promptAsync: makeMethod(
         'session.promptAsync',
         async (_p: Record<string, unknown>) => {},
@@ -166,6 +171,20 @@ export function createFakeForgeClient(
         'workspace.warp',
         async (_p: Record<string, unknown>) => {},
         overrides?.workspace?.warp,
+      ),
+    },
+    project: {
+      list: makeMethod(
+        'project.list',
+        async (_p: Record<string, unknown>) => [],
+        overrides?.project?.list,
+      ),
+    },
+    provider: {
+      list: makeMethod(
+        'provider.list',
+        async (_p: Record<string, unknown>) => ({ all: [], connected: [] }),
+        overrides?.provider?.list,
       ),
     },
     tui: {

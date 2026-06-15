@@ -88,6 +88,19 @@ export function createForgeClient(v2: OpencodeClient): ForgeClient {
     update: (params) => withVoid('session.update', v2.session.update(params)),
     messages: (params) => withData('session.messages', v2.session.messages(params)),
     status: (params) => withData('session.status', v2.session.status(params)),
+    // `list` is exposed by the SDK under `experimental.session`; guard for
+    // hosts that do not provide it so callers get a classified error.
+    list: (params) => {
+      const expSession = v2.experimental?.session
+      if (!expSession || typeof expSession.list !== 'function') {
+        return Promise.reject(new ForgeClientError({
+          kind: 'unavailable',
+          method: 'session.list',
+          message: 'experimental.session.list not available on this host',
+        }))
+      }
+      return withData('session.list', expSession.list(params))
+    },
     promptAsync: (params) => withVoid('session.promptAsync', v2.session.promptAsync(params)),
     abort: (params) => withVoid('session.abort', v2.session.abort(params)),
     delete: (params) => withVoid('session.delete', v2.session.delete(params)),
@@ -126,6 +139,16 @@ export function createForgeClient(v2: OpencodeClient): ForgeClient {
     warp: (params) => guardWs('warp', () => withVoid('workspace.warp', wsApi!.warp(params))),
   }
 
+  // ── project namespace ─────────────────────────────────────────────────────
+  const project: ForgeClient['project'] = {
+    list: (params) => withData('project.list', v2.project.list(params)),
+  }
+
+  // ── provider namespace ────────────────────────────────────────────────────
+  const provider: ForgeClient['provider'] = {
+    list: (params) => withData('provider.list', v2.provider.list(params)),
+  }
+
   // ── tui namespace ────────────────────────────────────────────────────────
   const tui: ForgeClient['tui'] = {
     publish: async (params) => {
@@ -152,7 +175,7 @@ export function createForgeClient(v2: OpencodeClient): ForgeClient {
     },
   }
 
-  return { session, workspace, tui, sync }
+  return { session, workspace, project, provider, tui, sync }
 }
 
 // ── Combined factory ─────────────────────────────────────────────────────────

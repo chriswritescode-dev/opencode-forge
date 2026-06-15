@@ -1,3 +1,5 @@
+import type { ForgeClient } from '../client/port'
+
 export type TuiWorkspaceEntry = {
   id: string
   name: string
@@ -12,34 +14,27 @@ type WorkspaceStatusEntry = {
   status: string
 }
 
-export type WorkspaceListApi = {
-  list?: () => Promise<{ data?: unknown[] }>
-  status?: () => Promise<{ data?: unknown[] }>
-  syncList?: () => Promise<unknown>
-}
-
-export async function listConnectedWorkspaces(workspaceApi: WorkspaceListApi | undefined): Promise<TuiWorkspaceEntry[]> {
-  if (!workspaceApi || typeof workspaceApi.list !== 'function') return []
-
-  if (typeof workspaceApi.syncList === 'function') {
-    try {
-      await workspaceApi.syncList()
-    } catch {
-      // swallow — syncList is a best-effort trigger only
-    }
+export async function listConnectedWorkspaces(workspace: ForgeClient['workspace']): Promise<TuiWorkspaceEntry[]> {
+  // syncList is a best-effort sync trigger only.
+  try {
+    await workspace.syncList()
+  } catch {
+    // swallow
   }
 
-  const rawEntries: TuiWorkspaceEntry[] = ((await workspaceApi.list()).data ?? []) as TuiWorkspaceEntry[]
+  let rawEntries: TuiWorkspaceEntry[]
+  try {
+    rawEntries = (await workspace.list()) as unknown as TuiWorkspaceEntry[]
+  } catch {
+    return []
+  }
 
   let statusMap: Record<string, string> = {}
-  if (typeof workspaceApi.status === 'function') {
-    try {
-      const statusResult = await workspaceApi.status()
-      const entries = (statusResult.data ?? []) as WorkspaceStatusEntry[]
-      statusMap = Object.fromEntries(entries.map((s) => [s.workspaceID, s.status]))
-    } catch {
-      // ignore status errors
-    }
+  try {
+    const entries = (await workspace.status()) as unknown as WorkspaceStatusEntry[]
+    statusMap = Object.fromEntries(entries.map((s) => [s.workspaceID, s.status]))
+  } catch {
+    // ignore status errors
   }
 
   const filtered = rawEntries.filter((w) => {
