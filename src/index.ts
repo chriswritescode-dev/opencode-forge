@@ -10,6 +10,7 @@ import { loadPluginConfig } from './setup'
 import { resolveLogPath } from './storage'
 import { createLogger } from './utils/logger'
 import { createDockerService } from './sandbox/docker'
+import { defaultGitService } from './utils/git-service'
 import { resolveSandboxContextForLoop } from './sandbox/context'
 import { createSandboxManager } from './sandbox/manager'
 import type { PluginConfig, CompactionConfig } from './types'
@@ -209,7 +210,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           image: config.sandbox?.image ?? 'oc-forge-sandbox:latest',
           dataDir,
           ...(config.sandbox?.resources ? { resources: config.sandbox.resources } : {}),
-        }, logger)
+        }, logger, defaultGitService)
         logger.log('Docker sandbox manager initialized')
       } catch (err) {
         logger.error('Failed to initialize Docker sandbox manager', err)
@@ -235,6 +236,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         dataDir,
         logger,
         sandboxManager,
+        gitService: defaultGitService,
         getTeardownContext: (loopName) => pendingTeardowns.get(loopName),
       }))
       logger.log(`Registered forge workspace adapter (worktrees under ${join(dataDir, 'worktrees')})`)

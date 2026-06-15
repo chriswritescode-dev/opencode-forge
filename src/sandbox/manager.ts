@@ -2,7 +2,7 @@ import type { DockerService } from './docker'
 import type { Logger, SandboxResources } from '../types'
 import { join, resolve } from 'path'
 import { mkdirSync } from 'fs'
-import { spawnSync } from 'child_process'
+import { defaultGitService, type GitService } from '../utils/git-service'
 
 export interface SandboxManagerConfig {
   image: string
@@ -38,6 +38,7 @@ export function createSandboxManager(
   docker: DockerService,
   config: SandboxManagerConfig,
   logger: Logger,
+  git: GitService = defaultGitService,
 ): SandboxManager {
   const activeSandboxes = new Map<string, ActiveSandbox>()
 
@@ -53,36 +54,23 @@ export function createSandboxManager(
   }
 
   function detectGitMount(projectDir: string): string[] {
-    try {
-      const gitDirResult = spawnSync('git', ['rev-parse', '--git-dir'], {
-        cwd: projectDir,
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      })
-      const commonDirResult = spawnSync('git', ['rev-parse', '--git-common-dir'], {
-        cwd: projectDir,
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      })
-      if (gitDirResult.status !== 0 || commonDirResult.status !== 0 || !gitDirResult.stdout || !commonDirResult.stdout) return []
+    const gitDirResult = git.revParseGitDir(projectDir)
+    const commonDirResult = git.revParseGitCommonDir(projectDir)
+    if (!gitDirResult.ok || !commonDirResult.ok || !gitDirResult.stdout || !commonDirResult.stdout) return []
 
-      const mounts = new Set<string>()
-      const gitDir = resolve(projectDir, gitDirResult.stdout.trim())
-      const gitCommonDir = resolve(projectDir, commonDirResult.stdout.trim())
+    const mounts = new Set<string>()
+    const resolvedGitDir = resolve(projectDir, gitDirResult.stdout.trim())
+    const resolvedCommonDir = resolve(projectDir, commonDirResult.stdout.trim())
 
-      if (!gitDir.startsWith(projectDir + '/')) {
-        mounts.add(`${gitDir}:${gitDir}`)
-      }
-
-      if (!gitCommonDir.startsWith(projectDir + '/')) {
-        mounts.add(`${gitCommonDir}:${gitCommonDir}`)
-      }
-
-      return [...mounts]
-    } catch {
-      logger.log(`[sandbox] could not detect git common dir for ${projectDir}, skipping extra mount`)
-      return []
+    if (!resolvedGitDir.startsWith(projectDir + '/')) {
+      mounts.add(`${resolvedGitDir}:${resolvedGitDir}`)
     }
+
+    if (!resolvedCommonDir.startsWith(projectDir + '/')) {
+      mounts.add(`${resolvedCommonDir}:${resolvedCommonDir}`)
+    }
+
+    return [...mounts]
   }
 
   async function start(worktreeName: string, projectDir: string, startedAt?: string): Promise<{ containerName: string }> {

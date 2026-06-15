@@ -1,6 +1,6 @@
 import { join } from 'path'
-import { spawnSync } from 'child_process'
 import { slugify } from '../utils/logger'
+import { defaultGitService, type GitService } from '../utils/git-service'
 
 /**
  * Canonical naming for forge worktrees and their scratch branches.
@@ -28,14 +28,9 @@ export function forgeWorktreeDir(dataDir: string, loopName: string): string {
  * Used to decide whether a loop whose worktree directory was pruned can still be
  * restarted by recreating the worktree from the surviving branch.
  */
-export function gitBranchExists(repoDir: string, branch: string): boolean {
+export function gitBranchExists(repoDir: string, branch: string, git: GitService = defaultGitService): boolean {
   if (!repoDir || !branch) return false
-  const res = spawnSync(
-    'git',
-    ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`],
-    { cwd: repoDir, encoding: 'utf-8' },
-  )
-  return res.status === 0
+  return git.branchExists(repoDir, branch)
 }
 
 /**
@@ -47,10 +42,11 @@ export function gitBranchExists(repoDir: string, branch: string): boolean {
 export function loopBranchExists(
   state: { loopName: string; worktreeBranch?: string; projectDir?: string },
   fallbackDir: string,
+  git: GitService = defaultGitService,
 ): boolean {
   const repoDir = state.projectDir || fallbackDir
   const branch = state.worktreeBranch && state.worktreeBranch.length > 0
     ? state.worktreeBranch
     : forgeBranchName(state.loopName)
-  return gitBranchExists(repoDir, branch)
+  return gitBranchExists(repoDir, branch, git)
 }
