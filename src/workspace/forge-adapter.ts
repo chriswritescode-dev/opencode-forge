@@ -1,12 +1,12 @@
 import { join } from 'path'
 import { mkdir } from 'fs/promises'
 import { existsSync } from 'fs'
-import { spawnSync } from 'child_process'
 import type { WorkspaceAdapter, WorkspaceInfo } from '@opencode-ai/plugin'
 import type { Logger } from '../types'
 import type { SandboxManager } from '../sandbox/manager'
-import { forgeBranchName, forgeWorktreeDir, forgeWorktreeSlug, gitBranchExists } from './forge-naming'
+import { forgeBranchName, forgeWorktreeDir, forgeWorktreeSlug } from './forge-naming'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
+import { defaultGitService, type GitService } from '../utils/git-service'
 
 
 /**
@@ -36,6 +36,8 @@ export interface ForgeAdapterDeps {
    * Optional: when absent or returning undefined, the adapter uses defaults.
    */
   getTeardownContext?: TeardownContextProvider
+  /** Inject a custom GitService (defaults to real git if omitted). */
+  gitService?: GitService
 }
 
 const DEFAULT_TEARDOWN_CONTEXT: TeardownContext = {
@@ -46,7 +48,8 @@ const DEFAULT_TEARDOWN_CONTEXT: TeardownContext = {
 }
 
 export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAdapter {
-  const { dataDir, logger, sandboxManager, getTeardownContext } = deps
+  const { dataDir, logger, sandboxManager, getTeardownContext, gitService: gitServiceOpt } = deps
+  const git = gitServiceOpt ?? defaultGitService
 
   function deriveLoopName(info: WorkspaceInfo): string {
     const extra = (info.extra ?? {}) as { loopName?: unknown }
@@ -74,26 +77,26 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
     if (!ctx.doCommit || !existsSync(directory)) return
 
     try {
-      const addResult = spawnSync('git', ['add', '-A'], { cwd: directory, encoding: 'utf-8' })
-      if (addResult.status !== 0) {
-        logger.log(`forge-adapter: git add failed during teardown: ${addResult.stderr?.trim() || 'unknown error'}`)
+      const addResult = git.addAll(directory)
+      if (!addResult.ok) {
+        logger.log(`forge-adapter: git add failed during teardown: ${addResult.stderr.trim() || 'unknown error'}`)
         return
       }
 
-      const statusResult = spawnSync('git', ['status', '--porcelain'], { cwd: directory, encoding: 'utf-8' })
-      if (statusResult.status !== 0 || !statusResult.stdout.trim()) {
+      const statusResult = git.statusPorcelain(directory)
+      if (!statusResult.ok || !statusResult.stdout.trim()) {
         logger.log(`forge-adapter: no pending changes to commit on ${branchLabel}`)
         return
       }
 
       const iterLabel = ctx.iteration === 1 ? 'iteration' : 'iterations'
       const message = `loop: ${loopName} ${ctx.reasonLabel} after ${ctx.iteration} ${iterLabel}`
-      const commitResult = spawnSync('git', ['commit', '-m', message], { cwd: directory, encoding: 'utf-8' })
+      const commitResult = git.commit(directory, message)
 
-      if (commitResult.status === 0) {
+      if (commitResult.ok) {
         logger.log(`forge-adapter: committed pending changes on ${branchLabel}`)
       } else {
-        logger.log(`forge-adapter: commit failed on ${branchLabel}: ${commitResult.stderr?.trim() || 'unknown error'}`)
+        logger.log(`forge-adapter: commit failed on ${branchLabel}: ${commitResult.stderr.trim() || 'unknown error'}`)
       }
     } catch (err) {
       logger.error('forge-adapter: commit step threw during teardown', err)
@@ -115,6 +118,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
       worktreeDir,
       logPrefix: 'forge-adapter',
       logger,
+      git,
     })
     if (result.error) {
       throw new Error(result.error)
@@ -142,29 +146,24 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
       const projectDir = deriveProjectDirectory(info)
       await mkdir(join(dataDir, 'worktrees'), { recursive: true })
 
-      const probe = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: projectDir, encoding: 'utf-8' })
-      if (probe.status !== 0 || probe.stdout.trim() !== 'true') {
+      if (!git.isInsideWorkTree(projectDir)) {
         throw new Error(`forge workspace adapter: projectDirectory ${projectDir} is not a git work tree`)
       }
 
       // Detect orphan state from a prior failed run: branch may exist without a live worktree.
-      const branchExists = gitBranchExists(projectDir, info.branch)
+      const branchExists = git.branchExists(projectDir, info.branch)
 
       // Prune dead worktree records first so `git worktree add` can re-use an orphaned branch.
-      spawnSync('git', ['worktree', 'prune'], { cwd: projectDir, encoding: 'utf-8' })
+      git.worktreePrune(projectDir)
 
-      const addArgs = branchExists
-        ? ['worktree', 'add', info.directory, info.branch]
-        : ['worktree', 'add', info.directory, '-b', info.branch]
-
-      let res = spawnSync('git', addArgs, { cwd: projectDir, encoding: 'utf-8' })
+      let res = git.worktreeAdd(projectDir, info.directory, info.branch, !branchExists)
       let reusedOrphan = false
-      if (res.status !== 0) {
-        const stderr = res.stderr?.trim() || 'unknown error'
+      if (!res.ok) {
+        const stderr = res.stderr.trim() || 'unknown error'
         const isAlreadyExists = /already exists/i.test(stderr) || /is already (checked out|registered)/i.test(stderr)
         if (isAlreadyExists && existsSync(info.directory)) {
-          const existingBranch = spawnSync('git', ['branch', '--show-current'], { cwd: info.directory, encoding: 'utf-8' })
-          if (existingBranch.status === 0 && existingBranch.stdout.trim() === info.branch) {
+          const existingBranch = git.currentBranch(info.directory)
+          if (existingBranch === info.branch) {
             logger.log(`forge-adapter: reusing existing worktree ${info.directory} on branch ${info.branch}`)
             reusedOrphan = true
           } else {
@@ -173,14 +172,15 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
               worktreeDir: info.directory,
               logPrefix: 'forge-adapter:create:orphan-cleanup',
               logger,
+              git,
             })
             if (!cleanup.removed) {
               logger.error(`forge-adapter: orphan cleanup failed for ${info.directory}: ${cleanup.error ?? 'unknown error'}`)
               throw new Error(`git worktree add failed: ${stderr}`)
             }
-            res = spawnSync('git', addArgs, { cwd: projectDir, encoding: 'utf-8' })
-            if (res.status !== 0) {
-              const retryStderr = res.stderr?.trim() || 'unknown error'
+            res = git.worktreeAdd(projectDir, info.directory, info.branch, !branchExists)
+            if (!res.ok) {
+              const retryStderr = res.stderr.trim() || 'unknown error'
               logger.error(`forge-adapter: git worktree add still failed after orphan cleanup: ${retryStderr}`)
               throw new Error(`git worktree add failed: ${retryStderr}`)
             }
@@ -204,15 +204,12 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
             logger.error(`forge-adapter: failed to stop sandbox after provisioning failure for ${info.name}`, stopErr)
           })
           if (existsSync(info.directory)) {
-            const cleanup = spawnSync('git', ['worktree', 'remove', '-f', info.directory], {
-              cwd: projectDir,
-              encoding: 'utf-8',
-            })
-            if (cleanup.status !== 0) {
-              logger.error(`forge-adapter: failed to remove worktree after sandbox failure: ${cleanup.stderr?.trim() || 'unknown error'}`)
+            const cleanup = git.worktreeRemove(projectDir, info.directory)
+            if (!cleanup.ok) {
+              logger.error(`forge-adapter: failed to remove worktree after sandbox failure: ${cleanup.stderr.trim() || 'unknown error'}`)
             }
           }
-          spawnSync('git', ['worktree', 'prune'], { cwd: projectDir, encoding: 'utf-8' })
+          git.worktreePrune(projectDir)
           throw err
         }
       }
