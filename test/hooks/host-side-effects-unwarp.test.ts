@@ -29,11 +29,13 @@ function buildState(overrides?: Partial<LoopState>): LoopState {
 
 function buildCtx(overrides?: {
   tuiPublish?: ReturnType<typeof vi.fn>
+  tuiSelectSession?: ReturnType<typeof vi.fn>
   workspaceRemove?: ReturnType<typeof vi.fn>
   log?: ReturnType<typeof vi.fn>
   error?: ReturnType<typeof vi.fn>
 }) {
   const tuiPublish = overrides?.tuiPublish ?? vi.fn().mockResolvedValue(undefined)
+  const tuiSelectSession = overrides?.tuiSelectSession ?? vi.fn().mockResolvedValue(undefined)
   const workspaceRemove = overrides?.workspaceRemove ?? vi.fn().mockResolvedValue(undefined)
   const log = overrides?.log ?? vi.fn()
   const error = overrides?.error ?? vi.fn()
@@ -52,7 +54,7 @@ function buildCtx(overrides?: {
         },
         tui: {
           publish: tuiPublish,
-          selectSession: async () => {},
+          selectSession: tuiSelectSession,
         },
         sync: {
           start: async () => {},
@@ -62,6 +64,7 @@ function buildCtx(overrides?: {
       getConfig: () => ({}) as PluginConfig,
     },
     tuiPublish,
+    tuiSelectSession,
     workspaceRemove,
     log,
     error,
@@ -72,87 +75,71 @@ const completed: TerminationReason = { kind: 'completed' }
 const maxIterations: TerminationReason = { kind: 'max_iterations' }
 
 describe('performTerminationSideEffects unwarp', () => {
-  test('publishes select to host session in projectDir before workspace.remove', async () => {
+  test('selects host session (no workspace = unwarp to local) before workspace.remove', async () => {
     const callOrder: string[] = []
-    const tuiPublish = vi.fn().mockImplementation(async (arg: unknown) => {
-      const body = (arg as { body: { type: string } }).body
-      if (body.type === 'tui.session.select') callOrder.push('select')
-      if (body.type === 'tui.toast.show') callOrder.push('toast')
+    const tuiSelectSession = vi.fn().mockImplementation(async () => {
+      callOrder.push('select')
     })
     const workspaceRemove = vi.fn().mockImplementation(async () => {
       callOrder.push('remove')
     })
-    const { ctx } = buildCtx({ tuiPublish, workspaceRemove })
+    const { ctx } = buildCtx({ tuiSelectSession, workspaceRemove })
 
     await performTerminationSideEffects(buildState(), completed, 'sess_worktree', ctx)
 
-    const selectCall = tuiPublish.mock.calls.find(
-      (c) => (c[0] as { body: { type: string } }).body.type === 'tui.session.select',
-    )
-    expect(selectCall).toBeTruthy()
-    const arg = selectCall![0] as {
-      directory: string
-      body: { type: string; properties: { sessionID: string; workspace?: string } }
-    }
-    expect(arg.directory).toBe('/tmp/project')
-    expect(arg.body.properties.sessionID).toBe('sess_host')
-    expect(arg.body.properties.workspace).toBeUndefined()
+    expect(tuiSelectSession).toHaveBeenCalledWith({ sessionID: 'sess_host' })
     expect(callOrder.indexOf('select')).toBeLessThan(callOrder.indexOf('remove'))
   })
 
   test('skips unwarp when hostSessionId missing', async () => {
-    const { ctx, tuiPublish, workspaceRemove } = buildCtx()
+    const { ctx, tuiSelectSession, tuiPublish, workspaceRemove } = buildCtx()
     const state = buildState({ hostSessionId: undefined })
 
     await performTerminationSideEffects(state, completed, 'sess_worktree', ctx)
 
-    const selectCall = tuiPublish.mock.calls.find(
+    expect(tuiSelectSession).not.toHaveBeenCalled()
+    const selectPublish = tuiPublish.mock.calls.find(
       (c) => (c[0] as { body: { type: string } }).body.type === 'tui.session.select',
     )
-    expect(selectCall).toBeUndefined()
+    expect(selectPublish).toBeUndefined()
     expect(workspaceRemove).toHaveBeenCalled()
   })
 
   test('skips unwarp when projectDir missing', async () => {
-    const { ctx, tuiPublish, workspaceRemove } = buildCtx()
+    const { ctx, tuiSelectSession, tuiPublish, workspaceRemove } = buildCtx()
     const state = buildState({ projectDir: undefined })
 
     await performTerminationSideEffects(state, completed, 'sess_worktree', ctx)
 
-    const selectCall = tuiPublish.mock.calls.find(
+    expect(tuiSelectSession).not.toHaveBeenCalled()
+    const selectPublish = tuiPublish.mock.calls.find(
       (c) => (c[0] as { body: { type: string } }).body.type === 'tui.session.select',
     )
-    expect(selectCall).toBeUndefined()
+    expect(selectPublish).toBeUndefined()
     expect(workspaceRemove).toHaveBeenCalled()
   })
 
   test('unwarp failure does not block workspace.remove', async () => {
+    const tuiSelectSession = vi.fn().mockRejectedValue(new Error('select failed'))
     const tuiPublish = vi.fn().mockImplementation(async (arg: unknown) => {
       const body = (arg as { body: { type: string } }).body
       if (body.type === 'tui.session.select') throw new Error('publish failed')
     })
-    const { ctx, workspaceRemove, error } = buildCtx({ tuiPublish })
+    const { ctx, workspaceRemove } = buildCtx({ tuiSelectSession, tuiPublish })
 
     await performTerminationSideEffects(buildState(), completed, 'sess_worktree', ctx)
 
     expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_abc' })
-    expect(error).toHaveBeenCalledWith(
-      expect.stringContaining('unwarp publish failed for feat-x'),
-      expect.any(Error),
-    )
   })
 
   test('max_iterations removes workspace but preserves restartable worktree', async () => {
-    const { ctx, tuiPublish, workspaceRemove } = buildCtx()
+    const { ctx, tuiSelectSession, workspaceRemove } = buildCtx()
     const state = buildState({ iteration: 10, maxIterations: 10 })
 
     await performTerminationSideEffects(state, maxIterations, 'sess_worktree', ctx)
 
     expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_abc' })
-    const selectCall = tuiPublish.mock.calls.find(
-      (c) => (c[0] as { body: { type: string } }).body.type === 'tui.session.select',
-    )
-    expect(selectCall).toBeTruthy()
+    expect(tuiSelectSession).toHaveBeenCalledWith({ sessionID: 'sess_host' })
   })
 
   test('sweep removes sibling completed forge workspace during teardown', async () => {

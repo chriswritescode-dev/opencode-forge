@@ -9,6 +9,7 @@ import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
 import { aggregateToUsageSummary } from '../utils/loop-format'
 import { sweepStaleForgeWorkspaces } from '../workspace/sweep-stale'
+import { selectSessionBestEffort } from '../utils/tui-navigation'
 
 export interface TerminationSideEffectsContext {
   client: ForgeClient
@@ -167,11 +168,12 @@ function getToastMessage(state: LoopState, reason: TerminationReason): string {
  * Unwarp the TUI back to the host project session before workspace removal.
  *
  * The TUI may currently be "warped" — displaying the workspace's worktree
- * session. Once `workspace.remove` fires, that view becomes orphaned. We
- * publish a `tui.session.select` event targeting the host project directory
- * and the original host session, with no `workspace` property, to return the
- * user to the local system. Best-effort: failures are logged but never block
- * teardown.
+ * session. Once `workspace.remove` fires, that view becomes orphaned. We reuse
+ * the same navigation path as warp-in (`selectSessionBestEffort`): the
+ * `tui.selectSession` command first, falling back to a `tui.session.select`
+ * publish. Omitting the `workspace` property returns the user to the host
+ * session on the local system. Best-effort: failures are logged but never
+ * block teardown.
  */
 async function unwarpToHostSession(
   state: LoopState,
@@ -179,18 +181,10 @@ async function unwarpToHostSession(
 ): Promise<void> {
   if (!state.hostSessionId || !state.projectDir) return
 
-  try {
-    await ctx.client.tui.publish({
-      directory: state.projectDir,
-      body: {
-        type: 'tui.session.select',
-        properties: { sessionID: state.hostSessionId },
-      },
-    })
-    ctx.logger.log(`Loop: unwarped TUI to host session ${state.hostSessionId} for ${state.loopName}`)
-  } catch (err) {
-    ctx.logger.error(`Loop: unwarp publish failed for ${state.loopName}`, err)
-  }
+  await selectSessionBestEffort(ctx.client, state.projectDir, ctx.logger, {
+    sessionID: state.hostSessionId,
+  })
+  ctx.logger.log(`Loop: unwarped TUI to host session ${state.hostSessionId} for ${state.loopName}`)
 }
 
 /** Tear down the worktree workspace — always commits changes back. */
