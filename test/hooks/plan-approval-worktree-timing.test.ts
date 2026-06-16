@@ -110,8 +110,8 @@ function planApprovalQuestionArgs() {
   }
 }
 
-describe('plan-approval worktree timing', () => {
-  test('"Loop (worktree)" sets lifecycle.selectSessionTiming to "after-create"', async () => {
+describe('plan-approval Loop deferral', () => {
+  test('"Loop (worktree)" defers to agent loop tool (no dispatch)', async () => {
     capturedCommands.length = 0
     const projectId = `proj-${Math.random().toString(36).slice(2)}`
     const directory = `/tmp/${projectId}`
@@ -132,18 +132,12 @@ describe('plan-approval worktree timing', () => {
 
     const meta = output.metadata as { forgePlanApprovalHandled?: boolean }
     expect(meta.forgePlanApprovalHandled).toBe(true)
-
-    expect(capturedCommands.length).toBeGreaterThanOrEqual(1)
-    const cmd = capturedCommands[capturedCommands.length - 1] as {
-      lifecycle?: { selectSession?: boolean; selectSessionTiming?: string; startWatchdog?: boolean; abortSourceSessionOnSuccess?: boolean }
-    }
-    expect(cmd.lifecycle?.selectSession).toBe(true)
-    expect(cmd.lifecycle?.selectSessionTiming).toBe('after-create')
-    expect(cmd.lifecycle?.startWatchdog).toBe(true)
-    expect(cmd.lifecycle?.abortSourceSessionOnSuccess).toBe(false)
+    expect(capturedCommands.length).toBe(0)
+    expect(abortMock).not.toHaveBeenCalled()
+    expect(output.output).toContain('<system-reminder>')
   })
 
-  test('"Loop" sets lifecycle.selectSessionTiming to "after-create"', async () => {
+  test('"Loop" defers to agent loop tool (no dispatch)', async () => {
     capturedCommands.length = 0
     const projectId = `proj-${Math.random().toString(36).slice(2)}`
     const directory = `/tmp/${projectId}`
@@ -164,14 +158,8 @@ describe('plan-approval worktree timing', () => {
 
     const meta = output.metadata as { forgePlanApprovalHandled?: boolean }
     expect(meta.forgePlanApprovalHandled).toBe(true)
-
-    expect(capturedCommands.length).toBeGreaterThanOrEqual(1)
-    const cmd = capturedCommands[capturedCommands.length - 1] as {
-      lifecycle?: { selectSession?: boolean; selectSessionTiming?: string; startWatchdog?: boolean; abortSourceSessionOnSuccess?: boolean }
-    }
-    expect(cmd.lifecycle?.selectSession).toBe(true)
-    expect(cmd.lifecycle?.selectSessionTiming).toBe('after-create')
-    expect(cmd.lifecycle?.startWatchdog).toBe(true)
-    expect(cmd.lifecycle?.abortSourceSessionOnSuccess).toBe(false)
+    expect(capturedCommands.length).toBe(0)
+    expect(abortMock).not.toHaveBeenCalled()
+    expect(output.output).toContain('<system-reminder>')
   })
 })

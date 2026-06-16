@@ -486,6 +486,7 @@ When emitting the final plan:
 - Do not insert \`<!-- forge-section -->\` before \`### Files\`, \`### Edits\`, \`### Acceptance Criteria\`, or \`### Verification\`
 - Shared \`## Decisions\` / \`## Conventions\` / \`## Key Context\` blocks go after all sections (no preceding marker)
 - After the plan, call the \`question\` tool with options: "New session", "Execute here", "Loop"
+- If the user selects "Loop", launch it by calling the \`loop\` tool (the stored plan is used automatically); do not re-run the question tool.
 </system-reminder>`,
           synthetic: true,
         })

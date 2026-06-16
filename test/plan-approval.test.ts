@@ -787,7 +787,7 @@ describe('Plan Approval Tool Interception', () => {
     expect(abortSpy).toHaveBeenCalledWith({ sessionID, directory: "/test" })
   })
 
-  test('Loop approval schedules source abort and returns without throwing', async () => {
+  test('Loop approval does not abort and defers to the loop tool', async () => {
     const abortSpy = vi.fn(() => Promise.resolve())
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -861,13 +861,13 @@ describe('Plan Approval Tool Interception', () => {
       output
     )).resolves.toBeUndefined()
 
-    expect(output.output).toBe('Loop')
     expect((output.metadata as any).forgePlanApprovalHandled).toBe(true)
-    
-    expect(abortSpy).toHaveBeenCalledWith({ sessionID, directory: "/test" })
+    expect(abortSpy).not.toHaveBeenCalled()
+    expect(output.output).toContain('loop')
+    expect(output.output).toContain('<system-reminder>')
   })
 
-  test('dispatches loop.start without a mode field when Loop is selected', async () => {
+  test('does not dispatch loop.start when Loop is selected (defers to loop tool)', async () => {
     const abortSpy = vi.fn(() => Promise.resolve())
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -957,12 +957,9 @@ describe('Plan Approval Tool Interception', () => {
       await new Promise(resolve => setTimeout(resolve, 10))
 
       expect((output.metadata as any).forgePlanApprovalHandled).toBe(true)
-
-      expect(abortSpy).toHaveBeenCalled()
-
-      expect(capturedCommand).toBeDefined()
-      expect(capturedCommand.type).toBe('loop.start')
-      expect(capturedCommand).not.toHaveProperty('mode')
+      expect(abortSpy).not.toHaveBeenCalled()
+      expect(capturedCommand).toBeNull()
+      expect(output.output).toContain('<system-reminder>')
     } finally {
       vi.restoreAllMocks()
     }
@@ -1270,7 +1267,7 @@ describe('Execute here bypass', () => {
     expect(promptSpy).toHaveBeenCalledTimes(1)
   })
 
-  test('Other approval labels do not inject directives (programmatic dispatch)', async () => {
+  test('New session injects directives but Loop defers to loop tool', async () => {
     const abortSpy = vi.fn(() => Promise.resolve())
     const ctx = createMockContext({
       client: {
@@ -1306,34 +1303,60 @@ describe('Execute here bypass', () => {
 
     const hook = createToolExecuteAfterHook(ctx)
 
-    const labels = ['New session', 'Loop']
-    for (let i = 0; i < labels.length; i++) {
-      const label = labels[i]
-      const args = {
-        questions: [{
-          question: 'How would you like to proceed?',
-          options: [
-            { label: 'New session', description: 'Create new session' },
-            { label: 'Execute here', description: 'Execute here' },
-            { label: 'Loop', description: 'Loop' },
-          ],
-        }],
-      }
-      const output = {
-        title: 'Asked 1 question',
-        output: label,
-        metadata: { answers: [[label]] },
-      }
-
-      await expect(hook(
-        { tool: 'question', sessionID, callID: `test-call-${i}`, args },
-        output
-      )).resolves.toBeUndefined()
-
-      expect(output.output).not.toContain('<system-reminder>')
-      expect(output.output).toBe(label)
-      expect(abortSpy).toHaveBeenCalledTimes(i + 1)
+    // Test "New session" first
+    const newSessionArgs = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop', description: 'Loop' },
+        ],
+      }],
     }
+    const nsOutput = {
+      title: 'Asked 1 question',
+      output: 'New session',
+      metadata: { answers: [['New session']] },
+    }
+
+    await expect(hook(
+      { tool: 'question', sessionID, callID: 'test-call-0', args: newSessionArgs },
+      nsOutput
+    )).resolves.toBeUndefined()
+
+    expect(nsOutput.output).not.toContain('<system-reminder>')
+    expect(nsOutput.output).toBe('New session')
+    expect(abortSpy).toHaveBeenCalledTimes(1)
+
+    // Reset abort spy for next test
+    abortSpy.mockClear()
+
+    // Test "Loop" — defers to agent, no dispatch
+    const loopArgs = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop', description: 'Loop' },
+        ],
+      }],
+    }
+    const loopOutput = {
+      title: 'Asked 1 question',
+      output: 'Loop',
+      metadata: { answers: [['Loop']] },
+    }
+
+    await expect(hook(
+      { tool: 'question', sessionID, callID: 'test-call-1', args: loopArgs },
+      loopOutput
+    )).resolves.toBeUndefined()
+
+    expect(loopOutput.output).toContain('Loop')
+    expect(loopOutput.output).toContain('<system-reminder>')
+    expect(abortSpy).not.toHaveBeenCalled()
   })
 
   test('session.idle for non-pending session is a no-op', async () => {
@@ -1565,7 +1588,7 @@ describe('Execute here bypass', () => {
     expect(planAfter?.content).toBe(originalPlan)
   })
 
-  test('Loop path plan persists after successful setup', async () => {
+  test('Loop defers to agent (no dispatch, no abort, plan preserved)', async () => {
     const db = createTestDb()
     openDbs.push(db)
     const testSessionID = 'test-session-loop'
@@ -1575,7 +1598,7 @@ describe('Execute here bypass', () => {
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
 
-    const originalPlan = '# Loop Plan\n\nThis plan should persist after Loop setup.'
+    const originalPlan = '# Loop Plan\n\nThis plan should persist after Loop selection.'
     plansRepo.writeForSession(projectId, testSessionID, originalPlan)
 
     const abortSpy = vi.fn(() => Promise.resolve())
@@ -1650,26 +1673,16 @@ describe('Execute here bypass', () => {
       output
     )).resolves.toBeUndefined()
 
-    // Abort is called synchronously (awaited in hook)
-    expect(abortSpy).toHaveBeenCalledWith({ sessionID: testSessionID, directory: "/test/dir" })
+    // No abort or dispatch — deferring to agent loop tool
+    expect(abortSpy).not.toHaveBeenCalled()
+    expect(output.output).toContain('<system-reminder>')
 
-    // Wait for dispatch IIFE to complete
-    await new Promise(resolve => setTimeout(resolve, 200))
-
-    // Verify plan persists in session-scoped repo after loop setup
+    // Plan persists in session-scoped repo (not consumed by dispatch)
     const planAfter = plansRepo.getForSession(projectId, testSessionID)
     expect(planAfter?.content).toBe(originalPlan)
-
-    // Verify loop was created and plan was stored in plans table
-    const loopRow = db.prepare('SELECT loop_name FROM loops WHERE project_id = ?').get(projectId) as { loop_name: string } | null
-    expect(loopRow).toBeDefined()
-    if (loopRow) {
-      const planRow = db.prepare('SELECT content FROM plans WHERE project_id = ? AND loop_name = ?').get(projectId, loopRow.loop_name) as { content: string } | null
-      expect(planRow?.content).toBe(originalPlan)
-    }
   })
 
-  test('Loop path plan persists after failed setup', async () => {
+  test('Loop defers to agent even when session create would fail (no dispatch)', async () => {
     const db = createTestDb()
     openDbs.push(db)
     const testSessionID = 'test-session-loop-fail'
@@ -1679,7 +1692,7 @@ describe('Execute here bypass', () => {
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
 
-    const originalPlan = '# Failed Loop Plan\n\nThis plan should persist after failed Loop setup.'
+    const originalPlan = '# Failed Loop Plan\n\nThis plan should persist.'
     plansRepo.writeForSession(projectId, testSessionID, originalPlan)
 
     const abortSpy = vi.fn(() => Promise.resolve())
@@ -1755,19 +1768,12 @@ describe('Execute here bypass', () => {
       output
     )).resolves.toBeUndefined()
 
-    // Abort is called synchronously (awaited in hook)
-    expect(abortSpy).toHaveBeenCalledTimes(1)
+    // No abort or dispatch — deferring to agent loop tool
+    expect(abortSpy).not.toHaveBeenCalled()
+    expect(tuiPublishSpy).not.toHaveBeenCalled()
+    expect(output.output).toContain('<system-reminder>')
 
-    // Wait for dispatch IIFE to complete
-    await new Promise(resolve => setTimeout(resolve, 50))
-    
-    // Verify failure is surfaced via toast
-    expect(tuiPublishSpy).toHaveBeenCalled()
-    const publishCall = (tuiPublishSpy.mock.calls[0] as any)[0]
-    expect(publishCall?.body?.type).toBe('tui.toast.show')
-    expect(publishCall?.body?.properties?.variant).toBe('error')
-
-    // Verify plan persists in session-scoped repo after failed loop setup
+    // Plan persists (not consumed by dispatch)
     const planAfter = plansRepo.getForSession(projectId, testSessionID)
     expect(planAfter?.content).toBe(originalPlan)
   })
@@ -1980,7 +1986,7 @@ describe('Fire-and-forget dispatch behavior', () => {
     resolvePrompt!()
   })
 
-  test('Loop approval returns before promptAsync resolves', async () => {
+  test('Loop approval returns before promptAsync resolves (defers to loop tool)', async () => {
     let resolvePrompt: () => void
     const pendingPromise = new Promise<any>((resolve) => {
       resolvePrompt = resolve
@@ -2059,12 +2065,12 @@ describe('Fire-and-forget dispatch behavior', () => {
       }),
     ])
     
-    // Output should be preserved immediately
-    expect(output.output).toBe('Loop')
+    // Output should contain system-reminder directing agent to use loop tool
+    expect(output.output).toContain('Loop')
+    expect(output.output).toContain('<system-reminder>')
     
-    
-    // Abort should be called
-    expect(abortSpy).toHaveBeenCalled()
+    // No abort or dispatch — deferring to agent loop tool
+    expect(abortSpy).not.toHaveBeenCalled()
     
     // Clean up pending promise
     resolvePrompt!()

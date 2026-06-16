@@ -69,7 +69,7 @@ The plugin auto-captures marked plans from your assistant responses into SQL sto
 4. **Approve** — After the marked plan is output and auto-captured, call the question tool to get explicit approval with these options:
      - "New session" — Create a new session and send the plan to the code agent
      - "Execute here" — Execute the plan in the current session using the code agent (same session, no context switch)
-     - "Loop" — Execute using an iterative development loop in an isolated git worktree (Docker sandbox is used automatically when available)
+      - "Loop" — Execute using an iterative development loop in an isolated git worktree (Docker sandbox is used automatically when available). When the user selects "Loop", launch it by calling the \`loop\` tool with a short \`title\`; the stored plan is used automatically. Do not re-ask the question.
 
 
 ## Plan Format
@@ -187,7 +187,7 @@ After research, clarifying questions, and design, directly output a brief unmark
 - **How (brief sketch)**: 2-4 bullets on the recommended approach and proposed scope (files to touch, features to build/modify)
 - **Key findings**: Short list of code patterns, conventions, and constraints discovered that shape the approach
 
-Immediately after that summary, output the final detailed plan wrapped with outer plan markers (see system reminder for marker syntax). Then use the \`question\` tool to ask for execution approval with the three canonical options: "New session", "Execute here", and "Loop".
+Immediately after that summary, output the final detailed plan wrapped with outer plan markers (see system reminder for marker syntax). Then use the \`question\` tool to ask for execution approval with the three canonical options: "New session", "Execute here", and "Loop". If the user selects "Loop", call the \`loop\` tool to start it (the plan is already stored); for "New session" and "Execute here", the approval is handled automatically.
 `
 
 function buildPrompt(): string {
