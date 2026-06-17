@@ -1,13 +1,21 @@
 import type { DockerService } from './docker'
 import type { Logger, SandboxResources } from '../types'
 import { join, resolve } from 'path'
-import { mkdirSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, rmSync, chmodSync } from 'fs'
 import { defaultGitService, type GitService } from '../utils/git-service'
+import type { SandboxMount } from './path'
 
 export interface SandboxManagerConfig {
   image: string
   dataDir?: string
   resources?: SandboxResources
+  sourceProjectDir?: string
+  mountProjectReadonly?: boolean
+  projectMountPath?: string
+  buildContextDir?: string
+  network?: { hostGateway?: boolean; env?: string[]; envFiles?: string[] }
+  runAsHostUser?: boolean
+  resolveHostUser?: () => string | undefined
 }
 
 const DEFAULT_RESOURCES: Required<Pick<SandboxResources, 'memory' | 'cpus' | 'shmSize'>> = {
@@ -16,10 +24,14 @@ const DEFAULT_RESOURCES: Required<Pick<SandboxResources, 'memory' | 'cpus' | 'sh
   shmSize: '1g',
 }
 
+const DOCKER_AVAILABLE_TTL = 30_000
+const LIVENESS_CHECK_TTL = 2_000
+
 export interface ActiveSandbox {
   containerName: string
   projectDir: string
   startedAt: string
+  mounts: SandboxMount[]
 }
 
 export interface SandboxManager {
@@ -32,6 +44,7 @@ export interface SandboxManager {
   isLiveByName(worktreeName: string): Promise<boolean>
   cleanupOrphans(preserveWorktrees?: string[]): Promise<number>
   restore(worktreeName: string, projectDir: string, startedAt: string): Promise<void>
+  ensureRunning(worktreeName: string, projectDir: string, startedAt?: string): Promise<string>
 }
 
 export function createSandboxManager(
@@ -41,16 +54,58 @@ export function createSandboxManager(
   git: GitService = defaultGitService,
 ): SandboxManager {
   const activeSandboxes = new Map<string, ActiveSandbox>()
+  const lastLivenessCheck = new Map<string, number>()
+  let dockerAvailableCache: { value: boolean; at: number } | null = null
+  let imageReady = false
 
-  function outputMounts(): string[] {
-    if (!config.dataDir) return []
-    const dir = join(config.dataDir, 'bash-output')
-    try {
-      mkdirSync(dir, { recursive: true })
-    } catch (err) {
-      logger.log(`[sandbox] could not ensure bash-output dir ${dir}: ${err instanceof Error ? err.message : String(err)}`)
+  async function ensureDockerAvailable(): Promise<void> {
+    const now = Date.now()
+    if (dockerAvailableCache && (now - dockerAvailableCache.at) < DOCKER_AVAILABLE_TTL) {
+      if (!dockerAvailableCache.value) {
+        throw new Error('Docker is not available. Please ensure Docker is running.')
+      }
+      return
     }
-    return [`${dir}:${dir}:ro`]
+    const available = await docker.checkDocker()
+    dockerAvailableCache = { value: available, at: now }
+    if (!available) {
+      throw new Error('Docker is not available. Please ensure Docker is running.')
+    }
+  }
+
+  async function ensureImage(): Promise<void> {
+    if (imageReady) return
+    const exists = await docker.imageExists(config.image)
+    if (!exists) {
+      const buildHint = config.buildContextDir
+        ? `  docker build -t ${config.image} "${config.buildContextDir}"`
+        : `  docker build -t ${config.image} <build-context-dir>`
+      throw new Error(
+        `Docker image "${config.image}" not found. Build it first:\n` +
+        `${buildHint}\n\n` +
+        `To disable the sandbox, set "sandbox": { "enabled": false } in your forge config.`
+      )
+    }
+    imageReady = true
+  }
+
+  function buildSandboxMounts(projectDir: string): SandboxMount[] {
+    const mounts: SandboxMount[] = [
+      { hostDir: resolve(projectDir), containerDir: '/workspace' },
+    ]
+    const sourceProjectDir = config.sourceProjectDir
+    const projectMountPath = config.projectMountPath ?? '/project'
+    const hasProjectMount = config.mountProjectReadonly !== false
+      && !!sourceProjectDir
+      && resolve(sourceProjectDir) !== resolve(projectDir)
+    if (hasProjectMount) {
+      mounts.push({
+        hostDir: resolve(sourceProjectDir!),
+        containerDir: projectMountPath,
+        readOnly: true,
+      })
+    }
+    return mounts
   }
 
   function detectGitMount(projectDir: string): string[] {
@@ -73,19 +128,60 @@ export function createSandboxManager(
     return [...mounts]
   }
 
-  async function start(worktreeName: string, projectDir: string, startedAt?: string): Promise<{ containerName: string }> {
-    const dockerAvailable = await docker.checkDocker()
-    if (!dockerAvailable) {
-      throw new Error('Docker is not available. Please ensure Docker is running.')
-    }
+  function buildAddHosts(): string[] | undefined {
+    if (config.network?.hostGateway === false) return []
+    return ['host.docker.internal:host-gateway']
+  }
 
-    const imageExists = await docker.imageExists(config.image)
-    if (!imageExists) {
-      throw new Error(
-        `Docker image "${config.image}" not found. Build it first:\n` +
-        `  docker build -t ${config.image} container/`
-      )
+  function envFileMounts(): string[] {
+    const envFiles = config.network?.envFiles ?? ['.env']
+    const projectDir = config.sourceProjectDir
+    if (!projectDir) return []
+    const mounts: string[] = []
+    for (const rel of envFiles) {
+      const abs = resolve(projectDir, rel)
+      if (existsSync(abs)) {
+        mounts.push(`${abs}:/workspace/${rel}:ro`)
+      }
     }
+    return mounts
+  }
+
+  function writeEnvPassthroughFile(containerName: string): string | undefined {
+    const names = config.network?.env
+    if (!names || names.length === 0) return undefined
+    const dataDir = config.dataDir
+    if (!dataDir) return undefined
+
+    const lines: string[] = []
+    for (const name of names) {
+      const value = process.env[name]
+      if (value !== undefined) {
+        lines.push(`${name}=${value}`)
+      }
+    }
+    if (lines.length === 0) return undefined
+
+    const dir = join(dataDir, 'sandbox-env')
+    mkdirSync(dir, { recursive: true })
+    const filePath = join(dir, `${containerName}.env`)
+    writeFileSync(filePath, lines.join('\n') + '\n', { encoding: 'utf-8' })
+    chmodSync(filePath, 0o600)
+    return filePath
+  }
+
+  function resolveUser(): string | undefined {
+    if (config.runAsHostUser === false) return undefined
+    return (config.resolveHostUser ?? (() => {
+      const u = process.getuid?.()
+      const g = process.getgid?.()
+      return u != null && g != null ? `${u}:${g}` : undefined
+    }))()
+  }
+
+  async function start(worktreeName: string, projectDir: string, startedAt?: string): Promise<{ containerName: string }> {
+    await ensureDockerAvailable()
+    await ensureImage()
 
     const containerName = docker.containerName(worktreeName)
 
@@ -97,10 +193,18 @@ export function createSandboxManager(
         containerName,
         projectDir: absoluteProjectDir,
         startedAt: startedAt ?? new Date().toISOString(),
+        mounts: buildSandboxMounts(projectDir),
       })
       return { containerName }
     }
-    const extraMounts = [...detectGitMount(absoluteProjectDir), ...outputMounts()]
+
+    const mounts = buildSandboxMounts(projectDir)
+
+    const projectMount = mounts.length > 1 ? mounts[1] : undefined
+    const extraMounts = [...detectGitMount(absoluteProjectDir), ...envFileMounts()]
+    if (projectMount) {
+      extraMounts.push(`${projectMount.hostDir}:${projectMount.containerDir}:ro`)
+    }
     if (extraMounts.length > 0) {
       logger.log(`Sandbox: mounting git metadata: ${extraMounts.join(', ')}`)
     }
@@ -110,13 +214,23 @@ export function createSandboxManager(
       shmSize: config.resources?.shmSize ?? DEFAULT_RESOURCES.shmSize,
       ...(config.resources?.memorySwap ? { memorySwap: config.resources.memorySwap } : {}),
     }
+    const addHosts = buildAddHosts()
+    const user = resolveUser()
+    const envFile = writeEnvPassthroughFile(containerName)
     logger.log(`Creating sandbox container ${containerName} for ${absoluteProjectDir} (memory=${resources.memory} cpus=${resources.cpus} shmSize=${resources.shmSize}${resources.memorySwap ? ` memorySwap=${resources.memorySwap}` : ''})`)
-    await docker.createContainer(containerName, absoluteProjectDir, config.image, extraMounts, resources)
+    try {
+      await docker.createContainer(containerName, absoluteProjectDir, config.image, { extraMounts, resources, addHosts, user, ...(envFile ? { envFile } : {}) })
+    } finally {
+      if (envFile) {
+        rmSync(envFile, { force: true })
+      }
+    }
 
     const active: ActiveSandbox = {
       containerName,
       projectDir: absoluteProjectDir,
       startedAt: startedAt ?? new Date().toISOString(),
+      mounts,
     }
 
     activeSandboxes.set(worktreeName, active)
@@ -208,15 +322,65 @@ export function createSandboxManager(
   }
 
   async function restore(worktreeName: string, projectDir: string, startedAt: string): Promise<void> {
+    await ensureRunning(worktreeName, projectDir, startedAt)
+  }
+
+  async function ensureRunning(worktreeName: string, projectDir: string, startedAt?: string): Promise<string> {
+    const active = activeSandboxes.get(worktreeName)
+    const lastCheck = lastLivenessCheck.get(worktreeName)
+    const now = Date.now()
+
+    // Cache hit: active entry and liveness checked within TTL
+    if (active && lastCheck !== undefined && (now - lastCheck) < LIVENESS_CHECK_TTL) {
+      return active.containerName
+    }
+
+    if (active) {
+      const running = await docker.isRunning(active.containerName)
+      if (running) {
+        // Repopulate mounts in case config changed, then update cache
+        activeSandboxes.set(worktreeName, {
+          ...active,
+          projectDir: resolve(projectDir),
+          mounts: buildSandboxMounts(projectDir),
+        })
+        lastLivenessCheck.set(worktreeName, Date.now())
+        return active.containerName
+      }
+      // Container is dead — remove stale entry and Docker container before recreating
+      logger.log(`Sandbox: container ${active.containerName} is not running, recreating for ${worktreeName}`)
+      activeSandboxes.delete(worktreeName)
+      await docker.removeContainer(active.containerName)
+
+      const result = await start(worktreeName, projectDir, startedAt)
+      lastLivenessCheck.set(worktreeName, Date.now())
+      return result.containerName
+    }
+
+    // No active entry — check if the container is still alive in Docker (e.g. after process
+    // restart or isLive cleanup). If running, repopulate the map; otherwise clean up and create.
     const containerName = docker.containerName(worktreeName)
     const running = await docker.isRunning(containerName)
     if (running) {
-      logger.log(`Sandbox container ${containerName} already running, repopulating map`)
-      activeSandboxes.set(worktreeName, { containerName, projectDir: resolve(projectDir), startedAt })
-    } else {
-      logger.log(`Sandbox container ${containerName} not running, starting new container`)
-      await start(worktreeName, projectDir, startedAt)
+      const absoluteProjectDir = resolve(projectDir)
+      const mounts = buildSandboxMounts(projectDir)
+      const activeEntry: ActiveSandbox = {
+        containerName,
+        projectDir: absoluteProjectDir,
+        startedAt: startedAt ?? new Date().toISOString(),
+        mounts,
+      }
+      activeSandboxes.set(worktreeName, activeEntry)
+      lastLivenessCheck.set(worktreeName, Date.now())
+      return containerName
     }
+
+    // Stopped container exists — remove it to avoid name conflict on create
+    await docker.removeContainer(containerName)
+
+    const runningResult = await start(worktreeName, projectDir, startedAt)
+    lastLivenessCheck.set(worktreeName, Date.now())
+    return runningResult.containerName
   }
 
   return {
@@ -229,5 +393,6 @@ export function createSandboxManager(
     isLiveByName,
     cleanupOrphans,
     restore,
+    ensureRunning,
   }
 }

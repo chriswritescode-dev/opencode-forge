@@ -48,6 +48,19 @@ export interface LoopConfig {
 }
 
 /**
+ * Network access configuration for the sandbox container.
+ * Controls host gateway access, environment passthrough, and project `.env` file mounting.
+ */
+export interface SandboxNetworkConfig {
+  /** Enable host.docker.internal gateway. Defaults to true. Set false to disable. */
+  hostGateway?: boolean
+  /** Environment variable names to pass through from host process into the container. */
+  env?: string[]
+  /** Relative paths in the source project directory to mount as env files. Defaults to ['.env']. */
+  envFiles?: string[]
+}
+
+/**
  * Resource limits for the sandbox container. Maps directly to `docker run` flags.
  * Docker Desktop's defaults (often 2GB / 2 CPUs) are too tight for many real projects
  * — `pnpm install` gets OOM-killed (exit 137) and shell commands run slowly.
@@ -75,6 +88,14 @@ export interface SandboxConfig {
   image?: string
   /** Container resource limits. Defaults to memory=8g, cpus=4, shmSize=1g. */
   resources?: SandboxResources
+  /** Mount the source project directory as a read-only volume. Defaults to true. */
+  mountProjectReadonly?: boolean
+  /** Container path for the read-only project mount. Defaults to '/project'. */
+  projectMountPath?: string
+  /** Network access configuration (host gateway, env passthrough, env file mounts). */
+  network?: SandboxNetworkConfig
+  /** Run the container as the host user's UID:GID. Defaults to true. */
+  runAsHostUser?: boolean
 }
 
 /**

@@ -1,6 +1,6 @@
 import { join } from 'path'
 import { mkdir } from 'fs/promises'
-import { existsSync } from 'fs'
+import { existsSync, readFileSync, appendFileSync } from 'fs'
 import type { WorkspaceAdapter, WorkspaceInfo } from '@opencode-ai/plugin'
 import type { Logger } from '../types'
 import type { SandboxManager } from '../sandbox/manager'
@@ -192,6 +192,24 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
         }
       }
       logger.log(`forge-adapter: created worktree ${info.directory} on branch ${info.branch}${branchExists ? ' (reused existing branch)' : ''}${reusedOrphan ? ' (after orphan cleanup)' : ''}`)
+
+      // Idempotently add .forge/ to git exclude so overflow/scratch files
+      // never enter loop commits.
+      if (info.directory) {
+        const excludeRes = git.revParseGitPath(info.directory, 'info/exclude')
+        if (excludeRes.ok && excludeRes.stdout) {
+          const excludeFile = excludeRes.stdout.trim()
+          try {
+            const content = existsSync(excludeFile) ? readFileSync(excludeFile, 'utf-8') : ''
+            if (!content.split('\n').some((l) => l.trim() === '.forge/')) {
+              appendFileSync(excludeFile, '\n.forge/\n')
+              logger.log(`forge-adapter: added .forge/ to git exclude in ${info.directory}`)
+            }
+          } catch (err) {
+            logger.log(`forge-adapter: could not update git exclude: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        }
+      }
 
       if (sandboxManager) {
         try {

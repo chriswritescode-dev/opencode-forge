@@ -16,6 +16,7 @@ export interface GitService {
   currentBranch(cwd: string): string | null
   revParseGitDir(cwd: string): GitResult
   revParseGitCommonDir(cwd: string): GitResult
+  revParseGitPath(cwd: string, path: string): GitResult
   worktreeAdd(cwd: string, directory: string, branch: string, createBranch: boolean): GitResult
   worktreeRemove(cwd: string, directory: string): GitResult
   worktreePrune(cwd: string): GitResult
@@ -62,6 +63,10 @@ export function createGitService(): GitService {
 
     revParseGitCommonDir(cwd: string): GitResult {
       return runGit(['rev-parse', '--git-common-dir'], cwd)
+    },
+
+    revParseGitPath(cwd: string, path: string): GitResult {
+      return runGit(['rev-parse', '--git-path', path], cwd)
     },
 
     worktreeAdd(cwd: string, directory: string, branch: string, createBranch: boolean): GitResult {

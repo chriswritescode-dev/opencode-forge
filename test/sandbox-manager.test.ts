@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest'
-import { mkdtempSync, rmSync, existsSync } from 'fs'
+import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 import { execSync } from 'child_process'
@@ -17,19 +17,23 @@ function createMockLogger(): Logger {
 
 function createMockDockerService() {
   const removeContainerCalls: string[] = []
-  const createContainerCalls: Array<[string, string, string, string[] | undefined]> = []
+  const createContainerCalls: Array<[string, string, string, { extraMounts?: string[] } | undefined]> = []
   let containers = ['forge-foo', 'forge-bar']
   let runningContainers = new Set<string>()
   let shouldDockerBeAvailable = true
   let shouldImageExist = true
   let shouldRemoveThrow = false
 
+  const buildImageCalls: Array<[string, string]> = []
+
   const mock = {
     checkDocker: async () => shouldDockerBeAvailable,
     imageExists: async () => shouldImageExist,
-    buildImage: async () => {},
-    createContainer: async (name: string, projectDir: string, image: string, extraMounts?: string[]) => {
-      createContainerCalls.push([name, projectDir, image, extraMounts])
+    buildImage: async (dockerfilePath: string, tag: string) => {
+      buildImageCalls.push([dockerfilePath, tag])
+    },
+    createContainer: async (name: string, projectDir: string, image: string, opts?: { extraMounts?: string[] }) => {
+      createContainerCalls.push([name, projectDir, image, opts])
       runningContainers.add(name)
     },
     removeContainer: async (name: string) => {
@@ -47,6 +51,7 @@ function createMockDockerService() {
     },
     getRemoveContainerCalls: () => removeContainerCalls,
     getCreateContainerCalls: () => createContainerCalls,
+    getBuildImageCalls: () => buildImageCalls,
     setContainers: (newContainers: string[]) => {
       containers = newContainers
     },
@@ -210,17 +215,23 @@ describe('SandboxManager', () => {
       await expect(manager.start('test', '/path')).rejects.toThrow('Docker is not available')
     })
 
-    test('throws when image does not exist', async () => {
+    test('throws actionable error when image does not exist, without building', async () => {
       const mockDocker = createMockDockerService()
       mockDocker.setImageExists(false)
       const logger = createMockLogger()
       const manager = createSandboxManager(
         mockDocker as unknown as DockerService,
-        { image: 'oc-forge-sandbox:latest' },
+        { image: 'my-custom-image:tag', buildContextDir: '/some/context' },
         logger
       )
 
-      await expect(manager.start('test', '/path')).rejects.toThrow('not found')
+      const err = await manager.start('test', '/path').catch(e => e)
+      expect(err).toBeInstanceOf(Error)
+      expect((err as Error).message).toMatch(/not found/)
+      expect((err as Error).message).toMatch(/my-custom-image:tag/)
+      expect((err as Error).message).toMatch(/\/some\/context/)
+      expect((err as Error).message).toMatch(/"sandbox":\s*\{\s*"enabled":\s*false\s*\}/)
+      expect(mockDocker.getBuildImageCalls().length).toBe(0)
     })
 
     test('returns early when container already running', async () => {
@@ -257,25 +268,6 @@ describe('SandboxManager', () => {
       expect(active?.containerName).toBe('forge-test')
     })
 
-    test('mounts the host bash-output dir read-only when dataDir is configured', async () => {
-      const dataDir = mkdtempSync(join(tmpdir(), 'forge-data-'))
-      try {
-        const mockDocker = createMockDockerService()
-        const manager = createSandboxManager(
-          mockDocker as unknown as DockerService,
-          { image: 'oc-forge-sandbox:latest', dataDir },
-          createMockLogger(),
-        )
-        await manager.start('test', '/path')
-        const mounts = mockDocker.getCreateContainerCalls()[0][3] ?? []
-        const bashOut = join(dataDir, 'bash-output')
-        expect(mounts).toContain(`${bashOut}:${bashOut}:ro`)
-        expect(existsSync(bashOut)).toBe(true)
-      } finally {
-        rmSync(dataDir, { recursive: true, force: true })
-      }
-    })
-
     test('mounts linked worktree git metadata writable', async () => {
       const tempDir = mkdtempSync(join(tmpdir(), 'sandbox-worktree-'))
       try {
@@ -298,7 +290,8 @@ describe('SandboxManager', () => {
 
         const createCalls = mockDocker.getCreateContainerCalls()
         expect(createCalls.length).toBe(1)
-        const mounts = createCalls[0][3] ?? []
+        const opts = createCalls[0][3]
+        const mounts = opts?.extraMounts ?? []
         const gitDir = execSync('git rev-parse --git-dir', { cwd: worktreeDir, encoding: 'utf-8' }).trim()
         const commonDir = execSync('git rev-parse --git-common-dir', { cwd: worktreeDir, encoding: 'utf-8' }).trim()
         const absoluteGitDir = resolve(worktreeDir, gitDir)

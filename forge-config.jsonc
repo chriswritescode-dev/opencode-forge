@@ -48,7 +48,22 @@
   "sandbox": {
     "enabled": true,
     "mode": "docker",
-    "image": "oc-forge-sandbox:latest"
+    "image": "oc-forge-sandbox:latest",
+    // Mount the source project directory as a read-only volume. Defaults to true.
+    // "mountProjectReadonly": true,
+    // Container path for the read-only project mount. Defaults to '/project'.
+    // "projectMountPath": "/project",
+    // Network access configuration (host gateway, env passthrough, env file mounts).
+    // "network": {
+    //   // Enable host.docker.internal gateway. Defaults to true.
+    //   "hostGateway": true,
+    //   // Environment variable names to pass through from host process into the container.
+    //   "env": ["MY_VAR"],
+    //   // Relative paths in the source project directory to mount as env files. Defaults to [".env"].
+    //   "envFiles": [".env"]
+    // },
+    // Run the container as the host user's UID:GID. Defaults to true.
+    // "runAsHostUser": true
   },
 
   // TUI sidebar widget configuration

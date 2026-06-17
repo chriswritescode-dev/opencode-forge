@@ -1,10 +1,12 @@
 import { toContainerPath, rewriteOutput } from './path'
+import type { SandboxMount } from './path'
 import type { DockerService } from './docker'
 
 interface SandboxExecutionDeps {
   docker: DockerService
   containerName: string
   hostDir: string
+  mounts: SandboxMount[]
 }
 
 /**
@@ -16,9 +18,9 @@ export async function executeSandboxGlob(
   pattern: string,
   searchPath?: string,
 ): Promise<string> {
-  const { docker, containerName, hostDir } = sandbox
+  const { docker, containerName, mounts } = sandbox
   const path = searchPath
-    ? toContainerPath(searchPath, hostDir)
+    ? toContainerPath(searchPath, mounts)
     : '/workspace'
 
   const safePattern = pattern.replace(/'/g, "'\\''")
@@ -30,7 +32,7 @@ export async function executeSandboxGlob(
     if (!result.stdout.trim()) return 'No files found'
 
     const lines = result.stdout.trim().split('\n').filter(Boolean)
-    const rewritten = lines.map(l => rewriteOutput(l, hostDir))
+    const rewritten = lines.map(l => rewriteOutput(l, mounts))
 
     let output = rewritten.join('\n')
     if (lines.length >= 100) {
@@ -57,9 +59,9 @@ export async function executeSandboxGrep(
   pattern: string,
   options?: { path?: string; include?: string },
 ): Promise<string> {
-  const { docker, containerName, hostDir } = sandbox
+  const { docker, containerName, mounts } = sandbox
   const searchPath = options?.path
-    ? toContainerPath(options.path, hostDir)
+    ? toContainerPath(options.path, mounts)
     : '/workspace'
 
   const safePattern = pattern.replace(/'/g, "'\\''")
@@ -81,7 +83,7 @@ export async function executeSandboxGrep(
     for (const line of lines) {
       const parts = line.split('|')
       if (parts.length < 3) continue
-      const filePath = rewriteOutput(parts[0], hostDir)
+      const filePath = rewriteOutput(parts[0], mounts)
       const lineNum = parseInt(parts[1], 10)
       const text = parts.slice(2).join('|')
       const truncatedText = text.length > 2000 ? text.slice(0, 1997) + '...' : text

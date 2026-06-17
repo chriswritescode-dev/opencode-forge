@@ -547,7 +547,7 @@ If workspace creation or session binding fails at runtime — env var unset, Ope
 
 ## Docker Sandbox
 
-Run loop iterations inside an isolated Docker container. Three tools (`bash`, `glob`, `grep`) execute inside the container via `docker exec`, while `read`/`write`/`edit` operate on the host filesystem. Your project directory is bind-mounted at `/workspace` for instant file sharing.
+Run loop iterations inside an isolated Docker container. Three tools (`bash`, `glob`, `grep`) execute inside the container via `docker exec`, while `read`/`write`/`edit` operate on the host filesystem. The worktree directory is bind-mounted at `/workspace` for instant file sharing, and the source project directory is mounted read-only at `/project` for convenient host-side access.
 
 ### Prerequisites
 
@@ -562,6 +562,8 @@ docker build -t oc-forge-sandbox:latest container/
 ```
 
 The image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, and jq.
+
+The `container/Dockerfile` ships with the package. If the image is missing at loop start, the sandbox fails fast with a message showing the build command and the `"enabled": false` opt-out. There is no auto-build — the image must be built manually.
 
 **2. Configure the sandbox** (`~/.config/opencode/forge-config.jsonc`):
 
@@ -592,11 +594,68 @@ Sandbox is optional. When Docker is available and configured, a sandbox containe
 
 ### How It Works
 
-- **Bind mount** -- the project directory is mounted directly into the container at `/workspace`. No sync daemon, no file copying. Changes are visible instantly on both sides.
+- **Bind mount** -- the worktree directory is mounted directly into the container at `/workspace`. No sync daemon, no file copying. Changes are visible instantly on both sides.
 - **Tool redirection** -- `bash`, `glob`, and `grep` route through `docker exec` when a session belongs to a sandbox loop. The `read`/`write`/`edit` tools operate on the host filesystem directly (compatible with host LSP).
-- **Git blocking** -- git commands are explicitly blocked inside the container. All git operations (commit, push, branch management) are handled by the loop system on the host.
+- **Git in the container** -- the image includes `git` for tooling and install workflows (e.g. fetching dependencies). Loop-managed git operations (commit, push, branch management) are handled by the loop system on the host.
 - **Host LSP** -- since files are shared via the bind mount, OpenCode's LSP servers on the host read the same files and provide diagnostics after writes and edits.
 - **Container lifecycle** -- one container per loop, automatically started and stopped. Container name format: `forge-<worktreeName>`.
+
+### Reaching Host Services
+
+The sandbox container can reach services running on the host via `host.docker.internal:<port>`. This is enabled by default and useful for connecting to local databases, API servers, or other development services. Disable it by setting `network.hostGateway` to `false`.
+
+**Environment passthrough** allows select host environment variables into the container. Specify variable names in `network.env`:
+
+```jsonc
+{
+  "sandbox": {
+    "network": {
+      "env": ["DATABASE_URL", "API_KEY"]
+    }
+  }
+}
+```
+
+Values are written to a temporary `--env-file` on container start; they are not persisted to disk.
+
+**Project env-file mounting** makes `.env` files (and other env files) available inside the container. By default, any `.env` file at the project root is mounted read-only into `/workspace`. Configure the list via `network.envFiles`:
+
+```jsonc
+{
+  "sandbox": {
+    "network": {
+      "envFiles": [".env", ".env.local"]
+    }
+  }
+}
+```
+
+**Security note:** environment passthrough and env-file mounting expose host secrets to the container. Only sandbox-trusted variables should be passed through. Each feature is independently controlled:
+
+- `network.hostGateway: false` — disables `host.docker.internal` gateway access
+- `network.env: []` — disables environment variable passthrough
+- `network.envFiles: []` — disables project-root env-file mounting
+
+Removing the `network` key does **not** disable all host-network features; the `hostGateway` and `envFiles` defaults remain active.
+
+### Read-Only Project Mount
+
+By default, the source project directory (not the worktree) is mounted read-only at `/project` inside the container. This gives you access to the original project files — useful for reference, config templates, or node_modules — without the risk of accidental edits to the source.
+
+- **Mount path:** configurable via `projectMountPath` (default: `"/project"`)
+- **Disable:** set `mountProjectReadonly` to `false`
+- **Searchable:** the mounted project is accessible to `glob` and `grep` (project-scoped) and readable via `sh`
+- **Not editable:** `write`/`edit` still target the host filesystem; changes to the project mount are not written back
+
+The worktree at `/workspace` remains writable for all sandbox operations.
+
+### Non-Root User
+
+The container runs as the host user's UID:GID by default (`runAsHostUser: true`). This ensures file ownership matches between the bind-mounted worktree and the host — files created inside the container are owned by you, not `root`. Set `runAsHostUser` to `false` to run as the container default user (`root`).
+
+### Large Command Output
+
+When a `sh` command produces output exceeding the tool's limit, the overflow is written to `<worktree>/.forge/tmp/` (inside the worktree, not the container). These spill files can be read with the `read` tool or searched with `grep`. The `.forge/` directory is automatically added to `git exclude` after worktree creation so spill files are never committed.
 
 ### Configuration
 
@@ -605,10 +664,20 @@ Sandbox is optional. When Docker is available and configured, a sandbox containe
 | `sandbox.enabled` | `true` | Enable sandboxed execution. Set to `false` to force worktree-only mode even when Docker is available. |
 | `sandbox.mode` | `"docker"` | Sandbox mode (optional; Docker used when available) |
 | `sandbox.image` | `"oc-forge-sandbox:latest"` | Docker image to use for sandbox containers |
+| `sandbox.resources.memory` | `"8g"` | Memory limit for the container. Maps to `--memory`. |
+| `sandbox.resources.memorySwap` | `"12g"` | Memory+swap limit. Maps to `--memory-swap`. |
+| `sandbox.resources.cpus` | `"4"` | CPU count. Maps to `--cpus`. |
+| `sandbox.resources.shmSize` | `"1g"` | Shared memory size. Maps to `--shm-size`. |
+| `sandbox.mountProjectReadonly` | `true` | Mount the source project directory read-only at `projectMountPath`. |
+| `sandbox.projectMountPath` | `"/project"` | Container path for the read-only project mount. |
+| `sandbox.runAsHostUser` | `true` | Run container as host user's UID:GID for correct bind-mount ownership. |
+| `sandbox.network.hostGateway` | `true` | Enable `host.docker.internal` gateway for reaching host services. |
+| `sandbox.network.env` | `[]` | Host environment variable names to pass through via temp `--env-file`. |
+| `sandbox.network.envFiles` | `[".env"]` | Project-root env file paths to mount read-only into `/workspace`. |
 
 ### Customizing the Image
 
-The `container/Dockerfile` is included in the project. To add project-specific tools (e.g., Go, Rust, additional language servers), edit the Dockerfile and rebuild:
+The `container/Dockerfile` is included in the project package. To add project-specific tools (e.g., Go, Rust, additional language servers), edit the Dockerfile and rebuild:
 
 ```bash
 docker build -t oc-forge-sandbox:latest container/

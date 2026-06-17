@@ -44,7 +44,7 @@ describe('detectGitMount', () => {
     const createMock = mockDocker.createContainer as ReturnType<typeof vi.fn>
     const calls = createMock.mock.calls
     expect(calls.length).toBe(1)
-    const extraMounts = calls[0][3] ?? []
+    const extraMounts = (calls[0][3] as { extraMounts?: string[] } | undefined)?.extraMounts ?? []
     expect(extraMounts).toContain('/external/repo/.git:/external/repo/.git')
   })
 
@@ -64,8 +64,8 @@ describe('detectGitMount', () => {
     const createMock = mockDocker.createContainer as ReturnType<typeof vi.fn>
     const calls = createMock.mock.calls
     expect(calls.length).toBe(1)
-    const extraMounts: string[] = calls[0][3] ?? []
-    // No git mount should be present — only output mounts (but no dataDir, so empty)
+    const extraMounts = (calls[0][3] as { extraMounts?: string[] } | undefined)?.extraMounts ?? []
+    // No git mount should be present — output mounts have been removed
     expect(extraMounts.length).toBe(0)
   })
 })

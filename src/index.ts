@@ -6,7 +6,7 @@ import { createConfigHandler } from './config'
 import { createSessionHooks, createLoopEventHandler } from './hooks'
 import { initializeDatabase, resolveDataDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo } from './storage'
 import type { LoopChangeNotifier } from './loop'
-import { loadPluginConfig } from './setup'
+import { loadPluginConfig, resolveBundledContainerDir } from './setup'
 import { resolveLogPath } from './storage'
 import { createLogger } from './utils/logger'
 import { createDockerService } from './sandbox/docker'
@@ -209,7 +209,13 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         sandboxManager = createSandboxManager(dockerService, {
           image: config.sandbox?.image ?? 'oc-forge-sandbox:latest',
           dataDir,
+          sourceProjectDir: directory,
+          mountProjectReadonly: config.sandbox?.mountProjectReadonly,
+          projectMountPath: config.sandbox?.projectMountPath,
+          buildContextDir: resolveBundledContainerDir(),
           ...(config.sandbox?.resources ? { resources: config.sandbox.resources } : {}),
+          ...(config.sandbox?.network ? { network: config.sandbox.network } : {}),
+          ...(config.sandbox?.runAsHostUser !== undefined ? { runAsHostUser: config.sandbox.runAsHostUser } : {}),
         }, logger, defaultGitService)
         logger.log('Docker sandbox manager initialized')
       } catch (err) {

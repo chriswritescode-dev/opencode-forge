@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { isSandboxEnabled, resolveSandboxContextForLoop } from '../../src/sandbox/context'
+import type { SandboxMount } from '../../src/sandbox/path'
 
 describe('isSandboxEnabled', () => {
   it('returns true when sandboxManager is provided regardless of legacy mode value', () => {
@@ -16,11 +17,13 @@ describe('isSandboxEnabled', () => {
 })
 
 describe('resolveSandboxContextForLoop', () => {
-  it('returns the active sandbox context without restoring', async () => {
+  it('returns the active sandbox context', async () => {
+    const mounts: SandboxMount[] = [{ hostDir: '/worktree', containerDir: '/workspace' }]
     const manager = {
       docker: {} as never,
       restore: vi.fn(),
-      getActive: vi.fn().mockReturnValue({ containerName: 'forge-loop', projectDir: '/worktree' }),
+      ensureRunning: vi.fn().mockResolvedValue('forge-loop'),
+      getActive: vi.fn().mockReturnValue({ containerName: 'forge-loop', projectDir: '/worktree', mounts }),
     }
 
     const context = await resolveSandboxContextForLoop(manager, {
@@ -30,35 +33,35 @@ describe('resolveSandboxContextForLoop', () => {
       worktreeDir: '/worktree',
     })
 
-    expect(context).toEqual({ docker: manager.docker, containerName: 'forge-loop', hostDir: '/worktree' })
-    expect(manager.restore).not.toHaveBeenCalled()
+    expect(context).toEqual({ docker: manager.docker, containerName: 'forge-loop', hostDir: '/worktree', mounts })
+    expect(manager.ensureRunning).toHaveBeenCalledWith('loop', '/worktree')
   })
 
-  it('restores the sandbox map when a sandbox loop has a running container not in memory', async () => {
+  it('returns null without calling ensureRunning when no worktreeDir', async () => {
+    const mounts: SandboxMount[] = [{ hostDir: '/worktree', containerDir: '/workspace' }]
     const manager = {
       docker: {} as never,
-      restore: vi.fn().mockResolvedValue(undefined),
-      getActive: vi.fn()
-        .mockReturnValueOnce(null)
-        .mockReturnValueOnce({ containerName: 'forge-loop', projectDir: '/worktree' }),
+      restore: vi.fn(),
+      ensureRunning: vi.fn(),
+      getActive: vi.fn().mockReturnValue({ containerName: 'forge-loop', projectDir: '/worktree', mounts }),
     }
 
     const context = await resolveSandboxContextForLoop(manager, {
       loopName: 'loop',
       active: true,
       sandbox: true,
-      worktreeDir: '/worktree',
     })
 
-    expect(manager.restore).toHaveBeenCalledWith('loop', '/worktree', expect.any(String))
-    expect(context).toEqual({ docker: manager.docker, containerName: 'forge-loop', hostDir: '/worktree' })
+    expect(context).toEqual({ docker: manager.docker, containerName: 'forge-loop', hostDir: '/worktree', mounts })
+    expect(manager.ensureRunning).not.toHaveBeenCalled()
   })
 
-  it('returns null after restore failure unless configured to throw', async () => {
+  it('returns null after ensureRunning failure unless configured to throw', async () => {
     const logger = { log: vi.fn() }
     const manager = {
       docker: {} as never,
-      restore: vi.fn().mockRejectedValue(new Error('docker unavailable')),
+      restore: vi.fn(),
+      ensureRunning: vi.fn().mockRejectedValue(new Error('docker unavailable')),
       getActive: vi.fn().mockReturnValue(null),
     }
 

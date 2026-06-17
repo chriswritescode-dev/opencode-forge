@@ -16,6 +16,11 @@ function resolveConfigDir(): string {
   return join(xdgConfigHome, 'opencode')
 }
 
+export function resolveBundledContainerDir(): string {
+  const pluginDir = dirname(fileURLToPath(import.meta.url))
+  return join(pluginDir, '..', 'container')
+}
+
 export function resolveConfigPath(): string {
   return join(resolveConfigDir(), 'forge-config.jsonc')
 }

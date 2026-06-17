@@ -13,6 +13,7 @@ export function createFakeGitService(overrides?: Partial<GitService>): GitServic
     currentBranch: vi.fn<[string], string | null>(() => null),
     revParseGitDir: vi.fn<[string], GitResult>(() => ({ ...defaultOk })),
     revParseGitCommonDir: vi.fn<[string], GitResult>(() => ({ ...defaultOk })),
+    revParseGitPath: vi.fn<[string, string], GitResult>(() => ({ ...defaultOk })),
     worktreeAdd: vi.fn<[string, string, string, boolean], GitResult>(() => ({ ...defaultOk })),
     worktreeRemove: vi.fn<[string, string], GitResult>(() => ({ ...defaultOk })),
     worktreePrune: vi.fn<[string], GitResult>(() => ({ ...defaultOk })),

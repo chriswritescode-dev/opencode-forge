@@ -167,16 +167,15 @@ describe('createForgeSessionAttachHook', () => {
   })
 
   test('chat.message fallback restores sandbox for TUI-created loop workspace', async () => {
-    const restore = vi.fn().mockResolvedValue(undefined)
-    const getActive = vi.fn()
-      .mockReturnValueOnce(null)
-      .mockReturnValueOnce({
-        containerName: 'forge-inline-loop',
-        projectDir: '/tmp/wt/inline',
-        startedAt: '2026-05-21T14:07:11.000Z',
-      })
+    const ensureRunning = vi.fn().mockResolvedValue('forge-inline-loop')
+    const getActive = vi.fn().mockReturnValue({
+      containerName: 'forge-inline-loop',
+      projectDir: '/tmp/wt/inline',
+      startedAt: '2026-05-21T14:07:11.000Z',
+      mounts: [{ hostDir: '/tmp/wt/inline', containerDir: '/workspace' }],
+    })
     const deps = buildHookDeps({
-      sandboxManager: { restore, getActive },
+      sandboxManager: { ensureRunning, getActive },
       sessionGet: vi.fn().mockResolvedValue({
         id: 'new_sess',
         workspaceID: 'ws_inline',
@@ -207,7 +206,7 @@ describe('createForgeSessionAttachHook', () => {
 
     await handler({ sessionID: 'new_sess' })
 
-    expect(restore).toHaveBeenCalledWith('inline-loop', '/tmp/wt/inline', expect.any(String))
+    expect(ensureRunning).toHaveBeenCalledWith('inline-loop', '/tmp/wt/inline')
     expect(mockAttachLoop).toHaveBeenCalledTimes(1)
     const [, , input] = mockAttachLoop.mock.calls[0]
     expect(input.sandboxEnabled).toBe(true)

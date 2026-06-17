@@ -14,11 +14,59 @@ export interface DockerExecResult {
   exitCode: number
 }
 
+export interface CreateContainerOpts {
+  extraMounts?: string[]
+  resources?: SandboxResources
+  addHosts?: string[]
+  envFile?: string
+  user?: string
+}
+
+export function buildCreateContainerArgs(name: string, projectDir: string, image: string, opts: CreateContainerOpts = {}): string[] {
+  const args: string[] = [
+    'run',
+    '-d',
+    '--name',
+    name,
+    '-v',
+    `${projectDir}:/workspace`,
+  ]
+
+  if (opts.resources?.memory) args.push('--memory', opts.resources.memory)
+  if (opts.resources?.memorySwap) args.push('--memory-swap', opts.resources.memorySwap)
+  if (opts.resources?.cpus) args.push('--cpus', opts.resources.cpus)
+  if (opts.resources?.shmSize) args.push('--shm-size', opts.resources.shmSize)
+
+  if (opts.addHosts) {
+    for (const host of opts.addHosts) {
+      args.push('--add-host', host)
+    }
+  }
+
+  if (opts.envFile) {
+    args.push('--env-file', opts.envFile)
+  }
+
+  if (opts.user) {
+    args.push('--user', opts.user)
+  }
+
+  if (opts.extraMounts) {
+    for (const mount of opts.extraMounts) {
+      args.push('-v', mount)
+    }
+  }
+
+  args.push('-w', '/workspace', image, 'sleep', 'infinity')
+
+  return args
+}
+
 export interface DockerService {
   checkDocker(): Promise<boolean>
   imageExists(image: string): Promise<boolean>
   buildImage(dockerfilePath: string, tag: string): Promise<void>
-  createContainer(name: string, projectDir: string, image: string, extraMounts?: string[], resources?: SandboxResources): Promise<void>
+  createContainer(name: string, projectDir: string, image: string, opts?: CreateContainerOpts): Promise<void>
   removeContainer(name: string): Promise<void>
   exec(name: string, command: string, opts?: DockerExecOpts): Promise<DockerExecResult>
   execPipe(name: string, command: string, stdin: string, opts?: { timeout?: number; abort?: AbortSignal }): Promise<DockerExecResult>
@@ -75,28 +123,8 @@ export function createDockerService(logger: Logger): DockerService {
     })
   }
 
-  async function createContainer(name: string, projectDir: string, image: string, extraMounts?: string[], resources?: SandboxResources): Promise<void> {
-    const args = [
-      'run',
-      '-d',
-      '--name',
-      name,
-      '-v',
-      `${projectDir}:/workspace`,
-    ]
-
-    if (resources?.memory) args.push('--memory', resources.memory)
-    if (resources?.memorySwap) args.push('--memory-swap', resources.memorySwap)
-    if (resources?.cpus) args.push('--cpus', resources.cpus)
-    if (resources?.shmSize) args.push('--shm-size', resources.shmSize)
-
-    if (extraMounts) {
-      for (const mount of extraMounts) {
-        args.push('-v', mount)
-      }
-    }
-
-    args.push('-w', '/workspace', image, 'sleep', 'infinity')
+  async function createContainer(name: string, projectDir: string, image: string, opts?: CreateContainerOpts): Promise<void> {
+    const args = buildCreateContainerArgs(name, projectDir, image, opts)
 
     const result = await execPromise('docker', args, { timeout: 30000 })
     if (result.exitCode !== 0) {
