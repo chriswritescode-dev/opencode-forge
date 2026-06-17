@@ -53,14 +53,12 @@
     // "mountProjectReadonly": true,
     // Container path for the read-only project mount. Defaults to '/project'.
     // "projectMountPath": "/project",
-    // Network access configuration (host gateway, env passthrough, env file mounts).
+    // Network access configuration (host gateway, env passthrough).
     // "network": {
     //   // Enable host.docker.internal gateway. Defaults to true.
     //   "hostGateway": true,
     //   // Environment variable names to pass through from host process into the container.
-    //   "env": ["MY_VAR"],
-    //   // Relative paths in the source project directory to mount as env files. Defaults to [".env"].
-    //   "envFiles": [".env"]
+    //   "env": ["MY_VAR"]
     // },
     // Run the container as the host user's UID:GID. Defaults to true.
     // "runAsHostUser": true

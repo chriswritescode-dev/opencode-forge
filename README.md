@@ -618,25 +618,14 @@ The sandbox container can reach services running on the host via `host.docker.in
 
 Values are written to a temporary `--env-file` on container start; they are not persisted to disk.
 
-**Project env-file mounting** makes `.env` files (and other env files) available inside the container. By default, any `.env` file at the project root is mounted read-only into `/workspace`. Configure the list via `network.envFiles`:
+The source project is mounted read-only at `/project`, so project env files remain available there for commands that explicitly read them.
 
-```jsonc
-{
-  "sandbox": {
-    "network": {
-      "envFiles": [".env", ".env.local"]
-    }
-  }
-}
-```
-
-**Security note:** environment passthrough and env-file mounting expose host secrets to the container. Only sandbox-trusted variables should be passed through. Each feature is independently controlled:
+**Security note:** environment passthrough exposes host secrets to the container. Only sandbox-trusted variables should be passed through. Each feature is independently controlled:
 
 - `network.hostGateway: false` — disables `host.docker.internal` gateway access
 - `network.env: []` — disables environment variable passthrough
-- `network.envFiles: []` — disables project-root env-file mounting
 
-Removing the `network` key does **not** disable all host-network features; the `hostGateway` and `envFiles` defaults remain active.
+Removing the `network` key does **not** disable all host-network features; the `hostGateway` default remains active.
 
 ### Read-Only Project Mount
 
@@ -673,7 +662,6 @@ When a `sh` command produces output exceeding the tool's limit, the overflow is 
 | `sandbox.runAsHostUser` | `true` | Run container as host user's UID:GID for correct bind-mount ownership. |
 | `sandbox.network.hostGateway` | `true` | Enable `host.docker.internal` gateway for reaching host services. |
 | `sandbox.network.env` | `[]` | Host environment variable names to pass through via temp `--env-file`. |
-| `sandbox.network.envFiles` | `[".env"]` | Project-root env file paths to mount read-only into `/workspace`. |
 
 ### Customizing the Image
 

@@ -56,8 +56,6 @@ export interface SandboxNetworkConfig {
   hostGateway?: boolean
   /** Environment variable names to pass through from host process into the container. */
   env?: string[]
-  /** Relative paths in the source project directory to mount as env files. Defaults to ['.env']. */
-  envFiles?: string[]
 }
 
 /**
@@ -92,7 +90,7 @@ export interface SandboxConfig {
   mountProjectReadonly?: boolean
   /** Container path for the read-only project mount. Defaults to '/project'. */
   projectMountPath?: string
-  /** Network access configuration (host gateway, env passthrough, env file mounts). */
+  /** Network access configuration (host gateway, env passthrough). */
   network?: SandboxNetworkConfig
   /** Run the container as the host user's UID:GID. Defaults to true. */
   runAsHostUser?: boolean

@@ -1,7 +1,7 @@
 import type { DockerService } from './docker'
 import type { Logger, SandboxResources } from '../types'
 import { join, resolve } from 'path'
-import { existsSync, mkdirSync, writeFileSync, rmSync, chmodSync } from 'fs'
+import { mkdirSync, writeFileSync, rmSync, chmodSync } from 'fs'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import type { SandboxMount } from './path'
 
@@ -13,7 +13,7 @@ export interface SandboxManagerConfig {
   mountProjectReadonly?: boolean
   projectMountPath?: string
   buildContextDir?: string
-  network?: { hostGateway?: boolean; env?: string[]; envFiles?: string[] }
+  network?: { hostGateway?: boolean; env?: string[] }
   runAsHostUser?: boolean
   resolveHostUser?: () => string | undefined
 }
@@ -133,20 +133,6 @@ export function createSandboxManager(
     return ['host.docker.internal:host-gateway']
   }
 
-  function envFileMounts(): string[] {
-    const envFiles = config.network?.envFiles ?? ['.env']
-    const projectDir = config.sourceProjectDir
-    if (!projectDir) return []
-    const mounts: string[] = []
-    for (const rel of envFiles) {
-      const abs = resolve(projectDir, rel)
-      if (existsSync(abs)) {
-        mounts.push(`${abs}:/workspace/${rel}:ro`)
-      }
-    }
-    return mounts
-  }
-
   function writeEnvPassthroughFile(containerName: string): string | undefined {
     const names = config.network?.env
     if (!names || names.length === 0) return undefined
@@ -201,7 +187,7 @@ export function createSandboxManager(
     const mounts = buildSandboxMounts(projectDir)
 
     const projectMount = mounts.length > 1 ? mounts[1] : undefined
-    const extraMounts = [...detectGitMount(absoluteProjectDir), ...envFileMounts()]
+    const extraMounts = detectGitMount(absoluteProjectDir)
     if (projectMount) {
       extraMounts.push(`${projectMount.hostDir}:${projectMount.containerDir}:ro`)
     }
