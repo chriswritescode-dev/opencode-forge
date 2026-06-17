@@ -22,6 +22,7 @@ export async function selectSessionBestEffort(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       await client.tui.selectSession({
+        directory,
         sessionID: selection.sessionID,
         ...(selection.workspace ? { workspace: selection.workspace } : {}),
       })
@@ -49,11 +50,11 @@ export async function selectSessionBestEffort(
   try {
     await client.tui.publish({
       directory,
+      ...(selection.workspace ? { workspace: selection.workspace } : {}),
       body: {
         type: 'tui.session.select',
         properties: {
           sessionID: selection.sessionID,
-          ...(selection.workspace ? { workspace: selection.workspace } : {}),
         },
       },
     })

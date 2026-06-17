@@ -87,7 +87,7 @@ describe('performTerminationSideEffects unwarp', () => {
 
     await performTerminationSideEffects(buildState(), completed, 'sess_worktree', ctx)
 
-    expect(tuiSelectSession).toHaveBeenCalledWith({ sessionID: 'sess_host' })
+    expect(tuiSelectSession).toHaveBeenCalledWith({ directory: '/tmp/project', sessionID: 'sess_host' })
     expect(callOrder.indexOf('select')).toBeLessThan(callOrder.indexOf('remove'))
   })
 
@@ -129,6 +129,13 @@ describe('performTerminationSideEffects unwarp', () => {
 
     await performTerminationSideEffects(buildState(), completed, 'sess_worktree', ctx)
 
+    expect(tuiPublish).toHaveBeenCalledWith({
+      directory: '/tmp/project',
+      body: {
+        type: 'tui.session.select',
+        properties: { sessionID: 'sess_host' },
+      },
+    })
     expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_abc' })
   })
 
@@ -139,7 +146,7 @@ describe('performTerminationSideEffects unwarp', () => {
     await performTerminationSideEffects(state, maxIterations, 'sess_worktree', ctx)
 
     expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_abc' })
-    expect(tuiSelectSession).toHaveBeenCalledWith({ sessionID: 'sess_host' })
+    expect(tuiSelectSession).toHaveBeenCalledWith({ directory: '/tmp/project', sessionID: 'sess_host' })
   })
 
   test('sweep removes sibling completed forge workspace during teardown', async () => {
