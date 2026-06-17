@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { reconcileSandboxes, type ReconcileSandboxesDeps } from '../../src/sandbox/reconcile'
 import type { SandboxManager } from '../../src/sandbox/manager'
 import type { LoopService } from '../../src/loop/service'
@@ -17,25 +17,25 @@ describe('reconcileSandboxes', () => {
     loopRegistry.clear()
 
     mockSandboxManager = {
-      isActive: mock(),
-      isLive: mock(async () => true),
-      getActive: mock(),
-      start: mock(),
-      restore: mock(),
-      stop: mock(),
-      cleanupOrphans: mock(),
+      isActive: vi.fn(),
+      isLive: vi.fn(async () => true),
+      getActive: vi.fn(),
+      start: vi.fn(),
+      restore: vi.fn(),
+      stop: vi.fn(),
+      cleanupOrphans: vi.fn(),
     }
 
     mockLoopService = {
-      listActive: mock(),
-      setSandboxContainer: mock(),
-      getActiveState: mock(),
+      listActive: vi.fn(),
+      setSandboxContainer: vi.fn(),
+      getActiveState: vi.fn(),
     }
 
     mockLogger = {
-      log: mock(),
-      error: mock(),
-      debug: mock(),
+      log: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
     }
 
     deps = {
@@ -280,7 +280,7 @@ describe('reconcileSandboxes', () => {
     // Simulate isLive checking Docker and finding container not running
     const mockManagerWithIsLive = {
       ...mockSandboxManager,
-      isLive: mock(async () => {
+      isLive: vi.fn(async () => {
         // Container not in Docker - stale map entry
         return false
       }),

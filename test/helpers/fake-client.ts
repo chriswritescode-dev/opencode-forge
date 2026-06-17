@@ -23,7 +23,7 @@
  * ```
  */
 
-import { mock } from 'bun:test'
+import { vi } from 'vitest'
 import type { ForgeClient } from '../../src/client/port'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -69,17 +69,17 @@ export function createFakeForgeClient(
   globalWorkspaceCounter = 0
 
   /**
-   * Create a `mock()` with call recording. If an `overrideImpl` is provided it
-   * replaces the default implementation, but the resulting `mock()` still
+   * Create a `vi.fn()` with call recording. If an `overrideImpl` is provided it
+   * replaces the default implementation, but the resulting `vi.fn()` still
    * records invocations to the shared `calls` array.
    */
   function makeMethod<T extends (...args: unknown[]) => unknown>(
     methodPath: string,
     defaultImpl: T,
     overrideImpl?: T,
-  ): T & ReturnType<typeof mock> {
+  ): T & ReturnType<typeof vi.fn> {
     const impl = overrideImpl ?? defaultImpl
-    return mock(((...args: unknown[]) => {
+    return vi.fn(((...args: unknown[]) => {
       calls.push({ method: methodPath, params: args[0] })
       return impl(...args)
     }) as any) as any

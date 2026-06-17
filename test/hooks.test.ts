@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, mock } from 'bun:test'
+import { describe, test, expect, beforeEach } from 'vitest'
 import { createSessionHooks } from '../src/hooks/session'
 import { createLoopEventHandler } from '../src/hooks/loop'
 import { createLoopService } from '../src/loop/service'

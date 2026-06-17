@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test'
+import { describe, test, expect } from 'vitest'
 import { createFakeForgeClient, type RecordedCall, type CreateFakeForgeClientResult } from './fake-client'
 import type { ForgeClient } from '../../src/client/port'
 

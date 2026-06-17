@@ -1,8 +1,11 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { loadPluginConfig, resolveConfigPath } from '../src/setup'
 import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs'
-import { join } from 'path'
+import { join, dirname } from 'path'
 import { homedir } from 'os'
+import { fileURLToPath } from 'url'
+
+const testDir = dirname(fileURLToPath(import.meta.url))
 
 const TEST_DIR = '/tmp/opencode-forge-setup-test-' + Date.now()
 
@@ -125,7 +128,7 @@ describe('bundled sample config', () => {
   })
 
   test('bundled forge-config.jsonc is valid JSONC and parses successfully', () => {
-    const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
+    const bundledConfigPath = join(testDir, '..', 'forge-config.jsonc')
     expect(existsSync(bundledConfigPath)).toBe(true)
     
     const content = readFileSync(bundledConfigPath, 'utf-8')
@@ -137,7 +140,7 @@ describe('bundled sample config', () => {
   })
 
   test('bundled config includes all supported top-level keys', () => {
-    const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
+    const bundledConfigPath = join(testDir, '..', 'forge-config.jsonc')
     const content = readFileSync(bundledConfigPath, 'utf-8')
     
     const stripComments = (text: string): string => {
@@ -171,7 +174,7 @@ describe('bundled sample config', () => {
   })
 
   test('bundled config compaction includes maxContextTokens', () => {
-    const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
+    const bundledConfigPath = join(testDir, '..', 'forge-config.jsonc')
     const content = readFileSync(bundledConfigPath, 'utf-8')
     
     const stripComments = (text: string): string => {
@@ -196,7 +199,7 @@ describe('bundled sample config', () => {
   })
 
   test('bundled config includes dataDir and completedLoopTtlMs', () => {
-    const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
+    const bundledConfigPath = join(testDir, '..', 'forge-config.jsonc')
     const content = readFileSync(bundledConfigPath, 'utf-8')
     
     const stripComments = (text: string): string => {
@@ -222,7 +225,7 @@ describe('bundled sample config', () => {
   })
 
   test('bundled config includes loop.worktreeLogging and is disabled by default', () => {
-    const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
+    const bundledConfigPath = join(testDir, '..', 'forge-config.jsonc')
     const content = readFileSync(bundledConfigPath, 'utf-8')
     
     const stripComments = (text: string): string => {
@@ -248,7 +251,7 @@ describe('bundled sample config', () => {
   })
 
   test('bundled config includes sandbox.enabled defaulting to true', () => {
-    const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
+    const bundledConfigPath = join(testDir, '..', 'forge-config.jsonc')
     const content = readFileSync(bundledConfigPath, 'utf-8')
 
     const stripComments = (text: string): string => {

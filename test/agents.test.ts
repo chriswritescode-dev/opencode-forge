@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test'
+import { describe, test, expect } from 'vitest'
 import { architectAgent, buildArchitectAgent } from '../src/agents/architect'
 import { codeAgent, buildCodeAgent } from '../src/agents/code'
 import { auditorAgent, auditorLoopAgent, buildAuditorAgent, buildAuditorLoopAgent } from '../src/agents/auditor'

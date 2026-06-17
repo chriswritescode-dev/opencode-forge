@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test'
+import { describe, test, expect } from 'vitest'
 import { resolveHostSessionDirectory } from '../src/utils/resolve-project-root'
 import { createFakeForgeClient } from './helpers/fake-client'
 

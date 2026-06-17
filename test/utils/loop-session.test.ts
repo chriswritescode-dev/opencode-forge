@@ -1,4 +1,4 @@
-import { test, expect } from 'bun:test'
+import { test, expect } from 'vitest'
 import { createLoopSessionWithWorkspace } from '../../src/utils/loop-session'
 import type { Logger } from '../../src/types'
 import { buildLoopPermissionRuleset } from '../../src/constants/loop'

@@ -1,4 +1,4 @@
-import { test, expect } from 'bun:test'
+import { test, expect } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { tmpdir } from 'os'
 import { join } from 'path'
