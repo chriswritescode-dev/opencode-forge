@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { createSectionPlansRepo } from '../src/storage/repos/section-plans-repo'
 import type { ParsedSection } from '../src/utils/section-capture'

@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'fs'
 import { join, isAbsolute } from 'path'
 import type { PluginConfig } from '../src/types'

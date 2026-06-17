@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import type { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
@@ -37,7 +37,7 @@ describe('Loop final audit rewind behavior', () => {
 
     loopService = createLoopService(
       loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger,
-      undefined, undefined, undefined, sectionPlansRepo,
+      undefined, undefined, sectionPlansRepo,
     )
   })
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, mock } from 'bun:test'
+import { describe, it, expect, vi } from 'vitest'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
 import type { DockerService } from '../../src/sandbox/docker'
 import type { Logger } from '../../src/types'
@@ -6,27 +6,27 @@ import type { Logger } from '../../src/types'
 describe('SandboxManager.isLiveByName', () => {
   function createMockDocker(): Partial<DockerService> {
     return {
-      checkDocker: mock(async () => true),
-      imageExists: mock(async () => true),
+      checkDocker: vi.fn(async () => true),
+      imageExists: vi.fn(async () => true),
       containerName: (worktreeName: string) => `forge-${worktreeName}`,
-      isRunning: mock(async () => false),
-      createContainer: mock(async () => {}),
-      removeContainer: mock(async () => {}),
-      listContainersByPrefix: mock(async () => []),
+      isRunning: vi.fn(async () => false),
+      createContainer: vi.fn(async () => {}),
+      removeContainer: vi.fn(async () => {}),
+      listContainersByPrefix: vi.fn(async () => []),
     }
   }
 
   function createMockLogger(): Partial<Logger> {
     return {
-      log: mock(),
-      error: mock(),
-      debug: mock(),
+      log: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
     }
   }
 
   it('should return true when Docker reports container is running', async () => {
     const mockDocker = createMockDocker()
-    mockDocker.isRunning = mock(async () => true)
+    mockDocker.isRunning = vi.fn(async () => true)
     const mockLogger = createMockLogger()
 
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
@@ -40,7 +40,7 @@ describe('SandboxManager.isLiveByName', () => {
 
   it('should return false when Docker reports container is not running', async () => {
     const mockDocker = createMockDocker()
-    mockDocker.isRunning = mock(async () => false)
+    mockDocker.isRunning = vi.fn(async () => false)
     const mockLogger = createMockLogger()
 
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
@@ -54,7 +54,7 @@ describe('SandboxManager.isLiveByName', () => {
 
   it('should not modify activeSandboxes map', async () => {
     const mockDocker = createMockDocker()
-    mockDocker.isRunning = mock(async () => true)
+    mockDocker.isRunning = vi.fn(async () => true)
     const mockLogger = createMockLogger()
 
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }

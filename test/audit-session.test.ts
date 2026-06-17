@@ -1,4 +1,4 @@
-import { describe, test, expect, mock } from 'bun:test'
+import { describe, test, expect, vi } from 'vitest'
 import { createAuditSession, promptAuditSession } from '../src/utils/audit-session'
 import { buildAuditSessionPermissionRuleset } from '../src/constants/loop'
 import type { Logger } from '../src/types'
@@ -22,7 +22,7 @@ describe('createAuditSession', () => {
 
   test('creates session with correct audit ruleset', async () => {
     const { client, sessionCreate } = createMockClient()
-    const logger = { log: mock(), error: mock() } as unknown as Logger
+    const logger = { log: vi.fn(), error: vi.fn() } as unknown as Logger
 
     const result = await createAuditSession({
       client,
@@ -53,7 +53,7 @@ describe('createAuditSession', () => {
         warp: async () => {},
       },
     })
-    const logger = { log: mock(), error: mock() } as unknown as Logger
+    const logger = { log: vi.fn(), error: vi.fn() } as unknown as Logger
 
     const result = await createAuditSession({
       client,
@@ -72,7 +72,7 @@ describe('createAuditSession', () => {
 
   test('uses non-sandbox ruleset when isSandbox is false', async () => {
     const { client, sessionCreate } = createMockClient()
-    const logger = { log: mock(), error: mock() } as unknown as Logger
+    const logger = { log: vi.fn(), error: vi.fn() } as unknown as Logger
 
     await createAuditSession({
       client,
@@ -92,7 +92,7 @@ describe('createAuditSession', () => {
 
   test('creates audit session as top-level session even when previous code session exists', async () => {
     const { client, sessionCreate } = createMockClient()
-    const logger = { log: mock(), error: mock() } as unknown as Logger
+    const logger = { log: vi.fn(), error: vi.fn() } as unknown as Logger
 
     await createAuditSession({
       client,
@@ -114,7 +114,7 @@ describe('createAuditSession', () => {
 
   test('formats title with section context for sectioned loops', async () => {
     const { client, sessionCreate } = createMockClient()
-    const logger = { log: mock(), error: mock() } as unknown as Logger
+    const logger = { log: vi.fn(), error: vi.fn() } as unknown as Logger
 
     await createAuditSession({
       client,

@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { openForgeDatabase, closeDatabase } from '../../src/storage/database'
 import { resolveDashboardDbPath, startDashboardServer, type DashboardServerHandle } from '../../src/dashboard/launch'
 
@@ -29,15 +29,23 @@ describe('resolveDashboardDbPath', () => {
 describe('startDashboardServer', () => {
   let dbPath: string
   let handle: DashboardServerHandle | null = null
+  let capturedFetch: (req: Request) => Response | Promise<Response>
 
   beforeEach(() => {
     const rand = Math.random().toString(36).slice(2, 10)
     dbPath = `/tmp/forge-dashboard-launch-test-${rand}.db`
     const db = openForgeDatabase(dbPath)
     closeDatabase(db)
+    vi.stubGlobal('Bun', {
+      serve: (opts: { port?: number; fetch: (req: Request) => Response | Promise<Response> }) => {
+        capturedFetch = opts.fetch
+        return { port: opts.port || 4747, stop: vi.fn() }
+      },
+    })
   })
 
   afterEach(() => {
+    vi.unstubAllGlobals()
     if (handle) {
       handle.stop()
       handle = null
@@ -54,7 +62,7 @@ describe('startDashboardServer', () => {
     handle = startDashboardServer({ dbPath, port: 0 })
     expect(handle.url).toMatch(/^http:\/\/localhost:\d+$/)
 
-    const res = await fetch(handle.url)
+    const res = await capturedFetch(new Request('http://localhost/'))
     expect(res.status).toBe(200)
     const body = await res.text()
     expect(body).toMatch(/^<!DOCTYPE html>/)
@@ -62,7 +70,7 @@ describe('startDashboardServer', () => {
 
   test('serves the data api as json', async () => {
     handle = startDashboardServer({ dbPath, port: 0 })
-    const res = await fetch(`${handle.url}/api/data`)
+    const res = await capturedFetch(new Request('http://localhost/api/data'))
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toMatch(/application\/json/)
     const body = await res.json()
