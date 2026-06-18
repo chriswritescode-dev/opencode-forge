@@ -109,7 +109,7 @@ describe('Loop', () => {
       })
 
       expect(loop.hasOutstandingFindings('b2', 'bug')).toBe(true)
-      const bugFindings = loop.getOutstandingFindings('b2', 'bug')
+      const bugFindings = loop.service.getOutstandingFindings('b2', 'bug')
       expect(bugFindings.length).toBe(1)
       expect(bugFindings[0].severity).toBe('bug')
     })
@@ -137,10 +137,10 @@ describe('Loop', () => {
         loopName: 'b2',
       })
 
-      const allFindings = loop.getOutstandingFindings('b2')
+      const allFindings = loop.service.getOutstandingFindings('b2')
       expect(allFindings.length).toBe(2)
 
-      const warningFindings = loop.getOutstandingFindings('b2', 'warning')
+      const warningFindings = loop.service.getOutstandingFindings('b2', 'warning')
       expect(warningFindings.length).toBe(1)
       expect(warningFindings[0].severity).toBe('warning')
     })
@@ -163,7 +163,7 @@ describe('Loop', () => {
         auditCount: 0,
       }
 
-      const prompt = loop.buildAuditPrompt(state as any)
+      const prompt = loop.service.buildAuditPrompt(state as any)
 
       expect(prompt).toContain('Plan completeness check:')
       expect(prompt).toContain('severity: "bug"')
@@ -207,7 +207,7 @@ describe('Loop', () => {
         auditCount: 0,
       }
 
-      const prompt = loop.buildContinuationPrompt(state as any)
+      const prompt = loop.service.buildContinuationPrompt(state as any)
 
       expect(prompt).toContain('Outstanding Review Findings')
       expect(prompt).toContain('test.ts:1')
@@ -229,7 +229,7 @@ describe('Loop', () => {
         auditCount: 1,
       }
 
-      const prompt = loop.buildContinuationPrompt(state as any, 'audit findings text')
+      const prompt = loop.service.buildContinuationPrompt(state as any, 'audit findings text')
 
       expect(prompt).not.toContain('ORIGINAL_PLAN_BODY_SHOULD_NOT_APPEAR')
       expect(prompt).toContain('audit findings text')
@@ -244,12 +244,12 @@ describe('Loop', () => {
         projectId, file: 'src/bug.ts', line: 10, severity: 'bug', description: 'Bug', scenario: 'test', loopName: 'test-loop',
       })
 
-      const findings = loop.getOutstandingFindings('test-loop', 'bug')
+      const findings = loop.service.getOutstandingFindings('test-loop', 'bug')
       expect(findings.length).toBe(1)
 
       // First bump → count=1
-      loop.bumpFindingRecurrence('test-loop', findings)
-      const prompt1 = loop.buildContinuationPrompt({
+      loop.service.bumpFindingRecurrence('test-loop', findings)
+      const prompt1 = loop.service.buildContinuationPrompt({
         active: true, sessionId: 's1', loopName: 'test-loop', worktreeDir: '/tmp/test',
         projectDir: '/tmp/test', iteration: 1, maxIterations: 5,
         startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
@@ -260,8 +260,8 @@ describe('Loop', () => {
       expect(prompt1).not.toContain('Recurring findings — re-evaluate')
 
       // Second bump → count=2
-      loop.bumpFindingRecurrence('test-loop', findings)
-      const prompt2 = loop.buildContinuationPrompt({
+      loop.service.bumpFindingRecurrence('test-loop', findings)
+      const prompt2 = loop.service.buildContinuationPrompt({
         active: true, sessionId: 's1', loopName: 'test-loop', worktreeDir: '/tmp/test',
         projectDir: '/tmp/test', iteration: 2, maxIterations: 5,
         startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
@@ -271,8 +271,8 @@ describe('Loop', () => {
       expect(prompt2).not.toContain('Recurring blocking findings')
 
       // Third bump → count=3 (threshold reached)
-      loop.bumpFindingRecurrence('test-loop', findings)
-      const prompt3 = loop.buildContinuationPrompt({
+      loop.service.bumpFindingRecurrence('test-loop', findings)
+      const prompt3 = loop.service.buildContinuationPrompt({
         active: true, sessionId: 's1', loopName: 'test-loop', worktreeDir: '/tmp/test',
         projectDir: '/tmp/test', iteration: 3, maxIterations: 5,
         startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
@@ -283,7 +283,7 @@ describe('Loop', () => {
       expect(prompt3).toContain('recurred 3×')
 
       // Also surfaces in audit prompt
-      const auditPrompt = loop.buildAuditPrompt({
+      const auditPrompt = loop.service.buildAuditPrompt({
         active: true, sessionId: 's1', loopName: 'test-loop', worktreeDir: '/tmp/test',
         projectDir: '/tmp/test', iteration: 3, maxIterations: 5,
         startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
@@ -301,28 +301,28 @@ describe('Loop', () => {
         projectId, file: 'src/bug.ts', line: 10, severity: 'bug', description: 'Bug', scenario: 'test', loopName: 'test-loop-2',
       })
 
-      const findings1 = loop.getOutstandingFindings('test-loop-2', 'bug')
-      loop.bumpFindingRecurrence('test-loop-2', findings1) // count=1
-      loop.bumpFindingRecurrence('test-loop-2', findings1) // count=2
+      const findings1 = loop.service.getOutstandingFindings('test-loop-2', 'bug')
+      loop.service.bumpFindingRecurrence('test-loop-2', findings1) // count=1
+      loop.service.bumpFindingRecurrence('test-loop-2', findings1) // count=2
 
       // Now resolve the finding (remove it)
       reviewFindingsRepo.delete(projectId, 'src/bug.ts', 10, { loopName: 'test-loop-2' })
 
-      const findings2 = loop.getOutstandingFindings('test-loop-2', 'bug')
+      const findings2 = loop.service.getOutstandingFindings('test-loop-2', 'bug')
       expect(findings2.length).toBe(0)
 
       // Bump with empty list — should reset
-      loop.bumpFindingRecurrence('test-loop-2', findings2)
+      loop.service.bumpFindingRecurrence('test-loop-2', findings2)
 
       // Re-add the same finding
       reviewFindingsRepo.write({
         projectId, file: 'src/bug.ts', line: 10, severity: 'bug', description: 'Bug', scenario: 'test', loopName: 'test-loop-2',
       })
 
-      const findings3 = loop.getOutstandingFindings('test-loop-2', 'bug')
-      loop.bumpFindingRecurrence('test-loop-2', findings3) // should start at 1 again
+      const findings3 = loop.service.getOutstandingFindings('test-loop-2', 'bug')
+      loop.service.bumpFindingRecurrence('test-loop-2', findings3) // should start at 1 again
 
-      const prompt = loop.buildContinuationPrompt({
+      const prompt = loop.service.buildContinuationPrompt({
         active: true, sessionId: 's1', loopName: 'test-loop-2', worktreeDir: '/tmp/test',
         projectDir: '/tmp/test', iteration: 4, maxIterations: 5,
         startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
@@ -339,7 +339,7 @@ describe('Loop', () => {
         projectId, file: 'src/final-bug.ts', line: 42, severity: 'bug', description: 'Final audit bug', scenario: 'test', loopName: 'test-loop-final',
       })
 
-      const findings = loop.getOutstandingFindings('test-loop-final', 'bug')
+      const findings = loop.service.getOutstandingFindings('test-loop-final', 'bug')
       expect(findings.length).toBe(1)
 
       const finalAuditState = {
@@ -350,24 +350,24 @@ describe('Loop', () => {
       } as any
 
       // Bump once — below threshold, no escalation
-      loop.bumpFindingRecurrence('test-loop-final', findings)
-      const fixPrompt1 = loop.buildFinalAuditFixPrompt(finalAuditState, 'final audit feedback')
+      loop.service.bumpFindingRecurrence('test-loop-final', findings)
+      const fixPrompt1 = loop.service.buildFinalAuditFixPrompt(finalAuditState, 'final audit feedback')
       expect(fixPrompt1).not.toContain('Recurring blocking findings')
 
       // Bump twice — still below threshold
-      loop.bumpFindingRecurrence('test-loop-final', findings)
-      const fixPrompt2 = loop.buildFinalAuditFixPrompt(finalAuditState, 'final audit feedback')
+      loop.service.bumpFindingRecurrence('test-loop-final', findings)
+      const fixPrompt2 = loop.service.buildFinalAuditFixPrompt(finalAuditState, 'final audit feedback')
       expect(fixPrompt2).not.toContain('Recurring blocking findings')
 
       // Bump third time — threshold reached, escalation appears
-      loop.bumpFindingRecurrence('test-loop-final', findings)
-      const fixPrompt3 = loop.buildFinalAuditFixPrompt(finalAuditState, 'final audit feedback')
+      loop.service.bumpFindingRecurrence('test-loop-final', findings)
+      const fixPrompt3 = loop.service.buildFinalAuditFixPrompt(finalAuditState, 'final audit feedback')
       expect(fixPrompt3).toContain('Recurring blocking findings')
       expect(fixPrompt3).toContain('src/final-bug.ts:42')
       expect(fixPrompt3).toContain('recurred 3×')
 
       // Also surfaces in the final-audit prompt
-      const auditPrompt = loop.buildFinalAuditPrompt(finalAuditState)
+      const auditPrompt = loop.service.buildFinalAuditPrompt(finalAuditState)
       expect(auditPrompt).toContain('Recurring findings — re-evaluate')
       expect(auditPrompt).toContain('src/final-bug.ts:42')
     })
@@ -385,20 +385,20 @@ describe('Loop', () => {
         projectId, file: 'src/section1.ts', line: 2, severity: 'bug', description: 'Bug section 1', scenario: 'test', loopName: 'reset-test', sectionIndex: 1,
       })
 
-      const allBugs = loop.getOutstandingFindings('reset-test', 'bug')
+      const allBugs = loop.service.getOutstandingFindings('reset-test', 'bug')
 
       // Bump all bugs together → both keys coexist in the map at count=2
-      loop.bumpFindingRecurrence('reset-test', allBugs) // s0:1, s1:1
-      loop.bumpFindingRecurrence('reset-test', allBugs) // s0:2, s1:2
+      loop.service.bumpFindingRecurrence('reset-test', allBugs) // s0:1, s1:1
+      loop.service.bumpFindingRecurrence('reset-test', allBugs) // s0:2, s1:2
 
       // Reset section 0 — should only remove s0 keys, leaving s1:2
-      loop.resetSectionRecurrence('reset-test', 0)
+      loop.service.resetSectionRecurrence('reset-test', 0)
 
       // Bump ALL bugs again: s0 starts fresh (0+1=1), s1 continues (2+1=3)
-      loop.bumpFindingRecurrence('reset-test', allBugs)
+      loop.service.bumpFindingRecurrence('reset-test', allBugs)
 
       // Check escalation via audit prompt: only s1 (count=3) should surface
-      const prompt = loop.buildAuditPrompt({
+      const prompt = loop.service.buildAuditPrompt({
         active: true, sessionId: 's1', loopName: 'reset-test', worktreeDir: '/tmp/test',
         projectDir: '/tmp/test', iteration: 3, maxIterations: 5,
         startedAt: new Date().toISOString(), phase: 'auditing', errorCount: 0, auditCount: 0,
@@ -412,7 +412,7 @@ describe('Loop', () => {
       expect(prompt).not.toContain('src/section0.ts:1 (') // NOT in recurrence format
 
       // Verify the continuation prompt also shows only section1 escalated
-      const contPrompt = loop.buildContinuationPrompt({
+      const contPrompt = loop.service.buildContinuationPrompt({
         active: true, sessionId: 's1', loopName: 'reset-test', worktreeDir: '/tmp/test',
         projectDir: '/tmp/test', iteration: 3, maxIterations: 5,
         startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
@@ -429,19 +429,19 @@ describe('Loop', () => {
         projectId, file: 'src/bug.ts', line: 10, severity: 'bug', description: 'Bug', scenario: 'test', loopName: 'reset-fresh', sectionIndex: 0,
       })
 
-      const findings = loop.getOutstandingFindings('reset-fresh', 'bug')
+      const findings = loop.service.getOutstandingFindings('reset-fresh', 'bug')
 
       // Build up recurrence to count 2
-      loop.bumpFindingRecurrence('reset-fresh', findings) // count=1
-      loop.bumpFindingRecurrence('reset-fresh', findings) // count=2
+      loop.service.bumpFindingRecurrence('reset-fresh', findings) // count=1
+      loop.service.bumpFindingRecurrence('reset-fresh', findings) // count=2
 
       // Reset section 0 (clean audit)
-      loop.resetSectionRecurrence('reset-fresh', 0)
+      loop.service.resetSectionRecurrence('reset-fresh', 0)
 
       // Bump again — should start at 1, not 3
-      loop.bumpFindingRecurrence('reset-fresh', findings) // count=1 (fresh)
+      loop.service.bumpFindingRecurrence('reset-fresh', findings) // count=1 (fresh)
 
-      const prompt = loop.buildContinuationPrompt({
+      const prompt = loop.service.buildContinuationPrompt({
         active: true, sessionId: 's1', loopName: 'reset-fresh', worktreeDir: '/tmp/test',
         projectDir: '/tmp/test', iteration: 3, maxIterations: 5,
         startedAt: new Date().toISOString(), phase: 'coding', errorCount: 0, auditCount: 0,
@@ -452,11 +452,11 @@ describe('Loop', () => {
     })
 
     test('resetting nonexistent section does not throw', () => {
-      expect(() => loop.resetSectionRecurrence('nonexistent-loop', 0)).not.toThrow()
+      expect(() => loop.service.resetSectionRecurrence('nonexistent-loop', 0)).not.toThrow()
     })
 
     test('resetting section with no recurrence data does not throw', () => {
-      expect(() => loop.resetSectionRecurrence('clean-loop', 0)).not.toThrow()
+      expect(() => loop.service.resetSectionRecurrence('clean-loop', 0)).not.toThrow()
     })
   })
 

@@ -13,13 +13,13 @@ export function createSectionReadTool(ctx: ToolContext): ReturnType<typeof tool>
     },
     execute: async (args, toolCtx) => {
       const sessionId = toolCtx?.sessionID ?? ''
-      const loopName = loop.resolveLoopName(sessionId)
+      const loopName = loop.service.resolveLoopName(sessionId)
 
       if (!loopName) {
         return JSON.stringify({ error: 'Not in a loop session. This tool can only be used within an active loop session.' })
       }
 
-      const state = loop.getAnyState(loopName)
+      const state = loop.service.getAnyState(loopName)
       if (!state) return JSON.stringify({ error: `Loop "${loopName}" not found.` })
 
       if (state.totalSections === 0) {
@@ -28,7 +28,7 @@ export function createSectionReadTool(ctx: ToolContext): ReturnType<typeof tool>
 
       const explicitIndex = args.section_index
       const selectedSection = explicitIndex === undefined
-        ? loop.getNextIncompleteSectionPlan(state)
+        ? loop.service.getNextIncompleteSectionPlan(state)
         : null
 
       const idx = explicitIndex ?? selectedSection?.sectionIndex ?? state.currentSectionIndex
@@ -38,10 +38,10 @@ export function createSectionReadTool(ctx: ToolContext): ReturnType<typeof tool>
 
       const section = explicitIndex === undefined && selectedSection?.sectionIndex === idx
         ? selectedSection
-        : loop.getSectionPlan(state, idx)
+        : loop.service.getSectionPlan(state, idx)
       if (!section) return JSON.stringify({ error: `Section ${idx} not found in loop "${loopName}".` })
 
-      const digest = loop.getCompletedSectionDigest(state)
+      const digest = loop.service.getCompletedSectionDigest(state)
       const summary = digest.find(s => s.index === idx)
 
       const result = {

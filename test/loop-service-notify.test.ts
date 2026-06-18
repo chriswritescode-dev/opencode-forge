@@ -84,7 +84,7 @@ describe('LoopChangeNotifier', () => {
         notify,
       })
 
-      loop.setState('test-loop', baseState as any)
+      loop.service.setState('test-loop', baseState as any)
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('insert')
@@ -112,7 +112,7 @@ describe('LoopChangeNotifier', () => {
         notify,
       })
 
-      loop.deleteState('test-loop')
+      loop.service.deleteState('test-loop')
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('delete')
@@ -171,7 +171,7 @@ describe('LoopChangeNotifier', () => {
         notify: () => {},
       })
 
-      loop.deleteState('test-loop')
+      loop.service.deleteState('test-loop')
 
       expect(deletedPlans.length).toBe(1)
       expect(deletedPlans[0].projectId).toBe('proj-test')
@@ -199,7 +199,7 @@ describe('LoopChangeNotifier', () => {
         notify,
       })
 
-      loop.setStatus('test-loop', 'running')
+      loop.service.setStatus('test-loop', 'running')
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('status')
@@ -227,7 +227,7 @@ describe('LoopChangeNotifier', () => {
         notify,
       })
 
-      loop.registerLoopSession('s1', 'test-loop')
+      loop.service.registerLoopSession('s1', 'test-loop')
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('session')
@@ -255,7 +255,7 @@ describe('LoopChangeNotifier', () => {
         notify,
       })
 
-      loop.incrementError('test-loop')
+      loop.service.incrementError('test-loop')
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('error')
@@ -283,7 +283,7 @@ describe('LoopChangeNotifier', () => {
         notify,
       })
 
-      loop.resetError('test-loop')
+      loop.service.resetError('test-loop')
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('error')
@@ -339,7 +339,7 @@ describe('LoopChangeNotifier', () => {
         notify,
       })
 
-      loop.setPhaseAndResetError('test-loop', 'auditing')
+      loop.service.setPhaseAndResetError('test-loop', 'auditing')
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('phase')
@@ -367,7 +367,7 @@ describe('LoopChangeNotifier', () => {
         notify,
       })
 
-      loop.setModelFailed('test-loop', true)
+      loop.service.setModelFailed('test-loop', true)
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('model-failed')
@@ -395,7 +395,7 @@ describe('LoopChangeNotifier', () => {
         notify,
       })
 
-      loop.setLastAuditResult('test-loop', 'audit result text')
+      loop.service.setLastAuditResult('test-loop', 'audit result text')
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('audit-result')
@@ -425,7 +425,7 @@ describe('LoopChangeNotifier', () => {
         notify,
       })
 
-      loop.replaceSession('test-loop', { newSessionId: 's5', phase: 'auditing' })
+      loop.service.replaceSession('test-loop', { newSessionId: 's5', phase: 'auditing' })
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('rotate')
@@ -453,7 +453,7 @@ describe('LoopChangeNotifier', () => {
         notify,
       })
 
-      loop.terminateLoop('test-loop', { status: 'completed', reason: 'done', completedAt: Date.now() })
+      loop.service.terminate('test-loop', { status: 'completed', reason: 'done', completedAt: Date.now() })
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('terminate')
@@ -481,7 +481,7 @@ describe('LoopChangeNotifier', () => {
         notify,
       })
 
-      loop.setSandboxContainer('test-loop', 'container-123')
+      loop.service.setSandboxContainer('test-loop', 'container-123')
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('sandbox')
@@ -509,7 +509,7 @@ describe('LoopChangeNotifier', () => {
         notify,
       })
 
-      loop.clearWorkspaceId('test-loop')
+      loop.service.clearWorkspaceId('test-loop')
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('workspace')
@@ -537,7 +537,7 @@ describe('LoopChangeNotifier', () => {
         notify,
       })
 
-      loop.setWorkspaceId('test-loop', 'ws-123')
+      loop.service.setWorkspaceId('test-loop', 'ws-123')
 
       expect(notifyCalls.length).toBe(1)
       expect(notifyCalls[0].reason).toBe('workspace')
@@ -628,7 +628,7 @@ describe('LoopChangeNotifier', () => {
 
       // Should not throw
       expect(() => {
-        loop.setState('test-loop', baseState as any)
+        loop.service.setState('test-loop', baseState as any)
       }).not.toThrow()
     })
   })

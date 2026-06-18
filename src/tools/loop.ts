@@ -260,7 +260,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             const iterInfo = s.maxIterations && s.maxIterations > 0 ? `${s.iteration} / ${s.maxIterations}` : `${s.iteration} (unlimited)`
             // Check if any session registered to this loop is busy (main + child/subagent sessions)
             const isBusy = Object.entries(statuses).some(([sid, v]) =>
-              ctx.loop.resolveLoopName(sid) === s.loopName && v.type === 'busy',
+              ctx.loop.service.resolveLoopName(sid) === s.loopName && v.type === 'busy',
             )
             const sessionStatus = isBusy ? 'busy' : (statuses[s.sessionId]?.type ?? 'unavailable')
             const stallInfo = loopHandler.getStallInfo(s.loopName!)
@@ -392,7 +392,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           const statuses = statusResult as Record<string, { type: string; attempt?: number; message?: string; next?: number }> | undefined
           // Check if any session registered to this loop is busy (main + child/subagent sessions)
           const isBusy = Object.entries(statuses ?? {}).some(([sid, s]) =>
-            ctx.loop.resolveLoopName(sid) === state.loopName && s.type === 'busy',
+            ctx.loop.service.resolveLoopName(sid) === state.loopName && s.type === 'busy',
           )
           if (isBusy) {
             sessionStatus = 'busy'

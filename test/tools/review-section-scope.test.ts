@@ -141,7 +141,7 @@ describe('review section scoping', () => {
     sectionPlansRepo = createSectionPlansRepo(db)
     loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger, undefined, undefined, sectionPlansRepo)
     const sessionLoopResolver = createSessionLoopResolver({
-      loop: loopService,
+      loop: { service: loopService, listActive: () => loopService.listActive() },
       getParentSessionId: async (sessionId: string) => parentSessions[sessionId] ?? null,
       getSessionDirectory: async () => tempDir,
       logger: mockLogger,
@@ -152,7 +152,7 @@ describe('review section scoping', () => {
       loopsRepo,
       projectId,
       logger: mockLogger,
-      loop: loopService,
+      loop: { service: loopService },
       directory: tempDir,
       resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
     } as any

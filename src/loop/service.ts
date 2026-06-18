@@ -4,6 +4,7 @@ import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo, ReviewFindingRow } from '../storage/repos/review-findings-repo'
 import type { SectionPlansRepo, SectionPlanRow } from '../storage/repos/section-plans-repo'
 import type { LoopState } from './state'
+import { loopRowToState, loopStateToRow } from './state'
 import {
   buildContinuationPrompt as _buildContinuationPrompt,
   buildAuditPrompt as _buildAuditPrompt,
@@ -86,41 +87,6 @@ export interface LoopService {
   setTotalSections(loopName: string, total: number): void
 }
 
-function rowToLoopState(row: LoopRow, large: LoopLargeFields | null): LoopState {
-  return {
-    active: row.status === 'running',
-    sessionId: row.currentSessionId,
-    loopName: row.loopName,
-    worktreeDir: row.worktreeDir,
-    projectDir: row.projectDir,
-    worktreeBranch: row.worktreeBranch ?? undefined,
-    iteration: row.iteration,
-    maxIterations: row.maxIterations,
-    startedAt: new Date(row.startedAt).toISOString(),
-    phase: row.phase,
-    lastAuditResult: large?.lastAuditResult ?? undefined,
-    errorCount: row.errorCount,
-    auditCount: row.auditCount,
-    status: row.status,
-    terminationReason: row.terminationReason ?? undefined,
-    completedAt: row.completedAt ? new Date(row.completedAt).toISOString() : undefined,
-    worktree: row.worktree,
-    modelFailed: row.modelFailed,
-    sandbox: row.sandbox,
-    sandboxContainer: row.sandboxContainer ?? undefined,
-    completionSummary: row.completionSummary ?? undefined,
-    executionModel: row.executionModel ?? undefined,
-    auditorModel: row.auditorModel ?? undefined,
-    workspaceId: row.workspaceId ?? undefined,
-    hostSessionId: row.hostSessionId ?? undefined,
-    currentSectionIndex: row.currentSectionIndex,
-    totalSections: row.totalSections,
-    finalAuditDone: row.finalAuditDone === 1,
-    executionVariant: row.executionVariant ?? undefined,
-    auditorVariant: row.auditorVariant ?? undefined,
-  }
-}
-
 export function createLoopService(
   loopsRepo: LoopsRepo,
   plansRepo: PlansRepo,
@@ -135,40 +101,6 @@ export function createLoopService(
   const coderDecisionsByLoop = new Map<string, string>()
   const findingRecurrenceByLoop = new Map<string, Map<string, number>>()
 
-  function stateToRow(state: LoopState): LoopRow {
-    return {
-      projectId,
-      loopName: state.loopName,
-      status: state.status,
-      currentSessionId: state.sessionId,
-      worktree: state.worktree ?? false,
-      worktreeDir: state.worktreeDir,
-      worktreeBranch: state.worktreeBranch ?? null,
-      projectDir: state.projectDir ?? state.worktreeDir,
-      maxIterations: state.maxIterations,
-      iteration: state.iteration,
-      auditCount: state.auditCount,
-      errorCount: state.errorCount,
-      phase: state.phase,
-      executionModel: state.executionModel ?? null,
-      auditorModel: state.auditorModel ?? null,
-      modelFailed: state.modelFailed ?? false,
-      sandbox: state.sandbox ?? false,
-      sandboxContainer: state.sandboxContainer ?? null,
-      startedAt: new Date(state.startedAt).getTime(),
-      completedAt: state.completedAt ? new Date(state.completedAt).getTime() : null,
-      terminationReason: state.terminationReason ?? null,
-      completionSummary: state.completionSummary ?? null,
-      workspaceId: state.workspaceId ?? null,
-      hostSessionId: state.hostSessionId ?? null,
-      currentSectionIndex: state.currentSectionIndex,
-      totalSections: state.totalSections,
-      finalAuditDone: state.finalAuditDone ? 1 : 0,
-      executionVariant: state.executionVariant ?? null,
-      auditorVariant: state.auditorVariant ?? null,
-    }
-  }
-
   function hydratePlanFromPlans(state: LoopState): LoopState {
     const planRow = plansRepo.getForLoopOrSession?.(projectId, state.loopName, state.sessionId) ?? null
     if (planRow) {
@@ -181,7 +113,7 @@ export function createLoopService(
     const row = loopsRepo.get(projectId, name)
     if (!row) return null
     const large = loopsRepo.getLarge(projectId, name)
-    const state = rowToLoopState(row, large)
+    const state = loopRowToState(row, large)
     return hydratePlanFromPlans(state)
   }
 
@@ -197,7 +129,7 @@ export function createLoopService(
     if (state.loopName !== name) {
       throw new Error(`setState: name parameter "${name}" does not match state.loopName "${state.loopName}"`)
     }
-    const row = stateToRow(state)
+    const row = loopStateToRow(state, projectId)
     const large: LoopLargeFields = {
       lastAuditResult: state.lastAuditResult ?? null,
     }
@@ -297,7 +229,7 @@ export function createLoopService(
     const rows = loopsRepo.listByStatus(projectId, ['running'])
     return rows.map((row) => {
       const large = loopsRepo.getLarge(projectId, row.loopName)
-      return hydratePlanFromPlans(rowToLoopState(row, large))
+      return hydratePlanFromPlans(loopRowToState(row, large))
     })
   }
 
@@ -305,7 +237,7 @@ export function createLoopService(
     const rows = loopsRepo.listByStatus(projectId, ['completed', 'cancelled', 'errored', 'stalled'])
     return rows.map((row) => {
       const large = loopsRepo.getLarge(projectId, row.loopName)
-      return hydratePlanFromPlans(rowToLoopState(row, large))
+      return hydratePlanFromPlans(loopRowToState(row, large))
     })
   }
 
@@ -314,13 +246,13 @@ export function createLoopService(
     const mapResult = (row: LoopRow | null): LoopState | null => {
       if (!row) return null
       const large = loopsRepo.getLarge(projectId, row.loopName)
-      return hydratePlanFromPlans(rowToLoopState(row, large))
+      return hydratePlanFromPlans(loopRowToState(row, large))
     }
     return {
       match: mapResult(result.match),
       candidates: result.candidates.map((row) => {
         const large = loopsRepo.getLarge(projectId, row.loopName)
-        return hydratePlanFromPlans(rowToLoopState(row, large))
+        return hydratePlanFromPlans(loopRowToState(row, large))
       }),
     }
   }

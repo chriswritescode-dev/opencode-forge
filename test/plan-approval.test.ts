@@ -316,9 +316,11 @@ describe('Plan Approval Tool Interception', () => {
   test('Matches metadata answer exactly', async () => {
     const abortSpy = vi.fn(() => Promise.resolve())
     const ctx = {
-      loopService: {
-        resolveLoopName: () => 'test-loop',
-        getActiveState: () => null,
+      loop: {
+        service: {
+          resolveLoopName: () => 'test-loop',
+          getActiveState: () => null,
+        },
       },
       logger: createMockLogger(),
       client: {
@@ -395,9 +397,11 @@ describe('Plan Approval Tool Interception', () => {
   test('Matches metadata answer by prefix', async () => {
     const abortSpy = vi.fn(() => Promise.resolve())
     const ctx = {
-      loopService: {
-        resolveLoopName: () => 'test-loop',
-        getActiveState: () => null,
+      loop: {
+        service: {
+          resolveLoopName: () => 'test-loop',
+          getActiveState: () => null,
+        },
       },
       logger: createMockLogger(),
       client: {
@@ -474,9 +478,11 @@ describe('Plan Approval Tool Interception', () => {
   test('Does not match middle-of-string text', async () => {
     const abortSpy = vi.fn(() => Promise.resolve())
     const ctx = {
-      loopService: {
-        resolveLoopName: () => 'test-loop',
-        getActiveState: () => null,
+      loop: {
+        service: {
+          resolveLoopName: () => 'test-loop',
+          getActiveState: () => null,
+        },
       },
       logger: createMockLogger(),
       client: {
@@ -552,9 +558,11 @@ describe('Plan Approval Tool Interception', () => {
   test('Falls back to output when metadata answers are missing', async () => {
     const abortSpy = vi.fn(() => Promise.resolve())
     const ctx = {
-      loopService: {
-        resolveLoopName: () => 'test-loop',
-        getActiveState: () => null,
+      loop: {
+        service: {
+          resolveLoopName: () => 'test-loop',
+          getActiveState: () => null,
+        },
       },
       logger: createMockLogger(),
       client: {
@@ -632,9 +640,11 @@ describe('Plan Approval Tool Interception', () => {
   test('Execute here approval schedules source abort and returns without throwing', async () => {
     const abortSpy = vi.fn(() => Promise.resolve())
     const ctx = {
-      loopService: {
-        resolveLoopName: () => 'test-loop',
-        getActiveState: () => null,
+      loop: {
+        service: {
+          resolveLoopName: () => 'test-loop',
+          getActiveState: () => null,
+        },
       },
       logger: createMockLogger(),
       client: {
@@ -711,9 +721,11 @@ describe('Plan Approval Tool Interception', () => {
   test('New session approval schedules source abort and returns without throwing', async () => {
     const abortSpy = vi.fn(() => Promise.resolve())
     const ctx = {
-      loopService: {
-        resolveLoopName: () => 'test-loop',
-        getActiveState: () => null,
+      loop: {
+        service: {
+          resolveLoopName: () => 'test-loop',
+          getActiveState: () => null,
+        },
       },
       logger: createMockLogger(),
       client: {
@@ -794,7 +806,7 @@ describe('Plan Approval Tool Interception', () => {
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
     
     const ctx = {
-      loopService,
+      loop: { service: loopService },
       logger: createMockLogger(),
       client: {
         session: {
@@ -875,7 +887,7 @@ describe('Plan Approval Tool Interception', () => {
 
     const uniqueSessionId = `loop-dispatch-${Date.now()}`
     const ctx = {
-      loopService,
+      loop: { service: loopService },
       logger: createMockLogger(),
       client: {
         session: {
@@ -973,9 +985,11 @@ describe('Tool blocking hook', () => {
 
   function createContextForLoopState(state: { active: boolean; sessionId: string; phase?: string } | null): ToolContext {
     return {
-      loopService: {
-        resolveLoopName: () => state ? loopName : null,
-        getActiveState: () => state,
+      loop: {
+        service: {
+          resolveLoopName: () => state ? loopName : null,
+          getActiveState: () => state,
+        },
       },
       logger: createMockLogger(),
     } as unknown as ToolContext
@@ -1113,7 +1127,7 @@ describe('Execute here bypass', () => {
       config: mockConfig,
       logger: mockLogger,
       db,
-      loopService,
+      loop: { service: loopService },
       plansRepo,
       loopsRepo,
       reviewFindingsRepo,
@@ -1428,7 +1442,7 @@ describe('Execute here bypass', () => {
       plansRepo,
       loopsRepo,
       reviewFindingsRepo,
-      loopService,
+      loop: { service: loopService },
       client: {
         session: {
           abort: abortSpy,
@@ -1527,7 +1541,7 @@ describe('Execute here bypass', () => {
       config: { executionModel: 'test-provider/test-model' } as PluginConfig,
       logger: createMockLogger(),
       plansRepo,
-      loopService,
+      loop: { service: loopService },
       client: {
         session: {
           abort: abortSpy,
@@ -1609,7 +1623,7 @@ describe('Execute here bypass', () => {
       config: { executionModel: 'test-provider/test-model', loop: { defaultMaxIterations: 5 } } as PluginConfig,
       logger: createMockLogger(),
       plansRepo,
-      loopService,
+      loop: { service: loopService },
       loopHandler: {
         startWatchdog: vi.fn(() => {}),
       },
@@ -1704,7 +1718,7 @@ describe('Execute here bypass', () => {
       config: { executionModel: 'test-provider/test-model', loop: { defaultMaxIterations: 5 } } as PluginConfig,
       logger: createMockLogger(),
       plansRepo,
-      loopService,
+      loop: { service: loopService },
       loopHandler: {
         startWatchdog: vi.fn(() => {}),
       },
@@ -1879,7 +1893,7 @@ describe('Fire-and-forget dispatch behavior', () => {
       config: mockConfig,
       logger: mockLogger,
       db,
-      loopService,
+      loop: { service: loopService },
       plansRepo,
       loopsRepo,
       reviewFindingsRepo,
@@ -2341,9 +2355,11 @@ describe('Fire-and-forget dispatch behavior', () => {
     const testReviewFindingsRepo = createReviewFindingsRepo(db)
     const abortSpy = vi.fn(() => Promise.resolve())
     const ctx = {
-      loopService: {
-        resolveLoopName: () => 'test-loop',
-        getActiveState: () => null,
+      loop: {
+        service: {
+          resolveLoopName: () => 'test-loop',
+          getActiveState: () => null,
+        },
       },
       logger: createMockLogger(),
       client: {
@@ -2424,9 +2440,11 @@ describe('Fire-and-forget dispatch behavior', () => {
     const abortSpy = vi.fn(() => Promise.reject(abortError))
     const errors: unknown[] = []
     const ctx = {
-      loopService: {
-        resolveLoopName: () => 'test-loop',
-        getActiveState: () => null,
+      loop: {
+        service: {
+          resolveLoopName: () => 'test-loop',
+          getActiveState: () => null,
+        },
       },
       logger: {
         log: () => {},

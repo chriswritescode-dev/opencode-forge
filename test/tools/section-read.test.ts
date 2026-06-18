@@ -190,7 +190,7 @@ describe('section-read tool', () => {
   }
 
   async function executeSectionRead(args?: { section_index?: number }, sessionID?: string): Promise<string> {
-    const tool = createSectionReadTool({ loop: loopService } as any)
+    const tool = createSectionReadTool({ loop: { service: loopService } } as any)
     const result = await tool.execute(args ?? {}, makeToolContext(sessionID ?? ''))
     return typeof result === 'string' ? result : result.output
   }

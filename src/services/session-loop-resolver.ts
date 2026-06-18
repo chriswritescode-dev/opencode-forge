@@ -1,11 +1,11 @@
 import type { Logger } from '../types'
+import type { LoopService } from '../loop/service'
 import { resolve } from 'path'
 
 export interface SessionLoopResolverDeps {
   loop: {
-    resolveLoopName(sessionId: string): string | null
-    getActiveState(name: string): { loopName: string; active: boolean; sandbox?: boolean; worktree?: boolean; worktreeDir?: string } | null
-    listActive?(): Array<{ loopName: string; worktreeDir: string; sandbox?: boolean; worktree?: boolean; active: boolean; workspaceId?: string }>
+    service: Pick<LoopService, 'resolveLoopName' | 'getActiveState'>
+    listActive(): Array<{ loopName: string; worktreeDir: string; sandbox?: boolean; worktree?: boolean; active: boolean; workspaceId?: string }>
   }
   getParentSessionId(sessionId: string): Promise<string | null>
   getSessionDirectory?(sessionId: string): Promise<string | null>
@@ -25,8 +25,8 @@ export function createSessionLoopResolver(deps: SessionLoopResolverDeps): {
 } {
   return {
     async resolveActiveLoopForSession(sessionId: string): Promise<ResolvedLoop | null> {
-      const directLoopName = deps.loop.resolveLoopName(sessionId)
-      const directState = directLoopName ? deps.loop.getActiveState(directLoopName) : null
+      const directLoopName = deps.loop.service.resolveLoopName(sessionId)
+      const directState = directLoopName ? deps.loop.service.getActiveState(directLoopName) : null
 
       deps.logger.debug(
         `[session-resolver] session=${sessionId} direct=${directLoopName ?? 'none'} parent=checking active=${directState?.loopName ?? 'none'}`,
@@ -41,8 +41,8 @@ export function createSessionLoopResolver(deps: SessionLoopResolverDeps): {
       )
 
       if (parentId) {
-        const parentLoopName = deps.loop.resolveLoopName(parentId)
-        const parentState = parentLoopName ? deps.loop.getActiveState(parentLoopName) : null
+        const parentLoopName = deps.loop.service.resolveLoopName(parentId)
+        const parentState = parentLoopName ? deps.loop.service.getActiveState(parentLoopName) : null
         if (parentState?.active) {
           deps.logger.log(`[session-resolver] session=${sessionId} resolved via parent=${parentId} loop=${parentState.loopName}`)
           return parentState
@@ -57,7 +57,7 @@ export function createSessionLoopResolver(deps: SessionLoopResolverDeps): {
             if (!state.worktree) continue
             if (resolve(state.worktreeDir) === normalized) {
               deps.logger.log(`[session-resolver] session=${sessionId} resolved via directory match loop=${state.loopName}`)
-              const full = deps.loop.getActiveState(state.loopName)
+              const full = deps.loop.service.getActiveState(state.loopName)
               if (full?.active) return full
             }
           }

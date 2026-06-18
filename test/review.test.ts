@@ -28,7 +28,7 @@ function createToolContext(db: Database, reviewFindingsRepo: ReturnType<typeof c
   const plansRepo = createPlansRepo(db)
   const loopsRepo = createLoopsRepo(db)
   const sessionLoopResolver = createSessionLoopResolver({
-    loop: loopService,
+    loop: { service: loopService, listActive: () => loopService.listActive() },
     getParentSessionId: async () => null,
     getSessionDirectory: async () => TEST_DIR,
     logger: mockLogger,
@@ -39,7 +39,7 @@ function createToolContext(db: Database, reviewFindingsRepo: ReturnType<typeof c
     loopsRepo,
     projectId: 'test-project',
     logger: mockLogger,
-    loop: loopService,
+    loop: { service: loopService },
     directory: TEST_DIR,
     resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
   } as any
