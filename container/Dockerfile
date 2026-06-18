@@ -40,13 +40,18 @@ RUN curl -fsSL https://astral.sh/uv/install.sh | bash \
 # The container is launched with `--user <hostUID>:<hostGID>` (forge's
 # runAsHostUser default). That UID has no /etc/passwd entry, so HOME and every
 # tool cache/store must resolve to fixed, world-writable paths.
+#
+# npm_config_store_dir pins pnpm's content-addressable store to a container-internal
+# path. Without it, pnpm places the store on the project filesystem (the bind-mounted
+# /workspace), which floods the host file watcher and is slow over the macOS bind mount.
 ENV HOME=/home/forge \
     XDG_CACHE_HOME=/home/forge/.cache \
     XDG_DATA_HOME=/home/forge/.local/share \
     PNPM_HOME=/home/forge/.local/share/pnpm \
-    npm_config_cache=/home/forge/.npm
+    npm_config_cache=/home/forge/.npm \
+    npm_config_store_dir=/home/forge/.local/share/pnpm/store
 RUN useradd -m -u 1000 forge \
-    && mkdir -p /home/forge/.cache /home/forge/.local/share/pnpm /home/forge/.npm \
+    && mkdir -p /home/forge/.cache /home/forge/.local/share/pnpm/store /home/forge/.npm \
     && chmod -R 0777 /home/forge
 
 # Allow git to operate on the bind-mounted workspace regardless of owner UID.
