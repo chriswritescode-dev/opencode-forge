@@ -26,7 +26,7 @@ import { join } from 'path'
 import { existsSync } from 'fs'
 import { applyPlanDecomposition } from './section-bootstrap'
 import { sendLoopPrompt } from '../loop/send-loop-prompt'
-import { markPromptSent, clearPromptPending, terminationStatusFor, parseTerminationReasonString } from '../loop'
+import { markPromptSent, clearPromptPending, terminationStatusFor, parseTerminationReasonString, isWorkspaceNotFoundError } from '../loop'
 import { ConcurrentPromptError } from '../loop/in-flight-guard'
 import { getRestartability, type RestartBlockedReason } from '../loop/restartability'
 import { loopBranchExists } from '../workspace/forge-naming'
@@ -44,7 +44,7 @@ function isTransientSessionError(err: unknown): boolean {
     : typeof err === 'string'
       ? err
       : (() => { try { return JSON.stringify(err ?? '') } catch { return String(err) } })()
-  return /Session not found/i.test(msg) || /Workspace not found/i.test(msg)
+  return /Session not found/i.test(msg) || isWorkspaceNotFoundError(err)
 }
 
 // ============================================================================
@@ -1256,23 +1256,28 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const loops: LoopStatusView[] = states.map(state => {
       const cap200 = (s: string | null | undefined): string | null =>
         s ? (s.length > 200 ? s.slice(0, 200) : s) : null
-      const sectionViews = state.totalSections > 0 
-        ? Array.from({ length: state.totalSections }, (_, i) => {
-            const section = deps.loop.service.getSectionPlan(state, i)
+      const sectionViews = state.totalSections > 0
+        ? (() => {
             const digest = deps.loop.service.getCompletedSectionDigest(state)
-            const summary = digest?.find(s => s.index === i)
-            return {
-              index: i,
-              title: section?.title ?? `Section ${i + 1}`,
-              status: section?.status ?? 'pending',
-              attempts: section?.attempts ?? 0,
-              startedAt: section?.startedAt,
-              completedAt: section?.completedAt,
-              summaryDone: cap200(summary?.summaryDone),
-              summaryDeviations: cap200(summary?.summaryDeviations),
-              summaryFollowUps: cap200(summary?.summaryFollowUps),
-            }
-          })
+            const sectionByIndex = new Map(
+              (deps.sectionPlansRepo?.list(deps.projectId, state.loopName) ?? []).map(s => [s.sectionIndex, s] as const),
+            )
+            return Array.from({ length: state.totalSections }, (_, i) => {
+              const section = sectionByIndex.get(i)
+              const summary = digest.find(s => s.index === i)
+              return {
+                index: i,
+                title: section?.title ?? `Section ${i + 1}`,
+                status: section?.status ?? 'pending',
+                attempts: section?.attempts ?? 0,
+                startedAt: section?.startedAt,
+                completedAt: section?.completedAt,
+                summaryDone: cap200(summary?.summaryDone),
+                summaryDeviations: cap200(summary?.summaryDeviations),
+                summaryFollowUps: cap200(summary?.summaryFollowUps),
+              }
+            })
+          })()
         : undefined
       
       // Fetch cumulative usage from persisted aggregate

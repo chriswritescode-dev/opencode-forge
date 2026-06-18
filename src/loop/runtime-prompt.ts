@@ -13,15 +13,17 @@ export interface PromptDispatchDeps {
   loopService: LoopService
 }
 
+export interface SendPromptInput {
+  loopName: string
+  sessionId: string
+  promptText: string
+  agent: 'code' | 'auditor-loop'
+  model?: { providerID: string; modelID: string } | null
+  variant?: string
+}
+
 export interface PromptDispatch {
-  sendPromptWithFallback(input: {
-    loopName: string
-    sessionId: string
-    promptText: string
-    agent: 'code' | 'auditor-loop'
-    model?: { providerID: string; modelID: string } | null
-    variant?: string
-  }): Promise<{ error?: unknown; usedModel?: { providerID: string; modelID: string } | undefined }>
+  sendPromptWithFallback(input: SendPromptInput): Promise<{ error?: unknown; usedModel?: { providerID: string; modelID: string } | undefined }>
 
   getLastAssistantInfo(sessionId: string, worktreeDir: string): Promise<{ text: string | null; error: string | null; lastMessageRole: string }>
 }
@@ -29,14 +31,7 @@ export interface PromptDispatch {
 export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
   const { client, logger, getConfig, loopService } = deps
 
-  async function sendPromptWithFallback(input: {
-    loopName: string
-    sessionId: string
-    promptText: string
-    agent: 'code' | 'auditor-loop'
-    model?: { providerID: string; modelID: string } | null
-    variant?: string
-  }): Promise<{ error?: unknown; usedModel?: { providerID: string; modelID: string } | undefined }> {
+  async function sendPromptWithFallback(input: SendPromptInput): Promise<{ error?: unknown; usedModel?: { providerID: string; modelID: string } | undefined }> {
     const { loopName, sessionId, promptText, agent } = input
 
     if (agent === 'auditor-loop') {

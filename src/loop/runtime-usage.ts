@@ -2,7 +2,7 @@ import type { ForgeClient } from '../client/port'
 import type { Logger, PluginConfig } from '../types'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
 import type { LoopState } from './state'
-import { summarizeAssistantUsage, type UsageAttribution } from './token-usage'
+import { summarizeAssistantUsage, type UsageAttribution, type AssistantMessageInfo } from './token-usage'
 
 export interface UsageCaptureDeps {
   client: ForgeClient
@@ -67,19 +67,7 @@ export function createUsageCapture(deps: UsageCaptureDeps): UsageCapture {
       const messages = await client.session.messages({
         sessionID: input.sessionId,
         directory: input.directory,
-      }) as Array<{
-        info: {
-          role: string
-          cost?: number
-          tokens?: { input: number; output: number; reasoning: number; cache: { read: number; write: number } }
-          model?: string
-          modelID?: string
-          modelId?: string
-          provider?: string
-          providerID?: string
-          model_name?: string
-        }
-      }>
+      }) as Array<{ info: AssistantMessageInfo }>
 
       const attribution: UsageAttribution = {
         role: input.role,
