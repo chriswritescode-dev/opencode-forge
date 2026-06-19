@@ -563,7 +563,7 @@ docker build -t oc-forge-sandbox:latest container/
 
 The image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, and jq.
 
-The `container/Dockerfile` ships with the package. If the image is missing at loop start, the sandbox fails fast with a message showing the build command and the `"enabled": false` opt-out. There is no auto-build — the image must be built manually.
+The `container/Dockerfile` ships with the plugin package. If the image is missing when OpenCode starts, Forge shows a warning toast with a "Forge: Build sandbox image" command in the palette. You can also trigger the build from the command palette at any time by searching for `Forge: Build sandbox image`, which opens a confirmation dialog and runs `docker build` automatically.
 
 **2. Configure the sandbox** (`~/.config/opencode/forge-config.jsonc`):
 
@@ -665,11 +665,13 @@ When a `sh` command produces output exceeding the tool's limit, the overflow is 
 
 ### Customizing the Image
 
-The `container/Dockerfile` is included in the project package. To add project-specific tools (e.g., Go, Rust, additional language servers), edit the Dockerfile and rebuild:
+The `container/Dockerfile` is included in the plugin package. To add project-specific tools (e.g., Go, Rust, additional language servers), edit the Dockerfile and rebuild:
 
 ```bash
 docker build -t oc-forge-sandbox:latest container/
 ```
+
+You can also rebuild from the command palette using `Forge: Build sandbox image`. This picks up any local changes to the bundled Dockerfile automatically.
 
 
 ## Development
