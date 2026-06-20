@@ -220,9 +220,33 @@ function SandboxBuildDialog(props: {
         <text fg={theme().textMuted}>Context: {props.buildContextDir}</text>
       </box>
 
-      <box paddingTop={1} flexShrink={0} flexDirection="row" gap={2}>
-        <text fg={theme().text} onMouseUp={() => { void doBuild() }}>Build</text>
-        <text fg={theme().textMuted} onMouseUp={() => props.api.ui.dialog.clear()}>Cancel (esc)</text>
+      <box paddingTop={1} paddingX={1} flexShrink={0}>
+        <select
+          focused={true}
+          selectedIndex={0}
+          options={[
+            { name: 'Build', description: 'Press enter to build the sandbox image', value: 'build' },
+            { name: 'Cancel', description: 'Press enter to close this dialog', value: 'cancel' },
+          ]}
+          onSelect={(_, option) => {
+            if (option?.value === 'build') {
+              void doBuild()
+              return
+            }
+            if (option?.value === 'cancel') {
+              props.api.ui.dialog.clear()
+            }
+          }}
+          showDescription={true}
+          itemSpacing={1}
+          wrapSelection={true}
+          textColor={theme().text}
+          focusedTextColor={theme().text}
+          selectedTextColor="#ffffff"
+          selectedBackgroundColor={theme().borderActive}
+          minHeight={4}
+          flexShrink={0}
+        />
       </box>
     </box>
   )

@@ -10,6 +10,7 @@ import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-r
 import { aggregateToUsageSummary } from '../utils/loop-format'
 import { sweepStaleForgeWorkspaces } from '../workspace/sweep-stale'
 import { selectSessionBestEffort } from '../utils/tui-navigation'
+import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 
 export interface TerminationSideEffectsContext {
   client: ForgeClient
@@ -171,9 +172,10 @@ function getToastMessage(state: LoopState, reason: TerminationReason): string {
  * session. Once `workspace.remove` fires, that view becomes orphaned. We reuse
  * the same navigation path as warp-in (`selectSessionBestEffort`): the
  * `tui.selectSession` command first, falling back to a `tui.session.select`
- * publish. Omitting the `workspace` property returns the user to the host
- * session on the local system. Best-effort: failures are logged but never
- * block teardown.
+ * publish. Selecting through the current workspace context reaches a TUI that
+ * is still scoped to the soon-to-be-removed workspace; selecting without a
+ * workspace reaches local project views. Best-effort: failures are logged but
+ * never block teardown.
  */
 async function unwarpToHostSession(
   state: LoopState,
@@ -181,10 +183,27 @@ async function unwarpToHostSession(
 ): Promise<void> {
   if (!state.hostSessionId || !state.projectDir) return
 
+  if (state.workspaceId) {
+    await selectSessionBestEffort(ctx.client, state.projectDir, ctx.logger, {
+      sessionID: state.hostSessionId,
+      workspace: state.workspaceId,
+    })
+  }
+
   await selectSessionBestEffort(ctx.client, state.projectDir, ctx.logger, {
     sessionID: state.hostSessionId,
   })
+
+  const settleMs = resolveUnwarpSettleMs()
+  if (settleMs > 0) {
+    await new Promise<void>((resolve) => setTimeout(resolve, settleMs))
+  }
   ctx.logger.log(`Loop: unwarped TUI to host session ${state.hostSessionId} for ${state.loopName}`)
+}
+
+function resolveUnwarpSettleMs(): number {
+  const raw = Number(process.env.FORGE_UNWARP_SETTLE_MS)
+  return Number.isFinite(raw) && raw >= 0 ? raw : 750
 }
 
 /** Tear down the worktree workspace — always commits changes back. */
@@ -198,23 +217,38 @@ async function teardownWorktree(
   const reasonLabel = resolveReasonLabel(reason)
   const doCommit = true
   const doRemoveWorktree = reason.kind === 'completed'
+  const removeWorktreeAfterWorkspaceRemoval = doRemoveWorktree
 
   ctx.pendingTeardowns?.set(state.loopName, {
     iteration: state.iteration,
     reasonLabel,
     doCommit,
-    doRemoveWorktree,
+    doRemoveWorktree: false,
   })
 
   await unwarpToHostSession(state, ctx)
 
+  let removedWorkspace = false
   try {
     await ctx.client.workspace.remove({ id: state.workspaceId })
+    removedWorkspace = true
     ctx.logger.log(`Loop: workspace ${state.workspaceId} removed for ${state.loopName}`)
   } catch (err) {
     ctx.logger.error(`Loop: workspace.remove threw for ${state.workspaceId}`, err)
   } finally {
     ctx.pendingTeardowns?.clear(state.loopName)
+  }
+
+  if (removedWorkspace && removeWorktreeAfterWorkspaceRemoval && state.worktreeDir) {
+    const settleMs = resolveUnwarpSettleMs()
+    if (settleMs > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, settleMs))
+    }
+    await cleanupLoopWorktree({
+      worktreeDir: state.worktreeDir,
+      logPrefix: 'Loop: post-workspace-remove',
+      logger: ctx.logger,
+    })
   }
 
   // Opportunistic sweep of stale sibling workspaces (port required)
