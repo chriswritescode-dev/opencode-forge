@@ -37,7 +37,6 @@ describe('plan-read', () => {
       loopsRepo,
       projectId: 'test-project',
       logger: mockLogger,
-      loopService: {} as any,
       loop: {
         service: {
           resolveLoopName: () => null,
@@ -184,7 +183,6 @@ describe('plan-read with loop session', () => {
       loopsRepo,
       projectId: 'test-project',
       logger: mockLogger,
-      loopService: {} as any,
       loop: {
         service: {
           resolveLoopName: (sessionID: string) =>
@@ -242,7 +240,6 @@ describe('plan-read with recent plans', () => {
       loopsRepo,
       projectId: 'test-project',
       logger: mockLogger,
-      loopService: {} as any,
       loop: {
         service: {
           resolveLoopName: () => null,

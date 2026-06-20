@@ -136,7 +136,7 @@ function isPlanApprovalQuestionArgs(args: unknown): boolean {
 }
 
 export function createToolExecuteBeforeHook(ctx: ToolContext, deps: LoopToolBlockingDeps = {}): Hooks['tool.execute.before'] {
-  const loop = ctx.loop ?? (ctx as ToolContext & { loopService: ToolContext['loop'] }).loopService
+  const loop = ctx.loop
   const { logger } = ctx
 
   return async (
@@ -154,7 +154,7 @@ export function createToolExecuteBeforeHook(ctx: ToolContext, deps: LoopToolBloc
 }
 
 export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlockingDeps = {}): Hooks['tool.execute.after'] {
-  const loop = ctx.loop ?? (ctx as ToolContext & { loopService: ToolContext['loop'] }).loopService
+  const loop = ctx.loop
   const { logger, config } = ctx
 
   return async (
