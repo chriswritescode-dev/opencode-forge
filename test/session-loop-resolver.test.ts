@@ -19,7 +19,7 @@ describe('createSessionLoopResolver', () => {
       }
 
       const resolver = createSessionLoopResolver({
-        loop: loopService,
+        loop: { service: loopService },
         getParentSessionId,
         logger: mockLogger,
       })
@@ -54,7 +54,7 @@ describe('createSessionLoopResolver', () => {
       }
 
       const resolver = createSessionLoopResolver({
-        loop: loopService,
+        loop: { service: loopService },
         getParentSessionId,
         logger: mockLogger,
       })
@@ -76,7 +76,7 @@ describe('createSessionLoopResolver', () => {
       }
 
       const resolver = createSessionLoopResolver({
-        loop: loopService,
+        loop: { service: loopService },
         getParentSessionId,
         logger: mockLogger,
       })
@@ -100,7 +100,7 @@ describe('createSessionLoopResolver', () => {
       }
 
       const resolver = createSessionLoopResolver({
-        loop: loopService,
+        loop: { service: loopService },
         getParentSessionId,
         logger: mockLogger,
       })
@@ -138,7 +138,7 @@ describe('createSessionLoopResolver', () => {
       }
 
       const resolver = createSessionLoopResolver({
-        loop: loopService,
+        loop: { service: loopService },
         getParentSessionId,
         logger: mockLogger,
       })
@@ -156,22 +156,24 @@ describe('createSessionLoopResolver', () => {
         return null
       }
 
-      const loopService = {
-        resolveLoopName: (sessionId: string) => {
-          if (sessionId === 'session-a') return 'loop-1'
-          if (sessionId === 'parent-session-1') return 'loop-2'
-          return null
-        },
-        getActiveState: (name: string) => {
-          if (name === 'loop-1') return { loopName: 'loop-1', active: false, sandbox: true }
-          if (name === 'loop-2') return { loopName: 'loop-2', active: false, sandbox: true }
-          return null
+      const loop = {
+        service: {
+          resolveLoopName: (sessionId: string) => {
+            if (sessionId === 'session-a') return 'loop-1'
+            if (sessionId === 'parent-session-1') return 'loop-2'
+            return null
+          },
+          getActiveState: (name: string) => {
+            if (name === 'loop-1') return { loopName: 'loop-1', active: false, sandbox: true }
+            if (name === 'loop-2') return { loopName: 'loop-2', active: false, sandbox: true }
+            return null
+          },
         },
         listActive: () => [],
       }
 
       const resolver = createSessionLoopResolver({
-        loop: loopService,
+        loop,
         getParentSessionId,
         logger: mockLogger,
       })
@@ -185,17 +187,19 @@ describe('createSessionLoopResolver', () => {
     it('resolves child session when directory matches an active loop worktreeDir', async () => {
       const getParentSessionId = async (sessionId: string) => sessionId === 'session-subagent' ? 'parent-session' : null
 
-      const loopService = {
-        resolveLoopName: () => null,
-        getActiveState: (name: string) =>
-          name === 'active-loop' ? { loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' } : null,
+      const loop = {
+        service: {
+          resolveLoopName: () => null,
+          getActiveState: (name: string) =>
+            name === 'active-loop' ? { loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' } : null,
+        },
         listActive: () => [{ loopName: 'active-loop', worktreeDir: '/worktree', sandbox: true, worktree: true, active: true }],
       }
 
       const getSessionDirectory = async (_sessionId: string) => '/worktree'
 
       const resolver = createSessionLoopResolver({
-        loop: loopService,
+        loop,
         getParentSessionId,
         getSessionDirectory,
         logger: mockLogger,
@@ -208,17 +212,19 @@ describe('createSessionLoopResolver', () => {
     it('does not resolve a top-level new session by directory alone', async () => {
       const getParentSessionId = async () => null
 
-      const loopService = {
-        resolveLoopName: () => null,
-        getActiveState: (name: string) =>
-          name === 'active-loop' ? { loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' } : null,
+      const loop = {
+        service: {
+          resolveLoopName: () => null,
+          getActiveState: (name: string) =>
+            name === 'active-loop' ? { loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' } : null,
+        },
         listActive: () => [{ loopName: 'active-loop', worktreeDir: '/worktree', sandbox: true, worktree: true, active: true }],
       }
 
       const getSessionDirectory = async (_sessionId: string) => '/worktree'
 
       const resolver = createSessionLoopResolver({
-        loop: loopService,
+        loop,
         getParentSessionId,
         getSessionDirectory,
         logger: mockLogger,
@@ -231,17 +237,19 @@ describe('createSessionLoopResolver', () => {
     it('directory-fallback: directory does not match any active loop returns null', async () => {
       const getParentSessionId = async () => null
 
-      const loopService = {
-        resolveLoopName: () => null,
-        getActiveState: (name: string) =>
-          name === 'active-loop' ? { loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' } : null,
+      const loop = {
+        service: {
+          resolveLoopName: () => null,
+          getActiveState: (name: string) =>
+            name === 'active-loop' ? { loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' } : null,
+        },
         listActive: () => [{ loopName: 'active-loop', worktreeDir: '/worktree', sandbox: true, worktree: true, active: true }],
       }
 
       const getSessionDirectory = async (_sessionId: string) => '/some-other-dir'
 
       const resolver = createSessionLoopResolver({
-        loop: loopService,
+        loop,
         getParentSessionId,
         getSessionDirectory,
         logger: mockLogger,
@@ -254,15 +262,17 @@ describe('createSessionLoopResolver', () => {
     it('getSessionDirectory undefined behaves exactly like today', async () => {
       const getParentSessionId = async () => null
 
-      const loopService = {
-        resolveLoopName: (sessionId: string) => (sessionId === 'session-a' ? 'loop-1' : null),
-        getActiveState: (name: string) =>
-          name === 'loop-1' ? { loopName: 'loop-1', active: false, sandbox: true } : null,
+      const loop = {
+        service: {
+          resolveLoopName: (sessionId: string) => (sessionId === 'session-a' ? 'loop-1' : null),
+          getActiveState: (name: string) =>
+            name === 'loop-1' ? { loopName: 'loop-1', active: false, sandbox: true } : null,
+        },
         listActive: () => [{ loopName: 'loop-1', worktreeDir: '/worktree', sandbox: true, active: false }],
       }
 
       const resolver = createSessionLoopResolver({
-        loop: loopService,
+        loop,
         getParentSessionId,
         logger: mockLogger,
       })
@@ -274,17 +284,19 @@ describe('createSessionLoopResolver', () => {
     it('resolves via directory with path normalization', async () => {
       const getParentSessionId = async (sessionId: string) => sessionId === 'session-subagent' ? 'parent-session' : null
 
-      const loopService = {
-        resolveLoopName: () => null,
-        getActiveState: (name: string) =>
-          name === 'active-loop' ? { loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' } : null,
+      const loop = {
+        service: {
+          resolveLoopName: () => null,
+          getActiveState: (name: string) =>
+            name === 'active-loop' ? { loopName: 'active-loop', active: true, sandbox: true, worktreeDir: '/worktree' } : null,
+        },
         listActive: () => [{ loopName: 'active-loop', worktreeDir: '/worktree/', sandbox: true, worktree: true, active: true }],
       }
 
       const getSessionDirectory = async (_sessionId: string) => '/worktree'
 
       const resolver = createSessionLoopResolver({
-        loop: loopService,
+        loop,
         getParentSessionId,
         getSessionDirectory,
         logger: mockLogger,

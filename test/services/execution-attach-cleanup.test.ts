@@ -66,7 +66,12 @@ describe('attachLoopToSession', () => {
       loopsRepo,
       reviewFindingsRepo,
       sectionPlansRepo,
-      loop: loopService as any,
+      loop: {
+        service: loopService,
+        listActive: (...a: any[]) => loopService.listActive(...a as any),
+        generateUniqueLoopName: (...a: any[]) => loopService.generateUniqueLoopName(...a as any),
+        findMatchByName: (...a: any[]) => loopService.findMatchByName(...a as any),
+      } as any,
       loopHandler: {
         runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
         startWatchdog: vi.fn(),

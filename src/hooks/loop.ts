@@ -70,7 +70,7 @@ export function createLoopEventHandler(
         getConfig,
         sandboxManager,
         dataDir,
-        getPlanText: loop.getPlanText,
+        getPlanText: loop.service.getPlanText,
         pendingTeardowns,
         loopsRepo,
         projectId,

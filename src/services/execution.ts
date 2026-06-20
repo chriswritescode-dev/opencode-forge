@@ -26,7 +26,7 @@ import { join } from 'path'
 import { existsSync } from 'fs'
 import { applyPlanDecomposition } from './section-bootstrap'
 import { sendLoopPrompt } from '../loop/send-loop-prompt'
-import { markPromptSent, clearPromptPending, terminationStatusFor, parseTerminationReasonString } from '../loop'
+import { markPromptSent, clearPromptPending, terminationStatusFor, parseTerminationReasonString, isWorkspaceNotFoundError } from '../loop'
 import { ConcurrentPromptError } from '../loop/in-flight-guard'
 import { getRestartability, type RestartBlockedReason } from '../loop/restartability'
 import { loopBranchExists } from '../workspace/forge-naming'
@@ -44,7 +44,7 @@ function isTransientSessionError(err: unknown): boolean {
     : typeof err === 'string'
       ? err
       : (() => { try { return JSON.stringify(err ?? '') } catch { return String(err) } })()
-  return /Session not found/i.test(msg) || /Workspace not found/i.test(msg)
+  return /Session not found/i.test(msg) || isWorkspaceNotFoundError(err)
 }
 
 // ============================================================================
@@ -454,7 +454,7 @@ async function resolvePlanSource(
     }
     
     case 'loop-state': {
-      const planText = deps.loop.getPlanText(source.loopName, ctx.sourceSessionId ?? '')
+      const planText = deps.loop.service.getPlanText(source.loopName, ctx.sourceSessionId ?? '')
       if (planText) {
         return { ok: true, planText }
       }
@@ -634,8 +634,8 @@ export async function attachLoopToSession(
       finalAuditDone: false,
     }
 
-    deps.loop.setState(loopName, state)
-    deps.loop.registerLoopSession(sessionId, loopName)
+    deps.loop.service.setState(loopName, state)
+    deps.loop.service.registerLoopSession(sessionId, loopName)
 
     deps.logger.log(`attachLoopToSession: state stored for loop=${loopName}`)
 
@@ -658,7 +658,7 @@ export async function attachLoopToSession(
     let promptText: string
     if (totalSections > 0) {
       const updatedState = { ...state, phase: 'coding' as const, currentSectionIndex: 0, totalSections }
-      promptText = deps.loop.buildSectionInitialPrompt(updatedState as import('../loop/state').LoopState)
+      promptText = deps.loop.service.buildSectionInitialPrompt(updatedState as import('../loop/state').LoopState)
     } else {
       promptText = planText
     }
@@ -688,7 +688,7 @@ export async function attachLoopToSession(
           } catch (cleanupErr) {
             deps.logger.error('attachLoopToSession: failed to remove sandbox container after timeout', cleanupErr)
           }
-          deps.loop.deleteState(loopName)
+          deps.loop.service.deleteState(loopName)
           return { ok: false, code: 'internal_error', message: `Sandbox not ready: ${waitResult.reason}` }
         }
 
@@ -747,7 +747,7 @@ export async function attachLoopToSession(
 
     if (promptResult.result.error) {
       deps.logger.error('attachLoopToSession: failed to send prompt', promptResult.result.error)
-      deps.loop.deleteState(loopName)
+      deps.loop.service.deleteState(loopName)
       return { ok: false, code: 'prompt_failed', message: 'Loop session created but failed to send prompt' }
     }
 
@@ -780,7 +780,7 @@ export async function attachLoopToSession(
     const isAlreadyExists = msg.includes('already exists') || msg.includes('UNIQUE constraint failed')
     deps.logger.error('attachLoopToSession: unexpected error', err)
     if (!isAlreadyExists) {
-      deps.loop.deleteState(loopName)
+      deps.loop.service.deleteState(loopName)
     } else {
       deps.logger.log(`attachLoopToSession: preserving existing loop ${loopName} despite collision`)
     }
@@ -1016,7 +1016,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         await deps.client.session.abort({ sessionID: createdSessionId }).catch(() => {})
       }
       if (loopStatePersisted) {
-        deps.loop.deleteState(uniqueLoopName)
+        deps.loop.service.deleteState(uniqueLoopName)
         loopStatePersisted = false
       }
       if ((sandboxStarted || sandboxStartAttempted) && deps.sandboxManager) {
@@ -1063,14 +1063,15 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       // Create builtin worktree workspace (single call — no separate worktree.create)
       const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
-      const ws = await createBuiltinWorktreeWorkspace(deps.client, {
+      const wsResult = await createBuiltinWorktreeWorkspace(deps.client, {
         loopName: uniqueLoopName,
         directory: ctx.directory,
       }, deps.logger, deps.workspaceStatusRegistry)
-      if (!ws) {
-        deps.logger.error('handleStartLoop: failed to create builtin worktree workspace')
-        return fail('internal_error', 500, 'Failed to create worktree workspace')
+      if (!wsResult.ok) {
+        deps.logger.error(`handleStartLoop: failed to create builtin worktree workspace (${wsResult.error.reason})`, wsResult.error.cause ?? '')
+        return fail('internal_error', 500, wsResult.error.message, { reason: wsResult.error.reason })
       }
+      const ws = wsResult.workspace
       hostWorktreeDir = ws.directory
       worktreeBranch = ws.branch
       const workspaceId = ws.workspaceId
@@ -1256,23 +1257,28 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const loops: LoopStatusView[] = states.map(state => {
       const cap200 = (s: string | null | undefined): string | null =>
         s ? (s.length > 200 ? s.slice(0, 200) : s) : null
-      const sectionViews = state.totalSections > 0 
-        ? Array.from({ length: state.totalSections }, (_, i) => {
-            const section = deps.loop.getSectionPlan(state, i)
-            const digest = deps.loop.getCompletedSectionDigest(state)
-            const summary = digest?.find(s => s.index === i)
-            return {
-              index: i,
-              title: section?.title ?? `Section ${i + 1}`,
-              status: section?.status ?? 'pending',
-              attempts: section?.attempts ?? 0,
-              startedAt: section?.startedAt,
-              completedAt: section?.completedAt,
-              summaryDone: cap200(summary?.summaryDone),
-              summaryDeviations: cap200(summary?.summaryDeviations),
-              summaryFollowUps: cap200(summary?.summaryFollowUps),
-            }
-          })
+      const sectionViews = state.totalSections > 0
+        ? (() => {
+            const digest = deps.loop.service.getCompletedSectionDigest(state)
+            const sectionByIndex = new Map(
+              (deps.sectionPlansRepo?.list(deps.projectId, state.loopName) ?? []).map(s => [s.sectionIndex, s] as const),
+            )
+            return Array.from({ length: state.totalSections }, (_, i) => {
+              const section = sectionByIndex.get(i)
+              const summary = digest.find(s => s.index === i)
+              return {
+                index: i,
+                title: section?.title ?? `Section ${i + 1}`,
+                status: section?.status ?? 'pending',
+                attempts: section?.attempts ?? 0,
+                startedAt: section?.startedAt,
+                completedAt: section?.completedAt,
+                summaryDone: cap200(summary?.summaryDone),
+                summaryDeviations: cap200(summary?.summaryDeviations),
+                summaryFollowUps: cap200(summary?.summaryFollowUps),
+              }
+            })
+          })()
         : undefined
       
       // Fetch cumulative usage from persisted aggregate
@@ -1449,7 +1455,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
     const outcome = await deps.loopHandler.runExclusive<RestartOutcome>(stoppedState.loopName, async () => {
       if (stoppedState.active) {
-        const latestState = deps.loop.getActiveState(stoppedState.loopName)
+        const latestState = deps.loop.service.getActiveState(stoppedState.loopName)
         if (latestState?.active) {
           try { await deps.client.session.abort({ sessionID: latestState.sessionId }) } catch {}
           await deps.loopHandler!.clearLoopTimers(stoppedState.loopName)
@@ -1481,11 +1487,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       if (stoppedState.worktree) {
         const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
-      const ws = await createBuiltinWorktreeWorkspace(deps.client, {
+        const wsResult = await createBuiltinWorktreeWorkspace(deps.client, {
           loopName: stoppedState.loopName,
           directory: stoppedState.projectDir || ctx.directory,
         }, deps.logger, deps.workspaceStatusRegistry)
-        if (!ws) return { ok: false, error: 'Restart failed: could not create fresh workspace for preserved worktree.' }
+        if (!wsResult.ok) return { ok: false, error: `Restart failed: ${wsResult.error.message}` }
+        const ws = wsResult.workspace
         stoppedState.workspaceId = ws.workspaceId
         stoppedState.worktreeDir = ws.directory
         stoppedState.worktreeBranch = ws.branch
@@ -1591,9 +1598,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       if (stoppedState.totalSections > 0) {
         // Use persisted section state to build the correct section prompt
         if (stoppedState.phase === 'final_auditing') {
-          promptText = deps.loop.buildFinalAuditPrompt(stoppedState)
+          promptText = deps.loop.service.buildFinalAuditPrompt(stoppedState)
         } else {
-          promptText = deps.loop.buildSectionInitialPrompt(stoppedState)
+          promptText = deps.loop.service.buildSectionInitialPrompt(stoppedState)
         }
       } else {
         // Legacy non-sectioned prompt
@@ -1621,7 +1628,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         startedAt: new Date(newState.startedAt).getTime(),
       })
 
-      deps.loop.registerLoopSession(effectiveSessionId, stoppedState.loopName)
+      deps.loop.service.registerLoopSession(effectiveSessionId, stoppedState.loopName)
 
       const restartVariant = promptAgent === 'auditor-loop'
         ? stoppedState.auditorVariant
@@ -1678,10 +1685,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         deps.logger.error('loop-restart: failed to send prompt', promptResult.error)
         // Save section plans before deleteState (which cascades to section_plans)
         const savedPlans = deps.sectionPlansRepo?.list(ctx.projectId, stoppedState.loopName) ?? []
-        deps.loop.deleteState(stoppedState.loopName)
+        deps.loop.service.deleteState(stoppedState.loopName)
         try {
-          deps.loop.setState(previousState.loopName, previousState)
-          if (previousState.active) deps.loop.registerLoopSession(previousState.sessionId, previousState.loopName)
+          deps.loop.service.setState(previousState.loopName, previousState)
+          if (previousState.active) deps.loop.service.registerLoopSession(previousState.sessionId, previousState.loopName)
           // Restore section plans after setState
           if (savedPlans.length > 0) {
             deps.sectionPlansRepo?.restoreAll(savedPlans)

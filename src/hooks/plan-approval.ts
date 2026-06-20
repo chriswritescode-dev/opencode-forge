@@ -87,8 +87,8 @@ async function resolveBlockedLoopToolState(
 ): Promise<{ active?: boolean; loopName?: string; phase?: string } | null> {
   if (deps.resolveActiveLoopForSession) return deps.resolveActiveLoopForSession(sessionID)
 
-  const loopName = loop.resolveLoopName(sessionID)
-  const state = loopName ? loop.getActiveState(loopName) : null
+  const loopName = loop.service.resolveLoopName(sessionID)
+  const state = loopName ? loop.service.getActiveState(loopName) : null
   if (state?.active && isActiveLoopToolSession(state, sessionID)) return state
   return null
 }
@@ -136,7 +136,7 @@ function isPlanApprovalQuestionArgs(args: unknown): boolean {
 }
 
 export function createToolExecuteBeforeHook(ctx: ToolContext, deps: LoopToolBlockingDeps = {}): Hooks['tool.execute.before'] {
-  const loop = ctx.loop ?? (ctx as ToolContext & { loopService: ToolContext['loop'] }).loopService
+  const loop = ctx.loop
   const { logger } = ctx
 
   return async (
@@ -154,7 +154,7 @@ export function createToolExecuteBeforeHook(ctx: ToolContext, deps: LoopToolBloc
 }
 
 export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlockingDeps = {}): Hooks['tool.execute.after'] {
-  const loop = ctx.loop ?? (ctx as ToolContext & { loopService: ToolContext['loop'] }).loopService
+  const loop = ctx.loop
   const { logger, config } = ctx
 
   return async (

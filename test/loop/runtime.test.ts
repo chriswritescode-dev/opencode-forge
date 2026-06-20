@@ -585,7 +585,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
         },
       })
 
-      const afterState = loop.getActiveState(state.loopName)
+      const afterState = loop.service.getActiveState(state.loopName)
       expect(afterState).not.toBeNull()
       expect(afterState!.active).toBe(true)
 

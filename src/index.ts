@@ -223,6 +223,34 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       }
     }
 
+    if (sandboxManager && forgeClient) {
+      const sandboxImage = config.sandbox?.image ?? 'oc-forge-sandbox:latest'
+      const buildContextDir = resolveBundledContainerDir()
+      void (async () => {
+        try {
+          const dockerOk = await dockerService.checkDocker()
+          if (!dockerOk) return
+          const exists = await dockerService.imageExists(sandboxImage)
+          if (!exists) {
+            logger.log(`Sandbox image "${sandboxImage}" not found — publishing toast`)
+            await forgeClient.tui.publish({
+              body: {
+                type: 'tui.toast.show' as const,
+                properties: {
+                  title: 'Sandbox image not found',
+                  message: `Docker image "${sandboxImage}" is missing. Build it from the command palette: "Forge: Build sandbox image", or run: docker build -t ${sandboxImage} "${buildContextDir}"`,
+                  variant: 'warning' as const,
+                  duration: 10_000,
+                },
+              },
+            }).catch(() => {})
+          }
+        } catch (err: unknown) {
+          logger.log(`Sandbox image check: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      })()
+    }
+
     // Pending-teardown registry: caller (loop termination side-effects) writes
     // iteration/reason/doCommit here right before invoking workspace.remove so
     // the forge adapter can build informative commit messages while remaining

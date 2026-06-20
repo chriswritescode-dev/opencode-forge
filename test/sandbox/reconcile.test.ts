@@ -40,7 +40,7 @@ describe('reconcileSandboxes', () => {
 
     deps = {
       sandboxManager: mockSandboxManager as SandboxManager,
-      loop: mockLoopService as unknown as import('../../src/loop').Loop,
+      loop: { service: mockLoopService, listActive: mockLoopService.listActive } as unknown as import('../../src/loop').Loop,
       logger: mockLogger as Logger,
     }
   })

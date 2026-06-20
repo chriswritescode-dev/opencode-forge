@@ -11,6 +11,12 @@
 
 import type { ForgeClient } from '../client/port'
 import type { WorkspaceStatusRegistry } from '../utils/workspace-status-registry'
+import {
+  classifyWorkspaceCreateThrow,
+  workspaceCreateMissingId,
+  workspaceCreateEmptyDirectory,
+  type WorkspaceCreateError,
+} from './workspace-create-error'
 
 export interface ForgeWorkspaceEntry {
   id: string
@@ -20,6 +26,16 @@ export interface ForgeWorkspaceEntry {
   directory?: string | null
   extra?: Record<string, unknown> | null
 }
+
+export interface CreatedWorktreeWorkspace {
+  workspaceId: string
+  directory: string
+  branch: string
+}
+
+export type CreateWorktreeWorkspaceResult =
+  | { ok: true; workspace: CreatedWorktreeWorkspace }
+  | { ok: false; error: WorkspaceCreateError }
 
 export function getForgeWorkspaceLoopName(entry: Pick<ForgeWorkspaceEntry, 'extra'>): string | undefined {
   const loopName = entry.extra?.loopName
@@ -78,7 +94,8 @@ export async function removeExistingForgeLoopWorkspaces(
  * After a successful create, also issues a best-effort `client.workspace.syncList()`
  * so the new workspace is registered in the Warp picker, not just reachable from the session list.
  *
- * @returns `{ workspaceId, directory, branch }` or `null` on failure.
+ * @returns `{ ok: true, workspace: { workspaceId, directory, branch } }` on success,
+ *          or `{ ok: false, error: WorkspaceCreateError }` on failure.
  */
 export async function createBuiltinWorktreeWorkspace(
   client: ForgeClient,
@@ -88,10 +105,10 @@ export async function createBuiltinWorktreeWorkspace(
   },
   logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void },
   statusRegistry?: WorkspaceStatusRegistry,
-): Promise<{ workspaceId: string; directory: string; branch: string } | null> {
+): Promise<CreateWorktreeWorkspaceResult> {
   if (!options.directory) {
     (logger ?? console).error('createBuiltinWorktreeWorkspace: options.directory is required')
-    return null
+    return { ok: false, error: { reason: 'unknown', message: 'createBuiltinWorktreeWorkspace: options.directory is required' } }
   }
   try {
     const _wsStart = Date.now()
@@ -118,16 +135,18 @@ export async function createBuiltinWorktreeWorkspace(
       : ''
 
     if (!id) {
-      (logger ?? console).error('createBuiltinWorktreeWorkspace: workspace.create returned no workspace id', workspaceData)
-      return null
+      const error = workspaceCreateMissingId(workspaceData)
+      ;(logger ?? console).error('createBuiltinWorktreeWorkspace: workspace.create returned no workspace id', workspaceData)
+      return { ok: false, error }
     }
 
     // opencode awaits the connected event internally before returning,
     // see opencode source workspace.ts (Event.Status loop). The response should
     // not reach us until the worktree is ready or errored — verify directory is populated.
     if (!directory) {
-      (logger ?? console).error('createBuiltinWorktreeWorkspace: workspace.create returned empty directory', workspaceData)
-      return null
+      const error = workspaceCreateEmptyDirectory(workspaceData)
+      ;(logger ?? console).error('createBuiltinWorktreeWorkspace: workspace.create returned empty directory', workspaceData)
+      return { ok: false, error }
     }
 
     (logger ?? console).log?.(`createBuiltinWorktreeWorkspace: workspace ${id} created for ${options.loopName}`)
@@ -165,10 +184,11 @@ export async function createBuiltinWorktreeWorkspace(
       ;(logger ?? console).error('createBuiltinWorktreeWorkspace: post-create workspace visibility check failed', err)
     }
 
-    return { workspaceId: id, directory, branch }
+    return { ok: true, workspace: { workspaceId: id, directory, branch } }
   } catch (err) {
-    (logger ?? console).error('createBuiltinWorktreeWorkspace: workspace.create threw', err)
-    return null
+    const error = classifyWorkspaceCreateThrow(err)
+    ;(logger ?? console).error('createBuiltinWorktreeWorkspace: workspace.create threw', err)
+    return { ok: false, error }
   }
 }
 

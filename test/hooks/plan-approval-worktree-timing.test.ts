@@ -81,8 +81,10 @@ function buildToolContext(opts: {
     dataDir: '/tmp',
     loopHandler: undefined,
     loop: {
-      resolveLoopName: () => null,
-      getActiveState: () => null,
+      service: {
+        resolveLoopName: () => null,
+        getActiveState: () => null,
+      },
       generateUniqueLoopName: (name: string) => `${name}-unique`,
     },
     cleanup: async () => {},

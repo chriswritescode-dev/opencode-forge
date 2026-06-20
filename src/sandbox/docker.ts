@@ -14,6 +14,10 @@ export interface DockerExecResult {
   exitCode: number
 }
 
+export interface BuildImageOpts {
+  timeout?: number
+}
+
 export interface CreateContainerOpts {
   extraMounts?: string[]
   resources?: SandboxResources
@@ -65,7 +69,7 @@ export function buildCreateContainerArgs(name: string, projectDir: string, image
 export interface DockerService {
   checkDocker(): Promise<boolean>
   imageExists(image: string): Promise<boolean>
-  buildImage(dockerfilePath: string, tag: string): Promise<void>
+  buildImage(contextDir: string, tag: string, opts?: BuildImageOpts): Promise<void>
   createContainer(name: string, projectDir: string, image: string, opts?: CreateContainerOpts): Promise<void>
   removeContainer(name: string): Promise<void>
   exec(name: string, command: string, opts?: DockerExecOpts): Promise<DockerExecResult>
@@ -77,6 +81,7 @@ export interface DockerService {
 
 export function createDockerService(logger: Logger): DockerService {
   const DEFAULT_TIMEOUT = 120000
+  const BUILD_TIMEOUT = 600000
 
   function containerName(worktreeName: string): string {
     return `forge-${worktreeName}`
@@ -100,27 +105,18 @@ export function createDockerService(logger: Logger): DockerService {
     }
   }
 
-  async function buildImage(dockerfilePath: string, tag: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const child = spawn('docker', ['build', '-t', tag, dockerfilePath], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-      })
+  async function buildImage(contextDir: string, tag: string, opts?: BuildImageOpts): Promise<void> {
+    const timeout = opts?.timeout ?? BUILD_TIMEOUT
+    const result = await execPromise('docker', ['build', '-t', tag, contextDir], { timeout })
 
-      const stderr: string[] = []
-      child.stderr.on('data', (data) => {
-        stderr.push(data.toString())
-      })
+    if (result.exitCode === 0) return
 
-      child.on('close', (code) => {
-        if (code === 0) {
-          resolve()
-        } else {
-          reject(new Error(`Docker build failed: ${stderr.join('')}`))
-        }
-      })
+    if (result.exitCode === 124) {
+      throw new Error(`Docker build timed out after ${Math.round(timeout / 1000)} seconds.`)
+    }
 
-      child.on('error', reject)
-    })
+    const output = result.stderr || result.stdout
+    throw new Error(`Docker build failed: ${output}`)
   }
 
   async function createContainer(name: string, projectDir: string, image: string, opts?: CreateContainerOpts): Promise<void> {

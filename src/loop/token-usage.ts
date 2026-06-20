@@ -34,6 +34,18 @@ export interface UsageAttribution {
   fallbackModel?: string
 }
 
+export interface AssistantMessageInfo {
+  role: string
+  cost?: number
+  tokens?: { input: number; output: number; reasoning: number; cache: { read: number; write: number } }
+  model?: string
+  modelID?: string
+  modelId?: string
+  provider?: string
+  providerID?: string
+  model_name?: string
+}
+
 /** Create an empty TokenBreakdown */
 export function emptyTokenBreakdown(): TokenBreakdown {
   return {

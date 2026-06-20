@@ -37,9 +37,10 @@ describe('plan-read', () => {
       loopsRepo,
       projectId: 'test-project',
       logger: mockLogger,
-      loopService: {} as any,
       loop: {
-        resolveLoopName: () => null,
+        service: {
+          resolveLoopName: () => null,
+        },
       },
       directory: TEST_DIR,
       sessionID: 'test-session',
@@ -182,10 +183,11 @@ describe('plan-read with loop session', () => {
       loopsRepo,
       projectId: 'test-project',
       logger: mockLogger,
-      loopService: {} as any,
       loop: {
-        resolveLoopName: (sessionID: string) =>
-          sessionID === 'loop-session-123' ? 'my-loop' : null,
+        service: {
+          resolveLoopName: (sessionID: string) =>
+            sessionID === 'loop-session-123' ? 'my-loop' : null,
+        },
       },
       directory: TEST_DIR,
       sessionID: 'test-session',
@@ -238,9 +240,10 @@ describe('plan-read with recent plans', () => {
       loopsRepo,
       projectId: 'test-project',
       logger: mockLogger,
-      loopService: {} as any,
       loop: {
-        resolveLoopName: () => null,
+        service: {
+          resolveLoopName: () => null,
+        },
       },
       directory: TEST_DIR,
       sessionID: 'test-session',

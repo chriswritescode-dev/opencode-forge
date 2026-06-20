@@ -209,7 +209,13 @@ describe('handleLoopRestart from stall_timeout', () => {
 
       plansRepo,
       loopsRepo,
-      loop: mockLoopService as any,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+        } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
@@ -318,7 +324,13 @@ describe('handleLoopRestart from stall_timeout', () => {
 
       plansRepo,
       loopsRepo,
-      loop: mockLoopService as any,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+        } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
@@ -407,7 +419,13 @@ describe('handleLoopRestart from stall_timeout', () => {
 
       plansRepo,
       loopsRepo,
-      loop: mockLoopService as any,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+        } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
@@ -514,7 +532,13 @@ describe('handleLoopRestart from stall_timeout', () => {
 
       plansRepo,
       loopsRepo,
-      loop: mockLoopService as any,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+        } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
@@ -613,7 +637,13 @@ describe('handleLoopRestart from stall_timeout', () => {
 
       plansRepo,
       loopsRepo,
-      loop: mockLoopService as any,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+        } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
@@ -710,7 +740,13 @@ describe('handleLoopRestart from stall_timeout', () => {
 
       plansRepo,
       loopsRepo,
-      loop: mockLoopService as any,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+        } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
@@ -913,7 +949,13 @@ describe('handleLoopRestart restartability rules', () => {
 
       plansRepo,
       loopsRepo,
-      loop: mockLoopService as any,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+        } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,

@@ -182,7 +182,8 @@ createLoop(deps: LoopRuntimeDeps): Loop
 isWorkspaceNotFoundError(error): boolean
 
 // State
-rowToLoopState(row, largeFields?): LoopState
+loopRowToState(row, largeFields?): LoopState
+loopStateToRow(state, projectId): LoopRow
 MAX_RETRIES: number
 
 // Transitions
@@ -485,7 +486,7 @@ Other modules do NOT have barrel files (utils, sandbox, services, workspace).
 All data access goes through typed repo interfaces:
 - `LoopsRepo`, `PlansRepo`, `ReviewFindingsRepo`, `SectionPlansRepo`, `TuiPrefsRepo`
 - Each created via `createXxxRepo(db)` with project-scoped queries.
-- Rows are mapped to domain objects via `rowToLoopState()` etc.
+- Rows are mapped to domain objects via `loopRowToState()` etc.
 
 ### State Machine Pattern
 

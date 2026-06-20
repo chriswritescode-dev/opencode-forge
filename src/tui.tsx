@@ -2,10 +2,11 @@
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from '@opencode-ai/plugin/tui'
 import { createEffect, createMemo, createSignal, Show, untrack } from 'solid-js'
 import { VERSION } from './version'
-import { loadPluginConfig } from './setup'
+import { loadPluginConfig, resolveBundledContainerDir } from './setup'
 import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
 import { createExecutionContextCache } from './utils/tui-execution-context-cache'
 import type { PluginConfig } from './types'
+import { createDockerService } from './sandbox/docker'
 import { connectForgeProject, type ForgeProjectClient } from './utils/tui-client'
 import { ExecutePlanPanel } from './tui/execute-plan-panel'
 import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/session-follow'
@@ -169,6 +170,88 @@ function ExecutionDialog(props: {
   )
 }
 
+function SandboxBuildDialog(props: {
+  api: TuiPluginApi
+  buildContextDir: string
+  image: string
+}) {
+  const theme = () => props.api.theme.current
+
+  const doBuild = async () => {
+    props.api.ui.dialog.clear()
+    props.api.ui.toast({ message: `Building sandbox image ${props.image}...`, variant: 'info', duration: 5000 })
+
+    const logger = { log: () => {}, error: () => {}, debug: () => {} }
+    const docker = createDockerService(logger)
+
+    try {
+      await docker.buildImage(props.buildContextDir, props.image)
+      props.api.ui.toast({
+        message: `Sandbox image ${props.image} built successfully`,
+        variant: 'success',
+        duration: 5000,
+      })
+    } catch (err) {
+      const rawMessage = err instanceof Error ? err.message : String(err)
+      const message = rawMessage.includes('spawn docker ENOENT')
+        ? 'Docker CLI not found. Is Docker installed and running?'
+        : rawMessage.split('\n').filter(Boolean).at(-1)?.trim() || rawMessage.slice(0, 200)
+      props.api.ui.toast({ message, variant: 'error', duration: 10_000 })
+    }
+  }
+
+  return (
+    <box flexDirection="column" paddingX={2}>
+      <box flexShrink={0} paddingBottom={1} flexDirection="row" gap={1}>
+        <text fg={theme().text}>
+          <b>Build sandbox Docker image</b>
+        </text>
+      </box>
+
+      <box paddingBottom={1}>
+        <text fg={theme().textMuted}>
+          This will build the sandbox image from the bundled Dockerfile.
+        </text>
+      </box>
+      <box paddingBottom={1}>
+        <text fg={theme().textMuted}>Image: {props.image}</text>
+      </box>
+      <box paddingBottom={1}>
+        <text fg={theme().textMuted}>Context: {props.buildContextDir}</text>
+      </box>
+
+      <box paddingTop={1} paddingX={1} flexShrink={0}>
+        <select
+          focused={true}
+          selectedIndex={0}
+          options={[
+            { name: 'Build', description: 'Press enter to build the sandbox image', value: 'build' },
+            { name: 'Cancel', description: 'Press enter to close this dialog', value: 'cancel' },
+          ]}
+          onSelect={(_, option) => {
+            if (option?.value === 'build') {
+              void doBuild()
+              return
+            }
+            if (option?.value === 'cancel') {
+              props.api.ui.dialog.clear()
+            }
+          }}
+          showDescription={true}
+          itemSpacing={1}
+          wrapSelection={true}
+          textColor={theme().text}
+          focusedTextColor={theme().text}
+          selectedTextColor="#ffffff"
+          selectedBackgroundColor={theme().borderActive}
+          minHeight={4}
+          flexShrink={0}
+        />
+      </box>
+    </box>
+  )
+}
+
 const id = 'oc-forge'
 
 const tui: TuiPlugin = async (api) => {
@@ -221,6 +304,20 @@ const tui: TuiPlugin = async (api) => {
     }
   })
 
+  const runBuildSandboxImage = () => {
+    const buildContextDir = resolveBundledContainerDir()
+    const image = pluginConfig.sandbox?.image ?? 'oc-forge-sandbox:latest'
+
+    api.ui.dialog.setSize('medium')
+    api.ui.dialog.replace(() => (
+      <SandboxBuildDialog
+        api={api}
+        buildContextDir={buildContextDir}
+        image={image}
+      />
+    ))
+  }
+
   api.keymap.registerLayer({
     commands: [
       {
@@ -231,10 +328,20 @@ const tui: TuiPlugin = async (api) => {
         namespace: 'palette',
         run: () => { runOpenDashboard() },
       },
+      {
+        name: 'forge.sandbox.buildImage',
+        title: 'Forge: Build sandbox image',
+        desc: 'Build the Docker sandbox image from the bundled Dockerfile',
+        category: 'Forge',
+        namespace: 'palette',
+        run: () => { runBuildSandboxImage() },
+      },
     ],
-    bindings: opts.keybinds.dashboard
-      ? [{ key: opts.keybinds.dashboard, cmd: 'forge.dashboard' }]
-      : [],
+    bindings: [
+      ...(opts.keybinds.dashboard
+        ? [{ key: opts.keybinds.dashboard, cmd: 'forge.dashboard' as const }]
+        : []),
+    ],
   })
 
   if (!opts.sidebar) return
