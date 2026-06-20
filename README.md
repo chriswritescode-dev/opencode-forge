@@ -38,13 +38,13 @@ Add to your `opencode.json` to enable Forge’s server-side hooks, tools, and ag
 }
 ```
 
-**Required for loops:** Forge creates loop worktrees through OpenCode's experimental workspace runtime. Export this in the environment that launches `opencode`:
+As of OpenCode 1.17.8, `OPENCODE_EXPERIMENTAL_WORKSPACES=true` is required for the plugin's loop functionality to work. Set it in the environment that launches `opencode`:
 
 ```bash
 export OPENCODE_EXPERIMENTAL_WORKSPACES=true
 ```
 
-Requires OpenCode ≥ 1.15.0. If this is missing, Forge cannot create the loop worktree and `loop` / `/loop` will fail. See [Common Issues](#common-issues) and [Workspace Integration](#workspace-integration) for details.
+Without this, Forge cannot create loop worktrees and `loop` / `/loop` will fail. See [Common Issues](#common-issues) and [Workspace Integration](#workspace-integration) for details.
 
 ## What Forge Adds
 
@@ -503,25 +503,13 @@ Forge worktree loops register as **OpenCode workspaces**, letting you switch bet
 
 ### Requirements
 
-Workspace integration requires the **experimental workspace runtime** to be enabled in OpenCode itself. Forge's current loop startup path creates the worktree through `experimental.workspace.create`, so this flag is required for `loop` / `/loop`, not just for TUI switching.
-
-Set one of these in the environment that launches `opencode`:
-
-```bash
-export OPENCODE_EXPERIMENTAL_WORKSPACES=true
-# or, to enable every experimental opencode feature at once:
-export OPENCODE_EXPERIMENTAL=true
-```
-
-Accepted values are `true` or `1` (case-insensitive). Requires **OpenCode ≥ 1.15.0**.
+Workspace integration requires the **experimental workspace runtime** enabled in OpenCode. See [Quick Start](#quick-start) for the environment variable setup. No forge config option enables or disables this — the toggle is purely on the OpenCode side and must be present before OpenCode starts.
 
 > The `OPENCODE_EXPERIMENTAL_WORKSPACES` flag is not currently documented on opencode.ai. The authoritative source is `packages/core/src/flag/flag.ts` and `packages/opencode/src/effect/runtime-flags.ts` in the OpenCode repo.
 
-No forge config option enables or disables this — the toggle is purely on the OpenCode side and must be present before OpenCode starts. Forge cannot reliably set it from the plugin because OpenCode reads runtime flags before plugins are loaded, and the TUI/server may be separate processes.
-
 ### When workspace integration is active
 
-- **Env var set, OpenCode ≥ 1.15.0** → Forge can create the worktree workspace, bind loop sessions to it, and show the loop as a switchable workspace in the TUI.
+- **Env var set, OpenCode ≥ 1.17.8** → Forge can create the worktree workspace, bind loop sessions to it, and show the loop as a switchable workspace in the TUI.
 - **Env var unset or older OpenCode** → `experimental.workspace.create` is unavailable or no-ops, Forge cannot create the loop worktree, and `loop` / `/loop` fails before iteration starts.
 
 ### What it does
@@ -549,7 +537,7 @@ If initial workspace creation fails at startup — env var unset, OpenCode versi
 
 ### `loop` / `/loop` fails to start
 
-**Most common cause:** `OPENCODE_EXPERIMENTAL_WORKSPACES=true` was not set in the environment that launched OpenCode.
+**Most common cause:** `OPENCODE_EXPERIMENTAL_WORKSPACES=true` was not set in the environment that launched OpenCode. See [Quick Start](#quick-start) for setup.
 
 Symptoms include:
 
@@ -557,18 +545,7 @@ Symptoms include:
 - Forge logs contain `createBuiltinWorktreeWorkspace: workspace.create threw`, `workspace.create returned no workspace id`, or `handleStartLoop: failed to create builtin worktree workspace`
 - No loop worktree appears in the TUI workspace switcher
 
-Fix:
-
-```bash
-export OPENCODE_EXPERIMENTAL_WORKSPACES=true
-opencode
-```
-
-If OpenCode is launched by a desktop app, service manager, shell alias, terminal profile, or wrapper script, set the variable there and fully restart OpenCode. Setting it inside an already-running OpenCode session is too late.
-
-### Can Forge enable workspaces automatically?
-
-Not reliably. OpenCode reads its experimental runtime flags before plugins are loaded, so setting `process.env.OPENCODE_EXPERIMENTAL_WORKSPACES = "true"` inside Forge would usually happen too late and only affect the current process. Configure the environment before starting OpenCode instead.
+The flag must be set before OpenCode starts — setting it inside an already-running session is too late. If OpenCode is launched by a desktop app, service manager, shell alias, terminal profile, or wrapper script, set the variable there and fully restart OpenCode.
 
 ## Docker Sandbox
 

@@ -1063,14 +1063,15 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       // Create builtin worktree workspace (single call — no separate worktree.create)
       const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
-      const ws = await createBuiltinWorktreeWorkspace(deps.client, {
+      const wsResult = await createBuiltinWorktreeWorkspace(deps.client, {
         loopName: uniqueLoopName,
         directory: ctx.directory,
       }, deps.logger, deps.workspaceStatusRegistry)
-      if (!ws) {
-        deps.logger.error('handleStartLoop: failed to create builtin worktree workspace')
-        return fail('internal_error', 500, 'Failed to create worktree workspace')
+      if (!wsResult.ok) {
+        deps.logger.error(`handleStartLoop: failed to create builtin worktree workspace (${wsResult.error.reason})`, wsResult.error.cause ?? '')
+        return fail('internal_error', 500, wsResult.error.message, { reason: wsResult.error.reason })
       }
+      const ws = wsResult.workspace
       hostWorktreeDir = ws.directory
       worktreeBranch = ws.branch
       const workspaceId = ws.workspaceId
@@ -1486,11 +1487,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       if (stoppedState.worktree) {
         const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
-      const ws = await createBuiltinWorktreeWorkspace(deps.client, {
+        const wsResult = await createBuiltinWorktreeWorkspace(deps.client, {
           loopName: stoppedState.loopName,
           directory: stoppedState.projectDir || ctx.directory,
         }, deps.logger, deps.workspaceStatusRegistry)
-        if (!ws) return { ok: false, error: 'Restart failed: could not create fresh workspace for preserved worktree.' }
+        if (!wsResult.ok) return { ok: false, error: `Restart failed: ${wsResult.error.message}` }
+        const ws = wsResult.workspace
         stoppedState.workspaceId = ws.workspaceId
         stoppedState.worktreeDir = ws.directory
         stoppedState.worktreeBranch = ws.branch

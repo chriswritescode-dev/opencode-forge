@@ -33,7 +33,7 @@ describe('createBuiltinWorktreeWorkspace', () => {
         logger,
       )
 
-      expect(result).toEqual({ workspaceId: 'ws-1', directory: '/tmp/wt-1', branch: 'feature/x' })
+      expect(result).toEqual({ ok: true, workspace: { workspaceId: 'ws-1', directory: '/tmp/wt-1', branch: 'feature/x' } })
     })
 
     it('syncList failure does not break the create result', async () => {
@@ -51,7 +51,7 @@ describe('createBuiltinWorktreeWorkspace', () => {
         logger,
       )
 
-      expect(result).toEqual({ workspaceId: 'ws-2', directory: '/tmp/wt-2', branch: 'feature/y' })
+      expect(result).toEqual({ ok: true, workspace: { workspaceId: 'ws-2', directory: '/tmp/wt-2', branch: 'feature/y' } })
       expect(logger.error).toHaveBeenCalledWith(
         expect.stringContaining('syncList'),
         expect.anything(),
@@ -71,7 +71,8 @@ describe('createBuiltinWorktreeWorkspace', () => {
         logger,
       )
 
-      expect(result).toBeNull()
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.error.reason).toBe('unknown')
       // syncList should not have been called
       const syncListCalls = calls.filter(c => c.method === 'workspace.syncList')
       expect(syncListCalls.length).toBe(0)
@@ -99,7 +100,7 @@ describe('createBuiltinWorktreeWorkspace', () => {
         logger,
       )
 
-      expect(result).toEqual({ workspaceId: 'ws-3', directory: '/tmp/wt-3', branch: 'feature/z' })
+      expect(result).toEqual({ ok: true, workspace: { workspaceId: 'ws-3', directory: '/tmp/wt-3', branch: 'feature/z' } })
     })
 
     it('recovery path calls syncList after successful re-provisioning (regression)', async () => {
@@ -116,7 +117,7 @@ describe('createBuiltinWorktreeWorkspace', () => {
         logger,
       )
 
-      expect(result).toEqual({ workspaceId: 'ws-recovered', directory: '/tmp/wt-recovered', branch: 'fix/recovery' })
+      expect(result).toEqual({ ok: true, workspace: { workspaceId: 'ws-recovered', directory: '/tmp/wt-recovered', branch: 'fix/recovery' } })
     })
 
     it('matches TUI create flow by keeping workspace create and syncList unscoped', async () => {
@@ -133,7 +134,7 @@ describe('createBuiltinWorktreeWorkspace', () => {
         logger,
       )
 
-      expect(result).toEqual({ workspaceId: 'ws-scoped', directory: '/tmp/wt-scoped', branch: 'feature/scoped' })
+      expect(result).toEqual({ ok: true, workspace: { workspaceId: 'ws-scoped', directory: '/tmp/wt-scoped', branch: 'feature/scoped' } })
     })
 
     it('starts workspace sync after successful create and syncList', async () => {
@@ -156,7 +157,7 @@ describe('createBuiltinWorktreeWorkspace', () => {
         logger,
       )
 
-      expect(result).toEqual({ workspaceId: 'ws-sync', directory: '/tmp/wt-sync', branch: 'feature/sync' })
+      expect(result).toEqual({ ok: true, workspace: { workspaceId: 'ws-sync', directory: '/tmp/wt-sync', branch: 'feature/sync' } })
       expect(syncStartCalled).toBe(true)
       // syncList should be called before sync.start
       expect(syncListCalled).toBe(true)
@@ -179,9 +180,43 @@ describe('createBuiltinWorktreeWorkspace', () => {
         logger,
       )
 
-      expect(result).toEqual({ workspaceId: 'ws-new', directory: '/tmp/wt-new', branch: 'feature/new' })
+      expect(result).toEqual({ ok: true, workspace: { workspaceId: 'ws-new', directory: '/tmp/wt-new', branch: 'feature/new' } })
       const removeCalls = calls.filter(c => c.method === 'workspace.remove')
       expect(removeCalls.length).toBe(0)
+    })
+
+    it('returns no-workspace-id when create returns no id field', async () => {
+      const { client } = createFakeForgeClient({
+        workspace: {
+          create: async () => ({ directory: '/x', branch: 'b' }),
+        },
+      })
+
+      const result = await createBuiltinWorktreeWorkspace(
+        client as unknown as ForgeClient,
+        { loopName: 'no-id', directory: '/tmp/project' },
+        logger,
+      )
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.error.reason).toBe('no-workspace-id')
+    })
+
+    it('returns empty-directory when create returns empty directory', async () => {
+      const { client } = createFakeForgeClient({
+        workspace: {
+          create: async () => ({ id: 'ws-empty', directory: '', branch: 'b' }),
+        },
+      })
+
+      const result = await createBuiltinWorktreeWorkspace(
+        client as unknown as ForgeClient,
+        { loopName: 'empty-dir', directory: '/tmp/project' },
+        logger,
+      )
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.error.reason).toBe('empty-directory')
     })
   })
 })

@@ -439,6 +439,63 @@ describe('handleStartLoop builtin worktree workspace', () => {
     // Verify sandbox stop was called during rollback
     expect(mockSandboxManager.stop).toHaveBeenCalled()
   })
+
+  test('returns actionable error when workspace.create throws due to missing flag', async () => {
+    const { client } = createFakeForgeClient({
+      workspace: {
+        create: async () => { throw new Error('experimental workspaces not enabled') },
+      },
+    })
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+      plansRepo,
+      loopsRepo,
+      loop: {
+        service: loopService,
+        listActive: (...args: any[]) => loopService.listActive(...args),
+        generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
+        findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+      } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
+      client,
+      pendingTeardowns: mockPendingTeardowns,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# Test Plan\n\nMissing flag test.' },
+        lifecycle: { selectSession: true },
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.error.code).toBe('internal_error')
+      expect(result.error.message).toBe((await import('../../src/workspace/workspace-create-error')).EXPERIMENTAL_WORKSPACES_HINT)
+      expect(result.error.details?.reason).toBe('experimental-workspaces-disabled')
+    }
+  })
 })
 
 describe('handleStartLoop concurrent-start dedupe', () => {

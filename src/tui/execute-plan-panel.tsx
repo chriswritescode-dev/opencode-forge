@@ -296,6 +296,11 @@ export function ExecutePlanPanel(props: {
       return
     }
 
+    if ('error' in result) {
+      props.api.ui.toast({ message: result.error, variant: 'error', duration: 10000 })
+      return
+    }
+
     cache?.recordRecent(execModel || '')
     cache?.recordRecent(auditModel || '')
 

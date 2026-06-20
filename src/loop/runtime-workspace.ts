@@ -75,7 +75,7 @@ export function createWorkspaceLifecycle(deps: WorkspaceLifecycleDeps): Workspac
       logger.log(`Loop: cannot recover workspace for ${loopName}: no projectDir/worktreeDir`)
       return { recovered: false }
     }
-    const newWorkspace = await createBuiltinWorktreeWorkspace(
+    const created = await createBuiltinWorktreeWorkspace(
       client,
       {
         loopName,
@@ -84,11 +84,12 @@ export function createWorkspaceLifecycle(deps: WorkspaceLifecycleDeps): Workspac
       logger,
     )
 
-    if (!newWorkspace) {
-      logger.error(`Loop: workspace re-provision failed for ${loopName}, continuing without workspace backing`)
+    if (!created.ok) {
+      logger.error(`Loop: workspace re-provision failed for ${loopName} (${created.error.reason}), continuing without workspace backing`)
       return { recovered: false }
     }
 
+    const newWorkspace = created.workspace
     try {
       await bindSessionToWorkspace(client, newWorkspace.workspaceId, sessionId, logger, { loopName })
       loopService.setWorkspaceId(loopName, newWorkspace.workspaceId)
@@ -122,7 +123,7 @@ export function createWorkspaceLifecycle(deps: WorkspaceLifecycleDeps): Workspac
       logger.log(`Loop: cannot provision workspace for ${loopName} (${contextLabel}): no projectDir/worktreeDir`)
       return {}
     }
-    const workspace = await createBuiltinWorktreeWorkspace(
+    const created = await createBuiltinWorktreeWorkspace(
       client,
       {
         loopName,
@@ -131,11 +132,12 @@ export function createWorkspaceLifecycle(deps: WorkspaceLifecycleDeps): Workspac
       logger,
     )
 
-    if (!workspace) {
-      logger.log(`Loop: workspace creation failed for ${loopName} (${contextLabel}), continuing without workspace backing`)
+    if (!created.ok) {
+      logger.log(`Loop: workspace creation failed for ${loopName} (${contextLabel}, ${created.error.reason}), continuing without workspace backing`)
       return {}
     }
 
+    const workspace = created.workspace
     loopService.setWorkspaceId(loopName, workspace.workspaceId)
     state.workspaceId = workspace.workspaceId
     if (workspace.directory) state.worktreeDir = workspace.directory

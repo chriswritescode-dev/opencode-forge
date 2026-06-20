@@ -15,6 +15,7 @@ import { listConnectedWorkspaces } from './workspace-listing'
 import { type ForgeLoopExtra } from '../services/execution'
 import { buildLoopPermissionRuleset } from '../constants/loop'
 import { getForgeWorkspaceLoopName, removeExistingForgeLoopWorkspaces } from '../workspace/forge-worktree'
+import { classifyWorkspaceCreateThrow } from '../workspace/workspace-create-error'
 import { fetchLoopsList } from './tui-loop-store'
 import { decomposeDeterministically } from '../services/deterministic-decomposer'
 import { buildSectionInitialPromptText } from '../loop/prompts'
@@ -131,7 +132,7 @@ export interface ForgeProjectClient {
     execute(
       sessionId: string,
       req: ExecutePlanRequest,
-    ): Promise<{ sessionId?: string; loopName?: string; worktreeDir?: string; workspaceId?: string } | null>
+    ): Promise<{ sessionId?: string; loopName?: string; worktreeDir?: string; workspaceId?: string } | { error: string } | null>
   }
 
   workspaces: {
@@ -347,17 +348,26 @@ export async function connectForgeProject(
           initialPromptOwner: 'tui',
           pendingAttachStartedAt: createdAt,
         }
+        await removeExistingForgeLoopWorkspaces(client, loopName, {
+          log: (message) => tuiDebug(`plan.execute(loop): ${message}`),
+          error: (message, err) => tuiDebug(`plan.execute(loop): ${message} ${err instanceof Error ? err.message : String(err)}`),
+        })
+
+        // Classify workspace.create failures separately to surface an actionable message
+        let workspace
         try {
-          await removeExistingForgeLoopWorkspaces(client, loopName, {
-            log: (message) => tuiDebug(`plan.execute(loop): ${message}`),
-            error: (message, err) => tuiDebug(`plan.execute(loop): ${message} ${err instanceof Error ? err.message : String(err)}`),
-          })
-          const workspace = await client.workspace.create({
+          workspace = await client.workspace.create({
             type: 'forge',
             branch: null,
             extra: { loopName, projectDirectory: directory, workspaceCreatedAt: createdAt, forgeLoop },
           })
+        } catch (err) {
+          const classified = classifyWorkspaceCreateThrow(err)
+          tuiDebug(`plan.execute(loop): workspace.create failed reason=${classified.reason} cause=${classified.cause ?? ''}`)
+          return { error: classified.message }
+        }
 
+        try {
           await client.workspace.syncList().catch(() => undefined)
 
           const connected = await awaitWorkspaceConnected(client, workspace.id, 5000, 100)
@@ -402,7 +412,8 @@ export async function connectForgeProject(
             worktreeDir: workspace.directory ?? undefined,
             workspaceId: workspace.id,
           }
-        } catch {
+        } catch (err) {
+          tuiDebug(`plan.execute(loop): post-create flow failed error=${err instanceof Error ? err.message : String(err)}`)
           return null
         }
       }
