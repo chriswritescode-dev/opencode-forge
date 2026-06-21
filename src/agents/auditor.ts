@@ -55,4 +55,3 @@ export function buildAuditorLoopAgent(promptsDir?: string): AgentDefinition {
   }
 }
 
-

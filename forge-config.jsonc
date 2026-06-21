@@ -63,10 +63,11 @@
     // Run the container as the host user's UID:GID. Defaults to true.
     // "runAsHostUser": true,
     // Additional host directories to bind-mount into the sandbox container.
-    // Each entry requires absolute host + container paths; "readonly" defaults to false (read-write).
+    // Each entry requires absolute host + container paths; "readonly" defaults to true (read-only).
+    // Set "readonly": false to grant the container read-write access to the host directory.
     // "mounts": [
-    //   { "host": "/abs/host/cache", "container": "/cache" },
-    //   { "host": "/abs/host/reference", "container": "/reference", "readonly": true }
+    //   { "host": "/abs/host/reference", "container": "/reference" },
+    //   { "host": "/abs/host/cache", "container": "/cache", "readonly": false }
     // ]
   },
 

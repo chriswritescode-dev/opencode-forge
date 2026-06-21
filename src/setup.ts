@@ -102,16 +102,19 @@ function resolveManifestPath(name: string): string {
   return join(resolveConfigDir(), 'forge', 'manifests', `${name}.json`)
 }
 
-function ensureBundledPrompts(): void {
-  const destRoot = resolvePromptsDir()
-  if (!existsSync(BUNDLED_PROMPTS_DIR)) return
-  if (!existsSync(destRoot)) mkdirSync(destRoot, { recursive: true })
+function ensureBundledDir(label: string, srcDir: string, destDir: string): void {
+  if (!existsSync(srcDir)) return
+  if (!existsSync(destDir)) mkdirSync(destDir, { recursive: true })
   try {
-    syncBundledDir(BUNDLED_PROMPTS_DIR, destRoot, resolveManifestPath('prompts'))
+    syncBundledDir(srcDir, destDir, resolveManifestPath(label))
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    console.warn(`[forge] Failed to install bundled prompts: ${message}`)
+    console.warn(`[forge] Failed to install bundled ${label}: ${message}`)
   }
+}
+
+function ensureBundledPrompts(): void {
+  ensureBundledDir('prompts', BUNDLED_PROMPTS_DIR, resolvePromptsDir())
 }
 
 export function loadPluginConfig(): PluginConfig {
@@ -147,24 +150,7 @@ function normalizeConfig(config: PluginConfig): PluginConfig {
 }
 
 function ensureBundledSkills(): void {
-  const configDir = resolveConfigDir()
-  const skillsDir = join(configDir, 'skills')
-  const bundledSkillsDir = join(resolvePluginDir(), '..', 'skills')
-
-  if (!existsSync(skillsDir)) {
-    mkdirSync(skillsDir, { recursive: true })
-  }
-
-  if (!existsSync(bundledSkillsDir)) {
-    return
-  }
-
-  try {
-    syncBundledDir(bundledSkillsDir, skillsDir, resolveManifestPath('skills'))
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    console.warn(`[forge] Failed to install bundled skills: ${message}`)
-  }
+  ensureBundledDir('skills', join(resolvePluginDir(), '..', 'skills'), join(resolveConfigDir(), 'skills'))
 }
 
 

@@ -54,7 +54,7 @@ export function resolveCustomMounts(
       continue
     }
     used.add(container)
-    resolved.push({ hostDir, containerDir: container, readOnly: entry.readonly === true })
+    resolved.push({ hostDir, containerDir: container, readOnly: entry.readonly !== false })
   }
   return resolved
 }
@@ -90,6 +90,7 @@ export function createSandboxManager(
 ): SandboxManager {
   const activeSandboxes = new Map<string, ActiveSandbox>()
   const lastLivenessCheck = new Map<string, number>()
+  const gitMountCache = new Map<string, string[]>()
   let dockerAvailableCache: { value: boolean; at: number } | null = null
   let imageReady = false
 
@@ -150,9 +151,15 @@ export function createSandboxManager(
   }
 
   function detectGitMount(projectDir: string): string[] {
+    const cached = gitMountCache.get(projectDir)
+    if (cached) return cached
+
     const gitDirResult = git.revParseGitDir(projectDir)
     const commonDirResult = git.revParseGitCommonDir(projectDir)
-    if (!gitDirResult.ok || !commonDirResult.ok || !gitDirResult.stdout || !commonDirResult.stdout) return []
+    if (!gitDirResult.ok || !commonDirResult.ok || !gitDirResult.stdout || !commonDirResult.stdout) {
+      gitMountCache.set(projectDir, [])
+      return []
+    }
 
     const mounts = new Set<string>()
     const resolvedGitDir = resolve(projectDir, gitDirResult.stdout.trim())
@@ -166,7 +173,9 @@ export function createSandboxManager(
       mounts.add(`${resolvedCommonDir}:${resolvedCommonDir}`)
     }
 
-    return [...mounts]
+    const result = [...mounts]
+    gitMountCache.set(projectDir, result)
+    return result
   }
 
   function buildAddHosts(): string[] | undefined {

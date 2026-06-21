@@ -18,4 +18,3 @@ export function buildCodeAgent(promptsDir?: string): AgentDefinition {
   }
 }
 
-

@@ -4,15 +4,7 @@ import { join, resolve } from 'path'
 import { tmpdir } from 'os'
 import { resolveCustomMounts } from '../../src/sandbox/manager'
 import type { SandboxMountConfig } from '../../src/types'
-import type { Logger } from '../../src/types'
-
-function createMockLogger(): Logger {
-  return {
-    log: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  }
-}
+import { createMockLogger } from '../helpers/sandbox-mocks'
 
 describe('resolveCustomMounts', () => {
   let tmpDir: string | undefined
@@ -30,11 +22,24 @@ describe('resolveCustomMounts', () => {
     return tmpDir
   }
 
-  test('valid read-write entry', () => {
+  test('omitted readonly defaults to read-only', () => {
     const dir = withTempDir()
     const logger = createMockLogger()
     const raw: SandboxMountConfig[] = [
       { host: dir, container: '/data' },
+    ]
+    const result = resolveCustomMounts(raw, new Set(['/workspace']), logger)
+    expect(result).toEqual([
+      { hostDir: resolve(dir), containerDir: '/data', readOnly: true },
+    ])
+    expect(logger.log).not.toHaveBeenCalled()
+  })
+
+  test('explicit read-write entry (readonly: false)', () => {
+    const dir = withTempDir()
+    const logger = createMockLogger()
+    const raw: SandboxMountConfig[] = [
+      { host: dir, container: '/data', readonly: false },
     ]
     const result = resolveCustomMounts(raw, new Set(['/workspace']), logger)
     expect(result).toEqual([
@@ -114,7 +119,7 @@ describe('resolveCustomMounts', () => {
     ]
     const result = resolveCustomMounts(raw, new Set(['/workspace']), logger)
     expect(result).toHaveLength(1)
-    expect(result[0]).toEqual({ hostDir: resolve(dir1), containerDir: '/shared', readOnly: false })
+    expect(result[0]).toEqual({ hostDir: resolve(dir1), containerDir: '/shared', readOnly: true })
     expect(logger.log).toHaveBeenCalledTimes(1)
     expect(logger.log.mock.calls[0][0]).toContain('already in use')
     // Clean up the second temp dir

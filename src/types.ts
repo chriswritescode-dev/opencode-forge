@@ -82,7 +82,7 @@ export interface SandboxMountConfig {
   host: string
   /** Absolute container path where the host path is mounted. */
   container: string
-  /** Mount read-only. Defaults to false (read-write). */
+  /** Mount read-only. Defaults to true (read-only); set false for read-write access. */
   readonly?: boolean
 }
 

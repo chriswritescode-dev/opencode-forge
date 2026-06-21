@@ -4,41 +4,7 @@ import { join, resolve } from 'path'
 import { tmpdir } from 'os'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
 import type { DockerService } from '../../src/sandbox/docker'
-import type { Logger } from '../../src/types'
-
-function createMockLogger(): Logger {
-  return {
-    log: () => {},
-    error: () => {},
-    debug: () => {},
-  }
-}
-
-function createMockDockerService() {
-  const createContainerCalls: Array<[string, string, string, Record<string, unknown> | undefined]> = []
-  let runningContainers = new Set<string>()
-
-  const mock = {
-    checkDocker: async () => true,
-    imageExists: async () => true,
-    buildImage: async () => {},
-    createContainer: async (name: string, projectDir: string, image: string, opts?: Record<string, unknown>) => {
-      createContainerCalls.push([name, projectDir, image, opts])
-      runningContainers.add(name)
-    },
-    removeContainer: async () => {},
-    exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
-    execPipe: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
-    isRunning: async (name: string) => runningContainers.has(name),
-    containerName: (worktreeName: string) => `forge-${worktreeName}`,
-    listContainersByPrefix: async () => [],
-    getCreateContainerCalls: () => createContainerCalls,
-    setRunning: (name: string, running: boolean) => {
-      if (running) runningContainers.add(name); else runningContainers.delete(name)
-    },
-  }
-  return mock
-}
+import { createMockLogger, createMockDockerService } from '../helpers/sandbox-mocks'
 
 describe('SandboxManager custom mounts', () => {
   const tmpDirs: string[] = []
@@ -65,7 +31,7 @@ describe('SandboxManager custom mounts', () => {
     const config: SandboxManagerConfig = {
       image: 'oc-forge-sandbox:latest',
       customMounts: [
-        { host: tmpRW, container: '/cache' },
+        { host: tmpRW, container: '/cache', readonly: false },
         { host: tmpRO, container: '/ref', readonly: true },
       ],
     }
@@ -95,7 +61,7 @@ describe('SandboxManager custom mounts', () => {
     const config: SandboxManagerConfig = {
       image: 'oc-forge-sandbox:latest',
       customMounts: [
-        { host: tmpRW, container: '/cache' },
+        { host: tmpRW, container: '/cache', readonly: false },
         { host: tmpRO, container: '/ref', readonly: true },
       ],
     }
@@ -153,7 +119,7 @@ describe('SandboxManager custom mounts', () => {
       sourceProjectDir: '/main-project',
       projectMountPath: '/project',
       customMounts: [
-        { host: tmpCustom, container: '/tools' },
+        { host: tmpCustom, container: '/tools', readonly: false },
       ],
     }
 
