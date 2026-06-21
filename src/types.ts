@@ -75,6 +75,18 @@ export interface SandboxResources {
 }
 
 /**
+ * A single custom bind-mount for the sandbox container.
+ */
+export interface SandboxMountConfig {
+  /** Absolute host directory (or file) path to bind-mount into the container. */
+  host: string
+  /** Absolute container path where the host path is mounted. */
+  container: string
+  /** Mount read-only. Defaults to true (read-only); set false for read-write access. */
+  readonly?: boolean
+}
+
+/**
  * Configuration for sandbox execution environment.
  */
 export interface SandboxConfig {
@@ -90,6 +102,8 @@ export interface SandboxConfig {
   mountProjectReadonly?: boolean
   /** Container path for the read-only project mount. Defaults to '/project'. */
   projectMountPath?: string
+  /** Additional host directories to bind-mount into the sandbox container. */
+  mounts?: SandboxMountConfig[]
   /** Network access configuration (host gateway, env passthrough). */
   network?: SandboxNetworkConfig
   /** Run the container as the host user's UID:GID. Defaults to true. */

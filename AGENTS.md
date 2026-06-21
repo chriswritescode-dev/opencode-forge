@@ -20,6 +20,10 @@ The following skills are bundled with the plugin and auto-installed to `~/.confi
 
 Source files are in `skills/` directory.
 
+## Bundled Prompts
+
+Agent and command prompts are bundled in `src/prompts/` and auto-installed to `~/.config/opencode/forge/prompts/` on first run. User edits take precedence and are preserved; unedited bundled files are refreshed when the bundled content changes (tracked via a content-hash manifest under `~/.config/opencode/forge/manifests/`). Section-summary markers in `agents/auditor-loop-addendum.md` must match `SECTION_SUMMARY_START_MARKER`/`SECTION_SUMMARY_END_MARKER` in `src/utils/section-summary.ts`.
+
 ## Project Conventions
 
 - All commits must be meaningful and follow conventional commit standards

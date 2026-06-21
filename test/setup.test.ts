@@ -4,26 +4,13 @@ import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { homedir } from 'os'
 import { fileURLToPath } from 'url'
+import { useTempConfigHome } from './helpers/temp-config'
 
 const testDir = dirname(fileURLToPath(import.meta.url))
-
 const TEST_DIR = '/tmp/opencode-forge-setup-test-' + Date.now()
 
 describe('loadPluginConfig', () => {
-  let testConfigDir: string
-
-  beforeEach(() => {
-    testConfigDir = TEST_DIR + '-config-' + Math.random().toString(36).slice(2)
-    mkdirSync(testConfigDir, { recursive: true })
-    process.env['XDG_CONFIG_HOME'] = testConfigDir
-  })
-
-  afterEach(() => {
-    delete process.env['XDG_CONFIG_HOME']
-    if (existsSync(testConfigDir)) {
-      rmSync(testConfigDir, { recursive: true, force: true })
-    }
-  })
+  const getConfigDir = useTempConfigHome('opencode-forge-setup-test')
 
   test('returns default config when no config file exists', () => {
     const config = loadPluginConfig()
@@ -32,8 +19,8 @@ describe('loadPluginConfig', () => {
   })
 
   test('reads and parses valid config file', () => {
-    const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
-    mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
+    const configPath = join(getConfigDir(), 'opencode', 'forge-config.jsonc')
+    mkdirSync(join(getConfigDir(), 'opencode'), { recursive: true })
 
     const validConfig = {
       logging: {
@@ -55,8 +42,8 @@ describe('loadPluginConfig', () => {
   })
 
   test('returns defaults when file contains invalid JSON', () => {
-    const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
-    mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
+    const configPath = join(getConfigDir(), 'opencode', 'forge-config.jsonc')
+    mkdirSync(join(getConfigDir(), 'opencode'), { recursive: true })
 
     writeFileSync(configPath, 'invalid json content')
 
@@ -65,8 +52,8 @@ describe('loadPluginConfig', () => {
   })
 
   test('loads config with sandbox settings', () => {
-    const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
-    mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
+    const configPath = join(getConfigDir(), 'opencode', 'forge-config.jsonc')
+    mkdirSync(join(getConfigDir(), 'opencode'), { recursive: true })
 
     const sandboxConfig = {
       sandbox: {

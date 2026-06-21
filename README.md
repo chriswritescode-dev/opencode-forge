@@ -148,6 +148,11 @@ You can edit this file to customize settings. The file is created only if it doe
 - Data dir: `~/.local/share/opencode/forge` or `$XDG_DATA_HOME/opencode/forge`
 - Logs: `~/.local/share/opencode/forge/logs/forge.log`
 - Log rotation: 10MB
+- Prompts: `~/.config/opencode/forge/prompts` or `$XDG_CONFIG_HOME/opencode/forge/prompts`
+
+### Customizing prompts
+
+Agent and command prompts are bundled as editable markdown under `src/prompts/` and installed to `~/.config/opencode/forge/prompts/` on first run. Edit any file there to customize an agent (`agents/*.md`) or slash command (`commands/*.md`); your edits take precedence over the bundled defaults and are preserved across upgrades. Bundled prompt fixes are re-applied automatically only to files you have not edited (tracked by content hash); delete a file to restore the bundled version on next start.
 
 Enable `logging.enabled` to write logs to disk. To use the default log path, omit `logging.file` or set it to `null` (an empty string is not treated as a default). Set `logging.debug` for more verbose output.
 
@@ -640,6 +645,22 @@ By default, the source project directory (not the worktree) is mounted read-only
 
 The worktree at `/workspace` remains writable for all sandbox operations.
 
+### Custom Bind Mounts
+
+Mount additional host directories into the sandbox via `sandbox.mounts`. Each entry requires absolute `host` and `container` paths; `readonly` defaults to `true` (read-only). Set `"readonly": false` to grant read-write access:
+
+```jsonc
+"mounts": [
+  { "host": "/abs/host/reference", "container": "/reference" },
+  { "host": "/abs/host/cache", "container": "/cache", "readonly": false }
+]
+```
+
+- **Validation:** entries are skipped (with a log message) when the host path does not exist, the container path is not absolute, or the container path collides with a reserved mount (`/workspace`, the `/project` mount, detected git metadata, or an earlier custom mount).
+- **Read-only by default:** mounts are mounted read-only unless you set `"readonly": false`, mirroring the read-only `/project` mount and keeping the worktree-isolation guarantee intact.
+
+**Security note:** read-write custom mounts (`"readonly": false`) expose arbitrary host directories to the container with the same trust boundary as environment passthrough. Only grant write access to directories you trust the sandbox to modify.
+
 ### Non-Root User
 
 The container runs as the host user's UID:GID by default (`runAsHostUser: true`). This ensures file ownership matches between the bind-mounted worktree and the host — files created inside the container are owned by you, not `root`. Set `runAsHostUser` to `false` to run as the container default user (`root`).
@@ -661,6 +682,7 @@ When a `sh` command produces output exceeding the tool's limit, the overflow is 
 | `sandbox.resources.shmSize` | `"1g"` | Shared memory size. Maps to `--shm-size`. |
 | `sandbox.mountProjectReadonly` | `true` | Mount the source project directory read-only at `projectMountPath`. |
 | `sandbox.projectMountPath` | `"/project"` | Container path for the read-only project mount. |
+| `sandbox.mounts` | `[]` | Additional host directories to bind-mount into the container (see [Custom Bind Mounts](#custom-bind-mounts)). |
 | `sandbox.runAsHostUser` | `true` | Run container as host user's UID:GID for correct bind-mount ownership. |
 | `sandbox.network.hostGateway` | `true` | Enable `host.docker.internal` gateway for reaching host services. |
 | `sandbox.network.env` | `[]` | Host environment variable names to pass through via temp `--env-file`. |
