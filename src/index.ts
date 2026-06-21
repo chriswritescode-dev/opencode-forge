@@ -212,6 +212,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           sourceProjectDir: directory,
           mountProjectReadonly: config.sandbox?.mountProjectReadonly,
           projectMountPath: config.sandbox?.projectMountPath,
+          ...(config.sandbox?.mounts ? { customMounts: config.sandbox.mounts } : {}),
           buildContextDir: resolveBundledContainerDir(),
           ...(config.sandbox?.resources ? { resources: config.sandbox.resources } : {}),
           ...(config.sandbox?.network ? { network: config.sandbox.network } : {}),

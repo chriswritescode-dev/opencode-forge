@@ -61,7 +61,13 @@
     //   "env": ["MY_VAR"]
     // },
     // Run the container as the host user's UID:GID. Defaults to true.
-    // "runAsHostUser": true
+    // "runAsHostUser": true,
+    // Additional host directories to bind-mount into the sandbox container.
+    // Each entry requires absolute host + container paths; "readonly" defaults to false (read-write).
+    // "mounts": [
+    //   { "host": "/abs/host/cache", "container": "/cache" },
+    //   { "host": "/abs/host/reference", "container": "/reference", "readonly": true }
+    // ]
   },
 
   // TUI sidebar widget configuration

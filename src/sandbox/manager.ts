@@ -1,7 +1,7 @@
 import type { DockerService } from './docker'
-import type { Logger, SandboxResources } from '../types'
-import { join, resolve } from 'path'
-import { mkdirSync, writeFileSync, rmSync, chmodSync } from 'fs'
+import type { Logger, SandboxResources, SandboxMountConfig } from '../types'
+import { join, resolve, isAbsolute } from 'path'
+import { mkdirSync, writeFileSync, rmSync, chmodSync, existsSync } from 'fs'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import type { SandboxMount } from './path'
 
@@ -12,6 +12,7 @@ export interface SandboxManagerConfig {
   sourceProjectDir?: string
   mountProjectReadonly?: boolean
   projectMountPath?: string
+  customMounts?: SandboxMountConfig[]
   buildContextDir?: string
   network?: { hostGateway?: boolean; env?: string[] }
   runAsHostUser?: boolean
@@ -22,6 +23,40 @@ const DEFAULT_RESOURCES: Required<Pick<SandboxResources, 'memory' | 'cpus' | 'sh
   memory: '8g',
   cpus: '4',
   shmSize: '1g',
+}
+
+export function resolveCustomMounts(
+  raw: SandboxMountConfig[] | undefined,
+  reservedContainerPaths: ReadonlySet<string>,
+  logger: Logger,
+): SandboxMount[] {
+  if (!raw || raw.length === 0) return []
+  const resolved: SandboxMount[] = []
+  const used = new Set<string>(reservedContainerPaths)
+  for (const entry of raw) {
+    const host = entry?.host?.trim()
+    const container = entry?.container?.trim()
+    if (!host || !container) {
+      logger.log(`Sandbox: skipping custom mount with missing host/container path: ${JSON.stringify(entry)}`)
+      continue
+    }
+    if (!isAbsolute(container)) {
+      logger.log(`Sandbox: skipping custom mount; container path must be absolute: ${container}`)
+      continue
+    }
+    const hostDir = resolve(host)
+    if (!existsSync(hostDir)) {
+      logger.log(`Sandbox: skipping custom mount; host path does not exist: ${hostDir}`)
+      continue
+    }
+    if (used.has(container)) {
+      logger.log(`Sandbox: skipping custom mount; container path already in use: ${container}`)
+      continue
+    }
+    used.add(container)
+    resolved.push({ hostDir, containerDir: container, readOnly: entry.readonly === true })
+  }
+  return resolved
 }
 
 const DOCKER_AVAILABLE_TTL = 30_000
@@ -89,15 +124,16 @@ export function createSandboxManager(
     imageReady = true
   }
 
-  function buildSandboxMounts(projectDir: string): SandboxMount[] {
+  function buildMountPlan(projectDir: string): { mounts: SandboxMount[]; gitMounts: string[] } {
+    const absolute = resolve(projectDir)
     const mounts: SandboxMount[] = [
-      { hostDir: resolve(projectDir), containerDir: '/workspace' },
+      { hostDir: absolute, containerDir: '/workspace' },
     ]
     const sourceProjectDir = config.sourceProjectDir
     const projectMountPath = config.projectMountPath ?? '/project'
     const hasProjectMount = config.mountProjectReadonly !== false
       && !!sourceProjectDir
-      && resolve(sourceProjectDir) !== resolve(projectDir)
+      && resolve(sourceProjectDir) !== absolute
     if (hasProjectMount) {
       mounts.push({
         hostDir: resolve(sourceProjectDir!),
@@ -105,7 +141,12 @@ export function createSandboxManager(
         readOnly: true,
       })
     }
-    return mounts
+    const gitMounts = detectGitMount(absolute)
+    const reserved = new Set<string>(['/workspace'])
+    for (const m of mounts.slice(1)) reserved.add(m.containerDir)
+    for (const g of gitMounts) reserved.add(g.slice(g.lastIndexOf(':') + 1))
+    mounts.push(...resolveCustomMounts(config.customMounts, reserved, logger))
+    return { mounts, gitMounts }
   }
 
   function detectGitMount(projectDir: string): string[] {
@@ -179,20 +220,18 @@ export function createSandboxManager(
         containerName,
         projectDir: absoluteProjectDir,
         startedAt: startedAt ?? new Date().toISOString(),
-        mounts: buildSandboxMounts(projectDir),
+        mounts: buildMountPlan(projectDir).mounts,
       })
       return { containerName }
     }
 
-    const mounts = buildSandboxMounts(projectDir)
-
-    const projectMount = mounts.length > 1 ? mounts[1] : undefined
-    const extraMounts = detectGitMount(absoluteProjectDir)
-    if (projectMount) {
-      extraMounts.push(`${projectMount.hostDir}:${projectMount.containerDir}:ro`)
+    const { mounts, gitMounts } = buildMountPlan(absoluteProjectDir)
+    const extraMounts = [...gitMounts]
+    for (const mount of mounts.slice(1)) {
+      extraMounts.push(mount.readOnly ? `${mount.hostDir}:${mount.containerDir}:ro` : `${mount.hostDir}:${mount.containerDir}`)
     }
     if (extraMounts.length > 0) {
-      logger.log(`Sandbox: mounting git metadata: ${extraMounts.join(', ')}`)
+      logger.log(`Sandbox: mounting extra volumes: ${extraMounts.join(', ')}`)
     }
     const resources: SandboxResources = {
       memory: config.resources?.memory ?? DEFAULT_RESOURCES.memory,
@@ -328,7 +367,7 @@ export function createSandboxManager(
         activeSandboxes.set(worktreeName, {
           ...active,
           projectDir: resolve(projectDir),
-          mounts: buildSandboxMounts(projectDir),
+          mounts: buildMountPlan(projectDir).mounts,
         })
         lastLivenessCheck.set(worktreeName, Date.now())
         return active.containerName
@@ -349,7 +388,7 @@ export function createSandboxManager(
     const running = await docker.isRunning(containerName)
     if (running) {
       const absoluteProjectDir = resolve(projectDir)
-      const mounts = buildSandboxMounts(projectDir)
+      const { mounts } = buildMountPlan(projectDir)
       const activeEntry: ActiveSandbox = {
         containerName,
         projectDir: absoluteProjectDir,
