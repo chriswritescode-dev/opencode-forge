@@ -6,14 +6,17 @@ function sha256(content: string): string {
   return createHash('sha256').update(content, 'utf-8').digest('hex')
 }
 
-function collectFiles(dir: string, root: string): string[] {
+function collectFiles(dir: string, root: string, filter?: (relPath: string) => boolean): string[] {
   const files: string[] = []
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const abs = join(dir, entry.name)
     if (entry.isDirectory()) {
-      files.push(...collectFiles(abs, root))
+      files.push(...collectFiles(abs, root, filter))
     } else {
-      files.push(relative(root, abs))
+      const rel = relative(root, abs)
+      if (!filter || filter(rel)) {
+        files.push(rel)
+      }
     }
   }
   return files
@@ -27,11 +30,16 @@ function readManifest(manifestPath: string): Record<string, string> {
   }
 }
 
-export function syncBundledDir(srcDir: string, destDir: string, manifestPath: string): void {
+export function syncBundledDir(
+  srcDir: string,
+  destDir: string,
+  manifestPath: string,
+  filter?: (relPath: string) => boolean,
+): void {
   if (!existsSync(srcDir)) return
 
   const manifest = readManifest(manifestPath)
-  const files = collectFiles(srcDir, srcDir)
+  const files = collectFiles(srcDir, srcDir, filter)
   let changed = false
 
   for (const rel of files) {

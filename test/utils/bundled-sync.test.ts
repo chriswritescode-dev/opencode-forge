@@ -154,6 +154,33 @@ describe('syncBundledDir', () => {
     rmSync(manifestPath, { recursive: true, force: true })
   })
 
+  test('only copies files matching the provided filter', () => {
+    const src = tmpDir('filter-src')
+    const dest = tmpDir('filter-dest')
+    const manifestPath = tmpDir('manifest') + '.json'
+
+    mkdirSync(join(src, 'agents'), { recursive: true })
+    writeFileSync(join(src, 'agents', 'architect.md'), 'ARCHITECT')
+    writeFileSync(join(src, 'loader.js'), 'console.log(1)')
+    writeFileSync(join(src, 'loader.d.ts'), 'export {}')
+    writeFileSync(join(src, 'loader.js.map'), '{}')
+
+    syncBundledDir(src, dest, manifestPath, (rel) => rel.endsWith('.md'))
+
+    expect(existsSync(join(dest, 'agents', 'architect.md'))).toBe(true)
+    expect(existsSync(join(dest, 'loader.js'))).toBe(false)
+    expect(existsSync(join(dest, 'loader.d.ts'))).toBe(false)
+    expect(existsSync(join(dest, 'loader.js.map'))).toBe(false)
+
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'))
+    expect(manifest['agents/architect.md']).toBeDefined()
+    expect(manifest['loader.js']).toBeUndefined()
+
+    rmSync(src, { recursive: true, force: true })
+    rmSync(dest, { recursive: true, force: true })
+    rmSync(manifestPath, { recursive: true, force: true })
+  })
+
   test('handles nested subdirectories', () => {
     const src = tmpDir('nested-src')
     const dest = tmpDir('nested-dest')

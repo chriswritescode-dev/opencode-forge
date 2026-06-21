@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'vitest'
 import { loadPluginConfig, resolvePromptsDir } from '../src/setup'
-import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from 'fs'
+import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { useTempConfigHome } from './helpers/temp-config'
 
@@ -47,6 +47,28 @@ describe('ensureBundledPrompts', () => {
     expect(existsSync(codePath)).toBe(true)
     const content = readFileSync(codePath, 'utf-8')
     expect(content).toContain('coding agent')
+  })
+
+  test('installs only markdown prompts, never build artifacts', () => {
+    loadPluginConfig()
+
+    const promptsDir = resolvePromptsDir()
+
+    function collect(dir: string): string[] {
+      const out: string[] = []
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const abs = join(dir, entry.name)
+        if (entry.isDirectory()) out.push(...collect(abs))
+        else out.push(abs)
+      }
+      return out
+    }
+
+    const files = collect(promptsDir)
+    expect(files.length).toBeGreaterThan(0)
+    for (const file of files) {
+      expect(file.endsWith('.md')).toBe(true)
+    }
   })
 
   test('creates manifest file with prompt entries', () => {

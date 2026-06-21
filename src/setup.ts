@@ -102,11 +102,16 @@ function resolveManifestPath(name: string): string {
   return join(resolveConfigDir(), 'forge', 'manifests', `${name}.json`)
 }
 
-function ensureBundledDir(label: string, srcDir: string, destDir: string): void {
+function ensureBundledDir(
+  label: string,
+  srcDir: string,
+  destDir: string,
+  filter?: (relPath: string) => boolean,
+): void {
   if (!existsSync(srcDir)) return
   if (!existsSync(destDir)) mkdirSync(destDir, { recursive: true })
   try {
-    syncBundledDir(srcDir, destDir, resolveManifestPath(label))
+    syncBundledDir(srcDir, destDir, resolveManifestPath(label), filter)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.warn(`[forge] Failed to install bundled ${label}: ${message}`)
@@ -114,7 +119,10 @@ function ensureBundledDir(label: string, srcDir: string, destDir: string): void 
 }
 
 function ensureBundledPrompts(): void {
-  ensureBundledDir('prompts', BUNDLED_PROMPTS_DIR, resolvePromptsDir())
+  // BUNDLED_PROMPTS_DIR resolves to the compiled module directory, which also
+  // contains JS/declaration/sourcemap build artifacts. Only prompt markdown
+  // files should be installed into the user prompts directory.
+  ensureBundledDir('prompts', BUNDLED_PROMPTS_DIR, resolvePromptsDir(), (rel) => rel.endsWith('.md'))
 }
 
 export function loadPluginConfig(): PluginConfig {
