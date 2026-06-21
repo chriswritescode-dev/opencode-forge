@@ -28,7 +28,6 @@
     "forge-config.jsonc",
     "scripts",
     "README.md",
-    "src/command/template",
     "skills"
   ],
   "repository": {

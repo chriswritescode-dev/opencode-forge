@@ -6,7 +6,7 @@ import { createConfigHandler } from './config'
 import { createSessionHooks, createLoopEventHandler } from './hooks'
 import { initializeDatabase, resolveDataDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo } from './storage'
 import type { LoopChangeNotifier } from './loop'
-import { loadPluginConfig, resolveBundledContainerDir } from './setup'
+import { loadPluginConfig, resolveBundledContainerDir, resolvePromptsDir } from './setup'
 import { resolveLogPath } from './storage'
 import { createLogger } from './utils/logger'
 import { createDockerService } from './sandbox/docker'
@@ -295,7 +295,8 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo)
 
-    const agents = buildAgents()
+    const promptsDir = resolvePromptsDir()
+    const agents = buildAgents(promptsDir)
 
     const compactionConfig: CompactionConfig | undefined = config.compaction
     const messagesTransformConfig = config.messagesTransform
@@ -438,7 +439,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     return {
       getCleanup,
       tool: tools,
-      config: createConfigHandler(agents, config.agents),
+      config: createConfigHandler(agents, config.agents, promptsDir),
       'chat.message': async (input, output) => {
         await forgeSessionMessageAttachHook(input)
         await sessionHooks.onMessage(input, output)

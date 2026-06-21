@@ -90,9 +90,47 @@ function parseJsonc<T = unknown>(content: string): T {
   return JSON.parse(normalized) as T
 }
 
+export function resolvePromptsDir(): string {
+  return join(resolveConfigDir(), 'forge', 'prompts')
+}
+
+function resolveBundledPromptsDir(): string {
+  const pluginDir = dirname(fileURLToPath(import.meta.url))
+  return join(pluginDir, 'prompts')
+}
+
+function copyMissingFiles(srcDir: string, destDir: string): void {
+  for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
+    const srcPath = join(srcDir, entry.name)
+    const destPath = join(destDir, entry.name)
+    if (entry.isDirectory()) {
+      mkdirSync(destPath, { recursive: true })
+      copyMissingFiles(srcPath, destPath)
+      continue
+    }
+    if (existsSync(destPath)) continue
+    mkdirSync(dirname(destPath), { recursive: true })
+    copyFileSync(srcPath, destPath)
+  }
+}
+
+function ensureBundledPrompts(): void {
+  const destRoot = resolvePromptsDir()
+  const bundledRoot = resolveBundledPromptsDir()
+  if (!existsSync(bundledRoot)) return
+  if (!existsSync(destRoot)) mkdirSync(destRoot, { recursive: true })
+  try {
+    copyMissingFiles(bundledRoot, destRoot)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.warn(`[forge] Failed to install bundled prompts: ${message}`)
+  }
+}
+
 export function loadPluginConfig(): PluginConfig {
   ensureGlobalConfig()
   ensureBundledSkills()
+  ensureBundledPrompts()
 
   const configPath = resolveConfigPath()
 
