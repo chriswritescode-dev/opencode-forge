@@ -29,6 +29,16 @@ export interface WorktreeLoggingConfig {
   directory?: string
 }
 
+/** Post-completion action run inside the worktree before teardown (review, audit, doc-gen, etc.). */
+export interface PostActionConfig {
+  /** Enable the post-completion action phase. Defaults to false. */
+  enabled?: boolean
+  /** Name of a skill to load via the Skill tool at action time (e.g. "pr-review"). Must be installed host-side. */
+  skill?: string
+  /** Optional extra instruction text appended to the action prompt. Used standalone when no skill is set. */
+  prompt?: string
+}
+
 /**
  * Configuration for autonomous loop behavior.
  */
@@ -43,6 +53,8 @@ export interface LoopConfig {
   stallTimeoutMs?: number
   /** Worktree loop completion logging configuration. */
   worktreeLogging?: WorktreeLoggingConfig
+  /** Optional post-completion action (skill and/or prompt) run in-worktree before teardown. */
+  postAction?: PostActionConfig
   /** Maximum consecutive stalls before loop is terminated. 0 = disabled (default: 5). */
   maxConsecutiveStalls?: number
 }

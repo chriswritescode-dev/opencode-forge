@@ -287,4 +287,29 @@ describe('bundled sample config', () => {
     expect(config.loop?.worktreeLogging?.directory).toBe('/tmp/loop-logs')
   })
 
+  test('JSONC parsing preserves postAction config', () => {
+    const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
+    mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
+    process.env['XDG_CONFIG_HOME'] = testConfigDir
+
+    const configWithPostAction = {
+      loop: {
+        enabled: true,
+        postAction: {
+          enabled: true,
+          skill: 'pr-review',
+          prompt: 'Auto-defer anything needing clarification',
+        },
+      },
+    }
+
+    writeFileSync(configPath, JSON.stringify(configWithPostAction))
+
+    const config = loadPluginConfig()
+    expect(config.loop?.postAction).toBeDefined()
+    expect(config.loop?.postAction?.enabled).toBe(true)
+    expect(config.loop?.postAction?.skill).toBe('pr-review')
+    expect(config.loop?.postAction?.prompt).toBe('Auto-defer anything needing clarification')
+  })
+
 })

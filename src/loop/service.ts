@@ -13,6 +13,8 @@ import {
   buildSectionContinuationPrompt as _buildSectionContinuationPrompt,
   buildFinalAuditPrompt as _buildFinalAuditPrompt,
   buildFinalAuditFixPrompt as _buildFinalAuditFixPrompt,
+  buildPostActionPrompt as _buildPostActionPrompt,
+  type PostActionPromptOptions,
   type PromptContext,
 } from './prompts'
 import { parseSectionSummary as _parseSectionSummary } from './section-summary'
@@ -77,6 +79,7 @@ export interface LoopService {
   buildSectionContinuationPrompt(state: LoopState, auditText: string, outstandingBugs?: ReviewFindingRow[]): string
   buildFinalAuditPrompt(state: LoopState): string
   buildFinalAuditFixPrompt(state: LoopState, auditText: string, outstandingBugs?: ReviewFindingRow[]): string
+  buildPostActionPrompt(state: LoopState, opts: PostActionPromptOptions): string
   completeSection(loopName: string, index: number, summary: { done: string | null; deviations: string | null; followUps: string | null }): void
   incrementSectionAttempts(loopName: string, index: number): void
   resetSectionForRewind(loopName: string, index: number): void
@@ -442,6 +445,10 @@ export function createLoopService(
     return _buildFinalAuditFixPrompt(_promptCtx, state, auditText, outstandingBugs)
   }
 
+  function buildPostActionPrompt(state: LoopState, opts: PostActionPromptOptions): string {
+    return _buildPostActionPrompt(_promptCtx, state, opts)
+  }
+
   function completeSection(loopName: string, index: number, summary: { done: string | null; deviations: string | null; followUps: string | null }): void {
     if (!sectionPlansRepo) return
     sectionPlansRepo.setStatus(projectId, loopName, index, 'completed')
@@ -531,6 +538,7 @@ export function createLoopService(
     buildSectionContinuationPrompt,
     buildFinalAuditPrompt,
     buildFinalAuditFixPrompt,
+    buildPostActionPrompt,
     completeSection,
     incrementSectionAttempts,
     resetSectionForRewind,

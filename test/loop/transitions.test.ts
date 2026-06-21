@@ -228,6 +228,46 @@ describe('nextTransition', () => {
 
 
 
+  describe('post_action phase', () => {
+    it('terminates with completed on post-action-complete', () => {
+      const state = makeState({ phase: 'post_action' })
+      const transition = nextTransition(state, { type: 'post-action-complete' })
+      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'completed' } })
+    })
+
+    it('terminates with max_iterations on iteration-cap', () => {
+      const state = makeState({ phase: 'post_action' })
+      const transition = nextTransition(state, { type: 'iteration-cap' })
+      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'max_iterations' } })
+    })
+
+    it('terminates with user_aborted on user-abort', () => {
+      const state = makeState({ phase: 'post_action' })
+      const transition = nextTransition(state, { type: 'user-abort' })
+      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'user_aborted' } })
+    })
+
+    it('terminates with shutdown', () => {
+      const state = makeState({ phase: 'post_action' })
+      const transition = nextTransition(state, { type: 'shutdown' })
+      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'shutdown' } })
+    })
+
+    it('terminates with stall_timeout', () => {
+      const state = makeState({ phase: 'post_action' })
+      const transition = nextTransition(state, { type: 'stall-timeout' })
+      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'stall_timeout' } })
+    })
+
+    it('terminates with missing_worktree_dir', () => {
+      const state = makeState({ phase: 'post_action' })
+      const transition = nextTransition(state, { type: 'missing-worktree-dir' })
+      expect(transition).toEqual({ kind: 'terminate', reason: { kind: 'missing_worktree_dir' } })
+    })
+  })
+
+
+
   describe('unhandled events in each phase', () => {
     it('returns noop for unhandled events in coding phase', () => {
       const state = makeState({ phase: 'coding' })
@@ -246,10 +286,16 @@ describe('nextTransition', () => {
       const transition = nextTransition(state, { type: 'nonexistent-event' as any })
       expect(transition).toEqual({ kind: 'noop' })
     })
+
+    it('returns noop for unhandled events in post_action phase', () => {
+      const state = makeState({ phase: 'post_action' })
+      const transition = nextTransition(state, { type: 'nonexistent-event' as any })
+      expect(transition).toEqual({ kind: 'noop' })
+    })
   })
 
   describe('cross-phase error events', () => {
-    const phases = ['coding', 'auditing', 'final_auditing'] as const
+    const phases = ['coding', 'auditing', 'final_auditing', 'post_action'] as const
 
     phases.forEach(phase => {
       it(`handles worktree-failed in ${phase} phase`, () => {

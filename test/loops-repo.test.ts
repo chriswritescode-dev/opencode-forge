@@ -32,7 +32,7 @@ describe('LoopsRepo', () => {
         iteration            INTEGER NOT NULL DEFAULT 0,
         audit_count          INTEGER NOT NULL DEFAULT 0,
         error_count          INTEGER NOT NULL DEFAULT 0,
-        phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing','final_auditing')),
+        phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing','final_auditing','post_action')),
         execution_model      TEXT,
         auditor_model        TEXT,
         model_failed         INTEGER NOT NULL DEFAULT 0,
@@ -93,7 +93,6 @@ describe('LoopsRepo', () => {
     auditCount: 0,
     errorCount: 0,
     phase: 'coding',
-
     executionModel: null,
     auditorModel: null,
     modelFailed: false,
@@ -105,6 +104,11 @@ describe('LoopsRepo', () => {
     completionSummary: null,
     workspaceId: null,
     hostSessionId: null,
+    currentSectionIndex: 0,
+    totalSections: 0,
+    finalAuditDone: 0,
+    executionVariant: null,
+    auditorVariant: null,
   }
 
   const testLarge: LoopLargeFields = {
@@ -142,6 +146,21 @@ describe('LoopsRepo', () => {
       const retrieved = repo.get(testRow.projectId, testRow.loopName)
       expect(retrieved!.iteration).toBe(1) // Still original value
       expect(retrieved!.errorCount).toBe(0)
+    })
+
+    test('should round-trip a row with phase=post_action', () => {
+      const row: LoopRow = {
+        ...testRow,
+        loopName: 'post-action-loop',
+        currentSessionId: 'session-post-action',
+        phase: 'post_action',
+      }
+      repo.insert(row, testLarge)
+
+      const retrieved = repo.get(row.projectId, row.loopName)
+      expect(retrieved).toBeTruthy()
+      expect(retrieved!.phase).toBe('post_action')
+      expect(retrieved!.loopName).toBe('post-action-loop')
     })
   })
 

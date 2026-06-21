@@ -17,7 +17,7 @@ import { buildLoopPermissionRuleset } from '../constants/loop'
 import { createLoopSessionWithWorkspace } from '../utils/loop-session'
 // worktree-cleanup imports moved to hooks/loop.ts (termination side-effects)
 import { createAuditSession, promptAuditSession } from '../utils/audit-session'
-import { formatLoopSessionTitle } from '../utils/session-titles'
+import { formatLoopSessionTitle, formatPostActionSessionTitle } from '../utils/session-titles'
 import { clearPromptPending, sessionsAwaitingBusy, isAwaitingBusy, isAwaitingBusyExpired } from './idle-gate'
 import {
   clearPromptInFlight,
@@ -267,8 +267,64 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return false
     }
     logger.log(`Loop: audit all-clear, terminating loop=${loopName} iteration=${currentState.iteration} audits=${currentState.auditCount ?? 0}`)
+    if (await enterPostActionPhase(loopName, currentState)) return true
     await terminateLoop(loopName, currentState, { kind: 'completed' })
     logger.log(`Loop completed: auditor all-clear at iteration ${currentState.iteration} (audits=${currentState.auditCount ?? 0})`)
+    return true
+  }
+
+  /**
+   * Resolve the post-action config from the current plugin config.
+   */
+  function resolvePostActionConfig(): { enabled: boolean; skill?: string; prompt?: string } {
+    const pa = getConfig().loop?.postAction
+    const enabled = pa?.enabled === true && (!!pa?.skill || !!pa?.prompt)
+    return { enabled, skill: pa?.skill, prompt: pa?.prompt }
+  }
+
+  /**
+   * Transition the loop into the post_action phase: creates a new session, builds the
+   * post-action prompt (with skill/prompt from config), sends it, and records the phase.
+   * Returns true if the loop entered post_action (caller should return without terminating).
+   */
+  async function enterPostActionPhase(loopName: string, currentState: LoopState): Promise<boolean> {
+    if (currentState.phase === 'post_action') return false
+    const cfg = resolvePostActionConfig()
+    if (!cfg.enabled) return false
+    if (!currentState.worktreeDir) return false
+
+    const ensured = await ensureWorkspaceForLoop(loopName, currentState, 'before post-action creation')
+    const permission = buildLoopPermissionRuleset({ sandbox: currentState.sandbox ?? false })
+    const created = await createLoopSessionWithWorkspace({
+      client,
+      title: formatPostActionSessionTitle(loopName),
+      directory: currentState.worktreeDir,
+      permission,
+      workspaceId: ensured.workspaceId ?? currentState.workspaceId,
+      loopName,
+      logPrefix: `loop ${loopName} post-action`,
+      logger,
+    })
+    if (!created) {
+      logger.error(`Loop: post-action session creation failed for ${loopName}, completing without action`)
+      return false
+    }
+
+    loopService.registerLoopSession(created.sessionId, loopName)
+
+    const prompt = loopService.buildPostActionPrompt(currentState, { skill: cfg.skill, prompt: cfg.prompt })
+    loopService.setPhaseAndResetError(loopName, 'post_action')
+    loopService.replaceSession(loopName, { newSessionId: created.sessionId, phase: 'post_action' })
+    void scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after post-action creation', phase: currentState.phase, state: currentState })
+
+    const loopModel = resolveLoopModel(getConfig(), loopService, loopName)
+    const { error } = await sendPromptWithFallback({ loopName, sessionId: created.sessionId, promptText: prompt, agent: 'code', model: loopModel, variant: currentState.executionVariant })
+    if (error) {
+      logger.error(`Loop: failed to send post-action prompt for ${loopName}, completing without action`, error)
+      await terminateLoop(loopName, loopService.getActiveState(loopName) ?? currentState, { kind: 'completed' })
+      return true
+    }
+    watchdog.recordActivity(loopName, 'post-action-prompt-sent')
     return true
   }
 
@@ -651,6 +707,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           await runAuditingPhase(loopName, freshState)
         } else if (freshState.phase === 'final_auditing') {
           await runFinalAuditPhase(loopName, freshState)
+        } else if (freshState.phase === 'post_action') {
+          await runPostActionPhase(loopName, freshState)
         } else {
           await runCodingPhase(loopName, freshState)
         }
@@ -1239,6 +1297,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (trans.kind === 'terminate') {
         logger.log(`Loop: final audit clean for ${loopName} (no outstanding bug findings), completing`)
         loopService.setFinalAuditDone(loopName, true)
+        if (trans.reason.kind === 'completed' && await enterPostActionPhase(loopName, currentState)) return
         await terminateLoop(loopName, currentState, trans.reason)
         return
       }
@@ -1302,6 +1361,63 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
+  async function runPostActionPhase(loopName: string, _state: LoopState): Promise<void> {
+    const currentState = loopService.getActiveState(loopName)
+    if (!currentState?.active) {
+      logger.log(`Loop: loop ${loopName} no longer active, skipping post-action phase`)
+      return
+    }
+
+    if (currentState.phase !== 'post_action') {
+      logger.log(`Loop: runPostActionPhase invoked while phase=${currentState.phase} for ${loopName}, ignoring`)
+      return
+    }
+
+    if (!currentState.worktreeDir) {
+      logger.error(`Loop: loop ${loopName} missing worktreeDir in post-action phase, terminating`)
+      await terminateLoop(loopName, currentState, { kind: 'missing_worktree_dir' })
+      return
+    }
+
+    const { lastMessageRole } = await getLastAssistantInfo(currentState.sessionId, currentState.worktreeDir)
+
+    if (lastMessageRole !== 'assistant') {
+      const attempts = idleRetryAttempts.get(loopName) ?? 0
+      if (attempts >= MAX_IDLE_RETRIES) {
+        logger.error(`Loop: post-action phase retry exhausted for ${loopName} (last message: ${lastMessageRole}), terminating as completed (best-effort)`)
+        idleRetryAttempts.delete(loopName)
+        await terminateLoop(loopName, currentState, { kind: 'completed' })
+        return
+      }
+      logger.log(`Loop: post-action idle without assistant message (last=${lastMessageRole}), retrying in ${IDLE_RETRY_DELAY_MS}ms (attempt ${attempts + 1}/${MAX_IDLE_RETRIES})`)
+      idleRetryAttempts.set(loopName, attempts + 1)
+      const t = setTimeout(() => {
+        void withStateLock(loopName, async () => {
+          const fresh = loopService.getActiveState(loopName)
+          if (!fresh?.active || fresh.phase !== 'post_action') return
+          await runPostActionPhase(loopName, fresh)
+        })
+      }, IDLE_RETRY_DELAY_MS)
+      idleRetryTimeouts.set(loopName, t)
+      return
+    }
+
+    const pending = idleRetryTimeouts.get(loopName)
+    if (pending) {
+      clearTimeout(pending)
+      idleRetryTimeouts.delete(loopName)
+    }
+    if (idleRetryAttempts.has(loopName)) {
+      idleRetryAttempts.delete(loopName)
+    }
+
+    logger.log(`Loop: post-action complete for ${loopName}, terminating`)
+    const trans = nextTransition(currentState, { type: 'post-action-complete' })
+    if (trans.kind === 'terminate') {
+      await terminateLoop(loopName, currentState, trans.reason)
+    }
+  }
+
   async function tick(event: LoopEvent): Promise<void> {
     if (event.type === 'worktree.failed') {
       const message = event.properties?.message as string
@@ -1359,6 +1475,17 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             await rotateToCodingAfterAuditFailure(loopName, state, 'aborted')
             return
           }
+          if (state.phase === 'post_action') {
+            const { lastMessageRole } = await getLastAssistantInfo(eventSessionId, state.worktreeDir)
+            if (lastMessageRole === 'assistant') {
+              logger.log(`Loop: post-action session ${eventSessionId} aborted after assistant response, processing result`)
+              await runPostActionPhase(loopName, state)
+              return
+            }
+            logger.log(`Loop: post-action session ${eventSessionId} aborted without assistant response, terminating as completed (best-effort)`)
+            await terminateLoop(loopName, state, { kind: 'completed' })
+            return
+          }
           logger.log(`Loop: session ${eventSessionId} aborted, terminating loop`)
           await terminateLoop(loopName, state, { kind: 'user_aborted' })
         })
@@ -1381,8 +1508,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           await rotateToCodingAfterAuditFailure(loopName, state, errorMessage)
           return
         }
+        const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
         if (state.phase === 'final_auditing') {
-          const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
           const { lastMessageRole } = await getLastAssistantInfo(eventSessionId, state.worktreeDir)
           if (lastMessageRole === 'assistant') {
             logger.log(`Loop: final audit session ${eventSessionId} error after assistant response, processing audit result`)
@@ -1393,7 +1520,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           await rotateToCodingAfterAuditFailure(loopName, state, errorMessage)
           return
         }
-        const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
+        if (state.phase === 'post_action') {
+          logger.error(`Loop: post-action session error for ${eventSessionId}: ${errorMessage}, completing as best-effort`)
+          await terminateLoop(loopName, state, { kind: 'completed' })
+          return
+        }
         logger.error(`Loop: session error for ${eventSessionId}: ${errorMessage}`)
         const isModelError = /provider|auth|model|api\s*error/i.test(errorMessage)
         if (isModelError && !state.modelFailed) {
@@ -1459,6 +1590,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           await runAuditingPhase(loopName, state)
         } else if (state.phase === 'final_auditing') {
           await runFinalAuditPhase(loopName, state)
+        } else if (state.phase === 'post_action') {
+          await runPostActionPhase(loopName, state)
         } else {
           await runCodingPhase(loopName, state)
         }

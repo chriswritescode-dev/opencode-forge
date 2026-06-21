@@ -45,7 +45,11 @@ export interface FinalAuditingState extends LoopStateBase {
   phase: 'final_auditing'
 }
 
-export type LoopState = CodingState | AuditingState | FinalAuditingState
+export interface PostActionState extends LoopStateBase {
+  phase: 'post_action'
+}
+
+export type LoopState = CodingState | AuditingState | FinalAuditingState | PostActionState
 
 export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): LoopState {
   const base = {
@@ -87,6 +91,8 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
       return { ...base, phase: 'auditing' } satisfies AuditingState
     case 'final_auditing':
       return { ...base, phase: 'final_auditing' } satisfies FinalAuditingState
+    case 'post_action':
+      return { ...base, phase: 'post_action' } satisfies PostActionState
   }
 }
 

@@ -175,4 +175,17 @@ describe('Audit session permissions', () => {
       action: 'deny',
     })
   })
+
+  test('audit ruleset denies question tool (autonomy preservation)', () => {
+    const ruleset = buildAuditSessionPermissionRuleset({ sandbox: false })
+    expect(ruleset).toContainEqual({ permission: 'question', pattern: '*', action: 'deny' })
+  })
+
+  test('audit ruleset does not deny skill or task (post-action sessions need them)', () => {
+    const ruleset = buildAuditSessionPermissionRuleset({ sandbox: false })
+    const denyRules = ruleset.filter((r: { permission: string; action: string }) => r.action === 'deny')
+    const deniedPermissions = denyRules.map((r: { permission: string }) => r.permission)
+    expect(deniedPermissions).not.toContain('skill')
+    expect(deniedPermissions).not.toContain('task')
+  })
 })

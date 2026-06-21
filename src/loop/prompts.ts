@@ -287,6 +287,47 @@ export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, a
   return header + buildSandboxContextNote(state) + CODER_DECISIONS_INSTRUCTION
 }
 
+export interface PostActionPromptOptions {
+  skill?: string
+  prompt?: string
+}
+
+export function buildPostActionPrompt(ctx: PromptContext, state: LoopState, opts: PostActionPromptOptions): string {
+  const planText = ctx.getPlanTextForState(state) ?? 'Plan not found in plan store.'
+  const branch = state.worktreeBranch ?? '(unknown)'
+
+  const parts: string[] = [
+    '[Post-implementation action]',
+    '',
+    '## Master Plan',
+    planText,
+    '',
+    'This is an isolated worktree. The plan\'s implementation is complete (changes may be uncommitted in the working tree)',
+    `on branch \`${branch}\`. Review the full worktree state including uncommitted changes (` + '`git status` + `git diff`' + ').',
+  ]
+
+  if (opts.skill) {
+    parts.push(
+      '',
+      `Load the \`${opts.skill}\` skill with the Skill tool and execute its workflow against this worktree's changes.`,
+    )
+  }
+
+  if (opts.prompt) {
+    parts.push('', opts.prompt)
+  }
+
+  parts.push(
+    '',
+    'This runs unattended — do NOT use the question tool. Auto-defer any finding that would require clarification',
+    'and report it; apply only safe, scoped fixes; then run the project\'s tests/lint/typecheck.',
+  )
+
+  parts.push(buildSandboxContextNote(state))
+
+  return parts.join('\n')
+}
+
 export function buildFinalAuditPrompt(ctx: PromptContext, state: LoopState): string {
   const planText = ctx.getPlanTextForState(state) ?? 'Plan not found in plan store.'
   const digest = ctx.getCompletedSectionDigest(state)
