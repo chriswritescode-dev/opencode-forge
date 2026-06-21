@@ -18,4 +18,4 @@ export function buildCodeAgent(promptsDir?: string): AgentDefinition {
   }
 }
 
-export const codeAgent: AgentDefinition = buildCodeAgent()
+

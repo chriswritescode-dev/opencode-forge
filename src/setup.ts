@@ -1,13 +1,18 @@
-import { readFileSync, existsSync, mkdirSync, copyFileSync, cpSync, readdirSync } from 'fs'
+import { readFileSync, existsSync, mkdirSync, copyFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
 import { resolveLogPath } from './storage'
+import { BUNDLED_PROMPTS_DIR } from './prompts/loader'
+import { syncBundledDir } from './utils/bundled-sync'
 import type { PluginConfig } from './types'
 
+function resolvePluginDir(): string {
+  return dirname(fileURLToPath(import.meta.url))
+}
+
 function resolveBundledConfigPath(): string {
-  const pluginDir = dirname(fileURLToPath(import.meta.url))
-  return join(pluginDir, '..', 'forge-config.jsonc')
+  return join(resolvePluginDir(), '..', 'forge-config.jsonc')
 }
 
 function resolveConfigDir(): string {
@@ -17,8 +22,7 @@ function resolveConfigDir(): string {
 }
 
 export function resolveBundledContainerDir(): string {
-  const pluginDir = dirname(fileURLToPath(import.meta.url))
-  return join(pluginDir, '..', 'container')
+  return join(resolvePluginDir(), '..', 'container')
 }
 
 export function resolveConfigPath(): string {
@@ -94,33 +98,16 @@ export function resolvePromptsDir(): string {
   return join(resolveConfigDir(), 'forge', 'prompts')
 }
 
-function resolveBundledPromptsDir(): string {
-  const pluginDir = dirname(fileURLToPath(import.meta.url))
-  return join(pluginDir, 'prompts')
-}
-
-function copyMissingFiles(srcDir: string, destDir: string): void {
-  for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
-    const srcPath = join(srcDir, entry.name)
-    const destPath = join(destDir, entry.name)
-    if (entry.isDirectory()) {
-      mkdirSync(destPath, { recursive: true })
-      copyMissingFiles(srcPath, destPath)
-      continue
-    }
-    if (existsSync(destPath)) continue
-    mkdirSync(dirname(destPath), { recursive: true })
-    copyFileSync(srcPath, destPath)
-  }
+function resolveManifestPath(name: string): string {
+  return join(resolveConfigDir(), 'forge', 'manifests', `${name}.json`)
 }
 
 function ensureBundledPrompts(): void {
   const destRoot = resolvePromptsDir()
-  const bundledRoot = resolveBundledPromptsDir()
-  if (!existsSync(bundledRoot)) return
+  if (!existsSync(BUNDLED_PROMPTS_DIR)) return
   if (!existsSync(destRoot)) mkdirSync(destRoot, { recursive: true })
   try {
-    copyMissingFiles(bundledRoot, destRoot)
+    syncBundledDir(BUNDLED_PROMPTS_DIR, destRoot, resolveManifestPath('prompts'))
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.warn(`[forge] Failed to install bundled prompts: ${message}`)
@@ -162,33 +149,18 @@ function normalizeConfig(config: PluginConfig): PluginConfig {
 function ensureBundledSkills(): void {
   const configDir = resolveConfigDir()
   const skillsDir = join(configDir, 'skills')
+  const bundledSkillsDir = join(resolvePluginDir(), '..', 'skills')
 
   if (!existsSync(skillsDir)) {
     mkdirSync(skillsDir, { recursive: true })
   }
-
-  const pluginDir = dirname(fileURLToPath(import.meta.url))
-  const bundledSkillsDir = join(pluginDir, '..', 'skills')
 
   if (!existsSync(bundledSkillsDir)) {
     return
   }
 
   try {
-    const skillNames = readdirSync(bundledSkillsDir, { withFileTypes: true })
-      .filter(d => d.isDirectory())
-      .map(d => d.name)
-
-    for (const skillName of skillNames) {
-      const srcDir = join(bundledSkillsDir, skillName)
-      const destDir = join(skillsDir, skillName)
-
-      if (existsSync(destDir)) {
-        continue
-      }
-
-      cpSync(srcDir, destDir, { recursive: true })
-    }
+    syncBundledDir(bundledSkillsDir, skillsDir, resolveManifestPath('skills'))
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.warn(`[forge] Failed to install bundled skills: ${message}`)

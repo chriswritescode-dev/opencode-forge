@@ -1,25 +1,11 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest'
+import { describe, test, expect } from 'vitest'
 import { loadPluginConfig, resolvePromptsDir } from '../src/setup'
-import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, unlinkSync } from 'fs'
+import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from 'fs'
 import { join } from 'path'
-
-const TEST_DIR = '/tmp/opencode-forge-prompts-test-' + Date.now()
+import { useTempConfigHome } from './helpers/temp-config'
 
 describe('ensureBundledPrompts', () => {
-  let testConfigDir: string
-
-  beforeEach(() => {
-    testConfigDir = TEST_DIR + '-config-' + Math.random().toString(36).slice(2)
-    mkdirSync(testConfigDir, { recursive: true })
-    process.env['XDG_CONFIG_HOME'] = testConfigDir
-  })
-
-  afterEach(() => {
-    delete process.env['XDG_CONFIG_HOME']
-    if (existsSync(testConfigDir)) {
-      rmSync(testConfigDir, { recursive: true, force: true })
-    }
-  })
+  const getConfigDir = useTempConfigHome('opencode-forge-prompts-test')
 
   test('installs bundled prompts on first loadPluginConfig call', () => {
     loadPluginConfig()
@@ -61,5 +47,16 @@ describe('ensureBundledPrompts', () => {
     expect(existsSync(codePath)).toBe(true)
     const content = readFileSync(codePath, 'utf-8')
     expect(content).toContain('coding agent')
+  })
+
+  test('creates manifest file with prompt entries', () => {
+    const configDir = getConfigDir()
+    const manifestPath = join(configDir, 'opencode', 'forge', 'manifests', 'prompts.json')
+
+    loadPluginConfig()
+
+    expect(existsSync(manifestPath)).toBe(true)
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'))
+    expect(manifest['agents/architect.md']).toBeDefined()
   })
 })

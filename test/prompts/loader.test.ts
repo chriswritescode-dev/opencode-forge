@@ -53,4 +53,20 @@ describe('loadPrompt', () => {
 
     rmSync(tmpDir, { recursive: true, force: true })
   })
+
+  test('loadPrompt memoizes per resolved path', () => {
+    const tmpDir = join(import.meta.dirname, '..', '..', '.forge', 'tmp', 'memo-' + Date.now())
+    mkdirSync(join(tmpDir, 'agents'), { recursive: true })
+    writeFileSync(join(tmpDir, 'agents', 'architect.md'), 'V1', 'utf-8')
+
+    const result1 = loadPrompt(['agents', 'architect.md'], tmpDir)
+    expect(result1).toBe('V1')
+
+    writeFileSync(join(tmpDir, 'agents', 'architect.md'), 'V2', 'utf-8')
+
+    const result2 = loadPrompt(['agents', 'architect.md'], tmpDir)
+    expect(result2).toBe('V1')
+
+    rmSync(tmpDir, { recursive: true, force: true })
+  })
 })

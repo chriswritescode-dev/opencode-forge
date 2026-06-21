@@ -25,6 +25,8 @@ export function createConfigHandler(
   agentOverrides?: Record<string, { temperature?: number }>,
   promptsDir?: string
 ) {
+  const pluginCommands = buildPluginCommands(promptsDir)
+
   return async (config: Record<string, unknown>) => {
     const effectiveAgents = { ...agents }
     if (agentOverrides) {
@@ -89,7 +91,7 @@ export function createConfigHandler(
     }
 
     const userCommands = config.command as Record<string, unknown> | undefined
-    const mergedCommands: Record<string, unknown> = { ...buildPluginCommands(promptsDir) }
+    const mergedCommands: Record<string, unknown> = { ...pluginCommands }
 
     if (userCommands) {
       for (const [name, userCommand] of Object.entries(userCommands)) {

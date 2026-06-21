@@ -148,6 +148,11 @@ You can edit this file to customize settings. The file is created only if it doe
 - Data dir: `~/.local/share/opencode/forge` or `$XDG_DATA_HOME/opencode/forge`
 - Logs: `~/.local/share/opencode/forge/logs/forge.log`
 - Log rotation: 10MB
+- Prompts: `~/.config/opencode/forge/prompts` or `$XDG_CONFIG_HOME/opencode/forge/prompts`
+
+### Customizing prompts
+
+Agent and command prompts are bundled as editable markdown under `src/prompts/` and installed to `~/.config/opencode/forge/prompts/` on first run. Edit any file there to customize an agent (`agents/*.md`) or slash command (`commands/*.md`); your edits take precedence over the bundled defaults and are preserved across upgrades. Bundled prompt fixes are re-applied automatically only to files you have not edited (tracked by content hash); delete a file to restore the bundled version on next start.
 
 Enable `logging.enabled` to write logs to disk. To use the default log path, omit `logging.file` or set it to `null` (an empty string is not treated as a default). Set `logging.debug` for more verbose output.
 

@@ -1,10 +1,15 @@
 import { describe, test, expect } from 'vitest'
-import { architectAgent, buildArchitectAgent } from '../src/agents/architect'
-import { codeAgent, buildCodeAgent } from '../src/agents/code'
-import { auditorAgent, auditorLoopAgent, buildAuditorAgent, buildAuditorLoopAgent } from '../src/agents/auditor'
+import { buildArchitectAgent } from '../src/agents/architect'
+import { buildCodeAgent } from '../src/agents/code'
+import { buildAuditorAgent, buildAuditorLoopAgent } from '../src/agents/auditor'
 import { buildAgents } from '../src/agents'
 
 describe('Agent definitions', () => {
+  const architectAgent = buildArchitectAgent()
+  const codeAgent = buildCodeAgent()
+  const auditorAgent = buildAuditorAgent()
+  const auditorLoopAgent = buildAuditorLoopAgent()
+
   describe('metadata stability', () => {
     test('architect agent has stable metadata', () => {
       expect(architectAgent.role).toBe('architect')

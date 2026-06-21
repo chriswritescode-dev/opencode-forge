@@ -18,4 +18,4 @@ export function buildArchitectAgent(promptsDir?: string): AgentDefinition {
   }
 }
 
-export const architectAgent: AgentDefinition = buildArchitectAgent()
+
