@@ -341,6 +341,8 @@ describe('post-action phase', () => {
     expect(finalState).not.toBeNull()
     expect(finalState!.active).toBe(false)
     expect(finalState!.terminationReason).toBe('completed')
+    // The raw post-action assistant message is captured as the completion summary.
+    expect(finalState!.completionSummary).toBe('Action complete.')
   })
 
   test('postAction disabled → terminates completed immediately (unchanged behavior)', async () => {

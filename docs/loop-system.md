@@ -249,6 +249,7 @@ After a clean final audit, before worktree teardown, the loop may run a **post-c
 - **Best-effort:** The post-action result is not re-audited; it applies only safe, scoped fixes. The question tool is blocked — any finding requiring clarification is auto-deferred.
 - On idle (`post-action-complete`), the loop terminates normally.
 - If the post-action session fails to create, the loop terminates as completed without retrying.
+- **Outcome capture:** On `post-action-complete`, the post-action session's raw final assistant message is stored verbatim in the loop's `completion_summary` (surfaced as **Completion Summary** in the dashboard). The loop status is **always** `completed` regardless of what the post-action reported — the plan itself was already cleared by the final audit; the summary only provides context (alternate-review verdict, CI result, etc.). Completion summary is captured only on the clean `post-action-complete` path; idle-exhausted, error, and abort-without-assistant terminations leave it empty.
 
 ## Cancellation
 

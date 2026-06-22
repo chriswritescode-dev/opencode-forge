@@ -325,6 +325,7 @@ export interface LoopStatusView {
   startedAt: string
   completedAt?: string
   terminationReason?: string
+  completionSummary?: string
   worktree: boolean
   worktreeDir?: string
   worktreeBranch?: string
@@ -1308,6 +1309,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         startedAt: state.startedAt,
         completedAt: state.completedAt,
         terminationReason: state.terminationReason,
+        completionSummary: state.completionSummary,
         worktree: !!state.worktree,
         worktreeDir: state.worktreeDir,
         worktreeBranch: state.worktreeBranch,

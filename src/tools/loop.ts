@@ -2,7 +2,7 @@ import { tool } from '@opencode-ai/plugin'
 import type { ToolContext } from './types'
 
 import { slugify } from '../utils/logger'
-import { formatSessionOutput, formatAuditResult } from '../utils/loop-format'
+import { formatSessionOutput, formatAuditResult, formatCompletionSummary } from '../utils/loop-format'
 import { fetchSessionOutput, type LoopSessionOutput, MAX_RETRIES } from '../loop'
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
@@ -328,6 +328,10 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             `Model: ${state.executionModel ?? config.executionModel ?? 'default'}`,
             `Auditor model: ${state.auditorModel ?? config.auditorModel ?? state.executionModel ?? config.executionModel ?? 'default'}`,
           )
+
+          if (state.completionSummary) {
+            statusLines.push(...formatCompletionSummary(state.completionSummary))
+          }
 
           if (state.lastAuditResult) {
             statusLines.push(...formatAuditResult(state.lastAuditResult))

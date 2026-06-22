@@ -569,7 +569,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
-  async function terminateLoop(loopName: string, state: LoopState, reason: TerminationReason): Promise<void> {
+  async function terminateLoop(loopName: string, state: LoopState, reason: TerminationReason, summary?: string): Promise<void> {
     const sessionId = state.sessionId
     watchdog.stop(loopName)
     loopRegistry.remove(loopName)
@@ -628,6 +628,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       status: terminationStatusFor(reason),
       reason: terminationReasonToString(reason),
       completedAt: now,
+      summary,
     })
 
     try {
@@ -1363,14 +1364,17 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return
     }
 
-    const { lastMessageRole } = await getLastAssistantInfo(currentState.sessionId, currentState.worktreeDir)
+    const { text: postActionText, lastMessageRole } = await getLastAssistantInfo(currentState.sessionId, currentState.worktreeDir)
 
     if (await handleIdleNoAssistantGate(loopName, currentState, lastMessageRole, { phaseLabel: 'post-action phase', exhaustedReason: { kind: 'completed' }, rerun: runPostActionPhase })) return
 
     logger.log(`Loop: post-action complete for ${loopName}, terminating`)
     const trans = nextTransition(currentState, { type: 'post-action-complete' })
     if (trans.kind === 'terminate') {
-      await terminateLoop(loopName, currentState, trans.reason)
+      // Capture the raw post-action assistant message as the loop's completion summary so the
+      // outcome (alternate review verdict, CI result, etc.) is visible in loop-status/dashboard.
+      // The loop still terminates `completed` — the plan itself was already cleared by the audit.
+      await terminateLoop(loopName, currentState, trans.reason, postActionText || undefined)
     }
   }
 
