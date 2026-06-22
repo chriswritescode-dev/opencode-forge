@@ -158,7 +158,41 @@ export function renderDashboardHtml(): string {
     cursor: pointer; user-select: none; line-height: 1.5;
     font-family: inherit; flex-shrink: 0;
   }
-  .copy-btn:hover { background: #30363d; color: #c9d1d9; }</style>
+  .copy-btn:hover { background: #30363d; color: #c9d1d9; }
+  .view-toggle { display: flex; gap: 8px; margin-bottom: 16px; }
+  .session-view { width: 100%; }
+  .session-list { display: flex; flex-direction: column; gap: 6px; }
+  .session-row {
+    border: 1px solid #30363d; border-radius: 6px; padding: 10px 12px;
+    background: #0d1117; cursor: pointer; user-select: none;
+  }
+  .session-row:hover { background: #161b22; }
+  .session-title { font-weight: 600; font-size: 0.95rem; color: #c9d1d9; margin-bottom: 2px; }
+  .session-meta { font-size: 0.78rem; color: #8b949e; }
+  .transcript-view { width: 100%; }
+  .transcript { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+  .transcript-entry { padding: 8px 12px; border-radius: 6px; }
+  .transcript-text { background: #0d1117; border: 1px solid #30363d; }
+  .transcript-tool {
+    background: #161b22; border: 1px solid #21262d;
+    display: flex; gap: 8px; align-items: center; font-size: 0.85rem;
+  }
+  .transcript-tool-name { color: #58a6ff; font-weight: 600; }
+  .transcript-tool-title { color: #c9d1d9; }
+  .transcript-tool-status { color: #8b949e; font-size: 0.78rem; }
+  .activity-feed {
+    border: 1px solid #30363d; border-radius: 6px; margin-bottom: 12px;
+    background: #161b22; overflow: hidden;
+  }
+  .activity-empty { padding: 12px; color: #8b949e; font-size: 0.85rem; text-align: center; }
+  .activity-row {
+    display: flex; gap: 10px; align-items: center; padding: 6px 12px;
+    border-bottom: 1px solid #21262d; font-size: 0.82rem;
+  }
+  .activity-row:last-child { border-bottom: none; }
+  .activity-time { color: #484f58; flex-shrink: 0; font-size: 0.75rem; }
+  .activity-type { color: #58a6ff; font-weight: 600; flex-shrink: 0; }
+  .activity-title { color: #c9d1d9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }</style>
 </head>
 <body>
   <div id="forge-app-root"></div>

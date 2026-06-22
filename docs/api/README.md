@@ -58,6 +58,44 @@ Forge ships two user-facing surfaces:
 
 The server plugin provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, and sandbox support. The TUI plugin layers on the sidebar and execution dialog.
 
+## Dashboard
+
+Forge includes a read-only observability Dashboard — a standalone Bun HTTP server (`src/dashboard/`) that serves a SolidJS single-page app at `GET /` and JSON state at `GET /api/data`. Launch it from the TUI command palette (`Forge: Open dashboard`) or via `pnpm dashboard`. The dashboard **never mutates** loop, workspace, or storage state.
+
+### Views
+
+The dashboard offers two toggleable views via a **Loops / Sessions** tab bar:
+
+**Loops view** (default) — Groups loops by project with filterable project/loop lists, loop detail (plan, sections, findings, usage, audit results, completion summary), and live polled state (5 s interval). Supports `#<projectId>/<loopName>` deep linking.
+
+**Sessions view** — Lists recent OpenCode sessions (title, project, model, cost, tokens, timestamp). Click a session to browse its **transcript** — a chronological view of text messages and tool calls rendered as markdown. Data is fetched from OpenCode's own `opencode.db` (read-only). Supports `#sessions/<sessionId>` deep linking.
+
+### API Endpoints
+
+All endpoints are read-only (non-GET requests return 404):
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /` | HTML page (inlined SolidJS app) |
+| `GET /api/data` | JSON snapshot of Forge loop/project state |
+| `GET /api/opencode/sessions?limit=N` | Recent OpenCode sessions list (max 200, default 50) |
+| `GET /api/opencode/sessions/<id>?limit=N` | Transcript entries for a session (max 2000, default 500) |
+| `GET /api/opencode/events` | SSE stream of OpenCode activity events |
+
+### OpenCode Database Access
+
+Session metadata and transcripts are queried read-only from OpenCode's own SQLite database (`opencode.db`). The dashboard resolves the database path in this order:
+
+1. Explicit `opencodeDbPath` argument (when launched programmatically)
+2. `OPENCODE_DB` environment variable
+3. `<XDG_DATA_HOME or ~/.local/share>/opencode/opencode.db`
+
+If the database is missing, unreadable, or the file does not exist, the Sessions view gracefully shows *"Sessions data unavailable."* All query methods catch errors internally and return empty arrays — the dashboard never fails or crashes due to an absent OpenCode DB.
+
+### Live Activity Feed
+
+The `GET /api/opencode/events` SSE endpoint streams a curated set of OpenCode session events (`session.idle`, `session.created`, `session.updated`, `session.error`) to the dashboard's **Activity Feed** widget (visible above the sessions list). Live events are only available when the dashboard is launched from the TUI — the TUI plugin creates an `EventBroadcaster`, subscribes to the TUI event bus via `forwardOpencodeEvents()`, and wires it to the dashboard server. When launched standalone (e.g. via `pnpm dashboard`), no broadcaster is present and the endpoint returns `204 No Content`. A ring buffer (default capacity 100 events) replays recent activity to late-joining SSE clients.
+
 ## Screenshots
 
 Execution flow dialog with mode and model selection:

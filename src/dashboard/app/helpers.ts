@@ -22,6 +22,54 @@ export function buildLoopHash(projectId: string | null, loopName: string | null)
   return h
 }
 
+/** View-route parsing: supports both legacy loops route and sessions route. */
+export interface HashRoute {
+  view: 'loops' | 'sessions'
+  projectId: string | null
+  loopName: string | null
+  sessionId: string | null
+}
+
+export function parseHashRoute(hash: string): HashRoute {
+  const raw = (hash || '').replace(/^#/, '')
+  if (raw === 'sessions' || raw.startsWith('sessions/')) {
+    const rest = raw.slice('sessions'.length)
+    const sessionId = rest.startsWith('/') ? decodeURIComponent(rest.slice(1)) : null
+    return { view: 'sessions', projectId: null, loopName: null, sessionId }
+  }
+  const parsed = parseLoopHash(hash)
+  return { view: 'loops', projectId: parsed.projectId, loopName: parsed.loopName, sessionId: null }
+}
+
+export function buildHashRoute(route: {
+  view: 'loops' | 'sessions'
+  projectId?: string | null
+  loopName?: string | null
+  sessionId?: string | null
+}): string {
+  if (route.view === 'sessions') {
+    let h = '#sessions'
+    if (route.sessionId) h += '/' + encodeURIComponent(route.sessionId)
+    return h
+  }
+  return buildLoopHash(route.projectId ?? null, route.loopName ?? null)
+}
+
+/**
+ * Set `location.hash` to `nextHash` only if it differs from the current value,
+ * suppressing the hashchange event via `suppressRef`.
+ * Normalisation (strips/re-adds `#`) matches the existing behaviour exactly.
+ */
+export function syncHash(nextHash: string, suppressRef: { current: boolean }): void {
+  const current = location.hash || ''
+  const currentNorm = '#' + current.replace(/^#/, '')
+  const nextNorm = '#' + nextHash.replace(/^#/, '')
+  if (currentNorm !== nextNorm) {
+    suppressRef.current = true
+    location.hash = nextHash
+  }
+}
+
 export function fmtTime(ts: number | null | undefined): string {
   if (!ts || ts === 0) return ''
   const d = new Date(ts)
@@ -145,6 +193,7 @@ export function formatLoopSummaryParts(dashLoop: DashboardLoop): string[] {
 }
 
 const markdownCache = new Map<string, string>()
+const MD_CACHE_MAX = 200
 
 export function renderMarkdown(src: string): string {
   if (!src) return ''
@@ -154,6 +203,11 @@ export function renderMarkdown(src: string): string {
   if (!m) return ''
   const result = m.parse(src)
   if (result) {
+    // Evict oldest entry if at capacity (insertion-order eviction)
+    if (markdownCache.size >= MD_CACHE_MAX) {
+      const firstKey = markdownCache.keys().next().value
+      if (firstKey !== undefined) markdownCache.delete(firstKey)
+    }
     markdownCache.set(src, result)
   }
   return result

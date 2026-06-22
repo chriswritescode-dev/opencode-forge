@@ -2,6 +2,8 @@ import { describe, test, expect, beforeEach } from 'vitest'
 import {
   parseLoopHash,
   buildLoopHash,
+  parseHashRoute,
+  buildHashRoute,
   fmtTime,
   statusClass,
   sectionStatusClass,
@@ -139,6 +141,71 @@ describe('parseLoopHash / buildLoopHash', () => {
     const hash = buildLoopHash('proj-id', null)
     expect(hash).toBe('#proj-id')
     expect(parseLoopHash(hash)).toEqual({ projectId: 'proj-id', loopName: null })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// parseHashRoute / buildHashRoute
+// ---------------------------------------------------------------------------
+
+describe('parseHashRoute / buildHashRoute', () => {
+  test('loops route round-trip with project and loop name', () => {
+    const hash = buildHashRoute({ view: 'loops', projectId: '/Users/x/proj', loopName: 'my-loop' })
+    expect(hash).toBe('#' + encodeURIComponent('/Users/x/proj') + '/' + encodeURIComponent('my-loop'))
+    expect(parseHashRoute(hash)).toEqual({ view: 'loops', projectId: '/Users/x/proj', loopName: 'my-loop', sessionId: null })
+  })
+
+  test('sessions route round-trip (no session id)', () => {
+    const hash = buildHashRoute({ view: 'sessions' })
+    expect(hash).toBe('#sessions')
+    expect(parseHashRoute(hash)).toEqual({ view: 'sessions', projectId: null, loopName: null, sessionId: null })
+  })
+
+  test('sessions route round-trip with session id', () => {
+    const hash = buildHashRoute({ view: 'sessions', sessionId: 'ses_abc123' })
+    expect(hash).toBe('#sessions/ses_abc123')
+    expect(parseHashRoute(hash)).toEqual({ view: 'sessions', projectId: null, loopName: null, sessionId: 'ses_abc123' })
+  })
+
+  test('sessions route with URL-encoded session id', () => {
+    const hash = buildHashRoute({ view: 'sessions', sessionId: 'session id with spaces' })
+    expect(parseHashRoute(hash)).toEqual({ view: 'sessions', projectId: null, loopName: null, sessionId: 'session id with spaces' })
+  })
+
+  test('empty hash returns loops view with null project/loop', () => {
+    expect(parseHashRoute('')).toEqual({ view: 'loops', projectId: null, loopName: null, sessionId: null })
+  })
+
+  test('hash with only hash prefix returns loops view', () => {
+    expect(parseHashRoute('#')).toEqual({ view: 'loops', projectId: null, loopName: null, sessionId: null })
+  })
+
+  test('project-only hash (no slash) returns loops view', () => {
+    expect(parseHashRoute('#proj-only')).toEqual({ view: 'loops', projectId: 'proj-only', loopName: null, sessionId: null })
+  })
+
+  test('buildHashRoute with loops view and null projectId returns empty string', () => {
+    expect(buildHashRoute({ view: 'loops', projectId: null, loopName: null })).toBe('')
+  })
+
+  test('project id starting with "sessions" is NOT treated as sessions route', () => {
+    // Regression: a project named e.g. "sessions-project" must be a loops route,
+    // not accidentally parsed as a sessions view.
+    expect(parseHashRoute('#sessions-project')).toEqual({
+      view: 'loops',
+      projectId: 'sessions-project',
+      loopName: null,
+      sessionId: null,
+    })
+  })
+
+  test('project id that merely contains "sessions" is a loops route', () => {
+    expect(parseHashRoute('#mysessions/foo')).toEqual({
+      view: 'loops',
+      projectId: 'mysessions',
+      loopName: 'foo',
+      sessionId: null,
+    })
   })
 })
 

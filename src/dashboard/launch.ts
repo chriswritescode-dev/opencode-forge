@@ -3,7 +3,8 @@ import { existsSync } from 'fs'
 import { join } from 'path'
 import { platform } from 'os'
 import { resolveDataDir } from '../storage/database'
-import { createRequestHandler } from './server'
+import { createOpencodeDataSource } from '../observability/data-source'
+import { createRequestHandler, type EventBroadcaster } from './server'
 
 export interface DashboardServerHandle {
   url: string
@@ -14,6 +15,8 @@ export interface DashboardServerHandle {
 export interface StartDashboardOptions {
   port?: number
   dbPath?: string
+  opencodeDbPath?: string
+  events?: EventBroadcaster | null
   maxAttempts?: number
 }
 
@@ -50,7 +53,17 @@ export function startDashboardServer(options: StartDashboardOptions = {}): Dashb
   const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS
   const db = new Database(dbPath, { readonly: true })
   db.run('PRAGMA busy_timeout=5000')
-  const handler = createRequestHandler(db)
+  const opencode = createOpencodeDataSource({ path: options.opencodeDbPath })
+  const handler = createRequestHandler({
+    forgeDb: db,
+    opencode,
+    events: options.events ?? null,
+  })
+
+  function closeAll(): void {
+    db.close()
+    opencode.close()
+  }
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const port = basePort + attempt
@@ -62,12 +75,12 @@ export function startDashboardServer(options: StartDashboardOptions = {}): Dashb
         port: boundPort,
         stop: () => {
           server.stop()
-          db.close()
+          closeAll()
         },
       }
     } catch (err) {
       if (!isAddrInUse(err) || attempt === maxAttempts - 1) {
-        db.close()
+        closeAll()
         throw new Error(
           `Failed to start dashboard on port ${port}. ` +
           `Port ${port} is in use or another error occurred. ` +
@@ -78,7 +91,7 @@ export function startDashboardServer(options: StartDashboardOptions = {}): Dashb
     }
   }
 
-  db.close()
+  closeAll()
   throw new Error('Failed to start dashboard: exhausted port attempts.')
 }
 
