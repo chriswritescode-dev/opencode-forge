@@ -49,6 +49,6 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ["dist/**", "node_modules/**", "*.d.ts", "test/**", ".sbx/**", "src/dashboard/marked.min.js"],
+    ignores: ["dist/**", "node_modules/**", "*.d.ts", "test/**", ".sbx/**", "src/dashboard/marked.min.js", "src/dashboard/app-bundle.ts"],
   }
 );

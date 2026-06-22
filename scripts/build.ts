@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, cpSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
 import solidPlugin from '@opentui/solid/bun-plugin'
+import { buildDashboardApp } from './build-dashboard-app'
 
 const packageJsonPath = join(__dirname, '..', 'package.json')
 const versionPath = join(__dirname, '..', 'src', 'version.ts')
@@ -25,6 +26,10 @@ export const MARKED_SOURCE: string = ${markedEscaped};
 `
 writeFileSync(markedSourcePath, markedSourceContent, 'utf-8')
 console.log('Dashboard marked-source generated.')
+
+console.log('Generating dashboard app bundle...')
+await buildDashboardApp()
+console.log('Dashboard app bundle generated.')
 
 console.log('Compiling main code...')
 execSync('tsc -p tsconfig.build.json', {
