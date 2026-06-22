@@ -266,6 +266,7 @@ export async function selectTuiSession(api: TuiPluginApi, client: ForgeClient, s
 export async function connectForgeProject(
   api: TuiPluginApi,
   directory?: string,
+  allowExternalDirectories?: string[],
 ): Promise<ForgeProjectClient | null> {
   tuiDebug(`connect start directory=${directory ?? 'none'}`)
 
@@ -376,7 +377,7 @@ export async function connectForgeProject(
             await waitForWorkspacePluginSettle(workspace.id)
           }
 
-          const permission = buildLoopPermissionRuleset()
+          const permission = buildLoopPermissionRuleset({ allowDirectories: allowExternalDirectories })
           const session = await client.session.create({
             workspaceID: workspace.id,
             title: loopName,

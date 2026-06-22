@@ -564,6 +564,107 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect(buildSectionInitialPromptSpy).not.toHaveBeenCalled()
   })
 
+  test('restart from stall_timeout re-enters post_action when persisted phase is post_action and postAction is configured', async () => {
+    insertLoop({
+      loopName: 'post-action-loop',
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      currentSectionIndex: 0,
+      iteration: 3,
+      totalSections: 0,
+      phase: 'post_action',
+    })
+
+    const noopFn = () => {}
+    const buildPostActionPromptSpy = vi.fn()
+    const buildSectionInitialPromptSpy = vi.fn()
+    const buildFinalAuditPromptSpy = vi.fn()
+
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: noopFn,
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: noopFn,
+      buildPostActionPrompt: buildPostActionPromptSpy,
+      buildSectionInitialPrompt: buildSectionInitialPromptSpy,
+      buildFinalAuditPrompt: buildFinalAuditPromptSpy,
+      generateUniqueLoopName: () => 'post-action-loop',
+    }
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-sess-pa-001' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: { list: async () => [], remove: async () => {} },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+    })
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true, postAction: { enabled: true, skill: 'pr-review' } },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+
+      plansRepo,
+      loopsRepo,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+        } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
+      pendingTeardowns: mockPendingTeardowns as any,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'post-action-loop' },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const newState = loopService.getActiveState('post-action-loop')!
+    expect(newState.phase).toBe('post_action')
+    expect(newState.iteration).toBe(1)
+
+    expect(buildPostActionPromptSpy).toHaveBeenCalledTimes(1)
+    expect(buildPostActionPromptSpy).toHaveBeenCalledWith(expect.any(Object), { skill: 'pr-review', prompt: undefined })
+    expect(buildSectionInitialPromptSpy).not.toHaveBeenCalled()
+    expect(buildFinalAuditPromptSpy).not.toHaveBeenCalled()
+  })
+
   test('restart commits new current_session_id BEFORE runExclusive releases (no stale-event race)', async () => {
     insertLoop({
       loopName: 'race-loop',

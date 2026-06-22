@@ -86,7 +86,7 @@ See [loop-system.md](loop-system.md) for detailed documentation.
 
 - **Loop Runtime** (`src/loop/runtime.ts`) - Factory for creating Loop instances (`createLoop()` returns a `Loop` interface with ~50 methods)
 - **Loop Service** (`src/loop/service.ts`) - State management for loops (DB-backed via SQLite)
-- **State Machine** (`src/loop/state.ts`) - Discriminated union `LoopState` with 3 phases: `coding`, `auditing`, `final_auditing`
+- **State Machine** (`src/loop/state.ts`) - Discriminated union `LoopState` with 4 phases: `coding`, `auditing`, `final_auditing`, `post_action`
 - **Transition Table** (`src/loop/transitions.ts`) - Pure `nextTransition()` function for phase transitions
 - **Termination** (`src/loop/termination.ts`) - Termination reason mapping and status checks
 - **Prompts** (`src/loop/prompts.ts`) - Prompt builders for each loop phase (continuation, audit, section)

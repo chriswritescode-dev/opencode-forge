@@ -9,6 +9,9 @@ export interface SendLoopPromptOptions {
   agent: PromptAgent
   logger: Logger
   primaryModel?: { providerID: string; modelID: string } | null
+  /** Model used for the fallback attempt when the primary model fails. Defaults to undefined
+   *  (the session/default model). */
+  fallbackModel?: { providerID: string; modelID: string } | null
   /** Performs ONE provider call for the given model (caller owns markPromptSent +
    *  the promptAsync/promptAuditSession call). Returns {} on success, {error} on failure. */
   performPrompt: (model: { providerID: string; modelID: string } | undefined) => Promise<{ error?: unknown }>
@@ -29,6 +32,7 @@ export async function sendLoopPrompt(opts: SendLoopPromptOptions): Promise<SendL
   const useGuard = opts.useInFlightGuard !== false
   const clearOnError = opts.clearPendingOnError !== false
   const primary = opts.primaryModel ?? undefined
+  const fallback = opts.fallbackModel ?? undefined
 
   const attempt = async (
     model: { providerID: string; modelID: string } | undefined,
@@ -44,7 +48,7 @@ export async function sendLoopPrompt(opts: SendLoopPromptOptions): Promise<SendL
 
   const { result, usedModel } = await retryWithModelFallback(
     () => attempt(primary),
-    () => attempt(undefined),
+    () => attempt(fallback),
     primary,
     logger,
   )

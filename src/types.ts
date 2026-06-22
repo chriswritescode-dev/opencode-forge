@@ -37,6 +37,8 @@ export interface PostActionConfig {
   skill?: string
   /** Optional extra instruction text appended to the action prompt. Used standalone when no skill is set. */
   prompt?: string
+  /** Override the model used for the post-action prompt (format: "provider/model"). Defaults to the auditor model chain. */
+  model?: string
 }
 
 /**
@@ -57,6 +59,14 @@ export interface LoopConfig {
   postAction?: PostActionConfig
   /** Maximum consecutive stalls before loop is terminated. 0 = disabled (default: 5). */
   maxConsecutiveStalls?: number
+  /**
+   * Absolute directory paths that loop, audit, and post-action sessions may read despite
+   * worktree isolation (e.g. an Obsidian vault). Each entry is granted via `external_directory`
+   * allow rules layered over the default deny. Provide the path as the session sees it on the
+   * host (governs host-side Read/Glob/Grep); for sandboxed loops, host-side tools still resolve
+   * host paths, so use the host path here rather than a container mount path.
+   */
+  allowExternalDirectories?: string[]
 }
 
 /**

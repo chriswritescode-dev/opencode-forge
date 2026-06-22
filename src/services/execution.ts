@@ -31,6 +31,7 @@ import { ConcurrentPromptError } from '../loop/in-flight-guard'
 import { getRestartability, type RestartBlockedReason } from '../loop/restartability'
 import { loopBranchExists } from '../workspace/forge-naming'
 import { resolveHostSessionDirectory } from '../utils/resolve-project-root'
+import { resolvePostActionConfig, type ResolvedPostActionConfig } from '../loop/post-action-config'
 
 /**
  * A freshly created + warped loop session can transiently report "Session not
@@ -1081,7 +1082,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       const sandboxEnabled = isSandboxEnabled(deps.config, deps.sandboxManager)
       sandboxEnabledForLoop = sandboxEnabled
 
-      const permissionRuleset = buildLoopPermissionRuleset({ sandbox: sandboxEnabled })
+      const permissionRuleset = buildLoopPermissionRuleset({ sandbox: sandboxEnabled, allowDirectories: deps.config.loop?.allowExternalDirectories })
 
       // Create single code session
       const createResult = await createLoopSessionWithWorkspace({
@@ -1444,7 +1445,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     deps.logger.log(
       `handleRestartLoop: [perm-diag] worktree=${String(stoppedState.worktree)} sandbox=${String(restartSandbox)}`
     )
-    const permissionRuleset = buildLoopPermissionRuleset({ sandbox: restartSandbox })
+    const permissionRuleset = buildLoopPermissionRuleset({ sandbox: restartSandbox, allowDirectories: deps.config.loop?.allowExternalDirectories })
     const previousState = { ...stoppedState }
     let bindFailed = false
     const previousSessionId = stoppedState.sessionId
@@ -1477,6 +1478,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             sandbox: latestState.sandbox,
           })
         }
+      }
+
+      if (stoppedState.phase === 'post_action' && !resolvePostActionConfig(deps.config).enabled) {
+        deps.logger.log(`loop-restart: ${stoppedState.loopName} was in post_action but postAction is disabled; marking completed without restart`)
+        deps.loop.service.terminate(stoppedState.loopName, { status: 'completed', reason: 'completed', completedAt: Date.now() })
+        return { ok: false, error: 'Loop implementation already completed; post-action is disabled — nothing to restart.' }
       }
 
       stoppedState.iteration = 1
@@ -1517,7 +1524,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           totalSections: stoppedState.totalSections ?? 0,
         }),
         directory: stoppedState.worktreeDir,
-        permission: stoppedState.phase === 'final_auditing' ? buildAuditSessionPermissionRuleset({ sandbox: restartSandbox }) : permissionRuleset,
+        permission: stoppedState.phase === 'final_auditing' ? buildAuditSessionPermissionRuleset({ sandbox: restartSandbox, allowDirectories: deps.config.loop?.allowExternalDirectories }) : permissionRuleset,
         workspaceId: stoppedState.workspaceId,
         loopName: stoppedState.loopName,
         logPrefix: 'loop-restart',
@@ -1562,7 +1569,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // else: existing totalSections preserved as-is
 
       const effectiveSessionId = newSessionId!
-      const restartPhase = stoppedState.phase === 'final_auditing' ? 'final_auditing' as const : 'coding' as const
+      const restartPhase = stoppedState.phase === 'final_auditing'
+        ? 'final_auditing' as const
+        : stoppedState.phase === 'post_action'
+          ? 'post_action' as const
+          : 'coding' as const
 
       const newState: import('../loop/state').LoopState = {
         active: true,
@@ -1594,8 +1605,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       }
       // Build appropriate prompt based on persisted state
       let promptText: string
+      let postActionCfg: ResolvedPostActionConfig | undefined
 
-      if (stoppedState.totalSections > 0) {
+      if (stoppedState.phase === 'post_action') {
+        postActionCfg = resolvePostActionConfig(deps.config)
+        promptText = deps.loop.service.buildPostActionPrompt(stoppedState, { skill: postActionCfg.skill, prompt: postActionCfg.prompt })
+      } else if (stoppedState.totalSections > 0) {
         // Use persisted section state to build the correct section prompt
         if (stoppedState.phase === 'final_auditing') {
           promptText = deps.loop.service.buildFinalAuditPrompt(stoppedState)
@@ -1607,9 +1622,16 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         promptText = stoppedState.prompt ?? ''
       }
 
-      const loopModel = stoppedState.phase === 'final_auditing'
-        ? parseModelString(stoppedState.auditorModel ?? deps.config.auditorModel)
-        : parseModelString(stoppedState.executionModel) ?? parseModelString(deps.config.executionModel)
+      const restartAuditorModel = parseModelString(stoppedState.auditorModel ?? deps.config.auditorModel)
+      const loopModel = stoppedState.phase === 'post_action' && postActionCfg?.model
+        ? parseModelString(postActionCfg.model)
+        : stoppedState.phase === 'final_auditing' || stoppedState.phase === 'post_action'
+          ? restartAuditorModel
+          : parseModelString(stoppedState.executionModel) ?? parseModelString(deps.config.executionModel)
+      // When a configured post-action model is used, fall back to the loop's auditor model if it fails.
+      const loopFallbackModel = stoppedState.phase === 'post_action' && postActionCfg?.model
+        ? restartAuditorModel
+        : undefined
       const workspaceParam = stoppedState.workspaceId ? { workspace: stoppedState.workspaceId } : {}
 
       const promptAgent = stoppedState.phase === 'final_auditing' ? 'auditor-loop' as const : 'code' as const
@@ -1664,6 +1686,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           agent: promptAgent,
           logger: deps.logger,
           primaryModel: loopModel,
+          fallbackModel: loopFallbackModel,
           useInFlightGuard: true,
           clearPendingOnError: false,
           performPrompt: performRestartPrompt,

@@ -366,6 +366,41 @@ describe('createLoopPermissionRejectHook', () => {
     })
   })
 
+  test('fallback ruleset includes configured external-directory allowlist for subagent sessions', async () => {
+    const VAULT = '/Users/chris/Documents/Obsidian/GFPRO'
+    const mockGet = vi.fn(async () => ({}))
+    const mockUpdate = vi.fn(async () => {})
+    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
+
+    const hook = createLoopPermissionRejectHook({
+      client: { session: { get: mockGet, update: mockUpdate } } as any,
+      sessionLoopResolver: {
+        resolveActiveLoopForSession: vi.fn(async () => ({
+          loopName: 'active-loop',
+          active: true,
+          worktreeDir: '/repo/.worktrees/active-loop',
+          sandbox: false,
+        })),
+      } as any,
+      directory: '/repo',
+      logger,
+      getAllowExternalDirectories: () => [VAULT],
+    })
+
+    await hook({
+      event: {
+        type: 'session.created',
+        properties: { info: { id: 'child-session', parentID: 'parent-session' } },
+      },
+    })
+
+    expect(mockUpdate).toHaveBeenCalledWith({
+      sessionID: 'child-session',
+      directory: '/repo/.worktrees/active-loop',
+      permission: buildLoopPermissionRuleset({ sandbox: false, allowDirectories: [VAULT] }),
+    })
+  })
+
   test('is idempotent: firing twice for the same child session results in a single session.update call', async () => {
     const parentPermission = buildLoopPermissionRuleset({ sandbox: true })
     const mockGet = vi.fn(async () => ({ permission: parentPermission }))

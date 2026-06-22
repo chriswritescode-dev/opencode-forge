@@ -93,3 +93,42 @@ describe('buildAuditSessionPermissionRuleset', () => {
     expect(rules).toContainEqual({ permission: 'bash', pattern: '*', action: 'allow' })
   })
 })
+
+describe('external directory allowlist', () => {
+  const VAULT = '/Users/chris/Documents/Obsidian/GFPRO'
+
+  it('loop ruleset adds no allow rules when allowDirectories is omitted', () => {
+    const rules = buildLoopPermissionRuleset({ sandbox: false })
+    expect(rules.find(r => r.permission === 'external_directory' && r.action === 'allow')).toBeUndefined()
+  })
+
+  it('loop ruleset adds exact + recursive allow rules for each configured directory', () => {
+    const rules = buildLoopPermissionRuleset({ sandbox: false, allowDirectories: [VAULT] })
+    expect(rules).toContainEqual({ permission: 'external_directory', pattern: VAULT, action: 'allow' })
+    expect(rules).toContainEqual({ permission: 'external_directory', pattern: `${VAULT}/**`, action: 'allow' })
+  })
+
+  it('loop ruleset places external_directory allow rules AFTER the deny (last-match-wins)', () => {
+    const rules = buildLoopPermissionRuleset({ sandbox: false, allowDirectories: [VAULT] })
+    const denyIdx = rules.findIndex(r => r.permission === 'external_directory' && r.pattern === '*' && r.action === 'deny')
+    const allowIdx = rules.findIndex(r => r.permission === 'external_directory' && r.pattern === VAULT && r.action === 'allow')
+    expect(denyIdx).toBeGreaterThanOrEqual(0)
+    expect(allowIdx).toBeGreaterThan(denyIdx)
+  })
+
+  it('audit ruleset adds allow rules after the deny too', () => {
+    const rules = buildAuditSessionPermissionRuleset({ sandbox: false, allowDirectories: [VAULT] })
+    const denyIdx = rules.findIndex(r => r.permission === 'external_directory' && r.pattern === '*' && r.action === 'deny')
+    const allowIdx = rules.findIndex(r => r.permission === 'external_directory' && r.pattern === `${VAULT}/**` && r.action === 'allow')
+    expect(denyIdx).toBeGreaterThanOrEqual(0)
+    expect(allowIdx).toBeGreaterThan(denyIdx)
+  })
+
+  it('trims trailing slashes and ignores empty/blank entries', () => {
+    const rules = buildLoopPermissionRuleset({ sandbox: false, allowDirectories: [`${VAULT}/`, '', '   '] })
+    expect(rules).toContainEqual({ permission: 'external_directory', pattern: VAULT, action: 'allow' })
+    const allowRules = rules.filter(r => r.permission === 'external_directory' && r.action === 'allow')
+    // Only the one valid directory → exact + recursive = 2 rules
+    expect(allowRules).toHaveLength(2)
+  })
+})

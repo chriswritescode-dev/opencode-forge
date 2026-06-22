@@ -42,9 +42,12 @@ stateDiagram-v2
     Auditing --> [*]: audit clear
     FinalAuditing --> Coding: final audit dirty (fix mode)
     Coding --> FinalAuditing: final-audit fix complete
-    FinalAuditing --> [*]: final audit clean
+    FinalAuditing --> PostAction: final audit clean
+    note right of PostAction: Only when loop.postAction.enabled
+    PostAction --> [*]: post-action complete
     Coding --> [*]: max iterations / retry limit / stall timeout / cancellation
     Auditing --> [*]: max iterations / retry limit / stall timeout / cancellation
+    FinalAuditing --> [*]: final audit clean (no post-action)
 ```
 
 ## Loop States
@@ -63,7 +66,7 @@ interface LoopState {
   maxIterations: number              // Maximum iterations (0 = unlimited)
   startedAt: string                  // ISO timestamp
   prompt?: string                    // Original task prompt
-  phase: 'coding' | 'auditing' | 'final_auditing'
+  phase: 'coding' | 'auditing' | 'final_auditing' | 'post_action'
   lastAuditResult?: string           // Last audit output
   errorCount: number                 // Consecutive error count
   auditCount: number                 // Number of audits completed
@@ -207,12 +210,45 @@ Decomposition is a one-shot preprocessing step at loop start (`services/determin
 
 ## Completion Conditions
 
-A loop completes when the active phase emits a clean audit result:
+A loop completes when the active phase emits a clean audit result (optionally followed by a post-completion action phase):
 
 - Non-sectioned loops complete on `audit-clear`.
 - Sectioned loops advance through clean section audits, then complete on `final-audit-clean`.
 - Dirty section audits rotate back to coding for the same section so findings can be addressed.
 - Dirty final audits rotate to coding in "final-audit fix" mode (no section rewind); when the fix coding pass goes idle, the loop returns straight to `final_auditing`.
+- After a clean final audit, if `loop.postAction.enabled` is `true` and specifies a `skill` or `prompt`, the loop enters a `post_action` phase that runs inside the worktree before teardown. Completion occurs when the post-action session goes idle (`post-action-complete` event).
+
+## Post-Completion Action Phase
+
+After a clean final audit, before worktree teardown, the loop may run a **post-completion action** configured via `loop.postAction` in `forge-config.jsonc`. This phase is best-effort — it is not re-audited and relies only on safe, scoped fixes. The post-action runs as the `code` agent in a fresh session inside the worktree.
+
+```jsonc
+{
+  "loop": {
+    "postAction": {
+      "enabled": false,       // Enable the post-completion action phase
+      "skill": "pr-review",   // Skill to load via the Skill tool (e.g. "pr-review")
+      "prompt": "..."         // Extra instruction text; used standalone when no skill is set
+    }
+  }
+}
+```
+
+### Configuration
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `loop.postAction.enabled` | `boolean` | `false` | Enable the post-completion action phase. |
+| `loop.postAction.skill` | `string` | — | Name of a skill to load via the Skill tool at action time (e.g. `"pr-review"`). Must be installed host-side. |
+| `loop.postAction.prompt` | `string` | — | Optional extra instruction text appended to the action prompt. Used standalone when no skill is set. |
+
+### Behavior
+
+- Runs only after a clean final audit completes.
+- Runs **inside the worktree** as the `code` agent, with access to the full worktree state (including uncommitted changes).
+- **Best-effort:** The post-action result is not re-audited; it applies only safe, scoped fixes. The question tool is blocked — any finding requiring clarification is auto-deferred.
+- On idle (`post-action-complete`), the loop terminates normally.
+- If the post-action session fails to create, the loop terminates as completed without retrying.
 
 ## Cancellation
 

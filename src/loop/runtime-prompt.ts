@@ -19,6 +19,9 @@ export interface SendPromptInput {
   promptText: string
   agent: 'code' | 'auditor-loop'
   model?: { providerID: string; modelID: string } | null
+  /** Model used for the fallback attempt when the primary model fails. Defaults to the
+   *  session/default model. */
+  fallbackModel?: { providerID: string; modelID: string } | null
   variant?: string
 }
 
@@ -60,6 +63,7 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
     const { result, usedModel } = await sendLoopPrompt({
       loopName, sessionId, agent: 'code', logger,
       primaryModel: effectiveModel,
+      fallbackModel: input.fallbackModel,
       performPrompt: async (model) => {
         const freshState = loopService.getActiveState(loopName)
         if (!freshState?.active) throw new Error('loop_cancelled')

@@ -23,13 +23,21 @@ export interface PromptContext {
   getFindingRecurrence(loopName?: string): Map<string, number>
 }
 
+/**
+ * Core sandbox shell-routing guidance. Shared between the main loop prompts and the
+ * per-message reminder injected into sandbox loop sessions (incl. subagents) so the
+ * instruction has a single source of truth.
+ */
+export const SANDBOX_SHELL_GUIDANCE =
+  'Use the sh tool for terminal commands in this loop; standard bash is disabled and will be denied, so shell commands execute in the loop container.'
+
 function buildSandboxContextNoteFromFlag(sandbox: boolean): string {
   if (!sandbox) return ''
   return [
     '',
     '---',
     '[Sandbox] This loop runs inside a container. Some paths, OS-specific commands, or tools may differ from your host system.',
-    'Use sh for terminal commands in this loop; standard bash is disabled so shell commands execute in the loop container.',
+    SANDBOX_SHELL_GUIDANCE,
     'Focus on what the code does, not whether local tooling matches — this saves time and avoids false positives.',
     '',
   ].join('\n')
