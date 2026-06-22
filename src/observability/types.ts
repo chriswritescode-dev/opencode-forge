@@ -35,6 +35,11 @@ export interface OpencodeActivityEvent {
   type: string
   sessionId: string | null
   title: string | null
+  /**
+   * Project/worktree the event originated from. Authoritative when sourced
+   * from the server global stream (its `directory` wrapper); best-effort
+   * (`info.directory`) when sourced from the TUI event bus.
+   */
   directory: string | null
   time: number
 }

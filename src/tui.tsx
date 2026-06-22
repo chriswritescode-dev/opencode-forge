@@ -12,7 +12,8 @@ import { ExecutePlanPanel } from './tui/execute-plan-panel'
 import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/session-follow'
 import { openInBrowser, startDashboardServer, type DashboardServerHandle } from './dashboard/launch'
 import { createEventBroadcaster, type EventBroadcaster } from './dashboard/event-broadcaster'
-import { forwardOpencodeEvents } from './dashboard/opencode-events'
+import { startActivityForwarding } from './dashboard/opencode-events'
+import { createForgeClient, createForgeClientFromServerUrl } from './client/sdk-adapter'
 import { normalizePastedPlanText } from './utils/marked-plan-parser'
 
 type TuiKeybinds = {
@@ -283,7 +284,17 @@ const tui: TuiPlugin = async (api) => {
       try {
         broadcaster = createEventBroadcaster()
         dashboardServer = startDashboardServer({ events: broadcaster })
-        detachEvents = forwardOpencodeEvents(api.event, broadcaster.publish)
+        const eventsConfig = pluginConfig.dashboard?.events
+        // Server source (default) uses the in-process client so it forwards
+        // whatever server this TUI is attached to — zero config for the common
+        // case. A configured serverUrl targets a different/shared server.
+        const forgeClient = eventsConfig?.serverUrl
+          ? createForgeClientFromServerUrl(eventsConfig.serverUrl)
+          : createForgeClient(api.client)
+        detachEvents = startActivityForwarding(
+          { source: eventsConfig?.source, types: eventsConfig?.types },
+          { publish: broadcaster.publish, client: forgeClient, eventBus: api.event },
+        )
       } catch (err) {
         // Clean up on failure so a retry starts fresh.
         detachEvents?.()

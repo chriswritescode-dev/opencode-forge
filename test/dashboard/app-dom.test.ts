@@ -414,6 +414,10 @@ describe('dashboard App fine-grained reactivity', () => {
     expect(activityRow).toBeTruthy()
     expect(activityRow!.textContent).toContain('session.updated')
     expect(activityRow!.textContent).toContain('Fix bug')
+    // Directory renders as a project label (trailing path segment).
+    const project = activityRow!.querySelector('.activity-project')
+    expect(project).toBeTruthy()
+    expect(project!.textContent).toBe('proj')
   })
 
   test('totals bar reflects updated counts after a poll', async () => {

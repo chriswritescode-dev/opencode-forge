@@ -192,6 +192,11 @@ export function renderDashboardHtml(): string {
   .activity-row:last-child { border-bottom: none; }
   .activity-time { color: #484f58; flex-shrink: 0; font-size: 0.75rem; }
   .activity-type { color: #58a6ff; font-weight: 600; flex-shrink: 0; }
+  .activity-project {
+    color: #3fb950; flex-shrink: 0; font-size: 0.75rem;
+    background: #1b3b2a; border-radius: 4px; padding: 1px 6px;
+    max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .activity-title { color: #c9d1d9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }</style>
 </head>
 <body>

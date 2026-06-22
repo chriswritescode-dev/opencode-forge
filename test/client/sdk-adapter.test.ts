@@ -269,6 +269,71 @@ describe('createForgeClient', () => {
   })
 })
 
+describe('createForgeClient events.subscribeGlobal', () => {
+  /** Build an async-iterable stream from a fixed list of events. */
+  function streamOf<T>(items: T[]): AsyncIterable<T> {
+    return {
+      async *[Symbol.asyncIterator]() {
+        for (const item of items) yield item
+      },
+    }
+  }
+
+  it('forwards each global event with directory + payload to onEvent', async () => {
+    const events = [
+      { directory: '/proj/a', payload: { type: 'session.idle', properties: { sessionID: 's1' } } },
+      { directory: '/proj/b', payload: { type: 'session.created', properties: {} } },
+    ]
+    const globalEvent = vi.fn().mockResolvedValue({ stream: streamOf(events) })
+    const v2 = { ...stubV2(), global: { event: globalEvent } } as unknown as OpencodeClient
+    const client = createForgeClient(v2)
+
+    const received: { directory: string; payload: unknown }[] = []
+    client.events.subscribeGlobal((e) => received.push(e))
+
+    // Allow the detached async loop to drain.
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(globalEvent).toHaveBeenCalledTimes(1)
+    expect(received).toEqual(events)
+  })
+
+  it('invokes onError with an unavailable error when global.event is missing', () => {
+    const v2 = stubV2() // no `global` namespace
+    const client = createForgeClient(v2)
+
+    const onError = vi.fn()
+    const detach = client.events.subscribeGlobal(() => {}, { onError })
+
+    expect(onError).toHaveBeenCalledTimes(1)
+    const err = onError.mock.calls[0][0]
+    expect(err).toBeInstanceOf(ForgeClientError)
+    expect((err as ForgeClientError).kind).toBe('unavailable')
+    // Detach is a safe no-op.
+    expect(() => detach()).not.toThrow()
+  })
+
+  it('detach aborts the request and suppresses post-detach stream errors', async () => {
+    let abortSignal: AbortSignal | undefined
+    const globalEvent = vi.fn().mockImplementation((opts?: { signal?: AbortSignal }) => {
+      abortSignal = opts?.signal
+      // Never-resolving stream; we only assert the signal is aborted on detach.
+      return Promise.resolve({ stream: streamOf<unknown>([]) })
+    })
+    const v2 = { ...stubV2(), global: { event: globalEvent } } as unknown as OpencodeClient
+    const client = createForgeClient(v2)
+
+    const onError = vi.fn()
+    const detach = client.events.subscribeGlobal(() => {}, { onError })
+    detach()
+
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(abortSignal?.aborted).toBe(true)
+    expect(onError).not.toHaveBeenCalled()
+  })
+})
+
 describe('createV2ClientFromPluginInput', () => {
   it('returns a v2 client constructed from the legacy PluginInput', async () => {
     const fakeFetch = vi.fn()

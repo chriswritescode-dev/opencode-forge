@@ -98,6 +98,14 @@ export function TranscriptView(props: {
 
 // ── ActivityFeed ───────────────────────────────────────────────────────────
 
+/** Display the trailing path segment of a directory as a project label. */
+function projectLabel(directory: string | null): string {
+  if (!directory) return ''
+  const trimmed = directory.replace(/\/+$/, '')
+  const idx = trimmed.lastIndexOf('/')
+  return idx >= 0 ? trimmed.slice(idx + 1) : trimmed
+}
+
 export function ActivityFeed(props: {
   events: OpencodeActivityEvent[]
 }) {
@@ -107,13 +115,15 @@ export function ActivityFeed(props: {
     </div>`
   }
   return html`<div class="activity-feed">
-    ${props.events.map(
-      (event) => html`<div class="activity-row">
+    ${props.events.map((event) => {
+      const project = projectLabel(event.directory)
+      return html`<div class="activity-row">
         <span class="activity-time">${fmtTime(event.time)}</span>
         <span class="activity-type">${event.type}</span>
-        <span class="activity-title">${event.title || event.directory || ''}</span>
-      </div>`,
-    )}
+        ${project ? html`<span class="activity-project" title=${event.directory || ''}>${project}</span>` : ''}
+        <span class="activity-title">${event.title || ''}</span>
+      </div>`
+    })}
   </div>`
 }
 
