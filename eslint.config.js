@@ -14,7 +14,7 @@ export default tseslint.config(
       parser: tseslint.parser,
       parserOptions: {
         projectService: {
-          allowDefaultProject: ["scripts/*.ts", "scripts/*.js", "test/*.ts", "vitest.config.ts"],
+          allowDefaultProject: ["scripts/*.ts", "scripts/*.js", "test/*.ts", "vitest.config.ts", "vitest.workspace.ts"],
         },
         tsconfigRootDir: import.meta.dirname,
       },

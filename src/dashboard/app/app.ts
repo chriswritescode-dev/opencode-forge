@@ -120,6 +120,35 @@ export function App() {
     return entry.loops.find(l => l.loop.loopName === name) ?? null
   })
 
+  // ── View nodes ──────────────────────────────────────────────────────────
+  // These memos return DOM nodes. Because a memo only re-emits when its value
+  // changes, the detail subtree is built once per selected loop (stable store
+  // reference) and survives polls, preserving markdown scroll / resize state;
+  // only the loop's fields update in place via the reactive reads inside it.
+
+  const sidebarView = createMemo(() =>
+    Sidebar({
+      entries: matchedByProject(),
+      selectedProjectId: selectedProjectId(),
+      onSelect: navigate,
+    }),
+  )
+
+  const detailView = createMemo<Node | string>(() => {
+    const loop = activeLoop()
+    return loop
+      ? (LoopDetail({ dashLoop: loop, onBack: () => navigate(selectedProjectId(), null) }) as Node)
+      : ''
+  })
+
+  const listView = createMemo<Node | string>(() => {
+    if (activeLoop()) return ''
+    const e = selectedEntry()
+    if (!e) return ''
+    const pid = selectedProjectId()
+    return LoopList({ loops: e.loops, onOpen: (name: string) => navigate(pid, name) }) as Node
+  })
+
   // ── Effects ─────────────────────────────────────────────────────────────
 
   // Sync selected project when data or filters change
@@ -183,7 +212,10 @@ export function App() {
 
   // ── Render ──────────────────────────────────────────────────────────────
 
-  return html`
+  // A single root element is required: top-level children of a multi-root
+  // solid-js/html template are not wired as reactive inserts, so wrap the whole
+  // UI in one container to keep the ${() => ...} regions reactive.
+  return html`<div class="forge-app">
     <h1>Forge Dashboard</h1>
 
     ${() => {
@@ -203,32 +235,21 @@ export function App() {
 
     ${() => {
       if (!loaded()) return ''
-      const entries = matchedByProject()
-      if (entries.length === 0) return EmptyState()
-
+      if (matchedByProject().length === 0) return EmptyState()
       const selEntry = selectedEntry()
       if (!selEntry) return ''
-
-      const actLoop = activeLoop()
-      const pid = selectedProjectId()
-
       return html`
         <div class="dash-layout">
-          ${Sidebar({ entries, selectedProjectId: pid, onSelect: navigate })}
+          ${sidebarView}
           <div class="project-detail">
             <div class="project">
               <div class="project-header">${selEntry.proj.projectDir || selEntry.proj.projectId}</div>
-              ${actLoop
-                ? LoopDetail({ dashLoop: actLoop, onBack: () => navigate(pid, null) })
-                : LoopList({
-                    loops: selEntry.loops,
-                    onOpen: (name: string) => navigate(pid, name),
-                  })
-              }
+              ${listView}
+              ${detailView}
             </div>
           </div>
         </div>
       `
     }}
-  `
+  </div>`
 }
