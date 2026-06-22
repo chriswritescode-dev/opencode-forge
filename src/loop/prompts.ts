@@ -24,28 +24,17 @@ export interface PromptContext {
 }
 
 /**
- * Core sandbox shell-routing guidance. Shared between the main loop prompts and the
- * per-message reminder injected into sandbox loop sessions (incl. subagents) so the
- * instruction has a single source of truth.
+ * Sandbox context note injected into the system prompt of every session belonging to an
+ * active sandbox loop — including subagent sessions spawned via the Task tool — by
+ * `createSandboxMessageHook`. Centralizing it here (rather than appending to each loop/audit
+ * prompt body) ensures subagents, which never see the loop prompt text, still receive the
+ * container context and shell-routing guidance. Single source of truth.
  */
-export const SANDBOX_SHELL_GUIDANCE =
-  'Use the sh tool for terminal commands in this loop; standard bash is disabled and will be denied, so shell commands execute in the loop container.'
-
-function buildSandboxContextNoteFromFlag(sandbox: boolean): string {
-  if (!sandbox) return ''
-  return [
-    '',
-    '---',
-    '[Sandbox] This loop runs inside a container. Some paths, OS-specific commands, or tools may differ from your host system.',
-    SANDBOX_SHELL_GUIDANCE,
-    'Focus on what the code does, not whether local tooling matches — this saves time and avoids false positives.',
-    '',
-  ].join('\n')
-}
-
-function buildSandboxContextNote(state: LoopState): string {
-  return buildSandboxContextNoteFromFlag(state.sandbox ?? false)
-}
+export const SANDBOX_CONTEXT_NOTE = [
+  '[Sandbox] This loop runs inside a container. Some paths, OS-specific commands, or tools may differ from your host system.',
+  'Use the sh tool for terminal commands in this loop; standard bash is disabled and will be denied, so shell commands execute in the loop container.',
+  'Focus on what the code does, not whether local tooling matches — this saves time and avoids false positives.',
+].join('\n')
 
 function formatSectionsSummary(digest: SectionDigestEntry[]): string {
   return digest.map(s => {
@@ -118,7 +107,7 @@ export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, au
 
   prompt += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
 
-  return prompt + buildSandboxContextNote(state) + CODER_DECISIONS_INSTRUCTION
+  return prompt + CODER_DECISIONS_INSTRUCTION
 }
 
 export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
@@ -170,7 +159,7 @@ export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
     parts.push('', recurringBlock)
   }
 
-  return parts.join('\n') + buildSandboxContextNote(state)
+  return parts.join('\n')
 }
 
 export function buildSectionInitialPrompt(ctx: PromptContext, state: LoopState): string {
@@ -186,7 +175,6 @@ export function buildSectionInitialPrompt(ctx: PromptContext, state: LoopState):
     maxIterations: state.maxIterations,
     sectionContent: section.content,
     completedSectionDigest: ctx.getCompletedSectionDigest(state),
-    sandbox: state.sandbox,
   })
 }
 
@@ -197,7 +185,6 @@ export function buildSectionInitialPromptText(input: {
   maxIterations: number
   sectionContent: string
   completedSectionDigest?: SectionDigestEntry[]
-  sandbox?: boolean
 }): string {
   const idx = input.currentSectionIndex
   const digest = input.completedSectionDigest ?? []
@@ -209,7 +196,7 @@ export function buildSectionInitialPromptText(input: {
 
   header += `\n\n## Section plan\n${input.sectionContent}`
 
-  return header + buildSandboxContextNoteFromFlag(input.sandbox ?? false) + CODER_DECISIONS_INSTRUCTION
+  return header + CODER_DECISIONS_INSTRUCTION
 }
 
 export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): string {
@@ -236,7 +223,7 @@ export function buildSectionAuditPrompt(ctx: PromptContext, state: LoopState): s
     header += `\n\n${recurringBlock}`
   }
 
-  return header + buildSandboxContextNote(state)
+  return header
 }
 
 export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopState, auditText: string, outstandingBugs?: ReviewFindingRow[]): string {
@@ -266,7 +253,7 @@ export function buildSectionContinuationPrompt(ctx: PromptContext, state: LoopSt
 
   header += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
 
-  return header + buildSandboxContextNote(state) + CODER_DECISIONS_INSTRUCTION
+  return header + CODER_DECISIONS_INSTRUCTION
 }
 
 export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, auditText: string, outstandingBugs?: ReviewFindingRow[]): string {
@@ -292,7 +279,7 @@ export function buildFinalAuditFixPrompt(ctx: PromptContext, state: LoopState, a
 
   header += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
 
-  return header + buildSandboxContextNote(state) + CODER_DECISIONS_INSTRUCTION
+  return header + CODER_DECISIONS_INSTRUCTION
 }
 
 export interface PostActionPromptOptions {
@@ -331,8 +318,6 @@ export function buildPostActionPrompt(ctx: PromptContext, state: LoopState, opts
     'and report it; apply only safe, scoped fixes; then run the project\'s tests/lint/typecheck.',
   )
 
-  parts.push(buildSandboxContextNote(state))
-
   return parts.join('\n')
 }
 
@@ -356,5 +341,5 @@ export function buildFinalAuditPrompt(ctx: PromptContext, state: LoopState): str
     header += `\n\n${recurringBlock}`
   }
 
-  return header + buildSandboxContextNote(state)
+  return header
 }

@@ -1,6 +1,6 @@
 import { describe, test, expect, vi } from 'vitest'
 import { createSandboxMessageHook } from '../../src/hooks/sandbox-message'
-import { SANDBOX_SHELL_GUIDANCE } from '../../src/loop/prompts'
+import { SANDBOX_CONTEXT_NOTE } from '../../src/loop/prompts'
 import type { Logger } from '../../src/types'
 
 const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
@@ -13,13 +13,13 @@ function makeHook(resolved: unknown) {
 }
 
 describe('createSandboxMessageHook (chat.system.transform)', () => {
-  test('appends sh guidance to system prompt for an active sandbox loop session', async () => {
+  test('appends sandbox context note to system prompt for an active sandbox loop session', async () => {
     const hook = makeHook({ loopName: 'l', active: true, sandbox: true })
     const output = { system: ['base system prompt'] }
 
     await hook({ sessionID: 'ses_1' }, output)
 
-    expect(output.system).toContain(SANDBOX_SHELL_GUIDANCE)
+    expect(output.system).toContain(SANDBOX_CONTEXT_NOTE)
     expect(output.system).toHaveLength(2)
   })
 
