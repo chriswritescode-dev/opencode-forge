@@ -10,6 +10,9 @@ describe('per-agent tools.exclude (regression guard)', () => {
       expect(excluded).toContain(tool)
     }
     expect(excluded).not.toContain('loop')
+    // Post-action sessions need skill and task tools to load skills and spawn subagents.
+    expect(excluded).not.toContain('skill')
+    expect(excluded).not.toContain('task')
   })
 
   test('auditor agent excludes plan/loop tools but NOT review tools', () => {

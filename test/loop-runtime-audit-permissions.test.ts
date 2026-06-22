@@ -10,7 +10,7 @@ import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-r
 import { createSectionPlansRepo } from '../src/storage/repos/section-plans-repo'
 import type { LoopState } from '../src/loop/state'
 import { createLoop } from '../src/loop/runtime'
-import { buildAuditSessionPermissionRuleset } from '../src/constants/loop'
+import { buildAuditSessionPermissionRuleset, buildLoopPermissionRuleset } from '../src/constants/loop'
 import type { Logger, PluginConfig } from '../src/types'
 import { setupLoopsTestDb } from './helpers/loops-test-db'
 import { createFakeForgeClient } from './helpers/fake-client'
@@ -174,5 +174,18 @@ describe('Audit session permissions', () => {
       pattern: '*',
       action: 'deny',
     })
+  })
+
+  test('audit ruleset denies question tool (autonomy preservation)', () => {
+    const ruleset = buildAuditSessionPermissionRuleset({ sandbox: false })
+    expect(ruleset).toContainEqual({ permission: 'question', pattern: '*', action: 'deny' })
+  })
+
+  test('loop ruleset (used by post-action sessions) does not deny skill or task', () => {
+    const ruleset = buildLoopPermissionRuleset({ sandbox: false })
+    const denyRules = ruleset.filter((r: { permission: string; action: string }) => r.action === 'deny')
+    const deniedPermissions = denyRules.map((r: { permission: string }) => r.permission)
+    expect(deniedPermissions).not.toContain('skill')
+    expect(deniedPermissions).not.toContain('task')
   })
 })

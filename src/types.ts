@@ -29,6 +29,18 @@ export interface WorktreeLoggingConfig {
   directory?: string
 }
 
+/** Post-completion action run inside the worktree before teardown (review, audit, doc-gen, etc.). */
+export interface PostActionConfig {
+  /** Enable the post-completion action phase. Defaults to false. */
+  enabled?: boolean
+  /** Name of a skill to load via the Skill tool at action time (e.g. "pr-review"). Must be installed host-side. */
+  skill?: string
+  /** Optional extra instruction text appended to the action prompt. Used standalone when no skill is set. */
+  prompt?: string
+  /** Override the model used for the post-action prompt (format: "provider/model"). Defaults to the auditor model chain. */
+  model?: string
+}
+
 /**
  * Configuration for autonomous loop behavior.
  */
@@ -43,8 +55,18 @@ export interface LoopConfig {
   stallTimeoutMs?: number
   /** Worktree loop completion logging configuration. */
   worktreeLogging?: WorktreeLoggingConfig
+  /** Optional post-completion action (skill and/or prompt) run in-worktree before teardown. */
+  postAction?: PostActionConfig
   /** Maximum consecutive stalls before loop is terminated. 0 = disabled (default: 5). */
   maxConsecutiveStalls?: number
+  /**
+   * Absolute directory paths that loop, audit, and post-action sessions may read despite
+   * worktree isolation (e.g. an Obsidian vault). Each entry is granted via `external_directory`
+   * allow rules layered over the default deny. Provide the path as the session sees it on the
+   * host (governs host-side Read/Glob/Grep); for sandboxed loops, host-side tools still resolve
+   * host paths, so use the host path here rather than a container mount path.
+   */
+  allowExternalDirectories?: string[]
 }
 
 /**

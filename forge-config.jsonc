@@ -39,7 +39,18 @@
     "worktreeLogging": {
       "enabled": false,
       "directory": ""
-    }
+    },
+    // Post-completion action (skill and/or prompt) run inside the worktree before teardown.
+    // (disabled by default)
+    // "postAction": {
+    //   "enabled": false,
+    //   "skill": "pr-review",
+    //   "prompt": "Auto-defer anything needing clarification; do not use the question tool.",
+    //   "model": "provider/model"  // optional: override model (defaults to auditor model chain)
+    // },
+    // Host directories loop/audit/post-action sessions may read despite worktree isolation
+    // (e.g. an Obsidian vault). Use absolute host paths; governs Read/Glob/Grep (external_directory).
+    // "allowExternalDirectories": ["/abs/host/path/to/vault"]
   },
 
   // Sandbox configuration. Sandbox is optional; when Docker is unavailable, loops run in worktree-only mode.

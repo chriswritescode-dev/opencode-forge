@@ -29,6 +29,7 @@ export type TransitionEvent =
   | { type: 'audit-retry-exhausted' }
   | { type: 'final-audit-retry-exhausted' }
   | { type: 'coding-no-assistant' }
+  | { type: 'post-action-complete' }
 
 /**
  * Pure transition table that mirrors the existing phase-handler behavior.
@@ -46,6 +47,9 @@ export function nextTransition(state: LoopState, event: TransitionEvent): Transi
 
     case 'final_auditing':
       return handleFinalAuditEvent(event)
+
+    case 'post_action':
+      return handlePostActionEvent(event)
   }
 }
 
@@ -118,6 +122,29 @@ function handleFinalAuditEvent(event: TransitionEvent): Transition {
       return { kind: 'fix-for-final-audit' }
     case 'final-audit-retry-exhausted':
       return { kind: 'terminate', reason: { kind: 'final_audit_retry_exhausted' } }
+    case 'iteration-cap':
+      return { kind: 'terminate', reason: { kind: 'max_iterations' } }
+    case 'user-abort':
+      return { kind: 'terminate', reason: { kind: 'user_aborted' } }
+    case 'shutdown':
+      return { kind: 'terminate', reason: { kind: 'shutdown' } }
+    case 'stall-timeout':
+      return { kind: 'terminate', reason: { kind: 'stall_timeout' } }
+    case 'missing-worktree-dir':
+      return { kind: 'terminate', reason: { kind: 'missing_worktree_dir' } }
+    case 'worktree-failed':
+      return { kind: 'terminate', reason: { kind: 'worktree_failed', message: event.message } }
+    case 'error-max-retries':
+      return { kind: 'terminate', reason: { kind: 'error_max_retries', message: event.context ?? '' } }
+    default:
+      return { kind: 'noop' }
+  }
+}
+
+function handlePostActionEvent(event: TransitionEvent): Transition {
+  switch (event.type) {
+    case 'post-action-complete':
+      return { kind: 'terminate', reason: { kind: 'completed' } }
     case 'iteration-cap':
       return { kind: 'terminate', reason: { kind: 'max_iterations' } }
     case 'user-abort':

@@ -26,6 +26,8 @@ export interface CreateLoopPermissionRejectHookDeps {
   sessionLoopResolver: ReturnType<typeof createSessionLoopResolver>
   directory: string
   logger: Logger
+  /** Resolves the configured external-directory allowlist for loop sessions. */
+  getAllowExternalDirectories?: () => string[] | undefined
 }
 
 export type LoopPermissionRejectHook = (
@@ -35,7 +37,7 @@ export type LoopPermissionRejectHook = (
 export function createLoopPermissionRejectHook(
   deps: CreateLoopPermissionRejectHookDeps,
 ): LoopPermissionRejectHook {
-  const { client, sessionLoopResolver, directory, logger } = deps
+  const { client, sessionLoopResolver, directory, logger, getAllowExternalDirectories } = deps
 
   return async (eventInput) => {
     if (eventInput.event?.type !== 'session.created') return
@@ -70,7 +72,7 @@ export function createLoopPermissionRejectHook(
     } catch (err) {
       logger.error(`[loop-permission] failed to fetch parent ${parentID} for inheritance`, err)
     }
-    if (!ruleset) ruleset = buildLoopPermissionRuleset({ sandbox: resolved.sandbox ?? false })
+    if (!ruleset) ruleset = buildLoopPermissionRuleset({ sandbox: resolved.sandbox ?? false, allowDirectories: getAllowExternalDirectories?.() })
 
     logger.log(
       `[loop-permission] patching loop=${resolved.loopName} session=${sessionID} parent=${parentID} ruleset=${rulesetSource}`,

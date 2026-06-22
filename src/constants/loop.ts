@@ -2,6 +2,29 @@ export type PermissionRule = { permission: string; pattern: string; action: 'all
 
 export interface LoopPermissionRulesetOptions {
   sandbox?: boolean
+  /**
+   * Absolute directory paths to grant access to via `external_directory` allow rules.
+   * These are layered AFTER the blanket `external_directory` deny so last-match-wins
+   * permission resolution grants access to these paths while keeping all others denied.
+   */
+  allowDirectories?: string[]
+}
+
+/**
+ * Builds `external_directory` allow rules for the configured directories. Each directory
+ * produces two rules: an exact-path allow and a recursive (`/**`) allow. Returns an empty
+ * array when no directories are configured, preserving the default deny-only behavior.
+ */
+function buildExternalDirectoryAllowRules(allowDirectories: string[] = []): PermissionRule[] {
+  const rules: PermissionRule[] = []
+  for (const dir of allowDirectories) {
+    if (typeof dir !== 'string') continue
+    const trimmed = dir.trim().replace(/\/+$/, '')
+    if (!trimmed) continue
+    rules.push({ permission: 'external_directory', pattern: trimmed, action: 'allow' })
+    rules.push({ permission: 'external_directory', pattern: `${trimmed}/**`, action: 'allow' })
+  }
+  return rules
 }
 
 function buildShellPermissionRules(sandbox: boolean): PermissionRule[] {
@@ -38,6 +61,10 @@ export function buildLoopPermissionRuleset(options: LoopPermissionRulesetOptions
     pattern: '*',
     action: 'deny',
   })
+
+  // Opt-in external directories: allow rules layered after the deny so last-match-wins
+  // grants access to configured paths (e.g. an Obsidian vault) while others stay denied.
+  rules.push(...buildExternalDirectoryAllowRules(options.allowDirectories))
 
   // Code agent forbidden tools. Placed after *:allow so findLast picks them up.
   rules.push(
@@ -76,6 +103,8 @@ export function buildAuditSessionPermissionRuleset(options: LoopPermissionRulese
   const rules: PermissionRule[] = [
     { permission: '*', pattern: '*', action: 'allow' },
     { permission: 'external_directory', pattern: '*', action: 'deny' },
+    // Opt-in external directories: allow rules layered after the deny (last-match-wins).
+    ...buildExternalDirectoryAllowRules(options.allowDirectories),
     // Audit sessions must not mutate code.
     { permission: 'edit',        pattern: '*', action: 'deny' },
     { permission: 'write',       pattern: '*', action: 'deny' },

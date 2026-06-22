@@ -259,6 +259,539 @@ describe('Loop Runtime', () => {
     })
   })
 
+describe('post-action phase', () => {
+  test('postAction enabled with skill → enters post_action phase on clean audit and completes on post-action idle', async () => {
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear. No issues found.' }] },
+        ],
+      },
+    })
+    const { loop } = createRuntime({
+      client,
+      loopConfig: {
+        loop: {
+          enabled: true,
+          defaultMaxIterations: 5,
+          postAction: { enabled: true, skill: 'pr-review' },
+        },
+      },
+    })
+
+    const state = makeState({
+      phase: 'auditing',
+      totalSections: 0,
+      auditCount: 0,
+      iteration: 1,
+      maxIterations: 3,
+    })
+    loopService.setState(state.loopName, state)
+
+    // First tick: clean audit → checkAuditClearAndTerminate → enterPostActionPhase
+    await loop.tick({
+      type: 'session.status',
+      properties: {
+        status: { type: 'idle' },
+        sessionID: state.sessionId,
+      },
+    })
+
+    // Assert loop is still active and in post_action phase
+    const afterState = loopService.getAnyState(state.loopName)
+    expect(afterState).not.toBeNull()
+    expect(afterState!.active).toBe(true)
+    expect(afterState!.phase).toBe('post_action')
+    expect(afterState!.sessionId).not.toBe(state.sessionId)
+
+    // Assert a code prompt was sent containing the skill name
+    const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+    expect(codeCalls.length).toBeGreaterThan(0)
+    // The last code prompt should be the post-action prompt
+    const lastCodePrompt = codeCalls[codeCalls.length - 1]?.params as any
+    const promptText = lastCodePrompt?.parts?.[0]?.text ?? ''
+    expect(promptText).toContain('pr-review')
+
+    // Simulate the post_action session completing: mock messages to return assistant response
+    const postActionSessionId = afterState!.sessionId
+    ;(client.session.messages as any).mockImplementation(async () => [
+      { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Action complete.' }] },
+    ])
+
+    // Send busy to clear the idle-gate (prompt was marked as sent)
+    await loop.tick({
+      type: 'session.status',
+      properties: {
+        status: { type: 'busy' },
+        sessionID: postActionSessionId,
+      },
+    })
+
+    // Send idle to trigger runPostActionPhase
+    await loop.tick({
+      type: 'session.status',
+      properties: {
+        status: { type: 'idle' },
+        sessionID: postActionSessionId,
+      },
+    })
+
+    // Assert loop terminated with completed
+    const finalState = loopService.getAnyState(state.loopName)
+    expect(finalState).not.toBeNull()
+    expect(finalState!.active).toBe(false)
+    expect(finalState!.terminationReason).toBe('completed')
+    // The raw post-action assistant message is captured as the completion summary.
+    expect(finalState!.completionSummary).toBe('Action complete.')
+  })
+
+  test('postAction disabled → terminates completed immediately (unchanged behavior)', async () => {
+    const { client } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear. No issues found.' }] },
+        ],
+      },
+    })
+    const { loop } = createRuntime({ client })
+    // Default config has no postAction — verifies no regression
+
+    const state = makeState({
+      phase: 'auditing',
+      totalSections: 0,
+      auditCount: 0,
+      iteration: 1,
+      maxIterations: 3,
+    })
+    loopService.setState(state.loopName, state)
+
+    await loop.tick({
+      type: 'session.status',
+      properties: {
+        status: { type: 'idle' },
+        sessionID: state.sessionId,
+      },
+    })
+
+    const afterState = loopService.getAnyState(state.loopName)
+    expect(afterState).not.toBeNull()
+    expect(afterState!.active).toBe(false)
+    expect(afterState!.terminationReason).toBe('completed')
+  })
+
+  test('sectioned final audit clean with postAction enabled → enters post_action phase', async () => {
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Final audit clean.' }] },
+        ],
+      },
+    })
+    const { loop } = createRuntime({
+      client,
+      loopConfig: {
+        loop: {
+          enabled: true,
+          defaultMaxIterations: 5,
+          postAction: { enabled: true, skill: 'pr-review' },
+        },
+      },
+    })
+
+    const loopName = 'test-loop-sectioned-pa'
+    const state = makeState({
+      loopName,
+      sessionId: 'final-audit-session',
+      phase: 'final_auditing',
+      totalSections: 2,
+      auditCount: 1,
+      finalAuditDone: false,
+      iteration: 1,
+      maxIterations: 5,
+    })
+    loopService.setState(state.loopName, state)
+
+    await loop.tick({
+      type: 'session.status',
+      properties: {
+        status: { type: 'idle' },
+        sessionID: 'final-audit-session',
+      },
+    })
+
+    // Assert loop entered post_action phase
+    const afterState = loopService.getAnyState(loopName)
+    expect(afterState).not.toBeNull()
+    expect(afterState!.active).toBe(true)
+    expect(afterState!.phase).toBe('post_action')
+    // finalAuditDone should be set
+    expect(afterState!.finalAuditDone).toBe(true)
+    // A code prompt with the skill name should have been sent
+    const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+    expect(codeCalls.length).toBeGreaterThan(0)
+    const lastCodePrompt = codeCalls[codeCalls.length - 1]?.params as any
+    const promptText = lastCodePrompt?.parts?.[0]?.text ?? ''
+    expect(promptText).toContain('pr-review')
+
+    // Clean up: simulate post_action completion to avoid stale state
+    const postActionSessionId = afterState!.sessionId
+    ;(client.session.messages as any).mockImplementation(async () => [
+      { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Action done.' }] },
+    ])
+    await loop.tick({
+      type: 'session.status',
+      properties: {
+        status: { type: 'busy' },
+        sessionID: postActionSessionId,
+      },
+    })
+    await loop.tick({
+      type: 'session.status',
+      properties: {
+        status: { type: 'idle' },
+        sessionID: postActionSessionId,
+      },
+    })
+    const finalState = loopService.getAnyState(loopName)
+    expect(finalState).not.toBeNull()
+    expect(finalState!.active).toBe(false)
+    expect(finalState!.terminationReason).toBe('completed')
+  })
+
+  test('postAction enabled with prompt only → enters post_action phase and sends prompt text', async () => {
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear. No issues found.' }] },
+        ],
+      },
+    })
+    const { loop } = createRuntime({
+      client,
+      loopConfig: {
+        loop: {
+          enabled: true,
+          defaultMaxIterations: 5,
+          postAction: {
+            enabled: true,
+            prompt: 'Run a lightweight post-action smoke review.',
+          },
+        },
+      },
+    })
+
+    const state = makeState({
+      phase: 'auditing',
+      totalSections: 0,
+      auditCount: 0,
+      iteration: 1,
+      maxIterations: 3,
+    })
+    loopService.setState(state.loopName, state)
+
+    // First tick: clean audit → checkAuditClearAndTerminate → enterPostActionPhase
+    await loop.tick({
+      type: 'session.status',
+      properties: {
+        status: { type: 'idle' },
+        sessionID: state.sessionId,
+      },
+    })
+
+    // Assert loop is still active and in post_action phase
+    const afterState = loopService.getAnyState(state.loopName)
+    expect(afterState).not.toBeNull()
+    expect(afterState!.active).toBe(true)
+    expect(afterState!.phase).toBe('post_action')
+    expect(afterState!.sessionId).not.toBe(state.sessionId)
+
+    // Assert a code prompt was sent containing the configured prompt text
+    const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+    expect(codeCalls.length).toBeGreaterThan(0)
+    const lastCodePrompt = codeCalls[codeCalls.length - 1]?.params as any
+    const promptText = lastCodePrompt?.parts?.[0]?.text ?? ''
+    expect(promptText).toContain('Run a lightweight post-action smoke review')
+    // No skill configured → no Load the / Skill tool instructions
+    expect(promptText).not.toContain('Load the')
+    expect(promptText).not.toContain('Skill tool')
+
+    // Simulate the post_action session completing
+    const postActionSessionId = afterState!.sessionId
+    ;(client.session.messages as any).mockImplementation(async () => [
+      { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Action complete.' }] },
+    ])
+
+    // Send busy to clear idle-gate
+    await loop.tick({
+      type: 'session.status',
+      properties: {
+        status: { type: 'busy' },
+        sessionID: postActionSessionId,
+      },
+    })
+
+    // Send idle to trigger runPostActionPhase
+    await loop.tick({
+      type: 'session.status',
+      properties: {
+        status: { type: 'idle' },
+        sessionID: postActionSessionId,
+      },
+    })
+
+    // Assert loop terminated with completed
+    const finalState = loopService.getAnyState(state.loopName)
+    expect(finalState).not.toBeNull()
+    expect(finalState!.active).toBe(false)
+    expect(finalState!.terminationReason).toBe('completed')
+  })
+
+  test('postAction prompt send failure → terminates completed as best effort', async () => {
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear. No issues found.' }] },
+        ],
+        promptAsync: async () => { throw new Error('prompt failed') },
+      },
+    })
+    const { loop } = createRuntime({
+      client,
+      loopConfig: {
+        loop: {
+          enabled: true,
+          defaultMaxIterations: 5,
+          postAction: { enabled: true, skill: 'pr-review' },
+        },
+      },
+    })
+
+    const state = makeState({
+      phase: 'auditing',
+      totalSections: 0,
+      auditCount: 0,
+      iteration: 1,
+      maxIterations: 3,
+    })
+    loopService.setState(state.loopName, state)
+
+    // Tick: clean audit → enterPostActionPhase → promptAsync throws
+    await loop.tick({
+      type: 'session.status',
+      properties: {
+        status: { type: 'idle' },
+        sessionID: state.sessionId,
+      },
+    })
+
+    // session.create was called for the post-action session (in addition to any prior creates)
+    const createCalls = calls.filter(c => c.method === 'session.create')
+    expect(createCalls.length).toBeGreaterThan(0)
+
+    // Loop terminated with completed despite the prompt failure
+    const finalState = loopService.getAnyState(state.loopName)
+    expect(finalState).not.toBeNull()
+    expect(finalState!.active).toBe(false)
+    expect(finalState!.terminationReason).toBe('completed')
+  })
+
+  test('post_action idle with missing worktreeDir → terminates missing_worktree_dir', async () => {
+    const { client } = createFakeForgeClient()
+    const { loop } = createRuntime({ client })
+
+    const state = makeState({
+      phase: 'post_action',
+      worktreeDir: '',
+    })
+    loopService.setState(state.loopName, state)
+    loopService.registerLoopSession(state.sessionId, state.loopName)
+
+    await loop.tick({
+      type: 'session.status',
+      properties: {
+        status: { type: 'idle' },
+        sessionID: state.sessionId,
+      },
+    })
+
+    const finalState = loopService.getAnyState(state.loopName)
+    expect(finalState).not.toBeNull()
+    expect(finalState!.active).toBe(false)
+    expect(finalState!.terminationReason).toBe('missing_worktree_dir')
+  })
+
+  test('post_action session error → terminates completed as best effort', async () => {
+    const { client } = createFakeForgeClient()
+    const { loop } = createRuntime({ client })
+
+    const state = makeState({
+      phase: 'post_action',
+    })
+    loopService.setState(state.loopName, state)
+    loopService.registerLoopSession(state.sessionId, state.loopName)
+
+    await loop.tick({
+      type: 'session.error',
+      properties: {
+        sessionID: state.sessionId,
+        error: {
+          name: 'ProviderError',
+          data: { message: 'provider failed' },
+        },
+      },
+    })
+
+    const finalState = loopService.getAnyState(state.loopName)
+    expect(finalState).not.toBeNull()
+    expect(finalState!.active).toBe(false)
+    expect(finalState!.terminationReason).toBe('completed')
+  })
+
+  test('post_action abort after assistant response → processes post-action completion', async () => {
+    const { client } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'done' }] },
+        ],
+      },
+    })
+    const { loop } = createRuntime({ client })
+
+    const state = makeState({
+      phase: 'post_action',
+    })
+    loopService.setState(state.loopName, state)
+    loopService.registerLoopSession(state.sessionId, state.loopName)
+
+    await loop.tick({
+      type: 'session.error',
+      properties: {
+        sessionID: state.sessionId,
+        error: {
+          name: 'AbortError',
+        },
+      },
+    })
+
+    const finalState = loopService.getAnyState(state.loopName)
+    expect(finalState).not.toBeNull()
+    expect(finalState!.active).toBe(false)
+    expect(finalState!.terminationReason).toBe('completed')
+  })
+
+  test('post_action abort without assistant response → terminates completed best effort', async () => {
+    const { client } = createFakeForgeClient({
+      session: {
+        messages: async () => [],
+      },
+    })
+    const { loop } = createRuntime({ client })
+
+    const state = makeState({
+      phase: 'post_action',
+    })
+    loopService.setState(state.loopName, state)
+    loopService.registerLoopSession(state.sessionId, state.loopName)
+
+    await loop.tick({
+      type: 'session.error',
+      properties: {
+        sessionID: state.sessionId,
+        error: {
+          name: 'AbortError',
+        },
+      },
+    })
+
+    const finalState = loopService.getAnyState(state.loopName)
+    expect(finalState).not.toBeNull()
+    expect(finalState!.active).toBe(false)
+    expect(finalState!.terminationReason).toBe('completed')
+  })
+
+  test('postAction with configured model → sends post-action prompt with that model', async () => {
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear. No issues found.' }] },
+        ],
+      },
+    })
+    const { loop } = createRuntime({
+      client,
+      loopConfig: {
+        loop: {
+          enabled: true,
+          defaultMaxIterations: 5,
+          postAction: { enabled: true, skill: 'pr-review', model: 'custom/post-model' },
+        },
+      },
+    })
+
+    const state = makeState({
+      phase: 'auditing',
+      totalSections: 0,
+      auditCount: 0,
+      iteration: 1,
+      maxIterations: 3,
+      auditorModel: 'state/auditor-model',
+    })
+    loopService.setState(state.loopName, state)
+
+    await loop.tick({
+      type: 'session.status',
+      properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+    })
+
+    const afterState = loopService.getAnyState(state.loopName)
+    expect(afterState!.phase).toBe('post_action')
+
+    // The post-action prompt should be sent with the configured model, not the auditor model.
+    const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+    const lastCodePrompt = codeCalls[codeCalls.length - 1]?.params as any
+    expect(lastCodePrompt?.model).toEqual({ providerID: 'custom', modelID: 'post-model' })
+  })
+
+  test('postAction without configured model → sends post-action prompt with auditor model', async () => {
+    const { client, calls } = createFakeForgeClient({
+      session: {
+        messages: async () => [
+          { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'All clear. No issues found.' }] },
+        ],
+      },
+    })
+    const { loop } = createRuntime({
+      client,
+      loopConfig: {
+        loop: {
+          enabled: true,
+          defaultMaxIterations: 5,
+          postAction: { enabled: true, skill: 'pr-review' },
+        },
+      },
+    })
+
+    const state = makeState({
+      phase: 'auditing',
+      totalSections: 0,
+      auditCount: 0,
+      iteration: 1,
+      maxIterations: 3,
+      auditorModel: 'state/auditor-model',
+    })
+    loopService.setState(state.loopName, state)
+
+    await loop.tick({
+      type: 'session.status',
+      properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+    })
+
+    const codeCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+    const lastCodePrompt = codeCalls[codeCalls.length - 1]?.params as any
+    expect(lastCodePrompt?.model).toEqual({ providerID: 'state', modelID: 'auditor-model' })
+  })
+})
+
 describe('runtime re-provisioning updates state.workspaceId', () => {
   test('ensureWorkspaceForLoop provisions workspace and sets workspaceId', async () => {
     const { client, calls } = createFakeForgeClient({

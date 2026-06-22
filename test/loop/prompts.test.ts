@@ -7,6 +7,7 @@ import {
   buildSectionContinuationPrompt,
   buildFinalAuditPrompt,
   buildFinalAuditFixPrompt,
+  buildPostActionPrompt,
 } from '../../src/loop/prompts'
 import { SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../../src/loop/section-summary'
 import type { PromptContext, SectionDigestEntry } from '../../src/loop/prompts'
@@ -352,6 +353,34 @@ describe('prompt builders (src/loop/prompts)', () => {
       })
       const result = buildFinalAuditPrompt(ctx, { ...sectionState })
       expect(result).not.toContain('Coder decisions & verification notes')
+    })
+  })
+
+  describe('buildPostActionPrompt', () => {
+    test('includes skill name, plan, branch, prompt text, and autonomy instruction when skill provided', () => {
+      const ctx = makeCtx()
+      const state = { ...defaultState, worktreeBranch: 'feat/my-branch', phase: 'post_action' as const }
+      const result = buildPostActionPrompt(ctx, state, { skill: 'pr-review', prompt: 'extra notes' })
+      expect(result).toContain('[Post-implementation action]')
+      expect(result).toContain('## Master Plan')
+      expect(result).toContain('Mock plan content')
+      expect(result).toContain('pr-review')
+      expect(result).toContain('Load the `pr-review` skill with the Skill tool')
+      expect(result).toContain('feat/my-branch')
+      expect(result).toContain('extra notes')
+      expect(result).toContain('do NOT use the question tool')
+      expect(result).toContain('Auto-defer any finding')
+    })
+
+    test('omits Skill-tool line when no skill is configured but includes prompt and autonomy instruction', () => {
+      const ctx = makeCtx()
+      const state = { ...defaultState, worktreeBranch: 'feat/my-branch', phase: 'post_action' as const }
+      const result = buildPostActionPrompt(ctx, state, { prompt: 'just review' })
+      expect(result).toContain('[Post-implementation action]')
+      expect(result).toContain('just review')
+      expect(result).toContain('do NOT use the question tool')
+      expect(result).not.toContain('Load the')
+      expect(result).not.toContain('Skill tool')
     })
   })
 

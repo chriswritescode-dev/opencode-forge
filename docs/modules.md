@@ -127,7 +127,7 @@ Source: [src/hooks/index.ts](../src/hooks/index.ts)
 
 ## `loop/` — Core Loop State Machine
 
-The heart of Forge. Implements autonomous iterative development with phases: `coding → auditing → final_auditing`.
+The heart of Forge. Implements autonomous iterative development with phases: `coding → auditing → final_auditing → post_action`.
 
 ### Files
 
@@ -136,10 +136,11 @@ The heart of Forge. Implements autonomous iterative development with phases: `co
 | `index.ts` | Public API barrel (all re-exports) |
 | `runtime.ts` | `createLoop()` factory, `Loop` interface |
 | `service.ts` | DB-backed `LoopService` (`createLoopService`) |
-| `state.ts` | Discriminated union `LoopState` (3 phases: `coding`, `auditing`, `final_auditing`), row↔state converters |
-| `transitions.ts` | Pure `nextTransition()` table — no side effects |
+| `state.ts` | Discriminated union `LoopState` (4 phases: `coding`, `auditing`, `final_auditing`, `post_action`), row↔state converters |
+| `transitions.ts` | Pure `nextTransition()` table — no side effects; includes `'post-action-complete'` event and `handlePostActionEvent` |
 | `termination.ts` | `TerminationReason` union, `terminationStatusFor()` |
-| `prompts.ts` | Prompt builders for each loop phase |
+| `prompts.ts` | Prompt builders for each loop phase, including `buildPostActionPrompt()` |
+| `post-action-config.ts` | `ResolvedPostActionConfig` interface and `resolvePostActionConfig()` resolver |
 | `section-summary.ts` | Parse audit output markers |
 | `idle-gate.ts` | Session busy detection and timeout tracking |
 | `in-flight-guard.ts` | Single-flight guard for concurrent loop start attempts |
@@ -151,12 +152,13 @@ The heart of Forge. Implements autonomous iterative development with phases: `co
 ### Key Types
 
 ```typescript
-type Phase = 'coding' | 'auditing' | 'final_auditing'
+type Phase = 'coding' | 'auditing' | 'final_auditing' | 'post_action'
 
 type LoopState =
   | CodingState
   | AuditingState
   | FinalAuditingState
+  | PostActionState
 
 type TerminationReason =
   | { kind: 'completed' }
@@ -196,6 +198,7 @@ buildSectionInitialPrompt(state, sectionIndex?): string
 buildSectionAuditPrompt(state, sectionIndex?): string
 buildSectionContinuationPrompt(state, sectionIndex?): string
 buildFinalAuditPrompt(state): string
+buildPostActionPrompt(state, opts): string
 
 // Termination
 terminationStatusFor(reason: TerminationReason): TerminationStatus
@@ -491,7 +494,7 @@ All data access goes through typed repo interfaces:
 ### State Machine Pattern
 
 The loop follows a strict phase-based state machine:
-- States: `coding`, `auditing`, `final_auditing`
+- States: `coding`, `auditing`, `final_auditing`, `post_action`
 - Transitions managed by `nextTransition()` in `transitions.ts`
 - Each phase has dedicated prompt builders and session rotation logic
 - State changes are persisted to SQLite after every mutation

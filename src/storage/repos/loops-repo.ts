@@ -14,7 +14,7 @@ export interface LoopRow {
   iteration: number
   auditCount: number
   errorCount: number
-  phase: 'coding' | 'auditing' | 'final_auditing'
+  phase: 'coding' | 'auditing' | 'final_auditing' | 'post_action'
   executionModel: string | null
   auditorModel: string | null
   modelFailed: boolean

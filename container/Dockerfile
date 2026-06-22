@@ -54,6 +54,11 @@ RUN useradd -m -u 1000 forge \
     && mkdir -p /home/forge/.cache /home/forge/.local/share/pnpm/store /home/forge/.npm \
     && chmod -R 0777 /home/forge
 
+# fallow CLI — dead-code analysis tool — installed globally with the same pnpm
+# setup used by the rest of the sandbox image. Binaries are linked into
+# /usr/local/bin so they are on PATH for arbitrary container UIDs.
+RUN corepack pnpm add -g fallow@2.101.0 --global-bin-dir /usr/local/bin
+
 # Allow git to operate on the bind-mounted workspace regardless of owner UID.
 RUN git config --system --add safe.directory '*'
 

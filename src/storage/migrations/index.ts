@@ -298,5 +298,14 @@ export const migrations: Migration[] = [
       db.run(loadSql('131_add_loop_model_variants.sql'))
     },
   },
+  {
+    id: '132',
+    description: 'Extend loops phase CHECK to include post_action',
+    apply: (db: Database) => {
+      const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get() as { sql: string } | null
+      if (row?.sql?.includes("'post_action'")) return
+      db.run(loadSql('132_extend_loops_phase_check_post_action.sql'))
+    },
+  },
 
 ]

@@ -432,12 +432,13 @@ Model selection follows this priority order:
 
 ## Loop
 
-The loop is an iterative development system that alternates between coding and auditing phases:
+The loop is an iterative development system with four phases, ending with an optional post-completion action:
 
 1. **Coding phase** — A Code session works on the task
 2. **Auditing phase** — The Auditor agent reviews changes against project conventions and stored review findings
 3. **Session rotation** — A fresh session is created for the next iteration
 4. **Repeat** — Audit findings feed back into the next coding iteration
+5. **Post-completion action** — After a clean final audit, if configured, a `post_action` phase runs a skill/prompt inside the worktree before teardown (best-effort, not re-audited)
 
 ### Session Rotation
 
@@ -497,7 +498,8 @@ The loop terminates when any of these conditions is met:
 
 - **Max iterations** — The global `maxIterations` cap is exceeded (0 = unlimited).
 - **Stall timeout** — After `maxConsecutiveStalls` consecutive stalls (default: 5). Use `loop-status` with `restart` to resume from the persisted section and iteration.
-- **Final audit completion** — When no bug-severity review findings remain after the final audit phase.
+- **Final audit completion** — When no bug-severity review findings remain after the final audit phase. If `loop.postAction.enabled` is `true`, the loop enters the `post_action` phase before final termination.
+- **Post-action completion** — After a clean final audit and a successful post-completion action phase (if configured).
 - **Consecutive errors** — 3 consecutive errors in either phase.
 
 Loops always run in an isolated git worktree. Sandbox is optional: when Docker is available and `sandbox.mode = 'docker'` is configured, a sandbox container is provisioned automatically; otherwise the loop runs in worktree-only mode.

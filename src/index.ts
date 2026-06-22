@@ -25,6 +25,7 @@ import { createSessionLoopResolver } from './services/session-loop-resolver'
 import { createPlanCaptureEventHook } from './hooks/plan-capture'
 import { createForgeSessionAttachHook, createForgeSessionMessageAttachHook } from './hooks/forge-session-attach'
 import { createLoopPermissionRejectHook } from './hooks/loop-permission'
+import { createSandboxMessageHook } from './hooks/sandbox-message'
 
 
 export interface CreateParentSessionLookupOptions {
@@ -387,6 +388,11 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       sessionLoopResolver,
       directory,
       logger,
+      getAllowExternalDirectories: () => config.loop?.allowExternalDirectories,
+    })
+    const sandboxMessageHook = createSandboxMessageHook({
+      sessionLoopResolver,
+      logger,
     })
     // Resolves sandbox context for a session by following parent hops until an
     // active sandbox loop is found. Returns null if no sandbox is active for
@@ -444,6 +450,12 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       'chat.message': async (input, output) => {
         await forgeSessionMessageAttachHook(input)
         await sessionHooks.onMessage(input, output)
+      },
+      'experimental.chat.system.transform': async (input, output) => {
+        await sandboxMessageHook(
+          input as { sessionID?: string },
+          output as { system: string[] },
+        )
       },
       event: async (input) => {
         const eventInput = input as { event: { type: string; properties?: Record<string, unknown> } }
