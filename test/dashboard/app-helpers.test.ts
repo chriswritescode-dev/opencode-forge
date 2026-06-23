@@ -14,6 +14,10 @@ import {
   formatFinding,
   formatUsageTotal,
   formatModelUsage,
+  formatTokenCount,
+  formatUsageCost,
+  tokenBreakdownSegments,
+  modelUsageBars,
   formatLoopSummaryParts,
   renderMarkdown,
 } from '../../src/dashboard/app/helpers'
@@ -541,6 +545,125 @@ describe('formatModelUsage', () => {
   test('includes message count', () => {
     const result = formatModelUsage('gpt-4', modelData)
     expect(result).toContain('messages: 5')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// formatTokenCount
+// ---------------------------------------------------------------------------
+
+describe('formatTokenCount', () => {
+  test('returns "0" for zero or negative', () => {
+    expect(formatTokenCount(0)).toBe('0')
+    expect(formatTokenCount(-5)).toBe('0')
+  })
+
+  test('returns raw number below 1000', () => {
+    expect(formatTokenCount(999)).toBe('999')
+  })
+
+  test('formats thousands with k suffix', () => {
+    expect(formatTokenCount(12345)).toBe('12.3k')
+    expect(formatTokenCount(2000)).toBe('2k')
+  })
+
+  test('formats millions with M suffix', () => {
+    expect(formatTokenCount(3_400_000)).toBe('3.4M')
+    expect(formatTokenCount(1_000_000)).toBe('1M')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// formatUsageCost
+// ---------------------------------------------------------------------------
+
+describe('formatUsageCost', () => {
+  test('returns "$0" for zero or negative', () => {
+    expect(formatUsageCost(0)).toBe('$0')
+    expect(formatUsageCost(-1)).toBe('$0')
+  })
+
+  test('keeps 4 decimals below $1', () => {
+    expect(formatUsageCost(0.1234)).toBe('$0.1234')
+  })
+
+  test('rounds to cents at or above $1', () => {
+    expect(formatUsageCost(12.3456)).toBe('$12.35')
+    expect(formatUsageCost(1)).toBe('$1.00')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// tokenBreakdownSegments
+// ---------------------------------------------------------------------------
+
+describe('tokenBreakdownSegments', () => {
+  const usage: NonNullable<DashboardLoop['usage']> = {
+    loopName: 'test-loop',
+    totalCost: 1,
+    totalInputTokens: 50,
+    totalOutputTokens: 30,
+    totalReasoningTokens: 10,
+    totalCacheReadTokens: 8,
+    totalCacheWriteTokens: 2,
+    totalMessageCount: 4,
+    byModel: {},
+  }
+
+  test('returns five labeled segments', () => {
+    const segs = tokenBreakdownSegments(usage)
+    expect(segs.map(s => s.label)).toEqual(['Input', 'Output', 'Reasoning', 'Cache R', 'Cache W'])
+  })
+
+  test('percentages are share of total and sum to 100', () => {
+    const segs = tokenBreakdownSegments(usage)
+    // total = 100, so pct equals the raw value
+    expect(segs[0].pct).toBeCloseTo(50)
+    expect(segs[1].pct).toBeCloseTo(30)
+    const sum = segs.reduce((acc, s) => acc + s.pct, 0)
+    expect(sum).toBeCloseTo(100)
+  })
+
+  test('all-zero usage yields zero-width segments (no divide by zero)', () => {
+    const zero = { ...usage, totalInputTokens: 0, totalOutputTokens: 0, totalReasoningTokens: 0, totalCacheReadTokens: 0, totalCacheWriteTokens: 0 }
+    const segs = tokenBreakdownSegments(zero)
+    expect(segs.every(s => s.pct === 0)).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// modelUsageBars
+// ---------------------------------------------------------------------------
+
+describe('modelUsageBars', () => {
+  const usage: NonNullable<DashboardLoop['usage']> = {
+    loopName: 'test-loop',
+    totalCost: 3,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    totalReasoningTokens: 0,
+    totalCacheReadTokens: 0,
+    totalCacheWriteTokens: 0,
+    totalMessageCount: 0,
+    byModel: {
+      'cheap-model': { cost: 0.5, inputTokens: 100, outputTokens: 20, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 2 },
+      'pricey-model': { cost: 2, inputTokens: 400, outputTokens: 80, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 6 },
+    },
+  }
+
+  test('sorts by cost descending', () => {
+    const bars = modelUsageBars(usage)
+    expect(bars.map(b => b.model)).toEqual(['pricey-model', 'cheap-model'])
+  })
+
+  test('pct is relative to the most expensive model', () => {
+    const bars = modelUsageBars(usage)
+    expect(bars[0].pct).toBeCloseTo(100)
+    expect(bars[1].pct).toBeCloseTo(25)
+  })
+
+  test('returns empty array when no models', () => {
+    expect(modelUsageBars({ ...usage, byModel: {} })).toEqual([])
   })
 })
 
