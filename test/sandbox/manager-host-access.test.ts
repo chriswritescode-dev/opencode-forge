@@ -194,60 +194,23 @@ describe('SandboxManager host access', () => {
     })
   })
 
-  describe('resolveUser', () => {
-    test('sets user when resolveHostUser returns a value', async () => {
+  describe('Docker-in-Docker (always on)', () => {
+    test('every sandbox enables dockerInDocker', async () => {
       const mockDocker = createMockDockerService()
       const logger = createMockLogger()
-      const config: SandboxManagerConfig = {
-        image: 'oc-forge-sandbox:latest',
-        resolveHostUser: () => '1000:1000',
-      }
+      const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
 
       const manager = createSandboxManager(mockDocker as unknown as DockerService, config, logger)
       await manager.start('test', '/home/user/worktrees/feature')
 
       const opts = getCreateContainerOpts(mockDocker)
-      expect(opts?.user).toBe('1000:1000')
+      expect(opts?.dockerInDocker).toBe(true)
     })
 
-    test('sets user when resolveHostUser returns different value', async () => {
+    test('runs as root (no --user mapping) since the nested daemon requires root', async () => {
       const mockDocker = createMockDockerService()
       const logger = createMockLogger()
-      const config: SandboxManagerConfig = {
-        image: 'oc-forge-sandbox:latest',
-        resolveHostUser: () => '1001:1002',
-      }
-
-      const manager = createSandboxManager(mockDocker as unknown as DockerService, config, logger)
-      await manager.start('test', '/home/user/worktrees/feature')
-
-      const opts = getCreateContainerOpts(mockDocker)
-      expect(opts?.user).toBe('1001:1002')
-    })
-
-    test('user undefined when runAsHostUser is false', async () => {
-      const mockDocker = createMockDockerService()
-      const logger = createMockLogger()
-      const config: SandboxManagerConfig = {
-        image: 'oc-forge-sandbox:latest',
-        runAsHostUser: false,
-        resolveHostUser: () => '1000:1000',
-      }
-
-      const manager = createSandboxManager(mockDocker as unknown as DockerService, config, logger)
-      await manager.start('test', '/home/user/worktrees/feature')
-
-      const opts = getCreateContainerOpts(mockDocker)
-      expect(opts?.user).toBeUndefined()
-    })
-
-    test('user undefined when resolveHostUser returns undefined', async () => {
-      const mockDocker = createMockDockerService()
-      const logger = createMockLogger()
-      const config: SandboxManagerConfig = {
-        image: 'oc-forge-sandbox:latest',
-        resolveHostUser: () => undefined,
-      }
+      const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
 
       const manager = createSandboxManager(mockDocker as unknown as DockerService, config, logger)
       await manager.start('test', '/home/user/worktrees/feature')

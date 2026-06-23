@@ -727,9 +727,13 @@ Mount additional host directories into the sandbox via `sandbox.mounts`. Each en
 
 **Security note:** read-write custom mounts (`"readonly": false`) expose arbitrary host directories to the container with the same trust boundary as environment passthrough. Only grant write access to directories you trust the sandbox to modify.
 
-### Non-Root User
+### Docker-in-Docker
 
-The container runs as the host user's UID:GID by default (`runAsHostUser: true`). This ensures file ownership matches between the bind-mounted worktree and the host — files created inside the container are owned by you, not `root`. Set `runAsHostUser` to `false` to run as the container default user (`root`).
+Every sandbox container runs **Docker-in-Docker** by default: a nested, isolated Docker daemon boots inside the container so loops can build and run containers (e.g. end-to-end tests, `docker compose` suites) without touching the host's Docker daemon. Each loop gets its own daemon and image/container storage, so concurrent loops cannot see each other's containers or images, and everything is torn down with the sandbox.
+
+Because a nested daemon requires root, the sandbox container runs as `root` and is launched `--privileged --init`. The privileges are confined to the Docker host's VM/daemon, not the host OS directly. On Docker Desktop (macOS/Windows), bind-mount file ownership on `/workspace` still maps back to your host user. On a native Linux Docker host, files written by the container to the bind-mounted worktree will be `root`-owned.
+
+The sandbox image bundles the Docker engine, buildx, and the Compose plugin. Inside a loop, the standard `docker` and `docker compose` commands work against the nested daemon, and bind mounts that reference `/workspace` resolve correctly (the daemon shares the container's filesystem).
 
 ### Large Command Output
 
@@ -749,7 +753,6 @@ When a `sh` command produces output exceeding the tool's limit, the overflow is 
 | `sandbox.mountProjectReadonly` | `true` | Mount the source project directory read-only at `projectMountPath`. |
 | `sandbox.projectMountPath` | `"/project"` | Container path for the read-only project mount. |
 | `sandbox.mounts` | `[]` | Additional host directories to bind-mount into the container (see [Custom Bind Mounts](#custom-bind-mounts)). |
-| `sandbox.runAsHostUser` | `true` | Run container as host user's UID:GID for correct bind-mount ownership. |
 | `sandbox.network.hostGateway` | `true` | Enable `host.docker.internal` gateway for reaching host services. |
 | `sandbox.network.env` | `[]` | Host environment variable names to pass through via temp `--env-file`. |
 

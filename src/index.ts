@@ -217,7 +217,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           buildContextDir: resolveBundledContainerDir(),
           ...(config.sandbox?.resources ? { resources: config.sandbox.resources } : {}),
           ...(config.sandbox?.network ? { network: config.sandbox.network } : {}),
-          ...(config.sandbox?.runAsHostUser !== undefined ? { runAsHostUser: config.sandbox.runAsHostUser } : {}),
         }, logger, defaultGitService)
         logger.log('Docker sandbox manager initialized')
       } catch (err) {

@@ -24,7 +24,18 @@ export interface CreateContainerOpts {
   addHosts?: string[]
   envFile?: string
   user?: string
+  /**
+   * Enable Docker-in-Docker for this container. Adds `--privileged --init`, sets the
+   * `FORGE_DIND=1` env var (which makes the image entrypoint boot a nested dockerd), and
+   * backs the nested daemon's `/var/lib/docker` with an anonymous volume so overlay2 works.
+   * `--init` installs a zombie-reaping init as PID 1, which matters when loops spawn many
+   * short-lived test containers.
+   */
+  dockerInDocker?: boolean
 }
+
+/** Container path for the nested Docker daemon's storage, backed by an anonymous volume. */
+const DIND_STORAGE_PATH = '/var/lib/docker'
 
 export function buildCreateContainerArgs(name: string, projectDir: string, image: string, opts: CreateContainerOpts = {}): string[] {
   const args: string[] = [
@@ -35,6 +46,15 @@ export function buildCreateContainerArgs(name: string, projectDir: string, image
     '-v',
     `${projectDir}:/workspace`,
   ]
+
+  if (opts.dockerInDocker) {
+    // Privileged + init lets a nested dockerd run with proper cgroup/iptables access and
+    // a zombie-reaping PID 1. The anonymous volume keeps the daemon's overlay2 store off
+    // the container's own overlay filesystem (overlay-on-overlay is unsupported).
+    args.push('--privileged', '--init')
+    args.push('-e', 'FORGE_DIND=1')
+    args.push('-v', DIND_STORAGE_PATH)
+  }
 
   if (opts.resources?.memory) args.push('--memory', opts.resources.memory)
   if (opts.resources?.memorySwap) args.push('--memory-swap', opts.resources.memorySwap)
@@ -129,7 +149,10 @@ export function createDockerService(logger: Logger): DockerService {
   }
 
   async function removeContainer(name: string): Promise<void> {
-    const result = await execPromise('docker', ['rm', '-f', name], { timeout: 30000 })
+    // `-v` removes anonymous volumes attached to the container (e.g. the Docker-in-Docker
+    // /var/lib/docker store). Bind mounts and named volumes are unaffected, so this is safe
+    // for non-DinD containers, which have no anonymous volumes.
+    const result = await execPromise('docker', ['rm', '-fv', name], { timeout: 30000 })
     if (result.exitCode !== 0 && !result.stderr.includes('No such container')) {
       throw new Error(`Failed to remove container: ${result.stderr}`)
     }

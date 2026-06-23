@@ -91,6 +91,26 @@ describe('buildCreateContainerArgs', () => {
     expect(args[vIndex + 3]).toBe('/data:/data')
   })
 
+  test('dockerInDocker adds privileged, init, FORGE_DIND env, and storage volume', () => {
+    const args = buildCreateContainerArgs('c', '/p', 'img', { dockerInDocker: true })
+    expect(args).toContain('--privileged')
+    expect(args).toContain('--init')
+    const envIdx = args.indexOf('-e')
+    expect(args[envIdx + 1]).toBe('FORGE_DIND=1')
+    // Anonymous volume for the nested daemon storage (container path only, no host source).
+    expect(args).toContain('/var/lib/docker')
+    // Still ends with the workspace working dir + command trailer.
+    const trailerIdx = args.indexOf('-w')
+    expect(args.slice(trailerIdx)).toEqual(['-w', '/workspace', 'img', 'sleep', 'infinity'])
+  })
+
+  test('dockerInDocker flags are omitted by default', () => {
+    const args = buildCreateContainerArgs('c', '/p', 'img')
+    expect(args).not.toContain('--privileged')
+    expect(args).not.toContain('--init')
+    expect(args).not.toContain('FORGE_DIND=1')
+  })
+
   test('combines all opt types together', () => {
     const args = buildCreateContainerArgs('c', '/p', 'img', {
       resources: { memory: '2g', cpus: '1' },
