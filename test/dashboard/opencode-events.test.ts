@@ -1,11 +1,71 @@
 import { describe, test, expect, vi } from 'vitest'
 import {
+  createDashboardEventClient,
   forwardOpencodeEvents,
   forwardGlobalEvents,
   startActivityForwarding,
 } from '../../src/dashboard/opencode-events'
 import type { OpencodeActivityEvent } from '../../src/observability/types'
 import { ForgeClientError, type ForgeClient, type GlobalActivityEvent } from '../../src/client/port'
+
+describe('createDashboardEventClient', () => {
+  test('derives a separate server client from the TUI server URL', () => {
+    const hostClient = { marker: 'tui-client' }
+    const createdClient = { marker: 'dashboard-client' } as unknown as ForgeClient
+    const makeServerClient = vi.fn(() => createdClient)
+
+    const client = createDashboardEventClient({
+      host: {
+        serverUrl: new URL('http://localhost:4096'),
+        client: hostClient,
+      },
+      makeServerClient,
+    })
+
+    expect(client).toBe(createdClient)
+    expect(makeServerClient).toHaveBeenCalledWith('http://localhost:4096/', { authClient: hostClient })
+  })
+
+  test('explicit dashboard server URL overrides the TUI server URL', () => {
+    const makeServerClient = vi.fn(() => ({}) as ForgeClient)
+
+    createDashboardEventClient({
+      configuredServerUrl: 'http://localhost:9999',
+      host: { serverUrl: 'http://localhost:4096', client: {} },
+      makeServerClient,
+    })
+
+    expect(makeServerClient).toHaveBeenCalledWith('http://localhost:9999', {})
+  })
+
+  test('falls back to the host client SDK config server URL', () => {
+    const hostClient = {
+      _client: {
+        getConfig: () => ({ baseUrl: 'http://localhost:3210', headers: new Headers({ Authorization: 'Bearer token' }) }),
+      },
+    }
+    const makeServerClient = vi.fn(() => ({}) as ForgeClient)
+
+    createDashboardEventClient({
+      host: { client: hostClient },
+      makeServerClient,
+    })
+
+    expect(makeServerClient).toHaveBeenCalledWith('http://localhost:3210', { authClient: hostClient })
+  })
+
+  test('returns null instead of using the in-process TUI client when no server URL is available', () => {
+    const makeServerClient = vi.fn(() => ({}) as ForgeClient)
+
+    const client = createDashboardEventClient({
+      host: { client: { global: { event: vi.fn() } } },
+      makeServerClient,
+    })
+
+    expect(client).toBeNull()
+    expect(makeServerClient).not.toHaveBeenCalled()
+  })
+})
 
 describe('forwardOpencodeEvents', () => {
   // ─── subscribes to all four curated event types ───────────────────────
