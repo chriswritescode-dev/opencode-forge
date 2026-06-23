@@ -1,15 +1,12 @@
 import type { OpencodeActivityEvent } from '../observability/types'
 import type { DashboardEventSource } from '../types'
 import { ForgeClientError, type ForgeClient, type GlobalActivityEvent } from '../client/port'
+import { isRecord } from '../utils/is-record'
 
 // ---------------------------------------------------------------------------
 // Minimal structural interface (compatible with TuiEventBus from
 // @opencode-ai/plugin/tui but avoids a hard dependency on its type).
 // ---------------------------------------------------------------------------
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 export interface EventBus {
   on(type: string, handler: (event: unknown) => void): () => void

@@ -183,6 +183,61 @@ describe('createSessionLoopResolver', () => {
     })
   })
 
+  describe('nested ancestor walk', () => {
+    it('resolves a deeply-nested sub-agent through multiple parent hops', async () => {
+      // session-grandchild → session-child → session-loop (active loop session)
+      const parents: Record<string, string> = {
+        'session-grandchild': 'session-child',
+        'session-child': 'session-loop',
+      }
+      const getParentSessionId = async (sessionId: string) => parents[sessionId] ?? null
+
+      const loop = {
+        service: {
+          resolveLoopName: (sessionId: string) => (sessionId === 'session-loop' ? 'loop-1' : null),
+          getActiveState: (name: string) =>
+            name === 'loop-1' ? { loopName: 'loop-1', active: true, sandbox: true } : null,
+        },
+        listActive: () => [],
+      }
+
+      const resolver = createSessionLoopResolver({
+        loop,
+        getParentSessionId,
+        logger: mockLogger,
+      })
+
+      const result = await resolver.resolveActiveLoopForSession('session-grandchild')
+      expect(result).toEqual({ loopName: 'loop-1', active: true, sandbox: true })
+    })
+
+    it('terminates on a parent cycle without infinite looping', async () => {
+      // session-a → session-b → session-a (cycle); no loop in the chain
+      const parents: Record<string, string> = {
+        'session-a': 'session-b',
+        'session-b': 'session-a',
+      }
+      const getParentSessionId = async (sessionId: string) => parents[sessionId] ?? null
+
+      const loop = {
+        service: {
+          resolveLoopName: () => null,
+          getActiveState: () => null,
+        },
+        listActive: () => [],
+      }
+
+      const resolver = createSessionLoopResolver({
+        loop,
+        getParentSessionId,
+        logger: mockLogger,
+      })
+
+      const result = await resolver.resolveActiveLoopForSession('session-a')
+      expect(result).toBeNull()
+    })
+  })
+
   describe('directory-fallback', () => {
     it('resolves child session when directory matches an active loop worktreeDir', async () => {
       const getParentSessionId = async (sessionId: string) => sessionId === 'session-subagent' ? 'parent-session' : null

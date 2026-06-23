@@ -1,6 +1,7 @@
 import type { Database } from 'bun:sqlite'
 import { basename } from 'path'
 import type { OpencodeSessionRow, TranscriptEntry } from './types'
+import { isRecord } from '../utils/is-record'
 
 // ---------------------------------------------------------------------------
 // Raw row matching the snake_case columns of the session + project LEFT JOIN
@@ -79,10 +80,6 @@ function parseModelJson(raw: string | null): { modelId: string | null; providerI
 function clampLimit(limit: number | undefined, max = 200, def = 50): number {
   if (limit === undefined) return def
   return Math.max(1, Math.min(max, Math.round(limit)))
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /**

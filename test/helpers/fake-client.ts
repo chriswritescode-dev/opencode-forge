@@ -206,6 +206,13 @@ export function createFakeForgeClient(
         overrides?.sync?.start,
       ),
     },
+    events: {
+      subscribeGlobal: makeMethod(
+        'events.subscribeGlobal',
+        (_onEvent: unknown, _opts?: unknown) => () => {},
+        overrides?.events?.subscribeGlobal,
+      ),
+    },
   }
 
   return { client, calls }
