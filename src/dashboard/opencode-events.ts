@@ -2,48 +2,8 @@ import { basename } from 'path'
 import type { OpencodeActivityEvent, OpencodeSessionRow } from '../observability/types'
 import type { DashboardEventSource } from '../types'
 import { ForgeClientError, type ForgeClient, type GlobalActivityEvent } from '../client/port'
-import { createForgeClientFromServerUrl, resolveServerUrlFromClient } from '../client/sdk-adapter'
 import { isRecord } from '../utils/is-record'
 import { mapTranscriptPartData } from '../observability/transcript-part'
-
-type MakeServerClient = (serverUrl: string | URL, options?: { authClient?: unknown }) => ForgeClient
-
-export interface DashboardEventClientHost {
-  serverUrl?: string | URL
-  client?: unknown
-}
-
-export interface DashboardEventClientOptions {
-  configuredServerUrl?: string
-  host?: DashboardEventClientHost | null
-  makeServerClient?: MakeServerClient
-}
-
-function normalizeServerUrl(value: string | URL | undefined): string | null {
-  if (!value) return null
-  return value.toString()
-}
-
-/**
- * Create the client used solely for dashboard global event forwarding.
- *
- * TUI launches must not subscribe with the in-process TUI client because the
- * global stream can mutate that client's session/event subscriptions and pollute
- * the TUI session list with remote sessions. Instead, derive the same server URL
- * and build a separate HTTP client for dashboard-only listening, copying only
- * auth headers from the host client when available.
- */
-export function createDashboardEventClient(options: DashboardEventClientOptions): ForgeClient | null {
-  const makeServerClient = options.makeServerClient ?? createForgeClientFromServerUrl
-  const configuredServerUrl = normalizeServerUrl(options.configuredServerUrl)
-  if (configuredServerUrl) return makeServerClient(configuredServerUrl, {})
-
-  const hostServerUrl = normalizeServerUrl(options.host?.serverUrl)
-    ?? resolveServerUrlFromClient(options.host?.client)
-  if (!hostServerUrl) return null
-
-  return makeServerClient(hostServerUrl, { authClient: options.host?.client })
-}
 
 // ---------------------------------------------------------------------------
 // Minimal structural interface (compatible with TuiEventBus from

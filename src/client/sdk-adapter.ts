@@ -8,16 +8,6 @@ import {
   type GlobalActivityEvent,
 } from './port'
 
-interface ServerUrlClientOptions {
-  /**
-   * Optional plugin/TUI client to copy the server Authorization header from.
-   * The server-url client deliberately does not copy the client's in-process
-   * fetch implementation, so dashboard global event subscriptions are isolated
-   * from the TUI client's session/event state.
-   */
-  authClient?: unknown
-}
-
 // ── Error classification ─────────────────────────────────────────────────────
 
 function extractMessage(err: unknown): string {
@@ -47,32 +37,6 @@ function classify(err: unknown, method: string): ForgeClientError {
     kind = 'not-found'
   }
   return new ForgeClientError({ kind, method, message: rawMessage, cause: err })
-}
-
-function legacyHttpConfig(client: unknown): { fetch?: typeof fetch; headers?: Headers; baseUrl?: string | URL; baseURL?: string | URL } | undefined {
-  return (
-    client as {
-      _client?: { getConfig: () => { fetch?: typeof fetch; headers?: Headers; baseUrl?: string | URL; baseURL?: string | URL } }
-    }
-  )._client?.getConfig?.()
-}
-
-function legacyAuthHeader(client: unknown): string | undefined {
-  const headers = legacyHttpConfig(client)?.headers
-  return headers?.get?.('authorization') ?? headers?.get?.('Authorization') ?? undefined
-}
-
-function normalizeUrl(value: unknown): string | null {
-  return typeof value === 'string' || value instanceof URL ? value.toString() : null
-}
-
-/** Resolve the SDK client's configured server URL when the plugin host exposes it there. */
-export function resolveServerUrlFromClient(client: unknown): string | null {
-  const config = legacyHttpConfig(client)
-  return normalizeUrl(config?.baseUrl)
-    ?? normalizeUrl(config?.baseURL)
-    ?? normalizeUrl((client as { baseUrl?: unknown }).baseUrl)
-    ?? normalizeUrl((client as { baseURL?: unknown }).baseURL)
 }
 
 // ── Result normalisation helpers ─────────────────────────────────────────────
@@ -298,15 +262,8 @@ export function createForgeClientFromPluginInput(
  * the standalone dashboard (no plugin input) and to target a server other than
  * the in-process one. Keeps SDK construction inside the adapter seam.
  */
-export function createForgeClientFromServerUrl(
-  serverUrl: string | URL,
-  options: ServerUrlClientOptions = {},
-): ForgeClient {
-  const authHeader = legacyAuthHeader(options.authClient)
-  return createForgeClient(createV2Client({
-    baseUrl: serverUrl.toString(),
-    ...(authHeader ? { headers: { Authorization: authHeader } } : {}),
-  }))
+export function createForgeClientFromServerUrl(serverUrl: string): ForgeClient {
+  return createForgeClient(createV2Client({ baseUrl: serverUrl }))
 }
 
 // ── Legacy client adapter ────────────────────────────────────────────────────
@@ -320,14 +277,20 @@ export function createForgeClientFromServerUrl(
  * satisfy the server's Basic auth requirement.
  */
 export function createV2ClientFromPluginInput(pluginInput: PluginInput): OpencodeClient {
-  const legacyConfig = legacyHttpConfig(pluginInput.client)
+  const legacyHttp = (
+    pluginInput.client as unknown as {
+      _client?: { getConfig: () => { fetch?: typeof fetch; headers?: Headers } }
+    }
+  )._client
+  const legacyConfig = legacyHttp?.getConfig?.()
   const legacyFetch = legacyConfig?.fetch
-  const authHeader = legacyAuthHeader(pluginInput.client)
+  const legacyAuthHeader =
+    legacyConfig?.headers?.get?.('authorization') ?? legacyConfig?.headers?.get?.('Authorization')
   const v2ClientConfig: Parameters<typeof createV2Client>[0] = {
     baseUrl: pluginInput.serverUrl.toString(),
     directory: pluginInput.directory,
     ...(legacyFetch ? { fetch: legacyFetch } : {}),
-    ...(authHeader ? { headers: { Authorization: authHeader } } : {}),
+    ...(legacyAuthHeader ? { headers: { Authorization: legacyAuthHeader } } : {}),
   }
   return createV2Client(v2ClientConfig)
 }

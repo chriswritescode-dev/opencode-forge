@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 import { startDashboardServer } from '../src/dashboard/launch'
 import { createEventBroadcaster } from '../src/dashboard/event-broadcaster'
-import { createDashboardEventClient, startActivityForwarding } from '../src/dashboard/opencode-events'
+import { startActivityForwarding } from '../src/dashboard/opencode-events'
+import { createForgeClientFromServerUrl } from '../src/client/sdk-adapter'
 import type { DashboardEventSource } from '../src/types'
 
 interface Args {
@@ -55,7 +56,7 @@ function main(): void {
   let detachEvents: (() => void) | null = null
 
   if (broadcaster && args.serverUrl) {
-    const client = createDashboardEventClient({ configuredServerUrl: args.serverUrl })
+    const client = createForgeClientFromServerUrl(args.serverUrl)
     detachEvents = startActivityForwarding(
       { source },
       {

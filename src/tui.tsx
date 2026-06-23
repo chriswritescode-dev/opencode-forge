@@ -12,7 +12,8 @@ import { ExecutePlanPanel } from './tui/execute-plan-panel'
 import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/session-follow'
 import { openInBrowser, startDashboardServer, type DashboardServerHandle } from './dashboard/launch'
 import { createEventBroadcaster, type EventBroadcaster } from './dashboard/event-broadcaster'
-import { createDashboardEventClient, startActivityForwarding } from './dashboard/opencode-events'
+import { startActivityForwarding } from './dashboard/opencode-events'
+import { createForgeClient, createForgeClientFromServerUrl } from './client/sdk-adapter'
 import { normalizePastedPlanText } from './utils/marked-plan-parser'
 
 type TuiKeybinds = {
@@ -284,14 +285,12 @@ const tui: TuiPlugin = async (api) => {
         broadcaster = createEventBroadcaster()
         dashboardServer = startDashboardServer({ events: broadcaster })
         const eventsConfig = pluginConfig.dashboard?.events
-        // Server source (default) uses a separate HTTP client pointed at the
-        // same server as this TUI. Do not subscribe through `api.client`: the
-        // global stream can mutate the TUI client's own session/event state and
-        // make remote sessions appear in the terminal session list.
-        const forgeClient = createDashboardEventClient({
-          configuredServerUrl: eventsConfig?.serverUrl,
-          host: api as { serverUrl?: string | URL; client?: unknown },
-        })
+        // Server source (default) uses the in-process client so it forwards
+        // whatever server this TUI is attached to — zero config for the common
+        // case. A configured serverUrl targets a different/shared server.
+        const forgeClient = eventsConfig?.serverUrl
+          ? createForgeClientFromServerUrl(eventsConfig.serverUrl)
+          : createForgeClient(api.client)
         detachEvents = startActivityForwarding(
           { source: eventsConfig?.source, types: eventsConfig?.types },
           { publish: broadcaster.publish, client: forgeClient, eventBus: api.event },
