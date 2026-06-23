@@ -153,12 +153,11 @@ export function renderDashboardHtml(): string {
   .error-text { color: #f85149; }
   .dim { color: #484f58; }
   .resizable-block {
-    resize: both; overflow: auto;
-    min-height: 120px; height: 60vh; max-height: none;
+    resize: vertical; overflow: auto;
+    min-height: 0; height: auto; max-height: 60vh;
     border: 1px solid #30363d; border-radius: 4px;
     background: #0d1117; padding: 8px; margin-top: 4px;
   }
-  pre.resizable-block { white-space: pre-wrap; word-break: break-word; font-size: 0.78rem; color: #8b949e; }
   .markdown-content { font-size: 0.85rem; line-height: 1.6; color: #c9d1d9; }
   .markdown-content h1 { font-size: 1.3rem; margin: 16px 0 8px; color: #f0f6fc; border-bottom: 1px solid #30363d; padding-bottom: 4px; }
   .markdown-content h2 { font-size: 1.15rem; margin: 14px 0 6px; color: #f0f6fc; border-bottom: 1px solid #21262d; padding-bottom: 3px; }

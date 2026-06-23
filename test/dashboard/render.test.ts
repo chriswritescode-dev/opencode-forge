@@ -47,7 +47,7 @@ describe('renderDashboardHtml', () => {
       'project-nav-count',
       'empty-state',
       'resizable-block',
-      'resize: both',
+      'resize: vertical',
       'back-to-loops',
       'session-layout',
       'session-project-sidebar',
