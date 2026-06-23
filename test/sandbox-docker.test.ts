@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest'
-import { createDockerService, buildCreateContainerArgs } from '../src/sandbox/docker'
+import { createDockerService, buildCreateContainerArgs, buildExecArgs } from '../src/sandbox/docker'
 
 function createMockLogger() {
   return {
@@ -26,6 +26,30 @@ describe('DockerService containerName', () => {
   test('containerName handles empty string', () => {
     const result = docker.containerName('')
     expect(result).toBe('forge-')
+  })
+})
+
+describe('buildExecArgs', () => {
+  test('omits --user when no exec user is configured', () => {
+    expect(buildExecArgs('forge-c', 'ls')).toEqual(['exec', 'forge-c', 'sh', '-c', 'ls'])
+  })
+
+  test('applies --user for the host UID:GID', () => {
+    expect(buildExecArgs('forge-c', 'ls', { execUser: '501:20' })).toEqual([
+      'exec', '--user', '501:20', 'forge-c', 'sh', '-c', 'ls',
+    ])
+  })
+
+  test('adds -i before --user for the piped path', () => {
+    expect(buildExecArgs('forge-c', 'patch', { execUser: '501:20', interactive: true })).toEqual([
+      'exec', '-i', '--user', '501:20', 'forge-c', 'sh', '-c', 'patch',
+    ])
+  })
+
+  test('interactive without exec user', () => {
+    expect(buildExecArgs('forge-c', 'patch', { interactive: true })).toEqual([
+      'exec', '-i', 'forge-c', 'sh', '-c', 'patch',
+    ])
   })
 })
 
@@ -102,6 +126,22 @@ describe('buildCreateContainerArgs', () => {
     // Still ends with the workspace working dir + command trailer.
     const trailerIdx = args.indexOf('-w')
     expect(args.slice(trailerIdx)).toEqual(['-w', '/workspace', 'img', 'sleep', 'infinity'])
+  })
+
+  test('dockerInDocker passes host GID to the entrypoint for socket group ownership', () => {
+    const args = buildCreateContainerArgs('c', '/p', 'img', {
+      dockerInDocker: true,
+      hostUser: { uid: '501', gid: '20' },
+    })
+    const envFlags = args.reduce<string[]>((acc, a, i) => (a === '-e' ? [...acc, args[i + 1]] : acc), [])
+    expect(envFlags).toContain('FORGE_DIND=1')
+    expect(envFlags).toContain('FORGE_HOST_UID=501')
+    expect(envFlags).toContain('FORGE_HOST_GID=20')
+  })
+
+  test('hostUser env is omitted when dockerInDocker is off', () => {
+    const args = buildCreateContainerArgs('c', '/p', 'img', { hostUser: { uid: '501', gid: '20' } })
+    expect(args).not.toContain('FORGE_HOST_GID=20')
   })
 
   test('dockerInDocker flags are omitted by default', () => {

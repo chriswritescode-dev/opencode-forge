@@ -202,7 +202,13 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const dataDir = config.dataDir || resolveDataDir()
 
     let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
-    const dockerService = createDockerService(logger)
+    // The sandbox container runs as root (required by the nested Docker daemon), but the agent's
+    // in-container shell commands run as the host UID:GID so files written to the bind-mounted
+    // worktree are owned by the host user, not root. Undefined on platforms without UID concept.
+    const hostExecUser = typeof process.getuid === 'function' && typeof process.getgid === 'function'
+      ? `${process.getuid()}:${process.getgid()}`
+      : undefined
+    const dockerService = createDockerService(logger, { execUser: hostExecUser })
     if (config.sandbox?.enabled === false) {
       logger.log('Docker sandbox disabled via config (sandbox.enabled=false); running in worktree-only mode')
     } else {

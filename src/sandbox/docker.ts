@@ -32,10 +32,32 @@ export interface CreateContainerOpts {
    * short-lived test containers.
    */
   dockerInDocker?: boolean
+  /**
+   * Host UID:GID for the in-container exec user. When Docker-in-Docker is enabled, the GID is
+   * passed to the entrypoint (`FORGE_HOST_GID`) so the nested dockerd owns its socket with that
+   * group from creation, letting the non-root exec user reach the daemon without a perms race.
+   */
+  hostUser?: { uid: string; gid: string }
 }
 
 /** Container path for the nested Docker daemon's storage, backed by an anonymous volume. */
 const DIND_STORAGE_PATH = '/var/lib/docker'
+
+/**
+ * Builds `docker exec` argument vectors. Single source of truth for both the standard and
+ * stdin-piped exec paths so the optional host-user mapping (`--user`) is applied consistently.
+ */
+export function buildExecArgs(
+  name: string,
+  command: string,
+  opts: { execUser?: string; interactive?: boolean } = {},
+): string[] {
+  const args = ['exec']
+  if (opts.interactive) args.push('-i')
+  if (opts.execUser) args.push('--user', opts.execUser)
+  args.push(name, 'sh', '-c', command)
+  return args
+}
 
 export function buildCreateContainerArgs(name: string, projectDir: string, image: string, opts: CreateContainerOpts = {}): string[] {
   const args: string[] = [
@@ -53,6 +75,12 @@ export function buildCreateContainerArgs(name: string, projectDir: string, image
     // the container's own overlay filesystem (overlay-on-overlay is unsupported).
     args.push('--privileged', '--init')
     args.push('-e', 'FORGE_DIND=1')
+    if (opts.hostUser) {
+      // Lets the entrypoint start dockerd with --group <host gid> so the host-UID exec user
+      // can reach the daemon socket. UID is passed for completeness/diagnostics.
+      args.push('-e', `FORGE_HOST_UID=${opts.hostUser.uid}`)
+      args.push('-e', `FORGE_HOST_GID=${opts.hostUser.gid}`)
+    }
     args.push('-v', DIND_STORAGE_PATH)
   }
 
@@ -99,9 +127,21 @@ export interface DockerService {
   listContainersByPrefix(prefix: string): Promise<string[]>
 }
 
-export function createDockerService(logger: Logger): DockerService {
+export interface DockerServiceOpts {
+  /**
+   * UID:GID applied to in-container commands via `docker exec --user`. The container itself
+   * runs as root (required by the nested Docker daemon), but the agent's shell commands run as
+   * this user so files written to the bind-mounted worktree are owned by the host user rather
+   * than root. Typically the host process UID:GID. Undefined runs commands as the container's
+   * default user (root).
+   */
+  execUser?: string
+}
+
+export function createDockerService(logger: Logger, opts: DockerServiceOpts = {}): DockerService {
   const DEFAULT_TIMEOUT = 120000
   const BUILD_TIMEOUT = 600000
+  const execUser = opts.execUser
 
   function containerName(worktreeName: string): string {
     return `forge-${worktreeName}`
@@ -140,7 +180,14 @@ export function createDockerService(logger: Logger): DockerService {
   }
 
   async function createContainer(name: string, projectDir: string, image: string, opts?: CreateContainerOpts): Promise<void> {
-    const args = buildCreateContainerArgs(name, projectDir, image, opts)
+    // Derive hostUser from the configured exec user so the nested daemon's socket group matches
+    // the UID that runs in-container commands. Single source of truth: the service's execUser.
+    const effectiveOpts: CreateContainerOpts = { ...opts }
+    if (execUser && !effectiveOpts.hostUser) {
+      const [uid, gid] = execUser.split(':')
+      if (uid && gid) effectiveOpts.hostUser = { uid, gid }
+    }
+    const args = buildCreateContainerArgs(name, projectDir, image, effectiveOpts)
 
     const result = await execPromise('docker', args, { timeout: 30000 })
     if (result.exitCode !== 0) {
@@ -174,7 +221,7 @@ export function createDockerService(logger: Logger): DockerService {
       fullCommand = command
     }
 
-    const args = ['exec', name, 'sh', '-c', fullCommand]
+    const args = buildExecArgs(name, fullCommand, { execUser })
 
     return execPromise('docker', args, { timeout, streaming: true, abort: opts?.abort })
   }
@@ -185,7 +232,9 @@ export function createDockerService(logger: Logger): DockerService {
     stdin: string,
     opts?: { timeout?: number; abort?: AbortSignal },
   ): Promise<DockerExecResult> {
-    return execPromise('docker', ['exec', '-i', name, 'sh', '-c', command], {
+    const args = buildExecArgs(name, command, { execUser, interactive: true })
+
+    return execPromise('docker', args, {
       timeout: opts?.timeout ?? DEFAULT_TIMEOUT,
       stdin,
       abort: opts?.abort,
