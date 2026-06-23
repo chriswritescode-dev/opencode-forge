@@ -11,6 +11,9 @@ import { connectForgeProject, type ForgeProjectClient } from './utils/tui-client
 import { ExecutePlanPanel } from './tui/execute-plan-panel'
 import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/session-follow'
 import { openInBrowser, startDashboardServer, type DashboardServerHandle } from './dashboard/launch'
+import { createEventBroadcaster, type EventBroadcaster } from './dashboard/event-broadcaster'
+import { startActivityForwarding } from './dashboard/opencode-events'
+import { createForgeClient, createForgeClientFromServerUrl } from './client/sdk-adapter'
 import { normalizePastedPlanText } from './utils/marked-plan-parser'
 
 type TuiKeybinds = {
@@ -274,11 +277,30 @@ const tui: TuiPlugin = async (api) => {
   // available even when the sidebar is disabled. The HTTP server is started
   // in-process on first use and reused on subsequent invocations.
   let dashboardServer: DashboardServerHandle | null = null
+  let broadcaster: EventBroadcaster | null = null
+  let detachEvents: (() => void) | null = null
   const runOpenDashboard = () => {
     if (!dashboardServer) {
       try {
-        dashboardServer = startDashboardServer()
+        broadcaster = createEventBroadcaster()
+        dashboardServer = startDashboardServer({ events: broadcaster })
+        const eventsConfig = pluginConfig.dashboard?.events
+        // Server source (default) uses the in-process client so it forwards
+        // whatever server this TUI is attached to — zero config for the common
+        // case. A configured serverUrl targets a different/shared server.
+        const forgeClient = eventsConfig?.serverUrl
+          ? createForgeClientFromServerUrl(eventsConfig.serverUrl)
+          : createForgeClient(api.client)
+        detachEvents = startActivityForwarding(
+          { source: eventsConfig?.source, types: eventsConfig?.types },
+          { publish: broadcaster.publish, client: forgeClient, eventBus: api.event },
+        )
       } catch (err) {
+        // Clean up on failure so a retry starts fresh.
+        detachEvents?.()
+        broadcaster?.close()
+        detachEvents = null
+        broadcaster = null
         api.ui.toast({
           message: err instanceof Error ? err.message : 'Failed to start dashboard',
           variant: 'error',
@@ -298,6 +320,10 @@ const tui: TuiPlugin = async (api) => {
   }
 
   api.lifecycle.onDispose(() => {
+    detachEvents?.()
+    broadcaster?.close()
+    detachEvents = null
+    broadcaster = null
     if (dashboardServer) {
       dashboardServer.stop()
       dashboardServer = null

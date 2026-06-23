@@ -94,6 +94,26 @@
     }
   },
 
+  // Dashboard configuration
+  "dashboard": {
+    // Live activity feed event source:
+    // - "server": subscribe to the OpenCode server's global event stream
+    //   (all projects/sessions on that server). Default.
+    // - "tui": subscribe to the in-process TUI event bus (current project
+    //   only; TUI launches only).
+    // - "none": disable the live feed (SSE endpoint returns 204).
+    "events": {
+      "source": "server",
+      // Base URL of the OpenCode server to subscribe to. Optional in the TUI
+      // (the in-process client is used). Set this for the standalone dashboard
+      // to receive a live feed, e.g. "http://localhost:4096".
+      // "serverUrl": "",
+      // Allowlist of event types forwarded to the feed. Defaults to the
+      // curated set below when omitted.
+      "types": ["session.idle", "session.created", "session.updated", "session.error"]
+    }
+  },
+
   // TTL in ms for completed/cancelled loops before cleanup. Default: 604800000 (7 days)
   "completedLoopTtlMs": 604800000,
 

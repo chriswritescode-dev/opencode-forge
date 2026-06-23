@@ -1,8 +1,14 @@
 import BetterSqlite3 from 'better-sqlite3'
 
 class Database extends BetterSqlite3 {
-  constructor(pathOrHandle) {
-    super(pathOrHandle)
+  /**
+   * @param {string | Buffer} pathOrHandle  Database file path.
+   * @param {{ readonly?: boolean } | undefined} options
+   *        Bun-compatible options object (readonly is forwarded to
+   *        better-sqlite3).
+   */
+  constructor(pathOrHandle, options) {
+    super(pathOrHandle, options)
   }
 
   run(sql, ...params) {

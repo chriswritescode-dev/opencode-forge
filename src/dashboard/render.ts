@@ -158,7 +158,101 @@ export function renderDashboardHtml(): string {
     cursor: pointer; user-select: none; line-height: 1.5;
     font-family: inherit; flex-shrink: 0;
   }
-  .copy-btn:hover { background: #30363d; color: #c9d1d9; }</style>
+  .copy-btn:hover { background: #30363d; color: #c9d1d9; }
+  .view-tabs {
+    display: flex; gap: 0; margin-bottom: 16px;
+    border-bottom: 1px solid #30363d;
+  }
+  .view-tab {
+    background: none; border: none; border-bottom: 2px solid transparent;
+    color: #8b949e; cursor: pointer; font-size: 0.9rem;
+    font-family: inherit; padding: 8px 16px; user-select: none;
+    transition: color 0.15s, background 0.15s;
+  }
+  .view-tab:hover {
+    color: #c9d1d9;
+    background: rgba(254, 125, 55, 0.08);
+  }
+  .view-tab-active {
+    color: #fe7d37; border-bottom-color: #fe7d37;
+    background: rgba(254, 125, 55, 0.12);
+    box-shadow: inset 3px 0 0 #fe7d37;
+  }
+  .session-view { width: 100%; }
+  .session-list { display: flex; flex-direction: column; gap: 6px; }
+  .session-row {
+    border: 1px solid #30363d; border-radius: 6px; padding: 10px 12px;
+    background: #0d1117; cursor: pointer; user-select: none;
+  }
+  .session-row:hover { background: #161b22; }
+  .session-title { font-weight: 600; font-size: 0.95rem; color: #c9d1d9; margin-bottom: 2px; }
+  .session-meta { font-size: 0.78rem; color: #8b949e; }
+  .transcript-view { width: 100%; }
+  .transcript { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+  .transcript-entry { padding: 8px 12px; border-radius: 6px; }
+  .transcript-text { background: #0d1117; border: 1px solid #30363d; }
+  .transcript-tool {
+    background: #161b22; border: 1px solid #21262d;
+    display: flex; gap: 8px; align-items: center; font-size: 0.85rem;
+  }
+  .transcript-tool-name { color: #58a6ff; font-weight: 600; }
+  .transcript-tool-title { color: #c9d1d9; }
+  .transcript-tool-status { color: #8b949e; font-size: 0.78rem; }
+  .activity-feed {
+    border: 1px solid #30363d; border-radius: 6px; margin-bottom: 12px;
+    background: #161b22; overflow: hidden;
+  }
+  .activity-empty { padding: 12px; color: #8b949e; font-size: 0.85rem; text-align: center; }
+  .activity-row {
+    display: flex; gap: 10px; align-items: center; padding: 6px 12px;
+    border-bottom: 1px solid #21262d; font-size: 0.82rem;
+  }
+  .activity-row:last-child { border-bottom: none; }
+  .activity-time { color: #484f58; flex-shrink: 0; font-size: 0.75rem; }
+  .activity-type { color: #58a6ff; font-weight: 600; flex-shrink: 0; }
+  .activity-project {
+    color: #3fb950; flex-shrink: 0; font-size: 0.75rem;
+    background: #1b3b2a; border-radius: 4px; padding: 1px 6px;
+    max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .activity-title { color: #c9d1d9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .session-layout { display: flex; gap: 16px; align-items: flex-start; }
+  .session-project-sidebar {
+    flex: 0 0 260px; max-width: 260px;
+    border: 1px solid #30363d; border-radius: 8px; background: #161b22;
+    overflow: hidden; position: sticky; top: 20px;
+  }
+  .session-project-nav-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 12px; cursor: pointer; user-select: none;
+    border-bottom: 1px solid #21262d; font-size: 0.9rem; color: #c9d1d9;
+  }
+  .session-project-nav-item:last-child { border-bottom: none; }
+  .session-project-nav-item:hover { background: #1c2128; }
+  .session-project-nav-item.selected {
+    background: rgba(254, 125, 55, 0.12);
+    border-left: 3px solid #fe7d37; padding-left: 9px;
+  }
+  .session-project-nav-name {
+    flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: #c9d1d9; font-weight: 600;
+  }
+  .session-project-nav-item.selected .session-project-nav-name { color: #fe7d37; }
+  .session-project-nav-count {
+    font-size: 0.7rem; padding: 1px 7px; border-radius: 9px;
+    background: #30363d; color: #c9d1d9;
+  }
+  .session-project-nav-item.selected .session-project-nav-count {
+    background: rgba(254, 125, 55, 0.25);
+    color: #fe7d37;
+  }
+  .session-detail { flex: 1 1 auto; min-width: 0; }
+  .session-project-header {
+    display: flex; align-items: baseline; gap: 10px;
+    font-weight: 600; font-size: 1.1rem; margin-bottom: 10px;
+  }
+  .session-group-count { font-size: 0.8rem; color: #8b949e; font-weight: normal; }
+  .dashboard-summary { margin-bottom: 12px; }</style>
 </head>
 <body>
   <div id="forge-app-root"></div>
