@@ -17,6 +17,8 @@ import { ViewToggle, SessionsView } from './opencode-components'
 import {
   groupSessionsByProject,
   findSessionProjectKey,
+  activeProjectKeys,
+  projectKeySetsEqual,
   type SessionProjectGroup,
 } from './opencode-helpers'
 import { createOpencodeStore } from './opencode'
@@ -164,6 +166,15 @@ export function App() {
 
   const sessionProjectGroups = createMemo(() => groupSessionsByProject(oc.sessions()))
 
+  // Project keys with a currently-running session, for the sidebar indicator.
+  // The set-equality comparator keeps the value stable so only genuine
+  // membership changes notify the sidebar regions.
+  const activeSessionProjectKeys = createMemo(
+    () => activeProjectKeys(oc.busySessionIds(), sessionProjectGroups()),
+    new Set<string>(),
+    { equals: projectKeySetsEqual },
+  )
+
   const selectedSessionGroup = createMemo<SessionProjectGroup | null>(() => {
     const groups = sessionProjectGroups()
     if (!groups.length) return null
@@ -210,11 +221,12 @@ export function App() {
 
   // ── Effects ─────────────────────────────────────────────────────────────
 
-  // Centralized activity SSE management: connect when on sessions view,
-  // disconnect when on loops view (or any other view).
+  // Centralized activity SSE management: connect when on sessions view and
+  // re-scope the stream to the open session so its transcript part events are
+  // forwarded; disconnect on any other view.
   createEffect(() => {
     if (activeView() === 'sessions') {
-      oc.connectActivity()
+      oc.connectActivity(selectedSessionId())
     } else {
       oc.disconnectActivity()
     }
@@ -298,13 +310,14 @@ export function App() {
       if (parsed.loopName) setSelectedLoopName(parsed.loopName)
     }
 
-    // Initial load + poll
+    // Initial load + poll. Only the loops view (forge DB) is polled; the
+    // sessions view is event-driven after its initial load — session.* events
+    // keep the list live and message.part.* events keep the open transcript
+    // live, so timer polling of the opencode DB is unnecessary.
     load()
     const id = setInterval(() => {
       if (activeView() === 'loops') {
         load()
-      } else if (activeView() === 'sessions') {
-        oc.loadSessions()
       }
     }, 5000)
 
@@ -366,14 +379,12 @@ export function App() {
     ${() => {
       if (!loaded()) return ''
       if (activeView() === 'sessions') {
-        if (!oc.sessionsAvailable()) {
-          return html`<div class="empty-state">Sessions data unavailable.</div>`
-        }
-        const s = oc.sessions()
-        if (s.length === 0) {
-          return html`<div class="empty-state">No sessions found.</div>`
-        }
+        // Build SessionsView once on entering the view (depends only on
+        // loaded()/activeView()). Availability, the empty state, and all data
+        // updates are handled by reactive accessors inside SessionsView so the
+        // open transcript's scroll container is never rebuilt by list changes.
         return SessionsView({
+          available: () => oc.sessionsAvailable(),
           groups: () => sessionProjectGroups(),
           selectedGroup: () => selectedSessionGroup(),
           selectedProjectKey: () => selectedSessionProjectKey(),
@@ -382,7 +393,7 @@ export function App() {
             const sid = selectedSessionId()
             return sid ? (oc.transcripts[sid] ?? null) : null
           },
-          activity: () => oc.activity(),
+          activeKeys: () => activeSessionProjectKeys(),
           onSelectProject: selectSessionProject,
           onOpen: navigateSession,
           onBack: backToSessionList,

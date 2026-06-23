@@ -10,7 +10,7 @@ import { ForgeClientError, type ForgeClient, type GlobalActivityEvent } from '..
 describe('forwardOpencodeEvents', () => {
   // ─── subscribes to all four curated event types ───────────────────────
 
-  test('subscribes to session.idle, session.created, session.updated, session.error', () => {
+  test('subscribes to all curated session and transcript-part event types', () => {
     const subscribedTypes: string[] = []
     const bus = {
       on(type: string, _handler: (event: any) => void) {
@@ -23,9 +23,14 @@ describe('forwardOpencodeEvents', () => {
 
     expect(subscribedTypes).toEqual([
       'session.idle',
+      'session.status',
       'session.created',
       'session.updated',
       'session.error',
+      'session.deleted',
+      'message.updated',
+      'message.part.updated',
+      'message.part.removed',
     ])
   })
 
@@ -56,6 +61,75 @@ describe('forwardOpencodeEvents', () => {
     expect(published[0].title).toBeNull()
     expect(published[0].directory).toBeNull()
     expect(published[0].time).toBeGreaterThan(0)
+  })
+
+  // ─── normalisation: session.status ───────────────────────────────────
+
+  test('session.status busy event carries the run status', () => {
+    const handlers = new Map<string, (event: any) => void>()
+    const bus = {
+      on(type: string, handler: (event: any) => void) {
+        handlers.set(type, handler)
+        return () => {}
+      },
+    }
+
+    const published: OpencodeActivityEvent[] = []
+    forwardOpencodeEvents(bus, (e) => published.push(e))
+
+    handlers.get('session.status')!({
+      id: 'evt-s1',
+      type: 'session.status',
+      properties: { sessionID: 'sess-busy', status: { type: 'busy' } },
+    })
+
+    expect(published).toHaveLength(1)
+    expect(published[0].type).toBe('session.status')
+    expect(published[0].sessionId).toBe('sess-busy')
+    expect(published[0].sessionStatus).toBe('busy')
+  })
+
+  test('session.status idle event carries idle status', () => {
+    const handlers = new Map<string, (event: any) => void>()
+    const bus = {
+      on(type: string, handler: (event: any) => void) {
+        handlers.set(type, handler)
+        return () => {}
+      },
+    }
+
+    const published: OpencodeActivityEvent[] = []
+    forwardOpencodeEvents(bus, (e) => published.push(e))
+
+    handlers.get('session.status')!({
+      id: 'evt-s2',
+      type: 'session.status',
+      properties: { sessionID: 'sess-x', status: { type: 'idle' } },
+    })
+
+    expect(published).toHaveLength(1)
+    expect(published[0].sessionStatus).toBe('idle')
+  })
+
+  test('session.status event with unknown status type is dropped', () => {
+    const handlers = new Map<string, (event: any) => void>()
+    const bus = {
+      on(type: string, handler: (event: any) => void) {
+        handlers.set(type, handler)
+        return () => {}
+      },
+    }
+
+    const published: OpencodeActivityEvent[] = []
+    forwardOpencodeEvents(bus, (e) => published.push(e))
+
+    handlers.get('session.status')!({
+      id: 'evt-s3',
+      type: 'session.status',
+      properties: { sessionID: 'sess-x', status: { type: 'weird' } },
+    })
+
+    expect(published).toHaveLength(0)
   })
 
   // ─── normalisation: session.created (includes info) ──────────────────
@@ -180,7 +254,7 @@ describe('forwardOpencodeEvents', () => {
 
   // ─── detach unsubscribes all ─────────────────────────────────────────
 
-  test('returned detach function unsubscribes all four event types', () => {
+  test('returned detach function unsubscribes all curated event types', () => {
     const unsubscribedTypes: string[] = []
     const bus = {
       on(type: string, _handler: (event: any) => void) {
@@ -195,9 +269,14 @@ describe('forwardOpencodeEvents', () => {
 
     expect(unsubscribedTypes).toEqual([
       'session.idle',
+      'session.status',
       'session.created',
       'session.updated',
       'session.error',
+      'session.deleted',
+      'message.updated',
+      'message.part.updated',
+      'message.part.removed',
     ])
   })
 
@@ -216,8 +295,8 @@ describe('forwardOpencodeEvents', () => {
 
     const detach = forwardOpencodeEvents(bus, () => {})
     expect(() => detach()).not.toThrow()
-    // All four unsubscribes were called (three succeeded, one threw)
-    expect(callCount).toBe(4)
+    // All curated unsubscribes were called (one threw, the rest succeeded)
+    expect(callCount).toBe(9)
   })
 
   // ─── each event creates a separate publish call ──────────────────────
@@ -331,7 +410,7 @@ describe('forwardGlobalEvents', () => {
     const published: OpencodeActivityEvent[] = []
     forwardGlobalEvents(client, (e) => published.push(e))
 
-    emit({ directory: '/p', payload: { type: 'message.part.updated', properties: {} } })
+    emit({ directory: '/p', payload: { type: 'file.edited', properties: {} } })
     emit({ directory: '/p', payload: { type: 'session.idle', properties: { sessionID: 's' } } })
 
     expect(published).toHaveLength(1)
@@ -344,7 +423,10 @@ describe('forwardGlobalEvents', () => {
     forwardGlobalEvents(client, (e) => published.push(e), { types: ['message.updated'] })
 
     emit({ directory: '/p', payload: { type: 'session.idle', properties: {} } })
-    emit({ directory: '/p', payload: { type: 'message.updated', properties: {} } })
+    emit({
+      directory: '/p',
+      payload: { type: 'message.updated', properties: { info: { id: 'm1', sessionID: 's1', role: 'assistant' } } },
+    })
 
     expect(published).toHaveLength(1)
     expect(published[0].type).toBe('message.updated')
@@ -358,6 +440,154 @@ describe('forwardGlobalEvents', () => {
     expect(returned).toBe(detach)
     // The onError passed to the port is the caller's onError.
     expect(getOnError()).toBe(onError)
+  })
+
+  test('session.created carries a session row built from info', () => {
+    const { client, emit } = stubClient()
+    const published: OpencodeActivityEvent[] = []
+    forwardGlobalEvents(client, (e) => published.push(e))
+
+    emit({
+      directory: '/proj/wt',
+      payload: {
+        type: 'session.created',
+        properties: {
+          info: { id: 's1', title: 'My session', directory: '/proj/from-info', time: { created: 5, updated: 9 } },
+        },
+      },
+    })
+
+    expect(published).toHaveLength(1)
+    const session = published[0].session!
+    expect(session.id).toBe('s1')
+    expect(session.title).toBe('My session')
+    // Wrapper directory is authoritative; projectName derives from its basename.
+    expect(session.directory).toBe('/proj/wt')
+    expect(session.projectName).toBe('wt')
+    expect(session.timeCreated).toBe(5)
+    expect(session.timeUpdated).toBe(9)
+    // Cost/token fields are absent from session events and default to 0.
+    expect(session.cost).toBe(0)
+    expect(session.tokensInput).toBe(0)
+  })
+
+  test('session.idle has a null session row (no info payload)', () => {
+    const { client, emit } = stubClient()
+    const published: OpencodeActivityEvent[] = []
+    forwardGlobalEvents(client, (e) => published.push(e))
+
+    emit({ directory: '/p', payload: { type: 'session.idle', properties: { sessionID: 's' } } })
+
+    expect(published).toHaveLength(1)
+    expect(published[0].session).toBeNull()
+  })
+
+  test('message.part.updated carries a mapped transcript entry scoped to its session', () => {
+    const { client, emit } = stubClient()
+    const published: OpencodeActivityEvent[] = []
+    forwardGlobalEvents(client, (e) => published.push(e))
+
+    emit({
+      directory: '/p',
+      payload: {
+        type: 'message.part.updated',
+        properties: {
+          part: {
+            id: 'prt_1',
+            sessionID: 'ses_1',
+            messageID: 'msg_1',
+            type: 'text',
+            text: 'streaming…',
+            time: { start: 42 },
+          },
+        },
+      },
+    })
+
+    expect(published).toHaveLength(1)
+    const event = published[0]
+    expect(event.type).toBe('message.part.updated')
+    expect(event.sessionId).toBe('ses_1')
+    const part = event.part!
+    expect(part.sessionId).toBe('ses_1')
+    expect(part.partId).toBe('prt_1')
+    expect(part.entry).toEqual({
+      partId: 'prt_1',
+      messageId: 'msg_1',
+      role: null,
+      model: null,
+      type: 'text',
+      text: 'streaming…',
+      toolName: null,
+      toolTitle: null,
+      toolStatus: null,
+      timeCreated: 42,
+    })
+  })
+
+  test('message.updated carries role + model metadata for its session', () => {
+    const { client, emit } = stubClient()
+    const published: OpencodeActivityEvent[] = []
+    forwardGlobalEvents(client, (e) => published.push(e))
+
+    emit({
+      directory: '/p',
+      payload: {
+        type: 'message.updated',
+        properties: {
+          info: { id: 'msg_1', sessionID: 'ses_1', role: 'assistant', modelID: 'claude-opus-4-8' },
+        },
+      },
+    })
+
+    expect(published).toHaveLength(1)
+    expect(published[0].type).toBe('message.updated')
+    expect(published[0].sessionId).toBe('ses_1')
+    expect(published[0].messageMeta).toEqual({
+      sessionId: 'ses_1',
+      messageId: 'msg_1',
+      role: 'assistant',
+      model: 'claude-opus-4-8',
+    })
+  })
+
+  test('message.part.updated for a non-rendered part type is dropped', () => {
+    const { client, emit } = stubClient()
+    const published: OpencodeActivityEvent[] = []
+    forwardGlobalEvents(client, (e) => published.push(e))
+
+    emit({
+      directory: '/p',
+      payload: {
+        type: 'message.part.updated',
+        properties: { part: { id: 'p', sessionID: 's', messageID: 'm', type: 'step-start' } },
+      },
+    })
+
+    expect(published).toHaveLength(0)
+  })
+
+  test('message.part.removed carries a null entry for removal', () => {
+    const { client, emit } = stubClient()
+    const published: OpencodeActivityEvent[] = []
+    forwardGlobalEvents(client, (e) => published.push(e))
+
+    emit({
+      directory: '/p',
+      payload: {
+        type: 'message.part.removed',
+        properties: { sessionID: 'ses_1', messageID: 'msg_1', partID: 'prt_1' },
+      },
+    })
+
+    expect(published).toHaveLength(1)
+    expect(published[0].sessionId).toBe('ses_1')
+    expect(published[0].part).toEqual({
+      sessionId: 'ses_1',
+      messageId: 'msg_1',
+      partId: 'prt_1',
+      entry: null,
+    })
   })
 })
 

@@ -58,6 +58,20 @@ function sessionsPayload(deps: DashboardDeps, limit: number): OpencodeSessionsPa
   }
 }
 
+/**
+ * Decide whether an activity event should be sent to a connection scoped to
+ * `sessionFilter`. Session-level events go to every client; transcript events
+ * (`message.*` — message.updated and message.part.*, higher volume) are sent
+ * only to the client whose open session matches, keeping traffic light.
+ */
+function eventMatchesSessionFilter(
+  event: OpencodeActivityEvent,
+  sessionFilter: string | null,
+): boolean {
+  if (!event.type.startsWith('message.')) return true
+  return sessionFilter !== null && event.sessionId === sessionFilter
+}
+
 function transcriptPayload(
   deps: DashboardDeps,
   sessionId: string,
@@ -124,6 +138,10 @@ export function createRequestHandler(deps: DashboardDeps): (req: Request) => Res
         return new Response(null, { status: 204 })
       }
 
+      // Optional `?session=<id>` scopes the higher-volume transcript part
+      // events to a single session; session-level events are always sent.
+      const sessionFilter = url.searchParams.get('session')
+
       let unsub: (() => void) | null = null
       let heartbeat: ReturnType<typeof setInterval> | null = null
       const encoder = new TextEncoder()
@@ -144,12 +162,14 @@ export function createRequestHandler(deps: DashboardDeps): (req: Request) => Res
 
           // Replay recent events so late joiners see recent activity
           for (const event of deps.events!.recent()) {
+            if (!eventMatchesSessionFilter(event, sessionFilter)) continue
             const line = `data: ${JSON.stringify(event)}\n\n`
             controller.enqueue(encoder.encode(line))
           }
 
           // Subscribe for future events
           unsub = deps.events!.subscribe((event: OpencodeActivityEvent) => {
+            if (!eventMatchesSessionFilter(event, sessionFilter)) return
             try {
               const line = `data: ${JSON.stringify(event)}\n\n`
               controller.enqueue(encoder.encode(line))

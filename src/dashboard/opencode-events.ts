@@ -1,7 +1,9 @@
-import type { OpencodeActivityEvent } from '../observability/types'
+import { basename } from 'path'
+import type { OpencodeActivityEvent, OpencodeSessionRow } from '../observability/types'
 import type { DashboardEventSource } from '../types'
 import { ForgeClientError, type ForgeClient, type GlobalActivityEvent } from '../client/port'
 import { isRecord } from '../utils/is-record'
+import { mapTranscriptPartData } from '../observability/transcript-part'
 
 // ---------------------------------------------------------------------------
 // Minimal structural interface (compatible with TuiEventBus from
@@ -16,12 +18,37 @@ export interface EventBus {
 // Event normalisation
 // ---------------------------------------------------------------------------
 
-/** Default curated set kept small so the feed is not flooded by part updates. */
-export const CURATED_EVENT_TYPES = [
+/**
+ * Session-level events that drive the live session list. Broadcast to every
+ * dashboard client; low volume.
+ */
+export const SESSION_EVENT_TYPES = [
   'session.idle',
+  'session.status',
   'session.created',
   'session.updated',
   'session.error',
+  'session.deleted',
+] as const
+
+/**
+ * Transcript part events that drive the live transcript of the open session.
+ * Higher volume, so the dashboard SSE endpoint forwards these only to the
+ * client whose open session matches (see server `?session=` filtering).
+ */
+export const TRANSCRIPT_EVENT_TYPES = [
+  'message.updated',
+  'message.part.updated',
+  'message.part.removed',
+] as const
+
+/**
+ * Full curated allowlist forwarded from opencode into the dashboard feed:
+ * session-level events plus open-session transcript part events.
+ */
+export const CURATED_EVENT_TYPES = [
+  ...SESSION_EVENT_TYPES,
+  ...TRANSCRIPT_EVENT_TYPES,
 ] as const
 
 /**
@@ -49,8 +76,159 @@ function extractActivity(
   }
 }
 
-function normalizeEvent(type: string, raw: unknown, directoryOverride?: string | null): OpencodeActivityEvent {
-  return { type, ...extractActivity(raw, directoryOverride), time: Date.now() }
+/**
+ * Build a session list row from a `session.*` event's `info` payload. The
+ * opencode `Session` shape carries id/title/directory/time but not
+ * cost/tokens/model/agent, so those default to 0/null — the live list shows
+ * title/time/ordering, while cost/tokens come from the initial DB load.
+ *
+ * Returns `null` when `info` is absent or lacks an id (e.g. `session.idle`).
+ */
+function mapSessionInfo(info: unknown, directoryOverride?: string | null): OpencodeSessionRow | null {
+  if (!isRecord(info) || typeof info.id !== 'string') return null
+  const infoDirectory = typeof info.directory === 'string' ? info.directory : null
+  const directory =
+    directoryOverride && directoryOverride.length > 0 ? directoryOverride : infoDirectory
+  const time = isRecord(info.time) ? info.time : {}
+  return {
+    id: info.id,
+    title: typeof info.title === 'string' ? info.title : null,
+    directory,
+    projectName: directory ? basename(directory) : null,
+    worktree: null,
+    agent: null,
+    modelId: null,
+    providerId: null,
+    cost: 0,
+    tokensInput: 0,
+    tokensOutput: 0,
+    tokensReasoning: 0,
+    tokensCacheRead: 0,
+    tokensCacheWrite: 0,
+    timeCreated: typeof time.created === 'number' ? time.created : null,
+    timeUpdated: typeof time.updated === 'number' ? time.updated : null,
+  }
+}
+
+/**
+ * Normalise a `message.part.*` event into an activity event carrying a
+ * {@link TranscriptPartUpdate}. Returns `null` (so the event is dropped) when
+ * the payload is malformed or the part is not a rendered type (text/tool).
+ */
+function normalizePartEvent(type: string, raw: unknown): OpencodeActivityEvent | null {
+  const props: Record<string, unknown> = isRecord(raw) && isRecord(raw.properties) ? raw.properties : {}
+
+  if (type === 'message.part.removed') {
+    const sessionId = typeof props.sessionID === 'string' ? props.sessionID : null
+    const partId = typeof props.partID === 'string' ? props.partID : null
+    const messageId = typeof props.messageID === 'string' ? props.messageID : ''
+    if (!sessionId || !partId) return null
+    return {
+      type,
+      sessionId,
+      title: null,
+      directory: null,
+      time: Date.now(),
+      part: { sessionId, messageId, partId, entry: null },
+    }
+  }
+
+  // message.part.updated
+  const part = props.part
+  if (!isRecord(part)) return null
+  const fields = mapTranscriptPartData(part)
+  if (!fields) return null
+  const sessionId = typeof part.sessionID === 'string' ? part.sessionID : null
+  const partId = typeof part.id === 'string' ? part.id : null
+  const messageId = typeof part.messageID === 'string' ? part.messageID : ''
+  if (!sessionId || !partId) return null
+  const partTime = isRecord(part.time) && typeof part.time.start === 'number' ? part.time.start : null
+  return {
+    type,
+    sessionId,
+    title: null,
+    directory: null,
+    time: Date.now(),
+    part: {
+      sessionId,
+      messageId,
+      partId,
+      entry: { partId, messageId, role: null, model: null, timeCreated: partTime, ...fields },
+    },
+  }
+}
+
+/**
+ * Normalise a `message.updated` event into an activity event carrying
+ * {@link TranscriptMessageMeta} (role + model) used to label transcript
+ * sections. Returns `null` when the payload lacks message/session ids.
+ */
+function normalizeMessageEvent(type: string, raw: unknown): OpencodeActivityEvent | null {
+  const props: Record<string, unknown> = isRecord(raw) && isRecord(raw.properties) ? raw.properties : {}
+  const info = props.info
+  if (!isRecord(info)) return null
+  const messageId = typeof info.id === 'string' ? info.id : null
+  const sessionId = typeof info.sessionID === 'string' ? info.sessionID : null
+  if (!messageId || !sessionId) return null
+  return {
+    type,
+    sessionId,
+    title: null,
+    directory: null,
+    time: Date.now(),
+    messageMeta: {
+      sessionId,
+      messageId,
+      role: typeof info.role === 'string' ? info.role : null,
+      model: typeof info.modelID === 'string' ? info.modelID : null,
+    },
+  }
+}
+
+/**
+ * Normalise a `session.status` event into an activity event carrying the run
+ * status (`busy`/`retry`/`idle`). Returns `null` when the payload lacks a
+ * session id or a recognised status type.
+ */
+function normalizeStatusEvent(type: string, raw: unknown, directoryOverride?: string | null): OpencodeActivityEvent | null {
+  const props: Record<string, unknown> = isRecord(raw) && isRecord(raw.properties) ? raw.properties : {}
+  const status = isRecord(props.status) && typeof props.status.type === 'string' ? props.status.type : null
+  if (status !== 'busy' && status !== 'retry' && status !== 'idle') return null
+  const activity = extractActivity(raw, directoryOverride)
+  if (!activity.sessionId) return null
+  return {
+    type,
+    ...activity,
+    time: Date.now(),
+    sessionStatus: status,
+  }
+}
+
+/**
+ * Normalise a raw opencode event into an {@link OpencodeActivityEvent}, or
+ * `null` when the event should be dropped (e.g. a non-rendered part type).
+ */
+function normalizeEvent(
+  type: string,
+  raw: unknown,
+  directoryOverride?: string | null,
+): OpencodeActivityEvent | null {
+  if (type.startsWith('message.part.')) {
+    return normalizePartEvent(type, raw)
+  }
+  if (type === 'message.updated') {
+    return normalizeMessageEvent(type, raw)
+  }
+  if (type === 'session.status') {
+    return normalizeStatusEvent(type, raw, directoryOverride)
+  }
+  const props: Record<string, unknown> = isRecord(raw) && isRecord(raw.properties) ? raw.properties : {}
+  return {
+    type,
+    ...extractActivity(raw, directoryOverride),
+    time: Date.now(),
+    session: mapSessionInfo(props.info, directoryOverride),
+  }
 }
 
 /** Read the `type` field from a raw OpenCode event payload, or '' when absent. */
@@ -78,7 +256,8 @@ export function forwardOpencodeEvents(
 
   for (const type of CURATED_EVENT_TYPES) {
     const unsub = eventBus.on(type, (event: unknown) => {
-      publish(normalizeEvent(type, event))
+      const normalized = normalizeEvent(type, event)
+      if (normalized) publish(normalized)
     })
     unsubscribes.push(unsub)
   }
@@ -115,7 +294,8 @@ export function forwardGlobalEvents(
     (event: GlobalActivityEvent) => {
       const type = payloadType(event.payload)
       if (!allow.has(type)) return
-      publish(normalizeEvent(type, event.payload, event.directory))
+      const normalized = normalizeEvent(type, event.payload, event.directory)
+      if (normalized) publish(normalized)
     },
     { onError: opts?.onError },
   )

@@ -616,8 +616,10 @@ describe('getSessionTranscript', () => {
 
     expect(entries).toHaveLength(1)
     expect(entries[0]).toEqual<TranscriptEntry>({
+      partId: 'part_1',
       messageId: 'msg_1',
       role: 'user',
+      model: null,
       type: 'text',
       text: 'Hello world',
       toolName: null,
@@ -635,7 +637,7 @@ describe('getSessionTranscript', () => {
     createTranscriptFixtureDb(
       tmpPath,
       [
-        { id: 'msg_1', session_id: 'ses_test', data: JSON.stringify({ role: 'assistant' }), time_created: 100 },
+        { id: 'msg_1', session_id: 'ses_test', data: JSON.stringify({ role: 'assistant', modelID: 'claude-opus-4-8' }), time_created: 100 },
       ],
       [
         {
@@ -656,8 +658,10 @@ describe('getSessionTranscript', () => {
 
     expect(entries).toHaveLength(1)
     expect(entries[0]).toEqual<TranscriptEntry>({
+      partId: 'part_1',
       messageId: 'msg_1',
       role: 'assistant',
+      model: 'claude-opus-4-8',
       type: 'tool',
       text: null,
       toolName: 'read',

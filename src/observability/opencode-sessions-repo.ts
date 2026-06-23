@@ -1,7 +1,7 @@
 import type { Database } from 'bun:sqlite'
 import { basename } from 'path'
 import type { OpencodeSessionRow, TranscriptEntry } from './types'
-import { isRecord } from '../utils/is-record'
+import { mapTranscriptPartData } from './transcript-part'
 
 // ---------------------------------------------------------------------------
 // Raw row matching the snake_case columns of the session + project LEFT JOIN
@@ -30,8 +30,10 @@ interface SessionRowRaw {
 // ---------------------------------------------------------------------------
 
 interface TranscriptRowRaw {
+  part_id: string
   message_id: string
   role: string | null
+  model: string | null
   part_data: string
   time_created: number | null
 }
@@ -87,9 +89,9 @@ function clampLimit(limit: number | undefined, max = 200, def = 50): number {
  * and unexpected part types.
  *
  * The `part.data` column is a JSON object with at least a `type` field
- * (`'text'` or `'tool'` for entries we care about).  Non-text/tool parts
- * (e.g. `step-start`) are excluded by the SQL filter, but we also guard
- * defensively here.
+ * (`'text'` or `'tool'` for entries we care about). Non-text/tool parts
+ * (e.g. `step-start`) are excluded by the SQL filter, but the shared
+ * {@link mapTranscriptPartData} mapper also guards defensively.
  *
  * Malformed JSON rows (null, invalid syntax) are silently skipped rather
  * than propagating an error to the caller.
@@ -102,39 +104,17 @@ function mapTranscriptRow(row: TranscriptRowRaw): TranscriptEntry | null {
     return null
   }
 
-  if (!isRecord(data)) return null
+  const fields = mapTranscriptPartData(data)
+  if (!fields) return null
 
-  const type = typeof data.type === 'string' ? data.type : ''
-  if (type !== 'text' && type !== 'tool') return null
-
-  const entry: TranscriptEntry = {
+  return {
+    partId: row.part_id,
     messageId: row.message_id,
     role: row.role,
-    type,
-    text: null,
-    toolName: null,
-    toolTitle: null,
-    toolStatus: null,
+    model: row.model,
     timeCreated: row.time_created,
+    ...fields,
   }
-
-  if (type === 'text') {
-    entry.text = typeof data.text === 'string' ? data.text : null
-  } else if (type === 'tool') {
-    entry.toolName = typeof data.tool === 'string' ? data.tool : null
-
-    const state = data.state
-    if (isRecord(state)) {
-      entry.toolStatus = typeof state.status === 'string' ? state.status : null
-      entry.toolTitle = typeof state.title === 'string'
-        ? state.title
-        : isRecord(state.input) && typeof state.input.description === 'string'
-          ? state.input.description
-          : null
-    }
-  }
-
-  return entry
 }
 
 // ---------------------------------------------------------------------------
@@ -155,8 +135,10 @@ export function createOpencodeSessionsRepo(db: Database): OpencodeSessionsRepo {
   `)
 
   const stmtTranscript = db.prepare(`
-    SELECT m.id AS message_id,
+    SELECT part.id AS part_id,
+           m.id AS message_id,
            json_extract(m.data, '$.role') AS role,
+           json_extract(m.data, '$.modelID') AS model,
            part.data AS part_data,
            part.time_created AS time_created
     FROM part

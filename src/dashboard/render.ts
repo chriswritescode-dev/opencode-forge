@@ -291,34 +291,35 @@ export function renderDashboardHtml(): string {
   .session-title { font-weight: 600; font-size: 0.95rem; color: #c9d1d9; margin-bottom: 2px; }
   .session-meta { font-size: 0.78rem; color: #8b949e; }
   .transcript-view { width: 100%; }
-  .transcript { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
-  .transcript-entry { padding: 8px 12px; border-radius: 6px; }
-  .transcript-text { background: #0d1117; border: 1px solid #30363d; }
+  /* Scrolls like the TUI: the transcript tails within its own viewport so the
+     header tabs/totals stay in view. */
+  .transcript {
+    display: flex; flex-direction: column; gap: 12px; margin-top: 8px;
+    max-height: calc(100vh - 230px); overflow-y: auto;
+    padding-right: 4px;
+  }
+  .transcript-msg {
+    border: 1px solid #30363d; border-radius: 8px; background: #0d1117;
+    border-left-width: 3px; overflow: hidden; flex-shrink: 0;
+  }
+  .transcript-msg-user { border-left-color: #1f6feb; }
+  .transcript-msg-assistant { border-left-color: #fe7d37; }
+  .transcript-msg-header {
+    font-size: 0.72rem; font-weight: 600; letter-spacing: 0.03em;
+    padding: 6px 12px; border-bottom: 1px solid #21262d; background: #161b22;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .transcript-msg-user .transcript-msg-header { color: #58a6ff; }
+  .transcript-msg-assistant .transcript-msg-header { color: #fe7d37; }
+  .transcript-entry { padding: 8px 12px; }
+  .transcript-msg .transcript-entry { background: transparent; border: none; }
+  .transcript-msg .transcript-entry + .transcript-entry { border-top: 1px solid #161b22; }
   .transcript-tool {
-    background: #161b22; border: 1px solid #21262d;
     display: flex; gap: 8px; align-items: center; font-size: 0.85rem;
   }
   .transcript-tool-name { color: #58a6ff; font-weight: 600; }
   .transcript-tool-title { color: #c9d1d9; }
   .transcript-tool-status { color: #8b949e; font-size: 0.78rem; }
-  .activity-feed {
-    border: 1px solid #30363d; border-radius: 6px; margin-bottom: 12px;
-    background: #161b22; overflow: hidden;
-  }
-  .activity-empty { padding: 12px; color: #8b949e; font-size: 0.85rem; text-align: center; }
-  .activity-row {
-    display: flex; gap: 10px; align-items: center; padding: 6px 12px;
-    border-bottom: 1px solid #21262d; font-size: 0.82rem;
-  }
-  .activity-row:last-child { border-bottom: none; }
-  .activity-time { color: #484f58; flex-shrink: 0; font-size: 0.75rem; }
-  .activity-type { color: #58a6ff; font-weight: 600; flex-shrink: 0; }
-  .activity-project {
-    color: #3fb950; flex-shrink: 0; font-size: 0.75rem;
-    background: #1b3b2a; border-radius: 4px; padding: 1px 6px;
-    max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .activity-title { color: #c9d1d9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .session-layout { display: flex; gap: 16px; align-items: flex-start; }
   .session-project-sidebar {
     flex: 0 0 260px; max-width: 260px;
@@ -335,6 +336,16 @@ export function renderDashboardHtml(): string {
   .session-project-nav-item.selected {
     background: rgba(254, 125, 55, 0.12);
     border-left: 3px solid #fe7d37; padding-left: 9px;
+  }
+  .session-project-nav-activity {
+    flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%;
+    background: #3fb950; box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.6);
+    animation: nav-activity-pulse 1.8s ease-out infinite;
+  }
+  @keyframes nav-activity-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.5); }
+    70% { box-shadow: 0 0 0 6px rgba(63, 185, 80, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(63, 185, 80, 0); }
   }
   .session-project-nav-name {
     flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

@@ -204,9 +204,13 @@ export function createForgeClient(v2: OpencodeClient): ForgeClient {
       }
 
       let detached = false
-      const eventFn = globalApi.event as (
+      // The SDK v2 `global` namespace is a class instance whose `event` method
+      // reads `this.client`; bind it to its owner so calling it here does not
+      // lose `this` (an unbound call throws "undefined is not an object
+      // (evaluating 'this.client')" and silently kills the feed).
+      const eventFn = (globalApi.event as (
         options?: unknown,
-      ) => Promise<{ stream?: AsyncIterable<unknown> } | undefined>
+      ) => Promise<{ stream?: AsyncIterable<unknown> } | undefined>).bind(globalApi)
 
       void (async () => {
         try {
