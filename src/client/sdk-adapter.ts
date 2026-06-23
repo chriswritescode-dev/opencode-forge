@@ -1,7 +1,12 @@
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2'
 import type { PluginInput } from '@opencode-ai/plugin'
-import { ForgeClientError, type ForgeClient, type ForgeClientErrorKind } from './port'
+import {
+  ForgeClientError,
+  type ForgeClient,
+  type ForgeClientErrorKind,
+  type GlobalActivityEvent,
+} from './port'
 
 // ── Error classification ─────────────────────────────────────────────────────
 
@@ -175,7 +180,64 @@ export function createForgeClient(v2: OpencodeClient): ForgeClient {
     },
   }
 
-  return { session, workspace, project, provider, tui, sync }
+  // ── events namespace ───────────────────────────────────────────────────────
+  const events: ForgeClient['events'] = {
+    subscribeGlobal(onEvent, opts) {
+      const globalApi = (v2 as { global?: { event?: unknown } }).global
+      if (!globalApi || typeof globalApi.event !== 'function') {
+        opts?.onError?.(
+          new ForgeClientError({
+            kind: 'unavailable',
+            method: 'events.subscribeGlobal',
+            message: 'global.event not available on this host',
+          }),
+        )
+        return () => {}
+      }
+
+      // Own controller so detach always works; chain an external signal when
+      // provided so callers can tie teardown to their own lifecycle.
+      const controller = new AbortController()
+      if (opts?.signal) {
+        if (opts.signal.aborted) controller.abort()
+        else opts.signal.addEventListener('abort', () => controller.abort(), { once: true })
+      }
+
+      let detached = false
+      const eventFn = globalApi.event as (
+        options?: unknown,
+      ) => Promise<{ stream?: AsyncIterable<unknown> } | undefined>
+
+      void (async () => {
+        try {
+          const result = await eventFn({ signal: controller.signal })
+          const stream = result?.stream
+          if (!stream) return
+          for await (const ev of stream) {
+            if (detached) break
+            if (ev && typeof ev === 'object' && 'payload' in (ev as Record<string, unknown>)) {
+              const record = ev as { directory?: unknown; payload?: unknown }
+              const normalized: GlobalActivityEvent = {
+                directory: typeof record.directory === 'string' ? record.directory : '',
+                payload: record.payload,
+              }
+              onEvent(normalized)
+            }
+          }
+        } catch (err) {
+          // Abort during teardown surfaces as an error; suppress once detached.
+          if (!detached) opts?.onError?.(classify(err, 'events.subscribeGlobal'))
+        }
+      })()
+
+      return () => {
+        detached = true
+        controller.abort()
+      }
+    },
+  }
+
+  return { session, workspace, project, provider, tui, sync, events }
 }
 
 // ── Combined factory ─────────────────────────────────────────────────────────
@@ -189,6 +251,15 @@ export function createForgeClientFromPluginInput(
   pluginInput: PluginInput,
 ): ForgeClient {
   return createForgeClient(createV2ClientFromPluginInput(pluginInput))
+}
+
+/**
+ * Create a `ForgeClient` that targets an OpenCode server by base URL. Used by
+ * the standalone dashboard (no plugin input) and to target a server other than
+ * the in-process one. Keeps SDK construction inside the adapter seam.
+ */
+export function createForgeClientFromServerUrl(serverUrl: string): ForgeClient {
+  return createForgeClient(createV2Client({ baseUrl: serverUrl }))
 }
 
 // ── Legacy client adapter ────────────────────────────────────────────────────

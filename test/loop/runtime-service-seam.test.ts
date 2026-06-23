@@ -99,6 +99,9 @@ function makeFakeForgeClient(): ForgeClient {
     sync: {
       start: vi.fn(async () => {}),
     },
+    events: {
+      subscribeGlobal: vi.fn(() => () => {}),
+    },
   }
 }
 

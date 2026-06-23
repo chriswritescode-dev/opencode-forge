@@ -13,10 +13,14 @@ const FORGE_PRAGMAS = [
   'PRAGMA synchronous=NORMAL',
 ]
 
-export function resolveDataDir(): string {
+export function resolveOpencodeDataDir(): string {
   const defaultBase = join(homedir(), platform() === 'win32' ? 'AppData' : '.local', 'share')
   const xdgDataHome = process.env['XDG_DATA_HOME'] || defaultBase
-  return join(xdgDataHome, 'opencode', 'forge')
+  return join(xdgDataHome, 'opencode')
+}
+
+export function resolveDataDir(): string {
+  return join(resolveOpencodeDataDir(), 'forge')
 }
 
 export function resolveLogPath(): string {

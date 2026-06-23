@@ -1,4 +1,5 @@
 import type { DashboardPayload, DashboardProject, DashboardLoop } from './types'
+import { formatDuration, computeElapsedSeconds } from '../../utils/duration'
 
 export function parseLoopHash(hash: string): { projectId: string | null; loopName: string | null } {
   const out = { projectId: null as string | null, loopName: null as string | null }
@@ -20,6 +21,54 @@ export function buildLoopHash(projectId: string | null, loopName: string | null)
   let h = '#' + encodeURIComponent(projectId)
   if (loopName) h += '/' + encodeURIComponent(loopName)
   return h
+}
+
+/** View-route parsing: supports both legacy loops route and sessions route. */
+export interface HashRoute {
+  view: 'loops' | 'sessions'
+  projectId: string | null
+  loopName: string | null
+  sessionId: string | null
+}
+
+export function parseHashRoute(hash: string): HashRoute {
+  const raw = (hash || '').replace(/^#/, '')
+  if (raw === 'sessions' || raw.startsWith('sessions/')) {
+    const rest = raw.slice('sessions'.length)
+    const sessionId = rest.startsWith('/') ? decodeURIComponent(rest.slice(1)) : null
+    return { view: 'sessions', projectId: null, loopName: null, sessionId }
+  }
+  const parsed = parseLoopHash(hash)
+  return { view: 'loops', projectId: parsed.projectId, loopName: parsed.loopName, sessionId: null }
+}
+
+export function buildHashRoute(route: {
+  view: 'loops' | 'sessions'
+  projectId?: string | null
+  loopName?: string | null
+  sessionId?: string | null
+}): string {
+  if (route.view === 'sessions') {
+    let h = '#sessions'
+    if (route.sessionId) h += '/' + encodeURIComponent(route.sessionId)
+    return h
+  }
+  return buildLoopHash(route.projectId ?? null, route.loopName ?? null)
+}
+
+/**
+ * Set `location.hash` to `nextHash` only if it differs from the current value,
+ * suppressing the hashchange event via `suppressRef`.
+ * Normalisation (strips/re-adds `#`) matches the existing behaviour exactly.
+ */
+export function syncHash(nextHash: string, suppressRef: { current: boolean }): void {
+  const current = location.hash || ''
+  const currentNorm = '#' + current.replace(/^#/, '')
+  const nextNorm = '#' + nextHash.replace(/^#/, '')
+  if (currentNorm !== nextNorm) {
+    suppressRef.current = true
+    location.hash = nextHash
+  }
 }
 
 export function fmtTime(ts: number | null | undefined): string {
@@ -132,6 +181,87 @@ export function formatModelUsage(
   )
 }
 
+/** Compact token count: 12,345 → "12.3k", 3,400,000 → "3.4M". */
+export function formatTokenCount(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0'
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M'
+  if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, '') + 'k'
+  return String(n)
+}
+
+/** Cost label: small values keep more precision ($0.1234), larger round to cents ($12.34). */
+export function formatUsageCost(cost: number): string {
+  if (!Number.isFinite(cost) || cost <= 0) return '$0'
+  return '$' + (cost >= 1 ? cost.toFixed(2) : cost.toFixed(4))
+}
+
+export interface UsageSegment {
+  label: string
+  value: number
+  color: string
+  pct: number
+}
+
+/**
+ * Token-type breakdown for the stacked composition bar. Percentages are of the
+ * summed positive token counts; an all-zero usage yields zero-width segments.
+ */
+export function tokenBreakdownSegments(u: NonNullable<DashboardLoop['usage']>): UsageSegment[] {
+  const raw: Omit<UsageSegment, 'pct'>[] = [
+    { label: 'Input', value: u.totalInputTokens, color: '#1f6feb' },
+    { label: 'Output', value: u.totalOutputTokens, color: '#3fb950' },
+    { label: 'Reasoning', value: u.totalReasoningTokens, color: '#a371f7' },
+    { label: 'Cache R', value: u.totalCacheReadTokens, color: '#d29922' },
+    { label: 'Cache W', value: u.totalCacheWriteTokens, color: '#db61a2' },
+  ]
+  const total = raw.reduce((sum, seg) => sum + Math.max(0, seg.value), 0)
+  return raw.map(seg => ({
+    ...seg,
+    pct: total > 0 ? (Math.max(0, seg.value) / total) * 100 : 0,
+  }))
+}
+
+export interface ModelUsageBar {
+  model: string
+  cost: number
+  inputTokens: number
+  outputTokens: number
+  messageCount: number
+  pct: number
+}
+
+/**
+ * Per-model bars sorted by cost desc. `pct` is each model's cost relative to the
+ * most expensive model so the widest bar always fills the track.
+ */
+export function modelUsageBars(u: NonNullable<DashboardLoop['usage']>): ModelUsageBar[] {
+  const entries = Object.keys(u.byModel).map(model => ({ model, ...u.byModel[model] }))
+  const maxCost = entries.reduce((max, e) => Math.max(max, e.cost), 0)
+  return entries
+    .sort((a, b) => b.cost - a.cost)
+    .map(e => ({
+      model: e.model,
+      cost: e.cost,
+      inputTokens: e.inputTokens,
+      outputTokens: e.outputTokens,
+      messageCount: e.messageCount,
+      pct: maxCost > 0 ? (e.cost / maxCost) * 100 : 0,
+    }))
+}
+
+/**
+ * Section duration label ("14m 58s"). Uses live elapsed time for an in-progress
+ * section (started, not yet completed) and empty string for pending sections.
+ */
+export function formatSectionDuration(
+  startedAt: number | null | undefined,
+  completedAt: number | null | undefined,
+): string {
+  if (!startedAt) return ''
+  const seconds = computeElapsedSeconds(startedAt, completedAt ?? undefined)
+  return seconds > 0 ? formatDuration(seconds) : ''
+}
+
 export function formatLoopSummaryParts(dashLoop: DashboardLoop): string[] {
   const lp = dashLoop.loop
   const parts: string[] = [
@@ -145,6 +275,7 @@ export function formatLoopSummaryParts(dashLoop: DashboardLoop): string[] {
 }
 
 const markdownCache = new Map<string, string>()
+const MD_CACHE_MAX = 200
 
 export function renderMarkdown(src: string): string {
   if (!src) return ''
@@ -154,6 +285,11 @@ export function renderMarkdown(src: string): string {
   if (!m) return ''
   const result = m.parse(src)
   if (result) {
+    // Evict oldest entry if at capacity (insertion-order eviction)
+    if (markdownCache.size >= MD_CACHE_MAX) {
+      const firstKey = markdownCache.keys().next().value
+      if (firstKey !== undefined) markdownCache.delete(firstKey)
+    }
     markdownCache.set(src, result)
   }
   return result

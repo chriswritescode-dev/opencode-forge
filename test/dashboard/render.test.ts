@@ -36,6 +36,9 @@ describe('renderDashboardHtml', () => {
     const cssClasses = [
       'badge-filter',
       'badge-active',
+      'view-tabs',
+      'view-tab-active',
+      '#fe7d37',
       'search-input',
       'dash-layout',
       'project-sidebar',
@@ -44,8 +47,17 @@ describe('renderDashboardHtml', () => {
       'project-nav-count',
       'empty-state',
       'resizable-block',
-      'resize: both',
+      'resize: vertical',
       'back-to-loops',
+      'session-layout',
+      'session-project-sidebar',
+      'session-project-nav-item',
+      'session-project-nav-item.selected',
+      'session-project-nav-name',
+      'session-project-nav-count',
+      'session-detail',
+      'session-project-header',
+      'session-group-count',
     ]
     for (const cls of cssClasses) {
       expect(html).toContain(cls)

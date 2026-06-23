@@ -165,6 +165,44 @@ export interface TuiConfig {
 }
 
 /**
+ * Source for the dashboard live activity feed.
+ * - `server`: subscribe to the OpenCode server's global event stream (all
+ *   projects/sessions on that server). Default.
+ * - `tui`: subscribe to the in-process TUI event bus (current project only,
+ *   TUI launches only).
+ * - `none`: disable the live feed (the SSE endpoint returns 204).
+ */
+export type DashboardEventSource = 'server' | 'tui' | 'none'
+
+/**
+ * Configuration for the dashboard live activity event feed.
+ */
+export interface DashboardEventsConfig {
+  /** Where live activity events are sourced from. Defaults to `server`. */
+  source?: DashboardEventSource
+  /**
+   * Base URL of the OpenCode server to subscribe to when `source` is `server`.
+   * Optional; in the TUI the in-process client is used when omitted. Required
+   * for the standalone dashboard to receive a live feed.
+   */
+  serverUrl?: string
+  /**
+   * Allowlist of event types forwarded to the feed. Defaults to a curated set
+   * (`session.idle`, `session.created`, `session.updated`, `session.error`) to
+   * avoid flooding the feed with high-frequency part/message updates.
+   */
+  types?: string[]
+}
+
+/**
+ * Configuration for the Forge dashboard.
+ */
+export interface DashboardConfig {
+  /** Live activity event feed configuration. */
+  events?: DashboardEventsConfig
+}
+
+/**
  * Per-agent configuration overrides.
  */
 export interface AgentOverrideConfig {
@@ -194,6 +232,8 @@ export interface PluginConfig {
   completedLoopTtlMs?: number
   /** TUI display configuration. */
   tui?: TuiConfig
+  /** Dashboard configuration. */
+  dashboard?: DashboardConfig
   /** Per-agent configuration overrides. */
   agents?: Record<string, AgentOverrideConfig>
   /** Sandbox execution configuration. */
