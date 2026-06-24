@@ -25,6 +25,7 @@
   "files": [
     "dist",
     "container",
+    "docs",
     "forge-config.jsonc",
     "scripts",
     "README.md",

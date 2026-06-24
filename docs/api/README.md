@@ -141,11 +141,13 @@ The plugin bundles three user-facing agents plus a hidden `auditor-loop` variant
 
 The auditor agent is a read-only subagent that cannot edit source files or execute plans. It is invoked by other agents via the Task tool to review code changes against stored project conventions and decisions.
 
-**Tool restrictions:** The auditor cannot use the `loop` tool to prevent interference with active workflows.
+**Tool restrictions:** The auditor cannot use file-editing tools, planning tools, or loop-management tools. See [Auditor restrictions](../agents-and-commands.md#auditor-restrictions).
 
 The architect agent operates as a read-only planner with message-level reinforcement via the `experimental.chat.messages.transform` hook. Final plans are rendered once in the assistant response between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers, then auto-captured into SQL before execution approval. After user approval via the question tool, execution is dispatched programmatically — no additional LLM calls are needed. The user can view and edit the cached plan from the sidebar or command palette before or during execution. 
 
 ## Tools
+
+See [Tools reference](../tools.md) for full arguments, section-scoping behavior, restart options, and sandbox shell details.
 
 ### Plan Tools
 
@@ -183,6 +185,7 @@ Iterative development loops with automatic auditing. Loops always run in an isol
 | Command | Description | Agent |
 |---------|-------------|-------|
 | `/review` | Run a code review on current changes | auditor (subtask) |
+| `/review-plan` | Review a completed implementation against its original plan | auditor (subtask) |
 | `/loop` | Start an iterative development loop in a worktree | code |
 | `/loop-status` | Check status of all active loops | code |
 | `/loop-cancel` | Cancel the active loop | code |
@@ -198,6 +201,8 @@ On first run, the plugin automatically copies the bundled config to your config 
 The plugin supports JSONC format, allowing comments with `//` and `/* */`.
 
 You can edit this file to customize settings. The file is created only if it doesn't already exist.
+
+See [Configuration reference](../configuration.md) for all supported options, including loop post-actions, external read directories, TUI keybinds, dashboard events, and sandbox resource defaults.
 
 ### Where Forge stores data
 
@@ -332,7 +337,7 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 - `sandbox.image` - Docker image for sandbox containers (default: `"oc-forge-sandbox:latest"`)
 - `sandbox.resources` - Container resource limits mapped directly to `docker run` flags:
   - `memory` - Memory limit, e.g., `'8g'`. Maps to `--memory`.
-  - `memorySwap` - Memory+swap limit, e.g., `'12g'`. Maps to `--memory-swap`.
+  - `memorySwap` - Optional memory+swap limit, e.g., `'12g'`. Maps to `--memory-swap`; no default is applied.
   - `cpus` - Number of CPUs, e.g., `'4'`, `'2.5'`. Maps to `--cpus`.
   - `shmSize` - Shared memory size, e.g., `'1g'`. Maps to `--shm-size`.
 
@@ -627,6 +632,8 @@ The flag must be set before OpenCode starts — setting it inside an already-run
 
 ## Docker Sandbox
 
+See [Sandbox](../sandbox.md) for setup, Docker-in-Docker behavior, host networking, environment passthrough, custom bind mounts, large-output handling, and resource defaults.
+
 Run loop iterations inside an isolated Docker container. Three tools (`bash`, `glob`, `grep`) execute inside the container via `docker exec`, while `read`/`write`/`edit` operate on the host filesystem. The worktree directory is bind-mounted at `/workspace` for instant file sharing, and the source project directory is mounted read-only at `/project` for convenient host-side access.
 
 ### Prerequisites
@@ -754,7 +761,7 @@ When a `sh` command produces output exceeding the tool's limit, the overflow is 
 | `sandbox.mode` | `"docker"` | Sandbox mode (optional; Docker used when available) |
 | `sandbox.image` | `"oc-forge-sandbox:latest"` | Docker image to use for sandbox containers |
 | `sandbox.resources.memory` | `"8g"` | Memory limit for the container. Maps to `--memory`. |
-| `sandbox.resources.memorySwap` | `"12g"` | Memory+swap limit. Maps to `--memory-swap`. |
+| `sandbox.resources.memorySwap` | unset | Optional memory+swap limit. Maps to `--memory-swap`. |
 | `sandbox.resources.cpus` | `"4"` | CPU count. Maps to `--cpus`. |
 | `sandbox.resources.shmSize` | `"1g"` | Shared memory size. Maps to `--shm-size`. |
 | `sandbox.mountProjectReadonly` | `true` | Mount the source project directory read-only at `projectMountPath`. |

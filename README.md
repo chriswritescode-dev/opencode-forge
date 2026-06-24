@@ -55,6 +55,15 @@ Forge ships two user-facing surfaces:
 
 The server plugin provides the core hooks, tools, agents, plan storage, loop orchestration, review persistence, and sandbox support. The TUI plugin layers on the sidebar and execution dialog.
 
+## Detailed Documentation
+
+- [Agents and slash commands](docs/agents-and-commands.md)
+- [Tools reference](docs/tools.md)
+- [Configuration reference](docs/configuration.md)
+- [Sandbox](docs/sandbox.md)
+- [Architecture](docs/architecture.md)
+- [Loop system](docs/loop-system.md)
+
 ## Dashboard
 
 Forge includes a read-only observability Dashboard — a standalone Bun HTTP server (`src/dashboard/`) that serves a SolidJS single-page app at `GET /` and JSON state at `GET /api/data`. Launch it from the TUI command palette (`Forge: Open dashboard`) or via `pnpm dashboard`. The dashboard **never mutates** loop, workspace, or storage state.
@@ -127,7 +136,7 @@ Execution flow dialog with mode and model selection:
 
 ## Agents
 
-The plugin bundles three user-facing agents plus a hidden `auditor-loop` variant used by loop audit sessions:
+The plugin bundles three user-facing agents plus a hidden `auditor-loop` variant used by loop audit sessions. See [Agents and slash commands](docs/agents-and-commands.md) for the full reference.
 
 | Agent | Mode | Description |
 |-------|------|-------------|
@@ -138,35 +147,23 @@ The plugin bundles three user-facing agents plus a hidden `auditor-loop` variant
 
 The auditor agent is a read-only subagent that cannot edit source files or execute plans. It is invoked by other agents via the Task tool to review code changes against stored project conventions and decisions.
 
-**Tool restrictions:** The auditor cannot use the `loop` tool to prevent interference with active workflows.
+**Tool restrictions:** The auditor cannot use file-editing tools, planning tools, or loop-management tools. See [Auditor restrictions](docs/agents-and-commands.md#auditor-restrictions).
 
 The architect agent operates as a read-only planner with message-level reinforcement via the `experimental.chat.messages.transform` hook. Final plans are rendered once in the assistant response between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers, then auto-captured into SQL before execution approval. After user approval via the question tool, execution is dispatched programmatically — no additional LLM calls are needed. The user can view and edit the cached plan from the sidebar or command palette before or during execution. 
 
 
 ## Tools
 
-### Plan Tools
+See [Tools reference](docs/tools.md) for full arguments, section-scoping behavior, restart options, and sandbox shell details.
 
-Session-scoped plan storage backed by SQL for managing implementation plans. Loop-associated plans are pruned with expired completed loops.
+Forge provides these tool groups:
 
-| Tool | Description |
-|------|-------------|
-| `plan-read` | Retrieve the plan. Supports pagination with offset/limit and pattern search. |
-| `section-read` | Read a section plan and its status for the active loop session. Supports reading by index or defaulting to the lowest-index incomplete section. |
+- **Plan tools** — `plan-read`, `section-read`
+- **Review tools** — `review-write`, `review-read`, `review-delete`
+- **Loop tools** — `loop`, `loop-cancel`, `loop-status`
+- **Sandbox shell** — `sh` when a sandbox manager is available
 
-### Review Tools
-
-Review finding storage for persisting audit results across session rotations.
-
-| Tool | Description |
-|------|-------------|
-| `review-write` | Store a review finding with file, line, severity, and description. Findings are scoped to the current loop. |
-| `review-read` | Retrieve review findings. Filter by file path or search by regex pattern. |
-| `review-delete` | Delete a review finding by file and line. |
-
-### Loop Tools
-
-Iterative development loops with automatic auditing. Loops always run in an isolated git worktree; Docker sandbox is used automatically when available.
+Loops always run in an isolated git worktree; Docker sandbox is used automatically when available.
 
 | Tool | Description |
 |------|-------------|
@@ -181,6 +178,7 @@ Iterative development loops with automatic auditing. Loops always run in an isol
 | Command | Description | Agent |
 |---------|-------------|-------|
 | `/review` | Run a code review on current changes | auditor (subtask) |
+| `/review-plan` | Review a completed implementation against its original plan | auditor (subtask) |
 | `/loop` | Start an iterative development loop in a worktree | code |
 | `/loop-status` | Check status of all active loops | code |
 | `/loop-cancel` | Cancel the active loop | code |
@@ -197,6 +195,8 @@ The plugin supports JSONC format, allowing comments with `//` and `/* */`.
 
 You can edit this file to customize settings. The file is created only if it doesn't already exist.
 
+See [Configuration reference](docs/configuration.md) for all supported options, including loop post-actions, external read directories, TUI keybinds, dashboard events, and sandbox resource defaults.
+
 ### Where Forge stores data
 
 - Config: `~/.config/opencode/forge-config.jsonc` or `$XDG_CONFIG_HOME/opencode/forge-config.jsonc`
@@ -210,139 +210,6 @@ You can edit this file to customize settings. The file is created only if it doe
 Agent and command prompts are bundled as editable markdown under `src/prompts/` and installed to `~/.config/opencode/forge/prompts/` on first run. Edit any file there to customize an agent (`agents/*.md`) or slash command (`commands/*.md`); your edits take precedence over the bundled defaults and are preserved across upgrades. Bundled prompt fixes are re-applied automatically only to files you have not edited (tracked by content hash); delete a file to restore the bundled version on next start.
 
 Enable `logging.enabled` to write logs to disk. To use the default log path, omit `logging.file` or set it to `null` (an empty string is not treated as a default). Set `logging.debug` for more verbose output.
-
-```jsonc
-{
-  // Data directory for plugin storage (SQL stores, logs)
-  // When empty, resolves to ~/.local/share/opencode/forge (or XDG_DATA_HOME equivalent)
-  "dataDir": "",
-
-  // Logging configuration
-  "logging": {
-    "enabled": false,                // Enable file logging
-    "debug": false,                 // Enable debug-level output
-    "file": ""                      // Log file path (omit or set to null for default path)
-  },
-
-  // Session compaction settings
-  "compaction": {
-    "customPrompt": true,           // Use custom compaction prompt for continuity
-    "maxContextTokens": 0           // Max tokens for context (0 = unlimited)
-  },
-
-  // Messages transform hook for read-only enforcement
-  "messagesTransform": {
-    "enabled": true,               // Enable transform hook
-    "debug": false                 // Enable debug logging
-  },
-
-  // Model override for plan execution sessions (format: "provider/model")
-  "executionModel": "",
-
-  // Model override for the auditor agent (format: "provider/model")
-  "auditorModel": "",
-
-  // Iterative development loop settings
-  "loop": {
-    "enabled": true,               // Enable iterative loops
-    "defaultMaxIterations": 15,    // Max iterations (0 = unlimited)
-    "cleanupWorktree": false,      // Auto-remove worktree on cancel
-    "stallTimeoutMs": 60000,       // Stall detection timeout (60s)
-    "maxConsecutiveStalls": 5,     // Consecutive stalls before termination (0 = disabled)
-    "worktreeLogging": {           // Worktree loop completion logging
-      "enabled": false,            // Enable completion logging
-      "directory": ""              // Log directory (defaults to platform data dir)
-    }
-  },
-
-  // Sandbox configuration (optional; provisioned automatically when available)
-  // Set "enabled": false to force worktree-only mode even when Docker is available.
-  "sandbox": {
-    "enabled": true,
-    "mode": "docker",
-    "image": "oc-forge-sandbox:latest"
-  },
-
-  // TUI sidebar widget configuration
-  "tui": {
-    "sidebar": true,               // Show Forge sidebar in OpenCode TUI
-    "showVersion": true            // Show plugin version in sidebar title
-  },
-
-  // Dashboard configuration
-  "dashboard": {
-    "events": {
-      "source": "server",          // "server" (default) | "tui" | "none"
-      // "serverUrl": "",          // Target a specific/shared OpenCode server
-      "types": ["session.idle", "session.created", "session.updated", "session.error"]
-    }
-  },
-
-  // TTL in ms for completed/cancelled loops before cleanup. Default: 604800000 (7 days)
-  "completedLoopTtlMs": 604800000,
-
-  // Per-agent overrides (temperature range: 0.0 - 2.0)
-  // Keys are agent display names (e.g., "code", "architect", "auditor")
-  // "agents": {
-  //   "architect": { "temperature": 0.0 },
-  //   "auditor": { "temperature": 0.0 },
-  //   "code": { "temperature": 0.7 }
-  // }
-}
-```
-
-### Options
-
-#### Top-level
-- `dataDir` - Data directory for plugin storage (SQL stores, logs). When empty, resolves to `~/.local/share/opencode/forge` (or `XDG_DATA_HOME` equivalent) (default: `""`)
-- `completedLoopTtlMs` - TTL for completed/cancelled/errored/stalled loops before sweep (default: `604800000` / 7 days).
-- `executionModel` - Model override for plan execution sessions, format: `provider/model` (e.g. `anthropic/claude-sonnet-4-20250514`). When set, plan execution (via the architect's approval flow or the TUI Execute panel) uses this model for the new Code session. When empty or omitted, OpenCode's default model is used (typically the `model` field from `opencode.json`). **Recommended:** Set this to a fast, cheap model (e.g. Haiku or MiniMax) and use a smart model (e.g. Opus) for the Architect session — planning needs reasoning, execution needs speed. This value is used as a fallback when no per-launch selection is made.
-- `auditorModel` - Model override for the auditor agent (`provider/model`). When set, overrides the auditor agent's default model. When not set, uses platform default (default: `""`). This value is used as a fallback when no per-launch selection is made.
-- `agents` - Per-agent temperature overrides keyed by display name (e.g., `"code"`, `"architect"`, `"auditor"`). Temperature range: `0.0` - `2.0` (default: `undefined`)
-
-#### Logging
-- `logging.enabled` - Enable file logging (default: `false`)
-- `logging.debug` - Enable debug-level log output (default: `false`)
-- `logging.file` - Log file path. Omitted or `null` falls back to `~/.local/share/opencode/forge/logs/forge.log` (default: `""`). Setting to an empty string `""` passes the empty string through and logging will fail silently. Logs remain in the data directory, only config has moved.
-
-When enabled, logs are written to the specified file with timestamps. The log file has a 10MB size limit with automatic rotation.
-
-#### Compaction
-- `compaction.customPrompt` - Use a custom compaction prompt optimized for session continuity (default: `true`)
-- `compaction.maxContextTokens` - Maximum tokens for context during compaction (default: `0` / unlimited)
-
-#### Messages Transform
-- `messagesTransform.enabled` - Enable the messages transform hook for Architect read-only enforcement (default: `true`)
-- `messagesTransform.debug` - Enable debug logging for messages transform (default: `false`)
-
-#### Loop
-- `loop.enabled` - Enable iterative development loops (default: `true`)
-- `loop.defaultMaxIterations` - Default max iterations for loops, 0 = unlimited (default: `15`)
-- `loop.cleanupWorktree` - Auto-remove worktree on cancel (default: `false`)
-- `loop.stallTimeoutMs` - Watchdog stall detection timeout in milliseconds (default: `60000`)
-- `loop.maxConsecutiveStalls` - Number of consecutive stalls before the loop terminates with reason `stall_timeout`. Set to `0` to disable stall-based termination (default: `5`).
-- `loop.worktreeLogging.enabled` - Enable worktree loop completion logging (default: `false`)
-- `loop.worktreeLogging.directory` - Directory for completion logs, defaults to platform data dir (default: `""`)
-
-#### Sandbox
-- `sandbox.enabled` - Enable sandboxed execution. When `false`, loops run in worktree-only mode even if Docker is available (default: `true`)
-- `sandbox.mode` - Sandbox mode: `"docker"` (optional; Docker sandbox is provisioned automatically when available)
-- `sandbox.image` - Docker image for sandbox containers (default: `"oc-forge-sandbox:latest"`)
-- `sandbox.resources` - Container resource limits mapped directly to `docker run` flags:
-  - `memory` - Memory limit, e.g., `'8g'`. Maps to `--memory`.
-  - `memorySwap` - Memory+swap limit, e.g., `'12g'`. Maps to `--memory-swap`.
-  - `cpus` - Number of CPUs, e.g., `'4'`, `'2.5'`. Maps to `--cpus`.
-  - `shmSize` - Shared memory size, e.g., `'1g'`. Maps to `--shm-size`.
-
-#### TUI
-- `tui.sidebar` - Show the forge sidebar widget in OpenCode TUI (default: `true`)
-- `tui.showVersion` - Show plugin version number in the sidebar title (default: `true`)
-- `tui.keybinds.executePlan` - Open the execution dialog for the current session's plan. Default: `<leader>f` ("Forge"). Avoid `<leader>e` — that conflicts with opencode's built-in `editor_open` and your binding will be shadowed.
-
-#### Dashboard
-- `dashboard.events.source` - Live session updates source: `"server"` (default; subscribe to the server global event stream — all projects/sessions on that server), `"tui"` (in-process TUI event bus, current project only), or `"none"` (disable live events; the SSE endpoint returns `204 No Content`). See [Live Session Updates](#live-session-updates).
-- `dashboard.events.serverUrl` - Base URL of the OpenCode server to subscribe to. Optional in the TUI (the in-process client is used); set it to target a specific/shared server or to enable the live feed for the standalone dashboard (default: `""`).
-- `dashboard.events.types` - Allowlist of event types forwarded to the feed. Defaults to `["session.idle", "session.created", "session.updated", "session.error"]` to avoid flooding the feed with high-frequency part/message updates.
 
 ## TUI Plugin
 
@@ -625,7 +492,9 @@ The flag must be set before OpenCode starts — setting it inside an already-run
 
 ## Docker Sandbox
 
-Run loop iterations inside an isolated Docker container. Three tools (`bash`, `glob`, `grep`) execute inside the container via `docker exec`, while `read`/`write`/`edit` operate on the host filesystem. The worktree directory is bind-mounted at `/workspace` for instant file sharing, and the source project directory is mounted read-only at `/project` for convenient host-side access.
+Run loop iterations inside an isolated Docker container. Sandbox is optional: when Docker is available and configured, Forge provisions a loop container automatically; otherwise loops run in worktree-only mode.
+
+See [Sandbox](docs/sandbox.md) for setup, Docker-in-Docker behavior, host networking, environment passthrough, custom bind mounts, large-output handling, and resource defaults.
 
 ### Prerequisites
 
@@ -643,133 +512,7 @@ The image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, and jq.
 
 The `container/Dockerfile` ships with the plugin package. If the image is missing when OpenCode starts, Forge shows a warning toast with a "Forge: Build sandbox image" command in the palette. You can also trigger the build from the command palette at any time by searching for `Forge: Build sandbox image`, which opens a confirmation dialog and runs `docker build` automatically.
 
-**2. Configure the sandbox** (`~/.config/opencode/forge-config.jsonc`):
-
-```jsonc
-{
-  "sandbox": {
-    "mode": "docker",
-    "image": "oc-forge-sandbox:latest"
-  }
-}
-```
-
-**3. Restart OpenCode.**
-
-### Usage
-
-Start a sandbox loop by selecting "Loop" in the execution dialog (the architect launches it via the `loop` tool) or by invoking the `loop` tool directly:
-
-```
-loop
-```
-
-Sandbox is optional. When Docker is available and configured, a sandbox container is provisioned automatically; otherwise the loop runs in worktree-only mode. The loop:
-1. Creates a git worktree
-2. Starts a Docker container with the worktree directory bind-mounted at `/workspace`
-3. Redirects `bash`, `glob`, and `grep` tool calls into the container
-4. Cleans up the container on loop completion or cancellation
-
-### How It Works
-
-- **Bind mount** -- the worktree directory is mounted directly into the container at `/workspace`. No sync daemon, no file copying. Changes are visible instantly on both sides.
-- **Tool redirection** -- `bash`, `glob`, and `grep` route through `docker exec` when a session belongs to a sandbox loop. The `read`/`write`/`edit` tools operate on the host filesystem directly (compatible with host LSP).
-- **Git in the container** -- the image includes `git` for tooling and install workflows (e.g. fetching dependencies). Loop-managed git operations (commit, push, branch management) are handled by the loop system on the host.
-- **Host LSP** -- since files are shared via the bind mount, OpenCode's LSP servers on the host read the same files and provide diagnostics after writes and edits.
-- **Container lifecycle** -- one container per loop, automatically started and stopped. Container name format: `forge-<worktreeName>`.
-
-### Reaching Host Services
-
-The sandbox container can reach services running on the host via `host.docker.internal:<port>`. This is enabled by default and useful for connecting to local databases, API servers, or other development services. Disable it by setting `network.hostGateway` to `false`.
-
-**Environment passthrough** allows select host environment variables into the container. Specify variable names in `network.env`:
-
-```jsonc
-{
-  "sandbox": {
-    "network": {
-      "env": ["DATABASE_URL", "API_KEY"]
-    }
-  }
-}
-```
-
-Values are written to a temporary `--env-file` on container start; they are not persisted to disk.
-
-The source project is mounted read-only at `/project`, so project env files remain available there for commands that explicitly read them.
-
-**Security note:** environment passthrough exposes host secrets to the container. Only sandbox-trusted variables should be passed through. Each feature is independently controlled:
-
-- `network.hostGateway: false` — disables `host.docker.internal` gateway access
-- `network.env: []` — disables environment variable passthrough
-
-Removing the `network` key does **not** disable all host-network features; the `hostGateway` default remains active.
-
-### Read-Only Project Mount
-
-By default, the source project directory (not the worktree) is mounted read-only at `/project` inside the container. This gives you access to the original project files — useful for reference, config templates, or node_modules — without the risk of accidental edits to the source.
-
-- **Mount path:** configurable via `projectMountPath` (default: `"/project"`)
-- **Disable:** set `mountProjectReadonly` to `false`
-- **Searchable:** the mounted project is accessible to `glob` and `grep` (project-scoped) and readable via `sh`
-- **Not editable:** `write`/`edit` still target the host filesystem; changes to the project mount are not written back
-
-The worktree at `/workspace` remains writable for all sandbox operations.
-
-### Custom Bind Mounts
-
-Mount additional host directories into the sandbox via `sandbox.mounts`. Each entry requires absolute `host` and `container` paths; `readonly` defaults to `true` (read-only). Set `"readonly": false` to grant read-write access:
-
-```jsonc
-"mounts": [
-  { "host": "/abs/host/reference", "container": "/reference" },
-  { "host": "/abs/host/cache", "container": "/cache", "readonly": false }
-]
-```
-
-- **Validation:** entries are skipped (with a log message) when the host path does not exist, the container path is not absolute, or the container path collides with a reserved mount (`/workspace`, the `/project` mount, detected git metadata, or an earlier custom mount).
-- **Read-only by default:** mounts are mounted read-only unless you set `"readonly": false`, mirroring the read-only `/project` mount and keeping the worktree-isolation guarantee intact.
-
-**Security note:** read-write custom mounts (`"readonly": false`) expose arbitrary host directories to the container with the same trust boundary as environment passthrough. Only grant write access to directories you trust the sandbox to modify.
-
-### Docker-in-Docker
-
-Every sandbox container runs **Docker-in-Docker** by default: a nested, isolated Docker daemon boots inside the container so loops can build and run containers (e.g. end-to-end tests, `docker compose` suites) without touching the host's Docker daemon. Each loop gets its own daemon and image/container storage, so concurrent loops cannot see each other's containers or images, and everything is torn down with the sandbox.
-
-Because a nested daemon requires root, the container itself is launched `--privileged --init` and the daemon runs as root. The privileges are confined to the Docker host's VM/daemon, not the host OS directly. The agent's own shell commands, however, run as your **host UID:GID** (`docker exec --user`), so files written to the bind-mounted worktree are owned by you, not `root` — on both Docker Desktop and native Linux hosts. To let that non-root user reach the nested daemon, `dockerd` is started with its socket group set to your host GID (`--group`), so no socket permission relaxation is needed.
-
-The sandbox image bundles the Docker engine, buildx, and the Compose plugin. Inside a loop, the standard `docker` and `docker compose` commands work against the nested daemon, and bind mounts that reference `/workspace` resolve correctly (the daemon shares the container's filesystem).
-
-### Large Command Output
-
-When a `sh` command produces output exceeding the tool's limit, the overflow is written to `<worktree>/.forge/tmp/` (inside the worktree, not the container). These spill files can be read with the `read` tool or searched with `grep`. The `.forge/` directory is automatically added to `git exclude` after worktree creation so spill files are never committed.
-
-### Configuration
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `sandbox.enabled` | `true` | Enable sandboxed execution. Set to `false` to force worktree-only mode even when Docker is available. |
-| `sandbox.mode` | `"docker"` | Sandbox mode (optional; Docker used when available) |
-| `sandbox.image` | `"oc-forge-sandbox:latest"` | Docker image to use for sandbox containers |
-| `sandbox.resources.memory` | `"8g"` | Memory limit for the container. Maps to `--memory`. |
-| `sandbox.resources.memorySwap` | `"12g"` | Memory+swap limit. Maps to `--memory-swap`. |
-| `sandbox.resources.cpus` | `"4"` | CPU count. Maps to `--cpus`. |
-| `sandbox.resources.shmSize` | `"1g"` | Shared memory size. Maps to `--shm-size`. |
-| `sandbox.mountProjectReadonly` | `true` | Mount the source project directory read-only at `projectMountPath`. |
-| `sandbox.projectMountPath` | `"/project"` | Container path for the read-only project mount. |
-| `sandbox.mounts` | `[]` | Additional host directories to bind-mount into the container (see [Custom Bind Mounts](#custom-bind-mounts)). |
-| `sandbox.network.hostGateway` | `true` | Enable `host.docker.internal` gateway for reaching host services. |
-| `sandbox.network.env` | `[]` | Host environment variable names to pass through via temp `--env-file`. |
-
-### Customizing the Image
-
-The `container/Dockerfile` is included in the plugin package. To add project-specific tools (e.g., Go, Rust, additional language servers), edit the Dockerfile and rebuild:
-
-```bash
-docker build -t oc-forge-sandbox:latest container/
-```
-
-You can also rebuild from the command palette using `Forge: Build sandbox image`. This picks up any local changes to the bundled Dockerfile automatically.
+Restart OpenCode after changing sandbox configuration.
 
 
 ## Development
