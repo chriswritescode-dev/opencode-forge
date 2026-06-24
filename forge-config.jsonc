@@ -71,8 +71,10 @@
     //   // Environment variable names to pass through from host process into the container.
     //   "env": ["MY_VAR"]
     // },
-    // Run the container as the host user's UID:GID. Defaults to true.
-    // "runAsHostUser": true,
+    // Every sandbox runs Docker-in-Docker by default: a nested, isolated Docker daemon inside
+    // each container so loops can build and run containers (e.g. end-to-end tests). Each loop
+    // gets its own daemon and storage, and the container runs as root (required by the nested
+    // daemon); privileges are confined to the Docker host VM/daemon, not the host OS.
     // Additional host directories to bind-mount into the sandbox container.
     // Each entry requires absolute host + container paths; "readonly" defaults to true (read-only).
     // Set "readonly": false to grant the container read-write access to the host directory.

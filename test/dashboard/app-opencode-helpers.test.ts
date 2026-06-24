@@ -5,6 +5,8 @@ import {
   sessionProjectLabel,
   groupSessionsByProject,
   findSessionProjectKey,
+  activeProjectKeys,
+  projectKeySetsEqual,
   type SessionProjectGroup,
 } from '../../src/dashboard/app/opencode-helpers'
 
@@ -244,5 +246,72 @@ describe('findSessionProjectKey', () => {
 
   test('returns null for empty string session id', () => {
     expect(findSessionProjectKey(groups, '')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// activeProjectKeys
+// ---------------------------------------------------------------------------
+
+describe('activeProjectKeys', () => {
+  const groups: SessionProjectGroup[] = [
+    {
+      key: '/proj/alpha',
+      label: 'Alpha',
+      directory: '/proj/alpha',
+      sessions: [mockSession('a1', { directory: '/proj/alpha' }), mockSession('a2', { directory: '/proj/alpha' })],
+      latestUpdated: 0,
+    },
+    {
+      key: '/proj/beta',
+      label: 'Beta',
+      directory: '/proj/beta',
+      sessions: [mockSession('b1', { directory: '/proj/beta' })],
+      latestUpdated: 0,
+    },
+  ]
+
+  test('marks the group containing a busy session', () => {
+    expect([...activeProjectKeys(new Set(['a1']), groups)]).toEqual(['/proj/alpha'])
+  })
+
+  test('marks a group when any of its sessions is busy', () => {
+    expect([...activeProjectKeys(new Set(['a2']), groups)]).toEqual(['/proj/alpha'])
+  })
+
+  test('returns empty set when no sessions are busy', () => {
+    expect(activeProjectKeys(new Set(), groups).size).toBe(0)
+  })
+
+  test('ignores busy session ids not present in any group', () => {
+    expect(activeProjectKeys(new Set(['unknown']), groups).size).toBe(0)
+  })
+
+  test('marks multiple groups from distinct busy sessions', () => {
+    const keys = activeProjectKeys(new Set(['a1', 'b1']), groups)
+    expect(keys.has('/proj/alpha')).toBe(true)
+    expect(keys.has('/proj/beta')).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// projectKeySetsEqual
+// ---------------------------------------------------------------------------
+
+describe('projectKeySetsEqual', () => {
+  test('true for sets with identical members', () => {
+    expect(projectKeySetsEqual(new Set(['a', 'b']), new Set(['b', 'a']))).toBe(true)
+  })
+
+  test('true for two empty sets', () => {
+    expect(projectKeySetsEqual(new Set(), new Set())).toBe(true)
+  })
+
+  test('false when sizes differ', () => {
+    expect(projectKeySetsEqual(new Set(['a']), new Set(['a', 'b']))).toBe(false)
+  })
+
+  test('false when members differ', () => {
+    expect(projectKeySetsEqual(new Set(['a', 'b']), new Set(['a', 'c']))).toBe(false)
   })
 })

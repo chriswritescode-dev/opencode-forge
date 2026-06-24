@@ -467,7 +467,7 @@ createLoopService(...)            // State management
 createSandboxManager(docker, config, logger) // Sandbox
 createTools(ctx)                  // Tool registry
 createForgeWorkspaceAdapter(deps) // Workspace
-createDockerService(logger)       // Docker
+createDockerService(logger, opts?) // Docker (opts.execUser = host UID:GID for `docker exec --user`)
 createLogger(config)              // Logging
 ```
 

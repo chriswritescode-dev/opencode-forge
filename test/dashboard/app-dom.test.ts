@@ -599,27 +599,33 @@ describe('dashboard App fine-grained reactivity', () => {
     expect(rows[0].textContent).toContain('/projects/other')
   })
 
-  test('activity events render via EventSource', async () => {
+  test('session.status busy lights the matching sidebar project indicator and idle clears it', async () => {
     sessionsPayload = makeSessionsPayload()
     window.location.hash = '#sessions'
     dispose = render(() => App() as unknown as Element, container)
     await flush()
 
-    // Simulate an incoming activity event
+    // No running sessions yet: no project indicators.
+    expect(container.querySelector('.session-project-nav-activity')).toBeFalsy()
+
+    // A busy status for ses_001 (in the app-project group) should light only it.
     expect(esOnMessage).toBeTruthy()
-    const fakeEvent = { data: JSON.stringify({ type: 'session.updated', sessionId: 'ses_001', title: 'Fix bug', directory: '/proj', time: Date.now() }) }
-    esOnMessage!(fakeEvent)
+    const busy = { data: JSON.stringify({ type: 'session.status', sessionId: 'ses_001', sessionStatus: 'busy', time: Date.now() }) }
+    esOnMessage!(busy)
     await flush()
 
-    // Activity row should be rendered
-    const activityRow = container.querySelector('.activity-row')
-    expect(activityRow).toBeTruthy()
-    expect(activityRow!.textContent).toContain('session.updated')
-    expect(activityRow!.textContent).toContain('Fix bug')
-    // Directory renders as a project label (trailing path segment).
-    const project = activityRow!.querySelector('.activity-project')
-    expect(project).toBeTruthy()
-    expect(project!.textContent).toBe('proj')
+    const navItems = container.querySelectorAll('.session-project-nav-item')
+    expect(navItems.length).toBe(2)
+    // app-project (key '/projects/app') sorts first and gets the indicator.
+    expect(navItems[0].querySelector('.session-project-nav-activity')).toBeTruthy()
+    expect(navItems[1].querySelector('.session-project-nav-activity')).toBeFalsy()
+
+    // Idle status clears it immediately (no timer).
+    const idle = { data: JSON.stringify({ type: 'session.status', sessionId: 'ses_001', sessionStatus: 'idle', time: Date.now() }) }
+    esOnMessage!(idle)
+    await flush()
+
+    expect(container.querySelector('.session-project-nav-activity')).toBeFalsy()
   })
 
   test('totals bar reflects updated counts after a poll', async () => {

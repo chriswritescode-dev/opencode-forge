@@ -15,8 +15,6 @@ export interface SandboxManagerConfig {
   customMounts?: SandboxMountConfig[]
   buildContextDir?: string
   network?: { hostGateway?: boolean; env?: string[] }
-  runAsHostUser?: boolean
-  resolveHostUser?: () => string | undefined
 }
 
 const DEFAULT_RESOURCES: Required<Pick<SandboxResources, 'memory' | 'cpus' | 'shmSize'>> = {
@@ -206,15 +204,6 @@ export function createSandboxManager(
     return filePath
   }
 
-  function resolveUser(): string | undefined {
-    if (config.runAsHostUser === false) return undefined
-    return (config.resolveHostUser ?? (() => {
-      const u = process.getuid?.()
-      const g = process.getgid?.()
-      return u != null && g != null ? `${u}:${g}` : undefined
-    }))()
-  }
-
   async function start(worktreeName: string, projectDir: string, startedAt?: string): Promise<{ containerName: string }> {
     await ensureDockerAvailable()
     await ensureImage()
@@ -249,11 +238,14 @@ export function createSandboxManager(
       ...(config.resources?.memorySwap ? { memorySwap: config.resources.memorySwap } : {}),
     }
     const addHosts = buildAddHosts()
-    const user = resolveUser()
     const envFile = writeEnvPassthroughFile(containerName)
-    logger.log(`Creating sandbox container ${containerName} for ${absoluteProjectDir} (memory=${resources.memory} cpus=${resources.cpus} shmSize=${resources.shmSize}${resources.memorySwap ? ` memorySwap=${resources.memorySwap}` : ''})`)
+    // Every sandbox runs Docker-in-Docker: a nested, isolated dockerd so loops can build and
+    // run containers (e.g. end-to-end tests). The nested daemon requires root, so the container
+    // runs as root (no --user mapping); on Docker Desktop bind-mount file ownership still maps
+    // back to the host user.
+    logger.log(`Creating sandbox container ${containerName} for ${absoluteProjectDir} (memory=${resources.memory} cpus=${resources.cpus} shmSize=${resources.shmSize}${resources.memorySwap ? ` memorySwap=${resources.memorySwap}` : ''} dind=on)`)
     try {
-      await docker.createContainer(containerName, absoluteProjectDir, config.image, { extraMounts, resources, addHosts, user, ...(envFile ? { envFile } : {}) })
+      await docker.createContainer(containerName, absoluteProjectDir, config.image, { extraMounts, resources, addHosts, dockerInDocker: true, ...(envFile ? { envFile } : {}) })
     } finally {
       if (envFile) {
         rmSync(envFile, { force: true })

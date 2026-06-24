@@ -298,6 +298,33 @@ describe('createForgeClient events.subscribeGlobal', () => {
     expect(received).toEqual(events)
   })
 
+  it('calls global.event bound to its namespace (preserves `this`)', async () => {
+    // Mirror the real SDK v2 shape: `global` is an instance whose `event`
+    // method reads `this.client`. An unbound call throws
+    // "Cannot read properties of undefined (reading 'sse')" / "this.client",
+    // which previously killed the feed silently.
+    const events = [{ directory: '/p', payload: { type: 'session.idle', properties: { sessionID: 's1' } } }]
+    const globalApi = {
+      client: { ok: true },
+      event(this: { client: unknown }) {
+        // Throws if `this` is lost (the regression we guard against).
+        if (!this || !this.client) throw new Error("this.client is undefined")
+        return Promise.resolve({ stream: streamOf(events) })
+      },
+    }
+    const v2 = { ...stubV2(), global: globalApi } as unknown as OpencodeClient
+    const client = createForgeClient(v2)
+
+    const received: { directory: string; payload: unknown }[] = []
+    const onError = vi.fn()
+    client.events.subscribeGlobal((e) => received.push(e), { onError })
+
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(onError).not.toHaveBeenCalled()
+    expect(received).toEqual(events)
+  })
+
   it('invokes onError with an unavailable error when global.event is missing', () => {
     const v2 = stubV2() // no `global` namespace
     const client = createForgeClient(v2)

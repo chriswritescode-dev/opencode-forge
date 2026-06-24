@@ -6,8 +6,6 @@ function makeEvent(overrides?: Partial<OpencodeActivityEvent>): OpencodeActivity
   return {
     type: 'session_created',
     sessionId: null,
-    title: null,
-    directory: null,
     time: Date.now(),
     ...overrides,
   }

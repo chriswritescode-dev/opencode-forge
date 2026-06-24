@@ -113,3 +113,28 @@ export function findSessionProjectKey(
   }
   return null
 }
+
+/**
+ * Derive the set of project group keys that contain a currently-running
+ * session. A project lights up when any of its sessions is in `busySessionIds`
+ * (sourced from opencode's authoritative `session.status` events), so the
+ * indicator reflects real run state rather than a recency heuristic.
+ */
+export function activeProjectKeys(
+  busySessionIds: Set<string>,
+  groups: SessionProjectGroup[],
+): Set<string> {
+  const keys = new Set<string>()
+  if (busySessionIds.size === 0) return keys
+  for (const group of groups) {
+    if (group.sessions.some((s) => busySessionIds.has(s.id))) keys.add(group.key)
+  }
+  return keys
+}
+
+/** Shallow set-equality used to debounce the active-project indicator memo. */
+export function projectKeySetsEqual(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false
+  for (const key of a) if (!b.has(key)) return false
+  return true
+}

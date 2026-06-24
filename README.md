@@ -89,11 +89,16 @@ Session metadata and transcripts are queried read-only from OpenCode's own SQLit
 
 If the database is missing, unreadable, or the file does not exist, the Sessions view gracefully shows *"Sessions data unavailable."* All query methods catch errors internally and return empty arrays — the dashboard never fails or crashes due to an absent OpenCode DB.
 
-### Live Activity Feed
+### Live Session Updates
 
-The `GET /api/opencode/events` SSE endpoint streams a curated set of OpenCode session events (`session.idle`, `session.created`, `session.updated`, `session.error`) to the dashboard's **Activity Feed** widget (visible above the sessions list). Each event is labelled with the originating project. A ring buffer (default capacity 100 events) replays recent activity to late-joining SSE clients.
+The `GET /api/opencode/events` SSE endpoint streams a curated set of OpenCode events that keep the Sessions view live without polling. Two tiers are forwarded:
 
-The feed source is configurable via `dashboard.events.source`:
+- **Session-level events** — `session.idle`, `session.status`, `session.created`, `session.updated`, `session.error`, `session.deleted` — broadcast to every connected client. They keep the session list current (upsert/remove + re-order) and drive the per-project **busy indicator** (a pulsing dot on a project whose session reports `session.status: busy`/`retry`, cleared on `idle`/`deleted`).
+- **Transcript-part events** — `message.updated`, `message.part.updated`, `message.part.removed` — higher volume, so they are sent only to the client whose open session matches the optional `?session=<id>` query parameter. They keep the open session's transcript live as a turn streams (text appends, tool status updates). Initial transcript content is loaded once from the database; live events keep it current thereafter.
+
+A ring buffer (default capacity 100 events) replays recent activity to late-joining SSE clients (respecting the same per-session filter). After the initial database load, the Sessions view is fully event-driven — there is no timer-based polling of the OpenCode database.
+
+The event source is configurable via `dashboard.events.source`:
 
 | Source | Behavior |
 |--------|----------|
@@ -335,7 +340,7 @@ When enabled, logs are written to the specified file with timestamps. The log fi
 - `tui.keybinds.executePlan` - Open the execution dialog for the current session's plan. Default: `<leader>f` ("Forge"). Avoid `<leader>e` — that conflicts with opencode's built-in `editor_open` and your binding will be shadowed.
 
 #### Dashboard
-- `dashboard.events.source` - Live activity feed source: `"server"` (default; subscribe to the server global event stream — all projects/sessions on that server), `"tui"` (in-process TUI event bus, current project only), or `"none"` (disable the feed). See [Live Activity Feed](#live-activity-feed).
+- `dashboard.events.source` - Live session updates source: `"server"` (default; subscribe to the server global event stream — all projects/sessions on that server), `"tui"` (in-process TUI event bus, current project only), or `"none"` (disable live events; the SSE endpoint returns `204 No Content`). See [Live Session Updates](#live-session-updates).
 - `dashboard.events.serverUrl` - Base URL of the OpenCode server to subscribe to. Optional in the TUI (the in-process client is used); set it to target a specific/shared server or to enable the live feed for the standalone dashboard (default: `""`).
 - `dashboard.events.types` - Allowlist of event types forwarded to the feed. Defaults to `["session.idle", "session.created", "session.updated", "session.error"]` to avoid flooding the feed with high-frequency part/message updates.
 
@@ -727,9 +732,13 @@ Mount additional host directories into the sandbox via `sandbox.mounts`. Each en
 
 **Security note:** read-write custom mounts (`"readonly": false`) expose arbitrary host directories to the container with the same trust boundary as environment passthrough. Only grant write access to directories you trust the sandbox to modify.
 
-### Non-Root User
+### Docker-in-Docker
 
-The container runs as the host user's UID:GID by default (`runAsHostUser: true`). This ensures file ownership matches between the bind-mounted worktree and the host — files created inside the container are owned by you, not `root`. Set `runAsHostUser` to `false` to run as the container default user (`root`).
+Every sandbox container runs **Docker-in-Docker** by default: a nested, isolated Docker daemon boots inside the container so loops can build and run containers (e.g. end-to-end tests, `docker compose` suites) without touching the host's Docker daemon. Each loop gets its own daemon and image/container storage, so concurrent loops cannot see each other's containers or images, and everything is torn down with the sandbox.
+
+Because a nested daemon requires root, the container itself is launched `--privileged --init` and the daemon runs as root. The privileges are confined to the Docker host's VM/daemon, not the host OS directly. The agent's own shell commands, however, run as your **host UID:GID** (`docker exec --user`), so files written to the bind-mounted worktree are owned by you, not `root` — on both Docker Desktop and native Linux hosts. To let that non-root user reach the nested daemon, `dockerd` is started with its socket group set to your host GID (`--group`), so no socket permission relaxation is needed.
+
+The sandbox image bundles the Docker engine, buildx, and the Compose plugin. Inside a loop, the standard `docker` and `docker compose` commands work against the nested daemon, and bind mounts that reference `/workspace` resolve correctly (the daemon shares the container's filesystem).
 
 ### Large Command Output
 
@@ -749,7 +758,6 @@ When a `sh` command produces output exceeding the tool's limit, the overflow is 
 | `sandbox.mountProjectReadonly` | `true` | Mount the source project directory read-only at `projectMountPath`. |
 | `sandbox.projectMountPath` | `"/project"` | Container path for the read-only project mount. |
 | `sandbox.mounts` | `[]` | Additional host directories to bind-mount into the container (see [Custom Bind Mounts](#custom-bind-mounts)). |
-| `sandbox.runAsHostUser` | `true` | Run container as host user's UID:GID for correct bind-mount ownership. |
 | `sandbox.network.hostGateway` | `true` | Enable `host.docker.internal` gateway for reaching host services. |
 | `sandbox.network.env` | `[]` | Host environment variable names to pass through via temp `--env-file`. |
 

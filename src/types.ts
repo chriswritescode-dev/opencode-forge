@@ -128,8 +128,6 @@ export interface SandboxConfig {
   mounts?: SandboxMountConfig[]
   /** Network access configuration (host gateway, env passthrough). */
   network?: SandboxNetworkConfig
-  /** Run the container as the host user's UID:GID. Defaults to true. */
-  runAsHostUser?: boolean
 }
 
 /**

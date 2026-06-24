@@ -55,8 +55,6 @@ function makeEvent(overrides?: Partial<OpencodeActivityEvent>): OpencodeActivity
   return {
     type: 'session_created',
     sessionId: null,
-    title: null,
-    directory: null,
     time: Date.now(),
     ...overrides,
   }
@@ -458,6 +456,46 @@ describe('createRequestHandler', () => {
     // Chunk 3: second replayed event
     const c3 = new TextDecoder().decode((await reader.read()).value)
     expect(c3).toContain('"evt-2"')
+    await reader.cancel()
+  })
+
+  // ─── Cycle 11: per-session transcript filtering (?session=) ───────────
+
+  test('unscoped /events drops message.part.* events but keeps session events', async () => {
+    const b = createEventBroadcaster({ bufferSize: 10 })
+    b.publish(makeEvent({ type: 'session.updated', sessionId: 'ses_1' }))
+    b.publish(makeEvent({ type: 'message.part.updated', sessionId: 'ses_1' }))
+
+    const deps: DashboardDeps = { ...makeDeps(db!), events: b }
+    const handler = createRequestHandler(deps)
+    const res = handler(new Request('http://localhost/api/opencode/events'))
+
+    const reader = res.body!.getReader()
+    const c1 = new TextDecoder().decode((await reader.read()).value)
+    expect(c1).toContain(': connected')
+    // Only the session-level event replays; the part event is filtered out.
+    const c2 = new TextDecoder().decode((await reader.read()).value)
+    expect(c2).toContain('session.updated')
+    expect(c2).not.toContain('message.part.updated')
+    await reader.cancel()
+  })
+
+  test('scoped /events?session= replays part events for the matching session only', async () => {
+    const b = createEventBroadcaster({ bufferSize: 10 })
+    b.publish(makeEvent({ type: 'message.part.updated', sessionId: 'other' }))
+    b.publish(makeEvent({ type: 'message.part.updated', sessionId: 'ses_1' }))
+
+    const deps: DashboardDeps = { ...makeDeps(db!), events: b }
+    const handler = createRequestHandler(deps)
+    const res = handler(new Request('http://localhost/api/opencode/events?session=ses_1'))
+
+    const reader = res.body!.getReader()
+    const c1 = new TextDecoder().decode((await reader.read()).value)
+    expect(c1).toContain(': connected')
+    // The non-matching session's part event is skipped; only ses_1's replays.
+    const c2 = new TextDecoder().decode((await reader.read()).value)
+    expect(c2).toContain('"sessionId":"ses_1"')
+    expect(c2).not.toContain('"sessionId":"other"')
     await reader.cancel()
   })
 })
