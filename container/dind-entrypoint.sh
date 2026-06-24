@@ -27,6 +27,28 @@ resolve_socket_group_arg() {
   [ -n "$group_name" ] && printf -- '--group %s' "$group_name"
 }
 
+# Guarantee the in-container exec user can reach the daemon socket. Agent shell commands run as
+# the host UID:GID via `docker exec --user` (not root), so the socket must be group-accessible to
+# that GID. dockerd is started with `--group` when FORGE_HOST_GID is known, but this runs only
+# AFTER the daemon is confirmed ready, so it is race-free (the startup race the `--group` arg
+# avoids is doing this while dockerd is still applying socket perms). It self-heals cases where the
+# group did not take, and falls back to a world-accessible socket when the GID is unknown — safe
+# because the container is per-loop, isolated, and already --privileged, so anyone who can exec in
+# is already root-capable.
+ensure_socket_access() {
+  sock=/var/run/docker.sock
+  [ -S "$sock" ] || return 0
+  if [ -n "${FORGE_HOST_GID:-}" ] \
+    && chgrp "$FORGE_HOST_GID" "$sock" 2>/dev/null \
+    && chmod g+rw "$sock" 2>/dev/null; then
+    echo "forge-dind: docker socket group set to GID $FORGE_HOST_GID" >&2
+    return 0
+  fi
+  # GID unknown or chgrp failed: make the socket reachable by any exec UID/GID.
+  chmod 666 "$sock" 2>/dev/null || true
+  echo "forge-dind: docker socket made world-accessible (no usable FORGE_HOST_GID)" >&2
+}
+
 start_dockerd() {
   echo "forge-dind: starting nested Docker daemon" >&2
   group_arg=$(resolve_socket_group_arg)
@@ -47,6 +69,7 @@ start_dockerd() {
     sleep 1
   done
   echo "forge-dind: nested Docker daemon ready" >&2
+  ensure_socket_access
 }
 
 if [ "${FORGE_DIND:-0}" = "1" ]; then

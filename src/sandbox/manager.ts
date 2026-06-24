@@ -287,7 +287,44 @@ export function createSandboxManager(
     activeSandboxes.set(worktreeName, active)
     logger.log(`Sandbox container ${containerName} started`)
 
+    await verifyDockerSocketReachable(containerName)
+
     return { containerName }
+  }
+
+  /**
+   * Confirms the in-container exec user (host UID:GID via `docker exec --user`, not root) can reach
+   * the nested Docker daemon socket, so loops running Docker-based e2e tests don't silently see
+   * "permission denied / no daemon". The entrypoint guarantees socket access post-readiness; this
+   * polls until that takes effect and surfaces a clear, actionable error if it never does.
+   *
+   * Best-effort and non-fatal: the nested daemon is not required by every loop, so an unreachable
+   * daemon is logged rather than thrown (which would break non-Docker loops). Any unexpected
+   * exec failure (e.g. a partial DockerService) aborts verification quietly.
+   */
+  async function verifyDockerSocketReachable(containerName: string): Promise<void> {
+    const MAX_TRIES = 30
+    let lastDetail = ''
+    for (let i = 0; i < MAX_TRIES; i++) {
+      let result: { stdout: string; stderr: string; exitCode: number }
+      try {
+        result = await docker.exec(containerName, 'docker version --format "{{.Server.Version}}"', { timeout: 5000 })
+      } catch (err) {
+        logger.debug?.(`Sandbox: skipping docker socket verification for ${containerName}: ${err instanceof Error ? err.message : String(err)}`)
+        return
+      }
+      if (result.exitCode === 0) {
+        logger.log(`Sandbox: nested Docker daemon reachable by exec user in ${containerName} (server ${result.stdout.trim()})`)
+        return
+      }
+      lastDetail = (result.stderr || result.stdout).trim()
+      await new Promise((r) => setTimeout(r, 1000))
+    }
+    logger.error(
+      `Sandbox: nested Docker daemon not reachable by the in-container exec user in ${containerName} after ${MAX_TRIES}s. ` +
+      `Docker-based tests (e.g. e2e) will fail. Last error: ${lastDetail || '(none)'}. ` +
+      `Check 'docker exec ${containerName} cat /var/log/dockerd.log' and the socket group ('ls -l /var/run/docker.sock').`
+    )
   }
 
   async function stop(worktreeName: string): Promise<void> {

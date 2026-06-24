@@ -113,6 +113,13 @@ Each sandbox container runs a nested Docker daemon so loops can build and run co
 - Agent shell commands run as the host UID:GID via `docker exec --user`, so files written to the bind-mounted worktree are owned by the host user.
 - The Docker socket group is set to the host GID so the non-root exec user can access the nested daemon.
 
+### Socket Access Guarantee
+
+Because agent commands run as the non-root host UID:GID, the nested daemon's socket must be reachable by that user — otherwise Docker-based tests fail with `permission denied while trying to connect to the docker API`, which looks like "no daemon" even though dockerd is healthy. Forge guarantees access in two layers:
+
+1. **Entrypoint (race-free).** After the nested daemon is confirmed ready, the entrypoint sets the socket group to `FORGE_HOST_GID` (`chgrp` + `g+rw`). Doing this *after* readiness avoids the startup race where dockerd re-applies socket permissions. When the GID is unknown, it falls back to a world-accessible socket (`chmod 666`) — safe because the container is per-loop, isolated, and already privileged.
+2. **Manager verification.** On container start, `manager.start()` polls `docker version` as the exec user. On success it logs the reachable server version; if the daemon stays unreachable it logs a clear, actionable error (pointing at `/var/log/dockerd.log` and the socket group) instead of letting the loop silently surface "no daemon". This check is non-fatal so loops that don't use Docker still run.
+
 ## Large Command Output
 
 When sandbox shell output exceeds the tool limit, overflow is written to `<worktree>/.forge/tmp/`. The worktree `.forge/` directory is added to git exclude so spill files are not committed.
