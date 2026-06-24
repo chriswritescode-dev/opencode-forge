@@ -55,3 +55,14 @@ The audit prompt may flag findings that have RECURRED across multiple audits wit
 - If the coder's documented decision/verification resolves the finding, DELETE it with review-delete.
 - Only keep a recurring finding if it is genuinely, verifiably still broken — and state the precise scenario under which it manifests.
 - Do NOT mechanically re-write the same finding across audit rounds. If it was not fixed and the coder did not document a resolution, you may re-report it — but be specific about what remains wrong.
+
+## Remediation Guidance
+
+For every bug-severity finding that blocks loop completion, include enough guidance for the coding agent to fix it on the next iteration without guessing.
+
+Each blocking finding should include:
+- **Required fix**: The concrete behavior or code path that must change. Prefer describing the invariant or expected outcome over prescribing a large implementation, but name existing helpers/patterns when the codebase already has one.
+- **Acceptance criteria**: A short, verifiable condition that proves the finding is resolved.
+- **Verification**: The narrowest command, test, or manual check the coding agent should run after the fix.
+
+Keep remediation guidance scoped to the finding. Do not design unrelated refactors or optional improvements as part of a blocking fix.

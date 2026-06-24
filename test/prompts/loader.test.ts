@@ -43,6 +43,14 @@ describe('loadPrompt', () => {
     expect(prompt).toContain(SECTION_SUMMARY_END_MARKER)
   })
 
+  test('auditor-loop-addendum requires remediation guidance for blocking findings', () => {
+    const prompt = loadPrompt(['agents', 'auditor-loop-addendum.md'])
+    expect(prompt).toContain('## Remediation Guidance')
+    expect(prompt).toContain('**Required fix**')
+    expect(prompt).toContain('**Acceptance criteria**')
+    expect(prompt).toContain('**Verification**')
+  })
+
   test('buildAgents with custom promptsDir uses the custom prompt', () => {
     const tmpDir = join(import.meta.dirname, '..', '..', '.forge', 'tmp', 'test-build-agents')
     mkdirSync(join(tmpDir, 'agents'), { recursive: true })
