@@ -1,4 +1,4 @@
-import { createMemo, createEffect } from 'solid-js'
+import { createMemo, createEffect, indexArray } from 'solid-js'
 import html from 'solid-js/html'
 import type { OpencodeSessionRow, TranscriptEntry } from './opencode-types'
 import type { SessionProjectGroup } from './opencode-helpers'
@@ -104,20 +104,24 @@ export function transcriptMessageLabel(role: string | null, model: string | null
   return role || 'Message'
 }
 
-function renderTranscriptEntry(entry: TranscriptEntry) {
+function renderTranscriptEntryAccessor(entryAccessor: () => TranscriptEntry): Node | Node[] {
+  // Snapshot the type once — a tool part never becomes a text part (and vice versa),
+  // so branching on the initial type is safe for the lifetime of this entry.
+  const entry = entryAccessor()
   if (entry.type === 'text') {
     return html`<div class="transcript-entry transcript-text">
-      <div class="markdown-content" innerHTML=${() => renderMarkdown(entry.text || '')}></div>
+      <div class="markdown-content" innerHTML=${() => renderMarkdown(entryAccessor().text || '')}></div>
     </div>`
   }
   if (entry.type === 'tool') {
     return html`<div class="transcript-entry transcript-tool">
-      <span class="transcript-tool-name">${entry.toolName || ''}</span>
-      <span class="transcript-tool-title">${entry.toolTitle || ''}</span>
-      <span class="transcript-tool-status">${entry.toolStatus || ''}</span>
+      <span class="transcript-tool-name">${() => entryAccessor().toolName || ''}</span>
+      <span class="transcript-tool-title">${() => entryAccessor().toolTitle || ''}</span>
+      <span class="transcript-tool-status">${() => entryAccessor().toolStatus || ''}</span>
     </div>`
   }
-  return ''
+  // Fallback — should never be reached for well-formed entries
+  return document.createComment('')
 }
 
 /** Distance (px) from the bottom within which we consider the view "pinned". */
@@ -151,6 +155,70 @@ export function TranscriptView(props: {
     requestAnimationFrame(() => { if (el) el.scrollTop = el.scrollHeight })
   }
 
+  // ── Keyed reconciliation ─────────────────────────────────────────────────
+  //
+  // indexArray at the GROUP level keys each message-group div by index. When
+  // groups() returns a new array, indexArray re-runs the map function only
+  // for indices whose item accessor has changed. The per-index accessor is a
+  // signal that updates in place when the backing array index is replaced, so
+  // unchanged groups keep their DOM nodes.
+  //
+  // Within each group, a persistent indexArray per messageId is cached. Since
+  // the outer group's reactive root is *not* disposed when the group signal
+  // updates (indexArray reuses the root via signal.set()), the inner
+  // indexArray survives group re-renders. Its list accessor reads from the
+  // persistent group signal, so it always sees the latest entries. The inner
+  // indexArray compares each entry by reference — unchanged entries keep
+  // their DOM nodes and already-parsed markdown innerHTML; only the
+  // streaming entry (new object identity) re-renders.
+  //
+  // ── Scroll stick ─────────────────────────────────────────────────────────
+  //
+  // The onScroll handler tracks scroll position and "stickiness" via non-
+  // reactive locals (stuck, lastTop). A createEffect watches groups() and
+  // follows the tail (scrollHeight) when stuck, or restores the user's
+  // scroll position otherwise. This is identical to the original behavior.
+
+  const entryArrays: Record<string, () => (Node | Node[])[]> = {}
+
+  // Collect current messageIds to later prune stale cache entries.
+  const usedMessageIds = new Set<string>()
+
+  const renderedGroups = indexArray<TranscriptMessageGroup, Node | Node[]>(
+    () => groups(),
+    (groupAccessor) => {
+      const group = groupAccessor()
+      const mid = group.messageId
+      usedMessageIds.add(mid)
+
+      // Create the entry-level indexArray once per group (by messageId).
+      // Because the outer indexArray's root survives signal updates, the
+      // cached entryArray persists across group re-renders.
+      if (!entryArrays[mid]) {
+        entryArrays[mid] = indexArray<TranscriptEntry, Node | Node[]>(
+          () => groupAccessor().entries,
+          (entryAccessor) => renderTranscriptEntryAccessor(entryAccessor),
+        )
+      }
+
+      return html`<div class=${() => 'transcript-msg transcript-msg-' + (groupAccessor().role === 'user' ? 'user' : 'assistant')}>
+        <div class="transcript-msg-header">${() => transcriptMessageLabel(groupAccessor().role, groupAccessor().model)}</div>
+        ${entryArrays[mid]}
+      </div>`
+    },
+  )
+
+  // Prune entry arrays for groups that no longer exist (e.g. session switch).
+  createEffect(() => {
+    groups() // track — keep the reference alive so pruning runs after each change
+    for (const mid of Object.keys(entryArrays)) {
+      if (!usedMessageIds.has(mid)) {
+        delete entryArrays[mid]
+      }
+    }
+    usedMessageIds.clear()
+  })
+
   // On each content change: follow the tail only when the user is at the bottom;
   // otherwise restore their position so streaming output doesn't fight them.
   createEffect(() => {
@@ -166,13 +234,7 @@ export function TranscriptView(props: {
       ← Back to sessions
     </div>
     <div class="transcript" ref=${setRef} onscroll=${onScroll}>
-      ${() => groups().map((group) => {
-        const cls = 'transcript-msg transcript-msg-' + (group.role === 'user' ? 'user' : 'assistant')
-        return html`<div class=${cls}>
-          <div class="transcript-msg-header">${transcriptMessageLabel(group.role, group.model)}</div>
-          ${group.entries.map((entry) => renderTranscriptEntry(entry))}
-        </div>`
-      })}
+      ${renderedGroups}
     </div>
   </div>`
 }

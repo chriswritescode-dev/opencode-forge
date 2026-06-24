@@ -55,8 +55,6 @@ function makeEvent(overrides?: Partial<OpencodeActivityEvent>): OpencodeActivity
   return {
     type: 'session_created',
     sessionId: null,
-    title: null,
-    directory: null,
     time: Date.now(),
     ...overrides,
   }
@@ -485,7 +483,7 @@ describe('createRequestHandler', () => {
   test('scoped /events?session= replays part events for the matching session only', async () => {
     const b = createEventBroadcaster({ bufferSize: 10 })
     b.publish(makeEvent({ type: 'message.part.updated', sessionId: 'other' }))
-    b.publish(makeEvent({ type: 'message.part.updated', sessionId: 'ses_1', title: 'mine' }))
+    b.publish(makeEvent({ type: 'message.part.updated', sessionId: 'ses_1' }))
 
     const deps: DashboardDeps = { ...makeDeps(db!), events: b }
     const handler = createRequestHandler(deps)

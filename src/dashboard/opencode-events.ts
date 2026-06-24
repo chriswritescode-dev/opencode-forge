@@ -22,7 +22,7 @@ export interface EventBus {
  * Session-level events that drive the live session list. Broadcast to every
  * dashboard client; low volume.
  */
-export const SESSION_EVENT_TYPES = [
+const SESSION_EVENT_TYPES = [
   'session.idle',
   'session.status',
   'session.created',
@@ -36,7 +36,7 @@ export const SESSION_EVENT_TYPES = [
  * Higher volume, so the dashboard SSE endpoint forwards these only to the
  * client whose open session matches (see server `?session=` filtering).
  */
-export const TRANSCRIPT_EVENT_TYPES = [
+const TRANSCRIPT_EVENT_TYPES = [
   'message.updated',
   'message.part.updated',
   'message.part.removed',
@@ -52,18 +52,12 @@ export const CURATED_EVENT_TYPES = [
 ] as const
 
 /**
- * Extract the activity fields (`sessionId`, `title`, `directory`) shared by the
- * TUI-bus and server-global event shapes. `directoryOverride` takes precedence
- * over `info.directory` and is supplied by the global stream's wrapper, which
- * is authoritative.
+ * Extract the `sessionId` shared by the TUI-bus and server-global event shapes.
+ * The session row's directory is handled separately by `mapSessionInfo`.
  */
-function extractActivity(
-  raw: unknown,
-  directoryOverride?: string | null,
-): Pick<OpencodeActivityEvent, 'sessionId' | 'title' | 'directory'> {
+function extractActivity(raw: unknown): Pick<OpencodeActivityEvent, 'sessionId'> {
   const props: Record<string, unknown> = isRecord(raw) && isRecord(raw.properties) ? raw.properties : {}
   const info: Record<string, unknown> = isRecord(props.info) ? props.info : {}
-  const infoDirectory = typeof info.directory === 'string' ? info.directory : null
   return {
     sessionId:
       typeof info.id === 'string'
@@ -71,8 +65,6 @@ function extractActivity(
         : typeof props.sessionID === 'string'
           ? props.sessionID
           : null,
-    title: typeof info.title === 'string' ? info.title : null,
-    directory: directoryOverride && directoryOverride.length > 0 ? directoryOverride : infoDirectory,
   }
 }
 
@@ -126,8 +118,6 @@ function normalizePartEvent(type: string, raw: unknown): OpencodeActivityEvent |
     return {
       type,
       sessionId,
-      title: null,
-      directory: null,
       time: Date.now(),
       part: { sessionId, messageId, partId, entry: null },
     }
@@ -146,8 +136,6 @@ function normalizePartEvent(type: string, raw: unknown): OpencodeActivityEvent |
   return {
     type,
     sessionId,
-    title: null,
-    directory: null,
     time: Date.now(),
     part: {
       sessionId,
@@ -173,8 +161,6 @@ function normalizeMessageEvent(type: string, raw: unknown): OpencodeActivityEven
   return {
     type,
     sessionId,
-    title: null,
-    directory: null,
     time: Date.now(),
     messageMeta: {
       sessionId,
@@ -190,11 +176,11 @@ function normalizeMessageEvent(type: string, raw: unknown): OpencodeActivityEven
  * status (`busy`/`retry`/`idle`). Returns `null` when the payload lacks a
  * session id or a recognised status type.
  */
-function normalizeStatusEvent(type: string, raw: unknown, directoryOverride?: string | null): OpencodeActivityEvent | null {
+function normalizeStatusEvent(type: string, raw: unknown): OpencodeActivityEvent | null {
   const props: Record<string, unknown> = isRecord(raw) && isRecord(raw.properties) ? raw.properties : {}
   const status = isRecord(props.status) && typeof props.status.type === 'string' ? props.status.type : null
   if (status !== 'busy' && status !== 'retry' && status !== 'idle') return null
-  const activity = extractActivity(raw, directoryOverride)
+  const activity = extractActivity(raw)
   if (!activity.sessionId) return null
   return {
     type,
@@ -220,12 +206,12 @@ function normalizeEvent(
     return normalizeMessageEvent(type, raw)
   }
   if (type === 'session.status') {
-    return normalizeStatusEvent(type, raw, directoryOverride)
+    return normalizeStatusEvent(type, raw)
   }
   const props: Record<string, unknown> = isRecord(raw) && isRecord(raw.properties) ? raw.properties : {}
   return {
     type,
-    ...extractActivity(raw, directoryOverride),
+    ...extractActivity(raw),
     time: Date.now(),
     session: mapSessionInfo(props.info, directoryOverride),
   }
