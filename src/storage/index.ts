@@ -1,4 +1,4 @@
-export { initializeDatabase, closeDatabase, resolveDataDir, resolveLogPath } from './database'
+export { initializeDatabase, closeDatabase, resolveDataDir, resolveLogPath, resolveOpencodeToolOutputDir } from './database'
 
 export { createLoopsRepo } from './repos/loops-repo'
 export type { LoopRow } from './repos/loops-repo'

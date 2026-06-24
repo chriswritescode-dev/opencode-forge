@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest'
 import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../../src/constants/loop'
+import { resolveOpencodeToolOutputDir } from '../../src/utils/opencode-paths'
+
+const TOOL_OUTPUT_DIR = resolveOpencodeToolOutputDir()
+const TOOL_OUTPUT_ALLOW_RULES = [
+  { permission: 'external_directory', pattern: TOOL_OUTPUT_DIR, action: 'allow' as const },
+  { permission: 'external_directory', pattern: `${TOOL_OUTPUT_DIR}/**`, action: 'allow' as const },
+]
 
 describe('buildLoopPermissionRuleset', () => {
   it('default sandbox rules expose sh and hide host bash', () => {
@@ -7,6 +14,7 @@ describe('buildLoopPermissionRuleset', () => {
     expect(rules).toEqual([
       { permission: '*', pattern: '*', action: 'allow' },
       { permission: 'external_directory', pattern: '*', action: 'deny' },
+      ...TOOL_OUTPUT_ALLOW_RULES,
       { permission: 'review-write', pattern: '*', action: 'deny' },
       { permission: 'review-delete', pattern: '*', action: 'deny' },
       { permission: 'plan', pattern: '*', action: 'deny' },
@@ -26,6 +34,7 @@ describe('buildLoopPermissionRuleset', () => {
     expect(rules).toEqual([
       { permission: '*', pattern: '*', action: 'allow' },
       { permission: 'external_directory', pattern: '*', action: 'deny' },
+      ...TOOL_OUTPUT_ALLOW_RULES,
       { permission: 'review-write', pattern: '*', action: 'deny' },
       { permission: 'review-delete', pattern: '*', action: 'deny' },
       { permission: 'plan', pattern: '*', action: 'deny' },
@@ -97,9 +106,12 @@ describe('buildAuditSessionPermissionRuleset', () => {
 describe('external directory allowlist', () => {
   const VAULT = '/Users/chris/Documents/Obsidian/GFPRO'
 
-  it('loop ruleset adds no allow rules when allowDirectories is omitted', () => {
+  it('loop ruleset allows only the tool-output directory when allowDirectories is omitted', () => {
     const rules = buildLoopPermissionRuleset({ sandbox: false })
-    expect(rules.find(r => r.permission === 'external_directory' && r.action === 'allow')).toBeUndefined()
+    const allowPatterns = rules
+      .filter(r => r.permission === 'external_directory' && r.action === 'allow')
+      .map(r => r.pattern)
+    expect(allowPatterns).toEqual([TOOL_OUTPUT_DIR, `${TOOL_OUTPUT_DIR}/**`])
   })
 
   it('loop ruleset adds exact + recursive allow rules for each configured directory', () => {
@@ -128,7 +140,8 @@ describe('external directory allowlist', () => {
     const rules = buildLoopPermissionRuleset({ sandbox: false, allowDirectories: [`${VAULT}/`, '', '   '] })
     expect(rules).toContainEqual({ permission: 'external_directory', pattern: VAULT, action: 'allow' })
     const allowRules = rules.filter(r => r.permission === 'external_directory' && r.action === 'allow')
-    // Only the one valid directory → exact + recursive = 2 rules
-    expect(allowRules).toHaveLength(2)
+    // Always-on tool-output dir (exact + recursive) + the one valid configured directory
+    // (exact + recursive) = 4 rules; blank/invalid entries are ignored.
+    expect(allowRules).toHaveLength(4)
   })
 })

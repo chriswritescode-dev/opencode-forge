@@ -4,7 +4,7 @@ import type { ForgeClient, SessionGetParams } from './client/port'
 import { buildAgents } from './agents'
 import { createConfigHandler } from './config'
 import { createSessionHooks, createLoopEventHandler } from './hooks'
-import { initializeDatabase, resolveDataDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo } from './storage'
+import { initializeDatabase, resolveDataDir, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo } from './storage'
 import type { LoopChangeNotifier } from './loop'
 import { loadPluginConfig, resolveBundledContainerDir, resolvePromptsDir } from './setup'
 import { resolveLogPath } from './storage'
@@ -216,6 +216,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         sandboxManager = createSandboxManager(dockerService, {
           image: config.sandbox?.image ?? 'oc-forge-sandbox:latest',
           dataDir,
+          toolOutputDir: resolveOpencodeToolOutputDir(),
           sourceProjectDir: directory,
           mountProjectReadonly: config.sandbox?.mountProjectReadonly,
           projectMountPath: config.sandbox?.projectMountPath,

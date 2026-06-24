@@ -15,6 +15,12 @@ export interface SandboxManagerConfig {
   customMounts?: SandboxMountConfig[]
   buildContextDir?: string
   network?: { hostGateway?: boolean; env?: string[] }
+  /**
+   * Host path of opencode's tool-output (truncation) directory. When set and present, it is
+   * bind-mounted read-only at the identical container path so the agent's in-container tools
+   * (`sh`, `glob`, `grep`) can read overflow files that opencode references by absolute host path.
+   */
+  toolOutputDir?: string
 }
 
 const DEFAULT_RESOURCES: Required<Pick<SandboxResources, 'memory' | 'cpus' | 'shmSize'>> = {
@@ -140,12 +146,31 @@ export function createSandboxManager(
         readOnly: true,
       })
     }
+    const toolOutputMount = resolveToolOutputMount(absolute)
+    if (toolOutputMount) mounts.push(toolOutputMount)
     const gitMounts = detectGitMount(absolute)
     const reserved = new Set<string>(['/workspace'])
     for (const m of mounts.slice(1)) reserved.add(m.containerDir)
     for (const g of gitMounts) reserved.add(g.slice(g.lastIndexOf(':') + 1))
     mounts.push(...resolveCustomMounts(config.customMounts, reserved, logger))
     return { mounts, gitMounts }
+  }
+
+  function resolveToolOutputMount(workspaceDir: string): SandboxMount | undefined {
+    const dir = config.toolOutputDir
+    if (!dir) return undefined
+    const resolved = resolve(dir)
+    // Docker rejects read-only bind mounts whose host source does not exist.
+    if (!existsSync(resolved)) {
+      logger.log(`Sandbox: skipping tool-output mount; directory does not exist: ${resolved}`)
+      return undefined
+    }
+    // Skip when it is already covered by the writable workspace mount to avoid a redundant
+    // (and conflicting read-only) overlay of the same path.
+    if (resolved === workspaceDir || resolved.startsWith(workspaceDir + '/')) return undefined
+    // Mount at the identical container path so absolute host references resolve unchanged inside
+    // the container (toContainerPath/rewriteOutput become no-ops for these paths).
+    return { hostDir: resolved, containerDir: resolved, readOnly: true }
   }
 
   function detectGitMount(projectDir: string): string[] {

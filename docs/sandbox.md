@@ -117,6 +117,13 @@ Each sandbox container runs a nested Docker daemon so loops can build and run co
 
 When sandbox shell output exceeds the tool limit, overflow is written to `<worktree>/.forge/tmp/`. The worktree `.forge/` directory is added to git exclude so spill files are not committed.
 
+## Tool-Output Access
+
+opencode spills large tool outputs to its truncation directory (`<opencode-data>/tool-output`, e.g. `~/.local/share/opencode/tool-output`) and references the saved file by absolute host path. Forge makes those overflow files readable from loop and audit sessions in two complementary ways:
+
+- **Container tools** (`sh`, `glob`, `grep`): the directory is bind-mounted **read-only at the identical container path**, so the same absolute path opencode reports resolves inside the container. The mount is added automatically when the directory exists; it is skipped when missing or already covered by the workspace mount.
+- **Host file tools** (`read`): the directory is granted an `external_directory` allow rule in the loop/audit permission ruleset (layered after the blanket external-directory deny), so reads succeed without prompting in the unattended loop. All other external directories remain denied unless added via `loop.allowExternalDirectories`.
+
 ## Resource Defaults
 
 | Option | Default | Docker flag |

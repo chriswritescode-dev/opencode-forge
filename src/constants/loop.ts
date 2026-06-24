@@ -1,3 +1,5 @@
+import { resolveOpencodeToolOutputDir } from '../utils/opencode-paths'
+
 export type PermissionRule = { permission: string; pattern: string; action: 'allow' | 'deny' }
 
 export interface LoopPermissionRulesetOptions {
@@ -11,13 +13,19 @@ export interface LoopPermissionRulesetOptions {
 }
 
 /**
- * Builds `external_directory` allow rules for the configured directories. Each directory
- * produces two rules: an exact-path allow and a recursive (`/**`) allow. Returns an empty
- * array when no directories are configured, preserving the default deny-only behavior.
+ * Builds `external_directory` allow rules. Each directory produces two rules: an exact-path
+ * allow and a recursive (`/**`) allow.
+ *
+ * opencode's tool-output (truncation) directory is always included: opencode spills large tool
+ * outputs there and references the saved file by absolute host path, so loop/audit sessions must
+ * be able to read it without prompting in the unattended loop. User-configured directories are
+ * layered on top. Both are added AFTER the blanket `external_directory` deny so last-match-wins
+ * resolution grants access to these paths while all others stay denied.
  */
 function buildExternalDirectoryAllowRules(allowDirectories: string[] = []): PermissionRule[] {
   const rules: PermissionRule[] = []
-  for (const dir of allowDirectories) {
+  const dirs = [resolveOpencodeToolOutputDir(), ...allowDirectories]
+  for (const dir of dirs) {
     if (typeof dir !== 'string') continue
     const trimmed = dir.trim().replace(/\/+$/, '')
     if (!trimmed) continue
@@ -44,7 +52,8 @@ function buildShellPermissionRules(sandbox: boolean): PermissionRule[] {
  *
  * All loops use worktree isolation with a blanket allow-all, plus
  * explicit deny rules for review tools, plan tools, and loop-management tools.
- * External directory access is always denied to prevent unauthorized file system traversal.
+ * External directory access is denied by default; opencode's tool-output directory (and any
+ * user-configured directories) are then allowed so spilled tool outputs remain readable.
  */
 export function buildLoopPermissionRuleset(options: LoopPermissionRulesetOptions = {}): PermissionRule[] {
   const sandbox = options.sandbox ?? true
@@ -53,7 +62,7 @@ export function buildLoopPermissionRuleset(options: LoopPermissionRulesetOptions
   // Blanket allow-all for worktree loops (isolated environment).
   rules.push({ permission: '*', pattern: '*', action: 'allow' })
 
-  // External directory access is always denied so loop work stays confined to
+  // External directory access is denied by default so loop work stays confined to
   // the isolated worktree, regardless of whether shell commands run on the host
   // or inside a sandbox container.
   rules.push({
@@ -62,8 +71,9 @@ export function buildLoopPermissionRuleset(options: LoopPermissionRulesetOptions
     action: 'deny',
   })
 
-  // Opt-in external directories: allow rules layered after the deny so last-match-wins
-  // grants access to configured paths (e.g. an Obsidian vault) while others stay denied.
+  // Allow rules layered after the deny so last-match-wins grants access: opencode's
+  // tool-output directory (always) plus any opt-in configured paths (e.g. an Obsidian vault),
+  // while all other external directories stay denied.
   rules.push(...buildExternalDirectoryAllowRules(options.allowDirectories))
 
   // Code agent forbidden tools. Placed after *:allow so findLast picks them up.
@@ -96,14 +106,16 @@ export function buildLoopPermissionRuleset(options: LoopPermissionRulesetOptions
  * websearch, list, task) and review tools (review-write, review-delete), but
  * denies direct code mutation tools.
  *
- * External directory access is always denied to prevent unauthorized file system traversal.
+ * External directory access is denied by default; opencode's tool-output directory (and any
+ * user-configured directories) are then allowed so spilled tool outputs remain readable.
  */
 export function buildAuditSessionPermissionRuleset(options: LoopPermissionRulesetOptions = {}): PermissionRule[] {
   const sandbox = options.sandbox ?? true
   const rules: PermissionRule[] = [
     { permission: '*', pattern: '*', action: 'allow' },
     { permission: 'external_directory', pattern: '*', action: 'deny' },
-    // Opt-in external directories: allow rules layered after the deny (last-match-wins).
+    // Allow rules layered after the deny (last-match-wins): tool-output directory (always)
+    // plus any opt-in configured directories.
     ...buildExternalDirectoryAllowRules(options.allowDirectories),
     // Audit sessions must not mutate code.
     { permission: 'edit',        pattern: '*', action: 'deny' },

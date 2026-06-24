@@ -1,20 +1,28 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../src/constants/loop'
+import { resolveOpencodeToolOutputDir } from '../src/utils/opencode-paths'
 import { createLoopPermissionRejectHook, __resetLoopPermissionCache } from '../src/hooks/loop-permission'
 import { createAuditSession } from '../src/utils/audit-session'
 import { createLoopSessionWithWorkspace } from '../src/utils/loop-session'
 import type { Logger } from '../src/types'
+
+const TOOL_OUTPUT_DIR = resolveOpencodeToolOutputDir()
+const TOOL_OUTPUT_ALLOW_RULES = [
+  { permission: 'external_directory', pattern: TOOL_OUTPUT_DIR, action: 'allow' as const },
+  { permission: 'external_directory', pattern: `${TOOL_OUTPUT_DIR}/**`, action: 'allow' as const },
+]
 
 beforeEach(() => {
   __resetLoopPermissionCache()
 })
 
 describe('buildLoopPermissionRuleset', () => {
-  test('worktree + sandbox ruleset: allow-all first, external_directory denied, code-agent denies, then operational denies last', () => {
+  test('worktree + sandbox ruleset: allow-all first, external_directory denied then tool-output allowed, code-agent denies, then operational denies last', () => {
     const rules = buildLoopPermissionRuleset()
     expect(rules).toEqual([
       { permission: '*',                  pattern: '*', action: 'allow' },
       { permission: 'external_directory', pattern: '*', action: 'deny' },
+      ...TOOL_OUTPUT_ALLOW_RULES,
       { permission: 'review-write',       pattern: '*', action: 'deny' },
       { permission: 'review-delete',      pattern: '*', action: 'deny' },
       { permission: 'plan',               pattern: '*', action: 'deny' },
@@ -58,12 +66,26 @@ describe('buildLoopPermissionRuleset', () => {
     expect(rules).toContainEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
   })
 
-  test('does not contain any external_directory allow rule (host/sandbox path mismatch makes /tmp unsafe)', () => {
+  test('always allows the opencode tool-output directory, layered after the blanket deny', () => {
     const rules = buildLoopPermissionRuleset()
-    const externalAllow = rules.find(
-      (r) => r.permission === 'external_directory' && r.action === 'allow',
+    const denyIdx = rules.findIndex(
+      (r) => r.permission === 'external_directory' && r.pattern === '*' && r.action === 'deny',
     )
-    expect(externalAllow).toBeUndefined()
+    expect(denyIdx).toBeGreaterThanOrEqual(0)
+    for (const allowRule of TOOL_OUTPUT_ALLOW_RULES) {
+      const idx = rules.findIndex(
+        (r) => r.permission === allowRule.permission && r.pattern === allowRule.pattern && r.action === allowRule.action,
+      )
+      expect(idx).toBeGreaterThan(denyIdx)
+    }
+  })
+
+  test('does not allow arbitrary external directories beyond tool-output and configured opt-ins', () => {
+    const rules = buildLoopPermissionRuleset()
+    const allowPatterns = rules
+      .filter((r) => r.permission === 'external_directory' && r.action === 'allow')
+      .map((r) => r.pattern)
+    expect(allowPatterns).toEqual([TOOL_OUTPUT_DIR, `${TOOL_OUTPUT_DIR}/**`])
   })
 })
 
