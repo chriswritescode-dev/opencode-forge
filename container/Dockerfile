@@ -57,7 +57,17 @@ RUN useradd -m -u 1000 forge \
 # fallow CLI — dead-code analysis tool — installed globally with the same pnpm
 # setup used by the rest of the sandbox image. Binaries are linked into
 # /usr/local/bin so they are on PATH for arbitrary container UIDs.
-RUN corepack pnpm add -g fallow@2.101.0 --global-bin-dir /usr/local/bin
+#
+# The trailing chmod is load-bearing: this global install runs as root and populates the
+# pnpm store (store/v10/{files,index,projects}) with root-owned 0755 dirs, AFTER the earlier
+# `chmod -R 0777 /home/forge`. Because the container runs as root but agent commands run as the
+# host UID via `docker exec --user`, that UID could not write into the root-owned store and
+# `pnpm install` failed with EACCES when registering the project — which previously drove the
+# agent to relocate the store onto the bind-mounted /workspace (huge, slow file transfers).
+# Re-asserting 0777 here, as the last build step that touches /home/forge, keeps the store
+# writable by any exec UID. Any future build step that runs pnpm as root must do the same.
+RUN corepack pnpm add -g fallow@2.101.0 --global-bin-dir /usr/local/bin \
+    && chmod -R 0777 /home/forge
 
 # Docker Engine (daemon + CLI + buildx + compose) from Docker's official apt
 # repository. This enables Docker-in-Docker: when the container is launched with
