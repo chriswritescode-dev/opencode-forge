@@ -52,7 +52,7 @@ The TUI plugin provides a sidebar widget that displays:
 - Plan viewer with inline editing (view/edit/execute/export tabs)
 - Execution dialog with mode, model, and variant selection
 - Loop details dialog with session statistics
-- Command palette integration (`Forge: Show loops`, `Forge: View plan`, `Forge: Execute plan`)
+- Command palette integration (`Show loops`, `View plan`, `Execute plan`)
 - Model selection dialog with recent model tracking
 
 The TUI communicates with the server via RPC over the opencode bus using `tui.command.execute` events.

@@ -259,7 +259,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
                 type: 'tui.toast.show' as const,
                 properties: {
                   title: 'Sandbox image not found',
-                  message: `Docker image "${sandboxImage}" is missing. Build it from the command palette: "Forge: Build sandbox image", or run: docker build -t ${sandboxImage} "${buildContextDir}"`,
+                  message: `Docker image "${sandboxImage}" is missing. Build it from the command palette: "Build sandbox image", or run: docker build -t ${sandboxImage} "${buildContextDir}"`,
                   variant: 'warning' as const,
                   duration: 10_000,
                 },

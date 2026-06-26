@@ -66,7 +66,7 @@ The server plugin provides the core hooks, tools, agents, plan storage, loop orc
 
 ## Dashboard
 
-Forge includes a read-only observability Dashboard — a standalone Bun HTTP server (`src/dashboard/`) that serves a SolidJS single-page app at `GET /` and JSON state at `GET /api/data`. Launch it from the TUI command palette (`Forge: Open dashboard`) or via `pnpm dashboard`. The dashboard **never mutates** loop, workspace, or storage state.
+Forge includes a read-only observability Dashboard — a standalone Bun HTTP server (`src/dashboard/`) that serves a SolidJS single-page app at `GET /` and JSON state at `GET /api/data`. Launch it from the TUI command palette (`Open dashboard`) or via `pnpm dashboard`. The dashboard **never mutates** loop, workspace, or storage state.
 
 ### Views
 
@@ -245,7 +245,7 @@ The sidebar shows Forge's connection status and version. Captured plans live on 
 
 ### Execution Dialog
 
-Open the dialog from the command palette as `Forge: Execute plan` (default keybind `<leader>f`). The plan is sourced from the most recent architect message in the current session — the marked `<!-- forge-plan:start --> ... <!-- forge-plan:end -->` block is parsed out of the assistant's reply. If no marked plan exists in the session, the dialog will not open and you'll see a toast asking the architect to produce one first.
+Open the dialog from the command palette as `Execute plan` (default keybind `<leader>f`). The plan is sourced from the most recent architect message in the current session — the marked `<!-- forge-plan:start --> ... <!-- forge-plan:end -->` block is parsed out of the assistant's reply. If no marked plan exists in the session, the dialog will not open and you'll see a toast asking the architect to produce one first.
 
 The dialog provides full control over execution parameters:
 
@@ -534,7 +534,7 @@ docker build -t oc-forge-sandbox:latest container/
 
 The image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, and jq.
 
-The `container/Dockerfile` ships with the plugin package. If the image is missing when OpenCode starts, Forge shows a warning toast with a "Forge: Build sandbox image" command in the palette. You can also trigger the build from the command palette at any time by searching for `Forge: Build sandbox image`, which opens a confirmation dialog and runs `docker build` automatically.
+The `container/Dockerfile` ships with the plugin package. If the image is missing when OpenCode starts, Forge shows a warning toast with a "Build sandbox image" command in the palette. You can also trigger the build from the command palette at any time by searching for `Build sandbox image`, which opens a confirmation dialog and runs `docker build` automatically.
 
 Restart OpenCode after changing sandbox configuration.
 

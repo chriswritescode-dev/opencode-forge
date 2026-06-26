@@ -350,7 +350,7 @@ const tui: TuiPlugin = async (api) => {
     commands: [
       {
         name: 'forge.dashboard',
-        title: 'Forge: Open dashboard',
+        title: 'Open dashboard',
         desc: 'Start the Forge dashboard server and open it in the browser',
         category: 'Forge',
         namespace: 'palette',
@@ -358,7 +358,7 @@ const tui: TuiPlugin = async (api) => {
       },
       {
         name: 'forge.sandbox.buildImage',
-        title: 'Forge: Build sandbox image',
+        title: 'Build sandbox image',
         desc: 'Build the Docker sandbox image from the bundled Dockerfile',
         category: 'Forge',
         namespace: 'palette',
@@ -521,7 +521,7 @@ const tui: TuiPlugin = async (api) => {
     commands: [
       {
         name: 'forge.plan.execute',
-        title: 'Forge: Execute plan',
+        title: 'Execute plan',
         desc: 'Open the execution dialog for the current session plan, or paste one if none is found',
         category: 'Forge',
         namespace: 'palette',
@@ -529,7 +529,7 @@ const tui: TuiPlugin = async (api) => {
       },
       {
         name: 'forge.plan.executePasted',
-        title: 'Forge: Execute pasted plan',
+        title: 'Execute pasted plan',
         desc: 'Paste a marked or unmarked plan and open the execution dialog',
         category: 'Forge',
         namespace: 'palette',
