@@ -44,7 +44,7 @@ As of OpenCode 1.17.8, `OPENCODE_EXPERIMENTAL_WORKSPACES=true` is required for t
 export OPENCODE_EXPERIMENTAL_WORKSPACES=true
 ```
 
-Without this, Forge cannot create loop worktrees and `loop` / `/loop` will fail. See [Common Issues](#common-issues) and [Workspace Integration](#workspace-integration) for details.
+Without this, Forge cannot create loop worktrees and `execute-plan` / `/execute-plan` will fail. See [Common Issues](#common-issues) and [Workspace Integration](#workspace-integration) for details.
 
 ## What Forge Adds
 
@@ -160,18 +160,18 @@ Forge provides these tool groups:
 
 - **Plan tools** — `plan-read`, `section-read`
 - **Review tools** — `review-write`, `review-read`, `review-delete`
-- **Loop tools** — `loop`, `loop-cancel`, `loop-status`
+- **Loop tools** — `execute-plan`, `loop-cancel`, `loop-status`
 - **Sandbox shell** — `sh` when a sandbox manager is available
 
 Loops always run in an isolated git worktree; Docker sandbox is used automatically when available.
 
 | Tool | Description |
 |------|-------------|
-| `loop` | Execute a plan using an iterative development loop in an isolated git worktree. Args: `title` required; `plan`, `loopName`, and `hostSessionId` optional. |
+| `execute-plan` | Execute a plan using an iterative development loop in an isolated git worktree, or `mode: new-session` to launch it in a fresh standalone session. Args: `title` required; `plan`, `loopName`, `hostSessionId`, `mode` optional. |
 | `loop-cancel` | Cancel an active loop by worktree name |
 | `loop-status` | List active/recent loops or get detailed status by worktree name, including cumulative token usage when available. Supports `restart=true` to restart any non-completed loop (`running`, `cancelled`, `errored`, `stalled`). Completed loops are history-only and cannot be restarted. |
 
-`loop` reads the current session's captured plan when `plan` is omitted. `maxIterations`, execution model, auditor model, and sandbox behavior come from configuration or the TUI execution dialog, not direct `loop` tool arguments.
+`execute-plan` reads the current session's captured plan when `plan` is omitted. `maxIterations`, execution model, auditor model, and sandbox behavior come from configuration or the TUI execution dialog, not direct `execute-plan` tool arguments.
 
 ## Slash Commands
 
@@ -179,7 +179,7 @@ Loops always run in an isolated git worktree; Docker sandbox is used automatical
 |---------|-------------|-------|
 | `/review` | Run a code review on current changes | auditor (subtask) |
 | `/review-plan` | Review a completed implementation against its original plan | auditor (subtask) |
-| `/loop` | Start an iterative development loop in a worktree | code |
+| `/execute-plan` | Start an iterative development loop in a worktree (or a fresh session with `mode: new-session`) | code |
 | `/loop-status` | Check status of all active loops | code |
 | `/loop-cancel` | Cancel the active loop | code |
 
@@ -255,7 +255,7 @@ Choose from three execution modes:
 
 1. **New session** — Creates a fresh Code session and sends the plan as the initial prompt
 2. **Execute here** — Takes over the current session immediately with the plan
-3. **Loop** — Prompts the architect to launch an iterative coding/auditing loop via the `loop` tool in an isolated git worktree (Docker sandbox used automatically when available)
+3. **Loop** — Prompts the architect to launch an iterative coding/auditing loop via the `execute-plan` tool in an isolated git worktree (Docker sandbox used automatically when available)
 
 #### Model Selection
 
@@ -357,7 +357,7 @@ After the architect presents a summary, the user chooses an execution mode from 
 
 - **New session** — Creates a new Code session and sends the plan as the initial prompt.
 - **Execute here** — The code agent takes over the current session immediately with the plan.
-- **Loop** — The architect is prompted to launch an iterative coding/auditing loop via the `loop` tool, which creates an isolated git worktree and provisions a Docker sandbox when available.
+- **Loop** — The architect is prompted to launch an iterative coding/auditing loop via the `execute-plan` tool, which creates an isolated git worktree and provisions a Docker sandbox when available.
 
 | Mode | When to choose it |
 |------|-------------------|
@@ -367,7 +367,7 @@ After the architect presents a summary, the user chooses an execution mode from 
 
 The dialog also lets you pick the execution model and auditor model at launch time. Those selections are remembered per project and pre-filled on later launches. Optional **variant selectors** accompany each model selector, letting you choose provider-specific reasoning or thinking-effort levels (e.g., `low`, `high`, `max`) when the model exposes them. Variant selections are also persisted per project.
 
-For New session and Execute here, execution is immediate — there are no additional LLM calls between approval and execution. The system intercepts the user's approval answer, reads the cached plan, and dispatches it programmatically to the code agent. The architect never processes the approval response. For Loop mode, the architect is instead instructed to launch the loop via the `loop` tool.
+For New session and Execute here, execution is immediate — there are no additional LLM calls between approval and execution. The system intercepts the user's approval answer, reads the cached plan, and dispatches it programmatically to the code agent. The architect never processes the approval response. For Loop mode, the architect is instead instructed to launch the loop via the `execute-plan` tool.
 
 ### Model Selection Priority
 
@@ -445,12 +445,12 @@ On model errors during execution, automatic fallback to the default model kicks 
 ### Safety
 
 - `git push` is denied inside active loop sessions
-- Tools like `question` and `loop` are blocked to prevent recursive loops and keep execution autonomous
+- Tools like `question` and `execute-plan` are blocked to prevent recursive loops and keep execution autonomous
 
 ### Management
 
-- **Slash commands**: `/loop` to start, `/loop-cancel` to cancel
-- **Tools**: `loop` to start with parameters, `loop-status` for checking progress (with restart capability), `loop-cancel` to cancel
+- **Slash commands**: `/execute-plan` to start, `/loop-cancel` to cancel
+- **Tools**: `execute-plan` to start with parameters, `loop-status` for checking progress (with restart capability), `loop-cancel` to cancel
 
 ### Loop termination
 
@@ -477,7 +477,7 @@ Workspace integration requires the **experimental workspace runtime** enabled in
 ### When workspace integration is active
 
 - **Env var set, OpenCode ≥ 1.17.8** → Forge can create the worktree workspace, bind loop sessions to it, and show the loop as a switchable workspace in the TUI.
-- **Env var unset or older OpenCode** → `experimental.workspace.create` is unavailable or no-ops, Forge cannot create the loop worktree, and `loop` / `/loop` fails before iteration starts.
+- **Env var unset or older OpenCode** → `experimental.workspace.create` is unavailable or no-ops, Forge cannot create the loop worktree, and `execute-plan` / `/execute-plan` fails before iteration starts.
 
 ### What it does
 
@@ -502,13 +502,13 @@ If initial workspace creation fails at startup — env var unset, OpenCode versi
 
 ## Common Issues
 
-### `loop` / `/loop` fails to start
+### `execute-plan` / `/execute-plan` fails to start
 
 **Most common cause:** `OPENCODE_EXPERIMENTAL_WORKSPACES=true` was not set in the environment that launched OpenCode. See [Quick Start](#quick-start) for setup.
 
 Symptoms include:
 
-- `loop` or `/loop` returns an internal error before the first coding session starts
+- `execute-plan` or `/execute-plan` returns an internal error before the first coding session starts
 - Forge logs contain `createBuiltinWorktreeWorkspace: workspace.create threw`, `workspace.create returned no workspace id`, or `handleStartLoop: failed to create builtin worktree workspace`
 - No loop worktree appears in the TUI workspace switcher
 

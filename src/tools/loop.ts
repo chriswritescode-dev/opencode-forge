@@ -46,13 +46,15 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
    
 
   return {
-    loop: tool({
-      description: 'Execute a plan using an iterative development loop in an isolated git worktree (sandboxed).',
+    'execute-plan': tool({
+      description: "Execute a plan using an iterative development loop in an isolated git worktree (sandboxed). Set mode='new-session' to instead launch the plan in a fresh standalone session running the code agent (no worktree, no loop).",
       args: {
         plan: z.string().optional().describe('The full implementation plan. If omitted, reads from the session plan store.'),
         title: z.string().describe('Short title for the session (shown in session list)'),
         loopName: z.string().optional().describe('Name for the loop (max 25 chars, auto-incremented if collision exists)'),
         hostSessionId: z.string().optional().describe('Host session ID for post-completion redirect'),
+        mode: z.enum(['loop', 'new-session']).optional().default('loop')
+          .describe("Execution mode. 'loop' (default) runs an iterative loop in an isolated git worktree. 'new-session' launches the plan in a fresh standalone session running the code agent (no worktree, no loop)."),
       },
       execute: async (args, context) => {
         logger.log(`loop: creating loop for plan="${args.title}"`)
@@ -83,12 +85,44 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           source = { kind: 'inline', planText: args.plan }
         }
 
-        const sessionTitle = formatPlanSessionTitle(args.title)
         const executionModel = config.executionModel
+        const { service, execCtx } = makeService(context.sessionID)
+
+        if (args.mode === 'new-session') {
+          const result = await service.dispatch(execCtx, {
+            type: 'plan.execute.newSession',
+            source,
+            title: args.title,
+            executionModel,
+            lifecycle: {
+              selectSession: true,
+              selectSessionTiming: 'after-prompt',
+              deleteSessionOnPromptFailure: true,
+            },
+          })
+
+          if (!result.ok) {
+            logger.error('loop: failed to start new session', result.error)
+            return `Failed to start new session: ${result.error.message}`
+          }
+
+          const modelInfo = result.data.modelUsed ?? 'default'
+          return [
+            'New session started!',
+            '',
+            `Session: ${result.data.sessionId}`,
+            `Title: ${result.data.title}`,
+            `Model: ${modelInfo}`,
+            '',
+            'The plan was sent to the code agent in a fresh session (no worktree, no loop).',
+            'It is a standalone session and is not tracked by loop-status or loop-cancel.',
+            'Your job is done — just confirm to the user that the new session has been launched.',
+          ].join('\n')
+        }
+
+        const sessionTitle = formatPlanSessionTitle(args.title)
         const auditorModel = config.auditorModel
         const loopName = args.loopName ? slugify(args.loopName) : slugify(sessionTitle)
-
-        const { service, execCtx } = makeService(context.sessionID)
 
         const command = buildStartLoopCommand({
           source,

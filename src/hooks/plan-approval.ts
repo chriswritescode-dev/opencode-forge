@@ -59,7 +59,7 @@ function scheduleApprovalDispatch(
 
 const LOOP_BLOCKED_TOOLS: Record<string, string> = {
   question: 'The question tool is not available during a loop. Do not ask questions — continue working on the task autonomously.',
-  loop: 'The loop tool is not available during a loop. Focus on executing the current plan.',
+  'execute-plan': 'The execute-plan tool is not available during a loop. Focus on executing the current plan.',
 }
 
 interface PendingExecution {
@@ -215,8 +215,8 @@ export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlock
           }
           
           if (matchedLabel === 'Loop') {
-            output.output = `${output.output}\n\n<system-reminder>\nThe user selected "Loop". Launch the loop now by calling the \`loop\` tool with a short \`title\`. The implementation plan is already stored for this session, so you do not need to pass the plan text. Do not ask any further questions and do not call the question tool again — just call the \`loop\` tool.\n</system-reminder>`
-            logger.log('Plan approval: "Loop" selected — deferring to agent loop tool call (auto-dispatch removed)')
+            output.output = `${output.output}\n\n<system-reminder>\nThe user selected "Loop". Launch the loop now by calling the \`execute-plan\` tool with a short \`title\`. The implementation plan is already stored for this session, so you do not need to pass the plan text. Do not ask any further questions and do not call the question tool again — just call the \`execute-plan\` tool.\n</system-reminder>`
+            logger.log('Plan approval: "Loop" selected — deferring to agent execute-plan tool call (auto-dispatch removed)')
             return
           }
           

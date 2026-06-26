@@ -102,7 +102,7 @@ describe('createForgePlugin', () => {
     expect(hooks.tool?.['ast-grep-search']).toBeUndefined()
     expect(hooks.tool?.['ast-grep-scan']).toBeUndefined()
     // Loop tools should be registered
-    expect(hooks.tool?.['loop']).toBeDefined()
+    expect(hooks.tool?.['execute-plan']).toBeDefined()
     expect(hooks.tool?.['loop-cancel']).toBeDefined()
     expect(hooks.tool?.['loop-status']).toBeDefined()
   })

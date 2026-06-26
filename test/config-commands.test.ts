@@ -25,11 +25,11 @@ describe('createConfigHandler commands', () => {
     expect(reviewPlan.agent).toBe('auditor')
     expect(reviewPlan.subtask).toBe(true)
 
-    const loop = commands.loop
-    expect(loop).toBeDefined()
-    expect(loop.template).toContain('Execute the Loop')
-    expect(loop.agent).toBe('code')
-    expect(loop.subtask).toBe(false)
+    const executePlan = commands['execute-plan']
+    expect(executePlan).toBeDefined()
+    expect(executePlan.template).toContain('Execute the Plan')
+    expect(executePlan.agent).toBe('code')
+    expect(executePlan.subtask).toBe(false)
 
     const loopStatus = commands['loop-status']
     expect(loopStatus).toBeDefined()

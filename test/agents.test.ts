@@ -23,7 +23,7 @@ describe('Agent definitions', () => {
       expect(architectAgent.tools?.exclude).toContain('plan')
       expect(architectAgent.tools?.exclude).toContain('plan_enter')
       expect(architectAgent.tools?.exclude).toContain('plan_exit')
-      expect(architectAgent.tools?.exclude).not.toContain('loop')
+      expect(architectAgent.tools?.exclude).not.toContain('execute-plan')
     })
 
     test('architect agent allows question tool', () => {
@@ -53,7 +53,7 @@ describe('Agent definitions', () => {
       expect(auditorAgent.tools?.exclude).toContain('multiedit')
       expect(auditorAgent.tools?.exclude).toContain('plan')
       expect(auditorAgent.tools?.exclude).toContain('plan_exit')
-      expect(auditorAgent.tools?.exclude).toContain('loop')
+      expect(auditorAgent.tools?.exclude).toContain('execute-plan')
       expect(auditorAgent.tools?.exclude).toContain('loop-cancel')
       expect(auditorAgent.tools?.exclude).toContain('loop-status')
     })
@@ -64,7 +64,7 @@ describe('Agent definitions', () => {
       expect(codeAgent.tools?.exclude).toContain('plan')
       expect(codeAgent.tools?.exclude).toContain('plan_enter')
       expect(codeAgent.tools?.exclude).toContain('plan_exit')
-      expect(codeAgent.tools?.exclude).not.toContain('loop')
+      expect(codeAgent.tools?.exclude).not.toContain('execute-plan')
       expect(codeAgent.tools?.exclude).not.toContain('loop-cancel')
       expect(codeAgent.tools?.exclude).not.toContain('loop-status')
     })
