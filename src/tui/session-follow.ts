@@ -16,7 +16,7 @@ export function getCurrentRouteSessionId(api: TuiPluginApi): string | null {
 
 export interface FollowDecisionInput {
   /** Session that was just created (from a session.created event). */
-  newSession: { id: string; workspaceID?: string | undefined }
+  newSession: { id: string; workspaceID?: string | undefined; parentID?: string | undefined }
   /** Session the user is currently viewing, or null when not on a session route. */
   currentSession: { id: string; workspaceID?: string | undefined } | null
 }
@@ -28,6 +28,11 @@ export interface FollowDecisionInput {
  * inside the workspace the user is currently in, that is virtually always a
  * loop rotation (coding → audit → coding) and the TUI should follow.
  *
+ * Sessions with a `parentID` are subagents/children (e.g. Task-tool spawns)
+ * that inherit the loop's workspace but are NOT loop rotations. They must not
+ * yank the user away from the loop they are watching. Loop rotation sessions
+ * are created without a parent, so parentID is the discriminator.
+ *
  * Returning true means the TUI should navigate from `currentSession.id` to
  * `newSession.id`. The rule deliberately does NOT yank users who have
  * navigated away from the loop's workspace.
@@ -36,6 +41,7 @@ export function shouldFollowNewSession(input: FollowDecisionInput): boolean {
   const { newSession, currentSession } = input
   if (!currentSession) return false
   if (currentSession.id === newSession.id) return false
+  if (newSession.parentID) return false
   if (!newSession.workspaceID) return false
   if (currentSession.workspaceID !== newSession.workspaceID) return false
   return true
@@ -90,10 +96,11 @@ export function attachLoopSessionFollower(api: TuiPluginApi): () => void {
       return
     }
     if (!shouldFollowNewSession({
-      newSession: { id: newSession.id, workspaceID: newWorkspaceID },
+      newSession: { id: newSession.id, workspaceID: newWorkspaceID, parentID: newSession.parentID },
       currentSession: { id: currentSession.id, workspaceID: currentSession.workspaceID },
     })) {
-      tuiFollowDebug(`skip session=${newSession.id} workspace=${newWorkspaceID} reason=workspace-mismatch current=${currentSessionID} currentWorkspace=${currentSession.workspaceID ?? 'none'}`)
+      const reason = newSession.parentID ? 'subagent-child-session' : 'workspace-mismatch'
+      tuiFollowDebug(`skip session=${newSession.id} workspace=${newWorkspaceID} reason=${reason} current=${currentSessionID} currentWorkspace=${currentSession.workspaceID ?? 'none'} parent=${newSession.parentID ?? 'none'}`)
       return
     }
 
