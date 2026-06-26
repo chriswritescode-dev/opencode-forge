@@ -213,6 +213,51 @@ describe('createForgeSessionAttachHook', () => {
     expect(input.sandboxContainer).toBe('forge-inline-loop')
   })
 
+  test('chat.message fallback degrades to worktree-only when Docker manager is absent', async () => {
+    const deps = buildHookDeps({
+      // No sandboxManager: Docker is disabled. A container cannot exist, so the loop
+      // must run worktree-only (bash allowed) regardless of the workspace's stale
+      // sandboxEnabled flag.
+      sandboxManager: undefined,
+      sessionGet: vi.fn().mockResolvedValue({
+        id: 'new_sess',
+        workspaceID: 'ws_inline',
+        directory: '/tmp/wt/inline',
+        projectID: 'proj_1',
+      }),
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_inline',
+          type: 'forge',
+          directory: '/tmp/wt/inline',
+          extra: {
+            loopName: 'inline-loop',
+            forgeLoop: {
+              title: 'Inline Loop',
+              planSource: 'inline',
+              planText: '# Inline Plan\n\nInline stuff.',
+              initialPromptOwner: 'tui',
+              pendingAttachStartedAt: Date.now(),
+              // Stale flag left over from when Docker was enabled.
+              sandboxEnabled: true,
+              sandboxContainer: 'forge-inline-loop',
+            },
+          },
+        },
+      ]),
+      loopsRepoGet: vi.fn().mockReturnValue(null),
+    })
+
+    const handler = createForgeSessionMessageAttachHook(deps as any)
+
+    await handler({ sessionID: 'new_sess' })
+
+    expect(mockAttachLoop).toHaveBeenCalledTimes(1)
+    const [, , input] = mockAttachLoop.mock.calls[0]
+    expect(input.sandboxEnabled).toBe(false)
+    expect(input.sandboxContainer).toBeUndefined()
+  })
+
   test('chat.message fallback removes expired pending attach workspace without binding', async () => {
     const workspaceRemove = vi.fn().mockResolvedValue(undefined)
     const tuiPublish = vi.fn().mockResolvedValue(undefined)

@@ -51,6 +51,19 @@ export async function resolveSandboxContextForLoop(
   }
 }
 
-export function isSandboxEnabled(_config: PluginConfig, sandboxManager: unknown): boolean {
+/**
+ * Determines whether sandboxed execution is in effect.
+ *
+ * A sandbox is only usable when BOTH conditions hold:
+ * - the user has not opted out via `sandbox.enabled: false`, and
+ * - a sandbox manager was constructed (Docker mode active).
+ *
+ * Honoring the config here (not just the manager's existence) keeps this the single
+ * source of truth for the bash/sh permission routing: when the sandbox is off, loops
+ * run worktree-only and host `bash` stays allowed rather than being denied in favor of
+ * an `sh` tool that has no container to run in.
+ */
+export function isSandboxEnabled(config: PluginConfig | undefined, sandboxManager: unknown): boolean {
+  if (config?.sandbox?.enabled === false) return false
   return !!sandboxManager
 }

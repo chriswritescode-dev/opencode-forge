@@ -2,7 +2,7 @@ import type { Logger } from '../types'
 import type { ForgeClient } from '../client/port'
 import type { ForgeExecutionServiceDeps, PlanSource } from '../services/execution'
 import { attachLoopToSession } from '../services/execution'
-import { resolveSandboxContextForLoop } from '../sandbox/context'
+import { resolveSandboxContextForLoop, isSandboxEnabled } from '../sandbox/context'
 import { classifyForgeWorkspace, isPendingAttachWorkspace } from '../workspace/classify-stale'
 import { removeForgeWorkspaceWithContext } from '../workspace/remove-with-context'
 import { getForgeWorkspaceLoopName } from '../workspace/forge-worktree'
@@ -329,7 +329,12 @@ async function resolveAttachSandbox(
   loopName: string,
   worktreeDir: string | undefined,
 ): Promise<{ enabled: boolean; containerName?: string }> {
+  // Worktree-only when the loop opted out, or when the sandbox isn't actually usable
+  // (sandbox disabled via config, or no Docker manager). Without a manager a sandbox
+  // container cannot exist, so the workspace's stale `sandboxEnabled` flag must not be
+  // trusted — degrade to host worktree execution so `bash` stays allowed.
   if (cfg?.sandboxEnabled === false) return { enabled: false }
+  if (!isSandboxEnabled(deps.execDeps.config, deps.execDeps.sandboxManager)) return { enabled: false }
 
   const sandbox = await resolveSandboxContextForLoop(
     deps.execDeps.sandboxManager,
@@ -341,8 +346,8 @@ async function resolveAttachSandbox(
     return { enabled: true, containerName: sandbox.containerName }
   }
 
-  if (!deps.execDeps.sandboxManager || !worktreeDir) {
-    return { enabled: cfg?.sandboxEnabled ?? false, containerName: cfg?.sandboxContainer }
+  if (!worktreeDir) {
+    return { enabled: false }
   }
 
   return { enabled: cfg?.sandboxEnabled ?? false, containerName: cfg?.sandboxContainer }

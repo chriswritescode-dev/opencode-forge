@@ -14,6 +14,19 @@ describe('isSandboxEnabled', () => {
   it('returns false when sandbox config is absent', () => {
     expect(isSandboxEnabled({}, undefined)).toBe(false)
   })
+
+  it('returns false when sandbox is explicitly disabled even if a manager is present', () => {
+    expect(isSandboxEnabled({ sandbox: { mode: 'docker' as const, enabled: false } }, {} as unknown)).toBe(false)
+  })
+
+  it('returns true when sandbox is explicitly enabled and a manager is present', () => {
+    expect(isSandboxEnabled({ sandbox: { mode: 'docker' as const, enabled: true } }, {} as unknown)).toBe(true)
+  })
+
+  it('tolerates an undefined config', () => {
+    expect(isSandboxEnabled(undefined, {} as unknown)).toBe(true)
+    expect(isSandboxEnabled(undefined, undefined)).toBe(false)
+  })
 })
 
 describe('resolveSandboxContextForLoop', () => {
