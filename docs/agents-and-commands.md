@@ -27,7 +27,7 @@ Excluded tools:
 - `multiedit`
 - `plan`
 - `plan_exit`
-- `loop`
+- `execute-plan`
 - `loop-cancel`
 - `loop-status`
 
@@ -39,7 +39,7 @@ Source: [`AUDITOR_TOOL_EXCLUDES`](../src/agents/auditor.ts).
 |---|---|---|---|
 | `/review` | Run a code review. | `auditor` | yes |
 | `/review-plan` | Review a completed implementation against its original plan. | `auditor` | yes |
-| `/loop` | Start an iterative development loop in a worktree. | `code` | no |
+| `/execute-plan` | Start an iterative development loop in a worktree (or launch the plan in a fresh standalone session with `mode: new-session`). | `code` | no |
 | `/loop-status` | Check status of all active loops. | `code` | no |
 | `/loop-cancel` | Cancel the active loop. | `code` | no |
 

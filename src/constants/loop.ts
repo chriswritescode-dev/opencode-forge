@@ -97,7 +97,7 @@ export function buildLoopPermissionRuleset(options: LoopPermissionRulesetOptions
     { permission: 'plan',          pattern: '*', action: 'deny' },
     { permission: 'plan_enter',    pattern: '*', action: 'deny' },
     { permission: 'plan_exit',     pattern: '*', action: 'deny' },
-    { permission: 'loop',          pattern: '*', action: 'deny' },
+    { permission: 'execute-plan',  pattern: '*', action: 'deny' },
     { permission: 'question',      pattern: '*', action: 'deny' },
   )
 
@@ -141,7 +141,7 @@ export function buildAuditSessionPermissionRuleset(options: LoopPermissionRulese
     { permission: 'plan',         pattern: '*', action: 'deny' },
     { permission: 'plan_enter',   pattern: '*', action: 'deny' },
     { permission: 'plan_exit',    pattern: '*', action: 'deny' },
-    { permission: 'loop',         pattern: '*', action: 'deny' },
+    { permission: 'execute-plan', pattern: '*', action: 'deny' },
     { permission: 'question',     pattern: '*', action: 'deny' },
     { permission: 'loop-cancel',  pattern: '*', action: 'deny' },
     { permission: 'loop-status',  pattern: '*', action: 'deny' },

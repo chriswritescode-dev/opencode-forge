@@ -46,7 +46,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
    
 
   return {
-    loop: tool({
+    'execute-plan': tool({
       description: "Execute a plan using an iterative development loop in an isolated git worktree (sandboxed). Set mode='new-session' to instead launch the plan in a fresh standalone session running the code agent (no worktree, no loop).",
       args: {
         plan: z.string().optional().describe('The full implementation plan. If omitted, reads from the session plan store.'),
@@ -85,11 +85,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           source = { kind: 'inline', planText: args.plan }
         }
 
-        const sessionTitle = formatPlanSessionTitle(args.title)
         const executionModel = config.executionModel
-        const auditorModel = config.auditorModel
-        const loopName = args.loopName ? slugify(args.loopName) : slugify(sessionTitle)
-
         const { service, execCtx } = makeService(context.sessionID)
 
         if (args.mode === 'new-session') {
@@ -119,9 +115,14 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             `Model: ${modelInfo}`,
             '',
             'The plan was sent to the code agent in a fresh session (no worktree, no loop).',
+            'It is a standalone session and is not tracked by loop-status or loop-cancel.',
             'Your job is done — just confirm to the user that the new session has been launched.',
           ].join('\n')
         }
+
+        const sessionTitle = formatPlanSessionTitle(args.title)
+        const auditorModel = config.auditorModel
+        const loopName = args.loopName ? slugify(args.loopName) : slugify(sessionTitle)
 
         const command = buildStartLoopCommand({
           source,

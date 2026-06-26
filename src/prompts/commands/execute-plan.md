@@ -2,9 +2,9 @@
 
 Ensure you have a clear implementation plan ready.
 
-## Step 2: Execute the Loop
+## Step 2: Execute the Plan
 
-Run `loop` with:
+Run `execute-plan` with:
 - plan: Optional full implementation plan. If omitted, Forge reads the captured plan for the current session.
 - title: Required short descriptive title.
 - loopName: Optional loop name. Forge slugifies it and auto-increments on collision.

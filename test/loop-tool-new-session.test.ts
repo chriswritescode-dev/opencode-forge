@@ -14,21 +14,7 @@ import Database from 'better-sqlite3'
 import { setupLoopsTestDb } from './helpers/loops-test-db'
 import { createFakeForgeClient } from './helpers/fake-client'
 import { createPendingTeardownRegistry } from '../src/workspace/pending-teardown'
-import type { WorkspaceStatusRegistry } from '../src/utils/workspace-status-registry'
-
-/**
- * Workspace status registry where awaitConnected resolves immediately.
- * Avoids 5s timeouts when the execution service waits for workspace
- * connection events that mock clients never fire.
- */
-function createNoWaitWorkspaceStatusRegistry(): WorkspaceStatusRegistry {
-  return {
-    recordEvent: () => {},
-    getStatus: () => 'connected' as const,
-    awaitConnected: async () => ({ connected: true, elapsedMs: 0, source: 'cached' as const }),
-    primeFromSnapshot: () => {},
-  }
-}
+import { createNoWaitWorkspaceStatusRegistry } from './helpers/workspace-status-registry'
 
 const TEST_DIR = '/tmp/opencode-loop-new-session-test-' + Date.now()
 
@@ -90,7 +76,7 @@ describe('loop tool mode=new-session', () => {
   test('mode="new-session" creates a session, prompts code agent, and does NOT create a worktree', async () => {
     const { tools, forgeClient } = setupTools()
 
-    const result = await tools.loop.execute(
+    const result = await tools['execute-plan'].execute(
       { title: 'Add feature', plan: '# Plan\nDo the thing', mode: 'new-session' },
       { sessionID: 'src-session' } as any,
     )
@@ -113,29 +99,20 @@ describe('loop tool mode=new-session', () => {
     expect(result).not.toContain('Memory loop activated')
   })
 
-  test('default mode runs the iterative loop (worktree created)', async () => {
+  // Default (mode omitted) and explicit mode='loop' both run the iterative loop.
+  test.each([
+    ['default mode (omitted)', undefined],
+    ['explicit mode="loop"', 'loop' as const],
+  ])('%s runs the iterative loop (worktree created)', async (_label, mode) => {
     const { tools, forgeClient } = setupTools()
 
-    const result = await tools.loop.execute(
-      { title: 'Add feature', plan: '# Plan\nDo the thing' },
+    const result = await tools['execute-plan'].execute(
+      { title: 'Add feature', plan: '# Plan\nDo the thing', ...(mode ? { mode } : {}) },
       { sessionID: 'src-session' } as any,
     )
 
     // Loop path either creates a workspace via the execution service
     // or returns the "Memory loop activated" message
-    const workspaceCreated = (forgeClient.workspace.create as any).mock.calls.length > 0
-    const hasLoopMessage = typeof result === 'string' && result.includes('Memory loop activated')
-    expect(workspaceCreated || hasLoopMessage).toBe(true)
-  })
-
-  test('mode="loop" is equivalent to default', async () => {
-    const { tools, forgeClient } = setupTools()
-
-    const result = await tools.loop.execute(
-      { title: 'Add feature', plan: '# Plan\nDo the thing', mode: 'loop' },
-      { sessionID: 'src-session' } as any,
-    )
-
     const workspaceCreated = (forgeClient.workspace.create as any).mock.calls.length > 0
     const hasLoopMessage = typeof result === 'string' && result.includes('Memory loop activated')
     expect(workspaceCreated || hasLoopMessage).toBe(true)

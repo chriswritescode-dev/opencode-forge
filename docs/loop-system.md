@@ -170,6 +170,8 @@ Outstanding `severity: 'bug'` findings block loop completion — the loop termin
 
 Loops always run in an isolated git worktree. Sandbox is optional: when Docker is available and `sandbox.mode = 'docker'` is configured, a sandbox container is provisioned automatically; otherwise the loop runs in worktree-only mode.
 
+> Note: this applies to the `execute-plan` tool's default `mode: loop`. The same tool also accepts `mode: new-session`, which bypasses the loop entirely and runs the plan in a fresh standalone session with no worktree or sandbox (see [Tools Reference](tools.md#execute-plan)).
+
 ```mermaid
 graph TD
     A[loop tool invoked] --> B[Create worktree]
@@ -277,5 +279,5 @@ Cancellation:
 
 Inside active loop sessions:
 - `git push` is denied (permission hook)
-- `loop` is blocked (tool hooks)
+- `execute-plan` is blocked (tool hooks)
 - `question` is blocked (tool hooks)

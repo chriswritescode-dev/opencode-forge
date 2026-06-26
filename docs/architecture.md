@@ -142,7 +142,7 @@ OpenCode Forge integrates with OpenCode through several hook points. The plugin 
 Loops are autonomous and cannot answer permission prompts, but OpenCode's default subagent ruleset falls back to `ask` for most tools. To prevent deadlocks, `createLoopPermissionRejectHook` listens for `session.created` events. When the new session resolves to an active loop, the hook calls `v2.session.update()` to overwrite the child session's `permission` ruleset:
 
 - If the parent session has an allow-all ruleset (e.g. an auditor subagent), the parent's ruleset is inherited so the child stays under the same constraints.
-- Otherwise the default loop ruleset from `buildLoopPermissionRuleset()` (`src/constants/loop.ts`) is applied — blanket allow-all inside the worktree, with explicit denies for `external_directory`, `git push *`, `review-write`, `review-delete`, `plan*`, `loop`, `loop-cancel`, `loop-status`.
+- Otherwise the default loop ruleset from `buildLoopPermissionRuleset()` (`src/constants/loop.ts`) is applied — blanket allow-all inside the worktree, with explicit denies for `external_directory`, `git push *`, `review-write`, `review-delete`, `plan*`, `execute-plan`, `loop-cancel`, `loop-status`.
 
 A `PATCHED_SESSIONS` set deduplicates retries. Audit-only subagents use the stricter `buildAuditSessionPermissionRuleset()` (read-only, denies `edit`/`write`/`multiedit`/`apply_patch` and destructive git/`rm`/`mv`).
 

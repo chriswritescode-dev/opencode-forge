@@ -28,7 +28,7 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'plan',               pattern: '*', action: 'deny' },
       { permission: 'plan_enter',         pattern: '*', action: 'deny' },
       { permission: 'plan_exit',          pattern: '*', action: 'deny' },
-      { permission: 'loop',               pattern: '*', action: 'deny' },
+      { permission: 'execute-plan',       pattern: '*', action: 'deny' },
       { permission: 'question',           pattern: '*', action: 'deny' },
       { permission: 'bash',               pattern: '*', action: 'deny' },
       { permission: 'sh',                 pattern: '*', action: 'allow' },
@@ -54,7 +54,7 @@ describe('buildLoopPermissionRuleset', () => {
   })
 
   test('EMITS session-level denies for code-agent tool exclusions (auditor now runs in separate session)', () => {
-    const required = ['review-write', 'review-delete', 'plan', 'plan_enter', 'plan_exit', 'loop', 'question']
+    const required = ['review-write', 'review-delete', 'plan', 'plan_enter', 'plan_exit', 'execute-plan', 'question']
     const rules = buildLoopPermissionRuleset()
     for (const tool of required) {
       expect(rules.find((r) => r.permission === tool && r.action === 'deny')).toBeDefined()
@@ -109,7 +109,7 @@ describe('buildAuditSessionPermissionRuleset', () => {
     expect(rules.some(r => r.permission === 'plan' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'plan_enter' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'plan_exit' && r.pattern === '*' && r.action === 'deny')).toBe(true)
-    expect(rules.some(r => r.permission === 'loop' && r.pattern === '*' && r.action === 'deny')).toBe(true)
+    expect(rules.some(r => r.permission === 'execute-plan' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'question' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'loop-cancel' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'loop-status' && r.pattern === '*' && r.action === 'deny')).toBe(true)
@@ -130,7 +130,7 @@ describe('buildAuditSessionPermissionRuleset', () => {
     expect(rules.some(r => r.permission === 'plan' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'plan_enter' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'plan_exit' && r.pattern === '*' && r.action === 'deny')).toBe(true)
-    expect(rules.some(r => r.permission === 'loop' && r.pattern === '*' && r.action === 'deny')).toBe(true)
+    expect(rules.some(r => r.permission === 'execute-plan' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'question' && r.pattern === '*' && r.action === 'deny')).toBe(true)
   })
 

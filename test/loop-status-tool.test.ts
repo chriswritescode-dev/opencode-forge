@@ -17,21 +17,7 @@ import Database from 'better-sqlite3'
 import { setupLoopsTestDb } from './helpers/loops-test-db'
 import { createFakeForgeClient } from './helpers/fake-client'
 import { createPendingTeardownRegistry } from '../src/workspace/pending-teardown'
-import type { WorkspaceStatusRegistry } from '../src/utils/workspace-status-registry'
-
-/**
- * Creates a workspace status registry where awaitConnected resolves immediately.
- * This avoids 5s timeouts when the execution service waits for workspace
- * connection events that mock clients never fire.
- */
-function createNoWaitWorkspaceStatusRegistry(): WorkspaceStatusRegistry {
-  return {
-    recordEvent: () => {},
-    getStatus: () => 'connected' as const,
-    awaitConnected: async () => ({ connected: true, elapsedMs: 0, source: 'cached' as const }),
-    primeFromSnapshot: () => {},
-  }
-}
+import { createNoWaitWorkspaceStatusRegistry } from './helpers/workspace-status-registry'
 
 const TEST_DIR = '/tmp/opencode-loop-status-test-' + Date.now()
 

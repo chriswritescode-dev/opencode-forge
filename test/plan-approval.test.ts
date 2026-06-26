@@ -130,7 +130,7 @@ describe('Plan Approval Tool Interception', () => {
 
     const LOOP_BLOCKED_TOOLS: Record<string, string> = {
       question: 'The question tool is not available during a loop. Do not ask questions — continue working on the task autonomously.',
-      loop: 'The loop tool is not available during a loop. Focus on executing the current plan.',
+      'execute-plan': 'The execute-plan tool is not available during a loop. Focus on executing the current plan.',
     }
 
     if (!(tool in LOOP_BLOCKED_TOOLS)) return
@@ -289,10 +289,10 @@ describe('Plan Approval Tool Interception', () => {
   test('Loop blocking works for loop tool', () => {
     const output = { title: '', output: 'test', metadata: {} }
 
-    simulateToolExecuteAfter('loop', {}, output, true)
+    simulateToolExecuteAfter('execute-plan', {}, output, true)
 
     expect(output.title).toBe('Tool blocked')
-    expect(output.output).toContain('loop tool is not available')
+    expect(output.output).toContain('execute-plan tool is not available')
   })
 
   test('Loop blocking does not affect non-blocked tools', () => {
@@ -307,7 +307,7 @@ describe('Plan Approval Tool Interception', () => {
   test('Loop blocking only applies when loop is active', () => {
     const output = { title: '', output: 'test', metadata: {} }
 
-    simulateToolExecuteAfter('loop', {}, output, false)
+    simulateToolExecuteAfter('execute-plan', {}, output, false)
 
     expect(output.title).toBe('')
     expect(output.output).toBe('test')
@@ -1061,7 +1061,7 @@ describe('Tool blocking hook', () => {
     }))!
     const output = { title: '', output: 'original output', metadata: {} }
 
-    await hook({ tool: 'loop', sessionID, callID: 'call-1', args: {} }, output)
+    await hook({ tool: 'execute-plan', sessionID, callID: 'call-1', args: {} }, output)
 
     expect(output.title).toBe('')
     expect(output.output).toBe('original output')

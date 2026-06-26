@@ -9,7 +9,7 @@ describe('per-agent tools.exclude (regression guard)', () => {
     for (const tool of ['review-write', 'review-delete', 'plan', 'plan_enter', 'plan_exit']) {
       expect(excluded).toContain(tool)
     }
-    expect(excluded).not.toContain('loop')
+    expect(excluded).not.toContain('execute-plan')
     // Post-action sessions need skill and task tools to load skills and spawn subagents.
     expect(excluded).not.toContain('skill')
     expect(excluded).not.toContain('task')
@@ -17,7 +17,7 @@ describe('per-agent tools.exclude (regression guard)', () => {
 
   test('auditor agent excludes plan/loop tools but NOT review tools', () => {
     const excluded = agents.auditor.tools?.exclude ?? []
-    for (const tool of ['plan', 'plan_exit', 'loop', 'loop-cancel', 'loop-status']) {
+    for (const tool of ['plan', 'plan_exit', 'execute-plan', 'loop-cancel', 'loop-status']) {
       expect(excluded).toContain(tool)
     }
     // Auditor MUST be allowed to use review-write and review-delete.
