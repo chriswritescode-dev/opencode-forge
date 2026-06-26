@@ -9,7 +9,7 @@ import { createLoopSessionUsageRepo } from '../src/storage/repos/loop-session-us
 import { createLoopTools } from '../src/tools/loop'
 import { createLogger } from '../src/utils/logger'
 import { createLoopEventHandler } from '../src/hooks/loop'
-import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../src/constants/loop'
+import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories } from '../src/constants/loop'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
@@ -434,7 +434,7 @@ describe('loop-status tool restart path', () => {
       call[0]?.permission !== undefined
     )
     expect(callWithPermission).toBeDefined()
-    expect(callWithPermission![0].permission).toEqual(buildLoopPermissionRuleset({ sandbox: false }))
+    expect(callWithPermission![0].permission).toEqual(buildLoopPermissionRuleset({ sandbox: false, allowDirectories: resolveLoopAllowedDirectories({}) }))
   })
 
   test('non-force restart of final_audit_retry_exhausted succeeds without force', async () => {
@@ -528,7 +528,7 @@ describe('loop-status tool restart path', () => {
       call[0]?.permission !== undefined
     )
     expect(callWithPermission).toBeDefined()
-    expect(callWithPermission![0].permission).toEqual(buildAuditSessionPermissionRuleset({ sandbox: false }))
+    expect(callWithPermission![0].permission).toEqual(buildAuditSessionPermissionRuleset({ sandbox: false, allowDirectories: resolveLoopAllowedDirectories({}) }))
   })
 
   test('forced restart of final_audit_retry_exhausted resumes at final_auditing', async () => {
@@ -622,7 +622,7 @@ describe('loop-status tool restart path', () => {
       call[0]?.permission !== undefined
     )
     expect(callWithPermission).toBeDefined()
-    expect(callWithPermission![0].permission).toEqual(buildAuditSessionPermissionRuleset({ sandbox: false }))
+    expect(callWithPermission![0].permission).toEqual(buildAuditSessionPermissionRuleset({ sandbox: false, allowDirectories: resolveLoopAllowedDirectories({}) }))
   })
 })
 

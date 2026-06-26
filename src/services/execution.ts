@@ -17,7 +17,7 @@ import { extractPlanExecutionMetadata } from '../utils/plan-execution'
 import { parseModelString } from '../utils/model-fallback'
 
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
-import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../constants/loop'
+import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories } from '../constants/loop'
 import { findPartialMatch } from '../utils/partial-match'
 import { isSandboxEnabled } from '../sandbox/context'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
@@ -1083,7 +1083,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       const sandboxEnabled = isSandboxEnabled(deps.config, deps.sandboxManager)
       sandboxEnabledForLoop = sandboxEnabled
 
-      const permissionRuleset = buildLoopPermissionRuleset({ sandbox: sandboxEnabled, allowDirectories: deps.config.loop?.allowExternalDirectories })
+      const permissionRuleset = buildLoopPermissionRuleset({ sandbox: sandboxEnabled, allowDirectories: resolveLoopAllowedDirectories(deps.config) })
 
       // Create single code session
       const createResult = await createLoopSessionWithWorkspace({
@@ -1447,7 +1447,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     deps.logger.log(
       `handleRestartLoop: [perm-diag] worktree=${String(stoppedState.worktree)} sandbox=${String(restartSandbox)}`
     )
-    const permissionRuleset = buildLoopPermissionRuleset({ sandbox: restartSandbox, allowDirectories: deps.config.loop?.allowExternalDirectories })
+    const permissionRuleset = buildLoopPermissionRuleset({ sandbox: restartSandbox, allowDirectories: resolveLoopAllowedDirectories(deps.config) })
     const previousState = { ...stoppedState }
     let bindFailed = false
     const previousSessionId = stoppedState.sessionId
@@ -1526,7 +1526,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           totalSections: stoppedState.totalSections ?? 0,
         }),
         directory: stoppedState.worktreeDir,
-        permission: stoppedState.phase === 'final_auditing' ? buildAuditSessionPermissionRuleset({ sandbox: restartSandbox, allowDirectories: deps.config.loop?.allowExternalDirectories }) : permissionRuleset,
+        permission: stoppedState.phase === 'final_auditing' ? buildAuditSessionPermissionRuleset({ sandbox: restartSandbox, allowDirectories: resolveLoopAllowedDirectories(deps.config) }) : permissionRuleset,
         workspaceId: stoppedState.workspaceId,
         loopName: stoppedState.loopName,
         logPrefix: 'loop-restart',

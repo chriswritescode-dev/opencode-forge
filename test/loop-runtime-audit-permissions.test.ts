@@ -10,7 +10,7 @@ import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-r
 import { createSectionPlansRepo } from '../src/storage/repos/section-plans-repo'
 import type { LoopState } from '../src/loop/state'
 import { createLoop } from '../src/loop/runtime'
-import { buildAuditSessionPermissionRuleset, buildLoopPermissionRuleset } from '../src/constants/loop'
+import { buildAuditSessionPermissionRuleset, buildLoopPermissionRuleset, resolveLoopAllowedDirectories } from '../src/constants/loop'
 import type { Logger, PluginConfig } from '../src/types'
 import { setupLoopsTestDb } from './helpers/loops-test-db'
 import { createFakeForgeClient } from './helpers/fake-client'
@@ -168,7 +168,7 @@ describe('Audit session permissions', () => {
 
     // With the ForgeClient port, create params are passed directly (not wrapped in { body })
     const callParams = createCalls[0] as any
-    expect(callParams.permission).toEqual(buildAuditSessionPermissionRuleset({ sandbox: false }))
+    expect(callParams.permission).toEqual(buildAuditSessionPermissionRuleset({ sandbox: false, allowDirectories: resolveLoopAllowedDirectories(config) }))
     expect(callParams.permission).toContainEqual({
       permission: 'external_directory',
       pattern: '*',

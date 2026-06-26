@@ -67,6 +67,13 @@ export interface LoopConfig {
    * host paths, so use the host path here rather than a container mount path.
    */
   allowExternalDirectories?: string[]
+  /**
+   * Absolute path of a shared scratch/temp directory granted to loop sessions in BOTH modes.
+   * It is added to the `external_directory` allowlist and, for sandboxed loops, bind-mounted
+   * read-write at the identical container path so absolute temp paths match host↔container.
+   * Defaults to `/tmp/oc-forge`. The directory is created on startup if missing.
+   */
+  tmpDir?: string
 }
 
 /**

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../../src/constants/loop'
-import { resolveOpencodeToolOutputDir } from '../../src/utils/opencode-paths'
+import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories } from '../../src/constants/loop'
+import { resolveOpencodeToolOutputDir, DEFAULT_FORGE_TMP_DIR } from '../../src/utils/opencode-paths'
 
 const TOOL_OUTPUT_DIR = resolveOpencodeToolOutputDir()
 const TOOL_OUTPUT_ALLOW_RULES = [
@@ -143,5 +143,30 @@ describe('external directory allowlist', () => {
     // Always-on tool-output dir (exact + recursive) + the one valid configured directory
     // (exact + recursive) = 4 rules; blank/invalid entries are ignored.
     expect(allowRules).toHaveLength(4)
+  })
+})
+
+describe('resolveLoopAllowedDirectories', () => {
+  it('always includes the default temp dir, even with no config', () => {
+    expect(resolveLoopAllowedDirectories(undefined)).toEqual([DEFAULT_FORGE_TMP_DIR])
+    expect(resolveLoopAllowedDirectories({})).toEqual([DEFAULT_FORGE_TMP_DIR])
+  })
+
+  it('layers configured external directories after the temp dir', () => {
+    const config = { loop: { allowExternalDirectories: ['/vault', '/notes'] } }
+    expect(resolveLoopAllowedDirectories(config)).toEqual([DEFAULT_FORGE_TMP_DIR, '/vault', '/notes'])
+  })
+
+  it('honors a configured tmpDir override', () => {
+    const config = { loop: { tmpDir: '/scratch/forge', allowExternalDirectories: ['/vault'] } }
+    expect(resolveLoopAllowedDirectories(config)).toEqual(['/scratch/forge', '/vault'])
+  })
+
+  it('grants the temp dir in both sandbox and worktree-only rulesets', () => {
+    for (const sandbox of [true, false]) {
+      const rules = buildLoopPermissionRuleset({ sandbox, allowDirectories: resolveLoopAllowedDirectories(undefined) })
+      expect(rules).toContainEqual({ permission: 'external_directory', pattern: DEFAULT_FORGE_TMP_DIR, action: 'allow' })
+      expect(rules).toContainEqual({ permission: 'external_directory', pattern: `${DEFAULT_FORGE_TMP_DIR}/**`, action: 'allow' })
+    }
   })
 })

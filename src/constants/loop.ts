@@ -1,6 +1,20 @@
-import { resolveOpencodeToolOutputDir } from '../utils/opencode-paths'
+import { resolveOpencodeToolOutputDir, resolveForgeTempDir } from '../utils/opencode-paths'
+import type { PluginConfig } from '../types'
 
 export type PermissionRule = { permission: string; pattern: string; action: 'allow' | 'deny' }
+
+/**
+ * Resolves the full set of external directories loop/audit sessions may access: the shared temp
+ * directory (always, default `/tmp/oc-forge`) plus any user-configured `loop.allowExternalDirectories`.
+ * Single source of truth so every permission-ruleset call site grants the same paths regardless of
+ * sandbox mode. (opencode's tool-output directory is added separately inside the ruleset builder.)
+ */
+export function resolveLoopAllowedDirectories(config: PluginConfig | undefined): string[] {
+  return [
+    resolveForgeTempDir(config?.loop?.tmpDir),
+    ...(config?.loop?.allowExternalDirectories ?? []),
+  ]
+}
 
 export interface LoopPermissionRulesetOptions {
   sandbox?: boolean

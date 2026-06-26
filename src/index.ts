@@ -12,6 +12,9 @@ import { createLogger } from './utils/logger'
 import { createDockerService } from './sandbox/docker'
 import { defaultGitService } from './utils/git-service'
 import { resolveSandboxContextForLoop, isSandboxConfigEnabled } from './sandbox/context'
+import { resolveForgeTempDir } from './utils/opencode-paths'
+import { resolveLoopAllowedDirectories } from './constants/loop'
+import { mkdirSync } from 'fs'
 import { createSandboxManager } from './sandbox/manager'
 import type { PluginConfig, CompactionConfig } from './types'
 import { createTools } from './tools'
@@ -201,6 +204,15 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 
     const dataDir = config.dataDir || resolveDataDir()
 
+    // Shared loop scratch directory, allowed in both worktree-only and sandbox modes. Created here
+    // so it exists for host tools (worktree-only) and as a valid bind-mount source (sandbox).
+    const forgeTempDir = resolveForgeTempDir(config.loop?.tmpDir)
+    try {
+      mkdirSync(forgeTempDir, { recursive: true })
+    } catch (err) {
+      logger.error(`Failed to create loop temp directory ${forgeTempDir}`, err)
+    }
+
     let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
     // The sandbox container runs as root (required by the nested Docker daemon), but the agent's
     // in-container shell commands run as the host UID:GID so files written to the bind-mounted
@@ -217,6 +229,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           image: config.sandbox?.image ?? 'oc-forge-sandbox:latest',
           dataDir,
           toolOutputDir: resolveOpencodeToolOutputDir(),
+          tmpDir: forgeTempDir,
           sourceProjectDir: directory,
           mountProjectReadonly: config.sandbox?.mountProjectReadonly,
           projectMountPath: config.sandbox?.projectMountPath,
@@ -394,7 +407,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       sessionLoopResolver,
       directory,
       logger,
-      getAllowExternalDirectories: () => config.loop?.allowExternalDirectories,
+      getAllowExternalDirectories: () => resolveLoopAllowedDirectories(config),
     })
     const sandboxMessageHook = createSandboxMessageHook({
       sessionLoopResolver,

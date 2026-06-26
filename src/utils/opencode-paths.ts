@@ -30,3 +30,20 @@ export function resolveOpencodeToolOutputDir(): string {
 export function resolveLogPath(): string {
   return join(resolveDataDir(), 'logs', 'forge.log')
 }
+
+/**
+ * Default absolute path for the shared loop scratch/temp directory. Used identically on the host
+ * (worktree-only loops) and inside the sandbox container (bind-mounted at the same path), so
+ * absolute temp paths resolve unchanged in both modes. Overridable via `loop.tmpDir`.
+ */
+export const DEFAULT_FORGE_TMP_DIR = '/tmp/oc-forge'
+
+/**
+ * Resolves the shared loop temp directory. Returns the configured override (trimmed) when present,
+ * otherwise {@link DEFAULT_FORGE_TMP_DIR}. The same value feeds the `external_directory` allowlist
+ * (both modes) and the sandbox bind-mount (mounted at the identical container path).
+ */
+export function resolveForgeTempDir(configuredPath?: string): string {
+  const trimmed = configuredPath?.trim()
+  return trimmed && trimmed.length > 0 ? trimmed : DEFAULT_FORGE_TMP_DIR
+}

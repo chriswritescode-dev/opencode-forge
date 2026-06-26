@@ -21,6 +21,12 @@ export interface SandboxManagerConfig {
    * (`sh`, `glob`, `grep`) can read overflow files that opencode references by absolute host path.
    */
   toolOutputDir?: string
+  /**
+   * Host path of the shared loop scratch/temp directory. When set, it is created if missing and
+   * bind-mounted read-WRITE at the identical container path, so absolute temp paths resolve
+   * unchanged inside the container and match the host (worktree-only) view.
+   */
+  tmpDir?: string
 }
 
 const DEFAULT_RESOURCES: Required<Pick<SandboxResources, 'memory' | 'cpus' | 'shmSize'>> = {
@@ -148,6 +154,8 @@ export function createSandboxManager(
     }
     const toolOutputMount = resolveToolOutputMount(absolute)
     if (toolOutputMount) mounts.push(toolOutputMount)
+    const tmpMount = resolveTempMount(absolute)
+    if (tmpMount) mounts.push(tmpMount)
     const gitMounts = detectGitMount(absolute)
     const reserved = new Set<string>(['/workspace'])
     for (const m of mounts.slice(1)) reserved.add(m.containerDir)
@@ -171,6 +179,24 @@ export function createSandboxManager(
     // Mount at the identical container path so absolute host references resolve unchanged inside
     // the container (toContainerPath/rewriteOutput become no-ops for these paths).
     return { hostDir: resolved, containerDir: resolved, readOnly: true }
+  }
+
+  function resolveTempMount(workspaceDir: string): SandboxMount | undefined {
+    const dir = config.tmpDir
+    if (!dir) return undefined
+    const resolved = resolve(dir)
+    // The temp dir is a writable scratch space, so create it if missing rather than skipping the
+    // mount (Docker rejects bind mounts whose host source does not exist).
+    try {
+      mkdirSync(resolved, { recursive: true })
+    } catch (err) {
+      logger.log(`Sandbox: skipping temp mount; could not create ${resolved}: ${err instanceof Error ? err.message : String(err)}`)
+      return undefined
+    }
+    // Skip when already covered by the writable workspace mount to avoid a redundant overlay.
+    if (resolved === workspaceDir || resolved.startsWith(workspaceDir + '/')) return undefined
+    // Identical container path (read-write) so absolute temp paths match host↔container.
+    return { hostDir: resolved, containerDir: resolved, readOnly: false }
   }
 
   function detectGitMount(projectDir: string): string[] {

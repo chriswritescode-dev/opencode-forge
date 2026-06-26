@@ -14,7 +14,7 @@ import { resolveLoopModel, resolveLoopAuditorModel } from '../utils/loop-helpers
 import { parseModelString } from '../utils/model-fallback'
 import type { createSandboxManager } from '../sandbox/manager'
 // worktree-completion imports moved to hooks/loop.ts (termination side-effects)
-import { buildLoopPermissionRuleset } from '../constants/loop'
+import { buildLoopPermissionRuleset, resolveLoopAllowedDirectories } from '../constants/loop'
 import { createLoopSessionWithWorkspace } from '../utils/loop-session'
 // worktree-cleanup imports moved to hooks/loop.ts (termination side-effects)
 import { createAuditSession, promptAuditSession } from '../utils/audit-session'
@@ -162,7 +162,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       `Loop: [perm-diag] rotate loop=${loopName} state.worktree=${String(state.worktree)} state.sandbox=${String(state.sandbox)}`
     )
 
-    const permissionRuleset = buildLoopPermissionRuleset({ sandbox: state.sandbox ?? false, allowDirectories: getConfig().loop?.allowExternalDirectories })
+    const permissionRuleset = buildLoopPermissionRuleset({ sandbox: state.sandbox ?? false, allowDirectories: resolveLoopAllowedDirectories(getConfig()) })
 
     const ensured = await ensureWorkspaceForLoop(loopName, state, 'during session rotation')
 
@@ -287,7 +287,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (!currentState.worktreeDir) return false
 
     const ensured = await ensureWorkspaceForLoop(loopName, currentState, 'before post-action creation')
-    const permission = buildLoopPermissionRuleset({ sandbox: currentState.sandbox ?? false, allowDirectories: getConfig().loop?.allowExternalDirectories })
+    const permission = buildLoopPermissionRuleset({ sandbox: currentState.sandbox ?? false, allowDirectories: resolveLoopAllowedDirectories(getConfig()) })
     const created = await createLoopSessionWithWorkspace({
       client,
       title: formatPostActionSessionTitle(loopName),
@@ -781,7 +781,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       isSandbox: currentState.sandbox ?? false,
       auditorModel,
       prompt: finalAuditPrompt,
-      allowDirectories: getConfig().loop?.allowExternalDirectories,
+      allowDirectories: resolveLoopAllowedDirectories(getConfig()),
       logger,
     })
     if (!created) {
@@ -937,7 +937,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       isSandbox: currentState.sandbox ?? false,
       auditorModel,
       prompt: auditPrompt,
-      allowDirectories: currentConfig.loop?.allowExternalDirectories,
+      allowDirectories: resolveLoopAllowedDirectories(currentConfig),
     })
 
     if (!created) {
