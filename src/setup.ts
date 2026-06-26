@@ -1,33 +1,21 @@
 import { readFileSync, existsSync, mkdirSync, copyFileSync } from 'fs'
-import { dirname, join } from 'path'
-import { fileURLToPath } from 'url'
-import { homedir, platform } from 'os'
+import { join } from 'path'
 import { resolveLogPath } from './storage'
-import { BUNDLED_PROMPTS_DIR } from './prompts/loader'
 import { syncBundledDir } from './utils/bundled-sync'
+import {
+  getBundleSpecs,
+  resolveConfigDir,
+  resolveConfigPath,
+  resolveBundledConfigPath,
+} from './install/paths'
 import type { PluginConfig } from './types'
 
-function resolvePluginDir(): string {
-  return dirname(fileURLToPath(import.meta.url))
-}
-
-function resolveBundledConfigPath(): string {
-  return join(resolvePluginDir(), '..', 'forge-config.jsonc')
-}
-
-function resolveConfigDir(): string {
-  const defaultBase = join(homedir(), platform() === 'win32' ? 'AppData' : '.config')
-  const xdgConfigHome = process.env['XDG_CONFIG_HOME'] || defaultBase
-  return join(xdgConfigHome, 'opencode')
-}
-
-export function resolveBundledContainerDir(): string {
-  return join(resolvePluginDir(), '..', 'container')
-}
-
-export function resolveConfigPath(): string {
-  return join(resolveConfigDir(), 'forge-config.jsonc')
-}
+// Re-exported for consumers that import path helpers from setup.
+export {
+  resolveConfigPath,
+  resolvePromptsDir,
+  resolveBundledContainerDir,
+} from './install/paths'
 
 function resolveLegacyConfigPaths(): string[] {
   return [
@@ -94,41 +82,29 @@ function parseJsonc<T = unknown>(content: string): T {
   return JSON.parse(normalized) as T
 }
 
-export function resolvePromptsDir(): string {
-  return join(resolveConfigDir(), 'forge', 'prompts')
-}
-
-function resolveManifestPath(name: string): string {
-  return join(resolveConfigDir(), 'forge', 'manifests', `${name}.json`)
-}
-
-function ensureBundledDir(
-  label: string,
-  srcDir: string,
-  destDir: string,
-  filter?: (relPath: string) => boolean,
-): void {
-  if (!existsSync(srcDir)) return
-  if (!existsSync(destDir)) mkdirSync(destDir, { recursive: true })
-  try {
-    syncBundledDir(srcDir, destDir, resolveManifestPath(label), filter)
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    console.warn(`[forge] Failed to install bundled ${label}: ${message}`)
+/**
+ * Silently install bundled prompts and skills into the user config dir. This
+ * runs on every plugin load and is intentionally non-interactive: it preserves
+ * user edits and never deletes files. Use the standalone installer
+ * (`bunx opencode-forge`) for interactive (re)install, conflict resolution, and
+ * orphan pruning.
+ */
+function ensureBundledAssets(): void {
+  for (const spec of getBundleSpecs()) {
+    if (!existsSync(spec.bundledDir)) continue
+    if (!existsSync(spec.destDir)) mkdirSync(spec.destDir, { recursive: true })
+    try {
+      syncBundledDir(spec.bundledDir, spec.destDir, spec.manifestPath, spec.filter)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.warn(`[forge] Failed to install bundled ${spec.label}: ${message}`)
+    }
   }
-}
-
-function ensureBundledPrompts(): void {
-  // BUNDLED_PROMPTS_DIR resolves to the compiled module directory, which also
-  // contains JS/declaration/sourcemap build artifacts. Only prompt markdown
-  // files should be installed into the user prompts directory.
-  ensureBundledDir('prompts', BUNDLED_PROMPTS_DIR, resolvePromptsDir(), (rel) => rel.endsWith('.md'))
 }
 
 export function loadPluginConfig(): PluginConfig {
   ensureGlobalConfig()
-  ensureBundledSkills()
-  ensureBundledPrompts()
+  ensureBundledAssets()
 
   const configPath = resolveConfigPath()
 
@@ -156,9 +132,3 @@ export function loadPluginConfig(): PluginConfig {
 function normalizeConfig(config: PluginConfig): PluginConfig {
   return { ...config }
 }
-
-function ensureBundledSkills(): void {
-  ensureBundledDir('skills', join(resolvePluginDir(), '..', 'skills'), join(resolveConfigDir(), 'skills'))
-}
-
-

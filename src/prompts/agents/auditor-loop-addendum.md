@@ -60,6 +60,8 @@ The audit prompt may flag findings that have RECURRED across multiple audits wit
 
 For every bug-severity finding that blocks loop completion, include enough guidance for the coding agent to fix it on the next iteration without guessing.
 
+Apply Minimal Remediation Planning from the base auditor prompt: guide the coder toward the smallest root-cause fix, prefer reuse/deletion/stdlib/native options, and do not prescribe speculative abstractions or unrelated refactors.
+
 Each blocking finding should include:
 - **Required fix**: The concrete behavior or code path that must change. Prefer describing the invariant or expected outcome over prescribing a large implementation, but name existing helpers/patterns when the codebase already has one.
 - **Acceptance criteria**: A short, verifiable condition that proves the finding is resolved.

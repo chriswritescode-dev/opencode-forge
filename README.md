@@ -207,7 +207,31 @@ See [Configuration reference](docs/configuration.md) for all supported options, 
 
 ### Customizing prompts
 
-Agent and command prompts are bundled as editable markdown under `src/prompts/` and installed to `~/.config/opencode/forge/prompts/` on first run. Edit any file there to customize an agent (`agents/*.md`) or slash command (`commands/*.md`); your edits take precedence over the bundled defaults and are preserved across upgrades. Bundled prompt fixes are re-applied automatically only to files you have not edited (tracked by content hash); delete a file to restore the bundled version on next start.
+Agent and command prompts are bundled as editable markdown under `src/prompts/` and installed to `~/.config/opencode/forge/prompts/` on first run. Edit any file there to customize an agent (`agents/*.md`) or slash command (`commands/*.md`); your edits take precedence over the bundled defaults and are preserved across upgrades. Bundled prompt fixes are re-applied automatically only to files you have not edited (tracked by content hash in `~/.config/opencode/forge/manifests/`); delete a file to restore the bundled version on next start.
+
+> The manifest files are managed automatically. Do not hand-edit a manifest hash to match a file you changed — doing so makes the startup sync treat your edit as a pristine bundled file and overwrite it on the next upgrade. Just edit the prompt; leave the manifest alone.
+
+### Reinstalling or repairing bundled assets
+
+The startup sync is intentionally silent and non-destructive: it installs new prompts/skills, refreshes files you have not touched, preserves your edits, and never deletes anything. For deliberate (re)installation, conflict resolution, and cleanup, run the interactive installer:
+
+```bash
+bunx opencode-forge        # or: npx opencode-forge
+```
+
+It walks through every bundled prompt and skill. New files are installed silently; when an installed file differs from the bundle you are prompted to **overwrite**, **keep** your version, or view a **diff**. Orphaned files left over from older layouts are offered for removal.
+
+Flags for non-interactive use:
+
+| Flag | Behavior |
+| --- | --- |
+| `-f`, `--force` | Overwrite all conflicting files and delete all orphans |
+| `-k`, `--keep` | Keep all local versions; never delete anything |
+| `-y`, `--yes` | Keep edited files, prune orphans (no prompts) |
+| `-n`, `--dry-run` | Show what would change without writing anything |
+| `--no-prune` | Only report orphaned files; never delete them |
+
+From a checkout, the same tool is available as `pnpm setup` (runs `bun src/install/cli.ts`).
 
 Enable `logging.enabled` to write logs to disk. To use the default log path, omit `logging.file` or set it to `null` (an empty string is not treated as a default). Set `logging.debug` for more verbose output.
 

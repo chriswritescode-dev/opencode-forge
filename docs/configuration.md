@@ -121,3 +121,43 @@ See [Sandbox](sandbox.md) for detailed behavior and security notes.
 | `sandbox.mounts` | `[]` | Additional custom bind mounts. |
 | `sandbox.network.hostGateway` | `true` | Enable `host.docker.internal` gateway. |
 | `sandbox.network.env` | `[]` | Host environment variables to pass into the container via temp env file. |
+
+## Bundled Assets & Installer
+
+Forge ships editable assets that are installed into your config dir:
+
+| Asset | Installed to | Manifest |
+|---|---|---|
+| Agent & command prompts | `~/.config/opencode/forge/prompts/` | `~/.config/opencode/forge/manifests/prompts.json` |
+| Skills | `~/.config/opencode/skills/` | `~/.config/opencode/forge/manifests/skills.json` |
+| Config | `~/.config/opencode/forge-config.jsonc` | — |
+
+### Automatic startup sync
+
+On every plugin load, Forge silently syncs bundled prompts and skills. The sync is non-destructive and tracks provenance by content hash in the manifests:
+
+- **New file** → installed.
+- **Unedited file, bundle changed** → refreshed to the new bundled version.
+- **File you edited** → preserved; never overwritten.
+- Files are **never deleted** by the startup sync.
+
+Because edits are detected by comparing the file hash against the recorded manifest hash, you should never hand-edit a manifest. Setting a manifest hash to match a file you changed makes the sync think the file is pristine and overwrite it on the next bundle update. Edit the asset; leave the manifest alone. To restore a bundled default, delete the file and restart.
+
+### Interactive installer
+
+Run the bundled installer for deliberate (re)installation, conflict resolution, and cleanup of orphaned files from older layouts:
+
+```bash
+bunx opencode-forge        # or: npx opencode-forge
+pnpm setup                 # from a checkout
+```
+
+| Flag | Behavior |
+|---|---|
+| `-f`, `--force` | Overwrite all conflicting files and delete all orphans. |
+| `-k`, `--keep` | Keep all local versions; never delete anything. |
+| `-y`, `--yes` | Non-interactive: keep edited files, prune orphans. |
+| `-n`, `--dry-run` | Report the plan without writing anything. |
+| `--no-prune` | Only report orphaned files; never delete them. |
+
+Without a flag the installer is interactive: for each conflicting file it offers overwrite / keep / diff, and for each orphan it offers delete / keep. When you choose **keep** on a conflict, the manifest is updated so future startup syncs continue to preserve your version.

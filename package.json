@@ -8,6 +8,9 @@
   ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "opencode-forge": "./dist/install/cli.js"
+  },
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -88,6 +91,7 @@
   },
   "scripts": {
     "build": "bun scripts/build.ts",
+    "setup": "bun src/install/cli.ts",
     "dashboard": "bun scripts/dashboard.ts",
     "lint": "eslint .",
     "prepublishOnly": "pnpm build",

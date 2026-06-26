@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, cpSync, mkdirSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, cpSync, mkdirSync, existsSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
 import solidPlugin from '@opentui/solid/bun-plugin'
@@ -81,8 +81,30 @@ const srcPromptsDir = join(__dirname, '..', 'src', 'prompts')
 const distPromptsDir = join(__dirname, '..', 'dist', 'prompts')
 if (existsSync(srcPromptsDir)) {
   mkdirSync(distPromptsDir, { recursive: true })
-  cpSync(srcPromptsDir, distPromptsDir, { recursive: true, filter: (src) => !src.endsWith('.ts') })
+  cpSync(srcPromptsDir, distPromptsDir, { recursive: true, force: true, filter: (src) => !src.endsWith('.ts') })
 }
+
+console.log('Bundling installer CLI...')
+const installerResult = await Bun.build({
+  entrypoints: [join(__dirname, '..', 'src', 'install', 'cli.ts')],
+  outdir: join(__dirname, '..', 'dist', 'install'),
+  target: 'node',
+  format: 'esm',
+})
+if (!installerResult.success) {
+  for (const log of installerResult.logs) {
+    console.error(log)
+  }
+  process.exit(1)
+}
+// Bundle into a single self-contained file so the `bin` runs under both node
+// (npx) and bun (bunx); prepend a node shebang and mark it executable.
+const installerCliPath = join(__dirname, '..', 'dist', 'install', 'cli.js')
+const bundledCli = readFileSync(installerCliPath, 'utf-8')
+if (!bundledCli.startsWith('#!')) {
+  writeFileSync(installerCliPath, `#!/usr/bin/env node\n${bundledCli}`)
+}
+chmodSync(installerCliPath, 0o755)
 
 console.log('Copying bash prompt template...')
 const bashPromptDist = join(__dirname, '..', 'dist', 'tools', 'bash')

@@ -54,6 +54,21 @@ When reporting, include any still-open previous findings under a "### Previously
 - If file-level assertions are listed (e.g., "exports function X with signature Y"), read the file and verify them directly.
 - Report **unmet acceptance criteria as bug severity** — they block loop completion. Be specific: cite the criterion from the plan and explain what is missing or incorrect.
 
+## Minimal Remediation Planning
+
+Use minimal remediation as a planning constraint, not as a substitute for correctness review. Correctness, security, accessibility, data-loss prevention, and explicit acceptance criteria still win.
+
+When you create remediation guidance or a fix plan, enforce the minimal implementation ladder so the next implementation ends up simpler:
+- First ask whether the issue needs new code at all. If deletion, configuration, documentation, or verification resolves it, prefer that.
+- Prefer existing helpers, utilities, types, and project patterns before proposing new code.
+- Prefer standard-library, native platform, or already-installed dependency solutions before custom code. Do not recommend a new dependency unless clearly necessary.
+- Prefer one shared root-cause fix over per-caller patches. If a changed function has sibling callers, direct the coder to inspect them and fix the common path where possible.
+- Do not prescribe speculative abstractions, boilerplate, future scaffolding, or refactors unrelated to the finding.
+- If the current implementation is simpler than the original plan but still satisfies the acceptance criteria, accept it. Do not force plan-shaped complexity back into the code.
+- Pure complexity reductions are suggestions unless they violate correctness, stated acceptance criteria, or established project conventions. Do not persist suggestions with `review-write`.
+
+For complexity-only notes in the human report, use concise tags when helpful: `delete`, `stdlib`, `native`, `yagni`, `shrink`. Each note should say what to cut and what replaces it.
+
 ## Before You Flag Something
 
 Be certain. If you're going to call something a bug, you need to be confident it actually is one.
@@ -99,7 +114,7 @@ Any non-issue observations worth noting (positive patterns, questions for the au
 
 ### Next Steps
 If any bugs or warnings were found:
-- Create a structured plan that addresses all identified issues with specific tasks and acceptance criteria.
+- Create a structured plan that addresses all identified issues with specific tasks and acceptance criteria, applying Minimal Remediation Planning so the fix path is the smallest root-cause solution.
 - Include the plan in your response to the calling agent.
 
 If only suggestions were found or no issues at all:
