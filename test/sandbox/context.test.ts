@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { isSandboxEnabled, resolveSandboxContextForLoop } from '../../src/sandbox/context'
+import { isSandboxEnabled, isSandboxConfigEnabled, resolveSandboxContextForLoop } from '../../src/sandbox/context'
 import type { SandboxMount } from '../../src/sandbox/path'
 
 describe('isSandboxEnabled', () => {
@@ -26,6 +26,19 @@ describe('isSandboxEnabled', () => {
   it('tolerates an undefined config', () => {
     expect(isSandboxEnabled(undefined, {} as unknown)).toBe(true)
     expect(isSandboxEnabled(undefined, undefined)).toBe(false)
+  })
+})
+
+describe('isSandboxConfigEnabled', () => {
+  it('is true by default (config absent or enabled not set)', () => {
+    expect(isSandboxConfigEnabled(undefined)).toBe(true)
+    expect(isSandboxConfigEnabled({})).toBe(true)
+    expect(isSandboxConfigEnabled({ sandbox: { mode: 'docker' as const } })).toBe(true)
+  })
+
+  it('is false only when explicitly disabled', () => {
+    expect(isSandboxConfigEnabled({ sandbox: { mode: 'docker' as const, enabled: false } })).toBe(false)
+    expect(isSandboxConfigEnabled({ sandbox: { mode: 'docker' as const, enabled: true } })).toBe(true)
   })
 })
 

@@ -7,6 +7,7 @@ import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
 import { createExecutionContextCache } from './utils/tui-execution-context-cache'
 import type { PluginConfig } from './types'
 import { createDockerService } from './sandbox/docker'
+import { isSandboxConfigEnabled } from './sandbox/context'
 import { connectForgeProject, type ForgeProjectClient } from './utils/tui-client'
 import { ExecutePlanPanel } from './tui/execute-plan-panel'
 import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/session-follow'
@@ -406,7 +407,7 @@ const tui: TuiPlugin = async (api) => {
     if (connectPromise) return connectPromise
 
     setConnectionStatus('connecting')
-    connectPromise = connectForgeProject(api, directory, pluginConfig.loop?.allowExternalDirectories).then((connected) => untrack(() => {
+    connectPromise = connectForgeProject(api, directory, pluginConfig.loop?.allowExternalDirectories, isSandboxConfigEnabled(pluginConfig)).then((connected) => untrack(() => {
       connectPromise = null
       if (disposed) return connected
 

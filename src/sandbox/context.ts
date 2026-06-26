@@ -52,6 +52,16 @@ export async function resolveSandboxContextForLoop(
 }
 
 /**
+ * Whether the sandbox is enabled by configuration alone (the user has not opted out via
+ * `sandbox.enabled: false`). This is the gate that decides whether the server constructs a
+ * sandbox manager, and is also the only signal the TUI can evaluate (it has no manager), so
+ * both sides share it to bake the correct bash/sh permission routing for new loop sessions.
+ */
+export function isSandboxConfigEnabled(config: PluginConfig | undefined): boolean {
+  return config?.sandbox?.enabled !== false
+}
+
+/**
  * Determines whether sandboxed execution is in effect.
  *
  * A sandbox is only usable when BOTH conditions hold:
@@ -64,6 +74,6 @@ export async function resolveSandboxContextForLoop(
  * an `sh` tool that has no container to run in.
  */
 export function isSandboxEnabled(config: PluginConfig | undefined, sandboxManager: unknown): boolean {
-  if (config?.sandbox?.enabled === false) return false
+  if (!isSandboxConfigEnabled(config)) return false
   return !!sandboxManager
 }

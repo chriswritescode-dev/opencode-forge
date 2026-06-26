@@ -11,7 +11,7 @@ import { resolveLogPath } from './storage'
 import { createLogger } from './utils/logger'
 import { createDockerService } from './sandbox/docker'
 import { defaultGitService } from './utils/git-service'
-import { resolveSandboxContextForLoop } from './sandbox/context'
+import { resolveSandboxContextForLoop, isSandboxConfigEnabled } from './sandbox/context'
 import { createSandboxManager } from './sandbox/manager'
 import type { PluginConfig, CompactionConfig } from './types'
 import { createTools } from './tools'
@@ -209,7 +209,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       ? `${process.getuid()}:${process.getgid()}`
       : undefined
     const dockerService = createDockerService(logger, { execUser: hostExecUser })
-    if (config.sandbox?.enabled === false) {
+    if (!isSandboxConfigEnabled(config)) {
       logger.log('Docker sandbox disabled via config (sandbox.enabled=false); running in worktree-only mode')
     } else {
       try {

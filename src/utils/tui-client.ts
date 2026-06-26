@@ -267,6 +267,7 @@ export async function connectForgeProject(
   api: TuiPluginApi,
   directory?: string,
   allowExternalDirectories?: string[],
+  sandboxEnabled?: boolean,
 ): Promise<ForgeProjectClient | null> {
   tuiDebug(`connect start directory=${directory ?? 'none'}`)
 
@@ -377,7 +378,12 @@ export async function connectForgeProject(
             await waitForWorkspacePluginSettle(workspace.id)
           }
 
-          const permission = buildLoopPermissionRuleset({ allowDirectories: allowExternalDirectories })
+          // Bake the bash/sh routing to match what the server will run. The TUI has no Docker
+          // manager, but `sandbox.enabled` is the same gate the server uses to construct one, so
+          // this predicts the server's decision: when the sandbox is disabled the loop runs
+          // worktree-only and host `bash` must stay allowed (defaulting to sandbox=true here would
+          // deny bash while `sh` has no container to run in).
+          const permission = buildLoopPermissionRuleset({ sandbox: sandboxEnabled ?? true, allowDirectories: allowExternalDirectories })
           const session = await client.session.create({
             workspaceID: workspace.id,
             title: loopName,
