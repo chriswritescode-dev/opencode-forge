@@ -53,24 +53,6 @@ export type SyncStartParams = NonNullable<Parameters<V2['sync']['start']>[0]>
 
 // ── Event types ──────────────────────────────────────────────────────────────
 
-/**
- * A single entry from the server's global event stream. `directory` is the
- * project/worktree the event originated from; `payload` is the raw OpenCode
- * `Event` (consumers narrow it structurally).
- */
-export interface GlobalActivityEvent {
-  directory: string
-  payload: unknown
-}
-
-/** Options for a global event subscription. */
-export interface SubscribeGlobalOptions {
-  /** Abort signal that stops the subscription when triggered. */
-  signal?: AbortSignal
-  /** Invoked when the underlying stream errors (after classification). */
-  onError?: (err: unknown) => void
-}
-
 // ── Error model ──────────────────────────────────────────────────────────────
 
 export type ForgeClientErrorKind = 'connection' | 'not-found' | 'unavailable' | 'request'
@@ -130,19 +112,5 @@ export interface ForgeClient {
   }
   sync: {
     start(params?: SyncStartParams): Promise<void>
-  }
-  events: {
-    /**
-     * Subscribe to the server-wide global event stream (all projects/sessions
-     * on this server). Each event is delivered to `onEvent`; stream errors are
-     * routed to `opts.onError`. Returns a detach function that aborts the
-     * subscription. When the host SDK lacks the global event endpoint, the
-     * returned detach is a no-op and `opts.onError` is invoked with an
-     * `unavailable` error.
-     */
-    subscribeGlobal(
-      onEvent: (event: GlobalActivityEvent) => void,
-      opts?: SubscribeGlobalOptions,
-    ): () => void
   }
 }

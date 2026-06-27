@@ -54,9 +54,6 @@ function createMockForgeClient(): ForgeClient {
     sync: {
       start: async () => {},
     },
-    events: {
-      subscribeGlobal: () => () => {},
-    },
   }
 }
 

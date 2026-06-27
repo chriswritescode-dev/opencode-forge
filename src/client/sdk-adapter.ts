@@ -5,7 +5,6 @@ import {
   ForgeClientError,
   type ForgeClient,
   type ForgeClientErrorKind,
-  type GlobalActivityEvent,
 } from './port'
 
 // ── Error classification ─────────────────────────────────────────────────────
@@ -180,68 +179,7 @@ export function createForgeClient(v2: OpencodeClient): ForgeClient {
     },
   }
 
-  // ── events namespace ───────────────────────────────────────────────────────
-  const events: ForgeClient['events'] = {
-    subscribeGlobal(onEvent, opts) {
-      const globalApi = (v2 as { global?: { event?: unknown } }).global
-      if (!globalApi || typeof globalApi.event !== 'function') {
-        opts?.onError?.(
-          new ForgeClientError({
-            kind: 'unavailable',
-            method: 'events.subscribeGlobal',
-            message: 'global.event not available on this host',
-          }),
-        )
-        return () => {}
-      }
-
-      // Own controller so detach always works; chain an external signal when
-      // provided so callers can tie teardown to their own lifecycle.
-      const controller = new AbortController()
-      if (opts?.signal) {
-        if (opts.signal.aborted) controller.abort()
-        else opts.signal.addEventListener('abort', () => controller.abort(), { once: true })
-      }
-
-      let detached = false
-      // The SDK v2 `global` namespace is a class instance whose `event` method
-      // reads `this.client`; bind it to its owner so calling it here does not
-      // lose `this` (an unbound call throws "undefined is not an object
-      // (evaluating 'this.client')" and silently kills the feed).
-      const eventFn = (globalApi.event as (
-        options?: unknown,
-      ) => Promise<{ stream?: AsyncIterable<unknown> } | undefined>).bind(globalApi)
-
-      void (async () => {
-        try {
-          const result = await eventFn({ signal: controller.signal })
-          const stream = result?.stream
-          if (!stream) return
-          for await (const ev of stream) {
-            if (detached) break
-            if (ev && typeof ev === 'object' && 'payload' in (ev as Record<string, unknown>)) {
-              const record = ev as { directory?: unknown; payload?: unknown }
-              const normalized: GlobalActivityEvent = {
-                directory: typeof record.directory === 'string' ? record.directory : '',
-                payload: record.payload,
-              }
-              onEvent(normalized)
-            }
-          }
-        } catch (err) {
-          // Abort during teardown surfaces as an error; suppress once detached.
-          if (!detached) opts?.onError?.(classify(err, 'events.subscribeGlobal'))
-        }
-      })()
-
-      return () => {
-        detached = true
-        controller.abort()
-      }
-    },
-  }
-
-  return { session, workspace, project, provider, tui, sync, events }
+  return { session, workspace, project, provider, tui, sync }
 }
 
 // ── Combined factory ─────────────────────────────────────────────────────────
