@@ -39,7 +39,7 @@
     "worktreeLogging": {
       "enabled": false,
       "directory": ""
-    },
+    }
     // Post-completion action (skill and/or prompt) run inside the worktree before teardown.
     // (disabled by default)
     // "postAction": {
@@ -65,7 +65,7 @@
   "sandbox": {
     "enabled": true,
     "mode": "docker",
-    "image": "oc-forge-sandbox:latest",
+    "image": "oc-forge-sandbox:latest"
     // Mount the source project directory as a read-only volume. Defaults to true.
     // "mountProjectReadonly": true,
     // Container path for the read-only project mount. Defaults to '/project'.
@@ -102,28 +102,8 @@
     }
   },
 
-  // Dashboard configuration
-  "dashboard": {
-    // Live activity feed event source:
-    // - "server": subscribe to the OpenCode server's global event stream
-    //   (all projects/sessions on that server). Default.
-    // - "tui": subscribe to the in-process TUI event bus (current project
-    //   only; TUI launches only).
-    // - "none": disable the live feed (SSE endpoint returns 204).
-    "events": {
-      "source": "server",
-      // Base URL of the OpenCode server to subscribe to. Optional in the TUI
-      // (the in-process client is used). Set this for the standalone dashboard
-      // to receive a live feed, e.g. "http://localhost:4096".
-      // "serverUrl": "",
-      // Allowlist of event types forwarded to the feed. Defaults to the
-      // curated set below when omitted.
-      "types": ["session.idle", "session.created", "session.updated", "session.error"]
-    }
-  },
-
   // TTL in ms for completed/cancelled loops before cleanup. Default: 604800000 (7 days)
-  "completedLoopTtlMs": 604800000,
+  "completedLoopTtlMs": 604800000
 
   // Per-agent overrides (temperature range: 0.0 - 2.0)
   // Keys are agent display names (e.g., "code", "architect", "auditor")

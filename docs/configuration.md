@@ -93,16 +93,6 @@ Example:
 | `tui.keybinds.executePlan` | `"<leader>f"` | Open the execution dialog. Avoid `<leader>e`, which conflicts with opencode's built-in `editor_open`. |
 | `tui.keybinds.dashboard` | `""` | Optional keybind for opening the dashboard. Empty registers the command without a default binding. |
 
-## Dashboard
-
-| Option | Default | Description |
-|---|---:|---|
-| `dashboard.events.source` | `"server"` | Live event source: `server`, `tui`, or `none`. |
-| `dashboard.events.serverUrl` | `""` | Optional OpenCode server URL for the global event stream. Required for standalone dashboard live events. |
-| `dashboard.events.types` | curated session list | Allowlist of server event types forwarded to the feed. |
-
-The bundled config currently sets `dashboard.events.types` to `["session.idle", "session.created", "session.updated", "session.error"]`. If omitted, the runtime curated set also includes `session.status`, `session.deleted`, `message.updated`, `message.part.updated`, and `message.part.removed`.
-
 ## Sandbox
 
 See [Sandbox](sandbox.md) for detailed behavior and security notes.

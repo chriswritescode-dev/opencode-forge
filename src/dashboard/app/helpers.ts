@@ -23,39 +23,6 @@ export function buildLoopHash(projectId: string | null, loopName: string | null)
   return h
 }
 
-/** View-route parsing: supports both legacy loops route and sessions route. */
-export interface HashRoute {
-  view: 'loops' | 'sessions'
-  projectId: string | null
-  loopName: string | null
-  sessionId: string | null
-}
-
-export function parseHashRoute(hash: string): HashRoute {
-  const raw = (hash || '').replace(/^#/, '')
-  if (raw === 'sessions' || raw.startsWith('sessions/')) {
-    const rest = raw.slice('sessions'.length)
-    const sessionId = rest.startsWith('/') ? decodeURIComponent(rest.slice(1)) : null
-    return { view: 'sessions', projectId: null, loopName: null, sessionId }
-  }
-  const parsed = parseLoopHash(hash)
-  return { view: 'loops', projectId: parsed.projectId, loopName: parsed.loopName, sessionId: null }
-}
-
-export function buildHashRoute(route: {
-  view: 'loops' | 'sessions'
-  projectId?: string | null
-  loopName?: string | null
-  sessionId?: string | null
-}): string {
-  if (route.view === 'sessions') {
-    let h = '#sessions'
-    if (route.sessionId) h += '/' + encodeURIComponent(route.sessionId)
-    return h
-  }
-  return buildLoopHash(route.projectId ?? null, route.loopName ?? null)
-}
-
 /**
  * Set `location.hash` to `nextHash` only if it differs from the current value,
  * suppressing the hashchange event via `suppressRef`.
