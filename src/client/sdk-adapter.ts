@@ -257,15 +257,6 @@ export function createForgeClientFromPluginInput(
   return createForgeClient(createV2ClientFromPluginInput(pluginInput))
 }
 
-/**
- * Create a `ForgeClient` that targets an OpenCode server by base URL. Used by
- * the standalone dashboard (no plugin input) and to target a server other than
- * the in-process one. Keeps SDK construction inside the adapter seam.
- */
-export function createForgeClientFromServerUrl(serverUrl: string): ForgeClient {
-  return createForgeClient(createV2Client({ baseUrl: serverUrl }))
-}
-
 // ── Legacy client adapter ────────────────────────────────────────────────────
 
 /**

@@ -70,11 +70,7 @@ Forge includes a read-only observability Dashboard — a standalone Bun HTTP ser
 
 ### Views
 
-The dashboard offers two toggleable views via a **Loops / Sessions** tab bar:
-
-**Loops view** (default) — Groups loops by project with filterable project/loop lists, loop detail (plan, sections, findings, usage, audit results, completion summary), and live polled state (5 s interval). Supports `#<projectId>/<loopName>` deep linking.
-
-**Sessions view** — Lists recent OpenCode sessions (title, project, model, cost, tokens, timestamp). Click a session to browse its **transcript** — a chronological view of text messages and tool calls rendered as markdown. Data is fetched from OpenCode's own `opencode.db` (read-only). Supports `#sessions/<sessionId>` deep linking.
+The dashboard shows a **Loops view** by default — groups loops by project with filterable project/loop lists, loop detail (plan, sections, findings, usage, audit results, completion summary), and live polled state (5 s interval). Supports `#<projectId>/<loopName>` deep linking.
 
 ### API Endpoints
 
@@ -83,41 +79,7 @@ All endpoints are read-only (non-GET requests return 404):
 | Endpoint | Description |
 |----------|-------------|
 | `GET /` | HTML page (inlined SolidJS app) |
-| `GET /api/data` | JSON snapshot of Forge loop/project state (`/api/data`) |
-| `GET /api/opencode/sessions?limit=N` | Recent OpenCode sessions list (max 200, default 50) |
-| `GET /api/opencode/sessions/<id>?limit=N` | Transcript entries for a session (max 2000, default 500) |
-| `GET /api/opencode/events` | SSE stream of OpenCode activity events |
-
-### OpenCode Database Access
-
-Session metadata and transcripts are queried read-only from OpenCode's own SQLite database (`opencode.db`). The dashboard resolves the database path in this order:
-
-1. Explicit `opencodeDbPath` argument (when launched programmatically)
-2. `OPENCODE_DB` environment variable
-3. `<XDG_DATA_HOME or ~/.local/share>/opencode/opencode.db`
-
-If the database is missing, unreadable, or the file does not exist, the Sessions view gracefully shows *"Sessions data unavailable."* All query methods catch errors internally and return empty arrays — the dashboard never fails or crashes due to an absent OpenCode DB.
-
-### Live Session Updates
-
-The `GET /api/opencode/events` SSE endpoint streams a curated set of OpenCode events that keep the Sessions view live without polling. Two tiers are forwarded:
-
-- **Session-level events** — `session.idle`, `session.status`, `session.created`, `session.updated`, `session.error`, `session.deleted` — broadcast to every connected client. They keep the session list current (upsert/remove + re-order) and drive the per-project **busy indicator** (a pulsing dot on a project whose session reports `session.status: busy`/`retry`, cleared on `idle`/`deleted`).
-- **Transcript-part events** — `message.updated`, `message.part.updated`, `message.part.removed` — higher volume, so they are sent only to the client whose open session matches the optional `?session=<id>` query parameter. They keep the open session's transcript live as a turn streams (text appends, tool status updates). Initial transcript content is loaded once from the database; live events keep it current thereafter.
-
-A ring buffer (default capacity 100 events) replays recent activity to late-joining SSE clients (respecting the same per-session filter). After the initial database load, the Sessions view is fully event-driven — there is no timer-based polling of the OpenCode database.
-
-The event source is configurable via `dashboard.events.source`:
-
-| Source | Behavior |
-|--------|----------|
-| `server` (default) | Subscribes to the OpenCode server's **global** event stream (`client.global.event()` → `GET /global/event`), covering **all projects/sessions on that server**. In the TUI this uses the in-process client (zero config), so it forwards whatever server the TUI is attached to — including a shared server used by multiple TUIs. Set `dashboard.events.serverUrl` to target a different/shared server. |
-| `tui` | Subscribes to the in-process TUI event bus (current project only; TUI launches only). |
-| `none` | Disables the live feed; the SSE endpoint returns `204 No Content`. |
-
-**Scope note:** the server stream covers a single server process. If multiple `opencode` TUIs each embed their own server (the default), each dashboard sees only its own server's events. To observe everything from one place, point all TUIs (or the dashboard's `serverUrl`) at a single shared server.
-
-When `source` is `server` and the host SDK lacks the global endpoint, the feed falls back to the TUI bus if one is available, otherwise yields no events. The standalone dashboard (`pnpm dashboard`) only emits a live feed when given a reachable server: `pnpm dashboard --server-url http://localhost:4096 [--events-source server]`. The TUI plugin wires this automatically via an `EventBroadcaster` and `startActivityForwarding()`.
+| `GET /api/data` | JSON snapshot of Forge loop/project state |
 
 ## Screenshots
 
@@ -195,7 +157,7 @@ The plugin supports JSONC format, allowing comments with `//` and `/* */`.
 
 You can edit this file to customize settings. The file is created only if it doesn't already exist.
 
-See [Configuration reference](docs/configuration.md) for all supported options, including loop post-actions, external read directories, TUI keybinds, dashboard events, and sandbox resource defaults.
+See [Configuration reference](docs/configuration.md) for all supported options, including loop post-actions, external read directories, TUI keybinds, dashboard, and sandbox resource defaults.
 
 ### Where Forge stores data
 
