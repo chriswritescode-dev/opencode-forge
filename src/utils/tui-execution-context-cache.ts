@@ -12,7 +12,7 @@
  * the TUI is running on a different host than the OpenCode server.
  */
 
-import type { ExecutionPreferences } from './tui-execution-preferences'
+import type { ExecutionPreferences, ExecutionSelectionOverride } from './tui-execution-preferences'
 import type { PluginConfig } from '../types'
 import type { ModelInfo } from './tui-models'
 import { deriveRecentModels, flattenProviders, sortModelsByPriority } from './tui-models'
@@ -44,6 +44,7 @@ export function buildExecutionContextSnapshot(
   projectId: string,
   pluginConfig: PluginConfig,
   result: ExecutionContext,
+  overrides?: ExecutionSelectionOverride,
 ): ExecutionContextSnapshot {
   const allModelList = flattenProviders(result.models.providers as Parameters<typeof flattenProviders>[0])
   const recents = deriveRecentModels(projectId, {
@@ -57,7 +58,7 @@ export function buildExecutionContextSnapshot(
     connectedProviderIds: result.models.connectedProviderIds || [],
     configuredProviderIds: result.models.configuredProviderIds || [],
   })
-  const defaults = resolveExecutionDialogDefaults(pluginConfig, result.preferences)
+  const defaults = resolveExecutionDialogDefaults(pluginConfig, result.preferences, overrides)
 
   return {
     preferences: result.preferences,
@@ -83,6 +84,12 @@ export interface ExecutionContextCache {
    * server-side state is authoritative on the next round-trip.
    */
   recordRecent(modelFullName: string): void
+  /**
+   * Sets an in-memory selection override (instance lifetime). Recomputes
+   * `defaults` from override > config > workspace and notifies listeners.
+   * Survives dialog close/reopen but not OpenCode restart.
+   */
+  setSelectionOverride(override: ExecutionSelectionOverride): void
   /** Registers a listener called on every snapshot update. Returns unsubscribe function. */
   onChange(listener: (snap: ExecutionContextSnapshot) => void): () => void
 }
@@ -105,6 +112,7 @@ export function createExecutionContextCache(
   loadFn: () => Promise<ExecutionContext>,
 ): ExecutionContextCache {
   let currentSnapshot: ExecutionContextSnapshot | null = null
+  let overrides: ExecutionSelectionOverride = {}
   let inFlightRefresh: Promise<ExecutionContextSnapshot> | null = null
   const listeners = new Set<(snap: ExecutionContextSnapshot) => void>()
 
@@ -116,7 +124,7 @@ export function createExecutionContextCache(
 
   async function refresh(): Promise<ExecutionContextSnapshot> {
     const result = await loadFn()
-    currentSnapshot = buildExecutionContextSnapshot(projectId, pluginConfig, result)
+    currentSnapshot = buildExecutionContextSnapshot(projectId, pluginConfig, result, overrides)
     notifyListeners()
     return currentSnapshot!
   }
@@ -151,6 +159,17 @@ export function createExecutionContextCache(
     }
   }
 
+  function setSelectionOverride(override: ExecutionSelectionOverride): void {
+    overrides = { ...overrides, ...override }
+    if (currentSnapshot) {
+      currentSnapshot = {
+        ...currentSnapshot,
+        defaults: resolveExecutionDialogDefaults(pluginConfig, currentSnapshot.preferences, overrides),
+      }
+      notifyListeners()
+    }
+  }
+
   function onChange(listener: (snap: ExecutionContextSnapshot) => void): () => void {
     listeners.add(listener)
     if (currentSnapshot) {
@@ -168,6 +187,7 @@ export function createExecutionContextCache(
     refresh,
     ensureLoaded,
     recordRecent,
+    setSelectionOverride,
     onChange,
   }
 }

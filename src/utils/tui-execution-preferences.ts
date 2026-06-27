@@ -26,6 +26,13 @@ export interface ExecutionPreferences {
   auditorVariant?: string
 }
 
+export type ExecutionSelectionOverride = Partial<{
+  executionModel: string
+  auditorModel: string
+  executionVariant: string
+  auditorVariant: string
+}>
+
 function normalizeMode(mode: string): ExecutionPreferences['mode'] {
   const lower = mode.toLowerCase()
   if (lower === 'loop' || lower.startsWith('loop ') || lower.startsWith('loop-')) {
@@ -92,39 +99,49 @@ export function deriveExecutionPreferencesFromWorkspaces(
 }
 
 /**
- * Resolves dialog defaults from last-used prefs first, then config fallbacks.
- * 
- * Priority order for executionModel:
- * 1. stored.executionModel
- * 2. config.executionModel
- * 
- * Priority order for auditorModel:
- * 1. stored.auditorModel
- * 2. config.auditorModel
- * 3. stored.executionModel
- * 4. config.executionModel
- * 
+ * Resolves dialog defaults with priority: override > config > storedPrefs.
+ *
+ * A defined override value (including explicit empty string `''`) beats
+ * every fallback. Use `''` to force "use default" (model auto-selection).
+ *
+ * Priority for executionModel:
+ *   1. overrides.executionModel (if defined)
+ *   2. config.executionModel
+ *   3. storedPrefs.executionModel
+ *
+ * Priority for auditorModel:
+ *   1. overrides.auditorModel (if defined)
+ *   2. config.auditorModel
+ *   3. config.executionModel (inherit)
+ *   4. storedPrefs.auditorModel
+ *   5. storedPrefs.executionModel (inherit)
+ *   6. Platform default (empty string)
+ *
+ * Variant fields follow the same pattern but auditor variant has **no**
+ * inheritance from execution variant — they are independent.
+ *
  * @param config - Plugin config
- * @param storedPrefs - Last-used preferences from KV
+ * @param storedPrefs - Last-used preferences from KV (workspace-derived)
+ * @param overrides - In-memory overrides (e.g. URL params, dialog temp state)
  * @returns Resolved defaults for dialog pre-fill
  */
 export function resolveExecutionDialogDefaults(
   config: PluginConfig,
-  storedPrefs: ExecutionPreferences | null
+  storedPrefs: ExecutionPreferences | null,
+  overrides?: ExecutionSelectionOverride,
 ): { mode: string; executionModel: string; auditorModel: string; executionVariant: string; auditorVariant: string } {
   const mode = normalizeMode(storedPrefs?.mode ?? 'Loop')
-  const executionModel = storedPrefs?.executionModel
-    ?? config.executionModel
-    ?? ''
-  
-  const auditorModel = storedPrefs?.auditorModel
-    ?? config.auditorModel
-    ?? storedPrefs?.executionModel
-    ?? config.executionModel
-    ?? ''
 
-  const executionVariant = storedPrefs?.executionVariant ?? ''
-  const auditorVariant = storedPrefs?.auditorVariant ?? ''
-  
+  const pick = (override: string | undefined, ...fallbacks: Array<string | undefined>): string => {
+    if (override !== undefined) return override
+    for (const f of fallbacks) if (f) return f
+    return ''
+  }
+
+  const executionModel = pick(overrides?.executionModel, config.executionModel, storedPrefs?.executionModel)
+  const auditorModel = pick(overrides?.auditorModel, config.auditorModel, config.executionModel, storedPrefs?.auditorModel, storedPrefs?.executionModel)
+  const executionVariant = pick(overrides?.executionVariant, config.executionVariant, storedPrefs?.executionVariant)
+  const auditorVariant = pick(overrides?.auditorVariant, config.auditorVariant, storedPrefs?.auditorVariant)
+
   return { mode, executionModel, auditorModel, executionVariant, auditorVariant }
 }

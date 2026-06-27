@@ -3,6 +3,7 @@ import {
   deriveExecutionPreferencesFromWorkspaces,
   resolveExecutionDialogDefaults,
   type ExecutionPreferences,
+  type ExecutionSelectionOverride,
 } from '../src/utils/tui-execution-preferences'
 import type { PluginConfig } from '../src/types'
 import type { WorkspaceForRecents } from '../src/utils/tui-models'
@@ -136,7 +137,7 @@ describe('deriveExecutionPreferencesFromWorkspaces', () => {
 })
 
 describe('resolveExecutionDialogDefaults', () => {
-  test('uses stored prefs first', () => {
+  test('config takes priority over stored prefs for model', () => {
     const config: PluginConfig = {
       executionModel: 'anthropic/claude-3-haiku',
       loop: { model: 'anthropic/claude-3-sonnet' },
@@ -150,7 +151,7 @@ describe('resolveExecutionDialogDefaults', () => {
 
     const result = resolveExecutionDialogDefaults(config, storedPrefs)
     expect(result.mode).toBe('New session')
-    expect(result.executionModel).toBe('anthropic/claude-3-5-sonnet')
+    expect(result.executionModel).toBe('anthropic/claude-3-haiku')
     expect(result.auditorModel).toBe('anthropic/claude-3-opus')
   })
 
@@ -199,7 +200,8 @@ describe('resolveExecutionDialogDefaults', () => {
 
     const result = resolveExecutionDialogDefaults(config, storedPrefs)
     expect(result.mode).toBe('Loop')
-    expect(result.executionModel).toBe('anthropic/claude-3-5-sonnet')
+    /* config takes priority over storedPrefs, so executionModel is config value */
+    expect(result.executionModel).toBe('anthropic/claude-3-haiku')
     expect(result.auditorModel).toBe('anthropic/claude-3-opus')
   })
 
@@ -263,6 +265,119 @@ describe('resolveExecutionDialogDefaults', () => {
     expect(result.executionVariant).toBe('')
     expect(result.auditorVariant).toBe('')
   })
+
+  test('falls back to stored model when config model empty', () => {
+    const config = {} as PluginConfig
+    const storedPrefs: ExecutionPreferences = {
+      mode: 'Loop',
+      executionModel: 'stored/model',
+    }
+    const result = resolveExecutionDialogDefaults(config, storedPrefs)
+    expect(result.executionModel).toBe('stored/model')
+  })
+
+  test('with empty config and only stored executionModel, auditor inherits stored executionModel', () => {
+    const config = {} as PluginConfig
+    const storedPrefs: ExecutionPreferences = {
+      mode: 'Loop',
+      executionModel: 'ws/exec',
+      // no auditorModel — should inherit from storedPrefs.executionModel
+    }
+    const result = resolveExecutionDialogDefaults(config, storedPrefs)
+    expect(result.executionModel).toBe('ws/exec')
+    expect(result.auditorModel).toBe('ws/exec')
+  })
+
+  test('with empty config, stored auditor model is not overridden by stored execution model', () => {
+    const config = {} as PluginConfig
+    const storedPrefs: ExecutionPreferences = {
+      mode: 'Loop',
+      executionModel: 'ws/exec',
+      auditorModel: 'ws/aud',
+    }
+    const result = resolveExecutionDialogDefaults(config, storedPrefs)
+    expect(result.executionModel).toBe('ws/exec')
+    // Bug regression: auditor should be the stored auditor model, not the stored execution model
+    expect(result.auditorModel).toBe('ws/aud')
+  })
+
+  test('auditor model inherits config.executionModel before stored prefs', () => {
+    const config: PluginConfig = {
+      executionModel: 'cfg/exec',
+      // no config.auditorModel — should inherit from config.executionModel
+    }
+    const storedPrefs: ExecutionPreferences = {
+      mode: 'Loop',
+      auditorModel: 'ws/aud', // stored preference should NOT win over config inheritance
+    }
+    const result = resolveExecutionDialogDefaults(config, storedPrefs)
+    expect(result.auditorModel).toBe('cfg/exec')
+  })
+
+  test('config variant beats stored variant', () => {
+    const config: PluginConfig = {
+      executionVariant: 'cfg-exec',
+      auditorVariant: 'cfg-aud',
+    }
+    const storedPrefs: ExecutionPreferences = {
+      mode: 'Loop',
+      executionVariant: 'ws-exec',
+      auditorVariant: 'ws-aud',
+    }
+    const result = resolveExecutionDialogDefaults(config, storedPrefs)
+    expect(result.executionVariant).toBe('cfg-exec')
+    expect(result.auditorVariant).toBe('cfg-aud')
+  })
+
+  test('auditor variant does not inherit execution variant', () => {
+    const config: PluginConfig = {
+      executionVariant: 'high',
+    }
+    const result = resolveExecutionDialogDefaults(config, null)
+    expect(result.executionVariant).toBe('high')
+    expect(result.auditorVariant).toBe('')
+  })
+
+  test('override beats config and stored for all four fields', () => {
+    const config: PluginConfig = {
+      executionModel: 'cfg/exec',
+      auditorModel: 'cfg/aud',
+      executionVariant: 'cfg-ev',
+      auditorVariant: 'cfg-av',
+    }
+    const storedPrefs: ExecutionPreferences = {
+      mode: 'Loop',
+      executionModel: 'ws/exec',
+      auditorModel: 'ws/aud',
+      executionVariant: 'ws-ev',
+      auditorVariant: 'ws-av',
+    }
+    const overrides: ExecutionSelectionOverride = {
+      executionModel: 'ov/exec',
+      auditorModel: 'ov/aud',
+      executionVariant: 'ov-ev',
+      auditorVariant: 'ov-av',
+    }
+    const result = resolveExecutionDialogDefaults(config, storedPrefs, overrides)
+    expect(result.executionModel).toBe('ov/exec')
+    expect(result.auditorModel).toBe('ov/aud')
+    expect(result.executionVariant).toBe('ov-ev')
+    expect(result.auditorVariant).toBe('ov-av')
+  })
+
+  test('explicit empty-string override beats config (use-default sticks)', () => {
+    const config: PluginConfig = {
+      executionModel: 'cfg/exec',
+      executionVariant: 'high',
+    }
+    const overrides: ExecutionSelectionOverride = {
+      executionModel: '',
+      executionVariant: '',
+    }
+    const result = resolveExecutionDialogDefaults(config, null, overrides)
+    expect(result.executionModel).toBe('')
+    expect(result.executionVariant).toBe('')
+  })
 })
 
 describe('deriveExecutionPreferencesFromWorkspaces + resolveExecutionDialogDefaults composition', () => {
@@ -283,8 +398,9 @@ describe('deriveExecutionPreferencesFromWorkspaces + resolveExecutionDialogDefau
     }
     const result = resolveExecutionDialogDefaults(config, derived)
     expect(result.mode).toBe('Loop')
-    expect(result.executionModel).toBe('derived/exec')
-    expect(result.auditorModel).toBe('derived/audit')
+    /* config takes priority over workspace-derived prefs */
+    expect(result.executionModel).toBe('config/fallback')
+    expect(result.auditorModel).toBe('config/auditor-fallback')
     expect(result.executionVariant).toBe('thinking-max')
     expect(result.auditorVariant).toBe('')
   })

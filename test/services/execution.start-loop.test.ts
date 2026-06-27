@@ -1173,3 +1173,161 @@ describe('handleStartLoop selectSessionBestEffort retry on connection errors', (
     db.close()
   })
 })
+
+describe('handleStartLoop variant config fallback', () => {
+  const noopFn = () => {}
+  const PROJECT_ID = 'test-project'
+
+  test('falls back to config variants when command has no variants', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'exec-variant-fallback-'))
+    const db = new Database(join(tempDir, 'test.db'))
+    setupLoopsTestDb(db)
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const sectionPlansRepo = createSectionPlansRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, sectionPlansRepo)
+
+    const { client } = createFakeForgeClient({
+      workspace: {
+        create: async () => ({
+          id: 'ws_test', directory: '/tmp/wt/abc', branch: 'opencode/abc',
+        }),
+        warp: async () => {},
+      },
+      session: {
+        create: async () => ({ id: 'session_test' }),
+        get: async () => ({}),
+      },
+      tui: {
+        selectSession: async () => {},
+      },
+    })
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn, clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID, directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+        executionVariant: 'high',
+        auditorVariant: 'audit-high',
+      },
+      logger: mockLogger, dataDir: '/tmp',
+      plansRepo, loopsRepo, loop: {
+          service: loopService,
+          listActive: (...args: any[]) => loopService.listActive(...args),
+          generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
+          findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+        } as any, loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
+      client,
+      pendingTeardowns: mockPendingTeardowns,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# Test Plan\n\nVariant fallback test.' },
+        lifecycle: { selectSession: true },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const state = loopService.getActiveState(result.data.loopName)
+    expect(state).not.toBeNull()
+    expect(state!.executionVariant).toBe('high')
+    expect(state!.auditorVariant).toBe('audit-high')
+
+    db.close()
+  })
+
+  test('preserves explicit empty string variant over config', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'exec-variant-empty-'))
+    const db = new Database(join(tempDir, 'test.db'))
+    setupLoopsTestDb(db)
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const sectionPlansRepo = createSectionPlansRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, sectionPlansRepo)
+
+    const { client } = createFakeForgeClient({
+      workspace: {
+        create: async () => ({
+          id: 'ws_test', directory: '/tmp/wt/abc', branch: 'opencode/abc',
+        }),
+        warp: async () => {},
+      },
+      session: {
+        create: async () => ({ id: 'session_test' }),
+        get: async () => ({}),
+      },
+      tui: {
+        selectSession: async () => {},
+      },
+    })
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(_name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn, clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID, directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+        executionVariant: 'high',
+        auditorVariant: 'audit-high',
+      },
+      logger: mockLogger, dataDir: '/tmp',
+      plansRepo, loopsRepo, loop: {
+          service: loopService,
+          listActive: (...args: any[]) => loopService.listActive(...args),
+          generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
+          findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+        } as any, loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
+      client,
+      pendingTeardowns: mockPendingTeardowns,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.start' as const,
+        source: { kind: 'inline', planText: '# Test Plan\n\nExplicit empty variant test.' },
+        lifecycle: { selectSession: true },
+        executionVariant: '',
+        auditorVariant: '',
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const state = loopService.getActiveState(result.data.loopName)
+    expect(state).not.toBeNull()
+    // Empty string from command should be preserved, not replaced by config
+    expect(state!.executionVariant).toBe('')
+    expect(state!.auditorVariant).toBe('')
+
+    db.close()
+  })
+})

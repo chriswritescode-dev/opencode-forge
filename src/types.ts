@@ -193,6 +193,10 @@ export interface PluginConfig {
   executionModel?: string
   /** Model to use for code auditing. */
   auditorModel?: string
+  /** Default reasoning/thinking variant for the execution model. */
+  executionVariant?: string
+  /** Default reasoning/thinking variant for the auditor model. */
+  auditorVariant?: string
   /** Loop behavior configuration. */
   loop?: LoopConfig
   /** TTL for completed/cancelled/errored/stalled loops before sweep. Default 7 days. */

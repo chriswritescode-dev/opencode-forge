@@ -327,24 +327,37 @@ After the architect presents a summary, the user chooses an execution mode from 
 | `Execute here` | When preserving current context matters |
 | `Loop` | Safer autonomous iteration |
 
-The dialog also lets you pick the execution model and auditor model at launch time. Those selections are remembered per project and pre-filled on later launches. Optional **variant selectors** accompany each model selector, letting you choose provider-specific reasoning or thinking-effort levels (e.g., `low`, `high`, `max`) when the model exposes them. Variant selections are also persisted per project.
+The dialog also lets you pick the execution model, auditor model, and their optional **variants** (provider-specific reasoning or thinking-effort levels such as `low`, `high`, `max`) at launch time. Selections are remembered as workspace-level preferences and pre-filled on later launches. Variant defaults can be set via `config.executionVariant` / `config.auditorVariant` in the plugin config. In-session changes in the dialog override all other sources and persist for the OpenCode instance lifetime only (not across restarts).
 
 For New session and Execute here, execution is immediate — there are no additional LLM calls between approval and execution. The system intercepts the user's approval answer, reads the cached plan, and dispatches it programmatically to the code agent. The architect never processes the approval response. For Loop mode, the architect is instead instructed to launch the loop via the `execute-plan` tool.
 
 ### Model Selection Priority
 
-Model selection follows this priority order:
+Model and variant selection follows this priority order:
 
 **For execution model:**
-1. Dialog selection (last-used, persisted per-project)
+1. In-session dialog override (instance lifetime)
 2. `config.executionModel`
-3. Platform default
+3. Last-used (per-project workspace)
+4. Platform default
 
 **For auditor model:**
-1. Dialog selection (last-used, persisted per-project)
+1. In-session override
 2. `config.auditorModel`
-3. `config.executionModel`
-4. Platform default
+3. `config.executionModel` (inherit)
+4. Last-used workspace
+5. Platform default
+
+**For execution variant:**
+1. In-session override
+2. `config.executionVariant`
+3. Last-used workspace
+
+**For auditor variant:**
+1. In-session override
+2. `config.auditorVariant`
+3. Last-used workspace
+   *(independent — does not inherit the execution variant)*
 
 ### Troubleshooting
 
@@ -394,11 +407,12 @@ A watchdog monitors loop activity. If no progress is detected within `stallTimeo
 
 Loops use the following priority order for model selection:
 
-1. **Dialog selection** — Model chosen in the execution dialog (persisted per-project)
-2. `executionModel` — Global execution model fallback
-3. Platform default — OpenCode's default model
+1. **In-session dialog override** — Changed in the execution dialog (instance lifetime)
+2. `config.executionModel` — Global execution model fallback
+3. Last-used workspace — Previously selected model for the project
+4. Platform default — OpenCode's default model
 
-The auditor model follows a similar chain: dialog selection → `auditorModel` → `executionModel` → platform default.
+The auditor model follows a similar chain: in-session override → `config.auditorModel` → `config.executionModel` (inherit) → last-used workspace → platform default. Variants follow their own priority (see [Model Selection Priority](#model-selection-priority)).
 
 When launching from the TUI dialog, your selection is remembered and pre-filled on subsequent launches. The dialog also allows selecting a separate model for the auditor phase.
 

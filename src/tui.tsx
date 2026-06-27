@@ -146,6 +146,7 @@ function ExecutionDialog(props: {
         initialLoopName={props.initialLoopName}
         onBack={() => props.api.ui.dialog.clear()}
         onSelectionChanged={({ executionModel, auditorModel, executionVariant, auditorVariant, loopName }) => {
+          props.cache?.setSelectionOverride({ executionModel, auditorModel, executionVariant, auditorVariant })
           props.api.ui.dialog.setSize('xlarge')
           props.api.ui.dialog.replace(() => (
             <ExecutionDialog

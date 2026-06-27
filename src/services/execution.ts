@@ -996,8 +996,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const resolvedAuditorModel = command.auditorModel ?? deps.config.auditorModel
     
     // Resolve variants
-    const resolvedExecutionVariant = command.executionVariant
-    const resolvedAuditorVariant = command.auditorVariant
+    const resolvedExecutionVariant = command.executionVariant ?? deps.config.executionVariant
+    const resolvedAuditorVariant = command.auditorVariant ?? deps.config.auditorVariant
     
     // Resolve max iterations
     const maxIterations = command.maxIterations ?? deps.config.loop?.defaultMaxIterations ?? 0
