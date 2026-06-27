@@ -3,8 +3,7 @@ import { existsSync } from 'fs'
 import { join } from 'path'
 import { platform } from 'os'
 import { resolveDataDir } from '../storage/database'
-import { createOpencodeDataSource } from '../observability/data-source'
-import { createRequestHandler, type EventBroadcaster } from './server'
+import { createRequestHandler } from './server'
 
 export interface DashboardServerHandle {
   url: string
@@ -15,8 +14,6 @@ export interface DashboardServerHandle {
 export interface StartDashboardOptions {
   port?: number
   dbPath?: string
-  opencodeDbPath?: string
-  events?: EventBroadcaster | null
   maxAttempts?: number
 }
 
@@ -53,24 +50,16 @@ export function startDashboardServer(options: StartDashboardOptions = {}): Dashb
   const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS
   const db = new Database(dbPath, { readonly: true })
   db.run('PRAGMA busy_timeout=5000')
-  const opencode = createOpencodeDataSource({ path: options.opencodeDbPath })
-  const handler = createRequestHandler({
-    forgeDb: db,
-    opencode,
-    events: options.events ?? null,
-  })
+  const handler = createRequestHandler({ forgeDb: db })
 
   function closeAll(): void {
     db.close()
-    opencode.close()
   }
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const port = basePort + attempt
     try {
       // idleTimeout: 0 disables Bun's per-request idle timeout (default 10s).
-      // The dashboard serves a long-lived SSE stream (/api/opencode/events)
-      // that can sit idle between events, which would otherwise be aborted.
       const server = Bun.serve({ hostname: 'localhost', port, idleTimeout: 0, fetch: handler })
       const boundPort = server.port ?? port
       return {

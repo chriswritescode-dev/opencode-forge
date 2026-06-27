@@ -2,7 +2,7 @@ import { createSignal, createMemo, createEffect, onMount, onCleanup } from 'soli
 import { createStore, reconcile } from 'solid-js/store'
 import html from 'solid-js/html'
 import type { DashboardPayload, DashboardLoop } from './types'
-import { parseHashRoute, buildHashRoute, syncHash, dataHash, loopMatchesFilters } from './helpers'
+import { parseLoopHash, buildLoopHash, syncHash, dataHash, loopMatchesFilters } from './helpers'
 import {
   TotalsBar,
   SearchInput,
@@ -13,18 +13,9 @@ import {
   EmptyState,
   type MatchedEntry,
 } from './components'
-import { ViewToggle, SessionsView } from './opencode-components'
-import {
-  groupSessionsByProject,
-  findSessionProjectKey,
-  activeProjectKeys,
-  projectKeySetsEqual,
-  type SessionProjectGroup,
-} from './opencode-helpers'
-import { createOpencodeStore } from './opencode'
 
 function syncHashTo(projectId: string | null, loopName: string | null, suppressRef: { current: boolean }) {
-  syncHash(buildHashRoute({ view: 'loops', projectId, loopName }), suppressRef)
+  syncHash(buildLoopHash(projectId, loopName), suppressRef)
 }
 
 export function App() {
@@ -41,10 +32,6 @@ export function App() {
   const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null)
   const [selectedLoopName, setSelectedLoopName] = createSignal<string | null>(null)
   const [loadError, setLoadError] = createSignal<string | null>(null)
-  const [activeView, setActiveView] = createSignal<'loops' | 'sessions'>('loops')
-  const [selectedSessionId, setSelectedSessionId] = createSignal<string | null>(null)
-  const [selectedSessionProjectKey, setSelectedSessionProjectKey] = createSignal<string | null>(null)
-  const oc = createOpencodeStore()
 
   // Non-reactive refs
   const lastDataHashRef = { current: '' }
@@ -77,31 +64,6 @@ export function App() {
     syncHashTo(projectId, loopName, suppressHashChangeRef)
   }
 
-  const navigateSession = (sessionId: string) => {
-    setSelectedSessionId(sessionId)
-    // Set selected project key to the containing group if known
-    const groups = sessionProjectGroups()
-    if (groups.length) {
-      const key = findSessionProjectKey(groups, sessionId)
-      if (key) setSelectedSessionProjectKey(key)
-    }
-    oc.loadTranscript(sessionId)
-    syncHash(buildHashRoute({ view: 'sessions', sessionId }), suppressHashChangeRef)
-  }
-
-  const switchView = (view: 'loops' | 'sessions') => {
-    setActiveView(view)
-    // Clear selected session whenever switching views — leaving a transcript
-    // open while on the sessions list view would show a stale transcript.
-    setSelectedSessionId(null)
-    if (view === 'sessions') {
-      oc.loadSessions()
-      syncHash(buildHashRoute({ view }), suppressHashChangeRef)
-    } else {
-      syncHash(buildHashRoute({ view: 'loops', projectId: selectedProjectId(), loopName: selectedLoopName() }), suppressHashChangeRef)
-    }
-  }
-
   // ── Event handlers ──────────────────────────────────────────────────────
 
   const toggleStatus = (key: string) => {
@@ -113,17 +75,6 @@ export function App() {
 
   const handleSearch = (e: Event) => {
     setSearchText((e.target as HTMLInputElement).value.trim().toLowerCase())
-  }
-
-  const selectSessionProject = (key: string) => {
-    setSelectedSessionProjectKey(key)
-    setSelectedSessionId(null)
-    syncHash(buildHashRoute({ view: 'sessions' }), suppressHashChangeRef)
-  }
-
-  const backToSessionList = () => {
-    setSelectedSessionId(null)
-    syncHash(buildHashRoute({ view: 'sessions' }), suppressHashChangeRef)
   }
 
   // ── Derived memos ───────────────────────────────────────────────────────
@@ -162,34 +113,6 @@ export function App() {
     return entry.loops.find(l => l.loop.loopName === name) ?? null
   })
 
-  // ── Session project grouping memos ───────────────────────────────────────
-
-  const sessionProjectGroups = createMemo(() => groupSessionsByProject(oc.sessions()))
-
-  // Project keys with a currently-running session, for the sidebar indicator.
-  // The set-equality comparator keeps the value stable so only genuine
-  // membership changes notify the sidebar regions.
-  const activeSessionProjectKeys = createMemo(
-    () => activeProjectKeys(oc.busySessionIds(), sessionProjectGroups()),
-    new Set<string>(),
-    { equals: projectKeySetsEqual },
-  )
-
-  const selectedSessionGroup = createMemo<SessionProjectGroup | null>(() => {
-    const groups = sessionProjectGroups()
-    if (!groups.length) return null
-
-    const sid = selectedSessionId()
-    if (sid) {
-      const key = findSessionProjectKey(groups, sid)
-      const found = key ? groups.find(g => g.key === key) : null
-      if (found) return found
-    }
-
-    const selected = selectedSessionProjectKey()
-    return groups.find(g => g.key === selected) ?? groups[0]
-  })
-
   // ── View nodes ──────────────────────────────────────────────────────────
   // These memos return DOM nodes. Because a memo only re-emits when its value
   // changes, the detail subtree is built once per selected loop (stable store
@@ -221,42 +144,6 @@ export function App() {
 
   // ── Effects ─────────────────────────────────────────────────────────────
 
-  // Centralized activity SSE management: connect when on sessions view and
-  // re-scope the stream to the open session so its transcript part events are
-  // forwarded; disconnect on any other view.
-  createEffect(() => {
-    if (activeView() === 'sessions') {
-      oc.connectActivity(selectedSessionId())
-    } else {
-      oc.disconnectActivity()
-    }
-  })
-
-  // Sync session project selection when sessions load or selected session changes
-  createEffect(() => {
-    if (activeView() !== 'sessions') return
-    const groups = sessionProjectGroups()
-
-    if (!groups.length) {
-      setSelectedSessionProjectKey(null)
-      return
-    }
-
-    const sid = selectedSessionId()
-    if (sid) {
-      const key = findSessionProjectKey(groups, sid)
-      if (key) {
-        setSelectedSessionProjectKey(key)
-        return
-      }
-    }
-
-    const cur = selectedSessionProjectKey()
-    if (!cur || !groups.some(g => g.key === cur)) {
-      setSelectedSessionProjectKey(groups[0].key)
-    }
-  })
-
   // Sync selected project when data or filters change
   createEffect(() => {
     if (!loaded()) return
@@ -286,10 +173,8 @@ export function App() {
   })
 
   // Sync hash to match current selection whenever it changes (but only after data loaded)
-  // Only applies to loops view; sessions view manages its own hash via switchView / navigateSession.
   createEffect(() => {
     if (!loaded()) return
-    if (activeView() !== 'loops') return
     syncHashTo(selectedProjectId(), selectedLoopName(), suppressHashChangeRef)
   })
 
@@ -297,28 +182,14 @@ export function App() {
 
   onMount(() => {
     // Seed initial selection from URL hash
-    const parsed = parseHashRoute(location.hash)
-    setActiveView(parsed.view)
-    if (parsed.view === 'sessions') {
-      if (parsed.sessionId) {
-        setSelectedSessionId(parsed.sessionId)
-        oc.loadTranscript(parsed.sessionId)
-      }
-      oc.loadSessions()
-    } else {
-      if (parsed.projectId) setSelectedProjectId(parsed.projectId)
-      if (parsed.loopName) setSelectedLoopName(parsed.loopName)
-    }
+    const parsed = parseLoopHash(location.hash)
+    if (parsed.projectId) setSelectedProjectId(parsed.projectId)
+    if (parsed.loopName) setSelectedLoopName(parsed.loopName)
 
-    // Initial load + poll. Only the loops view (forge DB) is polled; the
-    // sessions view is event-driven after its initial load — session.* events
-    // keep the list live and message.part.* events keep the open transcript
-    // live, so timer polling of the opencode DB is unnecessary.
+    // Initial load + poll
     load()
     const id = setInterval(() => {
-      if (activeView() === 'loops') {
-        load()
-      }
+      load()
     }, 5000)
 
     // Hash change listener (browser back/forward)
@@ -327,27 +198,15 @@ export function App() {
         suppressHashChangeRef.current = false
         return
       }
-      const parsed = parseHashRoute(location.hash)
-      setActiveView(parsed.view)
-      if (parsed.view === 'sessions') {
-        setSelectedProjectId(null)
-        setSelectedLoopName(null)
-        setSelectedSessionId(parsed.sessionId)
-        if (parsed.sessionId) {
-          oc.loadTranscript(parsed.sessionId)
-        }
-      } else {
-        setSelectedSessionId(null)
-        setSelectedProjectId(parsed.projectId)
-        setSelectedLoopName(parsed.loopName)
-      }
+      const parsed = parseLoopHash(location.hash)
+      setSelectedProjectId(parsed.projectId)
+      setSelectedLoopName(parsed.loopName)
     }
     window.addEventListener('hashchange', onHashChange)
 
     onCleanup(() => {
       clearInterval(id)
       window.removeEventListener('hashchange', onHashChange)
-      oc.disconnectActivity()
     })
   })
 
@@ -366,8 +225,6 @@ export function App() {
 
     ${SearchInput({ onInput: handleSearch })}
 
-    ${() => ViewToggle({ active: activeView(), onSelect: switchView })}
-
     ${() => {
       if (!loaded()) return ''
       return html`<div class="dashboard-summary">
@@ -378,28 +235,6 @@ export function App() {
 
     ${() => {
       if (!loaded()) return ''
-      if (activeView() === 'sessions') {
-        // Build SessionsView once on entering the view (depends only on
-        // loaded()/activeView()). Availability, the empty state, and all data
-        // updates are handled by reactive accessors inside SessionsView so the
-        // open transcript's scroll container is never rebuilt by list changes.
-        return SessionsView({
-          available: () => oc.sessionsAvailable(),
-          groups: () => sessionProjectGroups(),
-          selectedGroup: () => selectedSessionGroup(),
-          selectedProjectKey: () => selectedSessionProjectKey(),
-          activeSessionId: () => selectedSessionId(),
-          transcript: () => {
-            const sid = selectedSessionId()
-            return sid ? (oc.transcripts[sid] ?? null) : null
-          },
-          activeKeys: () => activeSessionProjectKeys(),
-          onSelectProject: selectSessionProject,
-          onOpen: navigateSession,
-          onBack: backToSessionList,
-        })
-      }
-      // Loops view — keep existing markup intact
       if (matchedByProject().length === 0) return EmptyState()
       const selEntry = selectedEntry()
       if (!selEntry) return ''

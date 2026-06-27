@@ -52,16 +52,6 @@ TTL for completed/cancelled/errored/stalled loops before sweep. Default 7 days.
 
 ***
 
-### dashboard?
-
-> `optional` **dashboard?**: `DashboardConfig`
-
-Defined in: [types.ts:234](https://github.com/chriswritescode-dev/opencode-forge/blob/7dda0a6dac066c72b6e45aff076d8e5c7e38f51f/src/types.ts#L234)
-
-Dashboard configuration.
-
-***
-
 ### dataDir?
 
 > `optional` **dataDir?**: `string`
