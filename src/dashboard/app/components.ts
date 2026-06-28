@@ -8,6 +8,9 @@ import {
   deriveSidebarLabel,
   formatSectionDuration,
   splitFindings,
+  findingsLevel,
+  formatFindingCount,
+  clampPercent,
   formatFinding,
   formatModelUsage,
   formatTokenCount,
@@ -108,11 +111,7 @@ export function Sidebar(props: {
 // ── LoopTable ─────────────────────────────────────────────────────────────
 
 function MiniMeter(props: { current: () => number; total: () => number }) {
-  const pct = () => {
-    const t = props.total()
-    if (!t || t <= 0) return 0
-    return Math.max(0, Math.min(100, (props.current() / t) * 100))
-  }
+  const pct = () => clampPercent(props.current(), props.total())
   return html`<span class="lt-meter-cell">
     <span class="lt-meter"><span class="lt-meter-fill" style=${() => 'width:' + pct() + '%'}></span></span>
     <span class="lt-meter-text">${() => props.current()}/${() => props.total()}</span>
@@ -147,7 +146,7 @@ function LoopTableRow(props: { dashLoop: DashboardLoop; onOpen: (name: string) =
       const c = counts()
       if (c.bugs.length === 0 && c.warnings.length === 0) return html`<span class="dim">—</span>`
       return html`<span>
-        ${c.bugs.length > 0 ? html`<span class="finding-bug">${c.bugs.length} bug${c.bugs.length === 1 ? '' : 's'}</span>` : ''}
+        ${c.bugs.length > 0 ? html`<span class="finding-bug">${formatFindingCount(c.bugs.length, 'bug')}</span>` : ''}
         ${c.bugs.length > 0 && c.warnings.length > 0 ? ' · ' : ''}
         ${c.warnings.length > 0 ? html`<span class="finding-warning">${c.warnings.length} warn</span>` : ''}
       </span>`
@@ -290,11 +289,7 @@ function LoopDetailStat(props: { label: string; value: () => string }) {
 // A progress bar with a count, clamped to 0–100%. Both current and total are
 // accessors so the fill width tracks live loop updates.
 function LoopDetailProgress(props: { label: string; current: () => number; total: () => number }) {
-  const pct = () => {
-    const total = props.total()
-    if (!total || total <= 0) return 0
-    return Math.max(0, Math.min(100, (props.current() / total) * 100))
-  }
+  const pct = () => clampPercent(props.current(), props.total())
   return html`<div class="ldh-bar-group">
     <div class="ldh-bar-head">
       <span class="ldh-bar-label">${props.label}</span>
@@ -310,30 +305,27 @@ function LoopDetailProgress(props: { label: string; current: () => number; total
 // title row, a labeled stat grid, iteration/section progress bars, and a
 // status-tinted outcome banner. Built once per selected loop; every dynamic
 // field is read reactively so it updates in place on polls.
-export function LoopDetailHeader(props: { dashLoop: DashboardLoop }) {
+export function LoopDetailHeader(props: {
+  dashLoop: DashboardLoop
+  split: () => { bugs: DashboardLoop['findings']; warnings: DashboardLoop['findings'] }
+}) {
   const lp = () => props.dashLoop.loop
   const dl = () => props.dashLoop
   const hasCompletedAt = createMemo(() => !!lp().completedAt)
   const hasDuration = createMemo(() => !!dl().duration)
   const hasSectionsTotal = createMemo(() => lp().totalSections > 0)
   const hasReason = createMemo(() => !!lp().terminationReason)
-  const split = createMemo(() => splitFindings(props.dashLoop.findings))
-  const findingsLevel = createMemo(() => {
-    const s = split()
-    if (s.bugs.length > 0) return 'bug'
-    if (s.warnings.length > 0) return 'warn'
-    return 'clean'
-  })
+  const level = createMemo(() => findingsLevel(props.split()))
   const hasUsage = createMemo(() => !!props.dashLoop.usage)
 
   return html`<div class="loop-detail-header">
-    <div class=${() => 'ldh-findings ldh-findings-' + findingsLevel()}>
+    <div class=${() => 'ldh-findings ldh-findings-' + level()}>
       ${() => {
-        const s = split()
+        const s = props.split()
         if (s.bugs.length === 0 && s.warnings.length === 0) return 'No findings'
         const parts = []
-        if (s.bugs.length > 0) parts.push(s.bugs.length + (s.bugs.length === 1 ? ' bug' : ' bugs'))
-        if (s.warnings.length > 0) parts.push(s.warnings.length + (s.warnings.length === 1 ? ' warning' : ' warnings'))
+        if (s.bugs.length > 0) parts.push(formatFindingCount(s.bugs.length, 'bug'))
+        if (s.warnings.length > 0) parts.push(formatFindingCount(s.warnings.length, 'warning'))
         return parts.join(' · ')
       }}
     </div>
@@ -459,7 +451,7 @@ export function LoopDetail(props: { dashLoop: DashboardLoop; onBack: () => void 
     </div>
 
     <!-- Header summary -->
-    ${LoopDetailHeader({ dashLoop: props.dashLoop })}
+    ${LoopDetailHeader({ dashLoop: props.dashLoop, split })}
 
     <!-- Detail body -->
     <div class="loop-detail">

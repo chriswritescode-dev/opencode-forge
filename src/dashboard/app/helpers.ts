@@ -97,31 +97,33 @@ export function splitFindings(
   return { bugs, warnings }
 }
 
+/** Classifies split findings into the severity tier used for badge styling. */
+export function findingsLevel(split: {
+  bugs: DashboardLoop['findings']
+  warnings: DashboardLoop['findings']
+}): 'bug' | 'warn' | 'clean' {
+  if (split.bugs.length > 0) return 'bug'
+  if (split.warnings.length > 0) return 'warn'
+  return 'clean'
+}
+
+/** Pluralizes a finding count, e.g. (1, 'bug') -> '1 bug', (2, 'bug') -> '2 bugs'. */
+export function formatFindingCount(count: number, noun: string): string {
+  return count + ' ' + noun + (count === 1 ? '' : 's')
+}
+
+/** Clamps current/total to a 0–100 fill percentage, guarding non-positive totals. */
+export function clampPercent(current: number, total: number): number {
+  if (!total || total <= 0) return 0
+  return Math.max(0, Math.min(100, (current / total) * 100))
+}
+
 export function formatFinding(f: DashboardLoop['findings'][number]): string {
   let text = f.file + ':' + f.line + ' — ' + f.description
   if (f.scenario) {
     text += ' (' + f.scenario + ')'
   }
   return text
-}
-
-export function formatUsageTotal(u: NonNullable<DashboardLoop['usage']>): string {
-  return (
-    'Total cost: $' +
-    u.totalCost.toFixed(6) +
-    ', tokens: ' +
-    u.totalInputTokens +
-    ' in / ' +
-    u.totalOutputTokens +
-    ' out (reasoning: ' +
-    u.totalReasoningTokens +
-    ', cache R: ' +
-    u.totalCacheReadTokens +
-    ' W: ' +
-    u.totalCacheWriteTokens +
-    '), messages: ' +
-    u.totalMessageCount
-  )
 }
 
 export function formatModelUsage(

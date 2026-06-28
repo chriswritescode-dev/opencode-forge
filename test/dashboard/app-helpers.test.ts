@@ -9,8 +9,10 @@ import {
   dataHash,
   deriveSidebarLabel,
   splitFindings,
+  findingsLevel,
+  formatFindingCount,
+  clampPercent,
   formatFinding,
-  formatUsageTotal,
   formatModelUsage,
   formatTokenCount,
   formatUsageCost,
@@ -386,6 +388,65 @@ describe('splitFindings', () => {
 })
 
 // ---------------------------------------------------------------------------
+// findingsLevel
+// ---------------------------------------------------------------------------
+
+describe('findingsLevel', () => {
+  test('returns bug when any bug present', () => {
+    expect(findingsLevel({ bugs: [mockFinding({ severity: 'bug' })], warnings: [] })).toBe('bug')
+    expect(
+      findingsLevel({ bugs: [mockFinding({ severity: 'bug' })], warnings: [mockFinding({ severity: 'warning' })] }),
+    ).toBe('bug')
+  })
+
+  test('returns warn when only warnings present', () => {
+    expect(findingsLevel({ bugs: [], warnings: [mockFinding({ severity: 'warning' })] })).toBe('warn')
+  })
+
+  test('returns clean when no findings', () => {
+    expect(findingsLevel({ bugs: [], warnings: [] })).toBe('clean')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// formatFindingCount
+// ---------------------------------------------------------------------------
+
+describe('formatFindingCount', () => {
+  test('singular for count of 1', () => {
+    expect(formatFindingCount(1, 'bug')).toBe('1 bug')
+    expect(formatFindingCount(1, 'warning')).toBe('1 warning')
+  })
+
+  test('plural for counts other than 1', () => {
+    expect(formatFindingCount(0, 'bug')).toBe('0 bugs')
+    expect(formatFindingCount(2, 'warning')).toBe('2 warnings')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// clampPercent
+// ---------------------------------------------------------------------------
+
+describe('clampPercent', () => {
+  test('returns 0 for non-positive or missing total', () => {
+    expect(clampPercent(3, 0)).toBe(0)
+    expect(clampPercent(3, -5)).toBe(0)
+    expect(clampPercent(3, NaN)).toBe(0)
+  })
+
+  test('computes percentage within range', () => {
+    expect(clampPercent(1, 4)).toBe(25)
+    expect(clampPercent(0, 10)).toBe(0)
+  })
+
+  test('clamps to 0–100 when out of range', () => {
+    expect(clampPercent(10, 5)).toBe(100)
+    expect(clampPercent(-2, 5)).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // formatFinding
 // ---------------------------------------------------------------------------
 
@@ -403,46 +464,6 @@ describe('formatFinding', () => {
   test('handles line number 0', () => {
     const f = mockFinding({ file: 'config.ts', line: 0, description: 'Syntax error', scenario: null })
     expect(formatFinding(f)).toBe('config.ts:0 — Syntax error')
-  })
-})
-
-// ---------------------------------------------------------------------------
-// formatUsageTotal
-// ---------------------------------------------------------------------------
-
-describe('formatUsageTotal', () => {
-  const usage: NonNullable<DashboardLoop['usage']> = {
-    loopName: 'test-loop',
-    totalCost: 1.234567,
-    totalInputTokens: 100,
-    totalOutputTokens: 50,
-    totalReasoningTokens: 10,
-    totalCacheReadTokens: 20,
-    totalCacheWriteTokens: 5,
-    totalMessageCount: 3,
-    byModel: {},
-  }
-
-  test('includes cost with 6 decimal places', () => {
-    const result = formatUsageTotal(usage)
-    expect(result).toContain('$1.234567')
-  })
-
-  test('includes all token breakdowns', () => {
-    const result = formatUsageTotal(usage)
-    expect(result).toContain('tokens: 100 in / 50 out')
-    expect(result).toContain('reasoning: 10')
-    expect(result).toContain('cache R: 20')
-    expect(result).toContain('W: 5')
-  })
-
-  test('includes message count', () => {
-    const result = formatUsageTotal(usage)
-    expect(result).toContain('messages: 3')
-  })
-
-  test('starts with Total cost', () => {
-    expect(formatUsageTotal(usage)).toMatch(/^Total cost:/)
   })
 })
 

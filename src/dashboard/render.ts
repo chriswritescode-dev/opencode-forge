@@ -69,25 +69,13 @@ export function renderDashboardHtml(): string {
   .status-cancelled { background: #6e7681; color: #fff; }
   .status-errored { background: #da3633; color: #fff; }
   .status-stalled { background: #d29922; color: #fff; }
-  .loop-info { font-size: 0.85rem; color: #8b949e; flex: 1; }
-  .loop-info strong { color: #c9d1d9; }
   .loop-detail { padding: 8px 12px 12px; border-top: 1px solid #30363d; font-size: 0.85rem; }
   .loop-detail h4 { color: #f0f6fc; margin: 8px 0 4px; font-size: 0.95rem; }
   .loop-detail h4:first-child { margin-top: 0; }
-  .sections-group { display: flex; flex-direction: column; gap: 6px; }
-  .section-item {
-    border: 1px solid #21262d; border-left: 3px solid #30363d;
-    border-radius: 4px; background: #0d1117; overflow: hidden;
-  }
   .section-item-pending { border-left-color: #6e7681; }
   .section-item-in_progress { border-left-color: #1f6feb; }
   .section-item-completed { border-left-color: #3fb950; }
   .section-item-failed { border-left-color: #f85149; }
-  .section-head {
-    display: flex; align-items: center; gap: 8px;
-    padding: 7px 10px; cursor: pointer; user-select: none;
-  }
-  .section-head:hover { background: #161b22; }
   .section-caret { color: #8b949e; font-size: 0.7rem; width: 10px; flex-shrink: 0; }
   .section-status {
     font-size: 0.66rem; font-weight: 600; text-transform: uppercase;
