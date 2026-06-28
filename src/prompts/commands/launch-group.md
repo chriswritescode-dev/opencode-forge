@@ -10,7 +10,7 @@ Use the `question` tool only to resolve a genuine blocker (which source, or an a
 
 Pull the items from the source, then turn them into discrete, independently-implementable features. Each feature needs a short `title` and a concrete `description` the architect-auto agent can plan from (name the target area, the behavior, and any constraints you already know).
 
-- **Already-discrete items (issues / tickets):** map each one to a single feature. Keep them 1:1 — never merge or split — and preserve the source identifier and link in the description (for example `#123` / `ENG-456` plus the URL) so the planner can re-fetch full context and the work stays traceable.
+- **Already-discrete items (issues / tickets):** map each one to a single feature. Keep them 1:1 — never merge or split — and preserve an exact reference in the description, preferably the issue/ticket URL and otherwise the canonical tracker identifier, so the planner can re-fetch full context and the work stays traceable.
 - **Unstructured input (a PRD):** do not pre-split it yourself; pass it through as `prd` and let the feature-splitter agent decompose it.
 
 ## Step 3: Confirm before launch
@@ -34,6 +34,6 @@ Forge then spawns an architect-auto planning session per feature and auto-launch
 
 ## Step 5: Report
 
-Report the group ID, status, and feature count returned by `launch-group`. Tell the user to run `group-status` to monitor progress, `group-status <groupId>` for per-feature detail, and `group-cancel <groupId>` to stop.
+Report the group ID, status, and feature count returned by `launch-group`. Let the user know they can ask you to check progress at any time (you will call `group-status`, or `group-status` with the group ID for per-feature detail) or to stop the group (you will call `group-cancel` with the group ID).
 
 $ARGUMENTS
