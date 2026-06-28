@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createExecutionContextCache } from '../../src/utils/tui-execution-context-cache'
+import { createExecutionContextCache, type ExecutionContextSnapshot } from '../../src/utils/tui-execution-context-cache'
 import type { ExecutionPreferences } from '../../src/utils/tui-execution-preferences'
 import type { PluginConfig } from '../../src/types'
 import type {
@@ -284,6 +284,54 @@ describe('createExecutionContextCache', () => {
     })
   })
 
+  describe('setSelectionOverride', () => {
+    it('updates snapshot defaults', async () => {
+      const loadFn = vi.fn(async () => makeLoadResult())
+      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, loadFn)
+      await cache.ensureLoaded()
+
+      cache.setSelectionOverride({ executionVariant: 'high', executionModel: 'ov/exec' })
+
+      const snap = cache.snapshot()!
+      expect(snap.defaults.executionVariant).toBe('high')
+      expect(snap.defaults.executionModel).toBe('ov/exec')
+    })
+
+    it('override persists across refresh', async () => {
+      let callCount = 0
+      const loadFn = vi.fn(async () => {
+        callCount++
+        return makeLoadResult()
+      })
+      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, loadFn)
+      await cache.ensureLoaded()
+
+      cache.setSelectionOverride({ executionVariant: 'high', executionModel: 'ov/exec' })
+      // Refresh re-loads from loadFn (no stored prefs), overrides should still apply
+      await cache.refresh()
+
+      const snap = cache.snapshot()!
+      expect(snap.defaults.executionVariant).toBe('high')
+      expect(snap.defaults.executionModel).toBe('ov/exec')
+      expect(callCount).toBe(2) // initial ensureLoaded + explicit refresh
+    })
+
+    it('notifies onChange listeners', async () => {
+      const loadFn = vi.fn(async () => makeLoadResult())
+      const cache = createExecutionContextCache(mockProjectId, mockPluginConfig, loadFn)
+      await cache.ensureLoaded()
+
+      const listener = vi.fn()
+      cache.onChange(listener)
+
+      cache.setSelectionOverride({ executionVariant: 'high' })
+
+      expect(listener).toHaveBeenCalledTimes(1)
+      const snap = listener.mock.calls[0][0] as ExecutionContextSnapshot
+      expect(snap.defaults.executionVariant).toBe('high')
+    })
+  })
+
   describe('defaults resolution', () => {
     it('uses config.executionModel when preferences is null', async () => {
       const config: PluginConfig = {
@@ -298,7 +346,7 @@ describe('createExecutionContextCache', () => {
       expect(snap.defaults.auditorModel).toBe('p/m2')
     })
 
-    it('stored prefs win over config', async () => {
+    it('config wins over stored prefs', async () => {
       const config: PluginConfig = {
         executionModel: 'config/model',
         auditorModel: 'config/auditor',
@@ -316,8 +364,8 @@ describe('createExecutionContextCache', () => {
       const cache = createExecutionContextCache(mockProjectId, config, loadFn)
       const snap = await cache.ensureLoaded()
 
-      expect(snap.defaults.executionModel).toBe('stored/model')
-      expect(snap.defaults.auditorModel).toBe('stored/auditor')
+      expect(snap.defaults.executionModel).toBe('config/model')
+      expect(snap.defaults.auditorModel).toBe('config/auditor')
     })
   })
 })

@@ -28,6 +28,12 @@
   // Model override for the auditor agent (format: "provider/model")
   "auditorModel": "",
 
+  // Default variant (reasoning/thinking-effort) for the execution model (e.g., "high", "max")
+  "executionVariant": "",
+
+  // Default variant for the auditor model (independent; does not inherit executionVariant)
+  "auditorVariant": "",
+
   // Iterative development loop settings
   "loop": {
     "enabled": true,

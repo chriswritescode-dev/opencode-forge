@@ -12,6 +12,8 @@ See also: [Tools](tools.md), [Agents and Slash Commands](agents-and-commands.md)
 | `completedLoopTtlMs` | `604800000` | TTL for completed/cancelled/errored/stalled loops before cleanup sweep. |
 | `executionModel` | `""` | Fallback model override for plan execution sessions. Format: `provider/model`. |
 | `auditorModel` | `""` | Fallback model override for auditor sessions. Format: `provider/model`. |
+| `executionVariant` | `""` | Default reasoning/thinking variant for the execution model (e.g. `high`, `max`). |
+| `auditorVariant` | `""` | Default reasoning/thinking variant for the auditor model. Independent — does not inherit `executionVariant`. |
 | `agents` | unset | Per-agent overrides keyed by display name, currently supporting `temperature`. |
 
 ## Logging
