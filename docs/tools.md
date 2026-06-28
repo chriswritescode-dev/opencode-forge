@@ -1,6 +1,6 @@
 # Tools Reference
 
-Forge exposes server-side tools for plan storage, review findings, loop management, section navigation, and sandbox shell execution.
+Forge exposes server-side tools for plan storage, review findings, loop management, group orchestration, section navigation, and sandbox shell execution.
 
 See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](configuration.md), [Loop System](loop-system.md).
 
@@ -16,6 +16,9 @@ See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](c
 | `execute-plan` | Start an iterative development loop in an isolated git worktree, or (with `mode: new-session`) launch the plan in a fresh standalone session. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `loop-cancel` | Cancel an active loop. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `loop-status` | List loops, inspect one loop, or restart a restartable loop. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
+| `launch-group` | Launch a group of features (from a PRD or a pre-split list), each planned and run as its own loop, scheduled with a concurrency cap. | [`src/tools/group.ts`](../src/tools/group.ts) |
+| `group-status` | List groups, inspect one group's per-feature stages, or restart a non-completed group. | [`src/tools/group.ts`](../src/tools/group.ts) |
+| `group-cancel` | Cancel a group, optionally cancelling its running loops. | [`src/tools/group.ts`](../src/tools/group.ts) |
 | `sh` | Sandbox shell tool added when a sandbox manager is available. | [`src/tools/bash/index.ts`](../src/tools/bash/index.ts) |
 
 ## Plan Tools
@@ -118,6 +121,38 @@ Arguments:
 | `force` | Force restart an active or stuck loop. Required for running loops. |
 
 Completed loops are history-only and cannot be restarted. See [Loop System](loop-system.md#restartability).
+
+> Group, loop, and plan tools are denied inside loop and audit sessions so an in-flight loop cannot recursively spawn more work.
+
+## Group Tools
+
+Group tools orchestrate parallel feature extraction: a PRD is split into features by the `feature-splitter` agent, each feature is planned by the `architect-auto` agent, and each plan runs as its own loop. A scheduler advances features while respecting a per-group concurrency cap. Group tools are agent-invoked only (no slash commands) and are denied inside loop/audit sessions.
+
+### `launch-group`
+
+Requires exactly one of `prd` or `features`.
+
+| Argument | Description |
+|---|---|
+| `title` | Required short title for the group. |
+| `prd` | PRD text to split into features. Mutually exclusive with `features`. |
+| `features` | Pre-split features (`{ title, description }[]`). Mutually exclusive with `prd`. |
+| `maxConcurrentLoops` | Maximum number of concurrent loops for this group. When omitted, defaults to the global `groupLaunch.maxConcurrentLoops` config value. |
+| `loopNamePrefix` | Reserved for future use. |
+
+### `group-status`
+
+| Argument | Description |
+|---|---|
+| `groupId` | Optional group ID for detailed per-feature status. When omitted, lists all groups. |
+| `restart` | Restart a non-completed, non-running group by `groupId` (resumes interrupted/errored groups). |
+
+### `group-cancel`
+
+| Argument | Description |
+|---|---|
+| `groupId` | Required group ID to cancel. |
+| `cancelRunningLoops` | Also cancel running loops for non-terminal features. |
 
 ## Sandbox Shell Tool
 

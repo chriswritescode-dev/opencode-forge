@@ -448,61 +448,71 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       return resolveSandboxContextForLoop(sandboxManager, resolved, logger)
     }
 
+    // Spawns an isolated agent session (splitter/architect) seeded with a single text prompt,
+    // using the configured auditor model. Single source of truth for group agent bring-up.
+    async function spawnAgentSession(title: string, text: string, agent: string): Promise<{ sessionId: string }> {
+      const session = await forgeClient.session.create({ title, directory })
+      const parsedModel = parseModelString(config.auditorModel)
+      const modelParam = parsedModel ? { model: parsedModel } : {}
+      await forgeClient.session.promptAsync({
+        sessionID: session.id,
+        directory,
+        parts: [{ type: 'text', text }],
+        agent,
+        ...modelParam,
+      })
+      return { sessionId: session.id }
+    }
+
+    // Returns the newest assistant text part across a session's messages, or null if none.
+    async function findLatestAssistantText(sessionId: string): Promise<string | null> {
+      const messages = await forgeClient.session.messages({ sessionID: sessionId, directory, limit: 20 })
+      const msgs = (messages ?? []) as Array<{ info: { role?: string }; parts: Array<{ type: string; text?: string }> }>
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const msg = msgs[i]
+        if (msg.info.role !== 'assistant') continue
+        for (const part of msg.parts) {
+          if (part.type === 'text' && part.text) return part.text
+        }
+      }
+      return null
+    }
+
+    // Execution service for group-launched loops. Built once and reused across launch/cancel
+    // (stateless dispatch) so the dependency wiring lives in a single place.
+    const groupExecService = createForgeExecutionService({
+      projectId,
+      directory,
+      config,
+      logger,
+      dataDir,
+      client: forgeClient,
+      plansRepo,
+      loopsRepo,
+      loopHandler,
+      loop: loopHandler.loop,
+      sandboxManager,
+      sectionPlansRepo,
+      reviewFindingsRepo,
+      loopSessionUsageRepo,
+      workspaceStatusRegistry,
+      pendingTeardowns,
+    })
+
     // ── Real GroupEffects ─────────────────────────────────────────────────────
     const effects: GroupEffects = {
       async spawnSplitterSession(prdText) {
-        const session = await forgeClient.session.create({
-          title: 'Feature extraction',
-          directory,
-        })
-        const parsedModel = parseModelString(config.auditorModel)
-        const modelParam = parsedModel ? { model: parsedModel } : {}
-        await forgeClient.session.promptAsync({
-          sessionID: session.id,
-          directory,
-          parts: [{ type: 'text', text: prdText }],
-          agent: 'feature-splitter',
-          ...modelParam,
-        })
-        return { sessionId: session.id }
+        return spawnAgentSession('Feature extraction', prdText, 'feature-splitter')
       },
 
       async readSplitterFeatures(sessionId) {
-        const messages = await forgeClient.session.messages({
-          sessionID: sessionId,
-          directory,
-          limit: 20,
-        })
-        // Find the newest assistant text message.
-        const msgs = (messages ?? []) as Array<{ info: { role?: string }; parts: Array<{ type: string; text?: string }> }>
-        for (let i = msgs.length - 1; i >= 0; i--) {
-          const msg = msgs[i]
-          if (msg.info.role === 'assistant') {
-            for (const part of msg.parts) {
-              if (part.type === 'text' && part.text) {
-                return parseFeatureList(part.text)
-              }
-            }
-          }
-        }
-        return { ok: false, reason: 'missing' as const }
+        const text = await findLatestAssistantText(sessionId)
+        if (text === null) return { ok: false, reason: 'missing' as const }
+        return parseFeatureList(text)
       },
 
       async spawnArchitectSession(feature) {
-        const session = await forgeClient.session.create({
-          title: `Plan: ${feature.title}`,
-          directory,
-        })
-        const parsedModel = parseModelString(config.auditorModel)
-        const modelParam = parsedModel ? { model: parsedModel } : {}
-        await forgeClient.session.promptAsync({
-          sessionID: session.id,
-          directory,
-          parts: [{ type: 'text', text: feature.description }],
-          agent: 'architect-auto',
-          ...modelParam,
-        })
-        return { sessionId: session.id }
+        return spawnAgentSession(`Plan: ${feature.title}`, feature.description, 'architect-auto')
       },
 
       async capturePlan(sessionId) {
@@ -517,27 +527,13 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       },
 
       async classifyArchitectFailure(sessionId) {
-        const messages = await forgeClient.session.messages({
-          sessionID: sessionId,
-          directory,
-          limit: 20,
-        })
-        const msgs = (messages ?? []) as Array<{ info: { role?: string }; parts: Array<{ type: string; text?: string }> }>
-        for (let i = msgs.length - 1; i >= 0; i--) {
-          const msg = msgs[i]
-          if (msg.info.role === 'assistant') {
-            for (const part of msg.parts) {
-              if (part.type === 'text' && part.text) {
-                const classified = classifyArchitectOutput(part.text)
-                const reason = classified.kind === 'insufficient'
-                  ? classified.reason
-                  : 'Architect failed to produce a valid plan'
-                return { reason }
-              }
-            }
-          }
-        }
-        return { reason: 'No assistant response found' }
+        const text = await findLatestAssistantText(sessionId)
+        if (text === null) return { reason: 'No assistant response found' }
+        const classified = classifyArchitectOutput(text)
+        const reason = classified.kind === 'insufficient'
+          ? classified.reason
+          : 'Architect failed to produce a valid plan'
+        return { reason }
       },
 
       async launchLoop({ architectSessionId, loopName }) {
@@ -547,25 +543,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           directory,
           sourceSessionId: architectSessionId,
         }
-        const execService = createForgeExecutionService({
-          projectId,
-          directory,
-          config,
-          logger,
-          dataDir,
-          client: forgeClient,
-          plansRepo,
-          loopsRepo,
-          loopHandler,
-          loop: loopHandler.loop,
-          sandboxManager,
-          sectionPlansRepo,
-          reviewFindingsRepo,
-          loopSessionUsageRepo,
-          workspaceStatusRegistry,
-          pendingTeardowns,
-        })
-        const response = await execService.dispatch(execCtx, {
+        const response = await groupExecService.dispatch(execCtx, {
           type: 'loop.start',
           source: { kind: 'stored', sessionId: architectSessionId },
           loopName,
@@ -580,25 +558,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       },
 
       async cancelLoop(loopName) {
-        const execService = createForgeExecutionService({
-          projectId,
-          directory,
-          config,
-          logger,
-          dataDir,
-          client: forgeClient,
-          plansRepo,
-          loopsRepo,
-          loopHandler,
-          loop: loopHandler.loop,
-          sandboxManager,
-          sectionPlansRepo,
-          reviewFindingsRepo,
-          loopSessionUsageRepo,
-          workspaceStatusRegistry,
-          pendingTeardowns,
-        })
-        await execService.dispatch(
+        await groupExecService.dispatch(
           { surface: 'tool', projectId, directory },
           { type: 'loop.cancel', selector: { kind: 'exact', name: loopName } },
         )

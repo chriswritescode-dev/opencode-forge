@@ -105,8 +105,11 @@ export function buildLoopPermissionRuleset(options: LoopPermissionRulesetOptions
   // worktree-only loops expose bash and hide sh because there is no sandbox.
   rules.push(
     ...buildShellPermissionRules(sandbox),
-    { permission: 'loop-cancel', pattern: '*', action: 'deny' },
-    { permission: 'loop-status', pattern: '*', action: 'deny' },
+    { permission: 'loop-cancel',  pattern: '*', action: 'deny' },
+    { permission: 'loop-status',  pattern: '*', action: 'deny' },
+    { permission: 'launch-group', pattern: '*', action: 'deny' },
+    { permission: 'group-status', pattern: '*', action: 'deny' },
+    { permission: 'group-cancel', pattern: '*', action: 'deny' },
   )
 
   return rules
@@ -145,6 +148,9 @@ export function buildAuditSessionPermissionRuleset(options: LoopPermissionRulese
     { permission: 'question',     pattern: '*', action: 'deny' },
     { permission: 'loop-cancel',  pattern: '*', action: 'deny' },
     { permission: 'loop-status',  pattern: '*', action: 'deny' },
+    { permission: 'launch-group', pattern: '*', action: 'deny' },
+    { permission: 'group-status', pattern: '*', action: 'deny' },
+    { permission: 'group-cancel', pattern: '*', action: 'deny' },
   ]
   return rules
 }

@@ -72,11 +72,17 @@ export interface FeatureGroupsRepo {
   getFeatureByLoopName(projectId: string, loopName: string): GroupFeatureRow | null
   claimFeatureStage(projectId: string, groupId: string, featureIndex: number, fromStage: string, toStage: string): boolean
   /**
-   * Atomically reset a feature stage and clear architect_session_id.
-   * Unlike claimFeatureStage, this also nulls the architect session ID
-   * to prevent stale idle events from interfering after a restart.
+   * Atomically reset all stuck feature stages for a group in a single transaction:
+   * `planning → pending` (also clearing the stale architect_session_id) and
+   * `launching → planned`. Used by restart to requeue interrupted work.
    */
-  resetFeatureStage(projectId: string, groupId: string, featureIndex: number, fromStage: string, toStage: string): boolean
+  resetStuckFeatureStages(projectId: string, groupId: string): void
+  /**
+   * Atomically mark every non-terminal feature `cancelled` and set the group `cancelled`
+   * in a single transaction, so a partially-applied cancel cannot leave the group cancelled
+   * while features remain in flight.
+   */
+  cancelGroupWithFeatures(projectId: string, groupId: string): void
   setFeatureArchitectSession(projectId: string, groupId: string, featureIndex: number, sessionId: string): void
   setFeatureLoopName(projectId: string, groupId: string, featureIndex: number, loopName: string): void
   setFeatureError(projectId: string, groupId: string, featureIndex: number, error: string, stage: string): void
@@ -239,9 +245,19 @@ export function createFeatureGroupsRepo(db: Database): FeatureGroupsRepo {
     WHERE project_id = ? AND group_id = ? AND feature_index = ? AND stage = ?
   `)
 
-  const resetFeatureStageStmt = db.prepare(`
-    UPDATE group_features SET stage = ?, architect_session_id = NULL, updated_at = ?
-    WHERE project_id = ? AND group_id = ? AND feature_index = ? AND stage = ?
+  const resetPlanningFeaturesStmt = db.prepare(`
+    UPDATE group_features SET stage = 'pending', architect_session_id = NULL, updated_at = ?
+    WHERE project_id = ? AND group_id = ? AND stage = 'planning'
+  `)
+
+  const resetLaunchingFeaturesStmt = db.prepare(`
+    UPDATE group_features SET stage = 'planned', updated_at = ?
+    WHERE project_id = ? AND group_id = ? AND stage = 'launching'
+  `)
+
+  const cancelNonTerminalFeaturesStmt = db.prepare(`
+    UPDATE group_features SET stage = 'cancelled', updated_at = ?
+    WHERE project_id = ? AND group_id = ? AND stage NOT IN ('completed','failed','cancelled')
   `)
 
   const setFeatureArchitectSessionStmt = db.prepare(`
@@ -349,9 +365,22 @@ export function createFeatureGroupsRepo(db: Database): FeatureGroupsRepo {
       return result.changes === 1
     },
 
-    resetFeatureStage(projectId: string, groupId: string, featureIndex: number, fromStage: string, toStage: string): boolean {
-      const result = resetFeatureStageStmt.run(toStage, now(), projectId, groupId, featureIndex, fromStage) as unknown as { changes: number }
-      return result.changes === 1
+    resetStuckFeatureStages(projectId: string, groupId: string): void {
+      const runTxn = db.transaction(() => {
+        const ts = now()
+        resetPlanningFeaturesStmt.run(ts, projectId, groupId)
+        resetLaunchingFeaturesStmt.run(ts, projectId, groupId)
+      })
+      runTxn()
+    },
+
+    cancelGroupWithFeatures(projectId: string, groupId: string): void {
+      const runTxn = db.transaction(() => {
+        const ts = now()
+        cancelNonTerminalFeaturesStmt.run(ts, projectId, groupId)
+        setGroupStatusStmt.run('cancelled', null, null, ts, projectId, groupId)
+      })
+      runTxn()
     },
 
     setFeatureArchitectSession(projectId: string, groupId: string, featureIndex: number, sessionId: string): void {

@@ -1,15 +1,8 @@
 import type { FeatureGroupsRepo, FeatureGroupRow, GroupFeatureRow } from '../storage/repos/feature-groups-repo'
 import type { FeatureListResult, ParsedFeature } from '../utils/feature-list-parser'
 import type { Logger } from '../types'
+import { randomUUID } from 'node:crypto'
 import { computeSchedulerActions, type FeatureStage } from './group-scheduler'
-
-/** Simple UUID v4 generator (no crypto dependency needed). */
-function generateId(): string {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-    const r = (Math.random() * 16) | 0
-    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16)
-  })
-}
 
 // ── Pure helpers ──────────────────────────────────────────────────────────
 
@@ -107,7 +100,9 @@ export function createGroupOrchestrator(deps: {
   // ── drive ──────────────────────────────────────────────────────────────
   async function drive(groupId: string): Promise<void> {
     const features = repo.listFeatures(projectId, groupId)
-    const capValue = cap()
+    // The stored per-group cap is authoritative (resolved at startGroup from an explicit
+    // override or the global default); fall back to the global default if the row is gone.
+    const capValue = repo.getGroup(projectId, groupId)?.maxConcurrent ?? cap()
 
     const decision = computeSchedulerActions(
       features.map(f => ({ featureIndex: f.featureIndex, stage: f.stage })),
@@ -252,7 +247,10 @@ export function createGroupOrchestrator(deps: {
 
   // ── startGroup ─────────────────────────────────────────────────────────
   async function startGroup(input: StartGroupInput): Promise<{ groupId: string; status: string }> {
-    const groupId = generateId()
+    const groupId = randomUUID()
+    // Resolve the effective concurrency cap once at creation so the stored value is the
+    // single source of truth: an explicit per-group override wins, else the global default.
+    const maxConcurrent = input.maxConcurrent ?? cap()
 
     if (input.prd) {
       repo.createGroup({
@@ -261,7 +259,7 @@ export function createGroupOrchestrator(deps: {
         title: input.title,
         status: 'extracting',
         prdText: input.prd,
-        maxConcurrent: input.maxConcurrent,
+        maxConcurrent,
         executionModel: input.executionModel ?? null,
         auditorModel: input.auditorModel ?? null,
         hostSessionId: input.hostSessionId ?? null,
@@ -280,7 +278,7 @@ export function createGroupOrchestrator(deps: {
       title: input.title,
       status: 'planning',
       prdText: null,
-      maxConcurrent: input.maxConcurrent,
+      maxConcurrent,
       executionModel: input.executionModel ?? null,
       auditorModel: input.auditorModel ?? null,
       hostSessionId: input.hostSessionId ?? null,
@@ -367,8 +365,8 @@ export function createGroupOrchestrator(deps: {
 
     if (captured) {
       // Re-validate: ensure this architect session is still attached to the feature
-      // after the await. restartGroup may have reset the stage and replaced the
-      // session via resetFeatureStage (which clears architect_session_id).
+      // after the await. restartGroup may have reset the stage and cleared the
+      // architect_session_id via resetStuckFeatureStages.
       const freshFeature = repo.getFeatureByArchitectSession(projectId, sessionId)
       if (!freshFeature || freshFeature.stage !== 'planning') {
         logger.log(
@@ -470,16 +468,10 @@ export function createGroupOrchestrator(deps: {
 
     const features = repo.listFeatures(projectId, groupId)
 
-    // Reset stuck stages: planning → pending, launching → planned
-    // Use resetFeatureStage for planning → pending to atomically clear the stale
-    // architect_session_id, preventing abandoned architect idle events from interfering.
-    for (const f of features) {
-      if (f.stage === 'planning') {
-        repo.resetFeatureStage(projectId, groupId, f.featureIndex, 'planning', 'pending')
-      } else if (f.stage === 'launching') {
-        repo.claimFeatureStage(projectId, groupId, f.featureIndex, 'launching', 'planned')
-      }
-    }
+    // Reset stuck stages in a single transaction (planning → pending, launching → planned).
+    // The planning → pending reset also clears the stale architect_session_id, preventing
+    // abandoned architect idle events from interfering after a restart.
+    repo.resetStuckFeatureStages(projectId, groupId)
 
     // Re-spawn splitter if group was errored or interrupted with no features and has prdText
     if ((group.status === 'errored' || group.status === 'interrupted') && features.length === 0 && group.prdText) {
@@ -530,12 +522,10 @@ export function createGroupOrchestrator(deps: {
       }
     }
 
-    // State-first: mark all non-terminal features cancelled and set group cancelled.
-    for (const f of features) {
-      if (terminalStages.has(f.stage)) continue
-      repo.setFeatureError(projectId, groupId, f.featureIndex, '', 'cancelled')
-    }
-    repo.setGroupStatus(projectId, groupId, 'cancelled')
+    // State-first: atomically mark all non-terminal features cancelled and set the group
+    // cancelled in a single transaction so an interrupted cancel cannot leave the group
+    // cancelled while features remain non-terminal.
+    repo.cancelGroupWithFeatures(projectId, groupId)
     logger.log(`group-orchestrator: cancelled group ${groupId}`)
 
     // Best-effort external cancellation after state is safe.

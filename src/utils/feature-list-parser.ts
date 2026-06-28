@@ -1,3 +1,5 @@
+import { isRecord } from './is-record'
+
 export const FEATURES_START_MARKER = '<!-- forge-features:start -->'
 export const FEATURES_END_MARKER = '<!-- forge-features:end -->'
 
@@ -9,10 +11,6 @@ export interface ParsedFeature {
 export type FeatureListResult =
   | { ok: true; features: ParsedFeature[] }
   | { ok: false; reason: 'missing' | 'unterminated' | 'invalid_json' | 'empty' | 'invalid_shape' }
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 export function parseFeatureList(text: string): FeatureListResult {
   const lines = text.split('\n')
