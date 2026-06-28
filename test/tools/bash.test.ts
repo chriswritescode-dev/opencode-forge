@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach } from 'bun:test'
+import { describe, test, expect, beforeEach } from 'vitest'
 import { mkdtempSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -28,7 +28,6 @@ describe('createBashTool', () => {
     ask: typeof mockAsk
   }
 
-  let tmpData: string
   let tmpHostDir: string
 
   beforeEach(() => {
@@ -36,7 +35,6 @@ describe('createBashTool', () => {
     dockerResult = { stdout: 'docker ok\n', stderr: '', exitCode: 0 }
     dockerCalls = []
     askCalls = []
-    tmpData = mkdtempSync(join(tmpdir(), 'forge-sh-data-'))
     tmpHostDir = mkdtempSync(join(tmpdir(), 'forge-sh-host-'))
     mockAsk = async (input) => {
       askCalls.push({ order: ++order, input })
@@ -61,14 +59,13 @@ describe('createBashTool', () => {
   })
 
   function sandbox(): SandboxContext {
-    return { docker: mockDocker, containerName: 'forge-foo', hostDir: tmpHostDir }
+    return { docker: mockDocker, containerName: 'forge-foo', hostDir: tmpHostDir, mounts: [{ hostDir: tmpHostDir, containerDir: '/workspace' }] }
   }
 
   function makeBash(sandboxFor: (sessionID: string) => Promise<SandboxContext | null> | SandboxContext | null) {
     return createBashTool({
       resolveSandboxForSession: async (sessionID) => await sandboxFor(sessionID),
       logger: mockLogger,
-      dataDir: tmpData,
     })
   }
 
@@ -163,7 +160,7 @@ describe('createBashTool', () => {
     const result = await tool.execute({ command: 'big', description: 'big' }, mockToolCtx as never)
     expect(result).toContain('...output truncated...')
     expect(result).toContain('Full output saved to:')
-    expect(result).toContain(join(tmpData, 'bash-output'))
+    expect(result).toContain(join(tmpHostDir, '.forge', 'tmp'))
   })
 
   test('tool description references sh, workdir, and truncation', () => {
@@ -187,7 +184,6 @@ describe('createBashTool', () => {
     const tool = createBashTool({
       resolveSandboxForSession: async () => null,
       logger: mockLogger,
-      dataDir: '/tmp',
       tmpDir: '.forge/tmp',
     })
     expect(tool.description).toContain('.forge/tmp')

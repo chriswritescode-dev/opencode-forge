@@ -9,5 +9,5 @@
     "types": ["bun-types"]
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["test/**/*", "node_modules", "dist", "src/tui.tsx"]
+  "exclude": ["test/**/*", "node_modules", "dist", "src/tui.tsx", "src/dashboard/app/**"]
 }

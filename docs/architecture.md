@@ -52,7 +52,7 @@ The TUI plugin provides a sidebar widget that displays:
 - Plan viewer with inline editing (view/edit/execute/export tabs)
 - Execution dialog with mode, model, and variant selection
 - Loop details dialog with session statistics
-- Command palette integration (`Forge: Show loops`, `Forge: View plan`, `Forge: Execute plan`)
+- Command palette integration (`Show loops`, `View plan`, `Execute plan`)
 - Model selection dialog with recent model tracking
 
 The TUI communicates with the server via RPC over the opencode bus using `tui.command.execute` events.
@@ -86,7 +86,7 @@ See [loop-system.md](loop-system.md) for detailed documentation.
 
 - **Loop Runtime** (`src/loop/runtime.ts`) - Factory for creating Loop instances (`createLoop()` returns a `Loop` interface with ~50 methods)
 - **Loop Service** (`src/loop/service.ts`) - State management for loops (DB-backed via SQLite)
-- **State Machine** (`src/loop/state.ts`) - Discriminated union `LoopState` with 3 phases: `coding`, `auditing`, `final_auditing`
+- **State Machine** (`src/loop/state.ts`) - Discriminated union `LoopState` with 4 phases: `coding`, `auditing`, `final_auditing`, `post_action`
 - **Transition Table** (`src/loop/transitions.ts`) - Pure `nextTransition()` function for phase transitions
 - **Termination** (`src/loop/termination.ts`) - Termination reason mapping and status checks
 - **Prompts** (`src/loop/prompts.ts`) - Prompt builders for each loop phase (continuation, audit, section)
@@ -142,7 +142,7 @@ OpenCode Forge integrates with OpenCode through several hook points. The plugin 
 Loops are autonomous and cannot answer permission prompts, but OpenCode's default subagent ruleset falls back to `ask` for most tools. To prevent deadlocks, `createLoopPermissionRejectHook` listens for `session.created` events. When the new session resolves to an active loop, the hook calls `v2.session.update()` to overwrite the child session's `permission` ruleset:
 
 - If the parent session has an allow-all ruleset (e.g. an auditor subagent), the parent's ruleset is inherited so the child stays under the same constraints.
-- Otherwise the default loop ruleset from `buildLoopPermissionRuleset()` (`src/constants/loop.ts`) is applied — blanket allow-all inside the worktree, with explicit denies for `external_directory`, `git push *`, `review-write`, `review-delete`, `plan*`, `loop`, `loop-cancel`, `loop-status`.
+- Otherwise the default loop ruleset from `buildLoopPermissionRuleset()` (`src/constants/loop.ts`) is applied — blanket allow-all inside the worktree, with explicit denies for `external_directory`, `git push *`, `review-write`, `review-delete`, `plan*`, `execute-plan`, `loop-cancel`, `loop-status`.
 
 A `PATCHED_SESSIONS` set deduplicates retries. Audit-only subagents use the stricter `buildAuditSessionPermissionRuleset()` (read-only, denies `edit`/`write`/`multiedit`/`apply_patch` and destructive git/`rm`/`mv`).
 

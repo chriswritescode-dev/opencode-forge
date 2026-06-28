@@ -1,35 +1,65 @@
-const CONTAINER_WORKSPACE = '/workspace'
+export interface SandboxMount {
+  hostDir: string
+  containerDir: string
+  readOnly?: boolean
+}
 
 function hasPrefix(path: string, prefix: string): boolean {
   if (path === prefix) return true
   return path.startsWith(prefix + '/')
 }
 
-export function toContainerPath(hostPath: string, hostDir: string): string {
-  if (hasPrefix(hostPath, hostDir)) {
-    if (hostPath === hostDir) return CONTAINER_WORKSPACE
-    return CONTAINER_WORKSPACE + hostPath.slice(hostDir.length)
+export function toContainerPath(hostPath: string, mounts: SandboxMount[]): string {
+  for (const mount of mounts) {
+    if (hasPrefix(hostPath, mount.containerDir)) {
+      return hostPath
+    }
   }
-  if (hasPrefix(hostPath, CONTAINER_WORKSPACE)) {
-    return hostPath
+
+  let bestMatch: SandboxMount | undefined
+  for (const mount of mounts) {
+    if (hasPrefix(hostPath, mount.hostDir)) {
+      if (!bestMatch || mount.hostDir.length > bestMatch.hostDir.length) {
+        bestMatch = mount
+      }
+    }
   }
+
+  if (bestMatch) {
+    if (hostPath === bestMatch.hostDir) return bestMatch.containerDir
+    return bestMatch.containerDir + hostPath.slice(bestMatch.hostDir.length)
+  }
+
   return hostPath
 }
 
-export function isInsideWorkspace(p: string, hostDir: string): boolean {
-  return hasPrefix(p, hostDir) || hasPrefix(p, CONTAINER_WORKSPACE)
+export function isInsideAnyMount(p: string, mounts: SandboxMount[]): boolean {
+  for (const mount of mounts) {
+    if (hasPrefix(p, mount.hostDir) || hasPrefix(p, mount.containerDir)) {
+      return true
+    }
+  }
+  return false
 }
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-export function rewriteOutput(output: string, hostDir: string): string {
-  const escaped = escapeRegex(CONTAINER_WORKSPACE)
-  // Match /workspace as a whole path token: either followed by a path separator,
-  // or by a non-path character (end-of-string, whitespace, punctuation), so
-  // /workspace-foo and /workspaces are preserved but /workspace, /workspace/x,
-  // '/workspace', "/workspace:", and /workspace) are all rewritten.
-  const pattern = new RegExp(`${escaped}(?=/|$|[^A-Za-z0-9_-])`, 'g')
-  return output.replace(pattern, hostDir)
+export function rewriteOutput(output: string, mounts: SandboxMount[]): string {
+  const sorted = [...mounts].sort((a, b) => b.containerDir.length - a.containerDir.length)
+  if (sorted.length === 0) return output
+
+  const patternParts = sorted.map(m => `(?<![A-Za-z0-9_/])(${escapeRegex(m.containerDir)}(?=/|$|[^A-Za-z0-9_-]))`)
+  const combined = new RegExp(patternParts.join('|'), 'g')
+
+  return output.replace(combined, (match) => {
+    for (const mount of sorted) {
+      if (match.startsWith(mount.containerDir)) {
+        const suffix = match.slice(mount.containerDir.length)
+        return mount.hostDir + suffix
+      }
+    }
+    return match
+  })
 }

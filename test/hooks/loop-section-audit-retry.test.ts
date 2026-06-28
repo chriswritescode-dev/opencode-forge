@@ -11,7 +11,7 @@ import { createLoopService, MAX_RETRIES } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoopEventHandler } from '../../src/hooks/loop'
 import type { Logger, PluginConfig } from '../../src/types'
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
+import { createFakeForgeClient } from '../helpers/fake-client'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
 
 const mockLogger: Logger = {
@@ -48,7 +48,6 @@ describe('Loop Section Audit Retry', () => {
       reviewFindingsRepo,
       PROJECT_ID,
       mockLogger,
-      undefined,
       undefined,
       undefined,
       sectionPlansRepo,
@@ -88,57 +87,6 @@ describe('Loop Section Audit Retry', () => {
     }
   }
 
-  function createMockV2Client(options: {
-    messagesCalls?: Array<{ lastMessageRole: string; text?: string }>
-    createCalls?: Array<{ data?: { id: string }; error?: unknown }>
-  }): OpencodeClient {
-    const callIndex = { value: 0 }
-    const createCallIndex = { value: 0 }
-
-    return {
-      session: {
-        messages: async () => {
-          const callConfig = options.messagesCalls?.[callIndex.value] || { lastMessageRole: 'assistant', text: '' }
-          callIndex.value++
-          return {
-            data: [
-              {
-                info: { role: callConfig.lastMessageRole },
-                parts: [{ type: 'text' as const, text: callConfig.text ?? '' }],
-              },
-            ],
-          }
-        },
-        promptAsync: async () => ({ data: {}, error: null }),
-        abort: async () => {},
-        status: async () => ({
-          data: { 'sess-1': { type: 'idle' } },
-        }),
-        create: async () => {
-          const callConfig = options.createCalls?.[createCallIndex.value]
-          createCallIndex.value++
-          if (callConfig) {
-            if (callConfig.error) {
-              return { data: undefined, error: callConfig.error }
-            }
-            return { data: callConfig.data ?? { id: `mock-session-${Date.now()}` }, error: undefined }
-          }
-          return { data: { id: `mock-session-${Date.now()}` }, error: undefined }
-        },
-        delete: async () => {},
-        get: async () => ({ data: {} }),
-      },
-      tui: {
-        publish: async () => {},
-        selectSession: async () => {},
-      },
-      worktree: {
-        create: async () => ({ data: { directory: '/mock/worktree', branch: 'mock-branch' }, error: undefined }),
-        remove: async () => {},
-      },
-    } as unknown as OpencodeClient
-  }
-
   function createCapturingLogger() {
     const logs: Array<{ level: string; message: string }> = []
     return {
@@ -156,7 +104,6 @@ describe('Loop Section Audit Retry', () => {
     auditorModel: 'test/auditor',
     loop: {
       enabled: true,
-      model: 'test/loop',
       defaultMaxIterations: 5,
     },
   }
@@ -178,33 +125,14 @@ describe('Loop Section Audit Retry', () => {
 
       const { logger } = createCapturingLogger()
 
-      let promptCalls: Array<{ agent?: string; text?: string }> = []
-      const v2Client = createMockV2Client({
-        messagesCalls: [
-          { lastMessageRole: 'assistant', text: 'dirty audit: found issues' },
-        ],
-        createCalls: [],
-      })
-
-      const origPromptAsync = (v2Client as any).session.promptAsync
-      ;(v2Client as any).session.promptAsync = async (opts: any) => {
-        if (opts?.parts) {
-          const text = opts.parts.map((p: any) => p.text ?? '').join('\n')
-          promptCalls.push({ agent: opts.agent, text })
-        }
-        return origPromptAsync(opts)
-      }
-
-      const pluginClient = {
+      const { client: forgeClient } = createFakeForgeClient({
         session: {
-          create: async () => ({ data: { id: 'new-audit-sess' } }),
-          promptAsync: async () => ({ data: {}, error: null }),
+          messages: async () => [{ info: { role: 'assistant' }, parts: [{ type: 'text' as const, text: 'dirty audit: found issues' }] }],
         },
-      }
-
+      })
       const getConfig = () => mockConfig as PluginConfig
 
-      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, pluginClient as any, v2Client as any, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
+      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, forgeClient, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
 
       await handler.onEvent({
         event: {
@@ -222,7 +150,9 @@ describe('Loop Section Audit Retry', () => {
       const after = loopService.getActiveState(state.loopName)!
       expect(after.currentSectionIndex).toBe(0)
 
-      const hasContinuationPrompt = promptCalls.some(p => p.text && p.text.includes('continuation'))
+      const hasContinuationPrompt = (forgeClient.session.promptAsync as any).mock.calls.some(
+        (call: any) => call[0]?.parts?.some((p: any) => typeof p.text === 'string' && p.text.includes('continuation'))
+      )
       expect(hasContinuationPrompt).toBe(true)
 
       const afterAuditResult = loopService.getActiveState(state.loopName)!
@@ -249,23 +179,14 @@ describe('Loop Section Audit Retry', () => {
 
       const { logger } = createCapturingLogger()
 
-      const v2Client = createMockV2Client({
-        messagesCalls: [
-          { lastMessageRole: 'assistant', text: 'second dirty audit' },
-        ],
-        createCalls: [],
-      })
-
-      const pluginClient = {
+      const { client: forgeClient } = createFakeForgeClient({
         session: {
-          create: async () => ({ data: { id: 'new-audit-sess' } }),
-          promptAsync: async () => ({ data: {}, error: null }),
+          messages: async () => [{ info: { role: 'assistant' }, parts: [{ type: 'text' as const, text: 'second dirty audit' }] }],
         },
-      }
-
+      })
       const getConfig = () => mockConfig as PluginConfig
 
-      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, pluginClient as any, v2Client as any, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
+      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, forgeClient, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
 
       await handler.onEvent({
         event: {
@@ -305,33 +226,14 @@ describe('Loop Section Audit Retry', () => {
 
       const summaryText = 'OK\n<!-- section-summary:start -->\n### Done\n- Implemented feature X\n### Deviations\n- None\n### Follow-ups\n- Handled in section 2\n<!-- section-summary:end -->'
 
-      let promptCalls: Array<{ agent?: string; text?: string }> = []
-      const v2Client = createMockV2Client({
-        messagesCalls: [
-          { lastMessageRole: 'assistant', text: summaryText },
-        ],
-        createCalls: [],
-      })
-
-      const origPromptAsync = (v2Client as any).session.promptAsync
-      ;(v2Client as any).session.promptAsync = async (opts: any) => {
-        if (opts?.parts) {
-          const text = opts.parts.map((p: any) => p.text ?? '').join('\n')
-          promptCalls.push({ agent: opts.agent, text })
-        }
-        return origPromptAsync(opts)
-      }
-
-      const pluginClient = {
+      const { client: forgeClient } = createFakeForgeClient({
         session: {
-          create: async () => ({ data: { id: 'new-audit-sess' } }),
-          promptAsync: async () => ({ data: {}, error: null }),
+          messages: async () => [{ info: { role: 'assistant' }, parts: [{ type: 'text' as const, text: summaryText }] }],
         },
-      }
-
+      })
       const getConfig = () => mockConfig as PluginConfig
 
-      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, pluginClient as any, v2Client as any, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
+      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, forgeClient, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
 
       await handler.onEvent({
         event: {
@@ -350,7 +252,9 @@ describe('Loop Section Audit Retry', () => {
       const after = loopService.getActiveState(state.loopName)!
       expect(after.currentSectionIndex).toBe(1)
 
-      const hasPriorSectionSummary = promptCalls.some(p => p.text && p.text.includes('Implemented feature X'))
+      const hasPriorSectionSummary = (forgeClient.session.promptAsync as any).mock.calls.some(
+        (call: any) => call[0]?.parts?.some((p: any) => typeof p.text === 'string' && p.text.includes('Implemented feature X'))
+      )
       expect(hasPriorSectionSummary).toBe(true)
     })
 
@@ -379,29 +283,19 @@ describe('Loop Section Audit Retry', () => {
 
       const summaryText = 'OK\n<!-- section-summary:start -->\n### Done\n- Implemented section 4\n### Deviations\n- None\n### Follow-ups\n- None\n<!-- section-summary:end -->'
 
-      const v2Client = createMockV2Client({
-        messagesCalls: [
-          { lastMessageRole: 'assistant', text: summaryText },
-        ],
-        createCalls: [],
-      })
-
       const createTitleCalls: string[] = []
-      ;(v2Client as any).session.create = async (opts: any) => {
-        if (opts?.title) createTitleCalls.push(opts.title)
-        return { data: { id: `rotated-sess-${createTitleCalls.length}` }, error: undefined }
-      }
-
-      const pluginClient = {
+      const { client: forgeClient } = createFakeForgeClient({
         session: {
-          create: async () => ({ data: { id: 'new-audit-sess' } }),
-          promptAsync: async () => ({ data: {}, error: null }),
+          messages: async () => [{ info: { role: 'assistant' }, parts: [{ type: 'text' as const, text: summaryText }] }],
+          create: async (opts: any) => {
+            if (opts?.title) createTitleCalls.push(opts.title)
+            return { id: `rotated-sess-${createTitleCalls.length}` }
+          },
         },
-      }
-
+      })
       const getConfig = () => mockConfig as PluginConfig
 
-      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, pluginClient as any, v2Client as any, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
+      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, forgeClient, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
 
       await handler.onEvent({
         event: {
@@ -443,33 +337,14 @@ describe('Loop Section Audit Retry', () => {
 
       const { logger } = createCapturingLogger()
 
-      let promptCalls: Array<{ agent?: string; text?: string }> = []
-      const v2Client = createMockV2Client({
-        messagesCalls: [
-          { lastMessageRole: 'assistant', text: 'dirty audit: found issues' },
-        ],
-        createCalls: [],
-      })
-
-      const origPromptAsync = (v2Client as any).session.promptAsync
-      ;(v2Client as any).session.promptAsync = async (opts: any) => {
-        if (opts?.parts) {
-          const text = opts.parts.map((p: any) => p.text ?? '').join('\n')
-          promptCalls.push({ agent: opts.agent, text })
-        }
-        return origPromptAsync(opts)
-      }
-
-      const pluginClient = {
+      const { client: forgeClient } = createFakeForgeClient({
         session: {
-          create: async () => ({ data: { id: 'new-audit-sess' } }),
-          promptAsync: async () => ({ data: {}, error: null }),
+          messages: async () => [{ info: { role: 'assistant' }, parts: [{ type: 'text' as const, text: 'dirty audit: found issues' }] }],
         },
-      }
-
+      })
       const getConfig = () => mockConfig as PluginConfig
 
-      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, pluginClient as any, v2Client as any, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
+      const handler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, forgeClient, logger, getConfig, undefined, undefined, undefined, sectionPlansRepo)
 
       await handler.onEvent({
         event: {

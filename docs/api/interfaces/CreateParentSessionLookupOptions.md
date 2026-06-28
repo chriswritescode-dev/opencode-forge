@@ -6,15 +6,23 @@
 
 # Interface: CreateParentSessionLookupOptions
 
-Defined in: [index.ts:27](https://github.com/chriswritescode-dev/opencode-forge/blob/7893ce7c6590ca13784ff2820a3bab43633d9d21/src/index.ts#L27)
+Defined in: [index.ts:31](https://github.com/chriswritescode-dev/opencode-forge/blob/7dda0a6dac066c72b6e45aff076d8e5c7e38f51f/src/index.ts#L31)
 
 ## Properties
+
+### client
+
+> **client**: `ForgeClient`
+
+Defined in: [index.ts:32](https://github.com/chriswritescode-dev/opencode-forge/blob/7dda0a6dac066c72b6e45aff076d8e5c7e38f51f/src/index.ts#L32)
+
+***
 
 ### directory
 
 > **directory**: `string`
 
-Defined in: [index.ts:29](https://github.com/chriswritescode-dev/opencode-forge/blob/7893ce7c6590ca13784ff2820a3bab43633d9d21/src/index.ts#L29)
+Defined in: [index.ts:33](https://github.com/chriswritescode-dev/opencode-forge/blob/7dda0a6dac066c72b6e45aff076d8e5c7e38f51f/src/index.ts#L33)
 
 ***
 
@@ -22,7 +30,7 @@ Defined in: [index.ts:29](https://github.com/chriswritescode-dev/opencode-forge/
 
 > **logger**: `object`
 
-Defined in: [index.ts:31](https://github.com/chriswritescode-dev/opencode-forge/blob/7893ce7c6590ca13784ff2820a3bab43633d9d21/src/index.ts#L31)
+Defined in: [index.ts:35](https://github.com/chriswritescode-dev/opencode-forge/blob/7dda0a6dac066c72b6e45aff076d8e5c7e38f51f/src/index.ts#L35)
 
 #### debug
 
@@ -84,7 +92,7 @@ Defined in: [index.ts:31](https://github.com/chriswritescode-dev/opencode-forge/
 
 > **loop**: `Loop`
 
-Defined in: [index.ts:30](https://github.com/chriswritescode-dev/opencode-forge/blob/7893ce7c6590ca13784ff2820a3bab43633d9d21/src/index.ts#L30)
+Defined in: [index.ts:34](https://github.com/chriswritescode-dev/opencode-forge/blob/7dda0a6dac066c72b6e45aff076d8e5c7e38f51f/src/index.ts#L34)
 
 ***
 
@@ -92,12 +100,4 @@ Defined in: [index.ts:30](https://github.com/chriswritescode-dev/opencode-forge/
 
 > `optional` **negativeTtlMs?**: `number`
 
-Defined in: [index.ts:32](https://github.com/chriswritescode-dev/opencode-forge/blob/7893ce7c6590ca13784ff2820a3bab43633d9d21/src/index.ts#L32)
-
-***
-
-### v2
-
-> **v2**: `OpencodeClient`
-
-Defined in: [index.ts:28](https://github.com/chriswritescode-dev/opencode-forge/blob/7893ce7c6590ca13784ff2820a3bab43633d9d21/src/index.ts#L28)
+Defined in: [index.ts:36](https://github.com/chriswritescode-dev/opencode-forge/blob/7dda0a6dac066c72b6e45aff076d8e5c7e38f51f/src/index.ts#L36)

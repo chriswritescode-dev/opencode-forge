@@ -1,4 +1,4 @@
-import { test, expect, beforeEach } from 'bun:test'
+import { test, expect, beforeEach } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -663,6 +663,43 @@ test('migration 131 is idempotent on re-opened databases', () => {
 
   const count = db2.prepare('SELECT COUNT(*) as count FROM migrations').get() as { count: number }
   expect(count.count).toBeGreaterThan(0)
+
+  db2.close()
+})
+
+test('migration 132 extends phase CHECK to include post_action', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  // Verify the CREATE TABLE sql contains 'post_action'
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get() as { sql: string }
+  expect(row.sql).toContain("'post_action'")
+
+  // Insert a row with phase='post_action' should succeed
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-1', 'loop-post-action', 'running', 'session-post', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'post_action', 1)
+  `).run()
+
+  const inserted = db.prepare("SELECT * FROM loops WHERE project_id = 'proj-1' AND loop_name = 'loop-post-action'").get() as { phase: string }
+  expect(inserted.phase).toBe('post_action')
+
+  db.close()
+})
+
+test('migration 132 is idempotent on re-opened databases', () => {
+  const dbPath = createTempDb()
+
+  const db1 = openForgeDatabase(dbPath)
+  db1.close()
+
+  const db2 = openForgeDatabase(dbPath)
+
+  const row = db2.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get() as { sql: string }
+  expect(row.sql).toContain("'post_action'")
+
+  const count = db2.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('132') as { count: number }
+  expect(count.count).toBe(1)
 
   db2.close()
 })

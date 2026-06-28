@@ -80,7 +80,7 @@ export async function reconcileSandboxes(deps: ReconcileSandboxesDeps): Promise<
             // Container is verified running - ensure persisted name matches
             const active = sandboxManager.getActive(loopName)
             if (active && state.sandboxContainer !== active.containerName) {
-              loop.setSandboxContainer(loopName, active.containerName)
+              loop.service.setSandboxContainer(loopName, active.containerName)
               const action = state.sandboxContainer ? 'corrected' : 'backfilled'
               logger.log(`Sandbox reconcile: ${action} container name for ${loopName}`)
             }
@@ -97,7 +97,7 @@ export async function reconcileSandboxes(deps: ReconcileSandboxesDeps): Promise<
 
         // Case 3: No container name - start fresh
         const result = await sandboxManager.start(loopName, state.worktreeDir, state.startedAt)
-        loop.setSandboxContainer(loopName, result.containerName)
+        loop.service.setSandboxContainer(loopName, result.containerName)
         logger.log(`Sandbox reconcile: started container for ${loopName}`)
       } catch (err) {
         // Log error but continue processing other loops

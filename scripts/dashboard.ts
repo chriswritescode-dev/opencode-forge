@@ -29,8 +29,14 @@ function main(): void {
   const args = parseArgs(process.argv)
 
   try {
-    const { url } = startDashboardServer({ port: args.port, dbPath: args.dbPath })
-    console.log(`Forge dashboard running: ${url}`)
+    const handle = startDashboardServer({ port: args.port, dbPath: args.dbPath })
+    console.log(`Forge dashboard running: ${handle.url}`)
+    const shutdown = () => {
+      handle.stop()
+      process.exit(0)
+    }
+    process.on('SIGINT', shutdown)
+    process.on('SIGTERM', shutdown)
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err))
     process.exit(1)

@@ -3,7 +3,7 @@ import type { Hooks } from '@opencode-ai/plugin'
 import type { Logger } from '../types'
 import type { SandboxContext } from '../sandbox/context'
 import { executeSandboxGlob, executeSandboxGrep } from '../sandbox/exec-fs'
-import { isInsideWorkspace } from '../sandbox/path'
+import { isInsideAnyMount } from '../sandbox/path'
 
 interface SandboxToolHookDeps {
   resolveSandboxForSession: (sessionID: string) => Promise<SandboxContext | null>
@@ -26,14 +26,14 @@ export function createSandboxToolBeforeHook(deps: SandboxToolHookDeps): Hooks['t
       return
     }
 
-    const { docker, containerName, hostDir } = sandbox
+    const { docker, containerName, mounts } = sandbox
 
     const requestedPath = output.args?.path
     if (
       (input.tool === 'glob' || input.tool === 'grep') &&
       typeof requestedPath === 'string' &&
       isAbsolute(requestedPath) &&
-      !isInsideWorkspace(requestedPath, hostDir)
+      !isInsideAnyMount(requestedPath, mounts)
     ) {
       deps.logger.debug(`[sandbox-hook] ${input.tool} path '${requestedPath}' is outside the workspace mount; deferring to host execution`)
       return
@@ -45,7 +45,7 @@ export function createSandboxToolBeforeHook(deps: SandboxToolHookDeps): Hooks['t
 
       try {
         const result = await executeSandboxGlob(
-          { docker, containerName, hostDir },
+          { docker, containerName, hostDir: sandbox.hostDir, mounts },
           args.pattern,
           args.path,
         )
@@ -64,7 +64,7 @@ export function createSandboxToolBeforeHook(deps: SandboxToolHookDeps): Hooks['t
 
       try {
         const result = await executeSandboxGrep(
-          { docker, containerName, hostDir },
+          { docker, containerName, hostDir: sandbox.hostDir, mounts },
           args.pattern,
           { path: args.path, include: args.include },
         )

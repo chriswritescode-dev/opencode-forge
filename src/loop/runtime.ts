@@ -1,6 +1,5 @@
-import type { PluginInput } from '@opencode-ai/plugin'
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
-import type { LoopChangeNotifier } from './service'
+import type { ForgeClient } from '../client/port'
+import type { LoopChangeNotifier, LoopService } from './service'
 import { createLoopService, MAX_RETRIES } from './service'
 import { generateUniqueName } from './name-uniqueness'
 import type { LoopState } from './state'
@@ -8,20 +7,19 @@ import type { Logger, PluginConfig, LoopConfig } from '../types'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo, ReviewFindingRow } from '../storage/repos/review-findings-repo'
-import type { SectionPlansRepo, SectionPlanRow } from '../storage/repos/section-plans-repo'
+import type { SectionPlansRepo } from '../storage/repos/section-plans-repo'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
 import { createLoopWatchdog, type LoopWatchdogStallInfo, type LoopWatchdogRecoveryContext } from '../hooks/watchdog'
-import { retryWithModelFallback } from '../utils/model-fallback'
 import { resolveLoopModel, resolveLoopAuditorModel } from '../utils/loop-helpers'
+import { parseModelString } from '../utils/model-fallback'
 import type { createSandboxManager } from '../sandbox/manager'
 // worktree-completion imports moved to hooks/loop.ts (termination side-effects)
-import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../constants/loop'
-import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
+import { buildLoopPermissionRuleset, resolveLoopAllowedDirectories } from '../constants/loop'
+import { createLoopSessionWithWorkspace } from '../utils/loop-session'
 // worktree-cleanup imports moved to hooks/loop.ts (termination side-effects)
 import { createAuditSession, promptAuditSession } from '../utils/audit-session'
-import { formatAuditSessionTitle, formatLoopSessionTitle } from '../utils/session-titles'
-import { bindSessionToWorkspace } from '../workspace/forge-worktree'
-import { markPromptSent, clearPromptPending, sessionsAwaitingBusy, isAwaitingBusy, isAwaitingBusyExpired } from './idle-gate'
+import { formatLoopSessionTitle, formatPostActionSessionTitle } from '../utils/session-titles'
+import { clearPromptPending, sessionsAwaitingBusy, isAwaitingBusy, isAwaitingBusyExpired } from './idle-gate'
 import {
   clearPromptInFlight,
   clearPromptInFlightBySession,
@@ -31,10 +29,13 @@ import {
 import type { TerminationReason } from './termination'
 import { terminationStatusFor, terminationReasonToString } from './termination'
 import { nextTransition } from './transitions'
-import { summarizeAssistantUsage, type UsageAttribution } from './token-usage'
+import { createUsageCapture } from './runtime-usage'
+import { createPromptDispatch } from './runtime-prompt'
+import { createWorkspaceLifecycle, isWorkspaceNotFoundError } from './runtime-workspace'
 import { loopRegistry } from '../utils/loop-registry'
 
 import { parseCoderDecisions } from '../utils/coder-decisions'
+import { resolvePostActionConfig } from './post-action-config'
 
 export interface LoopEvent {
   type: string
@@ -52,8 +53,7 @@ export interface LoopRuntimeDeps {
   plansRepo: PlansRepo
   reviewFindingsRepo: ReviewFindingsRepo
   projectId: string
-  client: PluginInput['client']
-  v2Client: OpencodeClient
+  client: ForgeClient
   logger: Logger
   getConfig: () => PluginConfig
   sandboxManager?: ReturnType<typeof createSandboxManager>
@@ -63,6 +63,8 @@ export interface LoopRuntimeDeps {
   loopConfig?: LoopConfig
   sectionPlansRepo?: SectionPlansRepo
   loopSessionUsageRepo?: LoopSessionUsageRepo
+  /** Optional injected LoopService (test seam). Defaults to a real one built from the repos. */
+  loopService?: LoopService
 }
 
 export interface StartLoopInput {
@@ -91,65 +93,19 @@ export interface Loop {
   generateUniqueLoopName(baseName: string): string
   /** Transition a running loop's phase. */
   setPhase(name: string, phase: LoopState['phase']): void
-
-  // State management methods (from LoopService)
-  resolveLoopName(sessionId: string): string | null
-  getActiveState(name: string): LoopState | null
-  getAnyState(name: string): LoopState | null
-  setState(name: string, state: LoopState): void
-  deleteState(name: string): void
-  registerLoopSession(sessionId: string, loopName: string): void
-  replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void
-  setStatus(name: string, status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'): void
-  setPhaseAndResetError(name: string, phase: LoopState['phase']): void
-  setModelFailed(name: string, failed: boolean): void
-  setLastAuditResult(name: string, text: string): void
-  clearLastAuditResult(name: string): void
-  setSandboxContainer(name: string, containerName: string | null): void
-  clearWorkspaceId(name: string): void
-  setWorkspaceId(name: string, workspaceId: string): void
-  incrementError(name: string): number
-  resetError(name: string): void
-  terminateLoop(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
-  getOutstandingFindings(loopName?: string, severity?: 'bug' | 'warning'): ReviewFindingRow[]
-  bumpFindingRecurrence(name: string, findings: ReviewFindingRow[]): void
-  resetSectionRecurrence(name: string, sectionIndex: number): void
-  getStallTimeoutMs(): number
-  getMaxConsecutiveStalls(): number
-
-  // Prompt building methods
-  buildContinuationPrompt(state: LoopState, auditFindings?: string): string
-  buildAuditPrompt(state: LoopState): string
-  buildSectionInitialPrompt(state: LoopState): string
-  buildSectionAuditPrompt(state: LoopState): string
-  buildSectionContinuationPrompt(state: LoopState, auditText: string): string
-  buildFinalAuditPrompt(state: LoopState): string
-  buildFinalAuditFixPrompt(state: LoopState, auditText: string): string
-
-  // Plan and section methods
-  getPlanText(loopName: string, sessionId: string): string | null
-  getSectionPlan(state: LoopState, index: number): SectionPlanRow | null
-  getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null
-  getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[]
-  parseSectionSummary(text: string): { done: string | null; deviations: string | null; followUps: string | null } | null
-  completeSection(loopName: string, index: number, summary: { done: string | null; deviations: string | null; followUps: string | null }): void
-  incrementSectionAttempts(loopName: string, index: number): void
-  resetSectionForRewind(loopName: string, index: number): void
-  setCurrentSectionIndex(loopName: string, index: number): void
-  setFinalAuditDone(loopName: string, done: boolean): void
-  startSection(loopName: string, index: number): void
-  bulkInsertSections(loopName: string, sections: { index: number; title: string; content: string }[]): void
-  setTotalSections(loopName: string, total: number): void
+  /** Access the underlying LoopService for state/prompt/section operations. */
+  service: LoopService
 }
 
-export function isWorkspaceNotFoundError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : typeof err === 'string' ? err : JSON.stringify(err ?? '')
-  return /Workspace not found/i.test(msg)
-}
+export { isWorkspaceNotFoundError } from './runtime-workspace'
 
 export function createLoop(deps: LoopRuntimeDeps): Loop {
-  const { loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, v2Client, logger, getConfig, onTerminated, notify, loopConfig, sectionPlansRepo, loopSessionUsageRepo } = deps
-  const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, loopConfig, notify, undefined, sectionPlansRepo)
+  const { loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, logger, getConfig, onTerminated, notify, loopConfig, sectionPlansRepo, loopSessionUsageRepo } = deps
+  const loopService = deps.loopService ?? createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, loopConfig, notify, sectionPlansRepo)
+
+  const { getFallbackModelForSession, captureLoopSessionUsage } = createUsageCapture({ client, logger, getConfig, projectId, loopSessionUsageRepo })
+
+  const { sendPromptWithFallback, getLastAssistantInfo } = createPromptDispatch({ client, logger, getConfig, loopService })
 
   const retryTimeouts = new Map<string, NodeJS.Timeout>()
   const idleRetryTimeouts = new Map<string, NodeJS.Timeout>()
@@ -185,342 +141,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return nextPromise
   }
 
-  async function sendPromptWithFallback(input: {
-    loopName: string
-    sessionId: string
-    promptText: string
-    agent: 'code' | 'auditor-loop'
-    model?: { providerID: string; modelID: string } | null
-    variant?: string
-  }): Promise<{ error?: unknown; usedModel?: { providerID: string; modelID: string } | undefined }> {
-    const { loopName, sessionId, promptText, agent } = input
-
-    if (agent === 'auditor-loop') {
-      const auditorModel = input.model != null ? input.model : undefined
-
-      const sendFn = async (model?: { providerID: string; modelID: string }) => {
-        const freshState = loopService.getActiveState(loopName)
-        if (!freshState?.active) throw new Error('loop_cancelled')
-        try {
-          return await withInFlightGuard(loopName, sessionId, 'auditor-loop', logger, async () => {
-            markPromptSent(loopName, sessionId, logger)
-            const result = await promptAuditSessionWithFallback({
-              sessionId,
-              worktreeDir: freshState.worktreeDir,
-              workspaceId: freshState.workspaceId,
-              prompt: promptText,
-              ...(model ? { auditorModel: model, ...(input.variant ? { auditorVariant: input.variant } : {}) } : {}),
-            })
-            return result.ok ? { data: true } : { error: result.error }
-          })
-        } catch (err) {
-          if (err instanceof ConcurrentPromptError) return { error: err }
-          throw err
-        }
-      }
-
-      const { result, usedModel } = await retryWithModelFallback(() => sendFn(auditorModel), () => sendFn(undefined), auditorModel, logger)
-      if (result.error) {
-        if (result.error instanceof ConcurrentPromptError) {
-          return { error: result.error, usedModel }
-        }
-        clearPromptPending(loopName, logger)
-      }
-      return { error: result.error, usedModel }
-    }
-
-    const effectiveModel = input.model != null ? input.model : resolveLoopModel(getConfig(), loopService, loopName)
-
-    const sendFn = async (model?: { providerID: string; modelID: string }) => {
-      const freshState = loopService.getActiveState(loopName)
-      if (!freshState?.active) throw new Error('loop_cancelled')
-      try {
-        return await withInFlightGuard(loopName, sessionId, 'code', logger, async () => {
-          markPromptSent(loopName, sessionId, logger)
-          return await v2Client.session.promptAsync({
-            sessionID: sessionId,
-            directory: freshState.worktreeDir,
-            ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
-            agent: 'code',
-            parts: [{ type: 'text' as const, text: promptText }],
-            ...(model ? { model, ...(input.variant ? { variant: input.variant } : {}) } : {}),
-          })
-        })
-      } catch (err) {
-        if (err instanceof ConcurrentPromptError) return { error: err }
-        throw err
-      }
-    }
-
-    const { result, usedModel } = await retryWithModelFallback(() => sendFn(effectiveModel), () => sendFn(undefined), effectiveModel, logger)
-    if (result.error) {
-      if (result.error instanceof ConcurrentPromptError) {
-        return { error: result.error, usedModel }
-      }
-      clearPromptPending(loopName, logger)
-    }
-    return { error: result.error, usedModel }
-  }
-
-  async function getLastAssistantInfo(sessionId: string, worktreeDir: string): Promise<{ text: string | null; error: string | null; lastMessageRole: string }> {
-    try {
-      let messagesResult = await v2Client.session.messages({
-        sessionID: sessionId,
-        directory: worktreeDir,
-        limit: 4,
-      })
-
-      if (messagesResult.error || !messagesResult.data?.length) {
-        try {
-          logger.log(`Loop: falling back to plugin client for session messages (${sessionId})`)
-          const legacyResult = await client.session.messages({
-            path: { id: sessionId },
-            query: { directory: worktreeDir, limit: 4 },
-          })
-          if (!legacyResult.error) {
-            messagesResult = legacyResult as typeof messagesResult
-          }
-        } catch (fallbackErr) {
-          logger.error(`Loop: plugin client session messages fallback failed for ${sessionId}`, fallbackErr)
-        }
-      }
-
-      const messages = (messagesResult.data ?? []) as Array<{
-        info: { role: string; finish?: string; error?: { name?: string; data?: { message?: string } } }
-        parts: Array<{ type: string; text?: string }>
-      }>
-
-      const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null
-
-      if (!lastMessage) {
-        return { text: null, error: null, lastMessageRole: 'none' }
-      }
-
-      if (lastMessage.info.role !== 'assistant') {
-        logger.log(`Loop: no assistant message found in session ${sessionId}, last message role: ${lastMessage.info.role ?? 'unknown'}`)
-        return { text: null, error: null, lastMessageRole: lastMessage.info.role ?? 'unknown' }
-      }
-
-      const lastAssistant = lastMessage
-      if (lastAssistant.info.finish && lastAssistant.info.finish !== 'stop') {
-        logger.log(`Loop: assistant message in session ${sessionId} is not final yet (finish=${lastAssistant.info.finish})`)
-        return { text: null, error: null, lastMessageRole: `assistant:${lastAssistant.info.finish}` }
-      }
-
-      const text = lastAssistant.parts
-        .filter((p) => p.type === 'text' && typeof p.text === 'string')
-        .map((p) => p.text as string)
-        .join('\n') || null
-
-      const error = lastAssistant.info.error?.data?.message ?? lastAssistant.info.error?.name ?? null
-
-      return { text, error, lastMessageRole: 'assistant' }
-    } catch (err) {
-      logger.error(`Loop: could not read session messages`, err)
-      return { text: null, error: null, lastMessageRole: 'error' }
-    }
-  }
-
-  /**
-   * Determine the fallback model for a session based on phase and loop state.
-   * For code sessions: state.executionModel > config.executionModel
-   * For audit/final-audit sessions: state.auditorModel > state.executionModel > config.auditorModel > config.executionModel
-   */
-  function getFallbackModelForSession(state: LoopState, phase: LoopState['phase']): string | undefined {
-    const config = getConfig()
-    if (phase === 'auditing' || phase === 'final_auditing') {
-      return (
-        state.auditorModel ??
-        state.executionModel ??
-        config.auditorModel ??
-        config.executionModel
-      )
-    }
-    // Code session
-    return (
-      state.executionModel ??
-      config.executionModel
-    )
-  }
-
-  /**
-   * Capture and persist token usage for a loop session.
-   * Non-fatal: logs errors but does not block deletion or termination.
-   */
-  async function captureLoopSessionUsage(input: {
-    loopName: string
-    sessionId: string
-    directory: string
-    role: 'code' | 'auditor' | 'unknown'
-    fallbackModel?: string
-  }): Promise<void> {
-    if (!loopSessionUsageRepo) {
-      return
-    }
-
-    try {
-      const messagesResult = await v2Client.session.messages({
-        sessionID: input.sessionId,
-        directory: input.directory,
-      })
-
-      const messages = (messagesResult.data ?? []) as Array<{
-        info: {
-          role: string
-          cost?: number
-          tokens?: { input: number; output: number; reasoning: number; cache: { read: number; write: number } }
-          model?: string
-          modelID?: string
-          modelId?: string
-          provider?: string
-          providerID?: string
-          model_name?: string
-        }
-      }>
-
-      const attribution: UsageAttribution = {
-        role: input.role,
-        fallbackModel: input.fallbackModel,
-      }
-
-      const usageSummary = summarizeAssistantUsage(messages, attribution)
-
-      if (usageSummary.perModel.length === 0) {
-        logger.debug(`Loop: no assistant usage to capture for session ${input.sessionId}`)
-        return
-      }
-
-      const rows = usageSummary.perModel.map((modelUsage) => ({
-        projectId,
-        loopName: input.loopName,
-        sessionId: input.sessionId,
-        role: input.role,
-        model: modelUsage.model,
-        cost: modelUsage.cost,
-        inputTokens: modelUsage.tokens.input,
-        outputTokens: modelUsage.tokens.output,
-        reasoningTokens: modelUsage.tokens.reasoning,
-        cacheReadTokens: modelUsage.tokens.cacheRead,
-        cacheWriteTokens: modelUsage.tokens.cacheWrite,
-        messageCount: modelUsage.messageCount,
-        capturedAt: Date.now(),
-      }))
-
-      loopSessionUsageRepo.upsertSessionUsage(rows)
-      logger.debug(`Loop: captured usage for session ${input.sessionId} (${input.role})`)
-    } catch (err) {
-      logger.error(`Loop: failed to capture usage for session ${input.sessionId}`, err)
-    }
-  }
-
-  function detachFromWorkspace(
-    loopName: string,
-    state: LoopState,
-    context?: string,
-  ): void {
-    loopService.clearWorkspaceId(loopName)
-    state.workspaceId = undefined
-    publishWorkspaceDetachedToast({
-      v2: v2Client,
-      directory: state.projectDir ?? state.worktreeDir,
-      loopName,
-      logger,
-      context,
-    })
-  }
-
-  async function recoverFromMissingWorkspace(
-    loopName: string,
-    state: LoopState,
-    sessionId: string,
-    contextLabel: string,
-    bindError?: unknown,
-  ): Promise<{ workspaceId?: string; recovered: boolean }> {
-    if (!state.workspaceId) {
-      return { recovered: false }
-    }
-
-    if (bindError && !isWorkspaceNotFoundError(bindError)) {
-      logger.log(`Loop: skipping workspace re-provision for ${loopName} because bind error is not "workspace not found"`)
-      return { recovered: false }
-    }
-
-    detachFromWorkspace(loopName, state, contextLabel)
-
-    const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
-    const projectDirectory = state.projectDir ?? state.worktreeDir
-    if (!projectDirectory) {
-      logger.log(`Loop: cannot recover workspace for ${loopName}: no projectDir/worktreeDir`)
-      return { recovered: false }
-    }
-    const newWorkspace = await createBuiltinWorktreeWorkspace(
-      v2Client,
-      {
-        loopName,
-        directory: projectDirectory,
-      },
-      logger,
-    )
-
-    if (!newWorkspace) {
-      logger.error(`Loop: workspace re-provision failed for ${loopName}, continuing without workspace backing`)
-      return { recovered: false }
-    }
-
-    try {
-      await bindSessionToWorkspace(v2Client, newWorkspace.workspaceId, sessionId, logger, { loopName })
-      loopService.setWorkspaceId(loopName, newWorkspace.workspaceId)
-      state.workspaceId = newWorkspace.workspaceId
-      if (newWorkspace.directory) state.worktreeDir = newWorkspace.directory
-      if (newWorkspace.branch) state.worktreeBranch = newWorkspace.branch
-      logger.log(`Loop: re-provisioned workspace ${newWorkspace.workspaceId} for ${loopName} after stale id`)
-      return { workspaceId: newWorkspace.workspaceId, recovered: true }
-    } catch (err) {
-      logger.error(`Loop: failed to bind session to re-provisioned workspace ${newWorkspace.workspaceId}`, err)
-      return { recovered: false }
-    }
-  }
-
-  async function ensureWorkspaceForLoop(
-    loopName: string,
-    state: LoopState,
-    contextLabel: string,
-  ): Promise<{ workspaceId?: string }> {
-    if (state.workspaceId) {
-      return { workspaceId: state.workspaceId }
-    }
-
-    if (!state.worktree) {
-      return {}
-    }
-
-    const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
-    const projectDirectory = state.projectDir ?? state.worktreeDir
-    if (!projectDirectory) {
-      logger.log(`Loop: cannot provision workspace for ${loopName} (${contextLabel}): no projectDir/worktreeDir`)
-      return {}
-    }
-    const workspace = await createBuiltinWorktreeWorkspace(
-      v2Client,
-      {
-        loopName,
-        directory: projectDirectory,
-      },
-      logger,
-    )
-
-    if (!workspace) {
-      logger.log(`Loop: workspace creation failed for ${loopName} (${contextLabel}), continuing without workspace backing`)
-      return {}
-    }
-
-    loopService.setWorkspaceId(loopName, workspace.workspaceId)
-    state.workspaceId = workspace.workspaceId
-    if (workspace.directory) state.worktreeDir = workspace.directory
-    if (workspace.branch) state.worktreeBranch = workspace.branch
-    logger.log(`Loop: provisioned workspace ${workspace.workspaceId} for ${loopName} (${contextLabel})`)
-    return { workspaceId: workspace.workspaceId }
-  }
+  const { detachFromWorkspace, recoverFromMissingWorkspace, ensureWorkspaceForLoop } = createWorkspaceLifecycle({ client, logger, loopService })
 
   /**
    * Rotates to a new session in the same workspace. Creates and binds the new session FIRST,
@@ -541,12 +162,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       `Loop: [perm-diag] rotate loop=${loopName} state.worktree=${String(state.worktree)} state.sandbox=${String(state.sandbox)}`
     )
 
-    const permissionRuleset = buildLoopPermissionRuleset({ sandbox: state.sandbox ?? false })
+    const permissionRuleset = buildLoopPermissionRuleset({ sandbox: state.sandbox ?? false, allowDirectories: resolveLoopAllowedDirectories(getConfig()) })
 
     const ensured = await ensureWorkspaceForLoop(loopName, state, 'during session rotation')
 
     const createResult = await createLoopSessionWithWorkspace({
-      v2: v2Client,
+      client: client,
       title: formatLoopSessionTitle(state.loopName, {
         iteration: titleContext?.iteration ?? state.iteration ?? 0,
         currentSectionIndex: titleContext?.currentSectionIndex ?? state.currentSectionIndex ?? 0,
@@ -648,8 +269,59 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       return false
     }
     logger.log(`Loop: audit all-clear, terminating loop=${loopName} iteration=${currentState.iteration} audits=${currentState.auditCount ?? 0}`)
+    if (await enterPostActionPhase(loopName, currentState)) return true
     await terminateLoop(loopName, currentState, { kind: 'completed' })
     logger.log(`Loop completed: auditor all-clear at iteration ${currentState.iteration} (audits=${currentState.auditCount ?? 0})`)
+    return true
+  }
+
+  /**
+   * Transition the loop into the post_action phase: creates a new session, builds the
+   * post-action prompt (with skill/prompt from config), sends it, and records the phase.
+   * Returns true if the loop entered post_action (caller should return without terminating).
+   */
+  async function enterPostActionPhase(loopName: string, currentState: LoopState): Promise<boolean> {
+    if (currentState.phase === 'post_action') return false
+    const cfg = resolvePostActionConfig(getConfig())
+    if (!cfg.enabled) return false
+    if (!currentState.worktreeDir) return false
+
+    const ensured = await ensureWorkspaceForLoop(loopName, currentState, 'before post-action creation')
+    const permission = buildLoopPermissionRuleset({ sandbox: currentState.sandbox ?? false, allowDirectories: resolveLoopAllowedDirectories(getConfig()) })
+    const created = await createLoopSessionWithWorkspace({
+      client,
+      title: formatPostActionSessionTitle(loopName),
+      directory: currentState.worktreeDir,
+      permission,
+      workspaceId: ensured.workspaceId ?? currentState.workspaceId,
+      loopName,
+      logPrefix: `loop ${loopName} post-action`,
+      logger,
+    })
+    if (!created) {
+      logger.error(`Loop: post-action session creation failed for ${loopName}, completing without action`)
+      return false
+    }
+
+    loopService.registerLoopSession(created.sessionId, loopName)
+
+    const prompt = loopService.buildPostActionPrompt(currentState, { skill: cfg.skill, prompt: cfg.prompt })
+    loopService.setPhaseAndResetError(loopName, 'post_action')
+    loopService.replaceSession(loopName, { newSessionId: created.sessionId, phase: 'post_action' })
+    void scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after post-action creation', phase: currentState.phase, state: currentState })
+
+    const auditorModel = resolveLoopAuditorModel(getConfig(), loopService, loopName)
+    const configuredModel = cfg.model ? parseModelString(cfg.model) : undefined
+    // Use the configured post-action model if set, falling back to the loop's auditor model when it fails.
+    const primaryModel = configuredModel ?? auditorModel
+    const fallbackModel = configuredModel ? auditorModel : undefined
+    const { error } = await sendPromptWithFallback({ loopName, sessionId: created.sessionId, promptText: prompt, agent: 'code', model: primaryModel, fallbackModel, variant: currentState.executionVariant })
+    if (error) {
+      logger.error(`Loop: failed to send post-action prompt for ${loopName}, completing without action`, error)
+      await terminateLoop(loopName, loopService.getActiveState(loopName) ?? currentState, { kind: 'completed' })
+      return true
+    }
+    watchdog.recordActivity(loopName, 'post-action-prompt-sent')
     return true
   }
 
@@ -725,16 +397,16 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         if (!freshState?.active) throw new Error('loop_cancelled')
         try {
           await withInFlightGuard(loopName, activeSessionId, 'code', logger, async () => {
-            const result = await v2Client.session.promptAsync({
-              sessionID: activeSessionId,
-              directory: freshState.worktreeDir,
-              ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
-              agent: 'code',
-              parts: [{ type: 'text' as const, text: continuationPrompt }],
-            })
-            if (result.error) {
-              await handlePromptError(loopName, currentState, `retry failed ${errorContext}`, result.error)
-              return
+            try {
+              await client.session.promptAsync({
+                sessionID: activeSessionId,
+                directory: freshState.worktreeDir,
+                ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
+                agent: 'code',
+                parts: [{ type: 'text' as const, text: continuationPrompt }],
+              })
+            } catch (err) {
+              await handlePromptError(loopName, currentState, `retry failed ${errorContext}`, err)
             }
           })
         } catch (err) {
@@ -835,14 +507,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           if (!fresh?.active || fresh.phase !== 'coding' || fresh.sessionId !== codeSessionId) throw new Error('loop_cancelled')
           try {
             await withInFlightGuard(loopName, codeSessionId, 'code', logger, async () => {
-              const result = await v2Client.session.promptAsync({
+              await client.session.promptAsync({
                 sessionID: codeSessionId,
                 directory: fresh.worktreeDir,
                 ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
                 agent: 'code',
                 parts: [{ type: 'text' as const, text: recoveryPrompt }],
               })
-              if (result.error) throw result.error
             })
           } catch (err) {
             if (err instanceof ConcurrentPromptError) { logger.log('Loop: failed to recover code launch — retry rejected as concurrent prompt (prior guard active), skipping'); return }
@@ -892,13 +563,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         fallbackModel: oldest.fallbackModel,
       })
       
-      void v2Client.session.delete({ sessionID: oldest.sessionId, directory: oldest.directory }).catch((err: unknown) => {
+      void client.session.delete({ sessionID: oldest.sessionId, directory: oldest.directory }).catch((err: unknown) => {
         logger.error(`Loop: failed to delete trimmed session ${oldest.sessionId} (loop=${loopName})`, err)
       })
     }
   }
 
-  async function terminateLoop(loopName: string, state: LoopState, reason: TerminationReason): Promise<void> {
+  async function terminateLoop(loopName: string, state: LoopState, reason: TerminationReason, summary?: string): Promise<void> {
     const sessionId = state.sessionId
     watchdog.stop(loopName)
     loopRegistry.remove(loopName)
@@ -934,7 +605,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         }).catch((err: unknown) => {
           logger.error(`Loop: failed to capture usage for retained session ${entry.sessionId} on terminate (loop=${loopName})`, err)
         })
-        void v2Client.session.delete({ sessionID: entry.sessionId, directory: entry.directory }).catch((err: unknown) => {
+        void client.session.delete({ sessionID: entry.sessionId, directory: entry.directory }).catch((err: unknown) => {
           logger.error(`Loop: failed to delete retained session ${entry.sessionId} on terminate (loop=${loopName})`, err)
         })
       }
@@ -957,10 +628,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       status: terminationStatusFor(reason),
       reason: terminationReasonToString(reason),
       completedAt: now,
+      summary,
     })
 
     try {
-      await v2Client.session.abort({ sessionID: sessionId })
+      await client.session.abort({ sessionID: sessionId })
     } catch {
       // Session may already be idle
     }
@@ -1015,93 +687,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
-  async function createAuditSessionWithFallback(input: {
-    loopName: string
-    iteration: number
-    currentSectionIndex: number
-    totalSections: number
-    worktreeDir: string
-    workspaceId?: string
-    isSandbox: boolean
-    auditorModel?: { providerID: string; modelID: string }
-    prompt: string
-  }): Promise<{ auditSessionId: string; boundWorkspaceId?: string; bindFailed: boolean; bindError?: unknown } | null> {
-    const created = await createAuditSession({
-      v2: v2Client,
-      loopName: input.loopName,
-      iteration: input.iteration,
-      currentSectionIndex: input.currentSectionIndex,
-      totalSections: input.totalSections,
-      worktreeDir: input.worktreeDir,
-      workspaceId: input.workspaceId,
-      isSandbox: input.isSandbox,
-      auditorModel: input.auditorModel,
-      prompt: input.prompt,
-      logger,
-    })
-    if (created) {
-      return {
-        auditSessionId: created.auditSessionId,
-        boundWorkspaceId: created.boundWorkspaceId,
-        bindFailed: created.bindFailed,
-        bindError: created.bindError,
-      }
-    }
 
-    try {
-      logger.log(`Loop: falling back to plugin client for audit session creation (${input.loopName})`)
-      const result = await client.session.create({
-        body: {
-          title: formatAuditSessionTitle(input.loopName, {
-            iteration: input.iteration,
-            currentSectionIndex: input.currentSectionIndex,
-            totalSections: input.totalSections,
-          }),
-          permission: buildAuditSessionPermissionRuleset({ sandbox: input.isSandbox }),
-          ...(input.workspaceId ? { workspaceID: input.workspaceId } : {}),
-        },
-        query: {
-          directory: input.worktreeDir,
-          ...(input.workspaceId ? { workspace: input.workspaceId } : {}),
-        },
-      } as Parameters<typeof client.session.create>[0])
-      const session = result.data as { id?: string } | undefined
-      if (!session?.id) return null
-      return { auditSessionId: session.id, bindFailed: false }
-    } catch (err) {
-      logger.error(`Loop: plugin client audit session creation failed`, err)
-      return null
-    }
-  }
 
-  async function promptAuditSessionWithFallback(input: {
-    sessionId: string
-    worktreeDir: string
-    workspaceId?: string
-    prompt: string
-    auditorModel?: { providerID: string; modelID: string }
-    auditorVariant?: string
-  }): Promise<{ ok: true } | { ok: false; error: unknown }> {
-    const result = await promptAuditSession(v2Client, input)
-    if (result.ok) return result
 
-    try {
-      logger.log(`Loop: falling back to plugin client for audit prompt (${input.sessionId})`)
-      const legacyResult = await client.session.promptAsync({
-        path: { id: input.sessionId },
-        query: { directory: input.worktreeDir, ...(input.workspaceId ? { workspace: input.workspaceId } : {}) },
-        body: {
-          agent: 'auditor-loop',
-          parts: [{ type: 'text' as const, text: input.prompt }],
-          ...(input.auditorModel ? { model: input.auditorModel, ...(input.auditorVariant ? { variant: input.auditorVariant } : {}) } : {}),
-        },
-      })
-      if (legacyResult.error) return { ok: false, error: legacyResult.error }
-      return { ok: true }
-    } catch (err) {
-      return { ok: false, error: err }
-    }
-  }
 
   async function recoverWatchdogStall(
     loopName: string,
@@ -1117,6 +705,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           await runAuditingPhase(loopName, freshState)
         } else if (freshState.phase === 'final_auditing') {
           await runFinalAuditPhase(loopName, freshState)
+        } else if (freshState.phase === 'post_action') {
+          await runPostActionPhase(loopName, freshState)
         } else {
           await runCodingPhase(loopName, freshState)
         }
@@ -1128,11 +718,51 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   const watchdog = createLoopWatchdog({
     loopService,
-    v2Client,
+    client,
     logger,
     recover: recoverWatchdogStall,
     terminate: terminateLoop,
   })
+
+  /**
+   * Shared idle/no-assistant gate for the auditing, final_auditing, and post_action phases.
+   * If the last message is not from the assistant, schedules a bounded retry (re-invoking `rerun`)
+   * or terminates with `exhaustedReason` once MAX_IDLE_RETRIES is reached. When an assistant message
+   * is present it clears any pending idle-retry timer/attempts. Returns true when the caller should
+   * return early (retry scheduled or loop terminated).
+   */
+  async function handleIdleNoAssistantGate(
+    loopName: string,
+    currentState: LoopState,
+    lastMessageRole: string,
+    opts: { phaseLabel: string; exhaustedReason: TerminationReason; rerun: (loopName: string, state: LoopState) => Promise<void> },
+  ): Promise<boolean> {
+    if (lastMessageRole !== 'assistant') {
+      const attempts = idleRetryAttempts.get(loopName) ?? 0
+      if (attempts >= MAX_IDLE_RETRIES) {
+        logger.error(`Loop: ${opts.phaseLabel} retry exhausted for ${loopName} (last message: ${lastMessageRole}), terminating`)
+        idleRetryAttempts.delete(loopName)
+        await terminateLoop(loopName, currentState, opts.exhaustedReason)
+        return true
+      }
+      logger.log(`Loop: ${opts.phaseLabel} idle without assistant message (last=${lastMessageRole}), retrying in ${IDLE_RETRY_DELAY_MS}ms (attempt ${attempts + 1}/${MAX_IDLE_RETRIES})`)
+      idleRetryAttempts.set(loopName, attempts + 1)
+      const phase = currentState.phase
+      const t = setTimeout(() => {
+        void withStateLock(loopName, async () => {
+          const fresh = loopService.getActiveState(loopName)
+          if (!fresh?.active || fresh.phase !== phase) return
+          await opts.rerun(loopName, fresh)
+        })
+      }, IDLE_RETRY_DELAY_MS)
+      idleRetryTimeouts.set(loopName, t)
+      return true
+    }
+    const pending = idleRetryTimeouts.get(loopName)
+    if (pending) { clearTimeout(pending); idleRetryTimeouts.delete(loopName) }
+    if (idleRetryAttempts.has(loopName)) { idleRetryAttempts.delete(loopName) }
+    return false
+  }
 
   async function startFinalAuditTransition(loopName: string, currentState: LoopState): Promise<boolean> {
     const finalAuditState = loopService.getActiveState(loopName) ?? { ...currentState, phase: 'final_auditing' }
@@ -1140,7 +770,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const auditorModel = resolveLoopAuditorModel(getConfig(), loopService, loopName, logger)
 
     const ensured = await ensureWorkspaceForLoop(loopName, currentState, 'before final audit creation')
-    const created = await createAuditSessionWithFallback({
+    const created = await createAuditSession({
+      client,
       loopName,
       iteration: currentState.iteration ?? 0,
       currentSectionIndex: currentState.currentSectionIndex ?? 0,
@@ -1150,6 +781,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       isSandbox: currentState.sandbox ?? false,
       auditorModel,
       prompt: finalAuditPrompt,
+      allowDirectories: resolveLoopAllowedDirectories(getConfig()),
+      logger,
     })
     if (!created) {
       logger.error(`Loop: final audit session creation failed for ${loopName}`)
@@ -1279,9 +912,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       isSandbox: boolean
       auditorModel?: { providerID: string; modelID: string }
       prompt: string
+      allowDirectories?: string[]
     }, attempts = MAX_RETRIES): Promise<{ auditSessionId: string; boundWorkspaceId?: string; bindFailed: boolean; bindError?: unknown } | null> {
       for (let i = 0; i < attempts; i++) {
-        const created = await createAuditSessionWithFallback(input)
+        const created = await createAuditSession({ client, ...input, logger })
         if (created) return created
         loopService.incrementError(loopName)
         const state = loopService.getActiveState(loopName)
@@ -1303,6 +937,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       isSandbox: currentState.sandbox ?? false,
       auditorModel,
       prompt: auditPrompt,
+      allowDirectories: resolveLoopAllowedDirectories(currentConfig),
     })
 
     if (!created) {
@@ -1367,7 +1002,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         currentState = loopService.getActiveState(loopName) ?? currentState
         if (recovered.recovered || !currentState.workspaceId) {
           const auditPromptText = loopService.buildAuditPrompt(currentState)
-          const retryResult = await promptAuditSessionWithFallback({
+          const retryResult = await promptAuditSession(client, {
             sessionId: created.auditSessionId,
             worktreeDir: currentState.worktreeDir,
             workspaceId: currentState.workspaceId,
@@ -1388,7 +1023,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         const auditPromptText = loopService.buildAuditPrompt(fresh)
         try {
           await withInFlightGuard(loopName, created.auditSessionId, 'auditor-loop', logger, async () => {
-            const retryResult = await promptAuditSessionWithFallback({
+            const retryResult = await promptAuditSession(client, {
               sessionId: created.auditSessionId,
               worktreeDir: fresh.worktreeDir,
               workspaceId: fresh.workspaceId,
@@ -1437,35 +1072,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const { text: auditText, error: assistantError, lastMessageRole } = await getLastAssistantInfo(auditSessionId, currentState.worktreeDir)
 
-    if (lastMessageRole !== 'assistant') {
-      const attempts = idleRetryAttempts.get(loopName) ?? 0
-      if (attempts >= MAX_IDLE_RETRIES) {
-        logger.error(`Loop: auditing phase retry exhausted for ${loopName} (last message: ${lastMessageRole}), terminating`)
-        idleRetryAttempts.delete(loopName)
-        await terminateLoop(loopName, currentState, { kind: 'audit_retry_exhausted' })
-        return
-      }
-      logger.log(`Loop: auditing idle without assistant message (last=${lastMessageRole}), retrying in ${IDLE_RETRY_DELAY_MS}ms (attempt ${attempts + 1}/${MAX_IDLE_RETRIES})`)
-      idleRetryAttempts.set(loopName, attempts + 1)
-      const t = setTimeout(() => {
-        void withStateLock(loopName, async () => {
-          const fresh = loopService.getActiveState(loopName)
-          if (!fresh?.active || fresh.phase !== 'auditing') return
-          await runAuditingPhase(loopName, fresh)
-        })
-      }, IDLE_RETRY_DELAY_MS)
-      idleRetryTimeouts.set(loopName, t)
-      return
-    }
-    
-    const pending = idleRetryTimeouts.get(loopName)
-    if (pending) {
-      clearTimeout(pending)
-      idleRetryTimeouts.delete(loopName)
-    }
-    if (idleRetryAttempts.has(loopName)) {
-      idleRetryAttempts.delete(loopName)
-    }
+    if (await handleIdleNoAssistantGate(loopName, currentState, lastMessageRole, { phaseLabel: 'auditing phase', exhaustedReason: { kind: 'audit_retry_exhausted' }, rerun: runAuditingPhase })) return
 
     const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantError, 'auditing')
     if (!errorResult) {
@@ -1659,35 +1266,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const { text: auditText, error: assistantError, lastMessageRole } = await getLastAssistantInfo(auditSessionId, currentState.worktreeDir)
 
-    if (lastMessageRole !== 'assistant') {
-      const attempts = idleRetryAttempts.get(loopName) ?? 0
-      if (attempts >= MAX_IDLE_RETRIES) {
-        logger.error(`Loop: final audit phase retry exhausted for ${loopName} (last message: ${lastMessageRole}), terminating`)
-        idleRetryAttempts.delete(loopName)
-        await terminateLoop(loopName, currentState, { kind: 'final_audit_retry_exhausted' })
-        return
-      }
-      logger.log(`Loop: final audit idle without assistant message (last=${lastMessageRole}), retrying in ${IDLE_RETRY_DELAY_MS}ms (attempt ${attempts + 1}/${MAX_IDLE_RETRIES})`)
-      idleRetryAttempts.set(loopName, attempts + 1)
-      const t = setTimeout(() => {
-        void withStateLock(loopName, async () => {
-          const fresh = loopService.getActiveState(loopName)
-          if (!fresh?.active || fresh.phase !== 'final_auditing') return
-          await runFinalAuditPhase(loopName, fresh)
-        })
-      }, IDLE_RETRY_DELAY_MS)
-      idleRetryTimeouts.set(loopName, t)
-      return
-    }
-
-    const pending = idleRetryTimeouts.get(loopName)
-    if (pending) {
-      clearTimeout(pending)
-      idleRetryTimeouts.delete(loopName)
-    }
-    if (idleRetryAttempts.has(loopName)) {
-      idleRetryAttempts.delete(loopName)
-    }
+    if (await handleIdleNoAssistantGate(loopName, currentState, lastMessageRole, { phaseLabel: 'final audit phase', exhaustedReason: { kind: 'final_audit_retry_exhausted' }, rerun: runFinalAuditPhase })) return
 
     const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantError, 'final_auditing')
     if (!errorResult) return
@@ -1703,6 +1282,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (trans.kind === 'terminate') {
         logger.log(`Loop: final audit clean for ${loopName} (no outstanding bug findings), completing`)
         loopService.setFinalAuditDone(loopName, true)
+        if (trans.reason.kind === 'completed' && await enterPostActionPhase(loopName, currentState)) return
         await terminateLoop(loopName, currentState, trans.reason)
         return
       }
@@ -1766,6 +1346,51 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
+  async function runPostActionPhase(loopName: string, _state: LoopState): Promise<void> {
+    const currentState = loopService.getActiveState(loopName)
+    if (!currentState?.active) {
+      logger.log(`Loop: loop ${loopName} no longer active, skipping post-action phase`)
+      return
+    }
+
+    if (currentState.phase !== 'post_action') {
+      logger.log(`Loop: runPostActionPhase invoked while phase=${currentState.phase} for ${loopName}, ignoring`)
+      return
+    }
+
+    if (!currentState.worktreeDir) {
+      logger.error(`Loop: loop ${loopName} missing worktreeDir in post-action phase, terminating`)
+      await terminateLoop(loopName, currentState, { kind: 'missing_worktree_dir' })
+      return
+    }
+
+    const { text: postActionText, lastMessageRole } = await getLastAssistantInfo(currentState.sessionId, currentState.worktreeDir)
+
+    if (await handleIdleNoAssistantGate(loopName, currentState, lastMessageRole, { phaseLabel: 'post-action phase', exhaustedReason: { kind: 'completed' }, rerun: runPostActionPhase })) return
+
+    logger.log(`Loop: post-action complete for ${loopName}, terminating`)
+    const trans = nextTransition(currentState, { type: 'post-action-complete' })
+    if (trans.kind === 'terminate') {
+      // Capture the raw post-action assistant message as the loop's completion summary so the
+      // outcome (alternate review verdict, CI result, etc.) is visible in loop-status/dashboard.
+      // The loop still terminates `completed` — the plan itself was already cleared by the audit.
+      await terminateLoop(loopName, currentState, trans.reason, postActionText || undefined)
+    }
+  }
+
+  /** Re-fetch the last message; run `onAssistant` if the assistant replied, otherwise `onNoAssistant`. */
+  async function resumeOrFallback(
+    loopName: string,
+    state: LoopState,
+    eventSessionId: string,
+    onAssistant: (loopName: string, state: LoopState) => Promise<void>,
+    onNoAssistant: (loopName: string, state: LoopState) => Promise<void>,
+  ): Promise<void> {
+    const { lastMessageRole } = await getLastAssistantInfo(eventSessionId, state.worktreeDir)
+    if (lastMessageRole === 'assistant') { await onAssistant(loopName, state); return }
+    await onNoAssistant(loopName, state)
+  }
+
   async function tick(event: LoopEvent): Promise<void> {
     if (event.type === 'worktree.failed') {
       const message = event.properties?.message as string
@@ -1802,25 +1427,24 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             return
           }
           if (state.phase === 'auditing') {
-            const { lastMessageRole } = await getLastAssistantInfo(eventSessionId, state.worktreeDir)
-            if (lastMessageRole === 'assistant') {
-              logger.log(`Loop: audit session ${eventSessionId} aborted after assistant response, processing audit result`)
-              await runAuditingPhase(loopName, state)
-              return
-            }
-            logger.log(`Loop: audit session ${eventSessionId} aborted, cleaning up and rolling back to coding`)
-            await rotateToCodingAfterAuditFailure(loopName, state, 'aborted')
+            await resumeOrFallback(loopName, state, eventSessionId,
+              async (ln, s) => { logger.log(`Loop: audit session ${eventSessionId} aborted after assistant response, processing audit result`); await runAuditingPhase(ln, s) },
+              async (ln, s) => { logger.log(`Loop: audit session ${eventSessionId} aborted, cleaning up and rolling back to coding`); await rotateToCodingAfterAuditFailure(ln, s, 'aborted') },
+            )
             return
           }
           if (state.phase === 'final_auditing') {
-            const { lastMessageRole } = await getLastAssistantInfo(eventSessionId, state.worktreeDir)
-            if (lastMessageRole === 'assistant') {
-              logger.log(`Loop: final audit session ${eventSessionId} aborted after assistant response, processing audit result`)
-              await runFinalAuditPhase(loopName, state)
-              return
-            }
-            logger.log(`Loop: final audit session ${eventSessionId} aborted, cleaning up and rolling back to coding`)
-            await rotateToCodingAfterAuditFailure(loopName, state, 'aborted')
+            await resumeOrFallback(loopName, state, eventSessionId,
+              async (ln, s) => { logger.log(`Loop: final audit session ${eventSessionId} aborted after assistant response, processing audit result`); await runFinalAuditPhase(ln, s) },
+              async (ln, s) => { logger.log(`Loop: final audit session ${eventSessionId} aborted, cleaning up and rolling back to coding`); await rotateToCodingAfterAuditFailure(ln, s, 'aborted') },
+            )
+            return
+          }
+          if (state.phase === 'post_action') {
+            await resumeOrFallback(loopName, state, eventSessionId,
+              async (ln, s) => { logger.log(`Loop: post-action session ${eventSessionId} aborted after assistant response, processing result`); await runPostActionPhase(ln, s) },
+              async (ln, s) => { logger.log(`Loop: post-action session ${eventSessionId} aborted without assistant response, terminating as completed (best-effort)`); await terminateLoop(ln, s, { kind: 'completed' }) },
+            )
             return
           }
           logger.log(`Loop: session ${eventSessionId} aborted, terminating loop`)
@@ -1845,8 +1469,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           await rotateToCodingAfterAuditFailure(loopName, state, errorMessage)
           return
         }
+        const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
         if (state.phase === 'final_auditing') {
-          const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
           const { lastMessageRole } = await getLastAssistantInfo(eventSessionId, state.worktreeDir)
           if (lastMessageRole === 'assistant') {
             logger.log(`Loop: final audit session ${eventSessionId} error after assistant response, processing audit result`)
@@ -1857,7 +1481,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           await rotateToCodingAfterAuditFailure(loopName, state, errorMessage)
           return
         }
-        const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
+        if (state.phase === 'post_action') {
+          logger.error(`Loop: post-action session error for ${eventSessionId}: ${errorMessage}, completing as best-effort`)
+          await terminateLoop(loopName, state, { kind: 'completed' })
+          return
+        }
         logger.error(`Loop: session error for ${eventSessionId}: ${errorMessage}`)
         const isModelError = /provider|auth|model|api\s*error/i.test(errorMessage)
         if (isModelError && !state.modelFailed) {
@@ -1923,6 +1551,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           await runAuditingPhase(loopName, state)
         } else if (state.phase === 'final_auditing') {
           await runFinalAuditPhase(loopName, state)
+        } else if (state.phase === 'post_action') {
+          await runPostActionPhase(loopName, state)
         } else {
           await runCodingPhase(loopName, state)
         }
@@ -2001,7 +1631,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         }).catch((err: unknown) => {
           logger.error(`Loop: failed to capture usage for retained session ${entry.sessionId} on clear (loop=${loopName})`, err)
         })
-        void v2Client.session.delete({ sessionID: entry.sessionId, directory: entry.directory }).catch(() => {})
+        void client.session.delete({ sessionID: entry.sessionId, directory: entry.directory }).catch(() => {})
       }
       loopRetainedSessions.delete(loopName)
     }
@@ -2106,54 +1736,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     restart,
     generateUniqueLoopName,
     setPhase,
-
-    // State management methods (delegated from loopService)
-    resolveLoopName: (sessionId: string) => loopService.resolveLoopName(sessionId),
-    getActiveState: (name: string) => loopService.getActiveState(name),
-    getAnyState: (name: string) => loopService.getAnyState(name),
-    setState: (name: string, state: LoopState) => loopService.setState(name, state),
-    deleteState: (name: string) => loopService.deleteState(name),
-    registerLoopSession: (sessionId: string, loopName: string) => loopService.registerLoopSession(sessionId, loopName),
-    replaceSession: (name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }) => loopService.replaceSession(name, opts),
-    setStatus: (name: string, status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled') => loopService.setStatus(name, status),
-    setPhaseAndResetError: (name: string, phase: LoopState['phase']) => loopService.setPhaseAndResetError(name, phase),
-    setModelFailed: (name: string, failed: boolean) => loopService.setModelFailed(name, failed),
-    setLastAuditResult: (name: string, text: string) => loopService.setLastAuditResult(name, text),
-    clearLastAuditResult: (name: string) => loopService.clearLastAuditResult(name),
-    setSandboxContainer: (name: string, containerName: string | null) => loopService.setSandboxContainer(name, containerName),
-    clearWorkspaceId: (name: string) => loopService.clearWorkspaceId(name),
-    setWorkspaceId: (name: string, workspaceId: string) => loopService.setWorkspaceId(name, workspaceId),
-    incrementError: (name: string) => loopService.incrementError(name),
-    resetError: (name: string) => loopService.resetError(name),
-    terminateLoop: (name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }) => loopService.terminate(name, opts),
-    getOutstandingFindings: (loopName?: string, severity?: 'bug' | 'warning') => loopService.getOutstandingFindings(loopName, severity),
-    bumpFindingRecurrence: (name: string, findings: ReviewFindingRow[]) => loopService.bumpFindingRecurrence(name, findings),
-    resetSectionRecurrence: (name: string, sectionIndex: number) => loopService.resetSectionRecurrence(name, sectionIndex),
-    getStallTimeoutMs: () => loopService.getStallTimeoutMs(),
-    getMaxConsecutiveStalls: () => loopService.getMaxConsecutiveStalls(),
-
-    // Prompt building methods (delegated from loopService)
-    buildContinuationPrompt: (state: LoopState, auditFindings?: string) => loopService.buildContinuationPrompt(state, auditFindings),
-    buildAuditPrompt: (state: LoopState) => loopService.buildAuditPrompt(state),
-    buildSectionInitialPrompt: (state: LoopState) => loopService.buildSectionInitialPrompt(state),
-    buildSectionAuditPrompt: (state: LoopState) => loopService.buildSectionAuditPrompt(state),
-    buildSectionContinuationPrompt: (state: LoopState, auditText: string) => loopService.buildSectionContinuationPrompt(state, auditText),
-    buildFinalAuditPrompt: (state: LoopState) => loopService.buildFinalAuditPrompt(state),
-    buildFinalAuditFixPrompt: (state: LoopState, auditText: string) => loopService.buildFinalAuditFixPrompt(state, auditText),
-
-    // Plan and section methods (delegated from loopService)
-    getPlanText: (loopName: string, sessionId: string) => loopService.getPlanText(loopName, sessionId),
-    getSectionPlan: (state: LoopState, index: number) => loopService.getSectionPlan(state, index),
-    getNextIncompleteSectionPlan: (state: LoopState) => loopService.getNextIncompleteSectionPlan(state),
-    getCompletedSectionDigest: (state: LoopState) => loopService.getCompletedSectionDigest(state),
-    parseSectionSummary: (text: string) => loopService.parseSectionSummary(text),
-    completeSection: (loopName: string, index: number, summary: { done: string | null; deviations: string | null; followUps: string | null }) => loopService.completeSection(loopName, index, summary),
-    incrementSectionAttempts: (loopName: string, index: number) => loopService.incrementSectionAttempts(loopName, index),
-    resetSectionForRewind: (loopName: string, index: number) => loopService.resetSectionForRewind(loopName, index),
-    setCurrentSectionIndex: (loopName: string, index: number) => loopService.setCurrentSectionIndex(loopName, index),
-    setFinalAuditDone: (loopName: string, done: boolean) => loopService.setFinalAuditDone(loopName, done),
-    startSection: (loopName: string, index: number) => loopService.startSection(loopName, index),
-    bulkInsertSections: (loopName: string, sections: { index: number; title: string; content: string }[]) => loopService.bulkInsertSections(loopName, sections),
-    setTotalSections: (loopName: string, total: number) => loopService.setTotalSections(loopName, total),
+    service: loopService,
   }
 }

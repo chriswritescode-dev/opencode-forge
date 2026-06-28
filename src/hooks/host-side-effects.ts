@@ -1,4 +1,4 @@
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
+import type { ForgeClient } from '../client/port'
 import type { LoopState, TerminationReason } from '../loop'
 import type { Logger, PluginConfig } from '../types'
 import type { createSandboxManager } from '../sandbox/manager'
@@ -9,9 +9,11 @@ import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
 import { aggregateToUsageSummary } from '../utils/loop-format'
 import { sweepStaleForgeWorkspaces } from '../workspace/sweep-stale'
+import { selectSessionBestEffort } from '../utils/tui-navigation'
+import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 
 export interface TerminationSideEffectsContext {
-  v2Client: OpencodeClient
+  client: ForgeClient
   logger: Logger
   getConfig: () => PluginConfig
   sandboxManager?: ReturnType<typeof createSandboxManager>
@@ -106,12 +108,10 @@ function publishTerminationToast(
   reason: TerminationReason,
   ctx: TerminationSideEffectsContext,
 ): void {
-  if (!ctx.v2Client.tui) return
-
   const variants = getToastVariant(reason)
   const message = getToastMessage(state, reason)
 
-  ctx.v2Client.tui.publish({
+  ctx.client.tui.publish({
     directory: state.projectDir ?? state.worktreeDir,
     body: {
       type: 'tui.toast.show',
@@ -169,31 +169,41 @@ function getToastMessage(state: LoopState, reason: TerminationReason): string {
  * Unwarp the TUI back to the host project session before workspace removal.
  *
  * The TUI may currently be "warped" — displaying the workspace's worktree
- * session. Once `workspace.remove` fires, that view becomes orphaned. We
- * publish a `tui.session.select` event targeting the host project directory
- * and the original host session, with no `workspace` property, to return the
- * user to the local system. Best-effort: failures are logged but never block
- * teardown.
+ * session. Once `workspace.remove` fires, that view becomes orphaned. We reuse
+ * the same navigation path as warp-in (`selectSessionBestEffort`): the
+ * `tui.selectSession` command first, falling back to a `tui.session.select`
+ * publish. Selecting through the current workspace context reaches a TUI that
+ * is still scoped to the soon-to-be-removed workspace; selecting without a
+ * workspace reaches local project views. Best-effort: failures are logged but
+ * never block teardown.
  */
 async function unwarpToHostSession(
   state: LoopState,
   ctx: TerminationSideEffectsContext,
 ): Promise<void> {
-  if (!ctx.v2Client.tui) return
   if (!state.hostSessionId || !state.projectDir) return
 
-  try {
-    await ctx.v2Client.tui.publish({
-      directory: state.projectDir,
-      body: {
-        type: 'tui.session.select',
-        properties: { sessionID: state.hostSessionId },
-      },
+  if (state.workspaceId) {
+    await selectSessionBestEffort(ctx.client, state.projectDir, ctx.logger, {
+      sessionID: state.hostSessionId,
+      workspace: state.workspaceId,
     })
-    ctx.logger.log(`Loop: unwarped TUI to host session ${state.hostSessionId} for ${state.loopName}`)
-  } catch (err) {
-    ctx.logger.error(`Loop: unwarp publish failed for ${state.loopName}`, err)
   }
+
+  await selectSessionBestEffort(ctx.client, state.projectDir, ctx.logger, {
+    sessionID: state.hostSessionId,
+  })
+
+  const settleMs = resolveUnwarpSettleMs()
+  if (settleMs > 0) {
+    await new Promise<void>((resolve) => setTimeout(resolve, settleMs))
+  }
+  ctx.logger.log(`Loop: unwarped TUI to host session ${state.hostSessionId} for ${state.loopName}`)
+}
+
+function resolveUnwarpSettleMs(): number {
+  const raw = Number(process.env.FORGE_UNWARP_SETTLE_MS)
+  return Number.isFinite(raw) && raw >= 0 ? raw : 750
 }
 
 /** Tear down the worktree workspace — always commits changes back. */
@@ -207,39 +217,45 @@ async function teardownWorktree(
   const reasonLabel = resolveReasonLabel(reason)
   const doCommit = true
   const doRemoveWorktree = reason.kind === 'completed'
+  const removeWorktreeAfterWorkspaceRemoval = doRemoveWorktree
 
   ctx.pendingTeardowns?.set(state.loopName, {
     iteration: state.iteration,
     reasonLabel,
     doCommit,
-    doRemoveWorktree,
+    doRemoveWorktree: false,
   })
 
   await unwarpToHostSession(state, ctx)
 
+  let removedWorkspace = false
   try {
-    const workspaceApi = ctx.v2Client.experimental?.workspace
-    if (workspaceApi?.remove) {
-      const result = await workspaceApi.remove({ id: state.workspaceId })
-      if (result.error) {
-        ctx.logger.error(`Loop: workspace.remove returned error for ${state.workspaceId}`, result.error)
-      } else {
-        ctx.logger.log(`Loop: workspace ${state.workspaceId} removed for ${state.loopName}`)
-      }
-    } else {
-      ctx.logger.error('Loop: experimental.workspace.remove not available; cannot tear down worktree')
-    }
+    await ctx.client.workspace.remove({ id: state.workspaceId })
+    removedWorkspace = true
+    ctx.logger.log(`Loop: workspace ${state.workspaceId} removed for ${state.loopName}`)
   } catch (err) {
     ctx.logger.error(`Loop: workspace.remove threw for ${state.workspaceId}`, err)
   } finally {
     ctx.pendingTeardowns?.clear(state.loopName)
   }
 
-  // Opportunistic sweep of stale sibling workspaces
-  if (ctx.loopsRepo && ctx.projectId && ctx.pendingTeardowns && state.projectDir) {
+  if (removedWorkspace && removeWorktreeAfterWorkspaceRemoval && state.worktreeDir) {
+    const settleMs = resolveUnwarpSettleMs()
+    if (settleMs > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, settleMs))
+    }
+    await cleanupLoopWorktree({
+      worktreeDir: state.worktreeDir,
+      logPrefix: 'Loop: post-workspace-remove',
+      logger: ctx.logger,
+    })
+  }
+
+  // Opportunistic sweep of stale sibling workspaces (port required)
+  if (ctx.client && ctx.loopsRepo && ctx.projectId && ctx.pendingTeardowns && state.projectDir) {
     try {
       const report = await sweepStaleForgeWorkspaces(
-        { v2: ctx.v2Client, loopsRepo: ctx.loopsRepo, pendingTeardowns: ctx.pendingTeardowns, logger: ctx.logger },
+        { client: ctx.client, loopsRepo: ctx.loopsRepo, pendingTeardowns: ctx.pendingTeardowns, logger: ctx.logger },
         { projectId: ctx.projectId, projectDirectory: state.projectDir, excludeLoopName: state.loopName, reasonLabel: 'orphan-sweep' },
       )
       if (report.swept.length > 0) {

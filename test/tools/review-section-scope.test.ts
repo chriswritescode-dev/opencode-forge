@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
@@ -139,9 +139,9 @@ describe('review section scoping', () => {
     plansRepo = createPlansRepo(db)
     reviewFindingsRepo = createReviewFindingsRepo(db)
     sectionPlansRepo = createSectionPlansRepo(db)
-    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger, undefined, undefined, undefined, sectionPlansRepo)
+    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger, undefined, undefined, sectionPlansRepo)
     const sessionLoopResolver = createSessionLoopResolver({
-      loop: loopService,
+      loop: { service: loopService, listActive: () => loopService.listActive() },
       getParentSessionId: async (sessionId: string) => parentSessions[sessionId] ?? null,
       getSessionDirectory: async () => tempDir,
       logger: mockLogger,
@@ -152,7 +152,7 @@ describe('review section scoping', () => {
       loopsRepo,
       projectId,
       logger: mockLogger,
-      loop: loopService,
+      loop: { service: loopService },
       directory: tempDir,
       resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
     } as any

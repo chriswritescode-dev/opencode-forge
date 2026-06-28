@@ -2,6 +2,7 @@ import { tool } from '@opencode-ai/plugin'
 import { createReviewTools } from './review'
 import { createPlanTools } from './plan-kv'
 import { createLoopTools } from './loop'
+import { createGroupTools } from './group'
 import { createSectionReadTool } from './section-read'
 import { createBashTool } from './bash/index'
 import type { ToolContext } from './types'
@@ -19,6 +20,7 @@ export function createTools(ctx: ToolContext): Record<string, ReturnType<typeof 
     ...createReviewTools(ctx),
     ...createPlanTools(ctx),
     ...createLoopTools(ctx),
+    ...createGroupTools(ctx),
     'section-read': createSectionReadTool(ctx),
   }
 
@@ -26,7 +28,6 @@ export function createTools(ctx: ToolContext): Record<string, ReturnType<typeof 
     tools.sh = createBashTool({
       resolveSandboxForSession: ctx.resolveSandboxForSession,
       logger: ctx.logger,
-      dataDir: ctx.dataDir,
       // Use a workspace-relative scratch dir: the worktree is mounted at
       // /workspace inside the sandbox, so .forge/tmp resolves consistently
       // for both host (read/write tools) and sandbox (bash).

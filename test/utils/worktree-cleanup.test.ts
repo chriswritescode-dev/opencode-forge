@@ -1,14 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { cleanupLoopWorktree } from '../../src/utils/worktree-cleanup'
+import { createFakeGitService } from '../helpers/fake-git'
+import type { GitService, GitResult } from '../../src/utils/git-service'
 
 vi.mock('fs', () => ({
-  existsSync: vi.fn().mockReturnValue(true),
+  existsSync: vi.fn(),
   rmSync: vi.fn(),
-}))
-
-vi.mock('child_process', () => ({
-  execSync: vi.fn().mockReturnValue('/tmp/.git'),
-  spawnSync: vi.fn().mockReturnValue({ status: 0, stdout: '', stderr: '' }),
 }))
 
 function createMockLogger() {
@@ -21,58 +18,51 @@ function createMockLogger() {
 
 describe('cleanupLoopWorktree', () => {
   let mockLogger: ReturnType<typeof createMockLogger>
+  let mockExistsSync: ReturnType<typeof vi.fn>
+  let mockRmSync: ReturnType<typeof vi.fn>
 
   beforeEach(async () => {
     mockLogger = createMockLogger()
     const fs = await import('fs')
-    vi.mocked(fs.existsSync).mockReturnValue(true)
-    vi.mocked(fs.rmSync).mockReturnValue(undefined)
-
-    const childProcess = await import('child_process')
-    vi.mocked(childProcess.execSync).mockReturnValue('/tmp/.git')
-    vi.mocked(childProcess.spawnSync).mockReturnValue({
-      status: 0,
-      stdout: '',
-      stderr: '',
-      error: undefined,
-      pid: 0,
-      output: [null, null, null],
-      signal: null,
-    })
+    mockExistsSync = vi.mocked(fs.existsSync)
+    mockRmSync = vi.mocked(fs.rmSync)
   })
 
   it('removes stale directories without .git before running git commands', async () => {
-    const fs = await import('fs')
-    vi.mocked(fs.existsSync)
-      .mockReturnValueOnce(true)
-      .mockReturnValueOnce(false)
+    mockExistsSync
+      .mockReturnValueOnce(true)  // worktreeDir exists
+      .mockReturnValueOnce(false) // .git does not exist
 
-    const childProcess = await import('child_process')
+    const fake = createFakeGitService()
 
     const result = await cleanupLoopWorktree({
       worktreeDir: '/tmp/not-git',
       logPrefix: 'Test',
       logger: mockLogger,
+      git: fake,
     })
 
     expect(result.removed).toBe(true)
     expect(result.error).toBeUndefined()
-    expect(childProcess.execSync).not.toHaveBeenCalled()
-    expect(childProcess.spawnSync).not.toHaveBeenCalled()
-    expect(fs.rmSync).toHaveBeenCalledWith('/tmp/not-git', { recursive: true, force: true })
+    expect(mockRmSync).toHaveBeenCalledWith('/tmp/not-git', { recursive: true, force: true })
+    expect(fake.revParseGitCommonDir).not.toHaveBeenCalled()
+    expect(fake.worktreeRemove).not.toHaveBeenCalled()
+    expect(fake.worktreePrune).not.toHaveBeenCalled()
     expect(mockLogger.log).toHaveBeenCalledWith(
       expect.stringContaining('removed non-git worktree directory'),
     )
   })
 
   it('returns removed when worktreeDir is missing at entry', async () => {
-    const fs = await import('fs')
-    vi.mocked(fs.existsSync).mockReturnValue(false)
+    mockExistsSync.mockReturnValue(false)
+
+    const fake = createFakeGitService()
 
     const result = await cleanupLoopWorktree({
       worktreeDir: '/tmp/gone',
       logPrefix: 'Test',
       logger: mockLogger,
+      git: fake,
     })
 
     expect(result.removed).toBe(true)
@@ -83,27 +73,25 @@ describe('cleanupLoopWorktree', () => {
   })
 
   it('returns removed with prune when Permission denied and dir is gone', async () => {
-    const fs = await import('fs')
-    vi.mocked(fs.existsSync)
-      .mockReturnValueOnce(true)
-      .mockReturnValueOnce(true)
-      .mockReturnValueOnce(false)
+    mockExistsSync
+      .mockReturnValueOnce(true)  // worktreeDir exists
+      .mockReturnValueOnce(true)  // .git exists
+      .mockReturnValueOnce(false) // worktreeDir gone after remove attempt
 
-    const childProcess = await import('child_process')
-    vi.mocked(childProcess.spawnSync).mockReturnValue({
-      status: 1,
-      stdout: '',
-      stderr: 'Permission denied',
-      error: undefined,
-      pid: 0,
-      output: [null, null, null],
-      signal: null,
+    const fake = createFakeGitService({
+      revParseGitCommonDir: vi.fn<[string], GitResult>().mockReturnValue({
+        ok: true, status: 0, stdout: '/tmp/.git', stderr: '',
+      }),
+      worktreeRemove: vi.fn<[string, string], GitResult>().mockReturnValue({
+        ok: false, status: 1, stdout: '', stderr: 'Permission denied',
+      }),
     })
 
     const result = await cleanupLoopWorktree({
       worktreeDir: '/tmp/wt',
       logPrefix: 'Test',
       logger: mockLogger,
+      git: fake,
     })
 
     expect(result.removed).toBe(true)
@@ -111,31 +99,58 @@ describe('cleanupLoopWorktree', () => {
     expect(mockLogger.log).toHaveBeenCalledWith(
       expect.stringContaining('worktree directory already removed'),
     )
+    expect(fake.worktreePrune).toHaveBeenCalled()
   })
 
   it('returns error for genuine failures (dir present, remove fails)', async () => {
-    const fs = await import('fs')
-    vi.mocked(fs.existsSync).mockReturnValue(true)
+    mockExistsSync.mockReturnValue(true)
 
-    const childProcess = await import('child_process')
-    vi.mocked(childProcess.spawnSync).mockReturnValue({
-      status: 1,
-      stdout: '',
-      stderr: 'git worktree remove failed',
-      error: undefined,
-      pid: 0,
-      output: [null, null, null],
-      signal: null,
+    const fake = createFakeGitService({
+      revParseGitCommonDir: vi.fn<[string], GitResult>().mockReturnValue({
+        ok: true, status: 0, stdout: '/tmp/.git', stderr: '',
+      }),
+      worktreeRemove: vi.fn<[string, string], GitResult>().mockReturnValue({
+        ok: false, status: 1, stdout: '', stderr: 'git worktree remove failed',
+      }),
     })
 
     const result = await cleanupLoopWorktree({
       worktreeDir: '/tmp/wt',
       logPrefix: 'Test',
       logger: mockLogger,
+      git: fake,
     })
 
     expect(result.removed).toBe(false)
     expect(result.error).toBeDefined()
     expect(mockLogger.error).toHaveBeenCalled()
+  })
+
+  it('removes directory when rev-parse indicates not a git repository', async () => {
+    mockExistsSync
+      .mockReturnValueOnce(true)  // worktreeDir exists
+      .mockReturnValueOnce(true)  // .git exists
+
+    const fake = createFakeGitService({
+      revParseGitCommonDir: vi.fn<[string], GitResult>().mockReturnValue({
+        ok: false, status: 128, stdout: '', stderr: 'fatal: not a git repository /tmp/wt',
+      }),
+    })
+
+    const result = await cleanupLoopWorktree({
+      worktreeDir: '/tmp/wt',
+      logPrefix: 'Test',
+      logger: mockLogger,
+      git: fake,
+    })
+
+    expect(result.removed).toBe(true)
+    expect(result.error).toBeUndefined()
+    expect(mockRmSync).toHaveBeenCalledWith('/tmp/wt', { recursive: true, force: true })
+    expect(fake.worktreeRemove).not.toHaveBeenCalled()
+    expect(fake.worktreePrune).not.toHaveBeenCalled()
+    expect(mockLogger.log).toHaveBeenCalledWith(
+      expect.stringContaining('removed non-git worktree directory'),
+    )
   })
 })

@@ -1,24 +1,21 @@
-import { readFileSync, existsSync, mkdirSync, copyFileSync, cpSync, readdirSync } from 'fs'
-import { dirname, join } from 'path'
-import { fileURLToPath } from 'url'
-import { homedir, platform } from 'os'
+import { readFileSync, existsSync, mkdirSync, copyFileSync } from 'fs'
+import { join } from 'path'
 import { resolveLogPath } from './storage'
+import { syncBundledDir } from './utils/bundled-sync'
+import {
+  getBundleSpecs,
+  resolveConfigDir,
+  resolveConfigPath,
+  resolveBundledConfigPath,
+} from './install/paths'
 import type { PluginConfig } from './types'
 
-function resolveBundledConfigPath(): string {
-  const pluginDir = dirname(fileURLToPath(import.meta.url))
-  return join(pluginDir, '..', 'forge-config.jsonc')
-}
-
-function resolveConfigDir(): string {
-  const defaultBase = join(homedir(), platform() === 'win32' ? 'AppData' : '.config')
-  const xdgConfigHome = process.env['XDG_CONFIG_HOME'] || defaultBase
-  return join(xdgConfigHome, 'opencode')
-}
-
-export function resolveConfigPath(): string {
-  return join(resolveConfigDir(), 'forge-config.jsonc')
-}
+// Re-exported for consumers that import path helpers from setup.
+export {
+  resolveConfigPath,
+  resolvePromptsDir,
+  resolveBundledContainerDir,
+} from './install/paths'
 
 function resolveLegacyConfigPaths(): string[] {
   return [
@@ -57,6 +54,9 @@ function getDefaultConfig(): PluginConfig {
       enabled: false,
       file: resolveLogPath(),
     },
+    groupLaunch: {
+      maxConcurrentLoops: 3,
+    },
   }
 }
 
@@ -85,9 +85,29 @@ function parseJsonc<T = unknown>(content: string): T {
   return JSON.parse(normalized) as T
 }
 
+/**
+ * Silently install bundled prompts and skills into the user config dir. This
+ * runs on every plugin load and is intentionally non-interactive: it preserves
+ * user edits and never deletes files. Use the standalone installer
+ * (`bunx opencode-forge`) for interactive (re)install, conflict resolution, and
+ * orphan pruning.
+ */
+function ensureBundledAssets(): void {
+  for (const spec of getBundleSpecs()) {
+    if (!existsSync(spec.bundledDir)) continue
+    if (!existsSync(spec.destDir)) mkdirSync(spec.destDir, { recursive: true })
+    try {
+      syncBundledDir(spec.bundledDir, spec.destDir, spec.manifestPath, spec.filter)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.warn(`[forge] Failed to install bundled ${spec.label}: ${message}`)
+    }
+  }
+}
+
 export function loadPluginConfig(): PluginConfig {
   ensureGlobalConfig()
-  ensureBundledSkills()
+  ensureBundledAssets()
 
   const configPath = resolveConfigPath()
 
@@ -113,43 +133,16 @@ export function loadPluginConfig(): PluginConfig {
 }
 
 function normalizeConfig(config: PluginConfig): PluginConfig {
-  return { ...config }
+  const normalized = { ...config }
+
+  if (!normalized.groupLaunch) {
+    normalized.groupLaunch = {}
+  }
+  if (normalized.groupLaunch.maxConcurrentLoops === undefined || normalized.groupLaunch.maxConcurrentLoops === null) {
+    normalized.groupLaunch.maxConcurrentLoops = 3
+  } else if (normalized.groupLaunch.maxConcurrentLoops < 1) {
+    normalized.groupLaunch.maxConcurrentLoops = 1
+  }
+
+  return normalized
 }
-
-function ensureBundledSkills(): void {
-  const configDir = resolveConfigDir()
-  const skillsDir = join(configDir, 'skills')
-
-  if (!existsSync(skillsDir)) {
-    mkdirSync(skillsDir, { recursive: true })
-  }
-
-  const pluginDir = dirname(fileURLToPath(import.meta.url))
-  const bundledSkillsDir = join(pluginDir, '..', 'skills')
-
-  if (!existsSync(bundledSkillsDir)) {
-    return
-  }
-
-  try {
-    const skillNames = readdirSync(bundledSkillsDir, { withFileTypes: true })
-      .filter(d => d.isDirectory())
-      .map(d => d.name)
-
-    for (const skillName of skillNames) {
-      const srcDir = join(bundledSkillsDir, skillName)
-      const destDir = join(skillsDir, skillName)
-
-      if (existsSync(destDir)) {
-        continue
-      }
-
-      cpSync(srcDir, destDir, { recursive: true })
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    console.warn(`[forge] Failed to install bundled skills: ${message}`)
-  }
-}
-
-

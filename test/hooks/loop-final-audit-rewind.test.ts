@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import type { Database } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
@@ -12,7 +12,6 @@ import { createLoopService, MAX_RETRIES } from '../../src/loop/service'
 import { createLoopEventHandler } from '../../src/hooks/loop'
 import { openForgeDatabase } from '../../src/storage/database'
 import type { Logger, PluginConfig } from '../../src/types'
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 
 const mockLogger: Logger = {
   log: () => {},
@@ -38,7 +37,7 @@ describe('Loop final audit rewind behavior', () => {
 
     loopService = createLoopService(
       loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger,
-      undefined, undefined, undefined, sectionPlansRepo,
+      undefined, undefined, sectionPlansRepo,
     )
   })
 

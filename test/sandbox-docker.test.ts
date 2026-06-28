@@ -1,5 +1,5 @@
-import { describe, test, expect } from 'bun:test'
-import { createDockerService } from '../src/sandbox/docker'
+import { describe, test, expect } from 'vitest'
+import { createDockerService, buildCreateContainerArgs, buildExecArgs } from '../src/sandbox/docker'
 
 function createMockLogger() {
   return {
@@ -26,5 +26,151 @@ describe('DockerService containerName', () => {
   test('containerName handles empty string', () => {
     const result = docker.containerName('')
     expect(result).toBe('forge-')
+  })
+})
+
+describe('buildExecArgs', () => {
+  test('omits --user when no exec user is configured', () => {
+    expect(buildExecArgs('forge-c', 'ls')).toEqual(['exec', 'forge-c', 'sh', '-c', 'ls'])
+  })
+
+  test('applies --user for the host UID:GID', () => {
+    expect(buildExecArgs('forge-c', 'ls', { execUser: '501:20' })).toEqual([
+      'exec', '--user', '501:20', 'forge-c', 'sh', '-c', 'ls',
+    ])
+  })
+
+  test('adds -i before --user for the piped path', () => {
+    expect(buildExecArgs('forge-c', 'patch', { execUser: '501:20', interactive: true })).toEqual([
+      'exec', '-i', '--user', '501:20', 'forge-c', 'sh', '-c', 'patch',
+    ])
+  })
+
+  test('interactive without exec user', () => {
+    expect(buildExecArgs('forge-c', 'patch', { interactive: true })).toEqual([
+      'exec', '-i', 'forge-c', 'sh', '-c', 'patch',
+    ])
+  })
+})
+
+describe('buildCreateContainerArgs', () => {
+  test('returns base args with no opts', () => {
+    const args = buildCreateContainerArgs('my-container', '/project', 'my-image')
+    expect(args).toEqual([
+      'run', '-d', '--name', 'my-container',
+      '-v', '/project:/workspace',
+      '-w', '/workspace', 'my-image', 'sleep', 'infinity',
+    ])
+  })
+
+  test('includes resource flags when provided', () => {
+    const args = buildCreateContainerArgs('c', '/p', 'img', {
+      resources: { memory: '4g', cpus: '2', shmSize: '512m', memorySwap: '8g' },
+    })
+    expect(args).toContain('--memory')
+    expect(args).toContain('4g')
+    expect(args).toContain('--memory-swap')
+    expect(args).toContain('8g')
+    expect(args).toContain('--cpus')
+    expect(args).toContain('2')
+    expect(args).toContain('--shm-size')
+    expect(args).toContain('512m')
+  })
+
+  test('includes add-hosts flags', () => {
+    const args = buildCreateContainerArgs('c', '/p', 'img', {
+      addHosts: ['host.docker.internal:host-gateway', 'other:1.2.3.4'],
+    })
+    expect(args).toContain('--add-host')
+    const addHostIndex = args.indexOf('--add-host')
+    expect(args[addHostIndex + 1]).toBe('host.docker.internal:host-gateway')
+    expect(args[addHostIndex + 2]).toBe('--add-host')
+    expect(args[addHostIndex + 3]).toBe('other:1.2.3.4')
+  })
+
+  test('includes env-file flag', () => {
+    const args = buildCreateContainerArgs('c', '/p', 'img', {
+      envFile: '/tmp/.env',
+    })
+    expect(args).toContain('--env-file')
+    expect(args).toContain('/tmp/.env')
+  })
+
+  test('includes user flag', () => {
+    const args = buildCreateContainerArgs('c', '/p', 'img', {
+      user: '1000:1000',
+    })
+    expect(args).toContain('--user')
+    expect(args).toContain('1000:1000')
+  })
+
+  test('includes extra mounts', () => {
+    const args = buildCreateContainerArgs('c', '/p', 'img', {
+      extraMounts: ['/ext:/ext:ro', '/data:/data'],
+    })
+    expect(args).toContain('-v')
+    const vIndex = args.indexOf('-v', args.indexOf('-v') + 1)
+    expect(args[vIndex + 1]).toBe('/ext:/ext:ro')
+    expect(args[vIndex + 2]).toBe('-v')
+    expect(args[vIndex + 3]).toBe('/data:/data')
+  })
+
+  test('dockerInDocker adds privileged, init, FORGE_DIND env, and storage volume', () => {
+    const args = buildCreateContainerArgs('c', '/p', 'img', { dockerInDocker: true })
+    expect(args).toContain('--privileged')
+    expect(args).toContain('--init')
+    const envIdx = args.indexOf('-e')
+    expect(args[envIdx + 1]).toBe('FORGE_DIND=1')
+    // Anonymous volume for the nested daemon storage (container path only, no host source).
+    expect(args).toContain('/var/lib/docker')
+    // Still ends with the workspace working dir + command trailer.
+    const trailerIdx = args.indexOf('-w')
+    expect(args.slice(trailerIdx)).toEqual(['-w', '/workspace', 'img', 'sleep', 'infinity'])
+  })
+
+  test('dockerInDocker passes host GID to the entrypoint for socket group ownership', () => {
+    const args = buildCreateContainerArgs('c', '/p', 'img', {
+      dockerInDocker: true,
+      hostUser: { uid: '501', gid: '20' },
+    })
+    const envFlags = args.reduce<string[]>((acc, a, i) => (a === '-e' ? [...acc, args[i + 1]] : acc), [])
+    expect(envFlags).toContain('FORGE_DIND=1')
+    expect(envFlags).toContain('FORGE_HOST_UID=501')
+    expect(envFlags).toContain('FORGE_HOST_GID=20')
+  })
+
+  test('hostUser env is omitted when dockerInDocker is off', () => {
+    const args = buildCreateContainerArgs('c', '/p', 'img', { hostUser: { uid: '501', gid: '20' } })
+    expect(args).not.toContain('FORGE_HOST_GID=20')
+  })
+
+  test('dockerInDocker flags are omitted by default', () => {
+    const args = buildCreateContainerArgs('c', '/p', 'img')
+    expect(args).not.toContain('--privileged')
+    expect(args).not.toContain('--init')
+    expect(args).not.toContain('FORGE_DIND=1')
+  })
+
+  test('combines all opt types together', () => {
+    const args = buildCreateContainerArgs('c', '/p', 'img', {
+      resources: { memory: '2g', cpus: '1' },
+      addHosts: ['host.docker.internal:host-gateway'],
+      envFile: '/e/.env',
+      user: '1001:1001',
+      extraMounts: ['/extra:/extra'],
+    })
+    const memIdx = args.indexOf('--memory')
+    const addHostIdx = args.indexOf('--add-host')
+    const envIdx = args.indexOf('--env-file')
+    const userIdx = args.indexOf('--user')
+    const extraVIdx = args.lastIndexOf('-v')
+    const trailerIdx = args.indexOf('-w')
+
+    expect(memIdx).toBeGreaterThan(0)
+    expect(addHostIdx).toBeGreaterThan(memIdx)
+    expect(envIdx).toBeGreaterThan(addHostIdx)
+    expect(userIdx).toBeGreaterThan(envIdx)
+    expect(extraVIdx).toBeGreaterThan(userIdx)
+    expect(trailerIdx).toBeGreaterThan(extraVIdx)
   })
 })

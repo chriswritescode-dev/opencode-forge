@@ -8,13 +8,6 @@ vi.mock('../../src/utils/tui-execution-preferences', () => ({
   deriveExecutionPreferencesFromWorkspaces: vi.fn().mockReturnValue(null),
 }))
 
-vi.mock('../../src/utils/tui-plan-store', () => ({
-  readPlan: vi.fn().mockReturnValue(null),
-  readPlanForAnyProject: vi.fn().mockReturnValue(null),
-  writePlan: vi.fn(),
-  deletePlan: vi.fn(),
-}))
-
 vi.mock('../../src/utils/tui-models', () => ({
   fetchAvailableModels: vi.fn().mockResolvedValue({ providers: [] }),
   readOpenCodeFavoriteModels: vi.fn().mockReturnValue([]),
@@ -266,7 +259,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
     expect(mockApi.client.session.create.mock.calls[0][0].title).toBe('my-cool-feature-1')
   })
 
-  test('failure: workspace.create returns error → returns null, downstream NOT called', async () => {
+  test('failure: workspace.create returns error → returns {error}, downstream NOT called', async () => {
     mockApi.client.experimental.workspace.create.mockResolvedValueOnce({ error: new Error('fail') })
 
     const client = await connectForgeProject(mockApi, DIRECTORY)
@@ -281,7 +274,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
       },
     )
 
-    expect(result).toBeNull()
+    expect(result).toEqual({ error: 'Failed to create worktree workspace: fail' })
     // Downstream calls should not have been made
     expect(mockApi.client.session.create).not.toHaveBeenCalled()
     expect(mockApi.client.tui.selectSession).not.toHaveBeenCalled()
@@ -289,7 +282,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
     expect(mockApi.client.session.promptAsync).not.toHaveBeenCalled()
   })
 
-  test('failure: workspace.create returns no data → returns null', async () => {
+  test('failure: workspace.create returns no data → returns {error}', async () => {
     mockApi.client.experimental.workspace.create.mockResolvedValueOnce({ data: undefined })
 
     const client = await connectForgeProject(mockApi, DIRECTORY)
@@ -303,7 +296,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
       },
     )
 
-    expect(result).toBeNull()
+    expect(result).toEqual({ error: 'Failed to create worktree workspace: no data returned' })
   })
 
   test('failure: session.create returns error → returns null', async () => {

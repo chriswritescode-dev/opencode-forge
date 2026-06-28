@@ -29,6 +29,18 @@ export interface WorktreeLoggingConfig {
   directory?: string
 }
 
+/** Post-completion action run inside the worktree before teardown (review, audit, doc-gen, etc.). */
+export interface PostActionConfig {
+  /** Enable the post-completion action phase. Defaults to false. */
+  enabled?: boolean
+  /** Name of a skill to load via the Skill tool at action time (e.g. "pr-review"). Must be installed host-side. */
+  skill?: string
+  /** Optional extra instruction text appended to the action prompt. Used standalone when no skill is set. */
+  prompt?: string
+  /** Override the model used for the post-action prompt (format: "provider/model"). Defaults to the auditor model chain. */
+  model?: string
+}
+
 /**
  * Configuration for autonomous loop behavior.
  */
@@ -43,8 +55,36 @@ export interface LoopConfig {
   stallTimeoutMs?: number
   /** Worktree loop completion logging configuration. */
   worktreeLogging?: WorktreeLoggingConfig
+  /** Optional post-completion action (skill and/or prompt) run in-worktree before teardown. */
+  postAction?: PostActionConfig
   /** Maximum consecutive stalls before loop is terminated. 0 = disabled (default: 5). */
   maxConsecutiveStalls?: number
+  /**
+   * Absolute directory paths that loop, audit, and post-action sessions may read despite
+   * worktree isolation (e.g. an Obsidian vault). Each entry is granted via `external_directory`
+   * allow rules layered over the default deny. Provide the path as the session sees it on the
+   * host (governs host-side Read/Glob/Grep); for sandboxed loops, host-side tools still resolve
+   * host paths, so use the host path here rather than a container mount path.
+   */
+  allowExternalDirectories?: string[]
+  /**
+   * Absolute path of a shared scratch/temp directory granted to loop sessions in BOTH modes.
+   * It is added to the `external_directory` allowlist and, for sandboxed loops, bind-mounted
+   * read-write at the identical container path so absolute temp paths match host↔container.
+   * Defaults to `/tmp/oc-forge`. The directory is created on startup if missing.
+   */
+  tmpDir?: string
+}
+
+/**
+ * Network access configuration for the sandbox container.
+ * Controls host gateway access, environment passthrough, and project `.env` file mounting.
+ */
+export interface SandboxNetworkConfig {
+  /** Enable host.docker.internal gateway. Defaults to true. Set false to disable. */
+  hostGateway?: boolean
+  /** Environment variable names to pass through from host process into the container. */
+  env?: string[]
 }
 
 /**
@@ -64,6 +104,18 @@ export interface SandboxResources {
 }
 
 /**
+ * A single custom bind-mount for the sandbox container.
+ */
+export interface SandboxMountConfig {
+  /** Absolute host directory (or file) path to bind-mount into the container. */
+  host: string
+  /** Absolute container path where the host path is mounted. */
+  container: string
+  /** Mount read-only. Defaults to true (read-only); set false for read-write access. */
+  readonly?: boolean
+}
+
+/**
  * Configuration for sandbox execution environment.
  */
 export interface SandboxConfig {
@@ -75,6 +127,14 @@ export interface SandboxConfig {
   image?: string
   /** Container resource limits. Defaults to memory=8g, cpus=4, shmSize=1g. */
   resources?: SandboxResources
+  /** Mount the source project directory as a read-only volume. Defaults to true. */
+  mountProjectReadonly?: boolean
+  /** Container path for the read-only project mount. Defaults to '/project'. */
+  projectMountPath?: string
+  /** Additional host directories to bind-mount into the sandbox container. */
+  mounts?: SandboxMountConfig[]
+  /** Network access configuration (host gateway, env passthrough). */
+  network?: SandboxNetworkConfig
 }
 
 /**
@@ -118,6 +178,14 @@ export interface AgentOverrideConfig {
 }
 
 /**
+ * Configuration for group launch behavior.
+ */
+export interface GroupLaunchConfig {
+  /** Max loops from one group running concurrently. Also bounds concurrent planning passes. Default 3. */
+  maxConcurrentLoops?: number
+}
+
+/**
  * Complete plugin configuration for opencode-forge.
  */
 export interface PluginConfig {
@@ -133,8 +201,14 @@ export interface PluginConfig {
   executionModel?: string
   /** Model to use for code auditing. */
   auditorModel?: string
+  /** Default reasoning/thinking variant for the execution model. */
+  executionVariant?: string
+  /** Default reasoning/thinking variant for the auditor model. */
+  auditorVariant?: string
   /** Loop behavior configuration. */
   loop?: LoopConfig
+  /** Group launch configuration. */
+  groupLaunch?: GroupLaunchConfig
   /** TTL for completed/cancelled/errored/stalled loops before sweep. Default 7 days. */
   completedLoopTtlMs?: number
   /** TUI display configuration. */

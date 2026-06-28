@@ -50,7 +50,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
 
         row.loopName = await resolveLoopName(toolCtx)
         if (row.loopName) {
-          const loopState = loop.getActiveState(row.loopName)
+          const loopState = loop.service.getActiveState(row.loopName)
           if (loopState && loopState.totalSections > 0) {
             row.sectionIndex = loopState.currentSectionIndex
           }
@@ -65,7 +65,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
           }
           const loopName = row.loopName
           if (loopName) {
-            const loopState = loop.getActiveState(loopName)
+            const loopState = loop.service.getActiveState(loopName)
             if (loopState && loopState.totalSections > 0) {
               if (args.sectionIndex < 0 || args.sectionIndex >= loopState.totalSections) {
                 return `Invalid sectionIndex ${args.sectionIndex}: must be between 0 and ${loopState.totalSections - 1}.`
@@ -107,7 +107,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         // During final_auditing, return all sections so the auditor can see cross-section findings
         // An explicit loopName targets another loop, so its sections are all returned
         if (loopName && !explicitLoop && !args.allSections) {
-          const loopState = loop.getActiveState(loopName)
+          const loopState = loop.service.getActiveState(loopName)
           if (loopState && loopState.totalSections > 0 && loopState.phase !== 'final_auditing') {
             if (args.crossSection) {
               // crossSection: return only cross-section findings (sectionIndex === null)
@@ -172,7 +172,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         if (args.crossSection === true) {
           sectionIndex = null
         } else if (sectionIndex === undefined && loopName) {
-          const loopState = loop.getActiveState(loopName)
+          const loopState = loop.service.getActiveState(loopName)
           if (loopState && loopState.totalSections > 0 && loopState.phase !== 'final_auditing') {
             sectionIndex = loopState.currentSectionIndex
           }

@@ -141,3 +141,8 @@ export function formatAuditResult(auditResult: string): string[] {
   const auditPreview = truncate(auditResult, 300)
   return ['', 'Last Audit:', `  ${auditPreview}`]
 }
+
+export function formatCompletionSummary(summary: string): string[] {
+  const preview = truncate(summary, 1000)
+  return ['', 'Completion Summary (post-action):', `  ${preview}`]
+}

@@ -1,6 +1,6 @@
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
+import type { ForgeClient } from '../client/port'
 import type { Logger } from '../types'
-import { summarizeAssistantUsage, type LoopUsageSummary, type UsageAttribution } from './token-usage'
+import { normalizeTokens, summarizeAssistantUsage, type LoopUsageSummary, type UsageAttribution } from './token-usage'
 
 const RECENT_MESSAGES_COUNT = 5
 
@@ -18,7 +18,7 @@ export interface FetchSessionOutputOptions {
 }
 
 export async function fetchSessionOutput(
-  v2Client: OpencodeClient,
+  client: ForgeClient,
   sessionId: string,
   directory: string,
   logger?: Logger,
@@ -30,12 +30,10 @@ export async function fetchSessionOutput(
   }
 
   try {
-    const messagesResult = await v2Client.session.messages({
+    const messages = (await client.session.messages({
       sessionID: sessionId,
       directory,
-    })
-
-    const messages = (messagesResult.data ?? []) as {
+    })) as unknown as {
       info: {
         role: string
         cost?: number
@@ -59,17 +57,10 @@ export async function fetchSessionOutput(
         .map((p) => p.text!)
         .join('\n')
       const cost = msg.info.cost ?? 0
-      const tokens = msg.info.tokens ?? { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
       return {
         text,
         cost,
-        tokens: {
-          input: tokens.input,
-          output: tokens.output,
-          reasoning: tokens.reasoning,
-          cacheRead: tokens.cache.read,
-          cacheWrite: tokens.cache.write,
-        },
+        tokens: normalizeTokens(msg.info.tokens),
       }
     })
 
@@ -79,8 +70,7 @@ export async function fetchSessionOutput(
       : undefined
     const usageSummary = summarizeAssistantUsage(messages, attribution)
 
-    const sessionResult = await v2Client.session.get({ sessionID: sessionId, directory })
-    const session = sessionResult.data as { summary?: { additions: number; deletions: number; files: number } } | undefined
+    const session = await client.session.get({ sessionID: sessionId, directory }) as unknown as { summary?: { additions: number; deletions: number; files: number } } | undefined
     const fileChanges = session?.summary
       ? {
           additions: session.summary.additions,

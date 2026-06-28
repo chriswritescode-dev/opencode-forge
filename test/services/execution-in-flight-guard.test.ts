@@ -20,6 +20,7 @@ import {
 } from '../../src/loop/in-flight-guard'
 import type { PromptAgent } from '../../src/loop/in-flight-guard'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { createFakeForgeClient } from '../helpers/fake-client'
 
 const noopFn = () => {}
 
@@ -37,6 +38,19 @@ describe('execution in-flight guard', () => {
     log: () => {},
     error: () => {},
     debug: () => {},
+  }
+
+  const mockWorkspaceStatusRegistry = {
+    recordEvent: () => {},
+    getStatus: () => 'connected' as const,
+    awaitConnected: async () => ({ connected: true, elapsedMs: 0, source: 'cached' as const }),
+    primeFromSnapshot: () => {},
+  }
+
+  const mockPendingTeardowns = {
+    set: () => {},
+    get: () => undefined,
+    clear: () => {},
   }
 
   beforeEach(() => {
@@ -100,23 +114,11 @@ describe('execution in-flight guard', () => {
         ],
       })
 
-      const mockV2Client = {
+      const { client } = createFakeForgeClient({
         session: {
-          create: async () => ({ data: { id: 'new-sess-999' } }),
-          get: async () => ({ data: {} }),
-          promptAsync: async () => ({ error: null, data: null }),
-          abort: async () => ({}),
-          delete: async () => ({}),
-          messages: async () => ({ data: [] }),
-          status: async () => ({ data: {} }),
+          create: async () => ({ id: 'new-sess-999' }),
         },
-        experimental: {
-          workspace: { list: async () => ({ data: [] }), remove: async () => ({}) },
-          session: { list: async () => ({ data: [] }) },
-        },
-        tui: { publish: async () => ({}), selectSession: async () => ({}) },
-        worktree: { create: async () => ({ data: { directory: '/tmp/wt', branch: 'main' } }) },
-      }
+      })
 
       const loopService = createLoopService(
         loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger,
@@ -136,13 +138,21 @@ describe('execution in-flight guard', () => {
         config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
         logger: mockLogger,
         dataDir: '/tmp',
-        v2: mockV2Client as any,
         plansRepo,
         loopsRepo,
-        loop: loopService as any,
+        loop: {
+          service: loopService,
+          listActive: (...a: any[]) => loopService.listActive(...a as any),
+          listRecent: (...a: any[]) => loopService.listRecent(...a as any),
+          generateUniqueLoopName: (...a: any[]) => loopService.generateUniqueLoopName(...a as any),
+          findMatchByName: (...a: any[]) => loopService.findMatchByName(...a as any),
+        } as any,
         loopHandler: mockLoopHandler as any,
         sectionPlansRepo,
-      } as any)
+        workspaceStatusRegistry: mockWorkspaceStatusRegistry,
+        pendingTeardowns: mockPendingTeardowns,
+        client,
+      })
 
       markPromptInFlight('guard-loop', 'other-prompt-sess', 'code')
 
@@ -217,29 +227,17 @@ describe('execution in-flight guard', () => {
         ],
       })
 
-      const mockV2Client = {
+      const { client } = createFakeForgeClient({
         session: {
-          create: async () => ({ data: { id: 'new-sess-888' } }),
-          get: async () => ({ data: {} }),
+          create: async () => ({ id: 'new-sess-888' }),
           promptAsync: async () => {
             promptCallCount++
             if (promptCallCount <= 2) {
-              return { error: new Error('model unavailable'), data: undefined }
+              throw new Error('model unavailable')
             }
-            return { error: null, data: null }
           },
-          abort: async () => ({}),
-          delete: async () => ({}),
-          messages: async () => ({ data: [] }),
-          status: async () => ({ data: {} }),
         },
-        experimental: {
-          workspace: { list: async () => ({ data: [] }), remove: async () => ({}) },
-          session: { list: async () => ({ data: [] }) },
-        },
-        tui: { publish: async () => ({}), selectSession: async () => ({}) },
-        worktree: { create: async () => ({ data: { directory: '/tmp/wt', branch: 'main' } }) },
-      }
+      })
 
       const loopService = createLoopService(
         loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger,
@@ -259,13 +257,21 @@ describe('execution in-flight guard', () => {
         config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
         logger: mockLogger,
         dataDir: '/tmp',
-        v2: mockV2Client as any,
         plansRepo,
         loopsRepo,
-        loop: loopService as any,
+        loop: {
+          service: loopService,
+          listActive: (...a: any[]) => loopService.listActive(...a as any),
+          listRecent: (...a: any[]) => loopService.listRecent(...a as any),
+          generateUniqueLoopName: (...a: any[]) => loopService.generateUniqueLoopName(...a as any),
+          findMatchByName: (...a: any[]) => loopService.findMatchByName(...a as any),
+        } as any,
         loopHandler: mockLoopHandler as any,
         sectionPlansRepo,
-      } as any)
+        workspaceStatusRegistry: mockWorkspaceStatusRegistry,
+        pendingTeardowns: mockPendingTeardowns,
+        client,
+      })
 
       const result = await service.dispatch(
         { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
@@ -324,29 +330,17 @@ describe('execution in-flight guard', () => {
         ],
       })
 
-      const mockV2Client = {
+      const { client } = createFakeForgeClient({
         session: {
-          create: async () => ({ data: { id: 'new-sess-777' } }),
-          get: async () => ({ data: {} }),
+          create: async () => ({ id: 'new-sess-777' }),
           promptAsync: async () => {
             promptCallCount++
             if (promptCallCount === 1) {
-              return { error: new Error('model unavailable'), data: undefined }
+              throw new Error('model unavailable')
             }
-            return { error: null, data: null }
           },
-          abort: async () => ({}),
-          delete: async () => ({}),
-          messages: async () => ({ data: [] }),
-          status: async () => ({ data: {} }),
         },
-        experimental: {
-          workspace: { list: async () => ({ data: [] }), remove: async () => ({}) },
-          session: { list: async () => ({ data: [] }) },
-        },
-        tui: { publish: async () => ({}), selectSession: async () => ({}) },
-        worktree: { create: async () => ({ data: { directory: '/tmp/wt', branch: 'main' } }) },
-      }
+      })
 
       const loopService = createLoopService(
         loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger,
@@ -366,13 +360,21 @@ describe('execution in-flight guard', () => {
         config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
         logger: mockLogger,
         dataDir: '/tmp',
-        v2: mockV2Client as any,
         plansRepo,
         loopsRepo,
-        loop: loopService as any,
+        loop: {
+          service: loopService,
+          listActive: (...a: any[]) => loopService.listActive(...a as any),
+          listRecent: (...a: any[]) => loopService.listRecent(...a as any),
+          generateUniqueLoopName: (...a: any[]) => loopService.generateUniqueLoopName(...a as any),
+          findMatchByName: (...a: any[]) => loopService.findMatchByName(...a as any),
+        } as any,
         loopHandler: mockLoopHandler as any,
         sectionPlansRepo,
-      } as any)
+        workspaceStatusRegistry: mockWorkspaceStatusRegistry,
+        pendingTeardowns: mockPendingTeardowns,
+        client,
+      })
 
       const result = await service.dispatch(
         { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },

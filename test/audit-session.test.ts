@@ -1,33 +1,31 @@
-import { describe, test, expect, mock } from 'bun:test'
+import { describe, test, expect, vi } from 'vitest'
 import { createAuditSession, promptAuditSession } from '../src/utils/audit-session'
 import { buildAuditSessionPermissionRuleset } from '../src/constants/loop'
 import type { Logger } from '../src/types'
-
-interface MockV2Client {
-  session: {
-    create: ReturnType<typeof mock<(params: any) => Promise<{ data?: { id: string }; error?: unknown }>>>
-    promptAsync: ReturnType<typeof mock<(params: any) => Promise<{ data?: unknown; error?: unknown }>>>
-    delete: ReturnType<typeof mock<(params: any) => Promise<void>>>
-  }
-}
-
-function createMockV2Client(): MockV2Client {
-  return {
-    session: {
-      create: mock(() => Promise.resolve({ data: { id: 'sess_mock_123' } })),
-      promptAsync: mock(() => Promise.resolve({ data: {} })),
-      delete: mock(() => Promise.resolve()),
-    },
-  }
-}
+import { createFakeForgeClient } from './helpers/fake-client'
+import { ForgeClientError } from '../src/client/port'
 
 describe('createAuditSession', () => {
+  function createMockClient() {
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async (params: any) => ({ id: 'sess_mock_123' }),
+        promptAsync: async () => {},
+        delete: async () => {},
+      },
+      workspace: {
+        warp: async () => {},
+      },
+    })
+    return { client, sessionCreate: client.session.create, promptAsync: client.session.promptAsync }
+  }
+
   test('creates session with correct audit ruleset', async () => {
-    const mockV2 = createMockV2Client()
-    const logger = { log: mock(), error: mock() } as unknown as Logger
+    const { client, sessionCreate } = createMockClient()
+    const logger = { log: vi.fn(), error: vi.fn() } as unknown as Logger
 
     const result = await createAuditSession({
-      v2: mockV2 as any,
+      client,
       loopName: 'test-loop',
       iteration: 1,
       currentSectionIndex: 0,
@@ -39,20 +37,26 @@ describe('createAuditSession', () => {
     })
 
     expect(result).not.toBeNull()
-    expect(mockV2.session.create).toHaveBeenCalled()
-    const callArgs = (mockV2.session.create as any).mock.calls[0][0]
+    expect(sessionCreate).toHaveBeenCalled()
+    const callArgs = (sessionCreate as any).mock.calls[0][0]
     expect(callArgs.permission).toEqual(buildAuditSessionPermissionRuleset({ sandbox: true }))
     expect(callArgs.title).toBe('audit: test-loop #1')
     expect(callArgs).not.toHaveProperty('parentID')
   })
 
   test('returns null on session creation error', async () => {
-    const mockV2 = createMockV2Client()
-    mockV2.session.create = mock(() => Promise.resolve({ error: new Error('create failed') }))
-    const logger = { log: mock(), error: mock() } as unknown as Logger
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => { throw new ForgeClientError({ kind: 'request', method: 'session.create', message: 'create failed', cause: new Error('create failed') }) },
+      },
+      workspace: {
+        warp: async () => {},
+      },
+    })
+    const logger = { log: vi.fn(), error: vi.fn() } as unknown as Logger
 
     const result = await createAuditSession({
-      v2: mockV2 as any,
+      client,
       loopName: 'test-loop',
       iteration: 1,
       currentSectionIndex: 0,
@@ -67,11 +71,11 @@ describe('createAuditSession', () => {
   })
 
   test('uses non-sandbox ruleset when isSandbox is false', async () => {
-    const mockV2 = createMockV2Client()
-    const logger = { log: mock(), error: mock() } as unknown as Logger
+    const { client, sessionCreate } = createMockClient()
+    const logger = { log: vi.fn(), error: vi.fn() } as unknown as Logger
 
     await createAuditSession({
-      v2: mockV2 as any,
+      client,
       loopName: 'test-loop',
       iteration: 1,
       currentSectionIndex: 0,
@@ -82,16 +86,16 @@ describe('createAuditSession', () => {
       logger,
     })
 
-    const callArgs = (mockV2.session.create as any).mock.calls[0][0]
+    const callArgs = (sessionCreate as any).mock.calls[0][0]
     expect(callArgs.permission).toEqual(buildAuditSessionPermissionRuleset({ sandbox: false }))
   })
 
   test('creates audit session as top-level session even when previous code session exists', async () => {
-    const mockV2 = createMockV2Client()
-    const logger = { log: mock(), error: mock() } as unknown as Logger
+    const { client, sessionCreate } = createMockClient()
+    const logger = { log: vi.fn(), error: vi.fn() } as unknown as Logger
 
     await createAuditSession({
-      v2: mockV2 as any,
+      client,
       loopName: 'test-loop',
       iteration: 2,
       currentSectionIndex: 0,
@@ -103,17 +107,17 @@ describe('createAuditSession', () => {
       logger,
     })
 
-    const callArgs = (mockV2.session.create as any).mock.calls[0][0]
+    const callArgs = (sessionCreate as any).mock.calls[0][0]
     expect(callArgs.workspaceID).toBe('workspace-1')
     expect(callArgs).not.toHaveProperty('parentID')
   })
 
   test('formats title with section context for sectioned loops', async () => {
-    const mockV2 = createMockV2Client()
-    const logger = { log: mock(), error: mock() } as unknown as Logger
+    const { client, sessionCreate } = createMockClient()
+    const logger = { log: vi.fn(), error: vi.fn() } as unknown as Logger
 
     await createAuditSession({
-      v2: mockV2 as any,
+      client,
       loopName: 'test-loop',
       iteration: 3,
       currentSectionIndex: 1,
@@ -124,32 +128,43 @@ describe('createAuditSession', () => {
       logger,
     })
 
-    const callArgs = (mockV2.session.create as any).mock.calls[0][0]
+    const callArgs = (sessionCreate as any).mock.calls[0][0]
     expect(callArgs.title).toBe('audit: test-loop 2/4 #3')
   })
 })
 
 describe('promptAuditSession', () => {
-  test('returns ok:true on success', async () => {
-    const mockV2 = createMockV2Client()
-    mockV2.session.promptAsync = mock(() => Promise.resolve({ data: {} }))
+  function makeClient() {
+    const { client } = createFakeForgeClient({
+      session: {
+        promptAsync: async () => {},
+      },
+    })
+    return { client, promptAsync: client.session.promptAsync }
+  }
 
-    const result = await promptAuditSession(mockV2 as any, {
+  test('returns ok:true on success', async () => {
+    const { client, promptAsync } = makeClient()
+
+    const result = await promptAuditSession(client, {
       sessionId: 'sess_audit_123',
       worktreeDir: '/tmp/test',
       prompt: 'test prompt',
     })
 
     expect(result).toEqual({ ok: true })
-    expect(mockV2.session.promptAsync).toHaveBeenCalled()
+    expect(promptAsync).toHaveBeenCalled()
   })
 
   test('returns ok:false on error', async () => {
-    const mockV2 = createMockV2Client()
     const testError = new Error('prompt failed')
-    mockV2.session.promptAsync = mock(() => Promise.resolve({ error: testError }))
+    const { client } = createFakeForgeClient({
+      session: {
+        promptAsync: async () => { throw testError },
+      },
+    })
 
-    const result = await promptAuditSession(mockV2 as any, {
+    const result = await promptAuditSession(client, {
       sessionId: 'sess_audit_123',
       worktreeDir: '/tmp/test',
       prompt: 'test prompt',
@@ -159,17 +174,16 @@ describe('promptAuditSession', () => {
   })
 
   test('passes auditorModel when provided', async () => {
-    const mockV2 = createMockV2Client()
-    mockV2.session.promptAsync = mock(() => Promise.resolve({ data: {} }))
+    const { client, promptAsync } = makeClient()
 
-    await promptAuditSession(mockV2 as any, {
+    await promptAuditSession(client, {
       sessionId: 'sess_audit_123',
       worktreeDir: '/tmp/test',
       prompt: 'test prompt',
       auditorModel: { providerID: 'openai', modelID: 'gpt-4' },
     })
 
-    const callArgs = (mockV2.session.promptAsync as any).mock.calls[0][0]
+    const callArgs = (promptAsync as any).mock.calls[0][0]
     expect(callArgs.model).toEqual({ providerID: 'openai', modelID: 'gpt-4' })
     expect(callArgs.agent).toBe('auditor-loop')
   })

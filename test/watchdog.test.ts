@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'bun:test'
+import { describe, it, expect } from 'vitest'
 import { createLoopWatchdog } from '../src/hooks/watchdog'
 import type { LoopState } from '../src/loop/state'
+import { createFakeForgeClient } from './helpers/fake-client'
 
 function createState(overrides?: Partial<LoopState>): LoopState {
   return {
@@ -53,6 +54,10 @@ function createMockLoopService(overrides?: {
   }
 }
 
+function createMockClient(statusImpl: () => Promise<any>) {
+  return createFakeForgeClient({ session: { status: statusImpl } }).client
+}
+
 describe('createLoopWatchdog', () => {
   it('resets while current session remains busy', async () => {
     const stateRef = { current: createState() }
@@ -66,13 +71,7 @@ describe('createLoopWatchdog', () => {
           getActiveState: () => stateRef.current,
         }),
       },
-      v2Client: {
-        session: {
-          status: async () => ({
-            data: { 'coding-session': { type: 'busy', message: 'working' } },
-          }),
-        },
-      },
+      client: createMockClient(async () => ({ 'coding-session': { type: 'busy', message: 'working' } })),
       logger,
       recover: async (ln, _s, ctx) => {
         recoverCalls.push(ctx)
@@ -106,16 +105,10 @@ describe('createLoopWatchdog', () => {
           getActiveState: () => stateRef.current,
         }),
       },
-      v2Client: {
-        session: {
-          status: async () => ({
-            data: {
-              'coding-session': { type: 'idle' },
-              'audit-session': { type: 'busy' },
-            },
-          }),
-        },
-      },
+      client: createMockClient(async () => ({
+        'coding-session': { type: 'idle' },
+        'audit-session': { type: 'busy' },
+      })),
       logger,
       recover: async (ln, _s, ctx) => {
         recoverCalls.push(ctx)
@@ -152,16 +145,10 @@ describe('createLoopWatchdog', () => {
             sessionId === 'coding-session' ? 'test-loop' : null,
         }),
       },
-      v2Client: {
-        session: {
-          status: async () => ({
-            data: {
-              'coding-session': { type: 'idle' },
-              'unrelated-session': { type: 'busy' },
-            },
-          }),
-        },
-      },
+      client: createMockClient(async () => ({
+        'coding-session': { type: 'idle' },
+        'unrelated-session': { type: 'busy' },
+      })),
       logger,
       recover: async (ln, _s, ctx) => {
         recoverCalls.push(ctx)
@@ -195,13 +182,7 @@ describe('createLoopWatchdog', () => {
           getActiveState: () => stateRef.current,
         }),
       },
-      v2Client: {
-        session: {
-          status: async () => ({
-            data: { 'coding-session': { type: 'retry', message: 'retrying request' } },
-          }),
-        },
-      },
+      client: createMockClient(async () => ({ 'coding-session': { type: 'retry', message: 'retrying request', attempt: 1, next: 1000 } })),
       logger,
       recover: async (ln, _s, ctx) => {
         recoverCalls.push(ctx)
@@ -238,13 +219,9 @@ describe('createLoopWatchdog', () => {
           getActiveState: () => stateRef.current,
         }),
       },
-      v2Client: {
-        session: {
-          status: async () => {
-            throw new Error('status api down')
-          },
-        },
-      },
+      client: createMockClient(async () => {
+        throw new Error('status api down')
+      }),
       logger,
       statusRetryAttempts: 1,
       statusRetryBackoffMs: 1,
@@ -287,13 +264,9 @@ describe('createLoopWatchdog', () => {
           getActiveState: () => stateRef.current,
         }),
       },
-      v2Client: {
-        session: {
-          status: async () => {
-            throw ''
-          },
-        },
-      },
+      client: createMockClient(async () => {
+        throw ''
+      }),
       logger,
       statusRetryAttempts: 1,
       statusRetryBackoffMs: 1,
@@ -327,13 +300,7 @@ describe('createLoopWatchdog', () => {
           getActiveState: () => stateRef.current,
         }),
       },
-      v2Client: {
-        session: {
-          status: async () => ({
-            data: { 'coding-session': { type: 'idle' } },
-          }),
-        },
-      },
+      client: createMockClient(async () => ({ 'coding-session': { type: 'idle' } })),
       logger,
       recover: async (ln, _s, ctx) => {
         recoverCalls.push(ctx)

@@ -16,6 +16,7 @@ import type { SectionPlansRepo } from '../../src/storage/repos/section-plans-rep
 import type { LoopService } from '../../src/loop/service'
 const Database = require('better-sqlite3')
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { createFakeForgeClient } from '../helpers/fake-client'
 type Database = ReturnType<typeof Database>
 
 const mockLogger: Logger = {
@@ -173,23 +174,19 @@ describe('handleLoopRestart from stall_timeout', () => {
       generateUniqueLoopName: () => 'stall-loop',
     }
 
-    const mockV2Client = {
+    const { client } = createFakeForgeClient({
       session: {
-        create: async () => ({ data: { id: 'new-session-123' } }),
-        get: async () => ({ data: {} }),
-        promptAsync: async () => ({}),
-        abort: async () => ({}),
-        delete: async () => ({}),
-        messages: async () => ({ data: [] }),
-        status: async () => ({ data: {} }),
+        create: async () => ({ id: 'new-session-123' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
       },
-      experimental: {
-        workspace: { list: async () => ({ data: [] }), remove: async () => ({}) },
-        session: { list: async () => ({ data: [] }) },
-      },
-      tui: { publish: async () => ({}), selectSession: async () => ({}) },
-      worktree: { create: async () => ({ data: { directory: '/tmp/wt', branch: 'main' } }) },
-    }
+      workspace: { list: async () => [], remove: async () => {} },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+    })
 
     const mockLoopHandler = {
       runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
@@ -209,13 +206,20 @@ describe('handleLoopRestart from stall_timeout', () => {
       },
       logger: mockLogger,
       dataDir: '/tmp',
-      v2: mockV2Client as any,
+
       plansRepo,
       loopsRepo,
-      loop: mockLoopService as any,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+        } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
       pendingTeardowns: mockPendingTeardowns as any,
     })
 
@@ -285,23 +289,19 @@ describe('handleLoopRestart from stall_timeout', () => {
       generateUniqueLoopName: () => 'iter-loop',
     }
 
-    const mockV2Client = {
+    const { client } = createFakeForgeClient({
       session: {
-        create: async () => ({ data: { id: 'new-sess-456' } }),
-        get: async () => ({ data: {} }),
-        promptAsync: async () => ({}),
-        abort: async () => ({}),
-        delete: async () => ({}),
-        messages: async () => ({ data: [] }),
-        status: async () => ({ data: {} }),
+        create: async () => ({ id: 'new-sess-456' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
       },
-      experimental: {
-        workspace: { list: async () => ({ data: [] }), remove: async () => ({}) },
-        session: { list: async () => ({ data: [] }) },
-      },
-      tui: { publish: async () => ({}), selectSession: async () => ({}) },
-      worktree: { create: async () => ({ data: { directory: '/tmp/wt', branch: 'main' } }) },
-    }
+      workspace: { list: async () => [], remove: async () => {} },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+    })
 
     const mockLoopHandler = {
       runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
@@ -321,13 +321,20 @@ describe('handleLoopRestart from stall_timeout', () => {
       },
       logger: mockLogger,
       dataDir: '/tmp',
-      v2: mockV2Client as any,
+
       plansRepo,
       loopsRepo,
-      loop: mockLoopService as any,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+        } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
       pendingTeardowns: mockPendingTeardowns as any,
     })
 
@@ -375,32 +382,26 @@ describe('handleLoopRestart from stall_timeout', () => {
       generateUniqueLoopName: () => 'worktree-loop',
     }
 
-    const workspaceCreate = vi.fn().mockResolvedValue({
-      data: { id: 'ws_new', directory: '/tmp', branch: 'forge/worktree-loop' },
-    })
-    const mockV2Client = {
+    const { client } = createFakeForgeClient({
       session: {
-        create: async () => ({ data: { id: 'new-sess-worktree' } }),
-        get: async () => ({ data: {} }),
-        promptAsync: async () => ({}),
-        abort: async () => ({}),
-        delete: async () => ({}),
-        messages: async () => ({ data: [] }),
-        status: async () => ({ data: {} }),
+        create: async () => ({ id: 'new-sess-worktree' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
       },
-      experimental: {
-        workspace: {
-          list: async () => ({ data: [] }),
-          remove: async () => ({}),
-          create: workspaceCreate,
-          warp: async () => ({}),
-          syncList: async () => ({}),
-        },
-        session: { list: async () => ({ data: [] }) },
+      workspace: {
+        create: async () => ({ id: 'ws_new', directory: '/tmp', branch: 'forge/worktree-loop' }),
+        list: async () => [],
+        remove: async () => {},
+        warp: async () => {},
+        syncList: async () => {},
       },
-      tui: { publish: async () => ({}), selectSession: async () => ({}) },
-      sync: { start: async () => ({}) },
-    }
+      tui: { publish: async () => {}, selectSession: async () => {} },
+      sync: { start: async () => {} },
+    })
 
     const mockLoopHandler = {
       runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
@@ -415,13 +416,20 @@ describe('handleLoopRestart from stall_timeout', () => {
       config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' },
       logger: mockLogger,
       dataDir: '/tmp',
-      v2: mockV2Client as any,
+
       plansRepo,
       loopsRepo,
-      loop: mockLoopService as any,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+        } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
       pendingTeardowns: mockPendingTeardowns as any,
     })
 
@@ -431,7 +439,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     )
 
     expect(result.ok).toBe(true)
-    expect(workspaceCreate).toHaveBeenCalledWith({
+    expect(client.workspace.create).toHaveBeenCalledWith({
       type: 'forge',
       branch: null,
       extra: {
@@ -489,23 +497,19 @@ describe('handleLoopRestart from stall_timeout', () => {
       generateUniqueLoopName: () => 'final-audit-loop',
     }
 
-    const mockV2Client = {
+    const { client } = createFakeForgeClient({
       session: {
-        create: async () => ({ data: { id: 'new-sess-789' } }),
-        get: async () => ({ data: {} }),
-        promptAsync: async () => ({}),
-        abort: async () => ({}),
-        delete: async () => ({}),
-        messages: async () => ({ data: [] }),
-        status: async () => ({ data: {} }),
+        create: async () => ({ id: 'new-sess-789' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
       },
-      experimental: {
-        workspace: { list: async () => ({ data: [] }), remove: async () => ({}) },
-        session: { list: async () => ({ data: [] }) },
-      },
-      tui: { publish: async () => ({}), selectSession: async () => ({}) },
-      worktree: { create: async () => ({ data: { directory: '/tmp/wt', branch: 'main' } }) },
-    }
+      workspace: { list: async () => [], remove: async () => {} },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+    })
 
     const mockLoopHandler = {
       runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
@@ -525,13 +529,20 @@ describe('handleLoopRestart from stall_timeout', () => {
       },
       logger: mockLogger,
       dataDir: '/tmp',
-      v2: mockV2Client as any,
+
       plansRepo,
       loopsRepo,
-      loop: mockLoopService as any,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+        } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
       pendingTeardowns: mockPendingTeardowns as any,
     })
 
@@ -553,6 +564,107 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect(buildSectionInitialPromptSpy).not.toHaveBeenCalled()
   })
 
+  test('restart from stall_timeout re-enters post_action when persisted phase is post_action and postAction is configured', async () => {
+    insertLoop({
+      loopName: 'post-action-loop',
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      currentSectionIndex: 0,
+      iteration: 3,
+      totalSections: 0,
+      phase: 'post_action',
+    })
+
+    const noopFn = () => {}
+    const buildPostActionPromptSpy = vi.fn()
+    const buildSectionInitialPromptSpy = vi.fn()
+    const buildFinalAuditPromptSpy = vi.fn()
+
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: noopFn,
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: noopFn,
+      buildPostActionPrompt: buildPostActionPromptSpy,
+      buildSectionInitialPrompt: buildSectionInitialPromptSpy,
+      buildFinalAuditPrompt: buildFinalAuditPromptSpy,
+      generateUniqueLoopName: () => 'post-action-loop',
+    }
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-sess-pa-001' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: { list: async () => [], remove: async () => {} },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+    })
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true, postAction: { enabled: true, skill: 'pr-review' } },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+
+      plansRepo,
+      loopsRepo,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+        } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
+      pendingTeardowns: mockPendingTeardowns as any,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'post-action-loop' },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const newState = loopService.getActiveState('post-action-loop')!
+    expect(newState.phase).toBe('post_action')
+    expect(newState.iteration).toBe(1)
+
+    expect(buildPostActionPromptSpy).toHaveBeenCalledTimes(1)
+    expect(buildPostActionPromptSpy).toHaveBeenCalledWith(expect.any(Object), { skill: 'pr-review', prompt: undefined })
+    expect(buildSectionInitialPromptSpy).not.toHaveBeenCalled()
+    expect(buildFinalAuditPromptSpy).not.toHaveBeenCalled()
+  })
+
   test('restart commits new current_session_id BEFORE runExclusive releases (no stale-event race)', async () => {
     insertLoop({
       loopName: 'race-loop',
@@ -565,23 +677,19 @@ describe('handleLoopRestart from stall_timeout', () => {
 
     const noopFn = () => {}
 
-    const mockV2Client = {
+    const { client } = createFakeForgeClient({
       session: {
-        create: async () => ({ data: { id: 'race-new-session' } }),
-        get: async () => ({ data: {} }),
-        promptAsync: async () => ({}),
-        abort: async () => ({}),
-        delete: async () => ({}),
-        messages: async () => ({ data: [] }),
-        status: async () => ({ data: {} }),
+        create: async () => ({ id: 'race-new-session' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
       },
-      experimental: {
-        workspace: { list: async () => ({ data: [] }), remove: async () => ({}) },
-        session: { list: async () => ({ data: [] }) },
-      },
-      tui: { publish: async () => ({}), selectSession: async () => ({}) },
-      worktree: { create: async () => ({ data: { directory: '/tmp/wt', branch: 'main' } }) },
-    }
+      workspace: { list: async () => [], remove: async () => {} },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+    })
 
     const mockLoopService: Partial<LoopService> = {
       listActive: () => loopService.listActive(),
@@ -627,13 +735,20 @@ describe('handleLoopRestart from stall_timeout', () => {
       },
       logger: mockLogger,
       dataDir: '/tmp',
-      v2: mockV2Client as any,
+
       plansRepo,
       loopsRepo,
-      loop: mockLoopService as any,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+        } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
       pendingTeardowns: mockPendingTeardowns as any,
     })
 
@@ -667,36 +782,19 @@ describe('handleLoopRestart from stall_timeout', () => {
 
     const noopFn = () => {}
 
-    const createCalls: Array<Record<string, unknown>> = []
-    const promptAsyncCalls: Array<Record<string, unknown>> = []
-    const abortCalls: Array<Record<string, unknown>> = []
-
-    const mockV2Client = {
+    const { client } = createFakeForgeClient({
       session: {
-        create: async (args: Record<string, unknown>) => {
-          createCalls.push(args)
-          return { data: { id: 'new-code-session' } }
-        },
-        get: async () => ({ data: {} }),
-        promptAsync: async (args: Record<string, unknown>) => {
-          promptAsyncCalls.push(args)
-          return {}
-        },
-        abort: async (args: Record<string, unknown>) => {
-          abortCalls.push(args)
-          return {}
-        },
-        delete: async () => ({}),
-        messages: async () => ({ data: [] }),
-        status: async () => ({ data: {} }),
+        create: async () => ({ id: 'new-code-session' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
       },
-      experimental: {
-        workspace: { list: async () => ({ data: [] }), remove: async () => ({}) },
-        session: { list: async () => ({ data: [] }) },
-      },
-      tui: { publish: async () => ({}), selectSession: async () => ({}) },
-      worktree: { create: async () => ({ data: { directory: '/tmp/wt', branch: 'main' } }) },
-    }
+      workspace: { list: async () => [], remove: async () => {} },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+    })
 
     let capturedResolvedNew: string | null | undefined
     let capturedResolvedOld: string | null | undefined
@@ -740,13 +838,20 @@ describe('handleLoopRestart from stall_timeout', () => {
       },
       logger: mockLogger,
       dataDir: '/tmp',
-      v2: mockV2Client as any,
+
       plansRepo,
       loopsRepo,
-      loop: mockLoopService as any,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+        } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
       pendingTeardowns: mockPendingTeardowns as any,
     })
 
@@ -762,12 +867,12 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect(result.ok).toBe(true)
 
     // Exactly one session create and one prompt dispatch
-    expect(createCalls.length).toBe(1)
-    expect(promptAsyncCalls.length).toBe(1)
+    expect((client.session.create as any).mock.calls).toHaveLength(1)
+    expect((client.session.promptAsync as any).mock.calls).toHaveLength(1)
 
     // Prompt sent with code agent to new session
-    expect(promptAsyncCalls[0].agent).toBe('code')
-    expect(promptAsyncCalls[0].sessionID).toBe('new-code-session')
+    expect((client.session.promptAsync as any).mock.calls[0][0].agent).toBe('code')
+    expect((client.session.promptAsync as any).mock.calls[0][0].sessionID).toBe('new-code-session')
 
     // At the moment runExclusive released, new session is registered and old is gone
     expect(capturedResolvedNew).toBe('audit-restart-loop')
@@ -775,8 +880,8 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect(capturedPhase).toBe('coding')
 
     // Exactly one abort for the old session
-    expect(abortCalls.length).toBe(1)
-    expect(abortCalls[0].sessionID).toBe('session-old')
+    expect((client.session.abort as any).mock.calls).toHaveLength(1)
+    expect((client.session.abort as any).mock.calls[0][0].sessionID).toBe('session-old')
   })
 })
 
@@ -895,34 +1000,25 @@ describe('handleLoopRestart restartability rules', () => {
       generateUniqueLoopName: (name) => name,
     }
 
-    const sessionCreateSpy = vi.fn().mockResolvedValue({ data: { id: 'new-session-restart' } })
-    const sessionPromptAsyncSpy = vi.fn().mockResolvedValue({})
-    const workspaceCreateSpy = vi.fn().mockResolvedValue({ data: { id: 'ws-new', directory: '/tmp', branch: 'main' } })
-    const tuiSelectSessionSpy = vi.fn().mockResolvedValue({})
-
-    const mockV2Client = {
+    const { client } = createFakeForgeClient({
       session: {
-        create: sessionCreateSpy,
-        get: async () => ({ data: {} }),
-        promptAsync: sessionPromptAsyncSpy,
-        abort: async () => ({}),
-        delete: async () => ({}),
-        messages: async () => ({ data: [] }),
-        status: async () => ({ data: {} }),
+        create: async () => ({ id: 'new-session-restart' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
       },
-      experimental: {
-        workspace: {
-          list: async () => ({ data: [] }),
-          remove: async () => ({}),
-          create: workspaceCreateSpy,
-          warp: async () => ({}),
-          syncList: async () => ({}),
-        },
-        session: { list: async () => ({ data: [] }) },
+      workspace: {
+        create: async () => ({ id: 'ws-new', directory: '/tmp', branch: 'main' }),
+        list: async () => [],
+        remove: async () => {},
+        warp: async () => {},
+        syncList: async () => {},
       },
-      tui: { publish: async () => ({}), selectSession: tuiSelectSessionSpy },
-      worktree: { create: async () => ({ data: { directory: '/tmp/wt', branch: 'main' } }) },
-    }
+      tui: { publish: async () => {}, selectSession: async () => {} },
+    })
 
     const mockLoopHandler = {
       runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
@@ -951,23 +1047,27 @@ describe('handleLoopRestart restartability rules', () => {
       },
       logger: mockLogger,
       dataDir: '/tmp',
-      v2: mockV2Client as any,
+
       plansRepo,
       loopsRepo,
-      loop: mockLoopService as any,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+        } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
       workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
       pendingTeardowns: mockPendingTeardowns as any,
+      client,
       sandboxManager: opts?.sandboxManager as any,
     })
 
     return {
       service,
-      sessionCreateSpy,
-      sessionPromptAsyncSpy,
-      workspaceCreateSpy,
-      tuiSelectSessionSpy,
+      client,
     }
   }
 
@@ -1021,7 +1121,7 @@ describe('handleLoopRestart restartability rules', () => {
       phase: 'coding',
     })
 
-    const { service, sessionCreateSpy, sessionPromptAsyncSpy } = await createMockService()
+    const { service, client } = await createMockService()
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
       {
@@ -1034,8 +1134,8 @@ describe('handleLoopRestart restartability rules', () => {
     if (result.ok) return
     expect(result.error.message).toContain('completed successfully and cannot be restarted')
 
-    expect(sessionCreateSpy).not.toHaveBeenCalled()
-    expect(sessionPromptAsyncSpy).not.toHaveBeenCalled()
+    expect(client.session.create).not.toHaveBeenCalled()
+    expect(client.session.promptAsync).not.toHaveBeenCalled()
 
     const newState = loopService.getActiveState('completed-loop')
     expect(newState).toBeNull()
@@ -1049,7 +1149,7 @@ describe('handleLoopRestart restartability rules', () => {
       phase: 'coding',
     })
 
-    const { service, sessionCreateSpy, sessionPromptAsyncSpy } = await createMockService()
+    const { service, client } = await createMockService()
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
       {
@@ -1062,8 +1162,8 @@ describe('handleLoopRestart restartability rules', () => {
     if (result.ok) return
     expect(result.error.message).toContain('completed successfully and cannot be restarted')
 
-    expect(sessionCreateSpy).not.toHaveBeenCalled()
-    expect(sessionPromptAsyncSpy).not.toHaveBeenCalled()
+    expect(client.session.create).not.toHaveBeenCalled()
+    expect(client.session.promptAsync).not.toHaveBeenCalled()
 
     const newState = loopService.getActiveState('completed-loop-null-reason')
     expect(newState).toBeNull()
@@ -1080,7 +1180,7 @@ describe('handleLoopRestart restartability rules', () => {
       phase: 'coding',
     })
 
-    const { service, sessionCreateSpy, sessionPromptAsyncSpy, workspaceCreateSpy } = await createMockService()
+    const { service, client } = await createMockService()
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
       {
@@ -1093,9 +1193,9 @@ describe('handleLoopRestart restartability rules', () => {
     if (result.ok) return
     expect(result.error.message).toContain('worktree directory no longer exists')
 
-    expect(sessionCreateSpy).not.toHaveBeenCalled()
-    expect(sessionPromptAsyncSpy).not.toHaveBeenCalled()
-    expect(workspaceCreateSpy).not.toHaveBeenCalled()
+    expect(client.session.create).not.toHaveBeenCalled()
+    expect(client.session.promptAsync).not.toHaveBeenCalled()
+    expect(client.workspace.create).not.toHaveBeenCalled()
 
     const newState = loopService.getActiveState('missing-worktree-loop')
     expect(newState).toBeNull()
@@ -1121,7 +1221,7 @@ describe('handleLoopRestart restartability rules', () => {
       phase: 'coding',
     })
 
-    const { service, sessionCreateSpy, workspaceCreateSpy, tuiSelectSessionSpy } = await createMockService()
+    const { service, client } = await createMockService()
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: repoDir },
       {
@@ -1134,11 +1234,11 @@ describe('handleLoopRestart restartability rules', () => {
     if (!result.ok) return
 
     // Restart proceeded: a fresh worktree workspace was requested and a new code session created.
-    expect(workspaceCreateSpy).toHaveBeenCalled()
-    expect(sessionCreateSpy).toHaveBeenCalled()
+    expect(client.workspace.create).toHaveBeenCalled()
+    expect(client.session.create).toHaveBeenCalled()
 
     // TUI was navigated to the recreated workspace+session so it connects/focuses.
-    expect(tuiSelectSessionSpy).toHaveBeenCalledWith(
+    expect(client.tui.selectSession).toHaveBeenCalledWith(
       expect.objectContaining({ workspace: 'ws-new' }),
     )
 
@@ -1171,7 +1271,7 @@ describe('handleLoopRestart restartability rules', () => {
       docker: { containerName: () => 'forge-sandbox' },
     }
 
-    const { service, workspaceCreateSpy } = await createMockService({ sandboxManager })
+    const { service, client } = await createMockService({ sandboxManager })
     const result = await service.dispatch(
       { surface: 'api', projectId: PROJECT_ID, directory: repoDir },
       {
@@ -1187,9 +1287,9 @@ describe('handleLoopRestart restartability rules', () => {
     expect(sandboxStartSpy).toHaveBeenCalledWith(loopName, '/tmp')
 
     // And only after the worktree workspace was recreated.
-    expect(workspaceCreateSpy).toHaveBeenCalled()
+    expect(client.workspace.create).toHaveBeenCalled()
     expect(Math.min(...sandboxStartSpy.mock.invocationCallOrder))
-      .toBeGreaterThan(Math.min(...workspaceCreateSpy.mock.invocationCallOrder))
+      .toBeGreaterThan(Math.min(...(client.workspace.create as any).mock.invocationCallOrder))
   })
 
   test('retries a transient "Session not found" on restart prompt instead of rolling back', async () => {
@@ -1202,16 +1302,16 @@ describe('handleLoopRestart restartability rules', () => {
       phase: 'coding',
     })
 
-    const { service, sessionPromptAsyncSpy } = await createMockService()
+    const { service, client } = await createMockService()
     // First outer attempt (2 model tries + 1 fallback) fails with a transient
     // not-found; the next attempt after backoff succeeds.
     let calls = 0
-    sessionPromptAsyncSpy.mockImplementation(async () => {
+    ;(client.session.promptAsync as any).mockImplementation(async () => {
       calls += 1
       if (calls <= 3) {
-        return { error: { name: 'NotFoundError', data: { message: `Session not found: ses_x` } } }
+        throw { name: 'NotFoundError', data: { message: `Session not found: ses_x` } }
       }
-      return {}
+      // success - return undefined
     })
 
     const result = await service.dispatch(
@@ -1241,9 +1341,9 @@ describe('handleLoopRestart restartability rules', () => {
       phase: 'coding',
     })
 
-    const { service, sessionPromptAsyncSpy } = await createMockService()
-    sessionPromptAsyncSpy.mockResolvedValue({
-      error: { name: 'NotFoundError', data: { message: 'Session not found: ses_x' } },
+    const { service, client } = await createMockService()
+    ;(client.session.promptAsync as any).mockImplementation(async () => {
+      throw { name: 'NotFoundError', data: { message: 'Session not found: ses_x' } }
     })
 
     const result = await service.dispatch(

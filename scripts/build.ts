@@ -1,7 +1,8 @@
-import { readFileSync, writeFileSync, cpSync, mkdirSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, cpSync, mkdirSync, existsSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
 import solidPlugin from '@opentui/solid/bun-plugin'
+import { buildDashboardApp } from './build-dashboard-app'
 
 const packageJsonPath = join(__dirname, '..', 'package.json')
 const versionPath = join(__dirname, '..', 'src', 'version.ts')
@@ -25,6 +26,10 @@ export const MARKED_SOURCE: string = ${markedEscaped};
 `
 writeFileSync(markedSourcePath, markedSourceContent, 'utf-8')
 console.log('Dashboard marked-source generated.')
+
+console.log('Generating dashboard app bundle...')
+await buildDashboardApp()
+console.log('Dashboard app bundle generated.')
 
 console.log('Compiling main code...')
 execSync('tsc -p tsconfig.build.json', {
@@ -55,12 +60,6 @@ export default plugin;
 `
 writeFileSync(join(__dirname, '..', 'dist', 'tui.d.ts'), tuiDtsContent, 'utf-8')
 
-console.log('Copying template files...')
-const srcTemplateDir = join(__dirname, '..', 'src', 'command', 'template')
-const distTemplateDir = join(__dirname, '..', 'dist', 'command', 'template')
-mkdirSync(distTemplateDir, { recursive: true })
-cpSync(srcTemplateDir, distTemplateDir, { recursive: true })
-
 console.log('Copying migration SQL files...')
 const srcMigrationsDir = join(__dirname, '..', 'src', 'storage', 'migrations')
 const distMigrationsDir = join(__dirname, '..', 'dist', 'storage', 'migrations')
@@ -69,7 +68,6 @@ cpSync(srcMigrationsDir, distMigrationsDir, {
   recursive: true,
   filter: (src) => !src.endsWith('.ts') && !src.endsWith('.md')
 })
-
 console.log('Copying bundled skills...')
 const srcSkillsDir = join(__dirname, '..', 'skills')
 const distSkillsDir = join(__dirname, '..', 'dist', 'skills')
@@ -78,7 +76,35 @@ if (existsSync(srcSkillsDir)) {
   cpSync(srcSkillsDir, distSkillsDir, { recursive: true })
 }
 
+console.log('Copying bundled prompts...')
+const srcPromptsDir = join(__dirname, '..', 'src', 'prompts')
+const distPromptsDir = join(__dirname, '..', 'dist', 'prompts')
+if (existsSync(srcPromptsDir)) {
+  mkdirSync(distPromptsDir, { recursive: true })
+  cpSync(srcPromptsDir, distPromptsDir, { recursive: true, force: true, filter: (src) => !src.endsWith('.ts') })
+}
 
+console.log('Bundling installer CLI...')
+const installerResult = await Bun.build({
+  entrypoints: [join(__dirname, '..', 'src', 'install', 'cli.ts')],
+  outdir: join(__dirname, '..', 'dist', 'install'),
+  target: 'node',
+  format: 'esm',
+})
+if (!installerResult.success) {
+  for (const log of installerResult.logs) {
+    console.error(log)
+  }
+  process.exit(1)
+}
+// Bundle into a single self-contained file so the `bin` runs under both node
+// (npx) and bun (bunx); prepend a node shebang and mark it executable.
+const installerCliPath = join(__dirname, '..', 'dist', 'install', 'cli.js')
+const bundledCli = readFileSync(installerCliPath, 'utf-8')
+if (!bundledCli.startsWith('#!')) {
+  writeFileSync(installerCliPath, `#!/usr/bin/env node\n${bundledCli}`)
+}
+chmodSync(installerCliPath, 0o755)
 
 console.log('Copying bash prompt template...')
 const bashPromptDist = join(__dirname, '..', 'dist', 'tools', 'bash')

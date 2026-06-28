@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test'
+import { describe, test, expect } from 'vitest'
 import { mkdtempSync, readFileSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -25,11 +25,12 @@ describe('tail', () => {
 })
 
 describe('writeOverflow', () => {
-  test('writes file under <dataDir>/bash-output/', () => {
+  test('writes file in the given directory', () => {
     const dir = mkdtempSync(join(tmpdir(), 'forge-sh-out-'))
     const file = writeOverflow(dir, 'call-1', 'hello')
     expect(existsSync(file)).toBe(true)
-    expect(file).toContain('bash-output')
+    expect(file).toContain(dir)
     expect(readFileSync(file, 'utf-8')).toBe('hello')
+    expect(file).toMatch(/call-1-\d+\.txt$/)
   })
 })

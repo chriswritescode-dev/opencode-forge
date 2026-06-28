@@ -49,4 +49,12 @@ describe('shouldFollowNewSession', () => {
     })
     expect(decision).toBe(false)
   })
+
+  test('skips when the new session is a subagent/child (has parentID)', () => {
+    const decision = shouldFollowNewSession({
+      newSession: { id: 'subagent', workspaceID: 'ws-forge-1', parentID: 'old' },
+      currentSession: { id: 'old', workspaceID: 'ws-forge-1' },
+    })
+    expect(decision).toBe(false)
+  })
 })

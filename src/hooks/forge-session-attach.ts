@@ -1,14 +1,14 @@
-import type { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2'
 import type { Logger } from '../types'
+import type { ForgeClient } from '../client/port'
 import type { ForgeExecutionServiceDeps, PlanSource } from '../services/execution'
 import { attachLoopToSession } from '../services/execution'
-import { resolveSandboxContextForLoop } from '../sandbox/context'
+import { resolveSandboxContextForLoop, isSandboxEnabled } from '../sandbox/context'
 import { classifyForgeWorkspace, isPendingAttachWorkspace } from '../workspace/classify-stale'
 import { removeForgeWorkspaceWithContext } from '../workspace/remove-with-context'
 import { getForgeWorkspaceLoopName } from '../workspace/forge-worktree'
 
 export interface ForgeSessionAttachHookDeps {
-  v2: ReturnType<typeof createV2Client>
+  client: ForgeClient
   execDeps: ForgeExecutionServiceDeps
   projectId: string
   directory: string
@@ -50,8 +50,10 @@ export function createForgeSessionMessageAttachHook(deps: ForgeSessionAttachHook
     const sessionId = input.sessionID
     if (!sessionId) return
 
-    const sessionResult = await deps.v2.session?.get?.({ sessionID: sessionId }).catch(() => null)
-    const sessionInfo = (sessionResult?.data ?? null) as Record<string, unknown> | null
+    const sessionInfo = await deps.client.session.get({ sessionID: sessionId }).then(
+      (data) => data as Record<string, unknown> | null,
+      () => null,
+    )
     const workspaceId = sessionInfo?.workspaceID as string | undefined
     if (!workspaceId) return
 
@@ -165,7 +167,7 @@ async function attachForgeSession(
       if (!cfg) {
         if (action.action === 'remove-fully') {
           await removeForgeWorkspaceWithContext(
-            { v2: deps.v2, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
+            { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
             { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-missing-row-no-config' },
           )
           publishAttachFailureToast(
@@ -182,7 +184,7 @@ async function attachForgeSession(
       }
       if (action.action === 'remove-fully' && cfg.initialPromptOwner === 'tui' && !isPendingAttachWorkspace(classifyEntry)) {
         await removeForgeWorkspaceWithContext(
-          { v2: deps.v2, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
+          { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
           { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-expired-pending' },
         )
         publishAttachFailureToast(
@@ -202,7 +204,7 @@ async function attachForgeSession(
     } else if (action.action === 'remove-fully' && action.reason === 'completed') {
       // Completed loop: remove workspace + toast
       await removeForgeWorkspaceWithContext(
-        { v2: deps.v2, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
+        { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
         { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-safety-net-completed' },
       )
       publishAttachFailureToast(
@@ -215,7 +217,7 @@ async function attachForgeSession(
     } else if (action.action === 'remove-registration-only') {
       // Restartable (cancelled/errored/stalled): remove registration, preserve worktree for manual restart
       await removeForgeWorkspaceWithContext(
-        { v2: deps.v2, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
+        { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
         { workspaceId, loopName, action: 'remove-registration-only', reasonLabel: 'attach-safety-net-restartable' },
       )
       publishAttachFailureToast(
@@ -251,7 +253,7 @@ async function attachForgeSession(
         deps.logger.error(`[forge-session-attach] plan not found for session=${planSource.sessionId} loop=${loopName} workspace=${workspaceId}`)
         publishAttachFailureToast(deps, ws.directory ?? deps.directory, `Forge loop "${loopName}"`, 'No stored plan found for this loop. Re-run "Execute → Loop" from a session that has a captured plan.')
         await removeForgeWorkspaceWithContext(
-          { v2: deps.v2, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
+          { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
           { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-no-plan' },
         )
         return
@@ -301,13 +303,13 @@ async function attachForgeSession(
               : `Failed to start loop: ${result.message}`,
           )
           await removeForgeWorkspaceWithContext(
-            { v2: deps.v2, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
+            { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
             { workspaceId, loopName, action: removalAction, reasonLabel: 'attach-conflict-terminal' },
           )
         } else if (!result.ok && result.code !== 'already_attached') {
           publishAttachFailureToast(deps, ws.directory ?? deps.directory, `Forge loop "${loopName}"`, `Failed to start loop: ${result.message}`)
           await removeForgeWorkspaceWithContext(
-            { v2: deps.v2, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
+            { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
             { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-failed' },
           )
         }
@@ -315,7 +317,7 @@ async function attachForgeSession(
         deps.logger.error('[forge-session-attach] attachLoopToSession threw', err)
         publishAttachFailureToast(deps, ws.directory ?? deps.directory, `Forge loop "${loopName}"`, 'Failed to start loop (unexpected error). Check forge logs.')
         await removeForgeWorkspaceWithContext(
-          { v2: deps.v2, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
+          { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
           { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-error' },
         )
       }
@@ -327,7 +329,12 @@ async function resolveAttachSandbox(
   loopName: string,
   worktreeDir: string | undefined,
 ): Promise<{ enabled: boolean; containerName?: string }> {
+  // Worktree-only when the loop opted out, or when the sandbox isn't actually usable
+  // (sandbox disabled via config, or no Docker manager). Without a manager a sandbox
+  // container cannot exist, so the workspace's stale `sandboxEnabled` flag must not be
+  // trusted — degrade to host worktree execution so `bash` stays allowed.
   if (cfg?.sandboxEnabled === false) return { enabled: false }
+  if (!isSandboxEnabled(deps.execDeps.config, deps.execDeps.sandboxManager)) return { enabled: false }
 
   const sandbox = await resolveSandboxContextForLoop(
     deps.execDeps.sandboxManager,
@@ -339,8 +346,8 @@ async function resolveAttachSandbox(
     return { enabled: true, containerName: sandbox.containerName }
   }
 
-  if (!deps.execDeps.sandboxManager || !worktreeDir) {
-    return { enabled: cfg?.sandboxEnabled ?? false, containerName: cfg?.sandboxContainer }
+  if (!worktreeDir) {
+    return { enabled: false }
   }
 
   return { enabled: cfg?.sandboxEnabled ?? false, containerName: cfg?.sandboxContainer }
@@ -352,15 +359,13 @@ function publishAttachFailureToast(
   title: string,
   message: string,
 ): void {
-  const tui = deps.v2.tui
-  if (!tui || typeof tui.publish !== 'function') return
-  tui.publish({
+  deps.client.tui.publish({
     directory,
     body: {
       type: 'tui.toast.show',
       properties: { title, message, variant: 'error', duration: 6000 },
     },
-  }).catch((err) => {
+  }).catch((err: unknown) => {
     deps.logger.error('[forge-session-attach] failed to publish toast', err)
   })
 }
@@ -371,10 +376,9 @@ async function findWorkspaceById(
   directory?: string,
 ): Promise<WorkspaceEntry | null> {
   try {
-    const result = await deps.v2.experimental.workspace.list(
+    const entries = (await deps.client.workspace.list(
       directory ? { directory } : undefined,
-    )
-    const entries = (result.data ?? []) as WorkspaceEntry[]
+    ) ?? []) as WorkspaceEntry[]
     return entries.find((e) => e.id === workspaceId) ?? null
   } catch {
     return null

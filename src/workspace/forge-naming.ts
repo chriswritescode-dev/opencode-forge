@@ -1,6 +1,6 @@
-import { join } from 'path'
-import { spawnSync } from 'child_process'
+import { join, relative, isAbsolute } from 'path'
 import { slugify } from '../utils/logger'
+import { defaultGitService, type GitService } from '../utils/git-service'
 
 /**
  * Canonical naming for forge worktrees and their scratch branches.
@@ -24,18 +24,29 @@ export function forgeWorktreeDir(dataDir: string, loopName: string): string {
 }
 
 /**
+ * True when `directory` is the forge worktrees root (`<dataDir>/worktrees`) or
+ * any directory beneath it.
+ *
+ * A forge worktree is always a child context of a live plugin instance — when a
+ * loop creates its worktree, OpenCode instantiates a fresh plugin for that
+ * directory. Startup-only recovery (e.g. marking orphaned feature groups
+ * interrupted) must not run for these child instances, since the owning process
+ * is still alive and may be actively driving those groups in the same project.
+ */
+export function isForgeWorktreeDir(dataDir: string, directory: string): boolean {
+  if (!dataDir || !directory) return false
+  const rel = relative(join(dataDir, 'worktrees'), directory)
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
+/**
  * True when a local git branch exists in the given repository working directory.
  * Used to decide whether a loop whose worktree directory was pruned can still be
  * restarted by recreating the worktree from the surviving branch.
  */
-export function gitBranchExists(repoDir: string, branch: string): boolean {
+export function gitBranchExists(repoDir: string, branch: string, git: GitService = defaultGitService): boolean {
   if (!repoDir || !branch) return false
-  const res = spawnSync(
-    'git',
-    ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`],
-    { cwd: repoDir, encoding: 'utf-8' },
-  )
-  return res.status === 0
+  return git.branchExists(repoDir, branch)
 }
 
 /**
@@ -47,10 +58,11 @@ export function gitBranchExists(repoDir: string, branch: string): boolean {
 export function loopBranchExists(
   state: { loopName: string; worktreeBranch?: string; projectDir?: string },
   fallbackDir: string,
+  git: GitService = defaultGitService,
 ): boolean {
   const repoDir = state.projectDir || fallbackDir
   const branch = state.worktreeBranch && state.worktreeBranch.length > 0
     ? state.worktreeBranch
     : forgeBranchName(state.loopName)
-  return gitBranchExists(repoDir, branch)
+  return gitBranchExists(repoDir, branch, git)
 }

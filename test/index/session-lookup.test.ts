@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { Logger } from '../../src/types'
+import { createFakeForgeClient } from '../helpers/fake-client'
+import { ForgeClientError } from '../../src/client/port'
 
 vi.mock('bun:sqlite', () => ({
   Database: vi.fn(),
@@ -26,25 +28,6 @@ function createMockLogger() {
   }
 }
 
-function createMockV2Client(responses: Map<string, { data?: unknown; error?: unknown }>) {
-  return {
-    session: {
-      get: async (input: Record<string, unknown>) => {
-        const key = input.directory
-          ? `${input.sessionID}:${input.directory}${input.workspace ? `:${input.workspace}` : ''}`
-          : input.workspace
-            ? `${input.sessionID}:${input.workspace}`
-            : String(input.sessionID)
-        const response = responses.get(key) ?? responses.get(String(input.sessionID))
-        if (!response) {
-          throw new Error(`No mock response for ${key}`)
-        }
-        return response
-      },
-    },
-  }
-}
-
 function createMockLoop(activeLoops: Array<{ loopName: string; worktreeDir: string; workspaceId?: string }>) {
   return {
     listActive: () => activeLoops.map((l) => ({
@@ -61,21 +44,23 @@ function createMockLoop(activeLoops: Array<{ loopName: string; worktreeDir: stri
   }
 }
 
+const notFoundErr = () => new ForgeClientError({ kind: 'not-found', method: 'session.get', message: 'not found' })
+
 describe('createParentSessionLookup', () => {
   it('with one active loop having workspaceId, issues directory+workspace then workspace-only then host fallback', async () => {
     const sessionId = 'ses-1'
-    const v2 = {
+    const { client } = createFakeForgeClient({
       session: {
-        get: vi.fn().mockResolvedValue({ data: undefined }),
+        get: async () => { throw notFoundErr() },
       },
-    }
+    })
 
     const loopService = createMockLoop([
       { loopName: 'test-loop', worktreeDir: '/wt', workspaceId: 'wrk_x' },
     ])
 
     const lookup = createParentSessionLookup({
-      v2: v2 as any,
+      client,
       directory: '/host',
       loop: loopService as any,
       logger: createMockLogger() as any,
@@ -84,7 +69,7 @@ describe('createParentSessionLookup', () => {
 
     await lookup(sessionId)
 
-    const calls = v2.session.get.mock.calls.map((c: unknown[]) => c[0] as Record<string, unknown>)
+    const calls = ((client.session.get as any).mock.calls as unknown[][]).map((c: unknown[]) => c[0] as Record<string, unknown>)
     expect(calls).toHaveLength(3)
     expect(calls[0]).toEqual({
       sessionID: sessionId,
@@ -103,11 +88,11 @@ describe('createParentSessionLookup', () => {
 
   it('host fallback is attempted after active loop attempts', async () => {
     const sessionId = 'ses-2'
-    const v2 = {
+    const { client } = createFakeForgeClient({
       session: {
-        get: vi.fn().mockResolvedValue({ data: undefined }),
+        get: async () => { throw notFoundErr() },
       },
-    }
+    })
 
     const loopService = createMockLoop([
       { loopName: 'loop-1', worktreeDir: '/wt-1', workspaceId: 'wrk_1' },
@@ -115,7 +100,7 @@ describe('createParentSessionLookup', () => {
     ])
 
     const lookup = createParentSessionLookup({
-      v2: v2 as any,
+      client,
       directory: '/host',
       loop: loopService as any,
       logger: createMockLogger() as any,
@@ -124,7 +109,7 @@ describe('createParentSessionLookup', () => {
 
     await lookup(sessionId)
 
-    const calls = v2.session.get.mock.calls.map((c: unknown[]) => c[0] as Record<string, unknown>)
+    const calls = ((client.session.get as any).mock.calls as unknown[][]).map((c: unknown[]) => c[0] as Record<string, unknown>)
     expect(calls).toHaveLength(5)
     expect(calls[0]).toEqual({ sessionID: sessionId, directory: '/wt-1', workspace: 'wrk_1' })
     expect(calls[1]).toEqual({ sessionID: sessionId, workspace: 'wrk_1' })
@@ -135,11 +120,11 @@ describe('createParentSessionLookup', () => {
 
   it('failure is logged once per sessionId within negative-TTL window', async () => {
     const sessionId = 'ses-3'
-    const v2 = {
+    const { client } = createFakeForgeClient({
       session: {
-        get: vi.fn().mockResolvedValue({ data: undefined }),
+        get: async () => { throw notFoundErr() },
       },
-    }
+    })
 
     const loopService = createMockLoop([
       { loopName: 'test-loop', worktreeDir: '/wt', workspaceId: 'wrk_x' },
@@ -147,7 +132,7 @@ describe('createParentSessionLookup', () => {
     const logger = createMockLogger()
 
     const lookup = createParentSessionLookup({
-      v2: v2 as any,
+      client,
       directory: '/host',
       loop: loopService as any,
       logger: logger as any,
@@ -166,18 +151,18 @@ describe('createParentSessionLookup', () => {
 
   it('positive cache prevents re-fetch', async () => {
     const sessionId = 'ses-4'
-    const v2 = {
+    const { client } = createFakeForgeClient({
       session: {
-        get: vi.fn().mockResolvedValue({ data: { parentID: 'parent-4' } }),
+        get: async () => ({ parentID: 'parent-4' }),
       },
-    }
+    })
 
     const loopService = createMockLoop([
       { loopName: 'test-loop', worktreeDir: '/wt', workspaceId: 'wrk_x' },
     ])
 
     const lookup = createParentSessionLookup({
-      v2: v2 as any,
+      client,
       directory: '/host',
       loop: loopService as any,
       logger: createMockLogger() as any,
@@ -190,21 +175,21 @@ describe('createParentSessionLookup', () => {
     const result2 = await lookup(sessionId)
     expect(result2).toBe('parent-4')
 
-    expect(v2.session.get).toHaveBeenCalledTimes(1)
+    expect(client.session.get).toHaveBeenCalledTimes(1)
   })
 
   it('no active loops fallback to host directory', async () => {
     const sessionId = 'ses-host'
-    const v2 = {
+    const { client } = createFakeForgeClient({
       session: {
-        get: vi.fn().mockResolvedValue({ data: { parentID: 'parent-host' } }),
+        get: async () => ({ parentID: 'parent-host' }),
       },
-    }
+    })
 
     const loopService = createMockLoop([])
 
     const lookup = createParentSessionLookup({
-      v2: v2 as any,
+      client,
       directory: '/host',
       loop: loopService as any,
       logger: createMockLogger() as any,
@@ -214,7 +199,7 @@ describe('createParentSessionLookup', () => {
     const result = await lookup(sessionId)
     expect(result).toBe('parent-host')
 
-    const calls = v2.session.get.mock.calls.map((c: unknown[]) => c[0] as Record<string, unknown>)
+    const calls = ((client.session.get as any).mock.calls as unknown[][]).map((c: unknown[]) => c[0] as Record<string, unknown>)
     expect(calls).toHaveLength(1)
     expect(calls[0]).toEqual({
       sessionID: sessionId,
@@ -224,18 +209,18 @@ describe('createParentSessionLookup', () => {
 
   it('active loop without workspaceId issues directory attempt then host fallback', async () => {
     const sessionId = 'ses-nows'
-    const v2 = {
+    const { client } = createFakeForgeClient({
       session: {
-        get: vi.fn().mockResolvedValue({ data: undefined }),
+        get: async () => { throw notFoundErr() },
       },
-    }
+    })
 
     const loopService = createMockLoop([
       { loopName: 'test-loop', worktreeDir: '/wt' },
     ])
 
     const lookup = createParentSessionLookup({
-      v2: v2 as any,
+      client,
       directory: '/host',
       loop: loopService as any,
       logger: createMockLogger() as any,
@@ -244,7 +229,7 @@ describe('createParentSessionLookup', () => {
 
     await lookup(sessionId)
 
-    const calls = v2.session.get.mock.calls.map((c: unknown[]) => c[0] as Record<string, unknown>)
+    const calls = ((client.session.get as any).mock.calls as unknown[][]).map((c: unknown[]) => c[0] as Record<string, unknown>)
     expect(calls).toHaveLength(2)
     expect(calls[0]).toEqual({
       sessionID: sessionId,
@@ -258,11 +243,11 @@ describe('createParentSessionLookup', () => {
 
   it('negative cache TTL is 15s by default', async () => {
     const sessionId = 'ses-ttl'
-    const v2 = {
+    const { client } = createFakeForgeClient({
       session: {
-        get: vi.fn().mockResolvedValue({ data: undefined }),
+        get: async () => { throw notFoundErr() },
       },
-    }
+    })
 
     const loopService = createMockLoop([
       { loopName: 'test-loop', worktreeDir: '/wt', workspaceId: 'wrk_x' },
@@ -275,7 +260,7 @@ describe('createParentSessionLookup', () => {
 
     try {
       const lookup = createParentSessionLookup({
-        v2: v2 as any,
+        client,
         directory: '/host',
         loop: loopService as any,
         logger: logger as any,
@@ -284,16 +269,16 @@ describe('createParentSessionLookup', () => {
       // First call: sets negative cache entry at 1000 + 15000 = 16000
       // 3 attempts: loop:/wt (workspace), loop-ws:test-loop, host
       await lookup(sessionId)
-      expect(v2.session.get).toHaveBeenCalledTimes(3)
+      expect(client.session.get).toHaveBeenCalledTimes(3)
 
       // Second call within TTL (now still 1000): returns null without re-attempting
       await lookup(sessionId)
-      expect(v2.session.get).toHaveBeenCalledTimes(3) // no additional calls
+      expect(client.session.get).toHaveBeenCalledTimes(3) // no additional calls
 
       // Third call after TTL expires (now = 17000 > 16000): re-attempts
       now = 17000
       await lookup(sessionId)
-      expect(v2.session.get).toHaveBeenCalledTimes(6) // 3 more calls
+      expect(client.session.get).toHaveBeenCalledTimes(6) // 3 more calls
     } finally {
       vi.restoreAllMocks()
     }
@@ -301,11 +286,11 @@ describe('createParentSessionLookup', () => {
 
   it('no log noise on zero-attempt empty path', async () => {
     const sessionId = 'ses-no-log'
-    const v2 = {
+    const { client } = createFakeForgeClient({
       session: {
-        get: vi.fn().mockResolvedValue({ data: undefined }),
+        get: async () => { throw notFoundErr() },
       },
-    }
+    })
 
     // Active loop with empty worktreeDir (so it's skipped)
     const loopService = createMockLoop([
@@ -314,7 +299,7 @@ describe('createParentSessionLookup', () => {
     const logger = createMockLogger()
 
     const lookup = createParentSessionLookup({
-      v2: v2 as any,
+      client,
       directory: '/host',
       loop: loopService as any,
       logger: logger as any,
@@ -324,8 +309,8 @@ describe('createParentSessionLookup', () => {
     const result = await lookup(sessionId)
     expect(result).toBeNull()
     // Only host directory attempt is made because active loop worktreeDir is empty
-    expect(v2.session.get).toHaveBeenCalledTimes(1)
-    expect(v2.session.get).toHaveBeenCalledWith({
+    expect(client.session.get).toHaveBeenCalledTimes(1)
+    expect(client.session.get).toHaveBeenCalledWith({
       sessionID: sessionId,
       directory: '/host',
     })
@@ -335,28 +320,30 @@ describe('createParentSessionLookup', () => {
 describe('createSessionDirectoryLookup', () => {
   it('with workspaceId, includes workspace and host fallback in attempts', async () => {
     const sessionId = 'ses-5'
-    const v2 = {
+    let callCount = 0
+    const { client } = createFakeForgeClient({
       session: {
-        get: vi.fn()
-          .mockResolvedValueOnce({ data: undefined })
-          .mockResolvedValueOnce({ data: undefined })
-          .mockResolvedValueOnce({ data: { directory: '/host' } }),
+        get: async () => {
+          callCount++
+          if (callCount <= 2) throw notFoundErr()
+          return { directory: '/host' }
+        },
       },
-    }
+    })
 
     const loopService = createMockLoop([
       { loopName: 'test-loop', worktreeDir: '/wt', workspaceId: 'wrk_x' },
     ])
 
     const lookup = createSessionDirectoryLookup({
-      v2: v2 as any,
+      client,
       directory: '/host',
       loop: loopService as any,
     })
 
     await lookup(sessionId)
 
-    const calls = v2.session.get.mock.calls.map((c: unknown[]) => c[0] as Record<string, unknown>)
+    const calls = ((client.session.get as any).mock.calls as unknown[][]).map((c: unknown[]) => c[0] as Record<string, unknown>)
     expect(calls).toHaveLength(3)
     expect(calls[0]).toEqual({
       sessionID: sessionId,
@@ -375,18 +362,18 @@ describe('createSessionDirectoryLookup', () => {
 
   it('positive result is cached', async () => {
     const sessionId = 'ses-6'
-    const v2 = {
+    const { client } = createFakeForgeClient({
       session: {
-        get: vi.fn().mockResolvedValue({ data: { directory: '/wt' } }),
+        get: async () => ({ directory: '/wt' }),
       },
-    }
+    })
 
     const loopService = createMockLoop([
       { loopName: 'test-loop', worktreeDir: '/wt', workspaceId: 'wrk_x' },
     ])
 
     const lookup = createSessionDirectoryLookup({
-      v2: v2 as any,
+      client,
       directory: '/host',
       loop: loopService as any,
     })
@@ -397,6 +384,6 @@ describe('createSessionDirectoryLookup', () => {
     const result2 = await lookup(sessionId)
     expect(result2).toBe('/wt')
 
-    expect(v2.session.get).toHaveBeenCalledTimes(1)
+    expect(client.session.get).toHaveBeenCalledTimes(1)
   })
 })

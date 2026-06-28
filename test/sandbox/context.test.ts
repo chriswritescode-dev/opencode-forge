@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
-import { isSandboxEnabled, resolveSandboxContextForLoop } from '../../src/sandbox/context'
+import { isSandboxEnabled, isSandboxConfigEnabled, resolveSandboxContextForLoop } from '../../src/sandbox/context'
+import type { SandboxMount } from '../../src/sandbox/path'
 
 describe('isSandboxEnabled', () => {
   it('returns true when sandboxManager is provided regardless of legacy mode value', () => {
@@ -13,14 +14,42 @@ describe('isSandboxEnabled', () => {
   it('returns false when sandbox config is absent', () => {
     expect(isSandboxEnabled({}, undefined)).toBe(false)
   })
+
+  it('returns false when sandbox is explicitly disabled even if a manager is present', () => {
+    expect(isSandboxEnabled({ sandbox: { mode: 'docker' as const, enabled: false } }, {} as unknown)).toBe(false)
+  })
+
+  it('returns true when sandbox is explicitly enabled and a manager is present', () => {
+    expect(isSandboxEnabled({ sandbox: { mode: 'docker' as const, enabled: true } }, {} as unknown)).toBe(true)
+  })
+
+  it('tolerates an undefined config', () => {
+    expect(isSandboxEnabled(undefined, {} as unknown)).toBe(true)
+    expect(isSandboxEnabled(undefined, undefined)).toBe(false)
+  })
+})
+
+describe('isSandboxConfigEnabled', () => {
+  it('is true by default (config absent or enabled not set)', () => {
+    expect(isSandboxConfigEnabled(undefined)).toBe(true)
+    expect(isSandboxConfigEnabled({})).toBe(true)
+    expect(isSandboxConfigEnabled({ sandbox: { mode: 'docker' as const } })).toBe(true)
+  })
+
+  it('is false only when explicitly disabled', () => {
+    expect(isSandboxConfigEnabled({ sandbox: { mode: 'docker' as const, enabled: false } })).toBe(false)
+    expect(isSandboxConfigEnabled({ sandbox: { mode: 'docker' as const, enabled: true } })).toBe(true)
+  })
 })
 
 describe('resolveSandboxContextForLoop', () => {
-  it('returns the active sandbox context without restoring', async () => {
+  it('returns the active sandbox context', async () => {
+    const mounts: SandboxMount[] = [{ hostDir: '/worktree', containerDir: '/workspace' }]
     const manager = {
       docker: {} as never,
       restore: vi.fn(),
-      getActive: vi.fn().mockReturnValue({ containerName: 'forge-loop', projectDir: '/worktree' }),
+      ensureRunning: vi.fn().mockResolvedValue('forge-loop'),
+      getActive: vi.fn().mockReturnValue({ containerName: 'forge-loop', projectDir: '/worktree', mounts }),
     }
 
     const context = await resolveSandboxContextForLoop(manager, {
@@ -30,35 +59,35 @@ describe('resolveSandboxContextForLoop', () => {
       worktreeDir: '/worktree',
     })
 
-    expect(context).toEqual({ docker: manager.docker, containerName: 'forge-loop', hostDir: '/worktree' })
-    expect(manager.restore).not.toHaveBeenCalled()
+    expect(context).toEqual({ docker: manager.docker, containerName: 'forge-loop', hostDir: '/worktree', mounts })
+    expect(manager.ensureRunning).toHaveBeenCalledWith('loop', '/worktree')
   })
 
-  it('restores the sandbox map when a sandbox loop has a running container not in memory', async () => {
+  it('returns null without calling ensureRunning when no worktreeDir', async () => {
+    const mounts: SandboxMount[] = [{ hostDir: '/worktree', containerDir: '/workspace' }]
     const manager = {
       docker: {} as never,
-      restore: vi.fn().mockResolvedValue(undefined),
-      getActive: vi.fn()
-        .mockReturnValueOnce(null)
-        .mockReturnValueOnce({ containerName: 'forge-loop', projectDir: '/worktree' }),
+      restore: vi.fn(),
+      ensureRunning: vi.fn(),
+      getActive: vi.fn().mockReturnValue({ containerName: 'forge-loop', projectDir: '/worktree', mounts }),
     }
 
     const context = await resolveSandboxContextForLoop(manager, {
       loopName: 'loop',
       active: true,
       sandbox: true,
-      worktreeDir: '/worktree',
     })
 
-    expect(manager.restore).toHaveBeenCalledWith('loop', '/worktree', expect.any(String))
-    expect(context).toEqual({ docker: manager.docker, containerName: 'forge-loop', hostDir: '/worktree' })
+    expect(context).toEqual({ docker: manager.docker, containerName: 'forge-loop', hostDir: '/worktree', mounts })
+    expect(manager.ensureRunning).not.toHaveBeenCalled()
   })
 
-  it('returns null after restore failure unless configured to throw', async () => {
+  it('returns null after ensureRunning failure unless configured to throw', async () => {
     const logger = { log: vi.fn() }
     const manager = {
       docker: {} as never,
-      restore: vi.fn().mockRejectedValue(new Error('docker unavailable')),
+      restore: vi.fn(),
+      ensureRunning: vi.fn().mockRejectedValue(new Error('docker unavailable')),
       getActive: vi.fn().mockReturnValue(null),
     }
 

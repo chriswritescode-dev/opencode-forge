@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createForgeWorkspaceAdapter, type ForgeAdapterDeps } from '../../src/workspace/forge-adapter'
-import { join } from 'path'
-import { mkdtempSync, existsSync, rmSync } from 'fs'
+import { join, isAbsolute } from 'path'
+import { mkdtempSync, existsSync, rmSync, readFileSync } from 'fs'
 import { execSync } from 'child_process'
 import { tmpdir } from 'os'
 
@@ -122,6 +122,33 @@ describe('createForgeWorkspaceAdapter', () => {
         encoding: 'utf-8',
       }).trim()
       expect(branch).toBe('forge/test-loop')
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('create adds .forge/ to git exclude in the worktree', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-exclude-'))
+    try {
+      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+      })
+      const configured = adapter.configure(makeInfo('exclude-loop', tmpRepo))
+
+      await adapter.create(configured, {})
+
+      let excludePath = execSync(`git -C "${configured.directory}" rev-parse --git-path info/exclude`, {
+        encoding: 'utf-8',
+      }).trim()
+      // git rev-parse --git-path returns an absolute path for linked worktrees
+      // and a relative path (e.g. .git/info/exclude) for standalone repos.
+      if (!isAbsolute(excludePath)) {
+        excludePath = join(configured.directory, excludePath)
+      }
+      const content = readFileSync(excludePath, 'utf-8')
+      expect(content).toContain('.forge/')
     } finally {
       if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
     }

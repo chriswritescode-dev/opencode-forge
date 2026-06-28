@@ -49,3 +49,10 @@ export function formatPlanSessionTitle(title: string): string {
 export function formatAuditSessionTitle(loopName: string, ctx: LoopTitleContext): string {
   return truncateSessionTitle(`audit: ${loopName}${buildSuffix(ctx)}`)
 }
+
+/**
+ * Formats a post-action session title.
+ */
+export function formatPostActionSessionTitle(loopName: string): string {
+  return truncateSessionTitle(`action: ${loopName}`)
+}

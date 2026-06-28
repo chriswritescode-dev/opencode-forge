@@ -3,7 +3,7 @@ import type { TeardownContext } from './forge-adapter'
 /**
  * Registry of pending workspace teardowns keyed by loop name.
  *
- * Set by callers of `experimental.workspace.remove` (loop termination side
+ * Set by callers of `client.workspace.remove` (loop termination side
  * effects, etc.) so the forge workspace adapter can produce informative commit
  * messages (iteration count, termination reason) while still being the single
  * source of truth for teardown behavior.

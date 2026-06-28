@@ -6,6 +6,7 @@ import {
   type CodingState,
   type AuditingState,
   type FinalAuditingState,
+  type PostActionState,
 } from '../../src/loop/state'
 import type { LoopRow } from '../../src/storage/repos/loops-repo'
 
@@ -38,6 +39,8 @@ function makeRow(overrides: Partial<LoopRow> = {}): LoopRow {
     currentSectionIndex: 0,
     totalSections: 0,
     finalAuditDone: 0,
+    executionVariant: null,
+    auditorVariant: null,
     ...overrides,
   }
 }
@@ -66,6 +69,14 @@ describe('loopRowToState', () => {
     expect(state.phase).toBe('final_auditing')
     const finalAudit = state as FinalAuditingState
     expect(finalAudit.phase).toBe('final_auditing')
+  })
+
+  it('narrows post_action phase to PostActionState', () => {
+    const row = makeRow({ phase: 'post_action' })
+    const state = loopRowToState(row)
+    expect(state.phase).toBe('post_action')
+    const postAction = state as PostActionState
+    expect(postAction.phase).toBe('post_action')
   })
 
   it('converts boolean fields correctly', () => {
@@ -141,8 +152,8 @@ describe('loopRowToState', () => {
     expect(state.lastAuditResult).toBeUndefined()
   })
 
-  it('returns all three phases without runtime errors', () => {
-    for (const phase of ['coding', 'auditing', 'final_auditing'] as const) {
+  it('returns all four phases without runtime errors', () => {
+    for (const phase of ['coding', 'auditing', 'final_auditing', 'post_action'] as const) {
       const row = makeRow({ phase })
       const state = loopRowToState(row)
       expect(state.phase).toBe(phase)
@@ -248,7 +259,7 @@ describe('loopRowToState + loopStateToRow round-trip', () => {
   })
 
   it('preserves projectId through round-trip for each phase', () => {
-    for (const phase of ['coding', 'auditing', 'final_auditing'] as const) {
+    for (const phase of ['coding', 'auditing', 'final_auditing', 'post_action'] as const) {
       const row = makeRow({ phase, projectId: 'proj-round' })
       const state = loopRowToState(row)
       const result = loopStateToRow(state, 'proj-round')

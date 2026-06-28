@@ -59,7 +59,7 @@ function buildToolContext(opts: {
     db: undefined,
     dataDir: '/tmp',
     loopHandler: undefined,
-    loop: { resolveLoopName: () => null, getActiveState: () => null },
+    loop: { service: { resolveLoopName: () => null, getActiveState: () => null } },
     cleanup: async () => {},
     sandboxManager: null,
     reviewFindingsRepo: {},

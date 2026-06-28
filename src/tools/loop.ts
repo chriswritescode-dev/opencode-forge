@@ -2,7 +2,7 @@ import { tool } from '@opencode-ai/plugin'
 import type { ToolContext } from './types'
 
 import { slugify } from '../utils/logger'
-import { formatSessionOutput, formatAuditResult } from '../utils/loop-format'
+import { formatSessionOutput, formatAuditResult, formatCompletionSummary } from '../utils/loop-format'
 import { fetchSessionOutput, type LoopSessionOutput, MAX_RETRIES } from '../loop'
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
@@ -14,7 +14,7 @@ import { loopBranchExists } from '../workspace/forge-naming'
 const z = tool.schema
 
 export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
-  const { v2, loopHandler, config, logger } = ctx
+  const { loopHandler, config, logger } = ctx
 
   function makeService(sourceSessionId?: string) {
     const execCtx: ForgeExecutionRequestContext = {
@@ -29,8 +29,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
       config,
       logger,
       dataDir: ctx.dataDir,
-      v2: ctx.v2,
-      legacyClient: ctx.input?.client,
+      client: ctx.client,
       plansRepo: ctx.plansRepo,
       loopsRepo: ctx.loopsRepo,
       loopHandler: ctx.loopHandler,
@@ -47,13 +46,15 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
    
 
   return {
-    loop: tool({
-      description: 'Execute a plan using an iterative development loop in an isolated git worktree (sandboxed).',
+    'execute-plan': tool({
+      description: "Execute a plan using an iterative development loop in an isolated git worktree (sandboxed). Set mode='new-session' to instead launch the plan in a fresh standalone session running the code agent (no worktree, no loop).",
       args: {
         plan: z.string().optional().describe('The full implementation plan. If omitted, reads from the session plan store.'),
         title: z.string().describe('Short title for the session (shown in session list)'),
         loopName: z.string().optional().describe('Name for the loop (max 25 chars, auto-incremented if collision exists)'),
         hostSessionId: z.string().optional().describe('Host session ID for post-completion redirect'),
+        mode: z.enum(['loop', 'new-session']).optional().default('loop')
+          .describe("Execution mode. 'loop' (default) runs an iterative loop in an isolated git worktree. 'new-session' launches the plan in a fresh standalone session running the code agent (no worktree, no loop)."),
       },
       execute: async (args, context) => {
         logger.log(`loop: creating loop for plan="${args.title}"`)
@@ -62,8 +63,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         if (!args.plan) {
           const capture = await captureLatestPlanForSession(
             {
-              v2: ctx.v2,
-              client: ctx.input.client,
+              client: ctx.client,
               plansRepo: ctx.plansRepo,
               projectId: ctx.projectId,
               directory: ctx.directory,
@@ -85,12 +85,44 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           source = { kind: 'inline', planText: args.plan }
         }
 
-        const sessionTitle = formatPlanSessionTitle(args.title)
         const executionModel = config.executionModel
+        const { service, execCtx } = makeService(context.sessionID)
+
+        if (args.mode === 'new-session') {
+          const result = await service.dispatch(execCtx, {
+            type: 'plan.execute.newSession',
+            source,
+            title: args.title,
+            executionModel,
+            lifecycle: {
+              selectSession: true,
+              selectSessionTiming: 'after-prompt',
+              deleteSessionOnPromptFailure: true,
+            },
+          })
+
+          if (!result.ok) {
+            logger.error('loop: failed to start new session', result.error)
+            return `Failed to start new session: ${result.error.message}`
+          }
+
+          const modelInfo = result.data.modelUsed ?? 'default'
+          return [
+            'New session started!',
+            '',
+            `Session: ${result.data.sessionId}`,
+            `Title: ${result.data.title}`,
+            `Model: ${modelInfo}`,
+            '',
+            'The plan was sent to the code agent in a fresh session (no worktree, no loop).',
+            'It is a standalone session and is not tracked by loop-status or loop-cancel.',
+            'Your job is done — just confirm to the user that the new session has been launched.',
+          ].join('\n')
+        }
+
+        const sessionTitle = formatPlanSessionTitle(args.title)
         const auditorModel = config.auditorModel
         const loopName = args.loopName ? slugify(args.loopName) : slugify(sessionTitle)
-
-        const { service, execCtx } = makeService(context.sessionID)
 
         const command = buildStartLoopCommand({
           source,
@@ -246,11 +278,11 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           try {
             const uniqueDirs = [...new Set(active.map((s) => s.worktreeDir).filter(Boolean))]
             const results = await Promise.allSettled(
-              uniqueDirs.map((dir) => v2.session.status({ directory: dir })),
+              uniqueDirs.map((dir) => ctx.client.session.status({ directory: dir })),
             )
             for (const result of results) {
-              if (result.status === 'fulfilled' && result.value.data) {
-                Object.assign(statuses, result.value.data)
+              if (result.status === 'fulfilled' && result.value) {
+                Object.assign(statuses, result.value)
               }
             }
           } catch {
@@ -262,7 +294,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             const iterInfo = s.maxIterations && s.maxIterations > 0 ? `${s.iteration} / ${s.maxIterations}` : `${s.iteration} (unlimited)`
             // Check if any session registered to this loop is busy (main + child/subagent sessions)
             const isBusy = Object.entries(statuses).some(([sid, v]) =>
-              ctx.loop.resolveLoopName(sid) === s.loopName && v.type === 'busy',
+              ctx.loop.service.resolveLoopName(sid) === s.loopName && v.type === 'busy',
             )
             const sessionStatus = isBusy ? 'busy' : (statuses[s.sessionId]?.type ?? 'unavailable')
             const stallInfo = loopHandler.getStallInfo(s.loopName!)
@@ -331,12 +363,16 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             `Auditor model: ${state.auditorModel ?? config.auditorModel ?? state.executionModel ?? config.executionModel ?? 'default'}`,
           )
 
+          if (state.completionSummary) {
+            statusLines.push(...formatCompletionSummary(state.completionSummary))
+          }
+
           if (state.lastAuditResult) {
             statusLines.push(...formatAuditResult(state.lastAuditResult))
           }
 
           const sessionOutput = state.worktreeDir ? await fetchSessionOutput(
-            v2,
+            ctx.client,
             state.sessionId,
             state.worktreeDir,
             logger,
@@ -390,11 +426,11 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
         let sessionStatus = 'unknown'
         try {
-          const statusResult = await v2.session.status({ directory: state.worktreeDir })
-          const statuses = statusResult.data as Record<string, { type: string; attempt?: number; message?: string; next?: number }> | undefined
+          const statusResult = await ctx.client.session.status({ directory: state.worktreeDir })
+          const statuses = statusResult as Record<string, { type: string; attempt?: number; message?: string; next?: number }> | undefined
           // Check if any session registered to this loop is busy (main + child/subagent sessions)
           const isBusy = Object.entries(statuses ?? {}).some(([sid, s]) =>
-            ctx.loop.resolveLoopName(sid) === state.loopName && s.type === 'busy',
+            ctx.loop.service.resolveLoopName(sid) === state.loopName && s.type === 'busy',
           )
           if (isBusy) {
             sessionStatus = 'busy'
@@ -442,7 +478,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         if (state.worktreeDir) {
           try {
             sessionOutput = await fetchSessionOutput(
-              v2,
+              ctx.client,
               state.sessionId,
               state.worktreeDir,
               logger,

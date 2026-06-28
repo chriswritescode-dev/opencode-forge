@@ -31,8 +31,7 @@ export function tail(text: string, maxLines: number, maxBytes: number): { text: 
   return { text: out.join('\n'), cut: true }
 }
 
-export function writeOverflow(dataDir: string, callID: string, text: string): string {
-  const dir = join(dataDir, 'bash-output')
+export function writeOverflow(dir: string, callID: string, text: string): string {
   mkdirSync(dir, { recursive: true })
   const file = join(dir, `${callID}-${Date.now()}.txt`)
   writeFileSync(file, text, 'utf-8')

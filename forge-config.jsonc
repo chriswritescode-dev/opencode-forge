@@ -28,6 +28,12 @@
   // Model override for the auditor agent (format: "provider/model")
   "auditorModel": "",
 
+  // Default variant (reasoning/thinking-effort) for the execution model (e.g., "high", "max")
+  "executionVariant": "",
+
+  // Default variant for the auditor model (independent; does not inherit executionVariant)
+  "auditorVariant": "",
+
   // Iterative development loop settings
   "loop": {
     "enabled": true,
@@ -40,6 +46,28 @@
       "enabled": false,
       "directory": ""
     }
+    // Post-completion action (skill and/or prompt) run inside the worktree before teardown.
+    // (disabled by default)
+    // "postAction": {
+    //   "enabled": false,
+    //   "skill": "pr-review",
+    //   "prompt": "Auto-defer anything needing clarification; do not use the question tool.",
+    //   "model": "provider/model"  // optional: override model (defaults to auditor model chain)
+    // },
+    // Host directories loop/audit/post-action sessions may read despite worktree isolation
+    // (e.g. an Obsidian vault). Use absolute host paths; governs Read/Glob/Grep (external_directory).
+    // "allowExternalDirectories": ["/abs/host/path/to/vault"]
+    //
+    // Shared scratch/temp directory available to loops in BOTH modes. It is added to the
+    // external_directory allowlist and, for sandboxed loops, bind-mounted read-write at the
+    // identical container path so absolute temp paths match host<->container. Created on startup
+    // if missing. Defaults to "/tmp/oc-forge".
+    // "tmpDir": "/tmp/oc-forge"
+  },
+
+  // Max loops from one group running concurrently. Also bounds concurrent planning passes. Default 3.
+  "groupLaunch": {
+    "maxConcurrentLoops": 3
   },
 
   // Sandbox configuration. Sandbox is optional; when Docker is unavailable, loops run in worktree-only mode.
@@ -49,6 +77,28 @@
     "enabled": true,
     "mode": "docker",
     "image": "oc-forge-sandbox:latest"
+    // Mount the source project directory as a read-only volume. Defaults to true.
+    // "mountProjectReadonly": true,
+    // Container path for the read-only project mount. Defaults to '/project'.
+    // "projectMountPath": "/project",
+    // Network access configuration (host gateway, env passthrough).
+    // "network": {
+    //   // Enable host.docker.internal gateway. Defaults to true.
+    //   "hostGateway": true,
+    //   // Environment variable names to pass through from host process into the container.
+    //   "env": ["MY_VAR"]
+    // },
+    // Every sandbox runs Docker-in-Docker by default: a nested, isolated Docker daemon inside
+    // each container so loops can build and run containers (e.g. end-to-end tests). Each loop
+    // gets its own daemon and storage, and the container runs as root (required by the nested
+    // daemon); privileges are confined to the Docker host VM/daemon, not the host OS.
+    // Additional host directories to bind-mount into the sandbox container.
+    // Each entry requires absolute host + container paths; "readonly" defaults to true (read-only).
+    // Set "readonly": false to grant the container read-write access to the host directory.
+    // "mounts": [
+    //   { "host": "/abs/host/reference", "container": "/reference" },
+    //   { "host": "/abs/host/cache", "container": "/cache", "readonly": false }
+    // ]
   },
 
   // TUI sidebar widget configuration
@@ -64,7 +114,7 @@
   },
 
   // TTL in ms for completed/cancelled loops before cleanup. Default: 604800000 (7 days)
-  "completedLoopTtlMs": 604800000,
+  "completedLoopTtlMs": 604800000
 
   // Per-agent overrides (temperature range: 0.0 - 2.0)
   // Keys are agent display names (e.g., "code", "architect", "auditor")

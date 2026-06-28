@@ -1,5 +1,6 @@
-import { describe, test, expect, mock } from 'bun:test'
+import { describe, test, expect, vi } from 'vitest'
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
+import { createForgeClient } from '../src/client/sdk-adapter'
 import {
   fetchAvailableModels,
   flattenProviders,
@@ -19,7 +20,7 @@ import {
 } from '../src/utils/tui-models'
 
 function createMockApi(configProviders?: string[], providerListFn?: any): TuiPluginApi {
-  const listFn = providerListFn ?? mock(() => Promise.resolve({ data: { all: [], connected: [] } }))
+  const listFn = providerListFn ?? vi.fn(() => Promise.resolve({ data: { all: [], connected: [] } }))
   return {
     state: {
       config: {
@@ -35,9 +36,9 @@ function createMockApi(configProviders?: string[], providerListFn?: any): TuiPlu
       },
     } as any,
     ui: {
-      toast: mock(() => {}),
+      toast: vi.fn(() => {}),
       dialog: {
-        clear: mock(() => {}),
+        clear: vi.fn(() => {}),
       },
     },
     theme: {
@@ -76,10 +77,10 @@ describe('fetchAvailableModels', () => {
       },
     ]
 
-    const providerListMock = mock(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
+    const providerListMock = vi.fn(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
     const mockApi = createMockApi(['anthropic'], providerListMock)
 
-    const result = await fetchAvailableModels(mockApi)
+    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
 
     expect(result.error).toBeUndefined()
     expect(result.providers).toHaveLength(1)
@@ -93,10 +94,10 @@ describe('fetchAvailableModels', () => {
   })
 
   test('returns empty providers array when no providers exist', async () => {
-    const providerListMock = mock(() => Promise.resolve({ data: { all: [], connected: [] } }))
+    const providerListMock = vi.fn(() => Promise.resolve({ data: { all: [], connected: [] } }))
     const mockApi = createMockApi([], providerListMock)
 
-    const result = await fetchAvailableModels(mockApi)
+    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
 
     expect(result.error).toBeUndefined()
     expect(result.providers).toHaveLength(0)
@@ -104,7 +105,7 @@ describe('fetchAvailableModels', () => {
   })
 
   test('returns error when API returns error', async () => {
-    const providerListMock = mock(() => Promise.resolve({
+    const providerListMock = vi.fn(() => Promise.resolve({
       error: {
         data: { message: 'Authentication failed' },
         name: 'APIError',
@@ -112,7 +113,7 @@ describe('fetchAvailableModels', () => {
     }))
     const mockApi = createMockApi(['anthropic'], providerListMock)
 
-    const result = await fetchAvailableModels(mockApi)
+    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
 
     expect(result.providers).toHaveLength(0)
     expect(result.error).toBe('Authentication failed')
@@ -120,10 +121,10 @@ describe('fetchAvailableModels', () => {
   })
 
   test('returns error when API throws', async () => {
-    const providerListMock = mock(() => Promise.reject(new Error('Network error')))
+    const providerListMock = vi.fn(() => Promise.reject(new Error('Network error')))
     const mockApi = createMockApi(['openai'], providerListMock)
 
-    const result = await fetchAvailableModels(mockApi)
+    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
 
     expect(result.providers).toHaveLength(0)
     expect(result.error).toBe('Network error')
@@ -131,13 +132,13 @@ describe('fetchAvailableModels', () => {
   })
 
   test('returns error when no data returned', async () => {
-    const providerListMock = mock(() => Promise.resolve({ data: null }))
+    const providerListMock = vi.fn(() => Promise.resolve({ data: null }))
     const mockApi = createMockApi(['google'], providerListMock)
 
-    const result = await fetchAvailableModels(mockApi)
+    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
 
     expect(result.providers).toHaveLength(0)
-    expect(result.error).toBe('No provider data returned')
+    expect(result.error).toBe('no data returned')
     expect(result.configuredProviderIds).toEqual(['google'])
   })
 
@@ -150,10 +151,10 @@ describe('fetchAvailableModels', () => {
       },
     ]
 
-    const providerListMock = mock(() => Promise.resolve({ data: { all: mockProviders, connected: ['empty-provider'] } }))
+    const providerListMock = vi.fn(() => Promise.resolve({ data: { all: mockProviders, connected: ['empty-provider'] } }))
     const mockApi = createMockApi([], providerListMock)
 
-    const result = await fetchAvailableModels(mockApi)
+    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
 
     expect(result.error).toBeUndefined()
     expect(result.providers).toHaveLength(1)
@@ -184,10 +185,10 @@ describe('fetchAvailableModels', () => {
       },
     ]
 
-    const providerListMock = mock(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
+    const providerListMock = vi.fn(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
     const mockApi = createMockApi([], providerListMock)
 
-    const result = await fetchAvailableModels(mockApi)
+    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
 
     expect(result.providers).toHaveLength(1)
     expect(result.providers[0].id).toBe('anthropic')
@@ -216,10 +217,10 @@ describe('fetchAvailableModels', () => {
       },
     ]
 
-    const providerListMock = mock(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
+    const providerListMock = vi.fn(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
     const mockApi = createMockApi([], providerListMock)
 
-    const result = await fetchAvailableModels(mockApi)
+    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
 
     expect(result.providers).toHaveLength(1)
     expect(result.providers[0].models).toHaveLength(1)
@@ -595,10 +596,10 @@ describe('fetchAvailableModels with variants', () => {
       },
     ]
 
-    const providerListMock = mock(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
+    const providerListMock = vi.fn(() => Promise.resolve({ data: { all: mockProviders, connected: ['anthropic'] } }))
     const mockApi = createMockApi(['anthropic'], providerListMock)
 
-    const result = await fetchAvailableModels(mockApi)
+    const result = await fetchAvailableModels(mockApi, createForgeClient(mockApi.client as never))
 
     expect(result.providers[0].models[0].variants).toEqual({
       default: { name: 'Default' },

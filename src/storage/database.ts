@@ -1,10 +1,18 @@
 import { Database } from 'bun:sqlite'
 import { mkdirSync, existsSync } from 'fs'
-import { homedir, platform } from 'os'
-import { join } from 'path'
 import { openSqliteWithIntegrityGuard } from './sqlite-open'
 import { migrations } from './migrations'
 import { sweepExpiredLoops } from './sweep'
+
+// Path resolvers live in a sqlite-free module so lightweight consumers (e.g. permission
+// rulesets) can import them without pulling in the storage layer. Re-exported here to keep
+// the historical `storage/database` import surface stable.
+export {
+  resolveOpencodeDataDir,
+  resolveDataDir,
+  resolveOpencodeToolOutputDir,
+  resolveLogPath,
+} from '../utils/opencode-paths'
 
 const FORGE_PRAGMAS = [
   'PRAGMA foreign_keys=ON',
@@ -12,16 +20,6 @@ const FORGE_PRAGMAS = [
   'PRAGMA busy_timeout=5000',
   'PRAGMA synchronous=NORMAL',
 ]
-
-export function resolveDataDir(): string {
-  const defaultBase = join(homedir(), platform() === 'win32' ? 'AppData' : '.local', 'share')
-  const xdgDataHome = process.env['XDG_DATA_HOME'] || defaultBase
-  return join(xdgDataHome, 'opencode', 'forge')
-}
-
-export function resolveLogPath(): string {
-  return join(resolveDataDir(), 'logs', 'forge.log')
-}
 
 function runMigrations(db: Database): void {
   db.run(`

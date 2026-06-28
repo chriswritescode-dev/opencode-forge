@@ -1,7 +1,7 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { openForgeDatabase, closeDatabase } from '../../src/storage/database'
-import { createRequestHandler } from '../../src/dashboard/server'
+import { createRequestHandler, type DashboardDeps } from '../../src/dashboard/server'
 import { createLoopsRepo, type LoopRow } from '../../src/storage'
 
 function makeLoopRow(overrides?: Partial<LoopRow>): LoopRow {
@@ -39,6 +39,11 @@ function makeLoopRow(overrides?: Partial<LoopRow>): LoopRow {
   }
 }
 
+/** Build a deps object with the given forge DB. */
+function makeDeps(forgeDb: Database): DashboardDeps {
+  return { forgeDb }
+}
+
 describe('createRequestHandler', () => {
   let db: Database | null = null
   let dbPath: string
@@ -67,7 +72,7 @@ describe('createRequestHandler', () => {
   // ─── Cycle 1: root route returns HTML ─────────────────────────────────
 
   test('GET / returns 200 with text/html content-type and DOCTYPE html', () => {
-    const handler = createRequestHandler(db!)
+    const handler = createRequestHandler(makeDeps(db!))
     const res = handler(new Request('http://localhost/'))
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toMatch(/text\/html/)
@@ -80,7 +85,7 @@ describe('createRequestHandler', () => {
   // ─── Cycle 2: /api/data returns JSON with projects and totals ────────
 
   test('GET /api/data returns 200 with application/json and no-store cache', async () => {
-    const handler = createRequestHandler(db!)
+    const handler = createRequestHandler(makeDeps(db!))
     const res = handler(new Request('http://localhost/api/data'))
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toMatch(/application\/json/)
@@ -97,7 +102,7 @@ describe('createRequestHandler', () => {
   // ─── Cycle 3: live re-query — inserting a loop changes /api/data ─────
 
   test('GET /api/data reflects DB changes after handler creation (live query)', async () => {
-    const handler = createRequestHandler(db!)
+    const handler = createRequestHandler(makeDeps(db!))
 
     // Verify empty before insertion
     const resBefore = await handler(new Request('http://localhost/api/data'))
@@ -123,14 +128,23 @@ describe('createRequestHandler', () => {
   // ─── Cycle 4: unknown route returns 404 ──────────────────────────────
 
   test('GET /nope returns 404', () => {
-    const handler = createRequestHandler(db!)
+    const handler = createRequestHandler(makeDeps(db!))
     const res = handler(new Request('http://localhost/nope'))
     expect(res.status).toBe(404)
   })
 
   test('POST / returns 404 (only GET / is served)', () => {
-    const handler = createRequestHandler(db!)
+    const handler = createRequestHandler(makeDeps(db!))
     const res = handler(new Request('http://localhost/', { method: 'POST' }))
     expect(res.status).toBe(404)
+  })
+
+  // ─── Cycle 5: removed opencode routes return 404 ─────────────────────
+
+  test('GET /api/opencode/sessions now returns 404 (feature removed)', () => {
+    const handler = createRequestHandler(makeDeps(db!))
+    expect(handler(new Request('http://localhost/api/opencode/sessions')).status).toBe(404)
+    expect(handler(new Request('http://localhost/api/opencode/events')).status).toBe(404)
+    expect(handler(new Request('http://localhost/api/opencode/sessions/abc')).status).toBe(404)
   })
 })

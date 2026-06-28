@@ -2,15 +2,17 @@
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from '@opencode-ai/plugin/tui'
 import { createEffect, createMemo, createSignal, Show, untrack } from 'solid-js'
 import { VERSION } from './version'
-import { loadPluginConfig } from './setup'
+import { loadPluginConfig, resolveBundledContainerDir } from './setup'
 import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
 import { createExecutionContextCache } from './utils/tui-execution-context-cache'
 import type { PluginConfig } from './types'
+import { createDockerService } from './sandbox/docker'
+import { isSandboxConfigEnabled } from './sandbox/context'
+import { resolveLoopAllowedDirectories } from './constants/loop'
 import { connectForgeProject, type ForgeProjectClient } from './utils/tui-client'
 import { ExecutePlanPanel } from './tui/execute-plan-panel'
 import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/session-follow'
 import { openInBrowser, startDashboardServer, type DashboardServerHandle } from './dashboard/launch'
-import { fetchLatestPlanForSession } from './utils/plan-from-messages'
 import { normalizePastedPlanText } from './utils/marked-plan-parser'
 
 type TuiKeybinds = {
@@ -144,6 +146,7 @@ function ExecutionDialog(props: {
         initialLoopName={props.initialLoopName}
         onBack={() => props.api.ui.dialog.clear()}
         onSelectionChanged={({ executionModel, auditorModel, executionVariant, auditorVariant, loopName }) => {
+          props.cache?.setSelectionOverride({ executionModel, auditorModel, executionVariant, auditorVariant })
           props.api.ui.dialog.setSize('xlarge')
           props.api.ui.dialog.replace(() => (
             <ExecutionDialog
@@ -165,6 +168,88 @@ function ExecutionDialog(props: {
 
       <box paddingTop={1} flexShrink={0} flexDirection="row" gap={2}>
         <text fg={theme().textMuted} onMouseUp={() => props.api.ui.dialog.clear()}>Close (esc)</text>
+      </box>
+    </box>
+  )
+}
+
+function SandboxBuildDialog(props: {
+  api: TuiPluginApi
+  buildContextDir: string
+  image: string
+}) {
+  const theme = () => props.api.theme.current
+
+  const doBuild = async () => {
+    props.api.ui.dialog.clear()
+    props.api.ui.toast({ message: `Building sandbox image ${props.image}...`, variant: 'info', duration: 5000 })
+
+    const logger = { log: () => {}, error: () => {}, debug: () => {} }
+    const docker = createDockerService(logger)
+
+    try {
+      await docker.buildImage(props.buildContextDir, props.image)
+      props.api.ui.toast({
+        message: `Sandbox image ${props.image} built successfully`,
+        variant: 'success',
+        duration: 5000,
+      })
+    } catch (err) {
+      const rawMessage = err instanceof Error ? err.message : String(err)
+      const message = rawMessage.includes('spawn docker ENOENT')
+        ? 'Docker CLI not found. Is Docker installed and running?'
+        : rawMessage.split('\n').filter(Boolean).at(-1)?.trim() || rawMessage.slice(0, 200)
+      props.api.ui.toast({ message, variant: 'error', duration: 10_000 })
+    }
+  }
+
+  return (
+    <box flexDirection="column" paddingX={2}>
+      <box flexShrink={0} paddingBottom={1} flexDirection="row" gap={1}>
+        <text fg={theme().text}>
+          <b>Build sandbox Docker image</b>
+        </text>
+      </box>
+
+      <box paddingBottom={1}>
+        <text fg={theme().textMuted}>
+          This will build the sandbox image from the bundled Dockerfile.
+        </text>
+      </box>
+      <box paddingBottom={1}>
+        <text fg={theme().textMuted}>Image: {props.image}</text>
+      </box>
+      <box paddingBottom={1}>
+        <text fg={theme().textMuted}>Context: {props.buildContextDir}</text>
+      </box>
+
+      <box paddingTop={1} paddingX={1} flexShrink={0}>
+        <select
+          focused={true}
+          selectedIndex={0}
+          options={[
+            { name: 'Build', description: 'Press enter to build the sandbox image', value: 'build' },
+            { name: 'Cancel', description: 'Press enter to close this dialog', value: 'cancel' },
+          ]}
+          onSelect={(_, option) => {
+            if (option?.value === 'build') {
+              void doBuild()
+              return
+            }
+            if (option?.value === 'cancel') {
+              props.api.ui.dialog.clear()
+            }
+          }}
+          showDescription={true}
+          itemSpacing={1}
+          wrapSelection={true}
+          textColor={theme().text}
+          focusedTextColor={theme().text}
+          selectedTextColor="#ffffff"
+          selectedBackgroundColor={theme().borderActive}
+          minHeight={4}
+          flexShrink={0}
+        />
       </box>
     </box>
   )
@@ -222,20 +307,44 @@ const tui: TuiPlugin = async (api) => {
     }
   })
 
+  const runBuildSandboxImage = () => {
+    const buildContextDir = resolveBundledContainerDir()
+    const image = pluginConfig.sandbox?.image ?? 'oc-forge-sandbox:latest'
+
+    api.ui.dialog.setSize('medium')
+    api.ui.dialog.replace(() => (
+      <SandboxBuildDialog
+        api={api}
+        buildContextDir={buildContextDir}
+        image={image}
+      />
+    ))
+  }
+
   api.keymap.registerLayer({
     commands: [
       {
         name: 'forge.dashboard',
-        title: 'Forge: Open dashboard',
+        title: 'Open dashboard',
         desc: 'Start the Forge dashboard server and open it in the browser',
         category: 'Forge',
         namespace: 'palette',
         run: () => { runOpenDashboard() },
       },
+      {
+        name: 'forge.sandbox.buildImage',
+        title: 'Build sandbox image',
+        desc: 'Build the Docker sandbox image from the bundled Dockerfile',
+        category: 'Forge',
+        namespace: 'palette',
+        run: () => { runBuildSandboxImage() },
+      },
     ],
-    bindings: opts.keybinds.dashboard
-      ? [{ key: opts.keybinds.dashboard, cmd: 'forge.dashboard' }]
-      : [],
+    bindings: [
+      ...(opts.keybinds.dashboard
+        ? [{ key: opts.keybinds.dashboard, cmd: 'forge.dashboard' as const }]
+        : []),
+    ],
   })
 
   if (!opts.sidebar) return
@@ -274,7 +383,7 @@ const tui: TuiPlugin = async (api) => {
     if (connectPromise) return connectPromise
 
     setConnectionStatus('connecting')
-    connectPromise = connectForgeProject(api, directory).then((connected) => untrack(() => {
+    connectPromise = connectForgeProject(api, directory, resolveLoopAllowedDirectories(pluginConfig), isSandboxConfigEnabled(pluginConfig)).then((connected) => untrack(() => {
       connectPromise = null
       if (disposed) return connected
 
@@ -369,7 +478,7 @@ const tui: TuiPlugin = async (api) => {
     const currentClient = await ensureClient()
     if (!currentClient) return
 
-    const planText = await fetchLatestPlanForSession(api.client, sessionID, directory)
+    const planText = await currentClient.loadLatestPlan(sessionID)
     if (!planText) {
       api.ui.toast({
         message: 'No plan in current session — paste one to execute',
@@ -387,7 +496,7 @@ const tui: TuiPlugin = async (api) => {
     commands: [
       {
         name: 'forge.plan.execute',
-        title: 'Forge: Execute plan',
+        title: 'Execute plan',
         desc: 'Open the execution dialog for the current session plan, or paste one if none is found',
         category: 'Forge',
         namespace: 'palette',
@@ -395,7 +504,7 @@ const tui: TuiPlugin = async (api) => {
       },
       {
         name: 'forge.plan.executePasted',
-        title: 'Forge: Execute pasted plan',
+        title: 'Execute pasted plan',
         desc: 'Paste a marked or unmarked plan and open the execution dialog',
         category: 'Forge',
         namespace: 'palette',

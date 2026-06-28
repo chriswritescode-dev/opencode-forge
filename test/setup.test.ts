@@ -1,26 +1,16 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { loadPluginConfig, resolveConfigPath } from '../src/setup'
 import { mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs'
-import { join } from 'path'
+import { join, dirname } from 'path'
 import { homedir } from 'os'
+import { fileURLToPath } from 'url'
+import { useTempConfigHome } from './helpers/temp-config'
 
+const testDir = dirname(fileURLToPath(import.meta.url))
 const TEST_DIR = '/tmp/opencode-forge-setup-test-' + Date.now()
 
 describe('loadPluginConfig', () => {
-  let testConfigDir: string
-
-  beforeEach(() => {
-    testConfigDir = TEST_DIR + '-config-' + Math.random().toString(36).slice(2)
-    mkdirSync(testConfigDir, { recursive: true })
-    process.env['XDG_CONFIG_HOME'] = testConfigDir
-  })
-
-  afterEach(() => {
-    delete process.env['XDG_CONFIG_HOME']
-    if (existsSync(testConfigDir)) {
-      rmSync(testConfigDir, { recursive: true, force: true })
-    }
-  })
+  const getConfigDir = useTempConfigHome('opencode-forge-setup-test')
 
   test('returns default config when no config file exists', () => {
     const config = loadPluginConfig()
@@ -29,8 +19,8 @@ describe('loadPluginConfig', () => {
   })
 
   test('reads and parses valid config file', () => {
-    const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
-    mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
+    const configPath = join(getConfigDir(), 'opencode', 'forge-config.jsonc')
+    mkdirSync(join(getConfigDir(), 'opencode'), { recursive: true })
 
     const validConfig = {
       logging: {
@@ -52,8 +42,8 @@ describe('loadPluginConfig', () => {
   })
 
   test('returns defaults when file contains invalid JSON', () => {
-    const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
-    mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
+    const configPath = join(getConfigDir(), 'opencode', 'forge-config.jsonc')
+    mkdirSync(join(getConfigDir(), 'opencode'), { recursive: true })
 
     writeFileSync(configPath, 'invalid json content')
 
@@ -62,8 +52,8 @@ describe('loadPluginConfig', () => {
   })
 
   test('loads config with sandbox settings', () => {
-    const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
-    mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
+    const configPath = join(getConfigDir(), 'opencode', 'forge-config.jsonc')
+    mkdirSync(join(getConfigDir(), 'opencode'), { recursive: true })
 
     const sandboxConfig = {
       sandbox: {
@@ -125,7 +115,7 @@ describe('bundled sample config', () => {
   })
 
   test('bundled forge-config.jsonc is valid JSONC and parses successfully', () => {
-    const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
+    const bundledConfigPath = join(testDir, '..', 'forge-config.jsonc')
     expect(existsSync(bundledConfigPath)).toBe(true)
     
     const content = readFileSync(bundledConfigPath, 'utf-8')
@@ -137,7 +127,7 @@ describe('bundled sample config', () => {
   })
 
   test('bundled config includes all supported top-level keys', () => {
-    const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
+    const bundledConfigPath = join(testDir, '..', 'forge-config.jsonc')
     const content = readFileSync(bundledConfigPath, 'utf-8')
     
     const stripComments = (text: string): string => {
@@ -171,7 +161,7 @@ describe('bundled sample config', () => {
   })
 
   test('bundled config compaction includes maxContextTokens', () => {
-    const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
+    const bundledConfigPath = join(testDir, '..', 'forge-config.jsonc')
     const content = readFileSync(bundledConfigPath, 'utf-8')
     
     const stripComments = (text: string): string => {
@@ -196,7 +186,7 @@ describe('bundled sample config', () => {
   })
 
   test('bundled config includes dataDir and completedLoopTtlMs', () => {
-    const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
+    const bundledConfigPath = join(testDir, '..', 'forge-config.jsonc')
     const content = readFileSync(bundledConfigPath, 'utf-8')
     
     const stripComments = (text: string): string => {
@@ -222,7 +212,7 @@ describe('bundled sample config', () => {
   })
 
   test('bundled config includes loop.worktreeLogging and is disabled by default', () => {
-    const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
+    const bundledConfigPath = join(testDir, '..', 'forge-config.jsonc')
     const content = readFileSync(bundledConfigPath, 'utf-8')
     
     const stripComments = (text: string): string => {
@@ -248,7 +238,7 @@ describe('bundled sample config', () => {
   })
 
   test('bundled config includes sandbox.enabled defaulting to true', () => {
-    const bundledConfigPath = join(import.meta.dir, '..', 'forge-config.jsonc')
+    const bundledConfigPath = join(testDir, '..', 'forge-config.jsonc')
     const content = readFileSync(bundledConfigPath, 'utf-8')
 
     const stripComments = (text: string): string => {
@@ -297,4 +287,51 @@ describe('bundled sample config', () => {
     expect(config.loop?.worktreeLogging?.directory).toBe('/tmp/loop-logs')
   })
 
+  test('JSONC parsing preserves postAction config', () => {
+    const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
+    mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
+    process.env['XDG_CONFIG_HOME'] = testConfigDir
+
+    const configWithPostAction = {
+      loop: {
+        enabled: true,
+        postAction: {
+          enabled: true,
+          skill: 'pr-review',
+          prompt: 'Auto-defer anything needing clarification',
+        },
+      },
+    }
+
+    writeFileSync(configPath, JSON.stringify(configWithPostAction))
+
+    const config = loadPluginConfig()
+    expect(config.loop?.postAction).toBeDefined()
+    expect(config.loop?.postAction?.enabled).toBe(true)
+    expect(config.loop?.postAction?.skill).toBe('pr-review')
+    expect(config.loop?.postAction?.prompt).toBe('Auto-defer anything needing clarification')
+  })
+
+  test('JSONC parsing preserves prompt-only postAction config', () => {
+    const configPath = join(testConfigDir, 'opencode', 'forge-config.jsonc')
+    mkdirSync(join(testConfigDir, 'opencode'), { recursive: true })
+    process.env['XDG_CONFIG_HOME'] = testConfigDir
+
+    const configWithPromptOnlyPostAction = {
+      loop: {
+        enabled: true,
+        postAction: {
+          enabled: true,
+          prompt: 'Run post-action smoke review',
+        },
+      },
+    }
+
+    writeFileSync(configPath, JSON.stringify(configWithPromptOnlyPostAction))
+
+    const config = loadPluginConfig()
+    expect(config.loop?.postAction?.enabled).toBe(true)
+    expect(config.loop?.postAction?.prompt).toBe('Run post-action smoke review')
+    expect(config.loop?.postAction?.skill).toBeUndefined()
+  })
 })

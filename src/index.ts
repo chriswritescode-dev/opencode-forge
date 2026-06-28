@@ -1,32 +1,45 @@
 import type { Plugin, PluginInput, Hooks } from '@opencode-ai/plugin'
 import { join } from 'path'
-import { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2'
+import type { ForgeClient, SessionGetParams } from './client/port'
 import { buildAgents } from './agents'
 import { createConfigHandler } from './config'
 import { createSessionHooks, createLoopEventHandler } from './hooks'
-import { initializeDatabase, resolveDataDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo } from './storage'
+import { initializeDatabase, resolveDataDir, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo } from './storage'
 import type { LoopChangeNotifier } from './loop'
-import { loadPluginConfig } from './setup'
+import { loadPluginConfig, resolveBundledContainerDir, resolvePromptsDir } from './setup'
 import { resolveLogPath } from './storage'
-import { createLogger } from './utils/logger'
+import { createLogger, slugify } from './utils/logger'
 import { createDockerService } from './sandbox/docker'
-import { resolveSandboxContextForLoop } from './sandbox/context'
+import { defaultGitService } from './utils/git-service'
+import { resolveSandboxContextForLoop, isSandboxConfigEnabled } from './sandbox/context'
+import { resolveForgeTempDir } from './utils/opencode-paths'
+import { isForgeWorktreeDir } from './workspace/forge-naming'
+import { resolveLoopAllowedDirectories } from './constants/loop'
+import { mkdirSync } from 'fs'
 import { createSandboxManager } from './sandbox/manager'
 import type { PluginConfig, CompactionConfig } from './types'
 import { createTools } from './tools'
 import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from './hooks'
 import { createSandboxToolBeforeHook, createSandboxToolAfterHook } from './hooks/sandbox-tools'
 import type { ToolContext } from './tools'
+import { createForgeClientFromPluginInput } from './client/sdk-adapter'
 
 import { LRUCache } from './utils/lru-cache'
 import { createSessionLoopResolver } from './services/session-loop-resolver'
 import { createPlanCaptureEventHook } from './hooks/plan-capture'
 import { createForgeSessionAttachHook, createForgeSessionMessageAttachHook } from './hooks/forge-session-attach'
 import { createLoopPermissionRejectHook } from './hooks/loop-permission'
-
+import { createSandboxMessageHook } from './hooks/sandbox-message'
+import { createGroupOrchestratorEventHook } from './hooks/group-orchestrator'
+import { createGroupOrchestrator, mapLoopStateToOutcome, type GroupOrchestrator, type GroupEffects } from './services/group-orchestrator'
+import { parseModelString } from './utils/model-fallback'
+import { parseFeatureList } from './utils/feature-list-parser'
+import { classifyArchitectOutput } from './utils/architect-auto-output'
+import { captureLatestPlanForSession } from './services/plan-capture'
+import { createForgeExecutionService, type ForgeExecutionRequestContext } from './services/execution'
 
 export interface CreateParentSessionLookupOptions {
-  v2: ReturnType<typeof createV2Client>
+  client: ForgeClient
   directory: string
   loop: import('./loop').Loop
   logger: ReturnType<typeof createLogger>
@@ -36,7 +49,7 @@ export interface CreateParentSessionLookupOptions {
 const PARENT_LOOKUP_NEGATIVE_TTL_MS = 15000
 
 export function createParentSessionLookup({
-  v2,
+  client,
   directory,
   loop,
   logger,
@@ -56,9 +69,7 @@ export function createParentSessionLookup({
       negativeCache.delete(sessionId)
     }
 
-    type SessionGetInput = Parameters<typeof v2.session.get>[0]
-
-    const attempts: Array<{ label: string; directory?: string; input: SessionGetInput }> = []
+    const attempts: Array<{ label: string; directory?: string; input: Record<string, unknown> }> = []
 
     const seenDirectories = new Set<string>()
     const activeLoops = loop.listActive()
@@ -70,12 +81,12 @@ export function createParentSessionLookup({
       attempts.push({
         label: `loop:${state.loopName}`,
         directory: state.worktreeDir,
-        input: { sessionID: sessionId, directory: state.worktreeDir, ...workspaceParam } as SessionGetInput,
+        input: { sessionID: sessionId, directory: state.worktreeDir, ...workspaceParam },
       })
       if (state.workspaceId) {
         attempts.push({
           label: `loop-ws:${state.loopName}`,
-          input: { sessionID: sessionId, workspace: state.workspaceId } as SessionGetInput,
+          input: { sessionID: sessionId, workspace: state.workspaceId },
         })
       }
     }
@@ -84,7 +95,7 @@ export function createParentSessionLookup({
       attempts.push({
         label: 'host',
         directory,
-        input: { sessionID: sessionId, directory } as SessionGetInput,
+        input: { sessionID: sessionId, directory },
       })
     }
 
@@ -92,9 +103,9 @@ export function createParentSessionLookup({
 
     for (const attempt of attempts) {
       try {
-        const result = await v2.session.get(attempt.input)
-        if (result.data) {
-          const parentId = result.data.parentID ?? null
+        const session = await client.session.get(attempt.input as SessionGetParams)
+        if (session) {
+          const parentId = session.parentID ?? null
           cache.set(sessionId, parentId)
           return parentId
         }
@@ -113,13 +124,13 @@ export function createParentSessionLookup({
 }
 
 export interface CreateSessionDirectoryLookupOptions {
-  v2: ReturnType<typeof createV2Client>
+  client: ForgeClient
   directory: string
   loop: import('./loop').Loop
 }
 
 export function createSessionDirectoryLookup({
-  v2,
+  client,
   directory,
   loop,
 }: CreateSessionDirectoryLookupOptions): (sessionId: string) => Promise<string | null> {
@@ -130,9 +141,7 @@ export function createSessionDirectoryLookup({
       return cache.get(sessionId) ?? null
     }
 
-    type SessionGetInput = Parameters<typeof v2.session.get>[0]
-
-    const attempts: Array<{ label: string; directory?: string; input: SessionGetInput }> = []
+    const attempts: Array<{ label: string; directory?: string; input: Record<string, unknown> }> = []
 
     const seenDirectories = new Set<string>()
     const activeLoops = loop.listActive()
@@ -144,12 +153,12 @@ export function createSessionDirectoryLookup({
       attempts.push({
         label: `loop:${state.loopName}`,
         directory: state.worktreeDir,
-        input: { sessionID: sessionId, directory: state.worktreeDir, ...workspaceParam } as SessionGetInput,
+        input: { sessionID: sessionId, directory: state.worktreeDir, ...workspaceParam },
       })
       if (state.workspaceId) {
         attempts.push({
           label: `loop-ws:${state.loopName}`,
-          input: { sessionID: sessionId, workspace: state.workspaceId } as SessionGetInput,
+          input: { sessionID: sessionId, workspace: state.workspaceId },
         })
       }
     }
@@ -158,16 +167,16 @@ export function createSessionDirectoryLookup({
       attempts.push({
         label: 'host',
         directory,
-        input: { sessionID: sessionId, directory } as SessionGetInput,
+        input: { sessionID: sessionId, directory },
       })
     }
 
     for (const attempt of attempts) {
       try {
-        const result = await v2.session.get(attempt.input)
-        if (result.data?.directory) {
-          cache.set(sessionId, result.data.directory)
-          return result.data.directory
+        const session = await client.session.get(attempt.input as SessionGetParams)
+        if (session && session.directory) {
+          cache.set(sessionId, session.directory)
+          return session.directory
         }
       } catch {
         // fall through to next attempt
@@ -187,25 +196,8 @@ export function createSessionDirectoryLookup({
  */
 export function createForgePlugin(config: PluginConfig): Plugin {
   return async (input: PluginInput): Promise<Hooks> => {
-    const { directory, project, client } = input
+    const { directory, project } = input
     const projectId = project.id
-
-    const serverUrl = input.serverUrl
-    
-    // Extract legacy fetch and auth headers from the plugin-provided client so
-    // the v2 client can dispatch in-process AND satisfy the server's Basic auth
-    // requirement (introduced for keychain-backed auth in TUI/server).
-    const legacyHttp = (client as unknown as { _client?: { getConfig: () => { fetch?: typeof fetch; headers?: Headers } } })._client
-    const legacyConfig = legacyHttp?.getConfig?.()
-    const legacyFetch = legacyConfig?.fetch
-    const legacyAuthHeader = legacyConfig?.headers?.get?.('authorization') ?? legacyConfig?.headers?.get?.('Authorization')
-    const v2ClientConfig: Parameters<typeof createV2Client>[0] = {
-      baseUrl: serverUrl.toString(),
-      directory,
-      ...(legacyFetch ? { fetch: legacyFetch } : {}),
-      ...(legacyAuthHeader ? { headers: { Authorization: legacyAuthHeader } } : {}),
-    }
-    const v2 = createV2Client(v2ClientConfig)
 
     const loggingConfig = config.logging
     const logger = createLogger({
@@ -214,25 +206,77 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       debug: loggingConfig?.debug ?? false,
     })
     logger.log(`Initializing plugin for directory: ${directory}, projectId: ${projectId}`)
-    logger.log(`v2 client fetch: ${legacyFetch ? 'in-process' : 'globalThis'}; auth: ${legacyAuthHeader ? 'inherited' : 'none'}`)
+
+    const forgeClient = createForgeClientFromPluginInput(input)
 
     const dataDir = config.dataDir || resolveDataDir()
 
+    // Shared loop scratch directory, allowed in both worktree-only and sandbox modes. Created here
+    // so it exists for host tools (worktree-only) and as a valid bind-mount source (sandbox).
+    const forgeTempDir = resolveForgeTempDir(config.loop?.tmpDir)
+    try {
+      mkdirSync(forgeTempDir, { recursive: true })
+    } catch (err) {
+      logger.error(`Failed to create loop temp directory ${forgeTempDir}`, err)
+    }
+
     let sandboxManager: ReturnType<typeof createSandboxManager> | null = null
-    const dockerService = createDockerService(logger)
-    if (config.sandbox?.enabled === false) {
+    // The sandbox container runs as root (required by the nested Docker daemon), but the agent's
+    // in-container shell commands run as the host UID:GID so files written to the bind-mounted
+    // worktree are owned by the host user, not root. Undefined on platforms without UID concept.
+    const hostExecUser = typeof process.getuid === 'function' && typeof process.getgid === 'function'
+      ? `${process.getuid()}:${process.getgid()}`
+      : undefined
+    const dockerService = createDockerService(logger, { execUser: hostExecUser })
+    if (!isSandboxConfigEnabled(config)) {
       logger.log('Docker sandbox disabled via config (sandbox.enabled=false); running in worktree-only mode')
     } else {
       try {
         sandboxManager = createSandboxManager(dockerService, {
           image: config.sandbox?.image ?? 'oc-forge-sandbox:latest',
           dataDir,
+          toolOutputDir: resolveOpencodeToolOutputDir(),
+          tmpDir: forgeTempDir,
+          sourceProjectDir: directory,
+          mountProjectReadonly: config.sandbox?.mountProjectReadonly,
+          projectMountPath: config.sandbox?.projectMountPath,
+          ...(config.sandbox?.mounts ? { customMounts: config.sandbox.mounts } : {}),
+          buildContextDir: resolveBundledContainerDir(),
           ...(config.sandbox?.resources ? { resources: config.sandbox.resources } : {}),
-        }, logger)
+          ...(config.sandbox?.network ? { network: config.sandbox.network } : {}),
+        }, logger, defaultGitService)
         logger.log('Docker sandbox manager initialized')
       } catch (err) {
         logger.error('Failed to initialize Docker sandbox manager', err)
       }
+    }
+
+    if (sandboxManager && forgeClient) {
+      const sandboxImage = config.sandbox?.image ?? 'oc-forge-sandbox:latest'
+      const buildContextDir = resolveBundledContainerDir()
+      void (async () => {
+        try {
+          const dockerOk = await dockerService.checkDocker()
+          if (!dockerOk) return
+          const exists = await dockerService.imageExists(sandboxImage)
+          if (!exists) {
+            logger.log(`Sandbox image "${sandboxImage}" not found — publishing toast`)
+            await forgeClient.tui.publish({
+              body: {
+                type: 'tui.toast.show' as const,
+                properties: {
+                  title: 'Sandbox image not found',
+                  message: `Docker image "${sandboxImage}" is missing. Build it from the command palette: "Build sandbox image", or run: docker build -t ${sandboxImage} "${buildContextDir}"`,
+                  variant: 'warning' as const,
+                  duration: 10_000,
+                },
+              },
+            }).catch(() => {})
+          }
+        } catch (err: unknown) {
+          logger.log(`Sandbox image check: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      })()
     }
 
     // Pending-teardown registry: caller (loop termination side-effects) writes
@@ -254,6 +298,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         dataDir,
         logger,
         sandboxManager,
+        gitService: defaultGitService,
         getTeardownContext: (loopName) => pendingTeardowns.get(loopName),
       }))
       logger.log(`Registered forge workspace adapter (worktrees under ${join(dataDir, 'worktrees')})`)
@@ -266,6 +311,25 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     const sectionPlansRepo = createSectionPlansRepo(db)
     const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
+    const featureGroupsRepo = createFeatureGroupsRepo(db)
+
+    // Mark any groups left in non-terminal status (extracting/planning/running) from a
+    // prior process as interrupted. Do NOT auto-resume — user must restart via group-status.
+    //
+    // Skip this for forge worktree directories: when a loop (including a group's own
+    // loops) creates its worktree, OpenCode spins up a fresh plugin instance for that
+    // child directory in the SAME project. Running recovery there would mark the still-
+    // active parent group interrupted, sabotaging the group that just launched the loop.
+    if (!isForgeWorktreeDir(dataDir, directory)) {
+      const interruptedCount = featureGroupsRepo.markInterrupted(projectId)
+      if (interruptedCount > 0) {
+        logger.log(`Startup: marked ${interruptedCount} group(s) as interrupted (no auto-resume)`)
+      }
+    }
+
+    // Forward reference — assigned after real effects are built (post sessionLoopResolver).
+    // eslint-disable-next-line prefer-const
+    let groupOrchestrator: GroupOrchestrator | undefined
 
     const notifyLoopChange: LoopChangeNotifier = (reason, loopName, hint) => {
       const targetDirectories = Array.from(new Set([
@@ -274,11 +338,21 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         directory,
       ].filter((dir): dir is string => !!dir)))
       logger.debug(`[notifyLoopChange] reason=${reason} loop=${loopName} dirs=${targetDirectories.join(',')} projectId=${projectId}`)
+
+      // When a loop terminates, notify the group orchestrator so it can advance
+      // the next queued feature. Fire-and-forget — the orchestrator guards internally
+      // against non-group loops.
+      if (reason === 'terminate') {
+        groupOrchestrator?.onLoopTerminated(loopName).catch((err: unknown) => {
+          logger.error(`[notifyLoopChange] groupOrchestrator.onLoopTerminated failed for loop=${loopName}:`, err as Error)
+        })
+      }
     }
 
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, v2, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo)
 
-    const agents = buildAgents()
+    const promptsDir = resolvePromptsDir()
+    const agents = buildAgents(promptsDir)
 
     const compactionConfig: CompactionConfig | undefined = config.compaction
     const messagesTransformConfig = config.messagesTransform
@@ -329,8 +403,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       config,
       logger,
       dataDir,
-      v2,
-      legacyClient: client,
+      client: forgeClient,
       plansRepo,
       loopsRepo,
       loopHandler,
@@ -342,22 +415,22 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       pendingTeardowns,
     }
     const forgeSessionAttachHook = createForgeSessionAttachHook({
-      v2,
+      client: forgeClient,
       execDeps: forgeAttachExecDeps,
       projectId,
       directory,
       logger,
     })
     const forgeSessionMessageAttachHook = createForgeSessionMessageAttachHook({
-      v2,
+      client: forgeClient,
       execDeps: forgeAttachExecDeps,
       projectId,
       directory,
       logger,
     })
 
-    const parentSessionLookup = createParentSessionLookup({ v2, directory, loop: loopHandler.loop, logger })
-    const sessionDirectoryLookup = createSessionDirectoryLookup({ v2, directory, loop: loopHandler.loop })
+    const parentSessionLookup = createParentSessionLookup({ client: forgeClient, directory, loop: loopHandler.loop, logger })
+    const sessionDirectoryLookup = createSessionDirectoryLookup({ client: forgeClient, directory, loop: loopHandler.loop })
     const sessionLoopResolver = createSessionLoopResolver({
       loop: loopHandler.loop,
       getParentSessionId: parentSessionLookup,
@@ -365,9 +438,14 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       logger,
     })
     const loopPermissionRejectHook = createLoopPermissionRejectHook({
-      v2,
+      client: forgeClient,
       sessionLoopResolver,
       directory,
+      logger,
+      getAllowExternalDirectories: () => resolveLoopAllowedDirectories(config),
+    })
+    const sandboxMessageHook = createSandboxMessageHook({
+      sessionLoopResolver,
       logger,
     })
     // Resolves sandbox context for a session by following parent hops until an
@@ -378,6 +456,147 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       return resolveSandboxContextForLoop(sandboxManager, resolved, logger)
     }
 
+    // Spawns an isolated agent session (splitter/architect) seeded with a single text prompt,
+    // using the configured auditor model. Single source of truth for group agent bring-up.
+    async function spawnAgentSession(title: string, text: string, agent: string): Promise<{ sessionId: string }> {
+      const session = await forgeClient.session.create({ title, directory })
+      const parsedModel = parseModelString(config.auditorModel)
+      const modelParam = parsedModel ? { model: parsedModel } : {}
+      await forgeClient.session.promptAsync({
+        sessionID: session.id,
+        directory,
+        parts: [{ type: 'text', text }],
+        agent,
+        ...modelParam,
+      })
+      return { sessionId: session.id }
+    }
+
+    // Returns the newest assistant text part across a session's messages, or null if none.
+    async function findLatestAssistantText(sessionId: string): Promise<string | null> {
+      const messages = await forgeClient.session.messages({ sessionID: sessionId, directory, limit: 20 })
+      const msgs = (messages ?? []) as Array<{ info: { role?: string }; parts: Array<{ type: string; text?: string }> }>
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const msg = msgs[i]
+        if (msg.info.role !== 'assistant') continue
+        for (const part of msg.parts) {
+          if (part.type === 'text' && part.text) return part.text
+        }
+      }
+      return null
+    }
+
+    // Execution service for group-launched loops. Built once and reused across launch/cancel
+    // (stateless dispatch) so the dependency wiring lives in a single place.
+    const groupExecService = createForgeExecutionService({
+      projectId,
+      directory,
+      config,
+      logger,
+      dataDir,
+      client: forgeClient,
+      plansRepo,
+      loopsRepo,
+      loopHandler,
+      loop: loopHandler.loop,
+      sandboxManager,
+      sectionPlansRepo,
+      reviewFindingsRepo,
+      loopSessionUsageRepo,
+      workspaceStatusRegistry,
+      pendingTeardowns,
+    })
+
+    // ── Real GroupEffects ─────────────────────────────────────────────────────
+    const effects: GroupEffects = {
+      async spawnSplitterSession(prdText) {
+        return spawnAgentSession('Feature extraction', prdText, 'feature-splitter')
+      },
+
+      async readSplitterFeatures(sessionId) {
+        const text = await findLatestAssistantText(sessionId)
+        if (text === null) return { ok: false, reason: 'missing' as const }
+        return parseFeatureList(text)
+      },
+
+      async spawnArchitectSession(feature) {
+        return spawnAgentSession(`Plan: ${feature.title}`, feature.description, 'architect-auto')
+      },
+
+      async capturePlan(sessionId) {
+        const result = await captureLatestPlanForSession({
+          client: forgeClient,
+          plansRepo,
+          projectId,
+          directory,
+          logger,
+        }, sessionId)
+        return { captured: result.status === 'captured' || result.status === 'already-current' }
+      },
+
+      async classifyArchitectFailure(sessionId) {
+        const text = await findLatestAssistantText(sessionId)
+        if (text === null) return { reason: 'No assistant response found' }
+        const classified = classifyArchitectOutput(text)
+        const reason = classified.kind === 'insufficient'
+          ? classified.reason
+          : 'Architect failed to produce a valid plan'
+        return { reason }
+      },
+
+      async launchLoop({ architectSessionId, loopName }) {
+        const execCtx: ForgeExecutionRequestContext = {
+          surface: 'tool',
+          projectId,
+          directory,
+          sourceSessionId: architectSessionId,
+        }
+        const response = await groupExecService.dispatch(execCtx, {
+          type: 'loop.start',
+          source: { kind: 'stored', sessionId: architectSessionId },
+          loopName,
+          executionModel: config.executionModel,
+          auditorModel: config.auditorModel,
+          lifecycle: { startWatchdog: true },
+        })
+        if (response.ok) {
+          return { ok: true, loopName: response.data.loopName }
+        }
+        return { ok: false, error: response.error?.message ?? 'Failed to start loop' }
+      },
+
+      async cancelLoop(loopName) {
+        await groupExecService.dispatch(
+          { surface: 'tool', projectId, directory },
+          { type: 'loop.cancel', selector: { kind: 'exact', name: loopName } },
+        )
+      },
+
+      loopFinalOutcome(loopName) {
+        const state = loopHandler.loop.service.getAnyState(loopName)
+        return mapLoopStateToOutcome(state)
+      },
+
+      generateLoopName(base) {
+        return loopHandler.loop.service.generateUniqueLoopName(slugify(base))
+      },
+    }
+
+    groupOrchestrator = createGroupOrchestrator({
+      projectId,
+      repo: featureGroupsRepo,
+      effects,
+      cap: () => config.groupLaunch?.maxConcurrentLoops ?? 3,
+      logger,
+    })
+
+    const groupOrchestratorEventHook = createGroupOrchestratorEventHook({
+      orchestrator: groupOrchestrator,
+      repo: featureGroupsRepo,
+      projectId,
+      logger,
+    })
+
     const ctx: ToolContext = {
       projectId,
       directory,
@@ -387,9 +606,8 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       dataDir,
       loopHandler,
       loop: loopHandler.loop,
-      v2,
+      client: forgeClient,
       cleanup,
-      input,
       sandboxManager,
       plansRepo,
       reviewFindingsRepo,
@@ -400,6 +618,8 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       pendingTeardowns,
       resolveSandboxForSession,
       resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
+      featureGroupsRepo,
+      groupOrchestrator,
     }
 
     const tools = createTools(ctx)
@@ -423,10 +643,16 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     return {
       getCleanup,
       tool: tools,
-      config: createConfigHandler(agents, config.agents),
+      config: createConfigHandler(agents, config.agents, promptsDir),
       'chat.message': async (input, output) => {
         await forgeSessionMessageAttachHook(input)
         await sessionHooks.onMessage(input, output)
+      },
+      'experimental.chat.system.transform': async (input, output) => {
+        await sandboxMessageHook(
+          input as { sessionID?: string },
+          output as { system: string[] },
+        )
       },
       event: async (input) => {
         const eventInput = input as { event: { type: string; properties?: Record<string, unknown> } }
@@ -438,6 +664,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         }
         await planCaptureEventHook(eventInput)
         await loopHandler.onEvent(eventInput)
+        await groupOrchestratorEventHook(eventInput)
         await loopPermissionRejectHook(eventInput)
         await forgeSessionAttachHook(eventInput)
         await sessionHooks.onEvent(eventInput)
@@ -505,6 +732,7 @@ When emitting the final plan:
 - Do not insert \`<!-- forge-section -->\` before \`### Files\`, \`### Edits\`, \`### Acceptance Criteria\`, or \`### Verification\`
 - Shared \`## Decisions\` / \`## Conventions\` / \`## Key Context\` blocks go after all sections (no preceding marker)
 - After the plan, call the \`question\` tool with options: "New session", "Execute here", "Loop"
+- If the user selects "Loop", launch it by calling the \`loop\` tool (the stored plan is used automatically); do not re-run the question tool.
 </system-reminder>`,
           synthetic: true,
         })

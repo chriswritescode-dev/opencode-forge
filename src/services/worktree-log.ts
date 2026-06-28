@@ -3,6 +3,7 @@ import { join, isAbsolute } from 'path'
 import { homedir } from 'os'
 import type { PluginConfig, Logger } from '../types'
 import { toContainerPath } from '../sandbox/path'
+import type { SandboxMount } from '../sandbox/path'
 import type { LoopUsageSummary } from '../loop/token-usage'
 import { formatUsageSummary } from '../utils/loop-format'
 
@@ -128,8 +129,9 @@ export function resolveWorktreeLogTarget(
     let permissionPath: string | null
     if (context.sandbox) {
       if (context.sandboxHostDir) {
-        // Map host path to container-visible path if within sandbox mount
-        const mappedPath = toContainerPath(resolvedPath, context.sandboxHostDir)
+        // Build a single mount entry from sandboxHostDir for the toContainerPath call
+        const mounts: SandboxMount[] = [{ hostDir: context.sandboxHostDir, containerDir: '/workspace' }]
+        const mappedPath = toContainerPath(resolvedPath, mounts)
         // Only use mapped path if it's actually within the container mount
         // If the path is outside the mount, permissionPath should be null
         // to prevent granting meaningless host-only external_directory rules

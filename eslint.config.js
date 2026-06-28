@@ -14,7 +14,7 @@ export default tseslint.config(
       parser: tseslint.parser,
       parserOptions: {
         projectService: {
-          allowDefaultProject: ["scripts/*.ts", "scripts/*.js", "test/*.ts", "vitest.config.ts"],
+          allowDefaultProject: ["scripts/*.ts", "scripts/*.js", "test/*.ts", "vitest.config.ts", "vitest.workspace.ts"],
         },
         tsconfigRootDir: import.meta.dirname,
       },
@@ -49,6 +49,6 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ["dist/**", "node_modules/**", "*.d.ts", "test/**", ".sbx/**", "src/dashboard/marked.min.js"],
+    ignores: ["dist/**", "node_modules/**", "*.d.ts", "test/**", ".sbx/**", "src/dashboard/marked.min.js", "src/dashboard/app-bundle.ts"],
   }
 );

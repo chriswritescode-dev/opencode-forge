@@ -1,4 +1,4 @@
-import type { OpencodeClient } from '@opencode-ai/sdk/v2'
+import type { ForgeClient } from '../client/port'
 import type { Logger } from '../types'
 import type { createSessionLoopResolver } from '../services/session-loop-resolver'
 import { buildLoopPermissionRuleset } from '../constants/loop'
@@ -22,10 +22,12 @@ interface SessionCreatedProperties {
 type PermissionRule = { permission: string; pattern: string; action: 'allow' | 'deny' | 'ask' }
 
 export interface CreateLoopPermissionRejectHookDeps {
-  v2: OpencodeClient
+  client: ForgeClient
   sessionLoopResolver: ReturnType<typeof createSessionLoopResolver>
   directory: string
   logger: Logger
+  /** Resolves the configured external-directory allowlist for loop sessions. */
+  getAllowExternalDirectories?: () => string[] | undefined
 }
 
 export type LoopPermissionRejectHook = (
@@ -35,7 +37,7 @@ export type LoopPermissionRejectHook = (
 export function createLoopPermissionRejectHook(
   deps: CreateLoopPermissionRejectHookDeps,
 ): LoopPermissionRejectHook {
-  const { v2, sessionLoopResolver, directory, logger } = deps
+  const { client, sessionLoopResolver, directory, logger, getAllowExternalDirectories } = deps
 
   return async (eventInput) => {
     if (eventInput.event?.type !== 'session.created') return
@@ -61,8 +63,8 @@ export function createLoopPermissionRejectHook(
     let ruleset: PermissionRule[] | null = null
     let rulesetSource = 'loop-default'
     try {
-      const parent = await v2.session.get({ sessionID: parentID, directory: targetDirectory })
-      const parentRules = (parent as { data?: { permission?: PermissionRule[] } })?.data?.permission
+      const parent = await client.session.get({ sessionID: parentID, directory: targetDirectory })
+      const parentRules = (parent as { permission?: PermissionRule[] })?.permission
       if (Array.isArray(parentRules) && parentRules.some((r) => r.permission === '*' && r.action === 'allow')) {
         ruleset = parentRules
         rulesetSource = `inherited-from-parent=${parentID}`
@@ -70,33 +72,26 @@ export function createLoopPermissionRejectHook(
     } catch (err) {
       logger.error(`[loop-permission] failed to fetch parent ${parentID} for inheritance`, err)
     }
-    if (!ruleset) ruleset = buildLoopPermissionRuleset({ sandbox: resolved.sandbox ?? false })
+    if (!ruleset) ruleset = buildLoopPermissionRuleset({ sandbox: resolved.sandbox ?? false, allowDirectories: getAllowExternalDirectories?.() })
 
     logger.log(
       `[loop-permission] patching loop=${resolved.loopName} session=${sessionID} parent=${parentID} ruleset=${rulesetSource}`,
     )
 
     try {
-      const result = await v2.session.update({
+      await client.session.update({
         sessionID,
         directory: targetDirectory,
         permission: ruleset,
       })
-      if ((result as { error?: unknown })?.error) {
-        logger.error(
-          `[loop-permission] session.update returned error for ${sessionID}`,
-          (result as { error?: unknown }).error,
-        )
-      } else {
-        PATCHED_SESSIONS.add(sessionID)
-        if (PATCHED_SESSIONS.size > PATCHED_SESSIONS_MAX) {
-          const oldest = PATCHED_SESSIONS.values().next().value
-          if (oldest) PATCHED_SESSIONS.delete(oldest)
-        }
-        logger.log(
-          `[loop-permission] applied loop=${resolved.loopName} session=${sessionID} ruleCount=${ruleset.length}`,
-        )
+      PATCHED_SESSIONS.add(sessionID)
+      if (PATCHED_SESSIONS.size > PATCHED_SESSIONS_MAX) {
+        const oldest = PATCHED_SESSIONS.values().next().value
+        if (oldest) PATCHED_SESSIONS.delete(oldest)
       }
+      logger.log(
+        `[loop-permission] applied loop=${resolved.loopName} session=${sessionID} ruleCount=${ruleset.length}`,
+      )
     } catch (err) {
       logger.error(`[loop-permission] session.update threw for ${sessionID}`, err)
     }

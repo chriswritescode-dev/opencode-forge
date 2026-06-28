@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test'
+import { describe, test, expect } from 'vitest'
 import {
   extractMarkedPlan,
   normalizePastedPlanText,
@@ -428,8 +428,7 @@ Outro`
   test('message part event auto-captures before idle or approval', async () => {
     const plansRepo = createFakePlansRepo()
     const hook = createPlanCaptureEventHook({
-      v2: { session: { messages: async () => ({ data: [] }) } },
-      input: { client: { session: { messages: async () => ({ data: [] }) } } },
+      client: { session: { messages: async () => [] } },
       plansRepo,
       projectId: 'test-project',
       directory: '/tmp/project',
@@ -470,7 +469,7 @@ Outro`
   })
 })
 
-describe('captureLatestPlanForSession legacy client fallback', () => {
+describe('captureLatestPlanForSession with ForgeClient', () => {
   function createFakePlansRepo() {
     const plans = new Map<string, { content: string; updatedAt: number }>()
     return {
@@ -493,58 +492,55 @@ describe('captureLatestPlanForSession legacy client fallback', () => {
 
   const planMessage = {
     info: { role: 'assistant', id: 'msg-1' },
-    parts: [{ type: 'text', text: `${PLAN_START_MARKER}\nFallback Plan\n${PLAN_END_MARKER}` }],
+    parts: [{ type: 'text', text: `${PLAN_START_MARKER}\nFound Plan\n${PLAN_END_MARKER}` }],
   }
 
-  test('falls back to legacy client when v2 returns empty data', async () => {
+  test('returns plan when client returns messages', async () => {
     const plansRepo = createFakePlansRepo()
     const deps = {
-      v2: { session: { messages: async () => ({ data: [] }) } },
-      client: { session: { messages: async () => ({ data: [planMessage] }) } },
+      client: { session: { messages: async () => [planMessage] } },
       plansRepo,
       projectId: 'test-project',
       directory: '/tmp/project',
       logger,
     }
 
-    const result = await captureLatestPlanForSession(deps as any, 'session-fb-1')
+    const result = await captureLatestPlanForSession(deps as any, 'session-found')
 
     expect(result.status).toBe('captured')
-    expect(plansRepo.getForSession('test-project', 'session-fb-1')?.content).toBe('Fallback Plan')
+    expect(plansRepo.getForSession('test-project', 'session-found')?.content).toBe('Found Plan')
   })
 
-  test('falls back to legacy client when v2 returns an error', async () => {
+  test('returns not-found when client returns empty messages', async () => {
     const plansRepo = createFakePlansRepo()
     const deps = {
-      v2: { session: { messages: async () => ({ error: { message: 'boom' }, data: undefined }) } },
-      client: { session: { messages: async () => ({ data: [planMessage] }) } },
+      client: { session: { messages: async () => [] } },
       plansRepo,
       projectId: 'test-project',
       directory: '/tmp/project',
       logger,
     }
 
-    const result = await captureLatestPlanForSession(deps as any, 'session-fb-2')
-
-    expect(result.status).toBe('captured')
-    expect(plansRepo.getForSession('test-project', 'session-fb-2')?.content).toBe('Fallback Plan')
-  })
-
-  test('returns not-found when both v2 and legacy return empty', async () => {
-    const plansRepo = createFakePlansRepo()
-    const deps = {
-      v2: { session: { messages: async () => ({ data: [] }) } },
-      client: { session: { messages: async () => ({ data: [] }) } },
-      plansRepo,
-      projectId: 'test-project',
-      directory: '/tmp/project',
-      logger,
-    }
-
-    const result = await captureLatestPlanForSession(deps as any, 'session-fb-3')
+    const result = await captureLatestPlanForSession(deps as any, 'session-empty')
 
     expect(result.status).toBe('not-found')
-    expect(plansRepo.getForSession('test-project', 'session-fb-3')).toBeNull()
+    expect(plansRepo.getForSession('test-project', 'session-empty')).toBeNull()
+  })
+
+  test('returns read-failed when client throws', async () => {
+    const plansRepo = createFakePlansRepo()
+    const deps = {
+      client: { session: { messages: async () => { throw new Error('network error') } } },
+      plansRepo,
+      projectId: 'test-project',
+      directory: '/tmp/project',
+      logger,
+    }
+
+    const result = await captureLatestPlanForSession(deps as any, 'session-error')
+
+    expect(result.status).toBe('read-failed')
+    expect(plansRepo.getForSession('test-project', 'session-error')).toBeNull()
   })
 })
 
@@ -577,8 +573,7 @@ describe('plan capture trigger on assistant message completion', () => {
       parts: [{ type: 'text', text: `${PLAN_START_MARKER}\n# Completed Plan\n\n## Verification\n- bun test\n${PLAN_END_MARKER}` }],
     }]
     const hook = createPlanCaptureEventHook({
-      v2: { session: { messages: async () => ({ data: messages }) } },
-      input: { client: { session: { messages: async () => ({ data: messages }) } } },
+      client: { session: { messages: async () => messages } },
       plansRepo,
       projectId: 'test-project',
       directory: '/tmp/project',
@@ -594,11 +589,10 @@ describe('plan capture trigger on assistant message completion', () => {
     const plansRepo = createFakePlansRepo()
     let messagesCalls = 0
     const hook = createPlanCaptureEventHook({
-      v2: { session: { messages: async () => {
+      client: { session: { messages: async () => {
         messagesCalls++
-        return { data: [] }
+        return []
       } } },
-      input: { client: { session: { messages: async () => ({ data: [] }) } } },
       plansRepo,
       projectId: 'test-project',
       directory: '/tmp/project',
@@ -615,11 +609,10 @@ describe('plan capture trigger on assistant message completion', () => {
     const plansRepo = createFakePlansRepo()
     let messagesCalls = 0
     const hook = createPlanCaptureEventHook({
-      v2: { session: { messages: async () => {
+      client: { session: { messages: async () => {
         messagesCalls++
-        return { data: [] }
+        return []
       } } },
-      input: { client: { session: { messages: async () => ({ data: [] }) } } },
       plansRepo,
       projectId: 'test-project',
       directory: '/tmp/project',
@@ -640,8 +633,7 @@ describe('plan capture trigger on assistant message completion', () => {
       parts: [{ type: 'text', text }],
     }]
     const hook = createPlanCaptureEventHook({
-      v2: { session: { messages: async () => ({ data: messages }) } },
-      input: { client: { session: { messages: async () => ({ data: messages }) } } },
+      client: { session: { messages: async () => messages } },
       plansRepo,
       projectId: 'test-project',
       directory: '/tmp/project',

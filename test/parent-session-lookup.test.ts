@@ -1,26 +1,13 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { createParentSessionLookup, type CreateParentSessionLookupOptions } from '../src/index'
+import { describe, test, expect, beforeEach, afterEach } from 'vitest'
+import { createParentSessionLookup } from '../src/index'
 import type { Logger } from '../src/types'
+import { createFakeForgeClient } from './helpers/fake-client'
+import { ForgeClientError } from '../src/client/port'
 
 const mockLogger: Logger = {
   log: () => {},
   debug: () => {},
   error: () => {},
-}
-
-function createMockV2Client(responses: Map<string, { data?: { parentID?: string | null }; error?: unknown }>) {
-  return {
-    session: {
-      get: async (input: { sessionID: string; directory?: string }) => {
-        const key = input.directory ? `${input.sessionID}:${input.directory}` : input.sessionID
-        const response = responses.get(key) ?? responses.get(input.sessionID)
-        if (!response) {
-          throw new Error(`No mock response for ${key}`)
-        }
-        return response
-      },
-    },
-  }
 }
 
 function createMockLoop(activeLoops: Array<{ loopName: string; worktreeDir: string }>) {
@@ -35,13 +22,15 @@ describe('createParentSessionLookup', () => {
   test('positive lookup caches the parent ID across calls', async () => {
     const sessionId = 'session-123'
     const parentId = 'parent-x'
-    const v2 = createMockV2Client(
-      new Map([[sessionId, { data: { parentID: parentId } }]]),
-    )
+    const { client } = createFakeForgeClient({
+      session: {
+        get: async () => ({ parentID: parentId }),
+      },
+    })
     const loop = createMockLoop([])
 
     const lookup = createParentSessionLookup({
-      v2,
+      client,
       directory: '/host',
       loop: loop as any,
       logger: mockLogger,
@@ -56,24 +45,15 @@ describe('createParentSessionLookup', () => {
 
   test('negative result is cached for TTL then retried', async () => {
     const sessionId = 'session-fail'
-    const parentId = 'parent-success'
-    let callCount = 0
-
-    const v2 = createMockV2Client(
-      new Map([
-        [
-          sessionId,
-          {
-            data: undefined,
-            error: 'not found',
-          },
-        ],
-      ]),
-    )
+    const { client } = createFakeForgeClient({
+      session: {
+        get: async () => { throw new ForgeClientError({ kind: 'not-found', method: 'session.get', message: 'not found' }) },
+      },
+    })
     const loop = createMockLoop([])
 
     const lookup = createParentSessionLookup({
-      v2,
+      client,
       directory: '/host',
       loop: loop as any,
       logger: mockLogger,
@@ -94,24 +74,15 @@ describe('createParentSessionLookup', () => {
 
   test('first call fails, second call succeeds after TTL expiry', async () => {
     const sessionId = 'session-mixed'
-    const parentId = 'parent-y'
-    let failCount = 0
-
-    const v2 = createMockV2Client(
-      new Map([
-        [
-          sessionId,
-          {
-            data: undefined,
-            error: 'not found',
-          },
-        ],
-      ]),
-    )
+    const { client } = createFakeForgeClient({
+      session: {
+        get: async () => { throw new ForgeClientError({ kind: 'not-found', method: 'session.get', message: 'not found' }) },
+      },
+    })
     const loop = createMockLoop([])
 
     const lookup = createParentSessionLookup({
-      v2,
+      client,
       directory: '/host',
       loop: loop as any,
       logger: mockLogger,
@@ -130,23 +101,23 @@ describe('createParentSessionLookup', () => {
     const worktreeDir = '/worktree'
 
     const callOrder: string[] = []
-    const v2 = {
+    const { client } = createFakeForgeClient({
       session: {
-        get: async (input: { sessionID: string; directory?: string }) => {
+        get: async (input: any) => {
           const label = input.directory ? `dir:${input.directory}` : 'no-dir'
           callOrder.push(label)
           if (input.directory === worktreeDir) {
-            return { data: { parentID: parentId } }
+            return { parentID: parentId }
           }
-          return { data: undefined }
+          throw new ForgeClientError({ kind: 'not-found', method: 'session.get', message: 'not found' })
         },
       },
-    }
+    })
 
     const loop = createMockLoop([{ loopName: 'test-loop', worktreeDir }])
 
     const lookup = createParentSessionLookup({
-      v2: v2 as any,
+      client,
       directory: '/host',
       loop: loop as any,
       logger: mockLogger,

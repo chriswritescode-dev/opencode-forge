@@ -50,24 +50,29 @@ export function startDashboardServer(options: StartDashboardOptions = {}): Dashb
   const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS
   const db = new Database(dbPath, { readonly: true })
   db.run('PRAGMA busy_timeout=5000')
-  const handler = createRequestHandler(db)
+  const handler = createRequestHandler({ forgeDb: db })
+
+  function closeAll(): void {
+    db.close()
+  }
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const port = basePort + attempt
     try {
-      const server = Bun.serve({ hostname: 'localhost', port, fetch: handler })
+      // idleTimeout: 0 disables Bun's per-request idle timeout (default 10s).
+      const server = Bun.serve({ hostname: 'localhost', port, idleTimeout: 0, fetch: handler })
       const boundPort = server.port ?? port
       return {
         url: `http://localhost:${boundPort}`,
         port: boundPort,
         stop: () => {
           server.stop()
-          db.close()
+          closeAll()
         },
       }
     } catch (err) {
       if (!isAddrInUse(err) || attempt === maxAttempts - 1) {
-        db.close()
+        closeAll()
         throw new Error(
           `Failed to start dashboard on port ${port}. ` +
           `Port ${port} is in use or another error occurred. ` +
@@ -78,7 +83,7 @@ export function startDashboardServer(options: StartDashboardOptions = {}): Dashb
     }
   }
 
-  db.close()
+  closeAll()
   throw new Error('Failed to start dashboard: exhausted port attempts.')
 }
 

@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import type { Database } from 'bun:sqlite'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
@@ -104,22 +104,22 @@ describe('Tool Blocking Logic', () => {
 
   describe('Blocked tools list', () => {
     test('includes question tool', () => {
-      const blockedTools = ['question', 'loop']
+      const blockedTools = ['question', 'execute-plan']
       expect(blockedTools).toContain('question')
     })
 
     test('includes loop tool', () => {
-      const blockedTools = ['question', 'loop']
-      expect(blockedTools).toContain('loop')
+      const blockedTools = ['question', 'execute-plan']
+      expect(blockedTools).toContain('execute-plan')
     })
 
     test('does not include memory-read tool', () => {
-      const blockedTools = ['question', 'loop']
+      const blockedTools = ['question', 'execute-plan']
       expect(blockedTools).not.toContain('memory-read')
     })
 
     test('does not include memory-write tool', () => {
-      const blockedTools = ['question', 'loop']
+      const blockedTools = ['question', 'execute-plan']
       expect(blockedTools).not.toContain('memory-write')
     })
   })
@@ -128,7 +128,7 @@ describe('Tool Blocking Logic', () => {
     test('question tool has appropriate error message', () => {
       const messages: Record<string, string> = {
         'question': 'The question tool is not available during a loop. Do not ask questions — continue working on the task autonomously.',
-        'loop': 'The loop tool is not available during a loop. Focus on executing the current plan.',
+        'execute-plan': 'The execute-plan tool is not available during a loop. Focus on executing the current plan.',
       }
       expect(messages['question']).toContain('question tool is not available')
     })

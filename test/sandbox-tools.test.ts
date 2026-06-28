@@ -1,7 +1,8 @@
-import { describe, test, expect, beforeEach } from 'bun:test'
+import { describe, test, expect, beforeEach } from 'vitest'
 import { createSandboxToolBeforeHook, createSandboxToolAfterHook } from '../src/hooks/sandbox-tools'
 import type { Logger } from '../src/types'
 import type { SandboxContext } from '../src/sandbox/context'
+import type { SandboxMount } from '../src/sandbox/path'
 
 interface MockSandboxContext {
   docker: {
@@ -58,10 +59,13 @@ describe('sandbox tool hooks', () => {
       debug: () => {},
     }
 
+    const mounts: SandboxMount[] = [{ hostDir: TEST_HOST_DIR, containerDir: '/workspace' }]
+
     const sandboxContext: SandboxContext = {
       docker: mockDocker,
       containerName: TEST_CONTAINER_NAME,
       hostDir: TEST_HOST_DIR,
+      mounts,
     }
 
     const resolveSandboxForSession = async (sessionID: string): Promise<SandboxContext | null> => {
@@ -297,6 +301,7 @@ describe('sandbox tool hooks', () => {
           docker: mockDocker,
           containerName: 'test-container',
           hostDir: '/tmp/host',
+          mounts: [{ hostDir: '/tmp/host', containerDir: '/workspace' }],
         }),
         logger: mockLogger,
       })

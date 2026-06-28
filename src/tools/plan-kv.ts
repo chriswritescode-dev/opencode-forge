@@ -68,7 +68,7 @@ export function createPlanTools(ctx: ToolContext): Record<string, ReturnType<typ
         } else if (args.session_id) {
           content = plansRepo.getForSession(projectId, args.session_id)?.content
         } else {
-          const resolvedLoopName = loop.resolveLoopName(context.sessionID)
+          const resolvedLoopName = loop.service.resolveLoopName(context.sessionID)
           if (resolvedLoopName) {
             content = plansRepo.getForLoop(projectId, resolvedLoopName)?.content
           } else {

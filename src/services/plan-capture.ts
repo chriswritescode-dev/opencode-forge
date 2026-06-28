@@ -1,13 +1,11 @@
-import type { ToolContext } from '../tools/types'
+import type { ForgeClient } from '../client/port'
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { Logger } from '../types'
 import type { PlanCaptureMessage } from '../utils/marked-plan-parser'
-import type { PluginInput } from '@opencode-ai/plugin'
 import { extractMarkedPlan, inspectLatestMarkedPlan, sanitizePlanPaths } from '../utils/marked-plan-parser'
 
 export interface CaptureLatestPlanDeps {
-  v2: ToolContext['v2']
-  client: PluginInput['client']
+  client: ForgeClient
   plansRepo: PlansRepo
   projectId: string
   directory: string
@@ -74,31 +72,18 @@ export function captureMarkedPlanTextForSession(
 }
 
 async function readRecentMessages(
-  deps: Pick<CaptureLatestPlanDeps, 'v2' | 'client' | 'directory' | 'logger'>,
+  deps: Pick<CaptureLatestPlanDeps, 'client' | 'directory' | 'logger'>,
   sessionID: string
 ): Promise<ReadRecentMessagesResult> {
   try {
-    const messagesResult = await deps.v2.session.messages({
+    const messages = await deps.client.session.messages({
       sessionID,
       directory: deps.directory,
       limit: 20,
     })
 
-    if (!messagesResult.error && messagesResult.data && messagesResult.data.length > 0) {
-      return { status: 'found', messages: messagesResult.data as unknown as PlanCaptureMessage[] }
-    }
-
-    try {
-      deps.logger.log(`plan-capture: v2 messages empty/error, falling back to legacy client for ${sessionID}`)
-      const legacyResult = await deps.client.session.messages({
-        path: { id: sessionID },
-        query: { directory: deps.directory, limit: 20 },
-      })
-      if (!legacyResult.error && legacyResult.data && legacyResult.data.length > 0) {
-        return { status: 'found', messages: legacyResult.data as unknown as PlanCaptureMessage[] }
-      }
-    } catch (fallbackErr) {
-      deps.logger.error(`plan-capture: legacy client messages fallback failed for ${sessionID}`, fallbackErr as Error)
+    if (messages && messages.length > 0) {
+      return { status: 'found', messages: messages as unknown as PlanCaptureMessage[] }
     }
 
     return { status: 'missing' }

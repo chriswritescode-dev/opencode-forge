@@ -11,7 +11,6 @@ const z = tool.schema
 export interface BashToolDeps {
   resolveSandboxForSession: (sessionID: string) => Promise<SandboxContext | null>
   logger: Logger
-  dataDir: string
   limits?: Limits
   /**
    * Path the description should advertise for scratch work. Defaults to the

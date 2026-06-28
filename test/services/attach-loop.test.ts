@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { mkdtempSync } from 'fs'
 import { join } from 'path'
@@ -9,6 +9,7 @@ import { createReviewFindingsRepo } from '../../src/storage/repos/review-finding
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopService } from '../../src/loop/service'
 import type { Logger } from '../../src/types'
+import { createFakeForgeClient } from '../helpers/fake-client'
 
 const noopFn = () => {}
 
@@ -147,8 +148,18 @@ describe('attachLoopToSession', () => {
       sectionPlansRepo,
     )
 
-    const promptAsyncMock = mock(async () => ({ error: null }))
-    const tuiSelectSessionMock = mock(async () => undefined)
+    const promptAsyncMock = vi.fn(async () => {})
+    const tuiSelectSessionMock = vi.fn(async () => undefined)
+
+    const fakeClient = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-session' }),
+        promptAsync: promptAsyncMock,
+      },
+      tui: {
+        selectSession: tuiSelectSessionMock,
+      },
+    })
 
     const deps = {
       projectId: PROJECT_ID,
@@ -160,42 +171,32 @@ describe('attachLoopToSession', () => {
       },
       logger: { log: () => {}, error: () => {}, debug: () => {} } as Logger,
       dataDir: '/tmp',
-      v2: {
-        session: {
-          create: mock(async () => ({ data: { id: 'new-session' } })),
-          get: mock(async () => ({ data: {} })),
-          update: mock(async () => ({ data: {} })),
-          promptAsync: promptAsyncMock,
-          abort: mock(async () => ({})),
-          delete: mock(async () => ({})),
-          messages: mock(async () => ({ data: [] })),
-          status: mock(async () => ({ data: {} })),
-        },
-        tui: {
-          publish: mock(() => {}),
-          selectSession: tuiSelectSessionMock,
-        },
-      },
+      client: fakeClient.client,
       plansRepo,
       loopsRepo,
       reviewFindingsRepo,
       sectionPlansRepo,
-      loop: loopService as any,
+      loop: {
+        service: loopService,
+        listActive: (...args: any[]) => loopService.listActive(...args),
+        generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
+        findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+      } as any,
       loopHandler: {
         runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
-        startWatchdog: mock(() => {}),
+        startWatchdog: vi.fn(() => {}),
         clearLoopTimers: noopFn,
       },
       sandboxManager: null,
       workspaceStatusRegistry: {
-        recordEvent: mock(() => {}),
-        getStatus: mock(() => 'connected' as const),
-        awaitConnected: mock(async () => ({ connected: true, elapsedMs: 0, source: 'cached' as const })),
-        primeFromSnapshot: mock(() => {}),
+        recordEvent: vi.fn(() => {}),
+        getStatus: vi.fn(() => 'connected' as const),
+        awaitConnected: vi.fn(async () => ({ connected: true, elapsedMs: 0, source: 'cached' as const })),
+        primeFromSnapshot: vi.fn(() => {}),
       },
     }
 
-    return { deps, loopsRepo, plansRepo, sectionPlansRepo, loopService, promptAsyncMock, tuiSelectSessionMock }
+    return { deps, loopsRepo, plansRepo, sectionPlansRepo, loopService, promptAsyncMock, tuiSelectSessionMock, fakeClient }
   }
 
   test('disabled mode persists state and sends code-agent prompt', async () => {
@@ -228,7 +229,7 @@ describe('attachLoopToSession', () => {
     expect(result.ok).toBe(true)
 
     // Verify loop state was persisted
-    const state = (deps.loop as any).getActiveState('my-loop')
+    const state = (deps.loop.service as any).getActiveState('my-loop')
     expect(state).not.toBeNull()
     expect(state!.sessionId).toBe('sess_abc')
     expect(state!.worktreeDir).toBe('/tmp/wt/abc')
@@ -249,7 +250,7 @@ describe('attachLoopToSession', () => {
   test('onStarted callback is invoked after state persistence', async () => {
     const { deps } = buildDeps()
 
-    const onStartedSpy = mock(() => {})
+    const onStartedSpy = vi.fn(() => {})
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -287,8 +288,8 @@ describe('attachLoopToSession', () => {
   test('prompt failure returns ok:false and cleans up state', async () => {
     const { deps, loopsRepo, promptAsyncMock } = buildDeps()
 
-    // Make promptAsync return an error
-    promptAsyncMock.mockImplementationOnce(async () => ({ error: new Error('network timeout') }))
+    // Make promptAsync throw an error (port contract: throws on failure)
+    promptAsyncMock.mockImplementationOnce(async () => { throw new Error('network timeout') })
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -317,7 +318,7 @@ describe('attachLoopToSession', () => {
     }
 
     // State should be cleaned up on failure
-    const state = (deps.loop as any).getActiveState('fail-loop')
+    const state = (deps.loop.service as any).getActiveState('fail-loop')
     expect(state).toBeNull()
   })
 
@@ -325,10 +326,10 @@ describe('attachLoopToSession', () => {
     const { deps } = buildDeps()
 
     let deleteStateCalled = false
-    const originalDeleteState = deps.loop.deleteState.bind(deps.loop)
-    deps.loop.deleteState = (...args: any[]) => { deleteStateCalled = true; return originalDeleteState(...args) }
+    const originalDeleteState = deps.loop.service.deleteState.bind(deps.loop.service)
+    deps.loop.service.deleteState = (...args: any[]) => { deleteStateCalled = true; return originalDeleteState(...args) }
 
-    ;(deps.loop as any).setState = mock((...args: any[]) => {
+    ;(deps.loop.service as any).setState = vi.fn((...args: any[]) => {
       throw new Error('setState: loop "my-feature" already exists')
     })
 
@@ -391,8 +392,8 @@ describe('attachLoopToSession', () => {
     expect(existingBefore?.status).toBe('cancelled')
 
     let deleteStateCalled = false
-    const originalDeleteState = deps.loop.deleteState.bind(deps.loop)
-    deps.loop.deleteState = (...args: any[]) => { deleteStateCalled = true; return originalDeleteState(...args) }
+    const originalDeleteState = deps.loop.service.deleteState.bind(deps.loop.service)
+    deps.loop.service.deleteState = (...args: any[]) => { deleteStateCalled = true; return originalDeleteState(...args) }
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -450,8 +451,8 @@ describe('attachLoopToSession', () => {
     } as any)
 
     let deleteStateCalled = false
-    const originalDeleteState = deps.loop.deleteState.bind(deps.loop)
-    deps.loop.deleteState = (...args: any[]) => { deleteStateCalled = true; return originalDeleteState(...args) }
+    const originalDeleteState = deps.loop.service.deleteState.bind(deps.loop.service)
+    deps.loop.service.deleteState = (...args: any[]) => { deleteStateCalled = true; return originalDeleteState(...args) }
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -520,7 +521,7 @@ describe('attachLoopToSession', () => {
 
     expect(result.ok).toBe(true)
 
-    const state = (deps.loop as any).getActiveState('sections-loop')
+    const state = (deps.loop.service as any).getActiveState('sections-loop')
     expect(state).not.toBeNull()
     expect(state!.phase).toBe('coding')
     expect(state!.currentSectionIndex).toBe(0)
@@ -565,7 +566,7 @@ describe('attachLoopToSession', () => {
 
     expect(result.ok).toBe(true)
 
-    const state = (deps.loop as any).getActiveState('phase-loop')
+    const state = (deps.loop.service as any).getActiveState('phase-loop')
     expect(state).not.toBeNull()
     expect(state!.totalSections).toBe(0)
     // The prompt sent to the code agent equals the raw plan text (legacy single-prompt mode)
@@ -601,7 +602,7 @@ describe('attachLoopToSession', () => {
 
     expect(result.ok).toBe(true)
 
-    const state = (deps.loop as any).getActiveState('raw-loop')
+    const state = (deps.loop.service as any).getActiveState('raw-loop')
     expect(state).not.toBeNull()
     expect(state!.totalSections).toBe(0)
 
@@ -642,7 +643,7 @@ describe('attachLoopToSession', () => {
     expect(promptCallArgs.agent).toBe('code')
     expect(promptCallArgs.sessionID).toBe('sess_nodecomp')
 
-    const state = (deps.loop as any).getActiveState('nodecomp-loop')
+    const state = (deps.loop.service as any).getActiveState('nodecomp-loop')
     expect(state).not.toBeNull()
     expect(state!.phase).toBe('coding')
   })
@@ -650,8 +651,7 @@ describe('attachLoopToSession', () => {
   test('attachLoopToSession does NOT call session.update for permission repair on any surface', async () => {
     const surfaces: Array<'tui' | 'tool' | 'approval-hook'> = ['tui', 'tool', 'approval-hook']
     for (const surface of surfaces) {
-      const { deps } = buildDeps()
-      const sessionUpdateMock = deps.v2.session.update
+      const { deps, fakeClient } = buildDeps()
       const { attachLoopToSession } = await import('../../src/services/execution')
       await attachLoopToSession(
         deps as any,
@@ -675,7 +675,7 @@ describe('attachLoopToSession', () => {
         },
       )
       // Assert: session.update was NEVER called (no permission repair)
-      expect(sessionUpdateMock).not.toHaveBeenCalled()
+      expect(fakeClient.client.session.update).not.toHaveBeenCalled()
     }
   })
 
@@ -711,7 +711,7 @@ describe('attachLoopToSession', () => {
     expect(result.ok).toBe(true)
 
     // Verify loop state was persisted with variants
-    const state = (deps.loop as any).getActiveState('variant-loop')
+    const state = (deps.loop.service as any).getActiveState('variant-loop')
     expect(state).not.toBeNull()
     expect(state!.sessionId).toBe('sess_variant')
     expect(state!.executionVariant).toBe('thinking-max')

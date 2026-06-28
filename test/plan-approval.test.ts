@@ -130,7 +130,7 @@ describe('Plan Approval Tool Interception', () => {
 
     const LOOP_BLOCKED_TOOLS: Record<string, string> = {
       question: 'The question tool is not available during a loop. Do not ask questions — continue working on the task autonomously.',
-      loop: 'The loop tool is not available during a loop. Focus on executing the current plan.',
+      'execute-plan': 'The execute-plan tool is not available during a loop. Focus on executing the current plan.',
     }
 
     if (!(tool in LOOP_BLOCKED_TOOLS)) return
@@ -289,10 +289,10 @@ describe('Plan Approval Tool Interception', () => {
   test('Loop blocking works for loop tool', () => {
     const output = { title: '', output: 'test', metadata: {} }
 
-    simulateToolExecuteAfter('loop', {}, output, true)
+    simulateToolExecuteAfter('execute-plan', {}, output, true)
 
     expect(output.title).toBe('Tool blocked')
-    expect(output.output).toContain('loop tool is not available')
+    expect(output.output).toContain('execute-plan tool is not available')
   })
 
   test('Loop blocking does not affect non-blocked tools', () => {
@@ -307,49 +307,55 @@ describe('Plan Approval Tool Interception', () => {
   test('Loop blocking only applies when loop is active', () => {
     const output = { title: '', output: 'test', metadata: {} }
 
-    simulateToolExecuteAfter('loop', {}, output, false)
+    simulateToolExecuteAfter('execute-plan', {}, output, false)
 
     expect(output.title).toBe('')
     expect(output.output).toBe('test')
   })
 
   test('Matches metadata answer exactly', async () => {
-    const v2AbortSpy = vi.fn(() => Promise.resolve({ data: {} }))
-    const legacyAbortSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
+    const abortSpy = vi.fn(() => Promise.resolve())
     const ctx = {
-      loopService: {
-        resolveLoopName: () => 'test-loop',
-        getActiveState: () => null,
+      loop: {
+        service: {
+          resolveLoopName: () => 'test-loop',
+          getActiveState: () => null,
+        },
       },
       logger: createMockLogger(),
-      v2: {
+      client: {
         session: {
-          abort: v2AbortSpy,
-          promptAsync: async () => ({ data: {} }),
-          create: async () => ({ data: { id: 'new-session-id' } }),
+          abort: abortSpy,
+          promptAsync: async () => {},
+          create: async () => ({ id: 'new-session-id' }),
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: async () => ({ data: {} }),
-          publish: async () => ({ data: {} }),
+          publish: async () => {},
+          selectSession: async () => {},
         },
-      } as unknown as ToolContext['v2'],
+        sync: {
+          start: async () => {},
+        },
+      },
       plansRepo,
       config: {} as PluginConfig,
       projectId,
       directory: '/test',
       dataDir: TEST_DIR,
       cleanup: async () => {},
-      input: {
-        messages: [],
-        systemPrompt: '',
-        client: {
-          session: {
-            abort: legacyAbortSpy,
-            create: async () => ({ data: { id: 'new-session-id' } }),
-            promptAsync: async () => ({ data: {} }),
-          },
-        } as any,
-      },
       systemPrompt: '',
       messages: [],
       loopsRepo: createLoopsRepo(db),
@@ -385,35 +391,52 @@ describe('Plan Approval Tool Interception', () => {
 
     expect(output.output).toBe('Execute here')
     expect((output.metadata as any).forgePlanApprovalHandled).toBe(true)
-    expect(legacyAbortSpy).toHaveBeenCalled()
+    expect(abortSpy).toHaveBeenCalled()
   })
 
   test('Matches metadata answer by prefix', async () => {
-    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve())
     const ctx = {
-      loopService: {
-        resolveLoopName: () => 'test-loop',
-        getActiveState: () => null,
+      loop: {
+        service: {
+          resolveLoopName: () => 'test-loop',
+          getActiveState: () => null,
+        },
       },
       logger: createMockLogger(),
-      v2: {
+      client: {
         session: {
           abort: abortSpy,
-          promptAsync: async () => ({ data: {} }),
-          create: async () => ({ data: { id: 'new-session-id' } }),
+          promptAsync: async () => {},
+          create: async () => ({ id: 'new-session-id' }),
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: async () => ({ data: {} }),
-          publish: async () => ({ data: {} }),
+          publish: async () => {},
+          selectSession: async () => {},
         },
-      } as unknown as ToolContext['v2'],
+        sync: {
+          start: async () => {},
+        },
+      },
       plansRepo,
       config: {} as PluginConfig,
       projectId,
       directory: '/test',
       dataDir: TEST_DIR,
       cleanup: async () => {},
-      input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
       loopsRepo: createLoopsRepo(db),
@@ -453,31 +476,48 @@ describe('Plan Approval Tool Interception', () => {
   })
 
   test('Does not match middle-of-string text', async () => {
-    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve())
     const ctx = {
-      loopService: {
-        resolveLoopName: () => 'test-loop',
-        getActiveState: () => null,
+      loop: {
+        service: {
+          resolveLoopName: () => 'test-loop',
+          getActiveState: () => null,
+        },
       },
       logger: createMockLogger(),
-      v2: {
+      client: {
         session: {
           abort: abortSpy,
-          promptAsync: async () => ({ data: {} }),
-          create: async () => ({ data: { id: 'new-session-id' } }),
+          promptAsync: async () => {},
+          create: async () => ({ id: 'new-session-id' }),
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: async () => ({ data: {} }),
-          publish: async () => ({ data: {} }),
+          publish: async () => {},
+          selectSession: async () => {},
         },
-      } as unknown as ToolContext['v2'],
+        sync: {
+          start: async () => {},
+        },
+      },
       plansRepo,
       config: {} as PluginConfig,
       projectId,
       directory: '/test',
       dataDir: TEST_DIR,
       cleanup: async () => {},
-      input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
       loopsRepo: createLoopsRepo(db),
@@ -516,31 +556,48 @@ describe('Plan Approval Tool Interception', () => {
   })
 
   test('Falls back to output when metadata answers are missing', async () => {
-    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve())
     const ctx = {
-      loopService: {
-        resolveLoopName: () => 'test-loop',
-        getActiveState: () => null,
+      loop: {
+        service: {
+          resolveLoopName: () => 'test-loop',
+          getActiveState: () => null,
+        },
       },
       logger: createMockLogger(),
-      v2: {
+      client: {
         session: {
           abort: abortSpy,
-          promptAsync: async () => ({ data: {} }),
-          create: async () => ({ data: { id: 'new-session-id' } }),
+          promptAsync: async () => {},
+          create: async () => ({ id: 'new-session-id' }),
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: async () => ({ data: {} }),
-          publish: async () => ({ data: {} }),
+          publish: async () => {},
+          selectSession: async () => {},
         },
-      } as unknown as ToolContext['v2'],
+        sync: {
+          start: async () => {},
+        },
+      },
       plansRepo,
       config: {} as PluginConfig,
       projectId,
       directory: '/test',
       dataDir: TEST_DIR,
       cleanup: async () => {},
-      input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
       loopsRepo: createLoopsRepo(db),
@@ -581,31 +638,48 @@ describe('Plan Approval Tool Interception', () => {
   })
 
   test('Execute here approval schedules source abort and returns without throwing', async () => {
-    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve())
     const ctx = {
-      loopService: {
-        resolveLoopName: () => 'test-loop',
-        getActiveState: () => null,
+      loop: {
+        service: {
+          resolveLoopName: () => 'test-loop',
+          getActiveState: () => null,
+        },
       },
       logger: createMockLogger(),
-      v2: {
+      client: {
         session: {
           abort: abortSpy,
-          promptAsync: async () => ({ data: {} }),
-          create: async () => ({ data: { id: 'new-session-id' } }),
+          promptAsync: async () => {},
+          create: async () => ({ id: 'new-session-id' }),
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: async () => ({ data: {} }),
-          publish: async () => ({ data: {} }),
+          publish: async () => {},
+          selectSession: async () => {},
         },
-      } as unknown as ToolContext['v2'],
+        sync: {
+          start: async () => {},
+        },
+      },
       plansRepo,
       config: {} as PluginConfig,
       projectId,
       directory: '/test',
       dataDir: TEST_DIR,
       cleanup: async () => {},
-      input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
       loopsRepo: createLoopsRepo(db),
@@ -645,31 +719,48 @@ describe('Plan Approval Tool Interception', () => {
   })
 
   test('New session approval schedules source abort and returns without throwing', async () => {
-    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve())
     const ctx = {
-      loopService: {
-        resolveLoopName: () => 'test-loop',
-        getActiveState: () => null,
+      loop: {
+        service: {
+          resolveLoopName: () => 'test-loop',
+          getActiveState: () => null,
+        },
       },
       logger: createMockLogger(),
-      v2: {
+      client: {
         session: {
           abort: abortSpy,
-          promptAsync: async () => ({ data: {} }),
-          create: async () => ({ data: { id: 'new-session-id' } }),
+          promptAsync: async () => {},
+          create: async () => ({ id: 'new-session-id' }),
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: async () => ({ data: {} }),
-          publish: async () => ({ data: {} }),
+          publish: async () => {},
+          selectSession: async () => {},
         },
-      } as unknown as ToolContext['v2'],
+        sync: {
+          start: async () => {},
+        },
+      },
       plansRepo,
       config: {} as PluginConfig,
       projectId,
       directory: '/test',
       dataDir: TEST_DIR,
       cleanup: async () => {},
-      input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
       loopsRepo: createLoopsRepo(db),
@@ -708,33 +799,48 @@ describe('Plan Approval Tool Interception', () => {
     expect(abortSpy).toHaveBeenCalledWith({ sessionID, directory: "/test" })
   })
 
-  test('Loop approval schedules source abort and returns without throwing', async () => {
-    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
+  test('Loop approval does not abort and defers to the loop tool', async () => {
+    const abortSpy = vi.fn(() => Promise.resolve())
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
     
     const ctx = {
-      loopService,
+      loop: { service: loopService },
       logger: createMockLogger(),
-      v2: {
+      client: {
         session: {
           abort: abortSpy,
-          promptAsync: async () => ({ data: {} }),
-          create: async () => ({ data: { id: 'new-session-id' } }),
+          promptAsync: async () => {},
+          create: async () => ({ id: 'new-session-id' }),
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: async () => ({ data: {} }),
-          publish: async () => ({ data: {} }),
+          publish: async () => {},
+          selectSession: async () => {},
         },
-      } as unknown as ToolContext['v2'],
+        sync: {
+          start: async () => {},
+        },
+      },
       plansRepo,
       config: {} as PluginConfig,
       projectId,
       directory: '/test',
       dataDir: TEST_DIR,
       cleanup: async () => {},
-      input: { messages: [], systemPrompt: '', client: { session: { promptAsync: async () => ({ data: {} }) } } as any },
       systemPrompt: '',
       messages: [],
       loopsRepo,
@@ -767,40 +873,55 @@ describe('Plan Approval Tool Interception', () => {
       output
     )).resolves.toBeUndefined()
 
-    expect(output.output).toBe('Loop')
     expect((output.metadata as any).forgePlanApprovalHandled).toBe(true)
-    
-    expect(abortSpy).toHaveBeenCalledWith({ sessionID, directory: "/test" })
+    expect(abortSpy).not.toHaveBeenCalled()
+    expect(output.output).toContain('loop')
+    expect(output.output).toContain('<system-reminder>')
   })
 
-  test('dispatches loop.start without a mode field when Loop is selected', async () => {
-    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
+  test('does not dispatch loop.start when Loop is selected (defers to loop tool)', async () => {
+    const abortSpy = vi.fn(() => Promise.resolve())
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
 
     const uniqueSessionId = `loop-dispatch-${Date.now()}`
     const ctx = {
-      loopService,
+      loop: { service: loopService },
       logger: createMockLogger(),
-      v2: {
+      client: {
         session: {
           abort: abortSpy,
-          promptAsync: async () => ({ data: {} }),
-          create: async () => ({ data: { id: 'new-session-id' } }),
+          promptAsync: async () => {},
+          create: async () => ({ id: 'new-session-id' }),
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: async () => ({ data: {} }),
-          publish: async () => ({ data: {} }),
+          publish: async () => {},
+          selectSession: async () => {},
         },
-      } as unknown as ToolContext['v2'],
+        sync: {
+          start: async () => {},
+        },
+      },
       plansRepo,
       config: {} as PluginConfig,
       projectId,
       directory: '/test-dispatch',
       dataDir: TEST_DIR,
       cleanup: async () => {},
-      input: { messages: [], systemPrompt: '', client: { session: { promptAsync: async () => ({ data: {} }) } } as any },
       systemPrompt: '',
       messages: [],
       loopsRepo,
@@ -815,7 +936,7 @@ describe('Plan Approval Tool Interception', () => {
     vi.spyOn(executionModule, 'createForgeExecutionService').mockImplementation((deps: any) => ({
       dispatch: async (_execCtx: any, command: any) => {
         capturedCommand = command
-        return { ok: true, data: {} }
+        return { ok: true, data: {} as any }
       },
     }))
 
@@ -848,12 +969,9 @@ describe('Plan Approval Tool Interception', () => {
       await new Promise(resolve => setTimeout(resolve, 10))
 
       expect((output.metadata as any).forgePlanApprovalHandled).toBe(true)
-
-      expect(abortSpy).toHaveBeenCalled()
-
-      expect(capturedCommand).toBeDefined()
-      expect(capturedCommand.type).toBe('loop.start')
-      expect(capturedCommand).not.toHaveProperty('mode')
+      expect(abortSpy).not.toHaveBeenCalled()
+      expect(capturedCommand).toBeNull()
+      expect(output.output).toContain('<system-reminder>')
     } finally {
       vi.restoreAllMocks()
     }
@@ -867,9 +985,11 @@ describe('Tool blocking hook', () => {
 
   function createContextForLoopState(state: { active: boolean; sessionId: string; phase?: string } | null): ToolContext {
     return {
-      loopService: {
-        resolveLoopName: () => state ? loopName : null,
-        getActiveState: () => state,
+      loop: {
+        service: {
+          resolveLoopName: () => state ? loopName : null,
+          getActiveState: () => state,
+        },
       },
       logger: createMockLogger(),
     } as unknown as ToolContext
@@ -941,7 +1061,7 @@ describe('Tool blocking hook', () => {
     }))!
     const output = { title: '', output: 'original output', metadata: {} }
 
-    await hook({ tool: 'loop', sessionID, callID: 'call-1', args: {} }, output)
+    await hook({ tool: 'execute-plan', sessionID, callID: 'call-1', args: {} }, output)
 
     expect(output.title).toBe('')
     expect(output.output).toBe('original output')
@@ -960,17 +1080,33 @@ describe('Execute here bypass', () => {
   })
 
   function createMockContext(overrides?: Partial<ToolContext>): ToolContext {
-    const mockV2 = {
+    const mockClient = {
       session: {
-        abort: async () => ({ data: {} }),
-        promptAsync: async () => ({ data: {} }),
-        create: async () => ({ data: { id: 'new-session-id' } }),
+        abort: async () => {},
+        promptAsync: async () => {},
+        create: async () => ({ id: 'new-session-id' }),
+        status: async () => ({}),
+        get: async () => ({}),
+        messages: async () => [],
+        update: async () => {},
+        delete: async () => {},
+      },
+      workspace: {
+        create: async () => ({ id: 'mock-ws', directory: '', branch: '' }),
+        list: async () => [],
+        status: async () => [],
+        syncList: async () => {},
+        remove: async () => {},
+        warp: async () => {},
       },
       tui: {
-        selectSession: async () => ({ data: {} }),
-        publish: async () => ({ data: {} }),
+        publish: async () => {},
+        selectSession: async () => {},
       },
-    } as unknown as ToolContext['v2']
+      sync: {
+        start: async () => {},
+      },
+    }
 
     const mockConfig = {
       executionModel: 'test-provider/test-model',
@@ -991,29 +1127,45 @@ describe('Execute here bypass', () => {
       config: mockConfig,
       logger: mockLogger,
       db,
-      loopService,
+      loop: { service: loopService },
       plansRepo,
       loopsRepo,
       reviewFindingsRepo,
-      v2: mockV2,
-      input: { messages: [], systemPrompt: '', client: { session: { promptAsync: async () => ({ data: {} }) } } as any },
+      client: mockClient,
       ...overrides,
-    } as ToolContext
+    } as unknown as ToolContext
   }
 
   test('Execute here bypasses directive injection and triggers abort', async () => {
-    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve())
     const ctx = createMockContext({
-      v2: {
+      client: {
         session: {
           abort: abortSpy,
-          promptAsync: async () => ({ data: {} }),
-          create: async () => ({ data: { id: 'new-session-id' } }),
+          promptAsync: async () => {},
+          create: async () => ({ id: 'new-session-id' }),
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: async () => ({ data: {} }),
+          publish: async () => {},
+          selectSession: async () => {},
         },
-      } as unknown as ToolContext['v2'],
+        sync: {
+          start: async () => {},
+        },
+      },
     })
 
     ctx.plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
@@ -1048,29 +1200,34 @@ describe('Execute here bypass', () => {
   })
 
   test('session.idle event triggers promptAsync for pending execution', async () => {
-    const v2PromptSpy = vi.fn(() => Promise.resolve({ data: {} }))
-    const legacyPromptSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
+    const promptSpy = vi.fn(() => Promise.resolve())
     const ctx = createMockContext({
-      v2: {
+      client: {
         session: {
-          abort: async () => ({ data: {} }),
-          promptAsync: v2PromptSpy,
-          create: async () => ({ data: { id: 'new-session-id' } }),
+          abort: async () => {},
+          promptAsync: promptSpy,
+          create: async () => ({ id: 'new-session-id' }),
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: async () => ({ data: {} }),
+          publish: async () => {},
+          selectSession: async () => {},
         },
-      } as unknown as ToolContext['v2'],
-      input: {
-        messages: [],
-        systemPrompt: '',
-        client: {
-          session: {
-            abort: async () => ({ data: {} } as any),
-            promptAsync: legacyPromptSpy,
-            create: async () => ({ data: { id: 'new-session-id' } }),
-          },
-        } as any,
+        sync: {
+          start: async () => {},
+        },
       },
       config: { executionModel: 'test-provider/test-model' } as PluginConfig,
     })
@@ -1108,11 +1265,11 @@ describe('Execute here bypass', () => {
       },
     })
 
-    expect(legacyPromptSpy).toHaveBeenCalled()
-    const callArgs = (legacyPromptSpy.mock.calls[0]?.[0] as any)
-    expect(callArgs?.path?.id).toBe(sessionID)
-    expect(callArgs?.body?.agent).toBe('code')
-    expect(callArgs?.body?.parts[0].text).toContain('The architect agent has created an implementation plan')
+    expect(promptSpy).toHaveBeenCalled()
+    const callArgs = (promptSpy.mock.calls[0]?.[0] as any)
+    expect(callArgs?.sessionID).toBe(sessionID)
+    expect(callArgs?.agent).toBe('code')
+    expect(callArgs?.parts[0].text).toContain('The architect agent has created an implementation plan')
 
     await eventHook({
       event: {
@@ -1121,73 +1278,131 @@ describe('Execute here bypass', () => {
       },
     })
 
-    expect(legacyPromptSpy).toHaveBeenCalledTimes(1)
+    expect(promptSpy).toHaveBeenCalledTimes(1)
   })
 
-  test('Other approval labels do not inject directives (programmatic dispatch)', async () => {
-    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
+  test('New session injects directives but Loop defers to loop tool', async () => {
+    const abortSpy = vi.fn(() => Promise.resolve())
     const ctx = createMockContext({
-      v2: {
+      client: {
         session: {
           abort: abortSpy,
-          promptAsync: async () => ({ data: {} }),
-          create: async () => ({ data: { id: 'new-session-id' } }),
+          promptAsync: async () => {},
+          create: async () => ({ id: 'new-session-id' }),
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: async () => ({ data: {} }),
-          publish: async () => ({ data: {} }),
+          publish: async () => {},
+          selectSession: async () => {},
         },
-      } as unknown as ToolContext['v2'],
+        sync: {
+          start: async () => {},
+        },
+      },
     })
 
     ctx.plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
 
     const hook = createToolExecuteAfterHook(ctx)
 
-    const labels = ['New session', 'Loop']
-    for (let i = 0; i < labels.length; i++) {
-      const label = labels[i]
-      const args = {
-        questions: [{
-          question: 'How would you like to proceed?',
-          options: [
-            { label: 'New session', description: 'Create new session' },
-            { label: 'Execute here', description: 'Execute here' },
-            { label: 'Loop', description: 'Loop' },
-          ],
-        }],
-      }
-      const output = {
-        title: 'Asked 1 question',
-        output: label,
-        metadata: { answers: [[label]] },
-      }
-
-      await expect(hook(
-        { tool: 'question', sessionID, callID: `test-call-${i}`, args },
-        output
-      )).resolves.toBeUndefined()
-
-      expect(output.output).not.toContain('<system-reminder>')
-      expect(output.output).toBe(label)
-      expect(abortSpy).toHaveBeenCalledTimes(i + 1)
+    // Test "New session" first
+    const newSessionArgs = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop', description: 'Loop' },
+        ],
+      }],
     }
+    const nsOutput = {
+      title: 'Asked 1 question',
+      output: 'New session',
+      metadata: { answers: [['New session']] },
+    }
+
+    await expect(hook(
+      { tool: 'question', sessionID, callID: 'test-call-0', args: newSessionArgs },
+      nsOutput
+    )).resolves.toBeUndefined()
+
+    expect(nsOutput.output).not.toContain('<system-reminder>')
+    expect(nsOutput.output).toBe('New session')
+    expect(abortSpy).toHaveBeenCalledTimes(1)
+
+    // Reset abort spy for next test
+    abortSpy.mockClear()
+
+    // Test "Loop" — defers to agent, no dispatch
+    const loopArgs = {
+      questions: [{
+        question: 'How would you like to proceed?',
+        options: [
+          { label: 'New session', description: 'Create new session' },
+          { label: 'Execute here', description: 'Execute here' },
+          { label: 'Loop', description: 'Loop' },
+        ],
+      }],
+    }
+    const loopOutput = {
+      title: 'Asked 1 question',
+      output: 'Loop',
+      metadata: { answers: [['Loop']] },
+    }
+
+    await expect(hook(
+      { tool: 'question', sessionID, callID: 'test-call-1', args: loopArgs },
+      loopOutput
+    )).resolves.toBeUndefined()
+
+    expect(loopOutput.output).toContain('Loop')
+    expect(loopOutput.output).toContain('<system-reminder>')
+    expect(abortSpy).not.toHaveBeenCalled()
   })
 
   test('session.idle for non-pending session is a no-op', async () => {
-    const promptSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const promptSpy = vi.fn(() => Promise.resolve())
     const ctx = createMockContext({
-      v2: {
+      client: {
         session: {
-          abort: async () => ({ data: {} }),
+          abort: async () => {},
           promptAsync: promptSpy,
-          create: async () => ({ data: { id: 'new-session-id' } }),
+          create: async () => ({ id: 'new-session-id' }),
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: async () => ({ data: {} }),
-          publish: async () => ({ data: {} }),
+          publish: async () => {},
+          selectSession: async () => {},
         },
-      } as unknown as ToolContext['v2'],
+        sync: {
+          start: async () => {},
+        },
+      },
     })
 
     const eventHook = createPlanApprovalEventHook(ctx)
@@ -1213,9 +1428,7 @@ describe('Execute here bypass', () => {
     const originalPlan = '# Test Plan\n\nThis is a test plan.'
     plansRepo.writeForSession(projectId, testSessionID, originalPlan)
     
-    const legacyCreateSpy = vi.fn(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
-    const legacyPromptSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
-    const legacyAbortSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
+    const abortSpy = vi.fn(() => Promise.resolve())
     
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -1229,30 +1442,35 @@ describe('Execute here bypass', () => {
       plansRepo,
       loopsRepo,
       reviewFindingsRepo,
-      loopService,
-      v2: {
+      loop: { service: loopService },
+      client: {
         session: {
-          abort: async () => ({ data: {} }),
-          promptAsync: async () => ({ data: {} }),
-          create: async () => ({ data: { id: 'unused' } }),
+          abort: abortSpy,
+          promptAsync: async () => {},
+          create: async () => ({ id: 'unused' }),
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: async () => ({ data: {} }),
-          publish: async () => ({ data: {} }),
+          publish: async () => {},
+          selectSession: async () => {},
         },
-      } as unknown as ToolContext['v2'],
-      input: {
-        messages: [] as any,
-        systemPrompt: '',
-        client: {
-          session: {
-            abort: legacyAbortSpy,
-            promptAsync: legacyPromptSpy,
-            create: legacyCreateSpy,
-          },
-        } as any,
-      } as any,
-    } as ToolContext
+        sync: {
+          start: async () => {},
+        },
+      },
+    } as unknown as ToolContext
 
     const hook = createToolExecuteAfterHook(ctx)
 
@@ -1294,8 +1512,8 @@ describe('Execute here bypass', () => {
     // Verify plan persists in session-scoped repo after dispatch
     const planAfter = plansRepo.getForSession(projectId, testSessionID)
     expect(planAfter?.content).toBe(originalPlan)
-    // Abort should have been called (legacy abort is used by the hook directly)
-    expect(legacyAbortSpy).toHaveBeenCalled()
+    // Abort should have been called (on the port client)
+    expect(abortSpy).toHaveBeenCalled()
     // Duplicate should preserve original output and add duplicate metadata
     expect(duplicateOutput.output).toBe('New session')
     expect((duplicateOutput.metadata as any).forgePlanApprovalDuplicate).toBe(true)
@@ -1311,8 +1529,7 @@ describe('Execute here bypass', () => {
     const originalPlan = '# Execute Here Plan\n\nThis plan should persist after Execute here.'
     plansRepo.writeForSession(projectId, testSessionID, originalPlan)
 
-    const promptSpy = vi.fn(() => Promise.resolve({ data: {} }))
-    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve())
 
     const loopsRepo = createLoopsRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
@@ -1324,17 +1541,35 @@ describe('Execute here bypass', () => {
       config: { executionModel: 'test-provider/test-model' } as PluginConfig,
       logger: createMockLogger(),
       plansRepo,
-      loopService,
-      v2: {
+      loop: { service: loopService },
+      client: {
         session: {
           abort: abortSpy,
-          promptAsync: promptSpy,
+          promptAsync: async () => {},
+          create: async () => ({ id: '' }),
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: async () => ({ data: {} }),
+          publish: async () => {},
+          selectSession: async () => {},
         },
-      } as unknown as ToolContext['v2'],
-    } as ToolContext
+        sync: {
+          start: async () => {},
+        },
+      },
+    } as unknown as ToolContext
 
     const hook = createToolExecuteAfterHook(ctx)
 
@@ -1367,7 +1602,7 @@ describe('Execute here bypass', () => {
     expect(planAfter?.content).toBe(originalPlan)
   })
 
-  test('Loop path plan persists after successful setup', async () => {
+  test('Loop defers to agent (no dispatch, no abort, plan preserved)', async () => {
     const db = createTestDb()
     openDbs.push(db)
     const testSessionID = 'test-session-loop'
@@ -1377,13 +1612,10 @@ describe('Execute here bypass', () => {
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
 
-    const originalPlan = '# Loop Plan\n\nThis plan should persist after Loop setup.'
+    const originalPlan = '# Loop Plan\n\nThis plan should persist after Loop selection.'
     plansRepo.writeForSession(projectId, testSessionID, originalPlan)
 
-    const createSpy = vi.fn(() => Promise.resolve({ data: { id: 'loop-session-123' } }))
-    const promptSpy = vi.fn(() => Promise.resolve({ data: {} }))
-    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
-    const selectSessionSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve())
 
     const ctx = {
       projectId,
@@ -1391,29 +1623,40 @@ describe('Execute here bypass', () => {
       config: { executionModel: 'test-provider/test-model', loop: { defaultMaxIterations: 5 } } as PluginConfig,
       logger: createMockLogger(),
       plansRepo,
-      loopService,
+      loop: { service: loopService },
       loopHandler: {
         startWatchdog: vi.fn(() => {}),
       },
-      v2: {
+      client: {
         session: {
           abort: abortSpy,
-          promptAsync: promptSpy,
-          create: createSpy,
+          promptAsync: async () => {},
+          create: async () => ({ id: 'loop-session-123' }),
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: 'ws-loop-test', directory: `${TEST_DIR}/loop-workspace`, branch: 'opencode/loop' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: selectSessionSpy,
+          publish: async () => {},
+          selectSession: async () => {},
         },
-        experimental: {
-          workspace: {
-            create: vi.fn(async () => ({ data: { id: 'ws-loop-test', directory: `${TEST_DIR}/loop-workspace`, branch: 'opencode/loop' }, error: undefined })),
-          },
+        sync: {
+          start: async () => {},
         },
       },
       db,
       dataDir: TEST_DIR,
       cleanup: async () => {},
-      input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
       loopsRepo,
@@ -1444,26 +1687,16 @@ describe('Execute here bypass', () => {
       output
     )).resolves.toBeUndefined()
 
-    // Abort is called synchronously (awaited in hook)
-    expect(abortSpy).toHaveBeenCalledWith({ sessionID: testSessionID, directory: "/test/dir" })
+    // No abort or dispatch — deferring to agent loop tool
+    expect(abortSpy).not.toHaveBeenCalled()
+    expect(output.output).toContain('<system-reminder>')
 
-    // Wait for dispatch IIFE to complete
-    await new Promise(resolve => setTimeout(resolve, 200))
-
-    // Verify plan persists in session-scoped repo after loop setup
+    // Plan persists in session-scoped repo (not consumed by dispatch)
     const planAfter = plansRepo.getForSession(projectId, testSessionID)
     expect(planAfter?.content).toBe(originalPlan)
-
-    // Verify loop was created and plan was stored in plans table
-    const loopRow = db.prepare('SELECT loop_name FROM loops WHERE project_id = ?').get(projectId) as { loop_name: string } | null
-    expect(loopRow).toBeDefined()
-    if (loopRow) {
-      const planRow = db.prepare('SELECT content FROM plans WHERE project_id = ? AND loop_name = ?').get(projectId, loopRow.loop_name) as { content: string } | null
-      expect(planRow?.content).toBe(originalPlan)
-    }
   })
 
-  test('Loop path plan persists after failed setup', async () => {
+  test('Loop defers to agent even when session create would fail (no dispatch)', async () => {
     const db = createTestDb()
     openDbs.push(db)
     const testSessionID = 'test-session-loop-fail'
@@ -1473,11 +1706,11 @@ describe('Execute here bypass', () => {
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, createMockLogger())
 
-    const originalPlan = '# Failed Loop Plan\n\nThis plan should persist after failed Loop setup.'
+    const originalPlan = '# Failed Loop Plan\n\nThis plan should persist.'
     plansRepo.writeForSession(projectId, testSessionID, originalPlan)
 
-    const createSpy = vi.fn(() => Promise.resolve({ data: null, error: 'Failed to create session' }))
-    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve())
+    const tuiPublishSpy = vi.fn(() => Promise.resolve())
 
     const ctx = {
       projectId,
@@ -1485,24 +1718,40 @@ describe('Execute here bypass', () => {
       config: { executionModel: 'test-provider/test-model', loop: { defaultMaxIterations: 5 } } as PluginConfig,
       logger: createMockLogger(),
       plansRepo,
-      loopService,
+      loop: { service: loopService },
       loopHandler: {
         startWatchdog: vi.fn(() => {}),
       },
-      v2: {
+      client: {
         session: {
           abort: abortSpy,
-          promptAsync: vi.fn(() => Promise.resolve({ data: {} })),
-          create: createSpy,
+          promptAsync: async () => {},
+          create: async () => { throw new Error('Failed to create session') },
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: vi.fn(() => Promise.resolve({ data: {} })),
+          publish: tuiPublishSpy,
+          selectSession: async () => {},
+        },
+        sync: {
+          start: async () => {},
         },
       },
       db,
       dataDir: TEST_DIR,
       cleanup: async () => {},
-      input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
       loopsRepo,
@@ -1528,27 +1777,17 @@ describe('Execute here bypass', () => {
       metadata: { answers: [['Loop']] },
     }
 
-    const tuiPublishSpy = vi.fn(() => Promise.resolve() as any)
-    ;(ctx.v2.tui as any).publish = tuiPublishSpy
-
     await expect(hook(
       { tool: 'question', sessionID: testSessionID, callID: 'test-call', args },
       output
     )).resolves.toBeUndefined()
 
-    // Abort is called synchronously (awaited in hook)
-    expect(abortSpy).toHaveBeenCalledTimes(1)
+    // No abort or dispatch — deferring to agent loop tool
+    expect(abortSpy).not.toHaveBeenCalled()
+    expect(tuiPublishSpy).not.toHaveBeenCalled()
+    expect(output.output).toContain('<system-reminder>')
 
-    // Wait for dispatch IIFE to complete
-    await new Promise(resolve => setTimeout(resolve, 50))
-    
-    // Verify failure is surfaced via toast
-    expect(tuiPublishSpy).toHaveBeenCalled()
-    const publishCall = (tuiPublishSpy.mock.calls[0] as any)[0]
-    expect(publishCall?.body?.type).toBe('tui.toast.show')
-    expect(publishCall?.body?.properties?.variant).toBe('error')
-
-    // Verify plan persists in session-scoped repo after failed loop setup
+    // Plan persists (not consumed by dispatch)
     const planAfter = plansRepo.getForSession(projectId, testSessionID)
     expect(planAfter?.content).toBe(originalPlan)
   })
@@ -1605,17 +1844,33 @@ describe('Fire-and-forget dispatch behavior', () => {
   })
 
   function createMockContext(overrides?: Partial<ToolContext>): ToolContext {
-    const mockV2 = {
+    const mockClient = {
       session: {
-        abort: async () => ({ data: {} }),
-        promptAsync: async () => ({ data: {} }),
-        create: async () => ({ data: { id: 'new-session-id' } }),
+        abort: async () => {},
+        promptAsync: async () => {},
+        create: async () => ({ id: 'new-session-id' }),
+        status: async () => ({}),
+        get: async () => ({}),
+        messages: async () => [],
+        update: async () => {},
+        delete: async () => {},
+      },
+      workspace: {
+        create: async () => ({ id: '', directory: '', branch: '' }),
+        list: async () => [],
+        status: async () => [],
+        syncList: async () => {},
+        remove: async () => {},
+        warp: async () => {},
       },
       tui: {
-        selectSession: async () => ({ data: {} }),
-        publish: async () => ({ data: {} }),
+        publish: async () => {},
+        selectSession: async () => {},
       },
-    } as unknown as ToolContext['v2']
+      sync: {
+        start: async () => {},
+      },
+    }
 
     const mockConfig = {
       executionModel: 'test-provider/test-model',
@@ -1638,22 +1893,21 @@ describe('Fire-and-forget dispatch behavior', () => {
       config: mockConfig,
       logger: mockLogger,
       db,
-      loopService,
+      loop: { service: loopService },
       plansRepo,
       loopsRepo,
       reviewFindingsRepo,
-      v2: mockV2,
+      client: mockClient,
       loopHandler: {
         startWatchdog: vi.fn(() => {}),
       },
       sandboxManager: null,
       dataDir: TEST_DIR,
       cleanup: async () => {},
-      input: { messages: [], systemPrompt: '' },
       systemPrompt: '',
       messages: [],
       ...overrides,
-    } as ToolContext
+    } as unknown as ToolContext
   }
 
   test('New session approval returns before promptAsync resolves', async () => {
@@ -1663,21 +1917,36 @@ describe('Fire-and-forget dispatch behavior', () => {
       resolvePrompt = resolve
     })
     
-    const promptSpy = vi.fn(() => pendingPromise)
-    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve())
     
     const ctx = createMockContext({
-      v2: {
+      client: {
         session: {
           abort: abortSpy,
-          promptAsync: promptSpy,
+          promptAsync: () => pendingPromise,
           create: () => pendingPromise,
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: async () => ({ data: {} }),
-          publish: async () => ({ data: {} }),
+          publish: async () => {},
+          selectSession: async () => {},
         },
-      } as unknown as ToolContext['v2'],
+        sync: {
+          start: async () => {},
+        },
+      },
     })
 
     ctx.plansRepo.writeForSession(projectId, sid, '# Test Plan\n\nThis is a test plan.')
@@ -1731,27 +2000,42 @@ describe('Fire-and-forget dispatch behavior', () => {
     resolvePrompt!()
   })
 
-  test('Loop approval returns before promptAsync resolves', async () => {
+  test('Loop approval returns before promptAsync resolves (defers to loop tool)', async () => {
     let resolvePrompt: () => void
     const pendingPromise = new Promise<any>((resolve) => {
       resolvePrompt = resolve
     })
     
-    const promptSpy = vi.fn(() => pendingPromise)
-    const abortSpy = vi.fn(() => Promise.resolve({ data: {} }))
+    const abortSpy = vi.fn(() => Promise.resolve())
     
     const ctx = createMockContext({
-      v2: {
+      client: {
         session: {
           abort: abortSpy,
-          promptAsync: promptSpy,
+          promptAsync: () => pendingPromise,
           create: () => pendingPromise,
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: async () => ({ data: {} }),
-          publish: async () => ({ data: {} }),
+          publish: async () => {},
+          selectSession: async () => {},
         },
-      } as unknown as ToolContext['v2'],
+        sync: {
+          start: async () => {},
+        },
+      },
       config: { executionModel: 'test-provider/test-model', loop: { defaultMaxIterations: 5 } } as PluginConfig,
     })
 
@@ -1795,45 +2079,48 @@ describe('Fire-and-forget dispatch behavior', () => {
       }),
     ])
     
-    // Output should be preserved immediately
-    expect(output.output).toBe('Loop')
+    // Output should contain system-reminder directing agent to use loop tool
+    expect(output.output).toContain('Loop')
+    expect(output.output).toContain('<system-reminder>')
     
-    
-    // Abort should be called
-    expect(abortSpy).toHaveBeenCalled()
+    // No abort or dispatch — deferring to agent loop tool
+    expect(abortSpy).not.toHaveBeenCalled()
     
     // Clean up pending promise
     resolvePrompt!()
   })
 
   test('Duplicate New session approval schedules one dispatch', async () => {
-    const legacyCreateSpy = vi.fn(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
-    const legacyPromptSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
-    const legacyAbortSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
+    const abortSpy = vi.fn(() => Promise.resolve())
     
     const ctx = createMockContext({
-      v2: {
+      client: {
         session: {
-          abort: async () => ({ data: {} }),
-          promptAsync: async () => ({ data: {} }),
-          create: async () => ({ data: { id: 'unused' } }),
+          abort: abortSpy,
+          promptAsync: async () => {},
+          create: async () => ({ id: 'new-session-id' }),
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: async () => ({ data: {} }),
-          publish: async () => ({ data: {} }),
+          publish: async () => {},
+          selectSession: async () => {},
         },
-      } as unknown as ToolContext['v2'],
-      input: {
-        messages: [] as any,
-        systemPrompt: '',
-        client: {
-          session: {
-            abort: legacyAbortSpy,
-            promptAsync: legacyPromptSpy,
-            create: legacyCreateSpy,
-          },
-        } as any,
-      } as any,
+        sync: {
+          start: async () => {},
+        },
+      },
     })
 
     ctx.plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
@@ -1878,46 +2165,44 @@ describe('Fire-and-forget dispatch behavior', () => {
     await new Promise(resolve => setTimeout(resolve, 100))
 
     // Abort is called for each approval call (both original and duplicate)
-    expect(legacyAbortSpy).toHaveBeenCalledTimes(2)
+    expect(abortSpy).toHaveBeenCalledTimes(2)
     // Duplicate should preserve original output and add duplicate metadata
     expect(duplicateOutput.output).toBe('New session')
     expect((duplicateOutput.metadata as any).forgePlanApprovalDuplicate).toBe(true)
   })
 
   test('Duplicate New session approval with a different callID schedules one dispatch', async () => {
-    let resolveAbort: () => void
-    const abortPromise = new Promise<{ data: {} }>((resolve) => {
-      resolveAbort = () => resolve({ data: {} })
-    })
-    const legacyCreateSpy = vi.fn(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
-    const legacyPromptSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
-    const legacyAbortSpy = vi.fn(() => abortPromise as any)
-    const v2CreateSpy = vi.fn(() => Promise.resolve({ data: { id: 'new-session-id' } }))
-    const sharedClient = {
-      session: {
-        abort: legacyAbortSpy,
-        promptAsync: legacyPromptSpy,
-        create: legacyCreateSpy,
-      },
-    } as any
+    const abortSpy = vi.fn(() => Promise.resolve())
+    const createSpy = vi.fn(() => Promise.resolve({ id: 'new-session-id' }))
 
     const ctx = createMockContext({
-      v2: {
+      client: {
         session: {
-          abort: async () => ({ data: {} }),
-          promptAsync: async () => ({ data: {} }),
-          create: v2CreateSpy,
+          abort: abortSpy,
+          promptAsync: async () => {},
+          create: createSpy,
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: async () => ({ data: {} }),
-          publish: async () => ({ data: {} }),
+          publish: async () => {},
+          selectSession: async () => {},
         },
-      } as unknown as ToolContext['v2'],
-      input: {
-        messages: [] as any,
-        systemPrompt: '',
-        client: sharedClient,
-      } as any,
+        sync: {
+          start: async () => {},
+        },
+      },
     })
 
     ctx.plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\nThis is a test plan.')
@@ -1935,18 +2220,15 @@ describe('Fire-and-forget dispatch behavior', () => {
       }],
     }
 
+    const firstOutput = {
+      title: 'Asked 1 question',
+      output: 'New session',
+      metadata: { answers: [['New session']] },
+    }
+
     const firstHook = hook(
-      {
-        tool: 'question',
-        sessionID,
-        callID: 'test-call-1',
-        args,
-      },
-      {
-        title: 'Asked 1 question',
-        output: 'New session',
-        metadata: { answers: [['New session']] },
-      }
+      { tool: 'question', sessionID, callID: 'test-call-1', args },
+      firstOutput
     )
 
     const duplicateOutput = {
@@ -1956,26 +2238,23 @@ describe('Fire-and-forget dispatch behavior', () => {
     }
 
     const duplicateHook = hook(
-      {
-        tool: 'question',
-        sessionID,
-        callID: 'test-call-2',
-        args,
-      },
+      { tool: 'question', sessionID, callID: 'test-call-2', args },
       duplicateOutput
     )
-
-    resolveAbort!()
 
     await expect(duplicateHook).resolves.toBeUndefined()
     await expect(firstHook).resolves.toBeUndefined()
 
-    await new Promise(resolve => setTimeout(resolve, 500))
+    await new Promise(resolve => setTimeout(resolve, 200))
 
-    expect(v2CreateSpy).toHaveBeenCalledTimes(1)
-    expect(legacyAbortSpy).toHaveBeenCalledTimes(2)
+    // Only one dispatch session.create (claimed by first caller)
+    expect(createSpy).toHaveBeenCalledTimes(1)
+    // Abort is called for each approval call (both original and duplicate)
+    expect(abortSpy).toHaveBeenCalledTimes(2)
+    // Duplicate gets the flag
     expect((duplicateOutput.metadata as any).forgePlanApprovalDuplicate).toBe(true)
 
+    // A third call with yet another callID is also a duplicate
     const laterDuplicateOutput = {
       title: 'Asked 1 question',
       output: 'New session',
@@ -1989,43 +2268,47 @@ describe('Fire-and-forget dispatch behavior', () => {
 
     await new Promise(resolve => setTimeout(resolve, 100))
 
-    expect(v2CreateSpy).toHaveBeenCalledTimes(1)
-    expect(legacyAbortSpy).toHaveBeenCalledTimes(3)
+    // Still only one dispatch
+    expect(createSpy).toHaveBeenCalledTimes(1)
+    // Abort called a third time
+    expect(abortSpy).toHaveBeenCalledTimes(3)
     expect((laterDuplicateOutput.metadata as any).forgePlanApprovalDuplicate).toBe(true)
   })
 
   test('Dispatch IIFE survives slow source-session abort', async () => {
     let resolveAbort: () => void
-    const abortPromise = new Promise<{ data: {} }>((resolve) => {
-      resolveAbort = () => resolve({ data: {} })
-    })
-    const legacyCreateSpy = vi.fn(() => Promise.resolve({ data: { id: 'new-session-123' } } as any))
-    const legacyPromptSpy = vi.fn(() => Promise.resolve({ data: {} } as any))
-    const legacyAbortSpy = vi.fn(() => abortPromise as any)
+    const abortSpy = vi.fn(() => new Promise<void>((resolve) => {
+      resolveAbort = resolve
+    }))
 
     const ctx = createMockContext({
-      v2: {
+      client: {
         session: {
-          abort: async () => ({ data: {} }),
-          promptAsync: async () => ({ data: {} }),
-          create: async () => ({ data: { id: 'unused' } }),
+          abort: abortSpy,
+          promptAsync: async () => {},
+          create: async () => ({ id: 'new-session-id' }),
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: async () => ({ data: {} }),
-          publish: async () => ({ data: {} }),
+          publish: async () => {},
+          selectSession: async () => {},
         },
-      } as unknown as ToolContext['v2'],
-      input: {
-        messages: [] as any,
-        systemPrompt: '',
-        client: {
-          session: {
-            abort: legacyAbortSpy,
-            promptAsync: legacyPromptSpy,
-            create: legacyCreateSpy,
-          },
-        } as any,
-      } as any,
+        sync: {
+          start: async () => {},
+        },
+      },
     })
 
     ctx.plansRepo.writeForSession(projectId, sessionID, '# Test Plan\n\n')
@@ -2054,6 +2337,9 @@ describe('Fire-and-forget dispatch behavior', () => {
       output
     )
 
+    // Wait a tick for the hook to start executing and call abortSpy
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(resolveAbort).toBeDefined()
     // Now resolve the abort
     resolveAbort!()
 
@@ -2061,43 +2347,62 @@ describe('Fire-and-forget dispatch behavior', () => {
     await expect(hookPromise).resolves.toBeUndefined()
   })
 
-  test('Falls back to v2 client when legacy client is unavailable', async () => {
+  test('Port abort is called on session.abort', async () => {
     const db = createTestDb()
+    openDbs.push(db)
     const testPlansRepo = createPlansRepo(db)
-    const v2AbortSpy = vi.fn(() => Promise.resolve({ data: {} }))
-    const testSid = 'fire-v2-fallback-' + (++nextTestId)
+    const testLoopsRepo = createLoopsRepo(db)
+    const testReviewFindingsRepo = createReviewFindingsRepo(db)
+    const abortSpy = vi.fn(() => Promise.resolve())
     const ctx = {
-      loopService: {
-        resolveLoopName: () => 'test-loop',
-        getActiveState: () => null,
+      loop: {
+        service: {
+          resolveLoopName: () => 'test-loop',
+          getActiveState: () => null,
+        },
       },
       logger: createMockLogger(),
-      v2: {
+      client: {
         session: {
-          abort: v2AbortSpy,
-          promptAsync: async () => ({ data: {} }),
-          create: async () => ({ data: { id: 'new-session-id' } }),
+          abort: abortSpy,
+          promptAsync: async () => {},
+          create: async () => ({ id: 'new-session-id' }),
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: async () => ({ data: {} }),
-          publish: async () => ({ data: {} }),
+          publish: async () => {},
+          selectSession: async () => {},
         },
-      } as unknown as ToolContext['v2'],
+        sync: {
+          start: async () => {},
+        },
+      },
       plansRepo: testPlansRepo,
       config: {} as PluginConfig,
       projectId,
       directory: '/test',
       dataDir: TEST_DIR,
       cleanup: async () => {},
-      input: { messages: [], systemPrompt: '', client: undefined } as any,
       systemPrompt: '',
       messages: [],
-      loopsRepo: createLoopsRepo(db),
-      reviewFindingsRepo: createReviewFindingsRepo(db),
+      loopsRepo: testLoopsRepo,
+      reviewFindingsRepo: testReviewFindingsRepo,
       sandboxManager: null,
     } as unknown as ToolContext
 
-    testPlansRepo.writeForSession(projectId, testSid, '# plan')
+    testPlansRepo.writeForSession(projectId, 'test-sid', '# plan')
 
     const hook = createToolExecuteAfterHook(ctx)
 
@@ -2118,56 +2423,75 @@ describe('Fire-and-forget dispatch behavior', () => {
     }
 
     await expect(hook(
-      { tool: 'question', sessionID: testSid, callID: 'test-call', args },
+      { tool: 'question', sessionID: 'test-sid', callID: 'test-call', args },
       output
     )).resolves.toBeUndefined()
 
-    expect(v2AbortSpy).toHaveBeenCalled()
-    db.close()
+    expect(abortSpy).toHaveBeenCalled()
   })
 
-  test('Treats v2 abort returning {error,...} as a failure (logs error)', async () => {
+  test('Treats port abort throwing as a failure (logs error)', async () => {
     const db = createTestDb()
+    openDbs.push(db)
     const testPlansRepo = createPlansRepo(db)
-    const v2AbortSpy = vi.fn(() => Promise.resolve({ data: undefined, error: 'Unable to connect' }))
+    const testLoopsRepo = createLoopsRepo(db)
+    const testReviewFindingsRepo = createReviewFindingsRepo(db)
+    const abortError = new Error('Unable to connect')
+    const abortSpy = vi.fn(() => Promise.reject(abortError))
     const errors: unknown[] = []
-    const testSid = 'fire-error-' + (++nextTestId)
     const ctx = {
-      loopService: {
-        resolveLoopName: () => 'test-loop',
-        getActiveState: () => null,
+      loop: {
+        service: {
+          resolveLoopName: () => 'test-loop',
+          getActiveState: () => null,
+        },
       },
       logger: {
         log: () => {},
         error: (...args: unknown[]) => { errors.push(args) },
         debug: () => {},
       } as Logger,
-      v2: {
+      client: {
         session: {
-          abort: v2AbortSpy,
-          promptAsync: async () => ({ data: {} }),
-          create: async () => ({ data: { id: 'new-session-id' } }),
+          abort: abortSpy,
+          promptAsync: async () => {},
+          create: async () => ({ id: 'new-session-id' }),
+          status: async () => ({}),
+          get: async () => ({}),
+          messages: async () => [],
+          update: async () => {},
+          delete: async () => {},
+        },
+        workspace: {
+          create: async () => ({ id: '', directory: '', branch: '' }),
+          list: async () => [],
+          status: async () => [],
+          syncList: async () => {},
+          remove: async () => {},
+          warp: async () => {},
         },
         tui: {
-          selectSession: async () => ({ data: {} }),
-          publish: async () => ({ data: {} }),
+          publish: async () => {},
+          selectSession: async () => {},
         },
-      } as unknown as ToolContext['v2'],
+        sync: {
+          start: async () => {},
+        },
+      },
       plansRepo: testPlansRepo,
       config: {} as PluginConfig,
       projectId,
       directory: '/test',
       dataDir: TEST_DIR,
       cleanup: async () => {},
-      input: { messages: [], systemPrompt: '', client: undefined } as any,
       systemPrompt: '',
       messages: [],
-      loopsRepo: createLoopsRepo(db),
-      reviewFindingsRepo: createReviewFindingsRepo(db),
+      loopsRepo: testLoopsRepo,
+      reviewFindingsRepo: testReviewFindingsRepo,
       sandboxManager: null,
     } as unknown as ToolContext
 
-    testPlansRepo.writeForSession(projectId, testSid, '# plan')
+    testPlansRepo.writeForSession(projectId, 'test-sid-error', '# plan')
 
     const hook = createToolExecuteAfterHook(ctx)
 
@@ -2188,11 +2512,13 @@ describe('Fire-and-forget dispatch behavior', () => {
     }
 
     await expect(hook(
-      { tool: 'question', sessionID: testSid, callID: 'test-call', args },
+      { tool: 'question', sessionID: 'test-sid-error', callID: 'test-call', args },
       output
     )).resolves.toBeUndefined()
 
-    expect(errors.some(e => JSON.stringify(e).includes('Unable to connect'))).toBe(true)
-    db.close()
+    expect(errors.some(e => {
+      const args = Array.isArray(e) ? e : [e]
+      return args.some(a => a instanceof Error ? a.message.includes('Unable to connect') : String(a).includes('Unable to connect'))
+    })).toBe(true)
   })
 })
