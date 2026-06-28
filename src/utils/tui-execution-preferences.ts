@@ -26,12 +26,7 @@ export interface ExecutionPreferences {
   auditorVariant?: string
 }
 
-export type ExecutionSelectionOverride = Partial<{
-  executionModel: string
-  auditorModel: string
-  executionVariant: string
-  auditorVariant: string
-}>
+export type ExecutionSelectionOverride = Partial<Omit<ExecutionPreferences, 'mode'>>
 
 function normalizeMode(mode: string): ExecutionPreferences['mode'] {
   const lower = mode.toLowerCase()
