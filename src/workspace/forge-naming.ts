@@ -1,4 +1,4 @@
-import { join } from 'path'
+import { join, relative, isAbsolute } from 'path'
 import { slugify } from '../utils/logger'
 import { defaultGitService, type GitService } from '../utils/git-service'
 
@@ -21,6 +21,22 @@ export function forgeBranchName(loopName: string): string {
 
 export function forgeWorktreeDir(dataDir: string, loopName: string): string {
   return join(dataDir, 'worktrees', forgeWorktreeSlug(loopName))
+}
+
+/**
+ * True when `directory` is the forge worktrees root (`<dataDir>/worktrees`) or
+ * any directory beneath it.
+ *
+ * A forge worktree is always a child context of a live plugin instance — when a
+ * loop creates its worktree, OpenCode instantiates a fresh plugin for that
+ * directory. Startup-only recovery (e.g. marking orphaned feature groups
+ * interrupted) must not run for these child instances, since the owning process
+ * is still alive and may be actively driving those groups in the same project.
+ */
+export function isForgeWorktreeDir(dataDir: string, directory: string): boolean {
+  if (!dataDir || !directory) return false
+  const rel = relative(join(dataDir, 'worktrees'), directory)
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
 }
 
 /**

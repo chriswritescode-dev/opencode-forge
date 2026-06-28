@@ -31,6 +31,12 @@ describe('createConfigHandler commands', () => {
     expect(executePlan.agent).toBe('code')
     expect(executePlan.subtask).toBe(false)
 
+    const launchGroup = commands['launch-group']
+    expect(launchGroup).toBeDefined()
+    expect(launchGroup.template).toContain('launch-group')
+    expect(launchGroup.agent).toBe('code')
+    expect(launchGroup.subtask).toBe(false)
+
     const loopStatus = commands['loop-status']
     expect(loopStatus).toBeDefined()
     expect(loopStatus.template).toContain('Check the status')

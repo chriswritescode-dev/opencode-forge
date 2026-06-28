@@ -13,6 +13,8 @@ function buildPluginCommands(promptsDir?: string): Record<string, PluginCommand>
       template: loadPrompt(['commands','review-plan.md'], promptsDir) },
     'execute-plan': { description: 'Execute a plan in an iterative development loop, or a fresh standalone session', agent: 'code', subtask: false,
       template: loadPrompt(['commands','execute-plan.md'], promptsDir) },
+    'launch-group': { description: 'Decompose a request into features and launch them as parallel planning + development loops', agent: 'code', subtask: false,
+      template: loadPrompt(['commands','launch-group.md'], promptsDir) },
     'loop-status': { description: 'Check status of all active loops', agent: 'code', subtask: false,
       template: loadPrompt(['commands','loop-status.md'], promptsDir) },
     'loop-cancel': { description: 'Cancel the active loop', agent: 'code', subtask: false,

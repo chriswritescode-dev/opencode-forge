@@ -13,6 +13,7 @@ import { createDockerService } from './sandbox/docker'
 import { defaultGitService } from './utils/git-service'
 import { resolveSandboxContextForLoop, isSandboxConfigEnabled } from './sandbox/context'
 import { resolveForgeTempDir } from './utils/opencode-paths'
+import { isForgeWorktreeDir } from './workspace/forge-naming'
 import { resolveLoopAllowedDirectories } from './constants/loop'
 import { mkdirSync } from 'fs'
 import { createSandboxManager } from './sandbox/manager'
@@ -314,9 +315,16 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 
     // Mark any groups left in non-terminal status (extracting/planning/running) from a
     // prior process as interrupted. Do NOT auto-resume — user must restart via group-status.
-    const interruptedCount = featureGroupsRepo.markInterrupted(projectId)
-    if (interruptedCount > 0) {
-      logger.log(`Startup: marked ${interruptedCount} group(s) as interrupted (no auto-resume)`)
+    //
+    // Skip this for forge worktree directories: when a loop (including a group's own
+    // loops) creates its worktree, OpenCode spins up a fresh plugin instance for that
+    // child directory in the SAME project. Running recovery there would mark the still-
+    // active parent group interrupted, sabotaging the group that just launched the loop.
+    if (!isForgeWorktreeDir(dataDir, directory)) {
+      const interruptedCount = featureGroupsRepo.markInterrupted(projectId)
+      if (interruptedCount > 0) {
+        logger.log(`Startup: marked ${interruptedCount} group(s) as interrupted (no auto-resume)`)
+      }
     }
 
     // Forward reference — assigned after real effects are built (post sessionLoopResolver).

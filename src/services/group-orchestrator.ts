@@ -157,7 +157,10 @@ export function createGroupOrchestrator(deps: {
       repo.incrementFeatureAttempts(projectId, groupId, idx)
       const generation = feature.attempts + 1
 
-      const loopName = effects.generateLoopName(`${groupId}-${feature.title}`)
+      // Base the loop name on the readable feature title; generateLoopName
+      // (→ generateUniqueLoopName) appends a numeric suffix on collision, so no
+      // UUID prefix is needed for uniqueness.
+      const loopName = effects.generateLoopName(feature.title)
       const result = await effects.launchLoop({
         architectSessionId: feature.architectSessionId ?? '',
         loopName,
