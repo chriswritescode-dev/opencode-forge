@@ -1,26 +1,23 @@
-Launch a group of features that Forge plans and executes in parallel. Each feature gets its own architect-auto planning session and its own development loop, run up to the configured concurrency cap (`groupLaunch.maxConcurrentLoops`).
+Launch a group of features that Forge plans and executes in parallel. The input is a **broad source of work** — not a single issue or change — such as a set of GitHub issues, Linear tickets, a milestone or label, a backlog, or a PRD. Your job is to take that source, fan it out into discrete features, launch a planning session for each, and let Forge auto-launch the development loops (up to the configured concurrency cap, `groupLaunch.maxConcurrentLoops`).
 
-## Step 1: Understand What the User Wants
+## Step 1: Understand the source
 
-Read what the user already wrote in their request (`$ARGUMENTS`) and the surrounding conversation. Treat it as the source description (the "what we want to build"). Do not re-ask for information that is already clear from context.
+Read the user's request (`$ARGUMENTS`) and the surrounding conversation to identify the source they are pointing you at and any selection they implied (for example: all open issues, a range, a label, a milestone, a project or cycle). Use whatever tools are available to read it — the GitHub CLI (`gh`) for issues, the Linear MCP for tickets, or the provided text for a PRD.
 
-Only use the `question` tool to resolve genuine ambiguities that block decomposition — for example: conflicting requirements, an unclear target area of the codebase, or whether two related items are one feature or two. Never ask via plain text; always use the `question` tool. Skip questions entirely when the intent is already clear.
+Use the `question` tool only to resolve a genuine blocker (which source, or an ambiguous selection). Do not re-ask what is already clear from context, and do not demand details the source already implies.
 
-## Step 2: Decompose Into Features
+## Step 2: Gather and decompose into features
 
-Break the description into discrete, independently-implementable features. Each feature must be:
-- Self-contained enough to plan and build on its own
-- Scoped so its loop will not collide with sibling features where avoidable
+Pull the items from the source, then turn them into discrete, independently-implementable features. Each feature needs a short `title` and a concrete `description` the architect-auto agent can plan from (name the target area, the behavior, and any constraints you already know).
 
-For each feature produce a `title` (short) and a `description` (a concrete brief the architect-auto agent can plan from — name the target area, the behavior, and any constraints you already know).
+- **Already-discrete items (issues / tickets):** map each one to a single feature. Keep them 1:1 — never merge or split — and preserve the source identifier and link in the description (for example `#123` / `ENG-456` plus the URL) so the planner can re-fetch full context and the work stays traceable.
+- **Unstructured input (a PRD):** do not pre-split it yourself; pass it through as `prd` and let the feature-splitter agent decompose it.
 
-If the work is genuinely a single feature, produce a one-item list. That is fine.
+## Step 3: Confirm before launch
 
-## Step 3: Confirm Before Launch
-
-Show the proposed feature list (titles + one-line summaries) and a proposed group title. Use the `question` tool to confirm before launching, offering at minimum:
+Show the proposed group title and the resolved feature list (identifier + title + one-line summary; for a PRD, note it will be split by the splitter). Use the `question` tool to confirm before launching, offering at minimum:
 - "Launch as shown" — proceed with this list
-- "Edit features" — revise the list first
+- "Edit selection" — revise first
 
 Do not launch until the user confirms. If they choose to edit, revise and re-confirm.
 
@@ -28,11 +25,12 @@ Do not launch until the user confirms. If they choose to edit, revise and re-con
 
 Call `launch-group` with:
 - `title`: the group title
-- `features`: the confirmed array of `{ title, description }` objects
+- For discrete items: `features` — the confirmed array of `{ title, description }` objects
+- For a PRD: `prd` — the source text
 
-Pass the explicit `features` list (not `prd`) so the list you confirmed is exactly what runs. Only pass `maxConcurrentLoops` if the user explicitly asked to override the default.
+Only pass `maxConcurrentLoops` if the user explicitly asked to override the default.
 
-Forge then spawns an architect-auto planning session per feature and launches a development loop for each planned feature, up to the concurrency cap. Features that cannot be planned are marked failed with a reason.
+Forge then spawns an architect-auto planning session per feature and auto-launches a development loop for each planned feature, up to the concurrency cap. Features that cannot be planned are marked failed with a reason.
 
 ## Step 5: Report
 
