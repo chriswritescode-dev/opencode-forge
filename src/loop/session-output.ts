@@ -1,6 +1,6 @@
 import type { ForgeClient } from '../client/port'
 import type { Logger } from '../types'
-import { summarizeAssistantUsage, type LoopUsageSummary, type UsageAttribution } from './token-usage'
+import { normalizeTokens, summarizeAssistantUsage, type LoopUsageSummary, type UsageAttribution } from './token-usage'
 
 const RECENT_MESSAGES_COUNT = 5
 
@@ -57,17 +57,10 @@ export async function fetchSessionOutput(
         .map((p) => p.text!)
         .join('\n')
       const cost = msg.info.cost ?? 0
-      const tokens = msg.info.tokens ?? { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
       return {
         text,
         cost,
-        tokens: {
-          input: tokens.input,
-          output: tokens.output,
-          reasoning: tokens.reasoning,
-          cacheRead: tokens.cache.read,
-          cacheWrite: tokens.cache.write,
-        },
+        tokens: normalizeTokens(msg.info.tokens),
       }
     })
 

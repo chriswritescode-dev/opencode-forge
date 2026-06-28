@@ -1,7 +1,32 @@
 import { describe, test, expect, vi } from 'vitest'
-import { gitBranchExists, loopBranchExists } from '../../src/workspace/forge-naming'
+import { gitBranchExists, loopBranchExists, isForgeWorktreeDir } from '../../src/workspace/forge-naming'
 import { createFakeGitService } from '../helpers/fake-git'
 import type { GitService } from '../../src/utils/git-service'
+
+describe('isForgeWorktreeDir', () => {
+  const dataDir = '/Users/x/.local/share/opencode/forge'
+
+  test('true for a directory under the worktrees root', () => {
+    expect(isForgeWorktreeDir(dataDir, `${dataDir}/worktrees/my-loop`)).toBe(true)
+  })
+
+  test('true for the worktrees root itself', () => {
+    expect(isForgeWorktreeDir(dataDir, `${dataDir}/worktrees`)).toBe(true)
+  })
+
+  test('false for the project root (not under worktrees)', () => {
+    expect(isForgeWorktreeDir(dataDir, '/Users/x/development/my-project')).toBe(false)
+  })
+
+  test('false for a sibling dir that shares a prefix but is not under worktrees', () => {
+    expect(isForgeWorktreeDir(dataDir, `${dataDir}/worktrees-archive/x`)).toBe(false)
+  })
+
+  test('false when dataDir or directory is empty', () => {
+    expect(isForgeWorktreeDir('', `${dataDir}/worktrees/x`)).toBe(false)
+    expect(isForgeWorktreeDir(dataDir, '')).toBe(false)
+  })
+})
 
 describe('gitBranchExists', () => {
   test('returns true when the fake reports the branch exists', () => {

@@ -2,6 +2,8 @@ import { describe, test, expect } from 'vitest'
 import { buildArchitectAgent } from '../src/agents/architect'
 import { buildCodeAgent } from '../src/agents/code'
 import { buildAuditorAgent, buildAuditorLoopAgent } from '../src/agents/auditor'
+import { buildArchitectAutoAgent } from '../src/agents/architect-auto'
+import { buildFeatureSplitterAgent } from '../src/agents/feature-splitter'
 import { buildAgents } from '../src/agents'
 
 describe('Agent definitions', () => {
@@ -9,6 +11,8 @@ describe('Agent definitions', () => {
   const codeAgent = buildCodeAgent()
   const auditorAgent = buildAuditorAgent()
   const auditorLoopAgent = buildAuditorLoopAgent()
+  const architectAutoAgent = buildArchitectAutoAgent()
+  const featureSplitterAgent = buildFeatureSplitterAgent()
 
   describe('metadata stability', () => {
     test('architect agent has stable metadata', () => {
@@ -121,6 +125,60 @@ describe('Agent definitions', () => {
       expect(prompt).toContain('### Follow-ups')
       expect(prompt.toLowerCase()).toContain('deviation acceptance')
     })
+
+    test('architect-auto agent has stable metadata', () => {
+      expect(architectAutoAgent.role).toBe('architect-auto')
+      expect(architectAutoAgent.id).toBe('opencode-architect-auto')
+      expect(architectAutoAgent.displayName).toBe('architect-auto')
+      expect(architectAutoAgent.mode).toBe('primary')
+      expect(architectAutoAgent.hidden).toBe(true)
+    })
+
+    test('architect-auto agent excludes plan and question tools', () => {
+      expect(architectAutoAgent.tools?.exclude).toBeDefined()
+      expect(architectAutoAgent.tools?.exclude).toContain('plan')
+      expect(architectAutoAgent.tools?.exclude).toContain('plan_enter')
+      expect(architectAutoAgent.tools?.exclude).toContain('plan_exit')
+      expect(architectAutoAgent.tools?.exclude).toContain('question')
+    })
+
+    test('feature-splitter agent has stable metadata', () => {
+      expect(featureSplitterAgent.role).toBe('feature-splitter')
+      expect(featureSplitterAgent.id).toBe('opencode-feature-splitter')
+      expect(featureSplitterAgent.displayName).toBe('feature-splitter')
+      expect(featureSplitterAgent.mode).toBe('primary')
+      expect(featureSplitterAgent.hidden).toBe(true)
+    })
+
+    test('feature-splitter agent excludes plan, question, write, edit, and patch tools', () => {
+      expect(featureSplitterAgent.tools?.exclude).toBeDefined()
+      expect(featureSplitterAgent.tools?.exclude).toContain('plan')
+      expect(featureSplitterAgent.tools?.exclude).toContain('plan_enter')
+      expect(featureSplitterAgent.tools?.exclude).toContain('plan_exit')
+      expect(featureSplitterAgent.tools?.exclude).toContain('question')
+      expect(featureSplitterAgent.tools?.exclude).toContain('write')
+      expect(featureSplitterAgent.tools?.exclude).toContain('edit')
+      expect(featureSplitterAgent.tools?.exclude).toContain('patch')
+    })
+
+    test('hidden group agents preserve overlap-aware planning guidance', () => {
+      expect(featureSplitterAgent.systemPrompt).toContain('implementation-coherent features')
+      expect(featureSplitterAgent.systemPrompt).toContain('small, independently reviewable plans/PRs')
+      expect(featureSplitterAgent.systemPrompt).toContain('Same-file edits alone are not enough to group')
+      expect(architectAutoAgent.systemPrompt).toContain('non-trivial implementation coupling')
+    })
+
+    test('buildAgents returns all 6 agent roles', () => {
+      const agents = buildAgents()
+      const roles = Object.keys(agents)
+      expect(roles).toHaveLength(6)
+      expect(roles).toContain('code')
+      expect(roles).toContain('architect')
+      expect(roles).toContain('auditor')
+      expect(roles).toContain('auditor-loop')
+      expect(roles).toContain('architect-auto')
+      expect(roles).toContain('feature-splitter')
+    })
   })
 
   describe('architect prompt', () => {
@@ -171,7 +229,7 @@ describe('Agent definitions', () => {
     })
 
     test('agent prompts avoid deprecated graph tooling names', () => {
-      for (const agent of [architectAgent, codeAgent, auditorAgent, auditorLoopAgent]) {
+      for (const agent of [architectAgent, codeAgent, auditorAgent, auditorLoopAgent, architectAutoAgent, featureSplitterAgent]) {
         expect(agent.systemPrompt).not.toContain('graph-query')
         expect(agent.systemPrompt).not.toContain('graph-symbols')
         expect(agent.systemPrompt).not.toContain('graph-analyze')

@@ -26,6 +26,9 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'sh', pattern: '*', action: 'allow' },
       { permission: 'loop-cancel', pattern: '*', action: 'deny' },
       { permission: 'loop-status', pattern: '*', action: 'deny' },
+      { permission: 'launch-group', pattern: '*', action: 'deny' },
+      { permission: 'group-status', pattern: '*', action: 'deny' },
+      { permission: 'group-cancel', pattern: '*', action: 'deny' },
     ])
   })
 
@@ -46,6 +49,9 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'sh', pattern: '*', action: 'allow' },
       { permission: 'loop-cancel', pattern: '*', action: 'deny' },
       { permission: 'loop-status', pattern: '*', action: 'deny' },
+      { permission: 'launch-group', pattern: '*', action: 'deny' },
+      { permission: 'group-status', pattern: '*', action: 'deny' },
+      { permission: 'group-cancel', pattern: '*', action: 'deny' },
     ])
   })
 

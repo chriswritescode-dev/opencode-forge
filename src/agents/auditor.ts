@@ -12,6 +12,9 @@ const AUDITOR_TOOL_EXCLUDES = [
   'execute-plan',
   'loop-cancel',
   'loop-status',
+  'launch-group',
+  'group-status',
+  'group-cancel',
 ]
 
 function buildBasePrompt(promptsDir?: string): string {

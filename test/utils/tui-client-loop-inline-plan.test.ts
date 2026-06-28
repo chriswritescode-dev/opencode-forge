@@ -8,13 +8,6 @@ vi.mock('../../src/utils/tui-execution-preferences', () => ({
   deriveExecutionPreferencesFromWorkspaces: vi.fn().mockReturnValue(null),
 }))
 
-vi.mock('../../src/utils/tui-plan-store', () => ({
-  readPlan: vi.fn().mockReturnValue(null),
-  readPlanForAnyProject: vi.fn().mockReturnValue(null),
-  writePlan: vi.fn(),
-  deletePlan: vi.fn(),
-}))
-
 vi.mock('../../src/utils/tui-models', () => ({
   fetchAvailableModels: vi.fn().mockResolvedValue({ providers: [] }),
   readOpenCodeFavoriteModels: vi.fn().mockReturnValue([]),

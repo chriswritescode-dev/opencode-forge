@@ -86,6 +86,14 @@ Example:
 }
 ```
 
+## Group Launch
+
+`groupLaunch` configures parallel feature orchestration (see the [`launch-group`](tools.md#group-tools) tool).
+
+| Option | Default | Description |
+|---|---:|---|
+| `groupLaunch.maxConcurrentLoops` | `3` | Maximum number of loops a group runs concurrently. Clamped to a minimum of `1`. Used as the default when `launch-group` is called without a per-group `maxConcurrentLoops`; an explicit per-group value overrides it. |
+
 ## TUI
 
 | Option | Default | Description |

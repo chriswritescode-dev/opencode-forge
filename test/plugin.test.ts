@@ -4,7 +4,7 @@ import { mkdirSync, rmSync, existsSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import type { PluginConfig } from '../src/types'
 import type { PluginInput } from '@opencode-ai/plugin'
-import { initializeDatabase, closeDatabase, createLoopsRepo, createPlansRepo } from '../src/storage'
+import { initializeDatabase, closeDatabase, createLoopsRepo, createPlansRepo, createFeatureGroupsRepo } from '../src/storage'
 
 const TEST_DIR = '/tmp/opencode-manager-memory-test-' + Date.now()
 
@@ -450,6 +450,73 @@ describe('createForgePlugin', () => {
     expect(rowAfter!.completedAt).toBeNull()
     expect(rowAfter!.sandbox).toBe(true)
     expect(rowAfter!.sandboxContainer).toBe('pre-existing-container-name')
+
+    closeDatabase(dbAfter)
+  })
+
+  test('marks previously-running feature groups as interrupted on startup (no auto-resume)', async () => {
+    const config: PluginConfig = {
+      dataDir: `${testDir}/.opencode/memory`,
+    }
+
+    const plugin = createForgePlugin(config)
+
+    // Pre-populate DB with a running feature group with features
+    const db = initializeDatabase(config.dataDir!)
+    const featureGroupsRepo = createFeatureGroupsRepo(db)
+    featureGroupsRepo.createGroup({
+      projectId: TEST_PROJECT_ID,
+      groupId: 'startup-group-1',
+      title: 'Startup Test Group',
+      status: 'running',
+      createdAt: Date.now() - 10000,
+      updatedAt: Date.now() - 10000,
+    })
+    featureGroupsRepo.insertFeatures(TEST_PROJECT_ID, 'startup-group-1', [
+      { title: 'Feature A', description: 'Desc A' },
+    ])
+    // Also pre-populate a completed group (should not be touched)
+    featureGroupsRepo.createGroup({
+      projectId: TEST_PROJECT_ID,
+      groupId: 'startup-group-2',
+      title: 'Completed Group',
+      status: 'completed',
+      createdAt: Date.now() - 10000,
+      updatedAt: Date.now() - 10000,
+      completedAt: Date.now(),
+    })
+    closeDatabase(db)
+
+    const mockInput = {
+      directory: testDir,
+      worktree: testDir,
+      client: {} as never,
+      project: { id: TEST_PROJECT_ID } as never,
+      serverUrl: new URL('http://localhost:5551'),
+      $: {} as never,
+    }
+
+    const hooks = await plugin(mockInput)
+    currentHooks = hooks as { getCleanup?: () => Promise<void> }
+
+    // Verify after plugin init
+    const dbAfter = initializeDatabase(config.dataDir!)
+    const featureGroupsRepoAfter = createFeatureGroupsRepo(dbAfter)
+
+    const group1 = featureGroupsRepoAfter.getGroup(TEST_PROJECT_ID, 'startup-group-1')
+    expect(group1).not.toBeNull()
+    expect(group1!.status).toBe('interrupted')
+
+    // Running group features are untouched
+    const features1 = featureGroupsRepoAfter.listFeatures(TEST_PROJECT_ID, 'startup-group-1')
+    expect(features1).toHaveLength(1)
+    expect(features1[0].title).toBe('Feature A')
+    expect(features1[0].stage).toBe('pending') // inserted as pending, not changed by markInterrupted
+
+    // Completed group unchanged
+    const group2 = featureGroupsRepoAfter.getGroup(TEST_PROJECT_ID, 'startup-group-2')
+    expect(group2).not.toBeNull()
+    expect(group2!.status).toBe('completed')
 
     closeDatabase(dbAfter)
   })

@@ -65,6 +65,11 @@
     // "tmpDir": "/tmp/oc-forge"
   },
 
+  // Max loops from one group running concurrently. Also bounds concurrent planning passes. Default 3.
+  "groupLaunch": {
+    "maxConcurrentLoops": 3
+  },
+
   // Sandbox configuration. Sandbox is optional; when Docker is unavailable, loops run in worktree-only mode.
   // Currently only Docker is supported; additional modes may be added later.
   // Set "enabled": false to force worktree-only mode even when Docker is available.

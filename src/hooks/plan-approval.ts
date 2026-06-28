@@ -60,6 +60,9 @@ function scheduleApprovalDispatch(
 const LOOP_BLOCKED_TOOLS: Record<string, string> = {
   question: 'The question tool is not available during a loop. Do not ask questions — continue working on the task autonomously.',
   'execute-plan': 'The execute-plan tool is not available during a loop. Focus on executing the current plan.',
+  'launch-group': 'The launch-group tool is not available during a loop. Focus on executing the current plan.',
+  'group-status': 'The group-status tool is not available during a loop. Focus on executing the current plan.',
+  'group-cancel': 'The group-cancel tool is not available during a loop. Focus on executing the current plan.',
 }
 
 interface PendingExecution {
