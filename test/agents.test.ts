@@ -161,6 +161,13 @@ describe('Agent definitions', () => {
       expect(featureSplitterAgent.tools?.exclude).toContain('patch')
     })
 
+    test('hidden group agents preserve overlap-aware planning guidance', () => {
+      expect(featureSplitterAgent.systemPrompt).toContain('implementation-coherent features')
+      expect(featureSplitterAgent.systemPrompt).toContain('small, independently reviewable plans/PRs')
+      expect(featureSplitterAgent.systemPrompt).toContain('Same-file edits alone are not enough to group')
+      expect(architectAutoAgent.systemPrompt).toContain('non-trivial implementation coupling')
+    })
+
     test('buildAgents returns all 6 agent roles', () => {
       const agents = buildAgents()
       const roles = Object.keys(agents)

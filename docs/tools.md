@@ -126,7 +126,7 @@ Completed loops are history-only and cannot be restarted. See [Loop System](loop
 
 ## Group Tools
 
-Group tools orchestrate parallel feature extraction: a PRD is split into features by the `feature-splitter` agent, each feature is planned by the `architect-auto` agent, and each plan runs as its own loop. A scheduler advances features while respecting a per-group concurrency cap. Group tools are agent-invoked only (no slash commands) and are denied inside loop/audit sessions.
+Group tools orchestrate parallel feature extraction: a PRD or other broad work source is split into implementation-coherent features by the `feature-splitter` agent, each feature is planned by the `architect-auto` agent, and each plan runs as its own loop. The launch command and splitter prefer small independently reviewable plans, grouping source items only when they have non-trivial implementation coupling such as shared contracts, migrations, state machines, refactors, or unavoidable sequencing. A scheduler advances features while respecting a per-group concurrency cap. Group tools are agent-invoked only (no slash commands) and are denied inside loop/audit sessions.
 
 ### `launch-group`
 
@@ -135,8 +135,8 @@ Requires exactly one of `prd` or `features`.
 | Argument | Description |
 |---|---|
 | `title` | Required short title for the group. |
-| `prd` | PRD text to split into features. Mutually exclusive with `features`. |
-| `features` | Pre-split features (`{ title, description }[]`). Mutually exclusive with `prd`. |
+| `prd` | PRD or other broad documentation text to split into features. Mutually exclusive with `features`. |
+| `features` | Pre-split or overlap-grouped features (`{ title, description }[]`). Mutually exclusive with `prd`. |
 | `maxConcurrentLoops` | Maximum number of concurrent loops for this group. When omitted, defaults to the global `groupLaunch.maxConcurrentLoops` config value. |
 | `loopNamePrefix` | Reserved for future use. |
 

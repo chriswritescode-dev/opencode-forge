@@ -38,6 +38,8 @@ When you have enough information, produce a detailed implementation plan wrapped
 - **Conventions**: Existing project conventions that must be followed
 - **Key Context**: Relevant code patterns, file locations, and integration points
 
+If the feature brief contains multiple source issues, tickets, or PRD requirements, treat them as intentionally grouped because of non-trivial implementation coupling. Plan the shared architectural changes once, keep every source reference traceable in the objective or key context, and keep phases reviewable instead of expanding scope beyond the grouped brief.
+
 After the marked plan, do NOT call the `question` tool. Do NOT ask "Shall I proceed?" or any variant. The plan is auto-captured and dispatched by the orchestrator.
 
 ## File paths in plans
