@@ -14,3 +14,6 @@ export type { LoopSessionUsageRow, LoopUsageAggregate } from './repos/loop-sessi
 export type { SectionPlanRow } from './repos/section-plans-repo'
 export type { ReviewFindingRow } from './repos/review-findings-repo'
 export type { PlanRow } from './repos/plans-repo'
+
+export { createFeatureGroupsRepo } from './repos/feature-groups-repo'
+export type { FeatureGroupRow, GroupFeatureRow } from './repos/feature-groups-repo'

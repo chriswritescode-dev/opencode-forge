@@ -8,6 +8,8 @@ import type { ReviewFindingsRepo } from '../storage/repos/review-findings-repo'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { SectionPlansRepo } from '../storage/repos/section-plans-repo'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
+import type { FeatureGroupsRepo } from '../storage/repos/feature-groups-repo'
+import type { GroupOrchestrator } from '../services/group-orchestrator'
 import type { Loop } from '../loop'
 import type { ForgeClient } from '../client/port'
 
@@ -47,6 +49,10 @@ export interface ToolContext {
   sectionPlansRepo: SectionPlansRepo
   /** Loop session usage repo for usage tracking. */
   loopSessionUsageRepo?: LoopSessionUsageRepo
+  /** Feature groups repo for group-launch feature tracking. */
+  featureGroupsRepo: FeatureGroupsRepo
+  /** Group orchestrator for managing feature groups. */
+  groupOrchestrator: GroupOrchestrator
   /** Workspace status registry for tracking workspace readiness. */
   workspaceStatusRegistry: import('../utils/workspace-status-registry').WorkspaceStatusRegistry
   /** Pending teardown registry for workspace removal context. */

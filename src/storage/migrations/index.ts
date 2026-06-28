@@ -307,5 +307,12 @@ export const migrations: Migration[] = [
       db.run(loadSql('132_extend_loops_phase_check_post_action.sql'))
     },
   },
+  {
+    id: '133',
+    description: 'Create feature_groups and group_features tables for group-launch feature orchestration',
+    apply: (db: Database) => {
+      db.run(loadSql('133_create_feature_groups.sql'))
+    },
+  },
 
 ]

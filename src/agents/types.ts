@@ -2,7 +2,7 @@
 /**
  * Available agent roles in the plugin.
  */
-export type AgentRole = 'code' | 'architect' | 'auditor' | 'auditor-loop'
+export type AgentRole = 'code' | 'architect' | 'auditor' | 'auditor-loop' | 'architect-auto' | 'feature-splitter'
 
 /**
  * Definition of an agent's capabilities and configuration.

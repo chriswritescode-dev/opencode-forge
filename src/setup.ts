@@ -54,6 +54,9 @@ function getDefaultConfig(): PluginConfig {
       enabled: false,
       file: resolveLogPath(),
     },
+    groupLaunch: {
+      maxConcurrentLoops: 3,
+    },
   }
 }
 
@@ -130,5 +133,16 @@ export function loadPluginConfig(): PluginConfig {
 }
 
 function normalizeConfig(config: PluginConfig): PluginConfig {
-  return { ...config }
+  const normalized = { ...config }
+
+  if (!normalized.groupLaunch) {
+    normalized.groupLaunch = {}
+  }
+  if (normalized.groupLaunch.maxConcurrentLoops === undefined || normalized.groupLaunch.maxConcurrentLoops === null) {
+    normalized.groupLaunch.maxConcurrentLoops = 3
+  } else if (normalized.groupLaunch.maxConcurrentLoops < 1) {
+    normalized.groupLaunch.maxConcurrentLoops = 1
+  }
+
+  return normalized
 }

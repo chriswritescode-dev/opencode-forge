@@ -178,6 +178,14 @@ export interface AgentOverrideConfig {
 }
 
 /**
+ * Configuration for group launch behavior.
+ */
+export interface GroupLaunchConfig {
+  /** Max loops from one group running concurrently. Also bounds concurrent planning passes. Default 3. */
+  maxConcurrentLoops?: number
+}
+
+/**
  * Complete plugin configuration for opencode-forge.
  */
 export interface PluginConfig {
@@ -195,6 +203,8 @@ export interface PluginConfig {
   auditorModel?: string
   /** Loop behavior configuration. */
   loop?: LoopConfig
+  /** Group launch configuration. */
+  groupLaunch?: GroupLaunchConfig
   /** TTL for completed/cancelled/errored/stalled loops before sweep. Default 7 days. */
   completedLoopTtlMs?: number
   /** TUI display configuration. */
