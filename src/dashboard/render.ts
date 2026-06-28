@@ -14,9 +14,9 @@ export function renderDashboardHtml(): string {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     background: #0d1117;
     color: #c9d1d9;
-    padding: 20px;
+    padding: 16px;
   }
-  h1 { font-size: 1.5rem; margin-bottom: 8px; color: #f0f6fc; }
+  h1 { font-size: 1.3rem; margin-bottom: 8px; color: #f0f6fc; }
   h2 { font-size: 1.2rem; margin-bottom: 6px; color: #f0f6fc; }
   .totals { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
   .totals .badge {
@@ -102,8 +102,17 @@ export function renderDashboardHtml(): string {
     color: #c9d1d9; flex: 1; min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .section-duration { color: #8b949e; font-size: 0.75rem; flex-shrink: 0; }
-  .section-attempts { color: #d29922; font-size: 0.72rem; flex-shrink: 0; }
+  .section-duration { color: #8b949e; font-size: 0.75rem; flex-shrink: 0; font-family: 'SF Mono','Fira Code',Menlo,Consolas,monospace; }
+  .section-attempts { color: #d29922; font-size: 0.72rem; flex-shrink: 0; font-family: 'SF Mono','Fira Code',Menlo,Consolas,monospace; }
+  .sections-panel { display: flex; flex-direction: column; gap: 8px; }
+  .section-list { display: flex; flex-direction: column; gap: 6px; }
+  .section-list-row { display: flex; align-items: center; gap: 8px; padding: 7px 10px; cursor: pointer;
+    border: 1px solid #21262d; border-left: 3px solid #30363d; border-radius: 4px; background: #0d1117; }
+  .section-list-row:hover { background: #161b22; }
+  .back-to-sections { display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+    color: #58a6ff; font-size: 0.85rem; margin-bottom: 10px; user-select: none; }
+  .back-to-sections:hover { color: #79c0ff; }
+  .section-drill-title { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
   .section-body {
     padding: 10px 12px 12px; border-top: 1px solid #21262d;
     display: flex; flex-direction: column; gap: 10px;
@@ -119,7 +128,6 @@ export function renderDashboardHtml(): string {
   .finding-warning { color: #d29922; }
   .usage-row { padding: 2px 0; color: #8b949e; }
   .usage-group { display: flex; flex-direction: column; gap: 12px; }
-  .usage-group .ldh-stats { margin-top: 2px; }
   .usage-block {
     border: 1px solid #21262d; border-radius: 6px; padding: 10px 12px; background: #0d1117;
   }
@@ -193,19 +201,26 @@ export function renderDashboardHtml(): string {
   .markdown-content a { color: #58a6ff; text-decoration: none; }
   .markdown-content a:hover { text-decoration: underline; }
   .markdown-content img { max-width: 100%; border-radius: 4px; }
-  .loop-row {
-    display: flex; align-items: center; gap: 10px; padding: 8px 12px;
-    cursor: pointer; user-select: none; border: 1px solid #30363d;
-    border-radius: 6px; margin-bottom: 8px; background: #0d1117;
-  }
-  .loop-row:hover { background: #161b22; }
+  .loop-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  .loop-table th { text-align: left; font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.05em;
+    color: #8b949e; font-weight: 600; padding: 6px 10px; border-bottom: 1px solid #30363d; white-space: nowrap; }
+  .loop-table td { padding: 7px 10px; border-bottom: 1px solid #21262d; vertical-align: middle; }
+  .lt-row { cursor: pointer; }
+  .lt-row:hover { background: #161b22; }
+  .lt-name { color: #58a6ff; font-weight: 600; }
+  .lt-phase, .lt-cost, .lt-duration, .lt-updated, .lt-meter-text {
+    font-family: 'SF Mono','Fira Code',Menlo,Consolas,monospace; font-size: 0.76rem; color: #8b949e; }
+  .lt-cost { color: #3fb950; }
+  .lt-meter-cell { display: inline-flex; align-items: center; gap: 6px; }
+  .lt-meter { width: 46px; height: 5px; border-radius: 3px; background: #21262d; overflow: hidden; flex: 0 0 46px; }
+  .lt-meter-fill { display: block; height: 100%; background: #1f6feb; }
   .back-to-loops {
     display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
     color: #58a6ff; font-size: 0.85rem; margin-bottom: 12px; user-select: none;
   }
   .back-to-loops:hover { color: #79c0ff; }
   .loop-detail-header {
-    display: flex; flex-direction: column; gap: 14px;
+    display: flex; flex-direction: column; gap: 10px;
     margin-bottom: 16px; padding: 16px;
     border: 1px solid #30363d; border-radius: 8px; background: #161b22;
   }
@@ -219,15 +234,15 @@ export function renderDashboardHtml(): string {
     padding: 2px 10px; border-radius: 999px; white-space: nowrap;
   }
   .ldh-stats {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px;
   }
   .ldh-stat {
     display: flex; flex-direction: column; gap: 3px;
-    padding: 8px 10px; border-radius: 6px;
+    padding: 6px 8px; border-radius: 6px;
     background: #0d1117; border: 1px solid #21262d;
   }
   .ldh-stat-label { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.05em; color: #8b949e; }
-  .ldh-stat-value { font-size: 0.9rem; color: #f0f6fc; font-weight: 600; }
+  .ldh-stat-value { font-size: 0.9rem; color: #f0f6fc; font-weight: 600; font-family: 'SF Mono','Fira Code',Menlo,Consolas,monospace; }
   .ldh-bars { display: flex; flex-direction: column; gap: 10px; }
   .ldh-bar-group { display: flex; flex-direction: column; gap: 4px; }
   .ldh-bar-head { display: flex; justify-content: space-between; align-items: baseline; }
@@ -244,6 +259,11 @@ export function renderDashboardHtml(): string {
   .ldh-banner-cancelled { background: rgba(110, 118, 129, 0.15); border-color: #6e7681; color: #8b949e; }
   .ldh-banner-stalled { background: rgba(210, 153, 34, 0.12); border-color: rgba(210, 153, 34, 0.4); color: #d29922; }
   .ldh-banner-running { background: rgba(31, 111, 235, 0.12); border-color: rgba(31, 111, 235, 0.4); color: #58a6ff; }
+  .ldh-findings { font-size: 0.78rem; font-weight: 600; padding: 6px 12px; border-radius: 6px;
+    border: 1px solid #30363d; align-self: flex-start; }
+  .ldh-findings-bug { background: rgba(248,81,73,0.12); border-color: rgba(248,81,73,0.4); color: #f85149; }
+  .ldh-findings-warn { background: rgba(210,153,34,0.12); border-color: rgba(210,153,34,0.4); color: #d29922; }
+  .ldh-findings-clean { background: rgba(63,185,80,0.10); border-color: rgba(63,185,80,0.3); color: #3fb950; }
   .markdown-scrollable {
     max-height: 320px; overflow-y: auto;
     border: 1px solid #30363d; border-radius: 6px;

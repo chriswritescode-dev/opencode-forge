@@ -131,6 +131,28 @@ async function poll(next: any): Promise<void> {
 // Tests
 // ---------------------------------------------------------------------------
 
+describe('dashboard App loop list', () => {
+  test('renders the project loop list as a table and opens a loop on row click', async () => {
+    window.location.hash = '#p1'
+    payload = makePayload()
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const table = container.querySelector('table.loop-table')
+    expect(table).toBeTruthy()
+    const rows = container.querySelectorAll('tr.lt-row')
+    expect(rows.length).toBe(1)
+
+    const row = rows[0] as HTMLElement
+    expect(row.textContent).toContain('loop-a')
+    expect(row.querySelector('.status-badge')).toBeTruthy()
+
+    ;(container.querySelector('tr.lt-row') as HTMLElement).click()
+    await flush()
+    expect(container.querySelector('.loop-detail-header')).toBeTruthy()
+  })
+})
+
 describe('dashboard App fine-grained reactivity', () => {
   test('renders the loop detail with markdown after initial load', async () => {
     dispose = render(() => App() as unknown as Element, container)
@@ -184,7 +206,7 @@ describe('dashboard App fine-grained reactivity', () => {
     expect(container.querySelector('.loop-detail-header .status-badge')?.textContent).toBe('completed')
   })
 
-  test('section rows show flat status and expand on click to reveal details', async () => {
+  test('section drill-in: click a row to open details, back returns to list', async () => {
     payload = makePayload({
       dashLoop: {
         sections: [
@@ -209,36 +231,34 @@ describe('dashboard App fine-grained reactivity', () => {
     dispose = render(() => App() as unknown as Element, container)
     await flush()
 
-    // Flat status: colored text class, with the status-coded left-border item, no pill background
-    const item = container.querySelector('.section-item') as HTMLElement
-    expect(item).toBeTruthy()
-    expect(item.classList.contains('section-item-completed')).toBe(true)
-    const statusEl = container.querySelector('.section-status') as HTMLElement
-    expect(statusEl.textContent).toBe('completed')
-    // attempts > 0 surfaced; duration computed from started→completed (500s = 8m 20s)
+    // List shown by default; .section-body absent
+    const row = container.querySelector('.section-list-row') as HTMLElement
+    expect(row).toBeTruthy()
+    expect(row.classList.contains('section-item-completed')).toBe(true)
+    expect(container.querySelector('.section-body')).toBeFalsy()
+    // attempts and duration surfaced
     expect(container.querySelector('.section-attempts')!.textContent).toContain('2 attempts')
     expect(container.querySelector('.section-duration')!.textContent).toBe('8m 20s')
 
-    // Collapsed by default
-    expect(container.querySelector('.section-body')).toBeFalsy()
-
-    // Expand
-    ;(container.querySelector('.section-head') as HTMLElement).click()
+    // Click row → drill-in with .section-body and .back-to-sections
+    row.click()
     await flush()
 
     const body = container.querySelector('.section-body') as HTMLElement
     expect(body).toBeTruthy()
-    expect(body.textContent).toContain('Started')
-    // Summary parts rendered as markdown; Deviations omitted (null)
-    const labels = Array.from(body.querySelectorAll('.section-summary-label')).map(l => l.textContent)
+    expect(container.querySelector('.back-to-sections')).toBeTruthy()
+    // Summary labels: only Done and Follow-ups (Deviations is null)
+    const labels = Array.from(container.querySelectorAll('.section-summary-label')).map(l => l.textContent)
     expect(labels).toEqual(['Done', 'Follow-ups'])
-    expect(body.querySelector('.section-summary-part .markdown-content')!.innerHTML).toContain('Did the backend config')
-    // Section plan content present (rendered inside the scrollable markdown block)
-    expect(body.textContent).toContain('Section Plan')
     expect(container.querySelector('.markdown-scrollable .markdown-content')!.innerHTML).toContain('SECTION PLAN BODY')
 
-    // Open state persists across a data poll that mutates a section field
-    const next = makePayload({
+    // Scroll position preserved across a data poll that mutates section title
+    const scroll1 = container.querySelector('.markdown-scrollable') as HTMLElement
+    expect(scroll1).toBeTruthy()
+    scroll1.scrollTop = 42
+    ;(scroll1 as any).__id = 'drill'
+
+    await poll(makePayload({
       dashLoop: {
         sections: [
           {
@@ -258,10 +278,20 @@ describe('dashboard App fine-grained reactivity', () => {
           },
         ],
       },
-    })
-    await poll(next)
-    expect(container.querySelector('.section-body')).toBeTruthy()
-    expect(container.querySelector('.section-title')!.textContent).toContain('(edited)')
+    }))
+
+    const scroll2 = container.querySelector('.markdown-scrollable') as HTMLElement
+    expect(scroll2).toBe(scroll1)
+    expect((scroll2 as any).__id).toBe('drill')
+    expect(scroll2.scrollTop).toBe(42)
+    // Title reflects the edit
+    expect(container.querySelector('.section-drill-title .section-title')!.textContent).toContain('(edited)')
+
+    // Click back → list restored, .section-body absent
+    ;(container.querySelector('.back-to-sections') as HTMLElement).click()
+    await flush()
+    expect(container.querySelector('.section-list-row')).toBeTruthy()
+    expect(container.querySelector('.section-body')).toBeFalsy()
   })
 
   test('renders usage graphs (stacked token bar + per-model cost bars)', async () => {
@@ -306,6 +336,69 @@ describe('dashboard App fine-grained reactivity', () => {
 
     const names = Array.from(container.querySelectorAll('.usage-model-name')).map(n => n.textContent)
     expect(names).toEqual(['model-a', 'model-b'])
+  })
+
+  test('loop detail shows findings banner and usage stats at top', async () => {
+    payload = makePayload({
+      dashLoop: {
+        findings: [
+          { severity: 'bug', file: 'a.ts', line: 1, description: 'Null check missing', scenario: null },
+          { severity: 'warning', file: 'b.ts', line: 5, description: 'Unused var', scenario: null },
+        ],
+        usage: {
+          loopName: 'loop-a',
+          totalCost: 0.42,
+          totalInputTokens: 5000,
+          totalOutputTokens: 3000,
+          totalReasoningTokens: 0,
+          totalCacheReadTokens: 0,
+          totalCacheWriteTokens: 0,
+          totalMessageCount: 7,
+          byModel: {
+            'gpt-4': { cost: 0.3, inputTokens: 3000, outputTokens: 2000, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 4 },
+            'gpt-3.5': { cost: 0.12, inputTokens: 2000, outputTokens: 1000, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 3 },
+          },
+        },
+      },
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    // Findings banner as first child of .loop-detail-header
+    const banner = container.querySelector('.loop-detail-header .ldh-findings') as HTMLElement
+    expect(banner).toBeTruthy()
+    expect(banner.textContent).toContain('1 bug')
+    expect(banner.textContent).toContain('1 warning')
+    expect(banner.classList.contains('ldh-findings-bug')).toBe(true)
+
+    // Header stat grid keeps the scalar facts (Messages) but no longer
+    // duplicates token/cost numbers now centralized in the usage graphs.
+    const stats = container.querySelector('.loop-detail-header .ldh-stats')!
+    expect(stats.textContent).toContain('Messages')
+    expect(stats.textContent).not.toContain('Total Tokens')
+    expect(stats.textContent).not.toContain('$')
+
+    // Usage graphs (token composition + cost by model) live inside the header,
+    // and are the single place token/cost figures are shown.
+    const usage = container.querySelector('.loop-detail-header .usage-group')!
+    expect(usage).toBeTruthy()
+    expect(usage.querySelector('.usage-stack')).toBeTruthy()
+    expect(usage.querySelector('.usage-legend')).toBeTruthy()
+    expect(usage.querySelector('.usage-model-fill')).toBeTruthy()
+    expect(usage.textContent).toContain('$')
+    // No standalone Usage block remains outside the header.
+    expect(container.querySelector('.loop-detail > .usage-group')).toBeFalsy()
+  })
+
+  test('findings banner shows No findings when no findings exist', async () => {
+    payload = makePayload({ dashLoop: { findings: [] } })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const banner = container.querySelector('.loop-detail-header .ldh-findings') as HTMLElement
+    expect(banner).toBeTruthy()
+    expect(banner.textContent).toBe('No findings')
+    expect(banner.classList.contains('ldh-findings-clean')).toBe(true)
   })
 
   test('totals bar reflects updated counts after a poll', async () => {

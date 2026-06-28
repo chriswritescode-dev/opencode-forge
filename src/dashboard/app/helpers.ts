@@ -229,18 +229,6 @@ export function formatSectionDuration(
   return seconds > 0 ? formatDuration(seconds) : ''
 }
 
-export function formatLoopSummaryParts(dashLoop: DashboardLoop): string[] {
-  const lp = dashLoop.loop
-  const parts: string[] = [
-    fmtTime(lp.startedAt),
-    'phase: ' + lp.phase,
-    'iteration ' + lp.iteration + '/' + lp.maxIterations,
-    'section ' + lp.currentSectionIndex + '/' + lp.totalSections,
-  ]
-  if (dashLoop.duration) parts.push(dashLoop.duration)
-  return parts
-}
-
 const markdownCache = new Map<string, string>()
 const MD_CACHE_MAX = 200
 
