@@ -47,6 +47,13 @@ describe('renderDashboardHtml', () => {
       'resizable-block',
       'resize: vertical',
       'back-to-loops',
+      'loop-table',
+      'lt-meter',
+      'lt-row',
+      'ldh-findings',
+      'sections-panel',
+      'section-list-row',
+      'back-to-sections',
     ]
     for (const cls of cssClasses) {
       expect(html).toContain(cls)

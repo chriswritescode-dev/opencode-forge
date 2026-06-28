@@ -8,7 +8,7 @@ import {
   SearchInput,
   Timestamp,
   Sidebar,
-  LoopList,
+  LoopTable,
   LoopDetail,
   EmptyState,
   type MatchedEntry,
@@ -139,7 +139,7 @@ export function App() {
     const e = selectedEntry()
     if (!e) return ''
     const pid = selectedProjectId()
-    return LoopList({ loops: e.loops, onOpen: (name: string) => navigate(pid, name) }) as Node
+    return LoopTable({ loops: e.loops, onOpen: (name: string) => navigate(pid, name) }) as Node
   })
 
   // ── Effects ─────────────────────────────────────────────────────────────

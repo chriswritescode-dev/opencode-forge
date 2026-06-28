@@ -16,7 +16,6 @@ import {
   formatUsageCost,
   tokenBreakdownSegments,
   modelUsageBars,
-  formatLoopSummaryParts,
   renderMarkdown,
 } from '../../src/dashboard/app/helpers'
 import type { DashboardPayload, DashboardProject, DashboardLoop } from '../../src/dashboard/app/types'
@@ -597,50 +596,6 @@ describe('modelUsageBars', () => {
 
   test('returns empty array when no models', () => {
     expect(modelUsageBars({ ...usage, byModel: {} })).toEqual([])
-  })
-})
-
-// ---------------------------------------------------------------------------
-// formatLoopSummaryParts
-// ---------------------------------------------------------------------------
-
-describe('formatLoopSummaryParts', () => {
-  test('returns array with startedAt, phase, iteration, section, and duration when present', () => {
-    const dashLoop = mockDashLoop({
-      loop: mockLoopRow({
-        startedAt: new Date('2024-01-15T14:30:00').getTime(),
-        phase: 'coding',
-        iteration: 3,
-        maxIterations: 10,
-        currentSectionIndex: 1,
-        totalSections: 5,
-      }),
-      duration: '2m 30s',
-    })
-    const parts = formatLoopSummaryParts(dashLoop)
-    expect(parts).toHaveLength(5)
-    expect(parts[0]).toMatch(/^\d{2}-\d{2}-\d{4} \d{1,2}:\d{2} (AM|PM)$/) // fmtTime
-    expect(parts[1]).toBe('phase: coding')
-    expect(parts[2]).toBe('iteration 3/10')
-    expect(parts[3]).toBe('section 1/5')
-    expect(parts[4]).toBe('2m 30s')
-  })
-
-  test('omits duration when null', () => {
-    const dashLoop = mockDashLoop({
-      loop: mockLoopRow({
-        startedAt: 1700000000000,
-        phase: 'auditing',
-        iteration: 1,
-        maxIterations: 5,
-        currentSectionIndex: 0,
-        totalSections: 3,
-      }),
-      duration: null,
-    })
-    const parts = formatLoopSummaryParts(dashLoop)
-    expect(parts).toHaveLength(4)
-    expect(parts[3]).toBe('section 0/3')
   })
 })
 
