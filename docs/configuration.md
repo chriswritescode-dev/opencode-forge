@@ -50,6 +50,7 @@ Default log path: `~/.local/share/opencode/forge/logs/forge.log` or `$XDG_DATA_H
 | `loop.stallTimeoutMs` | `60000` | Stall watchdog timeout in milliseconds. |
 | `loop.maxConsecutiveStalls` | `5` | Consecutive stalls before terminating with `stall_timeout`. `0` disables stall termination. |
 | `loop.allowExternalDirectories` | unset | Absolute host directories that loop, audit, and post-action sessions may read despite worktree isolation. |
+| `loop.worktreeOpencodeConfig` | unset | Inline [opencode config](https://opencode.ai/config.json) written as `opencode.jsonc` into each freshly created loop worktree. Enables per-loop customization (MCP servers, model overrides, etc.). Skip-if-exists — never overwrites a committed `opencode.json`/`opencode.jsonc`. The written file is git-excluded to keep it out of loop commits. |
 
 ### Worktree Logging
 
@@ -81,6 +82,34 @@ Example:
       "skill": "pr-review",
       "prompt": "Auto-defer anything needing clarification; do not use the question tool.",
       "model": "provider/model"
+    }
+  }
+}
+```
+
+### Worktree Opencode Config
+
+`loop.worktreeOpencodeConfig` writes an inline opencode config file (`opencode.jsonc`) at the root of each freshly created loop worktree. This enables per-loop customization — primarily MCP servers — without modifying the host config or polluting loop commits.
+
+The config is written only when:
+- The worktree has no existing `opencode.json` or `opencode.jsonc` (committed configs are never overwritten)
+- The value is a non-empty object
+
+The written file is added to the worktree's git exclude so it never appears in `git status` or loop commits.
+
+Example — expose Chrome DevTools MCP inside every loop:
+
+```jsonc
+{
+  "loop": {
+    "worktreeOpencodeConfig": {
+      "mcp": {
+        "chrome-devtools": {
+          "type": "local",
+          "command": ["npx", "chrome-devtools-mcp@latest", "--isolated"],
+          "enabled": true
+        }
+      }
     }
   }
 }

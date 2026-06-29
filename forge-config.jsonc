@@ -63,6 +63,15 @@
     // identical container path so absolute temp paths match host<->container. Created on startup
     // if missing. Defaults to "/tmp/oc-forge".
     // "tmpDir": "/tmp/oc-forge"
+    //
+    // Inline opencode config written as opencode.jsonc into each loop worktree (skip-if-exists;
+    // never overwrites a committed opencode.json/opencode.jsonc). Primarily for enabling per-loop
+    // MCP servers. The written file is git-excluded so it never enters loop commits.
+    // "worktreeOpencodeConfig": {
+    //   "mcp": {
+    //     "my-server": { "type": "local", "command": ["npx", "some-mcp-server"], "enabled": true }
+    //   }
+    // }
   },
 
   // Max loops from one group running concurrently. Also bounds concurrent planning passes. Default 3.

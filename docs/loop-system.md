@@ -187,6 +187,7 @@ Benefits of worktree isolation:
 - Isolation from ongoing development
 - Safe to experiment without affecting main branch
 - Branch preserved for later review/merge
+- Per-loop customization via `loop.worktreeOpencodeConfig` — inject MCP servers and other [opencode config](https://opencode.ai/config.json) into each worktree without host config changes or commit pollution (see [Configuration Reference](configuration.md#worktree-opencode-config))
 
 ## Sandbox Integration
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createForgeWorkspaceAdapter, type ForgeAdapterDeps } from '../../src/workspace/forge-adapter'
 import { join, isAbsolute } from 'path'
-import { mkdtempSync, existsSync, rmSync, readFileSync } from 'fs'
+import { mkdtempSync, existsSync, rmSync, readFileSync, writeFileSync } from 'fs'
 import { execSync } from 'child_process'
 import { tmpdir } from 'os'
 
@@ -435,5 +435,88 @@ describe('createForgeWorkspaceAdapter', () => {
     const configured = adapter.configure(makeInfo('target-loop'))
     const target = adapter.target(configured)
     expect(target).toEqual({ type: 'local', directory: configured.directory })
+  })
+
+  it('create writes opencode.jsonc and adds it to git exclude', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-opencode-'))
+    try {
+      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const config = { mcp: { demo: { type: 'local', command: ['x'], enabled: true } } }
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+        worktreeOpencodeConfig: config,
+      })
+      const configured = adapter.configure(makeInfo('opencode-loop', tmpRepo))
+
+      await adapter.create(configured, {})
+
+      const configPath = join(configured.directory, 'opencode.jsonc')
+      expect(existsSync(configPath)).toBe(true)
+      expect(JSON.parse(readFileSync(configPath, 'utf-8'))).toEqual(config)
+
+      let excludePath = execSync(`git -C "${configured.directory}" rev-parse --git-path info/exclude`, {
+        encoding: 'utf-8',
+      }).trim()
+      if (!isAbsolute(excludePath)) {
+        excludePath = join(configured.directory, excludePath)
+      }
+      const excludeContent = readFileSync(excludePath, 'utf-8')
+      expect(excludeContent).toContain('opencode.jsonc')
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('create does not overwrite a committed opencode.jsonc', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-committed-'))
+    try {
+      execSync('git init && git config user.email t@t && git config user.name t && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const sentinel = { sentinel: true }
+      writeFileSync(join(tmpRepo, 'opencode.jsonc'), JSON.stringify(sentinel) + '\n')
+      execSync('git add opencode.jsonc && git commit -m "add opencode config"', { cwd: tmpRepo, encoding: 'utf-8' })
+
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+        worktreeOpencodeConfig: { mcp: { other: {} } },
+      })
+      const configured = adapter.configure(makeInfo('committed-opencode-loop', tmpRepo))
+
+      await adapter.create(configured, {})
+
+      const configPath = join(configured.directory, 'opencode.jsonc')
+      expect(JSON.parse(readFileSync(configPath, 'utf-8'))).toEqual(sentinel)
+
+      // Also verify the committed config was not added to exclude.
+      let excludePath = execSync(`git -C "${configured.directory}" rev-parse --git-path info/exclude`, {
+        encoding: 'utf-8',
+      }).trim()
+      if (!isAbsolute(excludePath)) {
+        excludePath = join(configured.directory, excludePath)
+      }
+      const excludeContent = readFileSync(excludePath, 'utf-8')
+      expect(excludeContent).not.toContain('opencode.jsonc')
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('create does not write opencode.jsonc when no config provided', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-no-opencode-'))
+    try {
+      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+      })
+      const configured = adapter.configure(makeInfo('no-opencode-loop', tmpRepo))
+
+      await adapter.create(configured, {})
+
+      expect(existsSync(join(configured.directory, 'opencode.jsonc'))).toBe(false)
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
   })
 })

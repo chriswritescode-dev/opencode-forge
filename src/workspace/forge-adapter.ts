@@ -7,6 +7,7 @@ import type { SandboxManager } from '../sandbox/manager'
 import { forgeBranchName, forgeWorktreeDir, forgeWorktreeSlug } from './forge-naming'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { defaultGitService, type GitService } from '../utils/git-service'
+import { writeWorktreeOpencodeConfig, WORKTREE_OPENCODE_CONFIG_FILENAME } from './worktree-opencode-config'
 
 
 /**
@@ -38,6 +39,8 @@ export interface ForgeAdapterDeps {
   getTeardownContext?: TeardownContextProvider
   /** Inject a custom GitService (defaults to real git if omitted). */
   gitService?: GitService
+  /** Inline opencode config written as opencode.jsonc into each worktree (skip-if-exists). */
+  worktreeOpencodeConfig?: Record<string, unknown>
 }
 
 const DEFAULT_TEARDOWN_CONTEXT: TeardownContext = {
@@ -48,7 +51,7 @@ const DEFAULT_TEARDOWN_CONTEXT: TeardownContext = {
 }
 
 export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAdapter {
-  const { dataDir, logger, sandboxManager, getTeardownContext, gitService: gitServiceOpt } = deps
+  const { dataDir, logger, sandboxManager, getTeardownContext, gitService: gitServiceOpt, worktreeOpencodeConfig } = deps
   const git = gitServiceOpt ?? defaultGitService
 
   function deriveLoopName(info: WorkspaceInfo): string {
@@ -63,6 +66,21 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
     const dir = typeof extra.projectDirectory === 'string' ? extra.projectDirectory : ''
     if (!dir) throw new Error('forge workspace adapter: extra.projectDirectory is required')
     return dir
+  }
+
+  function addToGitExclude(directory: string, pattern: string): void {
+    const excludeRes = git.revParseGitPath(directory, 'info/exclude')
+    if (!excludeRes.ok || !excludeRes.stdout) return
+    const excludeFile = excludeRes.stdout.trim()
+    try {
+      const content = existsSync(excludeFile) ? readFileSync(excludeFile, 'utf-8') : ''
+      if (!content.split('\n').some((l) => l.trim() === pattern)) {
+        appendFileSync(excludeFile, `\n${pattern}\n`)
+        logger.log(`forge-adapter: added ${pattern} to git exclude in ${directory}`)
+      }
+    } catch (err) {
+      logger.log(`forge-adapter: could not update git exclude: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   function resolveLoopName(info: WorkspaceInfo): string {
@@ -196,19 +214,16 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
       // Idempotently add .forge/ to git exclude so overflow/scratch files
       // never enter loop commits.
       if (info.directory) {
-        const excludeRes = git.revParseGitPath(info.directory, 'info/exclude')
-        if (excludeRes.ok && excludeRes.stdout) {
-          const excludeFile = excludeRes.stdout.trim()
-          try {
-            const content = existsSync(excludeFile) ? readFileSync(excludeFile, 'utf-8') : ''
-            if (!content.split('\n').some((l) => l.trim() === '.forge/')) {
-              appendFileSync(excludeFile, '\n.forge/\n')
-              logger.log(`forge-adapter: added .forge/ to git exclude in ${info.directory}`)
-            }
-          } catch (err) {
-            logger.log(`forge-adapter: could not update git exclude: ${err instanceof Error ? err.message : String(err)}`)
-          }
-        }
+        addToGitExclude(info.directory, '.forge/')
+      }
+
+      const cfgResult = writeWorktreeOpencodeConfig({
+        directory: info.directory,
+        config: worktreeOpencodeConfig,
+        logger,
+      })
+      if (cfgResult.written) {
+        addToGitExclude(info.directory, WORKTREE_OPENCODE_CONFIG_FILENAME)
       }
 
       if (sandboxManager) {
