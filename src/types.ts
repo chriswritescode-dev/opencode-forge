@@ -74,6 +74,15 @@ export interface LoopConfig {
    * Defaults to `/tmp/oc-forge`. The directory is created on startup if missing.
    */
   tmpDir?: string
+  /**
+   * Inline opencode config object written verbatim as `opencode.jsonc` at the root of each
+   * freshly created loop worktree, enabling per-loop opencode customization (primarily MCP
+   * servers, e.g. `{ "mcp": { ... } }`). Written only when the worktree has no existing
+   * `opencode.json`/`opencode.jsonc` (committed configs are never overwritten). The written file
+   * is added to the worktree's git exclude so it never enters loop commits. An empty object or
+   * omission disables the behavior.
+   */
+  worktreeOpencodeConfig?: Record<string, unknown>
 }
 
 /**

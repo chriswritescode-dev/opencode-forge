@@ -9,6 +9,8 @@ export interface GitResult {
 
 export interface GitService {
   addAll(cwd: string): GitResult
+  /** True when `path` (file or directory) is tracked by git in `cwd`. */
+  isPathTracked(cwd: string, path: string): boolean
   statusPorcelain(cwd: string): GitResult
   commit(cwd: string, message: string): GitResult
   isInsideWorkTree(cwd: string): boolean
@@ -32,6 +34,11 @@ export function createGitService(): GitService {
   return {
     addAll(cwd: string): GitResult {
       return runGit(['add', '-A'], cwd)
+    },
+
+    isPathTracked(cwd: string, path: string): boolean {
+      const r = runGit(['ls-files', '--', path], cwd)
+      return r.ok && r.stdout.trim().length > 0
     },
 
     statusPorcelain(cwd: string): GitResult {

@@ -300,6 +300,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         sandboxManager,
         gitService: defaultGitService,
         getTeardownContext: (loopName) => pendingTeardowns.get(loopName),
+        worktreeOpencodeConfig: config.loop?.worktreeOpencodeConfig,
       }))
       logger.log(`Registered forge workspace adapter (worktrees under ${join(dataDir, 'worktrees')})`)
     }
