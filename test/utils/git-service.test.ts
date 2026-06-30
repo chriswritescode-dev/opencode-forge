@@ -119,6 +119,23 @@ describe('GitService', () => {
     })
   })
 
+  describe('isPathTracked', () => {
+    it('returns true for a committed (tracked) file', () => {
+      writeFileSync(join(repo, 'tracked.txt'), 'x', 'utf-8')
+      execSync('git add tracked.txt && git commit -m add', { cwd: repo, encoding: 'utf-8' })
+      expect(git.isPathTracked(repo, 'tracked.txt')).toBe(true)
+    })
+
+    it('returns false for an untracked file', () => {
+      writeFileSync(join(repo, 'untracked.txt'), 'x', 'utf-8')
+      expect(git.isPathTracked(repo, 'untracked.txt')).toBe(false)
+    })
+
+    it('returns false for a missing path', () => {
+      expect(git.isPathTracked(repo, 'nope.txt')).toBe(false)
+    })
+  })
+
   describe('worktreePrune', () => {
     it('returns ok', () => {
       const result = git.worktreePrune(repo)

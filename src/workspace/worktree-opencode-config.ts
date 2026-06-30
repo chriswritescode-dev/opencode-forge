@@ -8,7 +8,7 @@ export const WORKTREE_OPENCODE_CONFIG_FILENAME = 'opencode.jsonc'
 /** Filenames opencode discovers as a project config; any present means "already configured". */
 const OPENCODE_CONFIG_FILENAMES = ['opencode.jsonc', 'opencode.json'] as const
 
-export type WriteWorktreeOpencodeConfigReason = 'no-config' | 'exists' | 'written' | 'error'
+type WriteWorktreeOpencodeConfigReason = 'no-config' | 'exists' | 'written' | 'error'
 
 export interface WriteWorktreeOpencodeConfigInput {
   /** Absolute worktree root directory. */

@@ -6,6 +6,7 @@ const defaultOk: GitResult = { ok: true, status: 0, stdout: '', stderr: '' }
 export function createFakeGitService(overrides?: Partial<GitService>): GitService {
   return {
     addAll: vi.fn<[string], GitResult>(() => ({ ...defaultOk })),
+    isPathTracked: vi.fn<[string, string], boolean>(() => false),
     statusPorcelain: vi.fn<[string], GitResult>(() => ({ ...defaultOk })),
     commit: vi.fn<[string, string], GitResult>(() => ({ ...defaultOk })),
     isInsideWorkTree: vi.fn<[string], boolean>(() => true),

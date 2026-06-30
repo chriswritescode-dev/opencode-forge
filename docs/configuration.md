@@ -97,6 +97,10 @@ The config is written only when:
 
 The written file is added to the worktree's git exclude so it never appears in `git status` or loop commits.
 
+Notes:
+- The written file is ephemeral. Forge deletes its own `opencode.jsonc` before any teardown commit (and the whole worktree is removed on completion), so it can never land in loop history — even if the git-exclude write failed. A repository-tracked `opencode.jsonc` is never deleted (forge did not write it). Because the file is removed at teardown, a restarted loop is rewritten from the current `loop.worktreeOpencodeConfig`, so edits take effect on the next run.
+- MCP servers declared here run as **host** processes from the worktree directory. When [Sandbox](sandbox.md) is enabled, only `bash`/`glob`/`grep` execute inside the container; the MCP commands themselves are not container-isolated.
+
 Example — expose Chrome DevTools MCP inside every loop:
 
 ```jsonc

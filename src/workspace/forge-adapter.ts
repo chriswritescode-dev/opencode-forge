@@ -1,6 +1,6 @@
 import { join } from 'path'
 import { mkdir } from 'fs/promises'
-import { existsSync, readFileSync, appendFileSync } from 'fs'
+import { existsSync, readFileSync, appendFileSync, rmSync } from 'fs'
 import type { WorkspaceAdapter, WorkspaceInfo } from '@opencode-ai/plugin'
 import type { Logger } from '../types'
 import type { SandboxManager } from '../sandbox/manager'
@@ -68,15 +68,18 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
     return dir
   }
 
-  function addToGitExclude(directory: string, pattern: string): void {
+  function addToGitExclude(directory: string, patterns: string[]): void {
+    if (patterns.length === 0) return
     const excludeRes = git.revParseGitPath(directory, 'info/exclude')
     if (!excludeRes.ok || !excludeRes.stdout) return
     const excludeFile = excludeRes.stdout.trim()
     try {
       const content = existsSync(excludeFile) ? readFileSync(excludeFile, 'utf-8') : ''
-      if (!content.split('\n').some((l) => l.trim() === pattern)) {
-        appendFileSync(excludeFile, `\n${pattern}\n`)
-        logger.log(`forge-adapter: added ${pattern} to git exclude in ${directory}`)
+      const present = new Set(content.split('\n').map((l) => l.trim()))
+      const missing = patterns.filter((p) => !present.has(p))
+      if (missing.length > 0) {
+        appendFileSync(excludeFile, `\n${missing.join('\n')}\n`)
+        logger.log(`forge-adapter: added ${missing.join(', ')} to git exclude in ${directory}`)
       }
     } catch (err) {
       logger.log(`forge-adapter: could not update git exclude: ${err instanceof Error ? err.message : String(err)}`)
@@ -91,8 +94,29 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
     }
   }
 
+  /**
+   * Remove the forge-written `opencode.jsonc` before a teardown commit so the
+   * inline per-loop config never enters loop history. Only an untracked file is
+   * removed: when the repository already tracks an `opencode.jsonc`, forge never
+   * wrote it (skip-if-exists), so it is left untouched and its edits still commit.
+   * The worktree itself is torn down at teardown, so the removed file is not lost.
+   */
+  function removeForgeWrittenOpencodeConfig(directory: string): void {
+    const configPath = join(directory, WORKTREE_OPENCODE_CONFIG_FILENAME)
+    if (!existsSync(configPath)) return
+    if (git.isPathTracked(directory, WORKTREE_OPENCODE_CONFIG_FILENAME)) return
+    try {
+      rmSync(configPath, { force: true })
+      logger.log(`forge-adapter: removed forge-written ${WORKTREE_OPENCODE_CONFIG_FILENAME} before commit in ${directory}`)
+    } catch (err) {
+      logger.log(`forge-adapter: could not remove ${WORKTREE_OPENCODE_CONFIG_FILENAME}: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
   async function stepCommitChanges(loopName: string, directory: string, branchLabel: string, ctx: TeardownContext): Promise<void> {
     if (!ctx.doCommit || !existsSync(directory)) return
+
+    removeForgeWrittenOpencodeConfig(directory)
 
     try {
       const addResult = git.addAll(directory)
@@ -211,20 +235,18 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
       }
       logger.log(`forge-adapter: created worktree ${info.directory} on branch ${info.branch}${branchExists ? ' (reused existing branch)' : ''}${reusedOrphan ? ' (after orphan cleanup)' : ''}`)
 
-      // Idempotently add .forge/ to git exclude so overflow/scratch files
-      // never enter loop commits.
-      if (info.directory) {
-        addToGitExclude(info.directory, '.forge/')
-      }
-
+      // Idempotently add .forge/ (overflow/scratch) and any forge-written
+      // opencode config to git exclude so they never enter loop commits.
+      const excludePatterns = ['.forge/']
       const cfgResult = writeWorktreeOpencodeConfig({
         directory: info.directory,
         config: worktreeOpencodeConfig,
         logger,
       })
       if (cfgResult.written) {
-        addToGitExclude(info.directory, WORKTREE_OPENCODE_CONFIG_FILENAME)
+        excludePatterns.push(WORKTREE_OPENCODE_CONFIG_FILENAME)
       }
+      addToGitExclude(info.directory, excludePatterns)
 
       if (sandboxManager) {
         try {
