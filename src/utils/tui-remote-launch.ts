@@ -43,12 +43,15 @@ export async function executeRemoteLoop(
   const git = deps.git ?? defaultGitService
   const createClient = deps.createClient ?? createRemoteForgeClient
 
+  debug(`remote-launch: start remote="${req.remoteName}" dir="${req.localDirectory}" projectId="${req.localProjectId}" loop="${req.loopName}"`)
+
   // 1. Resolve remote server
   const remote = resolveRemoteServer(deps.config, req.remoteName)
   if (!remote) {
     const names = listRemoteNames(deps.config)
     return { error: `Unknown remote "${req.remoteName}". Configured remotes: ${names.length ? names.join(', ') : '(none)'}` }
   }
+  debug(`remote-launch: resolved remote name="${remote.name}" url="${remote.url}" gitRemote="${remote.gitRemote}" sandbox=${remote.sandbox}`)
 
   // 2. Preflight git checks
   if (!git.isInsideWorkTree(req.localDirectory)) {
@@ -60,6 +63,7 @@ export async function executeRemoteLoop(
     return { error: `Failed to resolve HEAD in ${req.localDirectory}: ${headResult.stderr}` }
   }
   const sha = headResult.stdout.trim()
+  debug(`remote-launch: preflight ok HEAD=${sha}`)
 
   // Warn about dirty working tree but proceed
   const statusResult = git.statusPorcelain(req.localDirectory)
@@ -83,17 +87,23 @@ export async function executeRemoteLoop(
   })
 
   let projects: Array<{ id: string; worktree: string }>
+  debug(`remote-launch: listing projects on "${remote.name}"`)
   try {
     projects = (await discoveryClient.project.list()) as Array<{ id: string; worktree: string }>
   } catch (err) {
+    const msg = err instanceof Error ? (err.stack ?? err.message) : String(err)
+    debug(`remote-launch: project.list FAILED: ${msg}`)
     return { error: `Failed to list projects on remote "${remote.name}": ${err instanceof Error ? err.message : String(err)}` }
   }
+  debug(`remote-launch: project.list returned ${projects.length} project(s)`)
 
   const matched = projects.find((p) => p.id === req.localProjectId)
   if (!matched) {
     const ids = projects.map((p) => p.id)
+    debug(`remote-launch: no id match for ${req.localProjectId}; available=${ids.length ? ids.join(',') : '(none)'}`)
     return { error: `No project on remote "${remote.name}" matches OpenCode project id ${req.localProjectId}. Available project ids: ${ids.length ? ids.join(', ') : '(none)'}` }
   }
+  debug(`remote-launch: matched project id=${matched.id} worktree="${matched.worktree}"`)
 
   // 4. Create scoped client for the matched directory
   const remoteClient = createClient({
@@ -106,12 +116,16 @@ export async function executeRemoteLoop(
   // 5. Reserve a unique loop name (once; launchTuiLoop uses it verbatim below)
   const finalLoopName = await reserveTuiLoopName(remoteClient, null, req.loopName)
   const syncRef = forgeSyncRef(finalLoopName)
+  debug(`remote-launch: reserved loop name="${finalLoopName}" syncRef="${syncRef}"`)
 
   // 6. Push HEAD to remote ref
+  debug(`remote-launch: pushing HEAD:${syncRef} to gitRemote="${remote.gitRemote}" from "${req.localDirectory}"`)
   const pushResult = git.push(req.localDirectory, remote.gitRemote, `HEAD:${syncRef}`, true)
   if (!pushResult.ok) {
+    debug(`remote-launch: push FAILED: ${pushResult.stderr || '(no stderr)'}`)
     return { error: `Failed to push to remote "${remote.name}": ${pushResult.stderr || '(no stderr)'}` }
   }
+  debug(`remote-launch: push ok (ref ${syncRef} now on ${remote.gitRemote})`)
 
   // 7. Launch the remote loop
   const launchResult = await launchTuiLoop({
@@ -141,9 +155,11 @@ export async function executeRemoteLoop(
 
   if (!launchResult || 'error' in launchResult) {
     const errMsg = launchResult && 'error' in launchResult ? launchResult.error : 'Failed to launch remote loop'
+    debug(`remote-launch: launchTuiLoop FAILED: ${errMsg}`)
     return { error: errMsg }
   }
 
+  debug(`remote-launch: launched loop="${launchResult.loopName}" session=${launchResult.sessionId} on "${remote.name}"`)
   return {
     loopName: launchResult.loopName,
     sessionId: launchResult.sessionId,

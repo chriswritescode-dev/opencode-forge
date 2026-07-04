@@ -39,6 +39,8 @@ export type SessionList = NonNullable<Awaited<ReturnType<V2['experimental']['ses
 // ── Project param/result types ───────────────────────────────────────────────
 export type ProjectListParams = NonNullable<Parameters<V2['project']['list']>[0]>
 export type ProjectList = NonNullable<Awaited<ReturnType<V2['project']['list']>>['data']>
+export type ProjectCurrentParams = NonNullable<Parameters<V2['project']['current']>[0]>
+export type ProjectCurrent = NonNullable<Awaited<ReturnType<V2['project']['current']>>['data']>
 
 // ── Provider param/result types ──────────────────────────────────────────────
 export type ProviderListParams = NonNullable<Parameters<V2['provider']['list']>[0]>
@@ -102,6 +104,7 @@ export interface ForgeClient {
   }
   project: {
     list(params?: ProjectListParams): Promise<ProjectList>
+    current(params?: ProjectCurrentParams): Promise<ProjectCurrent>
   }
   provider: {
     list(params?: ProviderListParams): Promise<ProviderList>

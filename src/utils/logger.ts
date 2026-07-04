@@ -35,9 +35,10 @@ function checkFileSize(filePath: string): void {
   }
 }
 
-export function createLogger(config: LoggingConfig) {
+export function createLogger(config: LoggingConfig, options?: { clearOnInit?: boolean }) {
   const isEnabled = config.enabled
   const isDebug = config.debug ?? false
+  const clearOnInit = options?.clearOnInit ?? true
 
   if (!isEnabled) {
     return {
@@ -50,8 +51,10 @@ export function createLogger(config: LoggingConfig) {
   const filePath = config.file
   ensureLogDir(filePath)
 
-  // Clear log file on new loads
-  if (existsSync(filePath)) {
+  // Clear log file on new loads. A secondary logger (e.g. the TUI process
+  // sharing the plugin's log file) must pass clearOnInit:false so it appends
+  // rather than wiping entries written by the primary plugin logger.
+  if (clearOnInit && existsSync(filePath)) {
     writeFileSync(filePath, '', 'utf-8')
   }
 

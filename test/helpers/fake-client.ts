@@ -179,6 +179,11 @@ export function createFakeForgeClient(
         async (_p: Record<string, unknown>) => [],
         overrides?.project?.list,
       ),
+      current: makeMethod(
+        'project.current',
+        async (_p: Record<string, unknown>) => undefined,
+        overrides?.project?.current,
+      ),
     },
     provider: {
       list: makeMethod(

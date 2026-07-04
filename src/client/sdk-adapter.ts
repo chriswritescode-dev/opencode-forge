@@ -147,6 +147,7 @@ export function createForgeClient(v2: OpencodeClient): ForgeClient {
   // ── project namespace ─────────────────────────────────────────────────────
   const project: ForgeClient['project'] = {
     list: (params) => withData('project.list', v2.project.list(params)),
+    current: (params) => withData('project.current', v2.project.current(params)),
   }
 
   // ── provider namespace ────────────────────────────────────────────────────

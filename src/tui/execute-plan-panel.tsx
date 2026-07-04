@@ -10,6 +10,8 @@ import { buildExecutionContextSnapshot, type ExecutionContextCache, type Executi
 import { withBusyGuard } from '../utils/busy-guard'
 import { listRemoteNames, isModeAllowedForTarget } from '../utils/remote-config'
 import { executeRemoteLoop } from '../utils/tui-remote-launch'
+import { createLogger } from '../utils/logger'
+import { resolveLogPath } from '../storage'
 import type { PluginConfig } from '../types'
 
 /** Selection state reported back to the wrapper dialog after every picker round-trip. */
@@ -45,6 +47,14 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   const cache = untrack(() => props.cache)
   const pluginConfig = untrack(() => props.pluginConfig)
   const theme = () => props.api.theme.current
+
+  // Shared plugin log file so remote-launch traces land alongside plugin logs.
+  // clearOnInit:false prevents this TUI-side logger from wiping the plugin's log.
+  const logger = untrack(() => createLogger({
+    enabled: pluginConfig.logging?.enabled ?? false,
+    file: pluginConfig.logging?.file || resolveLogPath(),
+    debug: pluginConfig.logging?.debug ?? false,
+  }, { clearOnInit: false }))
 
   const openCodeDefaultModel = () => props.api.state.config?.model ?? ''
 
@@ -345,7 +355,11 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
       }, {
         config: pluginConfig,
         onWarning: (m) => props.api.ui.toast({ message: m, variant: 'info', duration: 5000 }),
+        debug: (m) => logger.log(m),
       })
+      if ('error' in result) {
+        logger.error(`remote-launch: failed on "${target()}": ${result.error}`)
+      }
 
       await completeLaunch(
         'error' in result

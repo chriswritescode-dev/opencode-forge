@@ -409,11 +409,27 @@ export async function connectForgeProject(
   let projectId: string | null = null
 
   try {
-    const projects = (await client.project.list()) as Array<{ id: string; worktree: string }>
-    const matched = directory ? projects.find((p) => p.worktree === directory) : projects[0]
-    projectId = matched?.id ?? null
+    // Prefer OpenCode's own directory-scoped resolution. project.current handles
+    // multi-checkout repos (same project id, different worktree paths): the
+    // project row keeps only the first-registered checkout in `worktree` while
+    // additional checkouts land in `sandboxes`, so an exact `worktree === dir`
+    // match on the list silently fails for the secondary checkout.
+    const current = await client.project.current(directory ? { directory } : undefined)
+    projectId = current?.id ?? null
   } catch {
     projectId = null
+  }
+
+  if (!projectId) {
+    try {
+      const projects = (await client.project.list()) as Array<{ id: string; worktree: string; sandboxes?: string[] }>
+      const matched = directory
+        ? projects.find((p) => p.worktree === directory || p.sandboxes?.includes(directory))
+        : projects[0]
+      projectId = matched?.id ?? null
+    } catch {
+      projectId = null
+    }
   }
 
   if (!projectId) {
