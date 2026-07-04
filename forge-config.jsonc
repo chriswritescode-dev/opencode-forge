@@ -125,6 +125,21 @@
   // TTL in ms for completed/cancelled loops before cleanup. Default: 604800000 (7 days)
   "completedLoopTtlMs": 604800000
 
+  // Remote opencode servers available as loop launch targets.
+  // Each entry requires "name" (display name in the TUI picker) and "url" (base URL of the server).
+  // Optional fields: username (default "opencode"), gitRemote (default "origin"), sandbox (default true).
+  // Omit "password" when the remote runs without auth.
+  // "remotes": [
+  //   {
+  //     "name": "my-server",
+  //     "url": "http://192.168.1.20:4096",
+  //     "password": "",
+  //     "username": "opencode",
+  //     "gitRemote": "origin",
+  //     "sandbox": true
+  //   }
+  // ]
+
   // Per-agent overrides (temperature range: 0.0 - 2.0)
   // Keys are agent display names (e.g., "code", "architect", "auditor")
   // "agents": {

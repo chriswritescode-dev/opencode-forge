@@ -153,6 +153,15 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
     })
   }
 
+  function deriveSyncPin(info: WorkspaceInfo, loopName: string): { startRef: string; syncRef: string; gitRemote: string } | null {
+    const extra = (info.extra ?? {}) as Record<string, unknown>
+    const startRef = typeof extra.startRef === 'string' && extra.startRef.length > 0 ? extra.startRef : null
+    if (!startRef) return null
+    const syncRef = typeof extra.syncRef === 'string' ? extra.syncRef : `refs/forge/${loopName}`
+    const gitRemote = typeof extra.gitRemote === 'string' ? extra.gitRemote : 'origin'
+    return { startRef, syncRef, gitRemote }
+  }
+
   async function stepRemoveWorktree(worktreeDir: string, ctx: TeardownContext): Promise<void> {
     if (!ctx.doRemoveWorktree) return
 
@@ -192,13 +201,30 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
         throw new Error(`forge workspace adapter: projectDirectory ${projectDir} is not a git work tree`)
       }
 
+      // Resolve SHA pin before checking branch existence so the fetch (if needed)
+      // happens before any worktree operation.
+      const loopName = deriveLoopName(info)
+      const pin = deriveSyncPin(info, loopName)
+      if (pin && !git.commitExists(projectDir, pin.startRef)) {
+        logger.log(`forge-adapter: fetching ${pin.syncRef} from ${pin.gitRemote} to resolve pinned SHA ${pin.startRef}`)
+        git.fetchRef(projectDir, pin.gitRemote, pin.syncRef)
+        if (!git.commitExists(projectDir, pin.startRef)) {
+          throw new Error(
+            `forge workspace adapter: startRef ${pin.startRef} not found after fetching ${pin.syncRef} from ${pin.gitRemote}`,
+          )
+        }
+      }
+
       // Detect orphan state from a prior failed run: branch may exist without a live worktree.
       const branchExists = git.branchExists(projectDir, info.branch)
+
+      // Only pass startPoint when creating a new branch; existing branches always win.
+      const startPoint = pin && !branchExists ? pin.startRef : undefined
 
       // Prune dead worktree records first so `git worktree add` can re-use an orphaned branch.
       git.worktreePrune(projectDir)
 
-      let res = git.worktreeAdd(projectDir, info.directory, info.branch, !branchExists)
+      let res = git.worktreeAdd(projectDir, info.directory, info.branch, !branchExists, startPoint)
       let reusedOrphan = false
       if (!res.ok) {
         const stderr = res.stderr.trim() || 'unknown error'
@@ -220,7 +246,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
               logger.error(`forge-adapter: orphan cleanup failed for ${info.directory}: ${cleanup.error ?? 'unknown error'}`)
               throw new Error(`git worktree add failed: ${stderr}`)
             }
-            res = git.worktreeAdd(projectDir, info.directory, info.branch, !branchExists)
+            res = git.worktreeAdd(projectDir, info.directory, info.branch, !branchExists, startPoint)
             if (!res.ok) {
               const retryStderr = res.stderr.trim() || 'unknown error'
               logger.error(`forge-adapter: git worktree add still failed after orphan cleanup: ${retryStderr}`)

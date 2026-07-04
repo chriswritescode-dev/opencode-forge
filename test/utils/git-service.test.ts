@@ -142,4 +142,113 @@ describe('GitService', () => {
       expect(result.ok).toBe(true)
     })
   })
+
+  describe('revParseHead', () => {
+    it('returns 40-char SHA of HEAD', () => {
+      const result = git.revParseHead(repo)
+      expect(result.ok).toBe(true)
+      expect(result.stdout.trim()).toMatch(/^[0-9a-f]{40}$/)
+    })
+
+    it('returns not-ok for a non-repo directory', () => {
+      const result = git.revParseHead(nonRepo)
+      expect(result.ok).toBe(false)
+    })
+  })
+
+  describe('commitExists', () => {
+    it('returns true for the HEAD SHA', () => {
+      const headResult = git.revParseHead(repo)
+      const sha = headResult.stdout.trim()
+      expect(git.commitExists(repo, sha)).toBe(true)
+    })
+
+    it('returns false for a bogus SHA', () => {
+      expect(git.commitExists(repo, '0'.repeat(40))).toBe(false)
+    })
+  })
+
+  describe('push', () => {
+    let bare: string
+
+    beforeEach(() => {
+      bare = mkdtempSync(join(tmpdir(), 'git-svc-bare-'))
+      execSync('git init --bare', { cwd: bare, encoding: 'utf-8' })
+    })
+
+    afterEach(() => {
+      if (existsSync(bare)) rmSync(bare, { recursive: true, force: true })
+    })
+
+    it('pushes HEAD to remote and ref shows up; force-push after new commit succeeds', () => {
+      // Add remote and push
+      execSync(`git remote add origin ${bare}`, { cwd: repo, encoding: 'utf-8' })
+      const pushResult = git.push(repo, 'origin', 'HEAD:refs/forge/test-loop', false)
+      expect(pushResult.ok).toBe(true)
+
+      // Verify ref exists in bare repo
+      const showRef = execSync(`git --git-dir=${bare} show-ref refs/forge/test-loop`, { encoding: 'utf-8' })
+      expect(showRef.trim()).toMatch(/^[0-9a-f]{40} refs\/forge\/test-loop$/)
+
+      // New commit + force push
+      execSync('git commit --allow-empty -m second', { cwd: repo, encoding: 'utf-8' })
+      const forceResult = git.push(repo, 'origin', 'HEAD:refs/forge/test-loop', true)
+      expect(forceResult.ok).toBe(true)
+    })
+  })
+
+  describe('fetchRef', () => {
+    let bare: string
+    let clone: string
+
+    beforeEach(() => {
+      bare = mkdtempSync(join(tmpdir(), 'git-svc-bare2-'))
+      execSync('git init --bare', { cwd: bare, encoding: 'utf-8' })
+      execSync(`git remote add origin ${bare}`, { cwd: repo, encoding: 'utf-8' })
+      execSync('git push origin HEAD', { cwd: repo, encoding: 'utf-8' })
+
+      clone = mkdtempSync(join(tmpdir(), 'git-svc-clone-'))
+      execSync(`git clone ${bare} ${clone}`, { encoding: 'utf-8' })
+    })
+
+    afterEach(() => {
+      if (existsSync(bare)) rmSync(bare, { recursive: true, force: true })
+      if (existsSync(clone)) rmSync(clone, { recursive: true, force: true })
+    })
+
+    it('fetches a ref so commitExists returns true in the clone', () => {
+      // Create a new commit and push a specific ref from the original repo
+      execSync('git commit --allow-empty -m for-fetch', { cwd: repo, encoding: 'utf-8' })
+      const headSha = execSync('git rev-parse HEAD', { cwd: repo, encoding: 'utf-8' }).trim()
+      execSync(`git push origin HEAD:refs/forge/x`, { cwd: repo, encoding: 'utf-8' })
+
+      // Fetch into clone
+      const fetchResult = git.fetchRef(clone, 'origin', 'refs/forge/x')
+      expect(fetchResult.ok).toBe(true)
+
+      // Commit should now be reachable in clone
+      expect(git.commitExists(clone, headSha)).toBe(true)
+    })
+  })
+
+  describe('worktreeAdd with startPoint', () => {
+    it('creates a worktree pinned to a specific commit', () => {
+      // Create two commits so we can pin to the first
+      const firstSha = execSync('git rev-parse HEAD', { cwd: repo, encoding: 'utf-8' }).trim()
+      execSync('git commit --allow-empty -m second', { cwd: repo, encoding: 'utf-8' })
+
+      const rand = String(Math.random()).slice(2)
+      const wtDir = join(repo, '..', `wt-pin-${rand}`)
+      try {
+        const addResult = git.worktreeAdd(repo, wtDir, 'forge/pin-test', true, firstSha)
+        expect(addResult.ok).toBe(true)
+        expect(existsSync(wtDir)).toBe(true)
+
+        const wtHead = execSync('git rev-parse HEAD', { cwd: wtDir, encoding: 'utf-8' }).trim()
+        expect(wtHead).toBe(firstSha)
+      } finally {
+        if (existsSync(wtDir)) rmSync(wtDir, { recursive: true, force: true })
+      }
+    })
+  })
 })

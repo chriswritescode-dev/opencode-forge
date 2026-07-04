@@ -97,7 +97,7 @@ function nextAvailableLoopName(baseName: string, names: string[]): string {
   return candidate
 }
 
-async function reserveTuiLoopName(client: ForgeClient, projectId: string | null, baseName: string): Promise<string> {
+export async function reserveTuiLoopName(client: ForgeClient, projectId: string | null, baseName: string): Promise<string> {
   const names = new Set<string>()
   if (projectId) {
     for (const loop of fetchLoopsList(projectId)) {
@@ -243,6 +243,126 @@ function buildTuiLoopInitialPrompt(planText: string): string {
   })
 }
 
+export interface LaunchTuiLoopOptions {
+  client: ForgeClient
+  directory: string | undefined
+  projectId: string | null
+  requestedLoopName: string
+  title: string
+  plan: string
+  executionModel?: string
+  auditorModel?: string
+  executionVariant?: string
+  auditorVariant?: string
+  hostSessionId?: string
+  sandboxEnabled: boolean
+  allowDirectories?: string[]
+  /** Extra workspace fields merged into extra (e.g. startRef/syncRef/gitRemote). */
+  extraWorkspaceFields?: Record<string, unknown>
+  /** Merged into the forgeLoop envelope (e.g. sandboxEnabled=false for remote). */
+  forgeLoopOverrides?: Partial<ForgeLoopExtra> & { sandboxEnabled?: boolean }
+  /** Called after promptAsync succeeds; local path navigates the TUI, remote omits. */
+  onLaunched?: (sessionId: string, workspaceId: string) => Promise<void>
+  debug?: (message: string) => void
+}
+
+export async function launchTuiLoop(
+  opts: LaunchTuiLoopOptions,
+): Promise<{ sessionId: string; loopName: string; worktreeDir?: string; workspaceId: string } | { error: string } | null> {
+  const debug = opts.debug ?? tuiDebug
+  const loopName = await reserveTuiLoopName(opts.client, opts.projectId, opts.requestedLoopName)
+  debug(`launchTuiLoop: inline plan (planText.length=${opts.plan.length}) hostSession=${opts.hostSessionId ?? 'none'} loop=${loopName}`)
+  const createdAt = Date.now()
+  const forgeLoop: ForgeLoopExtra = {
+    hostSessionId: opts.hostSessionId,
+    title: opts.title,
+    executionModel: opts.executionModel,
+    auditorModel: opts.auditorModel,
+    executionVariant: opts.executionVariant,
+    auditorVariant: opts.auditorVariant,
+    planSource: 'inline',
+    planText: opts.plan,
+    initialPromptOwner: 'tui',
+    pendingAttachStartedAt: createdAt,
+    ...opts.forgeLoopOverrides,
+  }
+  await removeExistingForgeLoopWorkspaces(opts.client, loopName, {
+    log: (message) => debug(`launchTuiLoop: ${message}`),
+    error: (message, err) => debug(`launchTuiLoop: ${message} ${err instanceof Error ? err.message : String(err)}`),
+  })
+
+  // Classify workspace.create failures separately to surface an actionable message
+  let workspace
+  try {
+    workspace = await opts.client.workspace.create({
+      type: 'forge',
+      branch: null,
+      extra: {
+        loopName,
+        projectDirectory: opts.directory,
+        workspaceCreatedAt: createdAt,
+        forgeLoop,
+        ...opts.extraWorkspaceFields,
+      },
+    })
+  } catch (err) {
+    const classified = classifyWorkspaceCreateThrow(err)
+    debug(`launchTuiLoop: workspace.create failed reason=${classified.reason} cause=${classified.cause ?? ''}`)
+    return { error: classified.message }
+  }
+
+  try {
+    await opts.client.workspace.syncList().catch(() => undefined)
+
+    const connected = await awaitWorkspaceConnected(opts.client, workspace.id, 5000, 100)
+    debug(`launchTuiLoop: workspace ${workspace.id} connected=${connected.connected} source=${connected.source} elapsedMs=${connected.elapsedMs} lastStatus=${connected.lastStatus ?? 'unknown'}`)
+    if (connected.connected) {
+      await waitForWorkspacePluginSettle(workspace.id)
+    }
+
+    const parsedModel = parseModelString(opts.executionModel)
+    const permission = buildLoopPermissionRuleset({ sandbox: opts.sandboxEnabled, allowDirectories: opts.allowDirectories })
+    const session = await opts.client.session.create({
+      workspaceID: workspace.id,
+      title: loopName,
+      directory: workspace.directory ?? undefined,
+      permission,
+    })
+    const promptText = buildTuiLoopInitialPrompt(opts.plan)
+
+    const promptInput = {
+      sessionID: session.id,
+      directory: workspace.directory ?? undefined,
+      workspace: workspace.id,
+      agent: 'code' as const,
+      parts: [{ type: 'text' as const, text: promptText }],
+      ...buildPromptModelSelection(parsedModel, opts.executionVariant),
+    }
+    try {
+      await opts.client.session.promptAsync(promptInput)
+    } catch (err) {
+      debug(`launchTuiLoop: promptAsync failed session=${session.id} workspace=${workspace.id} error=${err instanceof Error ? err.message : String(err)}`)
+      await opts.client.workspace.remove({ id: workspace.id }).catch(() => undefined)
+      return null
+    }
+    debug(`launchTuiLoop: promptAsync ok session=${session.id} workspace=${workspace.id}`)
+
+    await opts.onLaunched?.(session.id, workspace.id)
+
+    await opts.client.workspace.syncList().catch(() => undefined)
+
+    return {
+      sessionId: session.id,
+      loopName,
+      worktreeDir: workspace.directory ?? undefined,
+      workspaceId: workspace.id,
+    }
+  } catch (err) {
+    debug(`launchTuiLoop: post-create flow failed error=${err instanceof Error ? err.message : String(err)}`)
+    return null
+  }
+}
+
 export async function selectTuiSession(api: TuiPluginApi, client: ForgeClient, sessionId: string, workspaceId?: string): Promise<void> {
   try {
     api.route.navigate('session', { sessionID: sessionId })
@@ -334,95 +454,23 @@ export async function connectForgeProject(
       }
 
       if (req.mode === 'loop') {
-        const requestedLoopName = req.loopName ?? (req.title ? sanitizeLoopName(req.title) : extractPlanExecutionMetadata(req.plan).executionName)
-        const loopName = await reserveTuiLoopName(client, projectId, requestedLoopName)
-        tuiDebug(`plan.execute(loop): inline plan (planText.length=${req.plan.length}) hostSession=${sessionId ?? 'none'} loop=${loopName}`)
-        const createdAt = Date.now()
-        const forgeLoop: ForgeLoopExtra = {
-          hostSessionId: sessionId || undefined,
+        return await launchTuiLoop({
+          client,
+          directory,
+          projectId,
+          requestedLoopName: req.loopName ?? (req.title ? sanitizeLoopName(req.title) : extractPlanExecutionMetadata(req.plan).executionName),
           title: req.title,
+          plan: req.plan,
           executionModel: req.executionModel,
           auditorModel: req.auditorModel,
           executionVariant: req.executionVariant,
           auditorVariant: req.auditorVariant,
-          planSource: 'inline',
-          planText: req.plan,
-          initialPromptOwner: 'tui',
-          pendingAttachStartedAt: createdAt,
-        }
-        await removeExistingForgeLoopWorkspaces(client, loopName, {
-          log: (message) => tuiDebug(`plan.execute(loop): ${message}`),
-          error: (message, err) => tuiDebug(`plan.execute(loop): ${message} ${err instanceof Error ? err.message : String(err)}`),
-        })
-
-        // Classify workspace.create failures separately to surface an actionable message
-        let workspace
-        try {
-          workspace = await client.workspace.create({
-            type: 'forge',
-            branch: null,
-            extra: { loopName, projectDirectory: directory, workspaceCreatedAt: createdAt, forgeLoop },
-          })
-        } catch (err) {
-          const classified = classifyWorkspaceCreateThrow(err)
-          tuiDebug(`plan.execute(loop): workspace.create failed reason=${classified.reason} cause=${classified.cause ?? ''}`)
-          return { error: classified.message }
-        }
-
-        try {
-          await client.workspace.syncList().catch(() => undefined)
-
-          const connected = await awaitWorkspaceConnected(client, workspace.id, 5000, 100)
-          tuiDebug(`plan.execute(loop): workspace ${workspace.id} connected=${connected.connected} source=${connected.source} elapsedMs=${connected.elapsedMs} lastStatus=${connected.lastStatus ?? 'unknown'}`)
-          if (connected.connected) {
-            await waitForWorkspacePluginSettle(workspace.id)
-          }
-
-          // Bake the bash/sh routing to match what the server will run. The TUI has no Docker
-          // manager, but `sandbox.enabled` is the same gate the server uses to construct one, so
-          // this predicts the server's decision: when the sandbox is disabled the loop runs
-          // worktree-only and host `bash` must stay allowed (defaulting to sandbox=true here would
-          // deny bash while `sh` has no container to run in).
-          const permission = buildLoopPermissionRuleset({ sandbox: sandboxEnabled ?? true, allowDirectories: allowExternalDirectories })
-          const session = await client.session.create({
-            workspaceID: workspace.id,
-            title: loopName,
-            directory: workspace.directory ?? undefined,
-            permission,
-          })
-          const promptText = buildTuiLoopInitialPrompt(req.plan)
-
-          const promptInput = {
-            sessionID: session.id,
-            directory: workspace.directory ?? undefined,
-            workspace: workspace.id,
-            agent: 'code',
-            parts: [{ type: 'text' as const, text: promptText }],
-            ...buildPromptModelSelection(parsedModel, req.executionVariant),
-          }
-          try {
-            await client.session.promptAsync(promptInput)
-          } catch (err) {
-            tuiDebug(`plan.execute(loop): promptAsync failed session=${session.id} workspace=${workspace.id} error=${err instanceof Error ? err.message : String(err)}`)
-            await client.workspace.remove({ id: workspace.id }).catch(() => undefined)
-            return null
-          }
-          tuiDebug(`plan.execute(loop): promptAsync ok session=${session.id} workspace=${workspace.id}`)
-
-          await selectTuiSession(api, client, session.id, workspace.id)
-
-          await client.workspace.syncList().catch(() => undefined)
-
-          return {
-            sessionId: session.id,
-            loopName,
-            worktreeDir: workspace.directory ?? undefined,
-            workspaceId: workspace.id,
-          }
-        } catch (err) {
-          tuiDebug(`plan.execute(loop): post-create flow failed error=${err instanceof Error ? err.message : String(err)}`)
-          return null
-        }
+          hostSessionId: sessionId || undefined,
+          sandboxEnabled: sandboxEnabled ?? true,
+          allowDirectories: allowExternalDirectories,
+          onLaunched: (sid, wid) => selectTuiSession(api, client, sid, wid),
+          debug: tuiDebug,
+        }) ?? null
       }
 
       return null

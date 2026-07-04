@@ -79,6 +79,7 @@ describe('createForgeWorkspaceAdapter with fake GitService', () => {
       configured.directory,
       configured.branch,
       true,
+      undefined,
     )
   })
 
@@ -101,6 +102,7 @@ describe('createForgeWorkspaceAdapter with fake GitService', () => {
       configured.directory,
       configured.branch,
       false,
+      undefined,
     )
   })
 
@@ -167,6 +169,209 @@ describe('createForgeWorkspaceAdapter with fake GitService', () => {
     expect(logger.log).toHaveBeenCalledWith(
       expect.stringContaining('after orphan cleanup'),
     )
+  })
+
+  it('SHA pinned: passes startPoint when commitExists, does not fetch', async () => {
+    fake = createFakeGitService({
+      isInsideWorkTree: vi.fn(() => true),
+      branchExists: vi.fn(() => false),
+      commitExists: vi.fn(() => true),
+    })
+    const adapter = createForgeWorkspaceAdapter({
+      dataDir: tmpDataDir,
+      logger,
+      gitService: fake,
+    })
+    const info = {
+      id: 'ws-1',
+      type: 'forge' as const,
+      name: '',
+      branch: null,
+      directory: null,
+      extra: { loopName: 'pin-loop', projectDirectory: projectDir, startRef: 'abc123def' },
+      projectID: 'p1',
+    }
+    const configured = adapter.configure(info)
+
+    await adapter.create(configured, {})
+
+    expect(fake.worktreeAdd).toHaveBeenCalledWith(
+      projectDir,
+      configured.directory,
+      configured.branch,
+      true,
+      'abc123def',
+    )
+    expect(fake.fetchRef).not.toHaveBeenCalled()
+  })
+
+  it('SHA pinned: fetches when commit missing, then passes startPoint', async () => {
+    const commitExists = vi.fn<[string, string], boolean>()
+      .mockReturnValueOnce(false)  // before fetch
+      .mockReturnValueOnce(true)   // after fetch
+    fake = createFakeGitService({
+      isInsideWorkTree: vi.fn(() => true),
+      branchExists: vi.fn(() => false),
+      commitExists,
+    })
+    const adapter = createForgeWorkspaceAdapter({
+      dataDir: tmpDataDir,
+      logger,
+      gitService: fake,
+    })
+    const info = {
+      id: 'ws-1',
+      type: 'forge' as const,
+      name: '',
+      branch: null,
+      directory: null,
+      extra: { loopName: 'fetch-loop', projectDirectory: projectDir, startRef: 'def456abc', syncRef: 'refs/forge/custom', gitRemote: 'upstream' },
+      projectID: 'p1',
+    }
+    const configured = adapter.configure(info)
+
+    await adapter.create(configured, {})
+
+    expect(fake.fetchRef).toHaveBeenCalledWith(projectDir, 'upstream', 'refs/forge/custom')
+    expect(logger.log).toHaveBeenCalledWith(
+      expect.stringContaining('forge-adapter:'),
+    )
+    expect(fake.worktreeAdd).toHaveBeenCalledWith(
+      projectDir,
+      configured.directory,
+      configured.branch,
+      true,
+      'def456abc',
+    )
+  })
+
+  it('SHA pinned: uses defaults for syncRef and gitRemote when omitted', async () => {
+    const commitExists = vi.fn<[string, string], boolean>()
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true)
+    fake = createFakeGitService({
+      isInsideWorkTree: vi.fn(() => true),
+      branchExists: vi.fn(() => false),
+      commitExists,
+    })
+    const adapter = createForgeWorkspaceAdapter({
+      dataDir: tmpDataDir,
+      logger,
+      gitService: fake,
+    })
+    const info = {
+      id: 'ws-1',
+      type: 'forge' as const,
+      name: '',
+      branch: null,
+      directory: null,
+      extra: { loopName: 'defaults-loop', projectDirectory: projectDir, startRef: 'abc' },
+      projectID: 'p1',
+    }
+    const configured = adapter.configure(info)
+
+    await adapter.create(configured, {})
+
+    // syncRef defaults to refs/forge/<loopName>, gitRemote defaults to 'origin'
+    expect(fake.fetchRef).toHaveBeenCalledWith(projectDir, 'origin', 'refs/forge/defaults-loop')
+    expect(fake.worktreeAdd).toHaveBeenCalledWith(
+      projectDir,
+      configured.directory,
+      configured.branch,
+      true,
+      'abc',
+    )
+  })
+
+  it('SHA pinned: rejects with descriptive error when still missing after fetch', async () => {
+    fake = createFakeGitService({
+      isInsideWorkTree: vi.fn(() => true),
+      branchExists: vi.fn(() => false),
+      commitExists: vi.fn(() => false),
+    })
+    const adapter = createForgeWorkspaceAdapter({
+      dataDir: tmpDataDir,
+      logger,
+      gitService: fake,
+    })
+    const info = {
+      id: 'ws-1',
+      type: 'forge' as const,
+      name: '',
+      branch: null,
+      directory: null,
+      extra: { loopName: 'missing-loop', projectDirectory: projectDir, startRef: 'deadbeef', syncRef: 'refs/forge/missing', gitRemote: 'origin' },
+      projectID: 'p1',
+    }
+    const configured = adapter.configure(info)
+
+    await expect(adapter.create(configured, {})).rejects.toThrow(
+      /startRef deadbeef not found after fetching refs\/forge\/missing from origin/,
+    )
+    expect(fake.fetchRef).toHaveBeenCalledWith(projectDir, 'origin', 'refs/forge/missing')
+    // worktreeAdd should NOT be called when the SHA is missing
+    expect(fake.worktreeAdd).not.toHaveBeenCalled()
+  })
+
+  it('SHA absent: behavior identical to today (no startPoint)', async () => {
+    fake = createFakeGitService({
+      isInsideWorkTree: vi.fn(() => true),
+      branchExists: vi.fn(() => false),
+    })
+    const adapter = createForgeWorkspaceAdapter({
+      dataDir: tmpDataDir,
+      logger,
+      gitService: fake,
+    })
+    const configured = adapter.configure(makeInfo('no-pin-loop', projectDir))
+
+    await adapter.create(configured, {})
+
+    // startPoint should be undefined (4 args, no 5th)
+    expect(fake.worktreeAdd).toHaveBeenCalledWith(
+      projectDir,
+      configured.directory,
+      configured.branch,
+      true,
+      undefined,
+    )
+    expect(fake.fetchRef).not.toHaveBeenCalled()
+    expect(fake.commitExists).not.toHaveBeenCalled()
+  })
+
+  it('SHA pinned with existing branch: no startPoint passed (branch wins)', async () => {
+    fake = createFakeGitService({
+      isInsideWorkTree: vi.fn(() => true),
+      branchExists: vi.fn(() => true), // branch already exists
+      commitExists: vi.fn(() => true),
+    })
+    const adapter = createForgeWorkspaceAdapter({
+      dataDir: tmpDataDir,
+      logger,
+      gitService: fake,
+    })
+    const info = {
+      id: 'ws-1',
+      type: 'forge' as const,
+      name: '',
+      branch: null,
+      directory: null,
+      extra: { loopName: 'existing-pin-loop', projectDirectory: projectDir, startRef: 'abc' },
+      projectID: 'p1',
+    }
+    const configured = adapter.configure(info)
+
+    await adapter.create(configured, {})
+
+    // Branch exists, so createBranch=false and no startPoint
+    expect(fake.worktreeAdd).toHaveBeenCalledWith(
+      projectDir,
+      configured.directory,
+      configured.branch,
+      false,
+      undefined,
+    )
+    expect(fake.fetchRef).not.toHaveBeenCalled()
   })
 
   it('hard failure: rejects with stderr when worktreeAdd fails with non-already-exists error', async () => {

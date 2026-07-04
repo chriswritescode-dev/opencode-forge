@@ -121,6 +121,8 @@ function ExecutionDialog(props: {
   initialExecutionVariant?: string
   initialAuditorVariant?: string
   initialLoopName?: string
+  initialTarget?: string
+  projectDirectory?: string
 }) {
   const theme = () => props.api.theme.current
 
@@ -144,8 +146,10 @@ function ExecutionDialog(props: {
         initialExecutionVariant={props.initialExecutionVariant}
         initialAuditorVariant={props.initialAuditorVariant}
         initialLoopName={props.initialLoopName}
+        initialTarget={props.initialTarget}
+        projectDirectory={props.projectDirectory}
         onBack={() => props.api.ui.dialog.clear()}
-        onSelectionChanged={({ executionModel, auditorModel, executionVariant, auditorVariant, loopName }) => {
+        onSelectionChanged={({ executionModel, auditorModel, executionVariant, auditorVariant, loopName, target }) => {
           props.cache?.setSelectionOverride({ executionModel, auditorModel, executionVariant, auditorVariant })
           props.api.ui.dialog.setSize('xlarge')
           props.api.ui.dialog.replace(() => (
@@ -161,6 +165,8 @@ function ExecutionDialog(props: {
               initialExecutionVariant={executionVariant}
               initialAuditorVariant={auditorVariant}
               initialLoopName={loopName}
+              initialTarget={target}
+              projectDirectory={props.projectDirectory}
             />
           ))
         }}
@@ -437,6 +443,7 @@ const tui: TuiPlugin = async (api) => {
         pluginConfig={pluginConfig}
         planContent={planContent}
         sessionId={sessionID}
+        projectDirectory={directory}
       />
     ))
   }
