@@ -1,6 +1,7 @@
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2'
 import type { PluginInput } from '@opencode-ai/plugin'
+import { DEFAULT_REMOTE_USERNAME } from '../utils/remote-config'
 import {
   ForgeClientError,
   type ForgeClient,
@@ -236,7 +237,8 @@ export function buildBasicAuthHeader(username: string, password: string): string
 
 export interface RemoteClientOptions {
   url: string
-  username?: string  // default 'opencode'
+  /** Defaults to {@link DEFAULT_REMOTE_USERNAME}. */
+  username?: string
   password?: string
   directory?: string
   fetch?: typeof fetch
@@ -258,7 +260,7 @@ export function createRemoteForgeClient(opts: RemoteClientOptions): ForgeClient 
   }
 
   if (opts.password) {
-    v2Config.headers = { Authorization: buildBasicAuthHeader(opts.username ?? 'opencode', opts.password) }
+    v2Config.headers = { Authorization: buildBasicAuthHeader(opts.username ?? DEFAULT_REMOTE_USERNAME, opts.password) }
   }
 
   return createForgeClient(createV2Client(v2Config))

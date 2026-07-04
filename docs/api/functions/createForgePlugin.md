@@ -8,7 +8,7 @@
 
 > **createForgePlugin**(`config`): `Plugin`
 
-Defined in: [index.ts:187](https://github.com/chriswritescode-dev/opencode-forge/blob/7dda0a6dac066c72b6e45aff076d8e5c7e38f51f/src/index.ts#L187)
+Defined in: [index.ts:197](https://github.com/chriswritescode-dev/opencode-forge/blob/40e2723833e99dd75f767d98a46231a4ea78cddd/src/index.ts#L197)
 
 Creates an OpenCode plugin instance with loop management and sandboxing.
 

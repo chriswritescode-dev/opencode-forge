@@ -10,7 +10,7 @@ import { createDockerService } from './sandbox/docker'
 import { isSandboxConfigEnabled } from './sandbox/context'
 import { resolveLoopAllowedDirectories } from './constants/loop'
 import { connectForgeProject, type ForgeProjectClient } from './utils/tui-client'
-import { ExecutePlanPanel } from './tui/execute-plan-panel'
+import { ExecutePlanPanel, type ExecutePlanPanelProps } from './tui/execute-plan-panel'
 import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/session-follow'
 import { openInBrowser, startDashboardServer, type DashboardServerHandle } from './dashboard/launch'
 import { normalizePastedPlanText } from './utils/marked-plan-parser'
@@ -109,21 +109,7 @@ function Sidebar(props: {
  * across picker round-trips. This mirrors the pattern the deleted
  * `PlanViewerDialog` used internally.
  */
-function ExecutionDialog(props: {
-  api: TuiPluginApi
-  client: ForgeProjectClient
-  cache: ExecutionContextCache | null
-  pluginConfig: PluginConfig
-  planContent: string
-  sessionId: string
-  initialExecutionModel?: string
-  initialAuditorModel?: string
-  initialExecutionVariant?: string
-  initialAuditorVariant?: string
-  initialLoopName?: string
-  initialTarget?: string
-  projectDirectory?: string
-}) {
+function ExecutionDialog(props: Omit<ExecutePlanPanelProps, 'onBack' | 'onExecuted' | 'onSelectionChanged'>) {
   const theme = () => props.api.theme.current
 
   return (

@@ -39,66 +39,31 @@ import type { PluginConfig } from '../../src/types'
 import type { GitService, GitResult } from '../../src/utils/git-service'
 import type { ForgeClient } from '../../src/client/port'
 import type { RemoteClientOptions } from '../../src/client/sdk-adapter'
+import { createFakeForgeClient } from '../helpers/fake-client'
+import { createFakeGitService } from '../helpers/fake-git'
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 const defaultOk: GitResult = { ok: true, status: 0, stdout: '', stderr: '' }
 
 /**
- * Build a fake ForgeClient whose methods are vi.fn() with sensible defaults
- * for the remote-loop flow. The workspace.create and workspace.status share a
- * lastWorkspaceId so the connected-poll resolves immediately.
+ * Fake ForgeClient (shared helper) with remote-loop flow defaults: a fixed
+ * workspace/session id pair and a `connected` status so the poll resolves
+ * immediately.
  */
 function makeFakeClient(): ForgeClient {
-  let lastWorkspaceId = 'ws_remote'
-
-  const client: ForgeClient & { __lastWorkspaceId: string } = {
-    __lastWorkspaceId: 'ws_remote',
-
+  const { client } = createFakeForgeClient({
     session: {
-      create: vi.fn().mockImplementation(async () => ({ id: 'sess_remote' })),
-      get: vi.fn() as any,
-      update: vi.fn() as any,
-      messages: vi.fn() as any,
-      status: vi.fn() as any,
-      list: vi.fn().mockResolvedValue([]),
-      promptAsync: vi.fn().mockResolvedValue(undefined),
-      abort: vi.fn() as any,
-      delete: vi.fn() as any,
+      create: async () => ({ id: 'sess_remote' }),
     },
-
     workspace: {
-      create: vi.fn().mockImplementation(async (_params: unknown) => {
-        lastWorkspaceId = 'ws_remote'
-        return { id: lastWorkspaceId, directory: '/remote/wt', branch: null }
-      }),
-      list: vi.fn().mockResolvedValue([]),
-      status: vi.fn().mockImplementation(async () => {
-        return [{ workspaceID: lastWorkspaceId, status: 'connected' }]
-      }),
-      syncList: vi.fn().mockResolvedValue(undefined),
-      remove: vi.fn().mockResolvedValue(undefined),
-      warp: vi.fn() as any,
+      create: async () => ({ id: 'ws_remote', directory: '/remote/wt', branch: null }),
+      status: async () => [{ workspaceID: 'ws_remote', status: 'connected' }],
     },
-
-      project: {
-      list: vi.fn().mockResolvedValue([{ id: 'proj_1', worktree: '/remote/my-project' }]),
+    project: {
+      list: async () => [{ id: 'proj_1', worktree: '/remote/my-project' }],
     },
-
-    provider: {
-      list: vi.fn() as any,
-    },
-
-    tui: {
-      publish: vi.fn() as any,
-      selectSession: vi.fn() as any,
-    },
-
-    sync: {
-      start: vi.fn() as any,
-    },
-  }
-
+  })
   return client
 }
 
@@ -131,25 +96,9 @@ function happyConfig(): PluginConfig {
 }
 
 function happyGit(): GitService {
-  return {
-    addAll: vi.fn() as any,
-    isPathTracked: vi.fn() as any,
-    statusPorcelain: vi.fn(() => ({ ...defaultOk, stdout: '' })) as any,
-    commit: vi.fn() as any,
-    isInsideWorkTree: vi.fn(() => true) as any,
-    branchExists: vi.fn() as any,
-    currentBranch: vi.fn() as any,
-    revParseGitDir: vi.fn() as any,
-    revParseGitCommonDir: vi.fn() as any,
-    revParseGitPath: vi.fn() as any,
-    revParseHead: vi.fn(() => ({ ...defaultOk, stdout: 'abc123def456abc123def456abc123def456abc1\n' })) as any,
-    commitExists: vi.fn() as any,
-    push: vi.fn(() => ({ ...defaultOk })) as any,
-    fetchRef: vi.fn() as any,
-    worktreeAdd: vi.fn() as any,
-    worktreeRemove: vi.fn() as any,
-    worktreePrune: vi.fn() as any,
-  }
+  return createFakeGitService({
+    revParseHead: vi.fn(() => ({ ...defaultOk, stdout: 'abc123def456abc123def456abc123def456abc1\n' })),
+  })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────

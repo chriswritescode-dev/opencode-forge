@@ -1,5 +1,5 @@
 import { basename } from 'path'
-import { resolveRemoteServer, listRemoteNames } from './remote-config'
+import { resolveRemoteServer, listRemoteNames, forgeSyncRef } from './remote-config'
 import { defaultGitService, type GitService } from './git-service'
 import { createRemoteForgeClient, type RemoteClientOptions } from '../client/sdk-adapter'
 import type { ForgeClient } from '../client/port'
@@ -96,12 +96,12 @@ export async function executeRemoteLoop(
     directory: matched.worktree,
   })
 
-  // 5. Reserve a unique loop name
+  // 5. Reserve a unique loop name (once; launchTuiLoop uses it verbatim below)
   const finalLoopName = await reserveTuiLoopName(remoteClient, null, req.loopName)
+  const syncRef = forgeSyncRef(finalLoopName)
 
   // 6. Push HEAD to remote ref
-  const pushRef = `HEAD:refs/forge/${finalLoopName}`
-  const pushResult = git.push(req.localDirectory, remote.gitRemote, pushRef, true)
+  const pushResult = git.push(req.localDirectory, remote.gitRemote, `HEAD:${syncRef}`, true)
   if (!pushResult.ok) {
     return { error: `Failed to push to remote "${remote.name}": ${pushResult.stderr || '(no stderr)'}` }
   }
@@ -112,6 +112,8 @@ export async function executeRemoteLoop(
     directory: matched.worktree,
     projectId: null,
     requestedLoopName: finalLoopName,
+    loopNameReserved: true,
+    connectPollIntervalMs: 500,
     title: req.title,
     plan: req.plan,
     executionModel: req.executionModel,
@@ -121,7 +123,7 @@ export async function executeRemoteLoop(
     sandboxEnabled: remote.sandbox,
     extraWorkspaceFields: {
       startRef: sha,
-      syncRef: `refs/forge/${finalLoopName}`,
+      syncRef,
       gitRemote: remote.gitRemote,
     },
     forgeLoopOverrides: {

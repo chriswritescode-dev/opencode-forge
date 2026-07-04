@@ -1,5 +1,20 @@
 import type { PluginConfig } from '../types'
 
+/** Default basic-auth username (OPENCODE_SERVER_USERNAME default on the remote). */
+export const DEFAULT_REMOTE_USERNAME = 'opencode'
+
+/** Default git remote name shared by launcher and remote server for code sync. */
+export const DEFAULT_GIT_REMOTE = 'origin'
+
+/**
+ * Ref used to sync the launching machine's HEAD to the shared git remote for a
+ * remote loop. Single source of truth for producer (push at launch) and
+ * consumer (fetch-on-miss in the forge workspace adapter).
+ */
+export function forgeSyncRef(loopName: string): string {
+  return `refs/forge/${loopName}`
+}
+
 export interface ResolvedRemoteServer {
   name: string
   url: string
@@ -29,8 +44,8 @@ export function resolveRemoteServer(
     name: entry.name,
     url: entry.url,
     password: entry.password,
-    username: entry.username ?? 'opencode',
-    gitRemote: entry.gitRemote ?? 'origin',
+    username: entry.username ?? DEFAULT_REMOTE_USERNAME,
+    gitRemote: entry.gitRemote ?? DEFAULT_GIT_REMOTE,
     sandbox: entry.sandbox ?? true,
   }
 }

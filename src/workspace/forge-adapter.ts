@@ -7,6 +7,7 @@ import type { SandboxManager } from '../sandbox/manager'
 import { forgeBranchName, forgeWorktreeDir, forgeWorktreeSlug } from './forge-naming'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { defaultGitService, type GitService } from '../utils/git-service'
+import { forgeSyncRef, DEFAULT_GIT_REMOTE } from '../utils/remote-config'
 import { writeWorktreeOpencodeConfig, WORKTREE_OPENCODE_CONFIG_FILENAME } from './worktree-opencode-config'
 
 
@@ -157,8 +158,8 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
     const extra = (info.extra ?? {}) as Record<string, unknown>
     const startRef = typeof extra.startRef === 'string' && extra.startRef.length > 0 ? extra.startRef : null
     if (!startRef) return null
-    const syncRef = typeof extra.syncRef === 'string' ? extra.syncRef : `refs/forge/${loopName}`
-    const gitRemote = typeof extra.gitRemote === 'string' ? extra.gitRemote : 'origin'
+    const syncRef = typeof extra.syncRef === 'string' ? extra.syncRef : forgeSyncRef(loopName)
+    const gitRemote = typeof extra.gitRemote === 'string' ? extra.gitRemote : DEFAULT_GIT_REMOTE
     return { startRef, syncRef, gitRemote }
   }
 
@@ -173,6 +174,30 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
     })
     if (result.error) {
       throw new Error(result.error)
+    }
+  }
+
+  /**
+   * Best-effort deletion of the remote-launch sync ref (`refs/forge/<loop>`)
+   * on the shared git remote so refs do not accumulate there. Runs only on
+   * final teardown (worktree removed): the loop branch pins the fetched
+   * commit locally, so the shared ref is no longer needed. Restart-preserving
+   * teardowns keep the ref in place.
+   */
+  function stepDeleteSyncRef(info: WorkspaceInfo, loopName: string, ctx: TeardownContext): void {
+    if (!ctx.doRemoveWorktree) return
+    const pin = deriveSyncPin(info, loopName)
+    if (!pin) return
+    try {
+      const projectDir = deriveProjectDirectory(info)
+      const res = git.push(projectDir, pin.gitRemote, `:${pin.syncRef}`, false)
+      if (res.ok) {
+        logger.log(`forge-adapter: deleted sync ref ${pin.syncRef} on ${pin.gitRemote}`)
+      } else {
+        logger.log(`forge-adapter: could not delete sync ref ${pin.syncRef} on ${pin.gitRemote}: ${res.stderr.trim() || 'unknown error'}`)
+      }
+    } catch (err) {
+      logger.log(`forge-adapter: sync ref cleanup skipped: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
@@ -311,6 +336,9 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
       // Remove the worktree directory and prune dead records.
       // Skip on error/stall/abort so restart can reuse it.
       await stepRemoveWorktree(info.directory, ctx)
+
+      // Remote-launched loops: drop the sync ref from the shared git remote.
+      stepDeleteSyncRef(info, loopName, ctx)
 
       // Branches are never deleted — `forge/*` scratch branches stay in place for potential restart.
     },

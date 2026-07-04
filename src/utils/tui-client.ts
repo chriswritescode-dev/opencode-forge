@@ -248,6 +248,13 @@ export interface LaunchTuiLoopOptions {
   directory: string | undefined
   projectId: string | null
   requestedLoopName: string
+  /**
+   * When true, `requestedLoopName` was already reserved via
+   * {@link reserveTuiLoopName} and is used verbatim. Avoids a second
+   * reservation round-trip and guarantees the caller's derived artifacts
+   * (e.g. the pushed sync ref) match the launched loop name.
+   */
+  loopNameReserved?: boolean
   title: string
   plan: string
   executionModel?: string
@@ -260,9 +267,11 @@ export interface LaunchTuiLoopOptions {
   /** Extra workspace fields merged into extra (e.g. startRef/syncRef/gitRemote). */
   extraWorkspaceFields?: Record<string, unknown>
   /** Merged into the forgeLoop envelope (e.g. sandboxEnabled=false for remote). */
-  forgeLoopOverrides?: Partial<ForgeLoopExtra> & { sandboxEnabled?: boolean }
+  forgeLoopOverrides?: Partial<ForgeLoopExtra>
   /** Called after promptAsync succeeds; local path navigates the TUI, remote omits. */
   onLaunched?: (sessionId: string, workspaceId: string) => Promise<void>
+  /** Poll interval for the workspace-connected wait. Remote launches widen this to avoid hammering the server over the network. Default 100ms. */
+  connectPollIntervalMs?: number
   debug?: (message: string) => void
 }
 
@@ -270,7 +279,9 @@ export async function launchTuiLoop(
   opts: LaunchTuiLoopOptions,
 ): Promise<{ sessionId: string; loopName: string; worktreeDir?: string; workspaceId: string } | { error: string } | null> {
   const debug = opts.debug ?? tuiDebug
-  const loopName = await reserveTuiLoopName(opts.client, opts.projectId, opts.requestedLoopName)
+  const loopName = opts.loopNameReserved
+    ? opts.requestedLoopName
+    : await reserveTuiLoopName(opts.client, opts.projectId, opts.requestedLoopName)
   debug(`launchTuiLoop: inline plan (planText.length=${opts.plan.length}) hostSession=${opts.hostSessionId ?? 'none'} loop=${loopName}`)
   const createdAt = Date.now()
   const forgeLoop: ForgeLoopExtra = {
@@ -314,7 +325,7 @@ export async function launchTuiLoop(
   try {
     await opts.client.workspace.syncList().catch(() => undefined)
 
-    const connected = await awaitWorkspaceConnected(opts.client, workspace.id, 5000, 100)
+    const connected = await awaitWorkspaceConnected(opts.client, workspace.id, 5000, opts.connectPollIntervalMs ?? 100)
     debug(`launchTuiLoop: workspace ${workspace.id} connected=${connected.connected} source=${connected.source} elapsedMs=${connected.elapsedMs} lastStatus=${connected.lastStatus ?? 'unknown'}`)
     if (connected.connected) {
       await waitForWorkspacePluginSettle(workspace.id)

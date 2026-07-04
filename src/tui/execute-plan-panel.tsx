@@ -12,7 +12,17 @@ import { listRemoteNames, isModeAllowedForTarget } from '../utils/remote-config'
 import { executeRemoteLoop } from '../utils/tui-remote-launch'
 import type { PluginConfig } from '../types'
 
-export function ExecutePlanPanel(props: {
+/** Selection state reported back to the wrapper dialog after every picker round-trip. */
+export interface ExecutionSelection {
+  executionModel: string
+  auditorModel: string
+  executionVariant: string
+  auditorVariant: string
+  loopName: string
+  target: string
+}
+
+export interface ExecutePlanPanelProps {
   api: TuiPluginApi
   client: ForgeProjectClient
   cache: ExecutionContextCache | null
@@ -28,15 +38,10 @@ export function ExecutePlanPanel(props: {
   projectDirectory?: string
   onBack: () => void
   onExecuted?: () => void | Promise<void>
-  onSelectionChanged: (args: {
-    executionModel: string
-    auditorModel: string
-    executionVariant: string
-    auditorVariant: string
-    loopName: string
-    target: string
-  }) => void
-}) {
+  onSelectionChanged: (args: ExecutionSelection) => void
+}
+
+export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   const cache = untrack(() => props.cache)
   const pluginConfig = untrack(() => props.pluginConfig)
   const theme = () => props.api.theme.current
@@ -74,6 +79,17 @@ export function ExecutePlanPanel(props: {
   const hasRemotes = remoteNames.length > 0
 
   const targetLabel = () => target() === 'local' ? 'Local' : `Remote (${target()})`
+
+  /** Current picker selections, with per-dialog overrides layered on top. */
+  const currentSelection = (overrides: Partial<ExecutionSelection> = {}): ExecutionSelection => ({
+    executionModel: executionModel(),
+    auditorModel: auditorModel(),
+    executionVariant: executionVariant(),
+    auditorVariant: auditorVariant(),
+    loopName: loopName(),
+    target: target(),
+    ...overrides,
+  })
 
   const selectedModelInfo = (target: 'execution' | 'auditor') => {
     const selected = target === 'execution' ? executionModel() : auditorModel()
@@ -166,14 +182,11 @@ export function ExecutePlanPanel(props: {
             effectiveModelInfo,
           )
           props.api.ui.dialog.setSize('xlarge')
-          props.onSelectionChanged({
-            executionModel: which === 'execution' ? selectedModel : executionModel(),
-            auditorModel: which === 'auditor' ? selectedModel : auditorModel(),
-            executionVariant: which === 'execution' ? normalizedVariant : executionVariant(),
-            auditorVariant: which === 'auditor' ? normalizedVariant : auditorVariant(),
-            loopName: loopName(),
-            target: target(),
-          })
+          props.onSelectionChanged(currentSelection(
+            which === 'execution'
+              ? { executionModel: selectedModel, executionVariant: normalizedVariant }
+              : { auditorModel: selectedModel, auditorVariant: normalizedVariant },
+          ))
         }}
       />
     ))
@@ -215,14 +228,11 @@ export function ExecutePlanPanel(props: {
         onSelect={(opt) => {
           const selectedVariant = typeof opt.value === 'string' ? opt.value : ''
           props.api.ui.dialog.setSize('xlarge')
-          props.onSelectionChanged({
-            executionModel: executionModel(),
-            auditorModel: auditorModel(),
-            executionVariant: which === 'execution' ? selectedVariant : executionVariant(),
-            auditorVariant: which === 'auditor' ? selectedVariant : auditorVariant(),
-            loopName: loopName(),
-            target: target(),
-          })
+          props.onSelectionChanged(currentSelection(
+            which === 'execution'
+              ? { executionVariant: selectedVariant }
+              : { auditorVariant: selectedVariant },
+          ))
         }}
       />
     ))
@@ -237,27 +247,12 @@ export function ExecutePlanPanel(props: {
         value={loopName()}
         onConfirm={(name) => {
           const trimmed = name.trim()
-          const newName = trimmed || loopName()
           props.api.ui.dialog.setSize('xlarge')
-          props.onSelectionChanged({
-            executionModel: executionModel(),
-            auditorModel: auditorModel(),
-            executionVariant: executionVariant(),
-            auditorVariant: auditorVariant(),
-            loopName: newName,
-            target: target(),
-          })
+          props.onSelectionChanged(currentSelection(trimmed ? { loopName: trimmed } : {}))
         }}
         onCancel={() => {
           props.api.ui.dialog.setSize('xlarge')
-          props.onSelectionChanged({
-            executionModel: executionModel(),
-            auditorModel: auditorModel(),
-            executionVariant: executionVariant(),
-            auditorVariant: auditorVariant(),
-            loopName: loopName(),
-            target: target(),
-          })
+          props.onSelectionChanged(currentSelection())
         }}
       />
     ))
@@ -278,14 +273,7 @@ export function ExecutePlanPanel(props: {
         onSelect={(opt) => {
           const selected = typeof opt.value === 'string' ? opt.value : 'local'
           props.api.ui.dialog.setSize('xlarge')
-          props.onSelectionChanged({
-            executionModel: executionModel(),
-            auditorModel: auditorModel(),
-            executionVariant: executionVariant(),
-            auditorVariant: auditorVariant(),
-            loopName: loopName(),
-            target: selected,
-          })
+          props.onSelectionChanged(currentSelection({ target: selected }))
         }}
       />
     ))
@@ -302,6 +290,27 @@ export function ExecutePlanPanel(props: {
       default:
         return ''
     }
+  }
+
+  /**
+   * Shared tail for local and remote launches: surface errors, record recent
+   * models, toast success, and notify the host. Returns false on error so
+   * callers can stop.
+   */
+  async function completeLaunch(
+    outcome: { error: string } | { message: string },
+    execModel?: string,
+    auditModel?: string,
+  ): Promise<boolean> {
+    if ('error' in outcome) {
+      props.api.ui.toast({ message: outcome.error, variant: 'error', duration: 10000 })
+      return false
+    }
+    cache?.recordRecent(execModel || '')
+    cache?.recordRecent(auditModel || '')
+    props.api.ui.toast({ message: outcome.message, variant: 'success', duration: 5000 })
+    await props.onExecuted?.()
+    return true
   }
 
   async function runExecuteMode(mode: string, execModel?: string, auditModel?: string, execVariant?: string, auditVariant?: string): Promise<void> {
@@ -337,16 +346,13 @@ export function ExecutePlanPanel(props: {
         onWarning: (m) => props.api.ui.toast({ message: m, variant: 'info', duration: 5000 }),
       })
 
-      if ('error' in result) {
-        props.api.ui.toast({ message: result.error, variant: 'error', duration: 10000 })
-        return
-      }
-
-      cache?.recordRecent(execModel || '')
-      cache?.recordRecent(auditModel || '')
-
-      props.api.ui.toast({ message: `Remote loop started: ${result.loopName} on ${result.remoteName}`, variant: 'success', duration: 5000 })
-      await props.onExecuted?.()
+      await completeLaunch(
+        'error' in result
+          ? result
+          : { message: `Remote loop started: ${result.loopName} on ${result.remoteName}` },
+        execModel,
+        auditModel,
+      )
       return
     }
 
@@ -377,15 +383,15 @@ export function ExecutePlanPanel(props: {
     }
 
     if ('error' in result) {
-      props.api.ui.toast({ message: result.error, variant: 'error', duration: 10000 })
+      await completeLaunch(result)
       return
     }
 
-    cache?.recordRecent(execModel || '')
-    cache?.recordRecent(auditModel || '')
-
-    props.api.ui.toast({ message: result.loopName ? `Loop started: ${result.loopName}` : 'Plan execution started', variant: 'success', duration: 3000 })
-    await props.onExecuted?.()
+    await completeLaunch(
+      { message: result.loopName ? `Loop started: ${result.loopName}` : 'Plan execution started' },
+      execModel,
+      auditModel,
+    )
     props.client.workspaces.list().catch(() => {})
     if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop')) {
       await props.client.selectSession(result.sessionId, result.workspaceId)

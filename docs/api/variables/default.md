@@ -8,7 +8,7 @@
 
 > `const` **default**: `object`
 
-Defined in: [index.ts:560](https://github.com/chriswritescode-dev/opencode-forge/blob/7dda0a6dac066c72b6e45aff076d8e5c7e38f51f/src/index.ts#L560)
+Defined in: [index.ts:754](https://github.com/chriswritescode-dev/opencode-forge/blob/40e2723833e99dd75f767d98a46231a4ea78cddd/src/index.ts#L754)
 
 ## Type Declaration
 

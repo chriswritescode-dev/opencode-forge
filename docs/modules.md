@@ -436,6 +436,7 @@ Cross-cutting helpers (~25 files) organized by concern:
 | Loop | `loop-helpers.ts`, `loop-format.ts`, `loop-session.ts` | Loop model/format/session helpers |
 | Sessions | `audit-session.ts`, `session-titles.ts` | Session naming |
 | TUI | `tui-client.ts`, `tui-plan-store.ts`, `tui-loop-store.ts`, `tui-execution-preferences.ts`, `tui-execution-context-cache.ts`, `tui-models.ts` | TUI RPC, storage, preferences, models |
+| Remote | `remote-config.ts`, `tui-remote-launch.ts` | Remote server config resolution and remote loop launch (see also `createRemoteForgeClient` in `client/sdk-adapter.ts`) |
 | Workspace | `worktree-cleanup.ts`, `workspace-listing.ts`, `workspace-status-registry.ts` | Worktree/workspace lifecycle |
 | Misc | `partial-match.ts`, `model-fallback.ts`, `busy-guard.ts`, `sandbox-ready.ts`, `format.ts` | Various helpers |
 

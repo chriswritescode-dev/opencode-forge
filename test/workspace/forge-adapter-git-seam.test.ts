@@ -374,6 +374,82 @@ describe('createForgeWorkspaceAdapter with fake GitService', () => {
     expect(fake.fetchRef).not.toHaveBeenCalled()
   })
 
+  it('remove: deletes sync ref on shared remote for pinned loops on final teardown', async () => {
+    fake = createFakeGitService({
+      isInsideWorkTree: vi.fn(() => true),
+    })
+    const adapter = createForgeWorkspaceAdapter({
+      dataDir: tmpDataDir,
+      logger,
+      gitService: fake,
+    })
+    const info = {
+      id: 'ws-1',
+      type: 'forge' as const,
+      name: 'sync-cleanup-loop',
+      branch: 'forge/sync-cleanup-loop',
+      directory: join(tmpDataDir, 'worktrees', 'sync-cleanup-loop'),
+      extra: { loopName: 'sync-cleanup-loop', projectDirectory: projectDir, startRef: 'abc123', syncRef: 'refs/forge/sync-cleanup-loop', gitRemote: 'upstream' },
+      projectID: 'p1',
+    }
+
+    await adapter.remove(info, {})
+
+    expect(fake.push).toHaveBeenCalledWith(projectDir, 'upstream', ':refs/forge/sync-cleanup-loop', false)
+    expect(logger.log).toHaveBeenCalledWith(
+      expect.stringContaining('deleted sync ref refs/forge/sync-cleanup-loop on upstream'),
+    )
+  })
+
+  it('remove: does not touch the shared remote when no pin is present', async () => {
+    fake = createFakeGitService({
+      isInsideWorkTree: vi.fn(() => true),
+    })
+    const adapter = createForgeWorkspaceAdapter({
+      dataDir: tmpDataDir,
+      logger,
+      gitService: fake,
+    })
+    const info = {
+      id: 'ws-1',
+      type: 'forge' as const,
+      name: 'local-loop',
+      branch: 'forge/local-loop',
+      directory: join(tmpDataDir, 'worktrees', 'local-loop'),
+      extra: { loopName: 'local-loop', projectDirectory: projectDir },
+      projectID: 'p1',
+    }
+
+    await adapter.remove(info, {})
+
+    expect(fake.push).not.toHaveBeenCalled()
+  })
+
+  it('remove: keeps sync ref when teardown preserves the worktree for restart', async () => {
+    fake = createFakeGitService({
+      isInsideWorkTree: vi.fn(() => true),
+    })
+    const adapter = createForgeWorkspaceAdapter({
+      dataDir: tmpDataDir,
+      logger,
+      gitService: fake,
+      getTeardownContext: () => ({ iteration: 1, reasonLabel: 'error', doCommit: false, doRemoveWorktree: false }),
+    })
+    const info = {
+      id: 'ws-1',
+      type: 'forge' as const,
+      name: 'restartable-loop',
+      branch: 'forge/restartable-loop',
+      directory: join(tmpDataDir, 'worktrees', 'restartable-loop'),
+      extra: { loopName: 'restartable-loop', projectDirectory: projectDir, startRef: 'abc123', syncRef: 'refs/forge/restartable-loop', gitRemote: 'origin' },
+      projectID: 'p1',
+    }
+
+    await adapter.remove(info, {})
+
+    expect(fake.push).not.toHaveBeenCalled()
+  })
+
   it('hard failure: rejects with stderr when worktreeAdd fails with non-already-exists error', async () => {
     fake = createFakeGitService({
       isInsideWorkTree: vi.fn(() => true),
