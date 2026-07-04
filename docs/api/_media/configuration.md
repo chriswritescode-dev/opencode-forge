@@ -169,7 +169,7 @@ Example:
 
 ### How remote launch works
 
-1. The local machine resolves the remote project by matching the local directory **basename** against the remote server's project worktrees (must be unique on the remote).
+1. The local machine resolves the remote project by matching the local repo's **OpenCode project id** (normalized git-origin hash, else the first root commit) against the remote server's project ids. This is location-independent, so the local checkout path and the remote worktree path (e.g. a container workspace) do not need to match.
 2. Local `HEAD` is force-pushed to `refs/forge/<loopName>` on the shared `gitRemote` (uncommitted changes are not included; a warning is shown).
 3. The remote server creates the loop worktree pinned to that exact SHA, fetching the sync ref when the commit is not yet in its clone.
 4. On final loop teardown, the remote deletes the sync ref from the shared git remote (restart-preserving teardowns keep it). If a loop is deleted outside normal teardown, remove leftovers manually with `git push <gitRemote> --delete refs/forge/<loopName>`.

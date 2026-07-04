@@ -1,5 +1,4 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest'
-import { basename } from 'path'
 
 // ── Module mocks required by the transitively-imported launchTuiLoop ──────
 
@@ -85,7 +84,7 @@ function createClientSpy(): {
 
 const LOCAL_DIR = '/home/user/my-project'
 const REMOTE_URL = 'http://remote:4096'
-const LOCAL_BASENAME = basename(LOCAL_DIR) // 'my-project'
+const LOCAL_PROJECT_ID = 'proj_1'
 
 function happyConfig(): PluginConfig {
   return {
@@ -121,6 +120,7 @@ describe('executeRemoteLoop', () => {
       {
         remoteName: 'server1',
         localDirectory: LOCAL_DIR,
+        localProjectId: LOCAL_PROJECT_ID,
         title: 'Test Plan',
         loopName: 'test-loop',
         plan: '# Test Plan\n\nDo work.',
@@ -199,6 +199,7 @@ describe('executeRemoteLoop', () => {
       {
         remoteName: 'unknown',
         localDirectory: LOCAL_DIR,
+        localProjectId: LOCAL_PROJECT_ID,
         title: 'Test',
         loopName: 'loop',
         plan: 'plan',
@@ -230,6 +231,7 @@ describe('executeRemoteLoop', () => {
       {
         remoteName: 'server1',
         localDirectory: LOCAL_DIR,
+        localProjectId: LOCAL_PROJECT_ID,
         title: 'Test',
         loopName: 'loop',
         plan: 'plan',
@@ -265,6 +267,7 @@ describe('executeRemoteLoop', () => {
       {
         remoteName: 'server1',
         localDirectory: LOCAL_DIR,
+        localProjectId: LOCAL_PROJECT_ID,
         title: 'Test',
         loopName: 'loop',
         plan: 'plan',
@@ -300,6 +303,7 @@ describe('executeRemoteLoop', () => {
       {
         remoteName: 'server1',
         localDirectory: LOCAL_DIR,
+        localProjectId: LOCAL_PROJECT_ID,
         title: 'Test',
         loopName: 'loop',
         plan: 'plan',
@@ -326,7 +330,7 @@ describe('executeRemoteLoop', () => {
 
   // ── Error: no matching remote project ───────────────────────────────────
 
-  test('returns error when no remote project matches local directory basename', async () => {
+  test('returns error when no remote project matches the local OpenCode project id', async () => {
     const config = happyConfig()
     const git = happyGit()
 
@@ -345,6 +349,7 @@ describe('executeRemoteLoop', () => {
       {
         remoteName: 'server1',
         localDirectory: LOCAL_DIR,
+        localProjectId: LOCAL_PROJECT_ID,
         title: 'Test',
         loopName: 'loop',
         plan: 'plan',
@@ -354,26 +359,56 @@ describe('executeRemoteLoop', () => {
 
     expect('error' in result).toBe(true)
     if ('error' in result) {
-      expect(result.error).toContain(LOCAL_BASENAME)
-      expect(result.error).toContain('other-project')
+      expect(result.error).toContain(LOCAL_PROJECT_ID)
+      expect(result.error).toContain('proj_other')
     }
 
     // No push after failed match
     expect(git.push).not.toHaveBeenCalled()
   })
 
-  // ── Error: multiple matching remote projects ────────────────────────────
+  // ── Error: local project id could not be resolved ───────────────────────
 
-  test('returns error when multiple remote projects share the same worktree basename', async () => {
+  test('returns error when the local project id is missing', async () => {
+    const config = happyConfig()
+    const git = happyGit()
+    const { spy: createClient } = createClientSpy()
+
+    const result = await executeRemoteLoop(
+      {
+        remoteName: 'server1',
+        localDirectory: LOCAL_DIR,
+        localProjectId: '',
+        title: 'Test',
+        loopName: 'loop',
+        plan: 'plan',
+      },
+      { config, git, createClient: createClient as any },
+    )
+
+    expect('error' in result).toBe(true)
+    if ('error' in result) {
+      expect(result.error).toContain('project id')
+    }
+
+    // No discovery client, no push when identity is unknown
+    expect(createClient).not.toHaveBeenCalled()
+    expect(git.push).not.toHaveBeenCalled()
+  })
+
+  // ── Matches by project id, not worktree path ────────────────────────────
+
+  test('matches by project id even when worktree basenames collide', async () => {
     const config = happyConfig()
     const git = happyGit()
 
     const clients: ForgeClient[] = []
     const createClient = vi.fn((_opts: RemoteClientOptions) => {
       const client = makeFakeClient()
+      // Two projects with the same worktree basename; only the id disambiguates.
       client.project.list = vi.fn().mockResolvedValue([
-        { id: 'proj_a', worktree: '/remote-a/my-project' },
-        { id: 'proj_b', worktree: '/remote-b/my-project' },
+        { id: 'proj_other', worktree: '/remote-a/my-project' },
+        { id: LOCAL_PROJECT_ID, worktree: '/remote-b/my-project' },
       ]) as any
       clients.push(client)
       return client
@@ -383,6 +418,7 @@ describe('executeRemoteLoop', () => {
       {
         remoteName: 'server1',
         localDirectory: LOCAL_DIR,
+        localProjectId: LOCAL_PROJECT_ID,
         title: 'Test',
         loopName: 'loop',
         plan: 'plan',
@@ -390,20 +426,17 @@ describe('executeRemoteLoop', () => {
       { config, git, createClient: createClient as any },
     )
 
-    expect('error' in result).toBe(true)
-    if ('error' in result) {
-      expect(result.error).toContain(LOCAL_BASENAME)
-      expect(result.error).toContain('/remote-a/my-project')
-      expect(result.error).toContain('/remote-b/my-project')
-      expect(result.error).toContain('unique')
-    }
+    expect('error' in result).toBe(false)
 
-    // No push, no workspace/session creation after ambiguity
-    expect(git.push).not.toHaveBeenCalled()
-    // createClient was called once (discovery) but scoped client was never created
-    expect(clients.length).toBe(1)
-    expect(clients[0].workspace.create).not.toHaveBeenCalled()
-    expect(clients[0].session.create).not.toHaveBeenCalled()
+    // The scoped client was created for the id-matched project's worktree,
+    // not the first basename collision.
+    expect(createClient).toHaveBeenNthCalledWith(2, {
+      url: REMOTE_URL,
+      username: 'opencode',
+      password: 'sekret',
+      directory: '/remote-b/my-project',
+    })
+    expect(git.push).toHaveBeenCalledTimes(1)
   })
 
   // ── Dirty working tree (warning) ────────────────────────────────────────
@@ -422,6 +455,7 @@ describe('executeRemoteLoop', () => {
       {
         remoteName: 'server1',
         localDirectory: LOCAL_DIR,
+        localProjectId: LOCAL_PROJECT_ID,
         title: 'Test Plan',
         loopName: 'test-loop',
         plan: '# Test Plan\n\nDo work.',
@@ -469,6 +503,7 @@ describe('executeRemoteLoop', () => {
       {
         remoteName: 'server1',
         localDirectory: LOCAL_DIR,
+        localProjectId: LOCAL_PROJECT_ID,
         title: 'Test Plan',
         loopName: 'test-loop',
         plan: '# Test Plan\n\nDo work.',

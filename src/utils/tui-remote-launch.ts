@@ -1,4 +1,3 @@
-import { basename } from 'path'
 import { resolveRemoteServer, listRemoteNames, forgeSyncRef } from './remote-config'
 import { defaultGitService, type GitService } from './git-service'
 import { createRemoteForgeClient, type RemoteClientOptions } from '../client/sdk-adapter'
@@ -9,6 +8,12 @@ import { reserveTuiLoopName, launchTuiLoop } from './tui-client'
 export interface RemoteLoopRequest {
   remoteName: string
   localDirectory: string
+  /**
+   * The local repo's OpenCode project id (as resolved by the local opencode
+   * server). Used to match the remote project by identity rather than by
+   * worktree path, which differs per machine.
+   */
+  localProjectId: string
   title: string
   loopName: string
   plan: string
@@ -62,7 +67,15 @@ export async function executeRemoteLoop(
     deps.onWarning?.(`Uncommitted changes are not included; remote loop starts from HEAD ${sha.substring(0, 7)}`)
   }
 
-  // 3. Discovery: find remote project matching local directory basename
+  // 3. Discovery: find the remote project sharing this repo's OpenCode project
+  // identity. OpenCode derives the same id for a given repo on every server
+  // (normalized git-origin hash, else the first root commit), so matching on
+  // id is location-independent — unlike worktree paths, which differ per
+  // machine (e.g. a local checkout vs. a container workspace).
+  if (!req.localProjectId) {
+    return { error: `Could not resolve the local OpenCode project id for ${req.localDirectory}; cannot match a remote project.` }
+  }
+
   const discoveryClient = createClient({
     url: remote.url,
     username: remote.username,
@@ -76,17 +89,11 @@ export async function executeRemoteLoop(
     return { error: `Failed to list projects on remote "${remote.name}": ${err instanceof Error ? err.message : String(err)}` }
   }
 
-  const localBasename = basename(req.localDirectory)
-  const matches = projects.filter((p) => basename(p.worktree) === localBasename)
-  if (matches.length === 0) {
-    const candidates = projects.map((p) => basename(p.worktree))
-    return { error: `No remote project matches local directory "${localBasename}". Available projects: ${candidates.length ? candidates.join(', ') : '(none)'}` }
+  const matched = projects.find((p) => p.id === req.localProjectId)
+  if (!matched) {
+    const ids = projects.map((p) => p.id)
+    return { error: `No project on remote "${remote.name}" matches OpenCode project id ${req.localProjectId}. Available project ids: ${ids.length ? ids.join(', ') : '(none)'}` }
   }
-  if (matches.length > 1) {
-    const ambiguous = matches.map((p) => p.worktree)
-    return { error: `Multiple remote projects match local directory "${localBasename}": ${ambiguous.join(', ')}. Remote project worktree must be unique.` }
-  }
-  const matched = matches[0]
 
   // 4. Create scoped client for the matched directory
   const remoteClient = createClient({

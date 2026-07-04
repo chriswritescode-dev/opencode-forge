@@ -334,6 +334,7 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
       const result = await executeRemoteLoop({
         remoteName: target(),
         localDirectory: props.projectDirectory ?? '',
+        localProjectId: props.client.projectId,
         title,
         loopName: loopName(),
         plan: planText,
