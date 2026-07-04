@@ -1,6 +1,7 @@
 import type { OpencodeClient } from '@opencode-ai/sdk/v2'
 import { createOpencodeClient as createV2Client } from '@opencode-ai/sdk/v2'
 import type { PluginInput } from '@opencode-ai/plugin'
+import { DEFAULT_REMOTE_USERNAME } from '../utils/remote-config'
 import {
   ForgeClientError,
   type ForgeClient,
@@ -222,4 +223,45 @@ export function createV2ClientFromPluginInput(pluginInput: PluginInput): Opencod
     ...(legacyAuthHeader ? { headers: { Authorization: legacyAuthHeader } } : {}),
   }
   return createV2Client(v2ClientConfig)
+}
+
+// ── Remote client factory ─────────────────────────────────────────────────────
+
+/**
+ * Build a Basic HTTP Authorization header value from username and password.
+ * The username defaults to `'opencode'` in {@link RemoteClientOptions}.
+ */
+export function buildBasicAuthHeader(username: string, password: string): string {
+  return `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`
+}
+
+export interface RemoteClientOptions {
+  url: string
+  /** Defaults to {@link DEFAULT_REMOTE_USERNAME}. */
+  username?: string
+  password?: string
+  directory?: string
+  fetch?: typeof fetch
+}
+
+/**
+ * Create a {@link ForgeClient} targeting a remote opencode server.
+ *
+ * Sets the `Authorization` header via {@link buildBasicAuthHeader} only when
+ * `password` is provided. The client uses the given `baseUrl`, optional
+ * `directory` (injected as `x-opencode-directory`), and optional `fetch` test
+ * seam.
+ */
+export function createRemoteForgeClient(opts: RemoteClientOptions): ForgeClient {
+  const v2Config: Parameters<typeof createV2Client>[0] = {
+    baseUrl: opts.url,
+    ...(opts.directory ? { directory: opts.directory } : {}),
+    ...(opts.fetch ? { fetch: opts.fetch } : {}),
+  }
+
+  if (opts.password) {
+    v2Config.headers = { Authorization: buildBasicAuthHeader(opts.username ?? DEFAULT_REMOTE_USERNAME, opts.password) }
+  }
+
+  return createForgeClient(createV2Client(v2Config))
 }

@@ -90,6 +90,10 @@ export interface ForgeLoopExtra {
   planText?: string
   initialPromptOwner?: 'server' | 'tui'
   pendingAttachStartedAt?: number
+  /** Whether the loop runs sandboxed. Written by the attach hook and remote launches; read on re-attach. */
+  sandboxEnabled?: boolean
+  /** Docker container name when the loop runs sandboxed. */
+  sandboxContainer?: string
 }
 
 export interface AttachLoopInput {

@@ -7,6 +7,7 @@ import type { SandboxManager } from '../sandbox/manager'
 import { forgeBranchName, forgeWorktreeDir, forgeWorktreeSlug } from './forge-naming'
 import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { defaultGitService, type GitService } from '../utils/git-service'
+import { forgeSyncRef, DEFAULT_GIT_REMOTE } from '../utils/remote-config'
 import { writeWorktreeOpencodeConfig, WORKTREE_OPENCODE_CONFIG_FILENAME } from './worktree-opencode-config'
 
 
@@ -153,6 +154,15 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
     })
   }
 
+  function deriveSyncPin(info: WorkspaceInfo, loopName: string): { startRef: string; syncRef: string; gitRemote: string } | null {
+    const extra = (info.extra ?? {}) as Record<string, unknown>
+    const startRef = typeof extra.startRef === 'string' && extra.startRef.length > 0 ? extra.startRef : null
+    if (!startRef) return null
+    const syncRef = typeof extra.syncRef === 'string' ? extra.syncRef : forgeSyncRef(loopName)
+    const gitRemote = typeof extra.gitRemote === 'string' ? extra.gitRemote : DEFAULT_GIT_REMOTE
+    return { startRef, syncRef, gitRemote }
+  }
+
   async function stepRemoveWorktree(worktreeDir: string, ctx: TeardownContext): Promise<void> {
     if (!ctx.doRemoveWorktree) return
 
@@ -164,6 +174,30 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
     })
     if (result.error) {
       throw new Error(result.error)
+    }
+  }
+
+  /**
+   * Best-effort deletion of the remote-launch sync ref (`refs/forge/<loop>`)
+   * on the shared git remote so refs do not accumulate there. Runs only on
+   * final teardown (worktree removed): the loop branch pins the fetched
+   * commit locally, so the shared ref is no longer needed. Restart-preserving
+   * teardowns keep the ref in place.
+   */
+  function stepDeleteSyncRef(info: WorkspaceInfo, loopName: string, ctx: TeardownContext): void {
+    if (!ctx.doRemoveWorktree) return
+    const pin = deriveSyncPin(info, loopName)
+    if (!pin) return
+    try {
+      const projectDir = deriveProjectDirectory(info)
+      const res = git.push(projectDir, pin.gitRemote, `:${pin.syncRef}`, false)
+      if (res.ok) {
+        logger.log(`forge-adapter: deleted sync ref ${pin.syncRef} on ${pin.gitRemote}`)
+      } else {
+        logger.log(`forge-adapter: could not delete sync ref ${pin.syncRef} on ${pin.gitRemote}: ${res.stderr.trim() || 'unknown error'}`)
+      }
+    } catch (err) {
+      logger.log(`forge-adapter: sync ref cleanup skipped: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
@@ -192,13 +226,30 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
         throw new Error(`forge workspace adapter: projectDirectory ${projectDir} is not a git work tree`)
       }
 
+      // Resolve SHA pin before checking branch existence so the fetch (if needed)
+      // happens before any worktree operation.
+      const loopName = deriveLoopName(info)
+      const pin = deriveSyncPin(info, loopName)
+      if (pin && !git.commitExists(projectDir, pin.startRef)) {
+        logger.log(`forge-adapter: fetching ${pin.syncRef} from ${pin.gitRemote} to resolve pinned SHA ${pin.startRef}`)
+        git.fetchRef(projectDir, pin.gitRemote, pin.syncRef)
+        if (!git.commitExists(projectDir, pin.startRef)) {
+          throw new Error(
+            `forge workspace adapter: startRef ${pin.startRef} not found after fetching ${pin.syncRef} from ${pin.gitRemote}`,
+          )
+        }
+      }
+
       // Detect orphan state from a prior failed run: branch may exist without a live worktree.
       const branchExists = git.branchExists(projectDir, info.branch)
+
+      // Only pass startPoint when creating a new branch; existing branches always win.
+      const startPoint = pin && !branchExists ? pin.startRef : undefined
 
       // Prune dead worktree records first so `git worktree add` can re-use an orphaned branch.
       git.worktreePrune(projectDir)
 
-      let res = git.worktreeAdd(projectDir, info.directory, info.branch, !branchExists)
+      let res = git.worktreeAdd(projectDir, info.directory, info.branch, !branchExists, startPoint)
       let reusedOrphan = false
       if (!res.ok) {
         const stderr = res.stderr.trim() || 'unknown error'
@@ -220,7 +271,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
               logger.error(`forge-adapter: orphan cleanup failed for ${info.directory}: ${cleanup.error ?? 'unknown error'}`)
               throw new Error(`git worktree add failed: ${stderr}`)
             }
-            res = git.worktreeAdd(projectDir, info.directory, info.branch, !branchExists)
+            res = git.worktreeAdd(projectDir, info.directory, info.branch, !branchExists, startPoint)
             if (!res.ok) {
               const retryStderr = res.stderr.trim() || 'unknown error'
               logger.error(`forge-adapter: git worktree add still failed after orphan cleanup: ${retryStderr}`)
@@ -285,6 +336,9 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
       // Remove the worktree directory and prune dead records.
       // Skip on error/stall/abort so restart can reuse it.
       await stepRemoveWorktree(info.directory, ctx)
+
+      // Remote-launched loops: drop the sync ref from the shared git remote.
+      stepDeleteSyncRef(info, loopName, ctx)
 
       // Branches are never deleted — `forge/*` scratch branches stay in place for potential restart.
     },

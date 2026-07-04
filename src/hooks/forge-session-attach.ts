@@ -1,6 +1,6 @@
 import type { Logger } from '../types'
 import type { ForgeClient } from '../client/port'
-import type { ForgeExecutionServiceDeps, PlanSource } from '../services/execution'
+import type { ForgeExecutionServiceDeps, ForgeLoopExtra, PlanSource } from '../services/execution'
 import { attachLoopToSession } from '../services/execution'
 import { resolveSandboxContextForLoop, isSandboxEnabled } from '../sandbox/context'
 import { classifyForgeWorkspace, isPendingAttachWorkspace } from '../workspace/classify-stale'
@@ -114,20 +114,9 @@ async function attachForgeSession(
       return
     }
 
-    const cfg = (ws.extra ?? {}).forgeLoop as {
-      hostSessionId?: string
-      title?: string
-      executionModel?: string
-      auditorModel?: string
-      executionVariant?: string
-      auditorVariant?: string
-      planSource?: 'stored' | 'inline'
-      planText?: string
-      initialPromptOwner?: 'server' | 'tui'
-      maxIterations?: number
-      sandboxEnabled?: boolean
-      sandboxContainer?: string
-    } | undefined
+    const cfg = (ws.extra ?? {}).forgeLoop as
+      | (Partial<ForgeLoopExtra> & { maxIterations?: number })
+      | undefined
 
     if (cfg?.initialPromptOwner === 'tui' && sendInitialPrompt) {
       deps.logger.log(`[forge-session-attach] skip session=${sessionId} loop=${loopName} reason=tui-owned-initial-prompt`)

@@ -10,7 +10,7 @@ import { createDockerService } from './sandbox/docker'
 import { isSandboxConfigEnabled } from './sandbox/context'
 import { resolveLoopAllowedDirectories } from './constants/loop'
 import { connectForgeProject, type ForgeProjectClient } from './utils/tui-client'
-import { ExecutePlanPanel } from './tui/execute-plan-panel'
+import { ExecutePlanPanel, type ExecutePlanPanelProps } from './tui/execute-plan-panel'
 import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/session-follow'
 import { openInBrowser, startDashboardServer, type DashboardServerHandle } from './dashboard/launch'
 import { normalizePastedPlanText } from './utils/marked-plan-parser'
@@ -109,19 +109,7 @@ function Sidebar(props: {
  * across picker round-trips. This mirrors the pattern the deleted
  * `PlanViewerDialog` used internally.
  */
-function ExecutionDialog(props: {
-  api: TuiPluginApi
-  client: ForgeProjectClient
-  cache: ExecutionContextCache | null
-  pluginConfig: PluginConfig
-  planContent: string
-  sessionId: string
-  initialExecutionModel?: string
-  initialAuditorModel?: string
-  initialExecutionVariant?: string
-  initialAuditorVariant?: string
-  initialLoopName?: string
-}) {
+function ExecutionDialog(props: Omit<ExecutePlanPanelProps, 'onBack' | 'onExecuted' | 'onSelectionChanged'>) {
   const theme = () => props.api.theme.current
 
   return (
@@ -144,8 +132,10 @@ function ExecutionDialog(props: {
         initialExecutionVariant={props.initialExecutionVariant}
         initialAuditorVariant={props.initialAuditorVariant}
         initialLoopName={props.initialLoopName}
+        initialTarget={props.initialTarget}
+        projectDirectory={props.projectDirectory}
         onBack={() => props.api.ui.dialog.clear()}
-        onSelectionChanged={({ executionModel, auditorModel, executionVariant, auditorVariant, loopName }) => {
+        onSelectionChanged={({ executionModel, auditorModel, executionVariant, auditorVariant, loopName, target }) => {
           props.cache?.setSelectionOverride({ executionModel, auditorModel, executionVariant, auditorVariant })
           props.api.ui.dialog.setSize('xlarge')
           props.api.ui.dialog.replace(() => (
@@ -161,6 +151,8 @@ function ExecutionDialog(props: {
               initialExecutionVariant={executionVariant}
               initialAuditorVariant={auditorVariant}
               initialLoopName={loopName}
+              initialTarget={target}
+              projectDirectory={props.projectDirectory}
             />
           ))
         }}
@@ -437,6 +429,7 @@ const tui: TuiPlugin = async (api) => {
         pluginConfig={pluginConfig}
         planContent={planContent}
         sessionId={sessionID}
+        projectDirectory={directory}
       />
     ))
   }

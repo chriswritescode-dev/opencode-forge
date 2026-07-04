@@ -90,7 +90,7 @@ Execution flow dialog with mode and model selection:
 ## Features
 
 - **Plans** — architect produces marked plans that are auto-captured to SQL storage
-- **Execution** — `New session`, `Execute here`, and `Loop` launch paths for approved plans
+- **Execution** — `New session`, `Execute here`, and `Loop` launch paths for approved plans; loops can also target a configured remote opencode server (see [Configuration](docs/configuration.md#remotes))
 - **Loops** — iterative coding/auditing with isolated git worktree and optional Docker sandbox
 - **Review Findings** — persistent, loop-scoped review findings across loop sessions
 - **TUI** — sidebar and execution dialog

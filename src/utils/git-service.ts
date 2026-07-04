@@ -19,7 +19,11 @@ export interface GitService {
   revParseGitDir(cwd: string): GitResult
   revParseGitCommonDir(cwd: string): GitResult
   revParseGitPath(cwd: string, path: string): GitResult
-  worktreeAdd(cwd: string, directory: string, branch: string, createBranch: boolean): GitResult
+  revParseHead(cwd: string): GitResult
+  commitExists(cwd: string, sha: string): boolean
+  push(cwd: string, remote: string, refspec: string, force: boolean): GitResult
+  fetchRef(cwd: string, remote: string, ref: string): GitResult
+  worktreeAdd(cwd: string, directory: string, branch: string, createBranch: boolean, startPoint?: string): GitResult
   worktreeRemove(cwd: string, directory: string): GitResult
   worktreePrune(cwd: string): GitResult
 }
@@ -76,7 +80,27 @@ export function createGitService(): GitService {
       return runGit(['rev-parse', '--git-path', path], cwd)
     },
 
-    worktreeAdd(cwd: string, directory: string, branch: string, createBranch: boolean): GitResult {
+    revParseHead(cwd: string): GitResult {
+      return runGit(['rev-parse', 'HEAD'], cwd)
+    },
+
+    commitExists(cwd: string, sha: string): boolean {
+      return runGit(['cat-file', '-e', `${sha}^{commit}`], cwd).ok
+    },
+
+    push(cwd: string, remote: string, refspec: string, force: boolean): GitResult {
+      const args = force ? ['push', '--force', remote, refspec] : ['push', remote, refspec]
+      return runGit(args, cwd)
+    },
+
+    fetchRef(cwd: string, remote: string, ref: string): GitResult {
+      return runGit(['fetch', remote, ref], cwd)
+    },
+
+    worktreeAdd(cwd: string, directory: string, branch: string, createBranch: boolean, startPoint?: string): GitResult {
+      if (createBranch && startPoint) {
+        return runGit(['worktree', 'add', directory, '-b', branch, startPoint], cwd)
+      }
       return runGit(createBranch ? ['worktree', 'add', directory, '-b', branch] : ['worktree', 'add', directory, branch], cwd)
     },
 
