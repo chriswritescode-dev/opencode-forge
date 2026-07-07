@@ -110,6 +110,31 @@ describe('SandboxManager custom mounts', () => {
     expect(active?.mounts[2]).toEqual({ hostDir: '/main-project', containerDir: '/project', readOnly: true })
   })
 
+  test('nested collision with workspace container path is skipped', async () => {
+    const tmpRW = createTempDir()
+
+    const mockDocker = createMockDockerService()
+    const logger = createMockLogger()
+    const config: SandboxManagerConfig = {
+      image: 'oc-forge-sandbox:latest',
+      customMounts: [
+        { host: tmpRW, container: '/workspace/cache', readonly: false },
+      ],
+    }
+
+    const manager = createSandboxManager(mockDocker as unknown as DockerService, config, logger)
+    await manager.start('test', '/home/user/worktrees/feature')
+
+    const calls = mockDocker.getCreateContainerCalls()
+    const opts = calls[0][3] as { extraMounts?: string[] } | undefined
+    const mounts = opts?.extraMounts ?? []
+
+    expect(mounts).not.toContain(`${resolve(tmpRW)}:/workspace/cache`)
+
+    const active = manager.getActive('test')
+    expect(active?.mounts).toHaveLength(2)
+  })
+
   test('coexists with project mount', async () => {
     const tmpCustom = createTempDir()
 

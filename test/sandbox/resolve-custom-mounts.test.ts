@@ -109,6 +109,18 @@ describe('resolveCustomMounts', () => {
     expect(logger.log.mock.calls[0][0]).toContain('already in use')
   })
 
+  test('nested collision with reserved container path is skipped', () => {
+    const dir = withTempDir()
+    const logger = createMockLogger()
+    const raw: SandboxMountConfig[] = [
+      { host: dir, container: '/workspace/cache', readonly: false },
+    ]
+    const result = resolveCustomMounts(raw, new Set(['/workspace']), logger)
+    expect(result).toEqual([])
+    expect(logger.log).toHaveBeenCalledTimes(1)
+    expect(logger.log.mock.calls[0][0]).toContain('already in use')
+  })
+
   test('duplicate container path among entries skips the second', () => {
     const dir1 = withTempDir()
     const dir2 = mkdtempSync(join(tmpdir(), 'forge-mount-'))
