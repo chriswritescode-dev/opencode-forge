@@ -77,7 +77,6 @@ describe('resolveWorktreeLogTarget', () => {
     
     expect(result).not.toBeNull()
     expect(result!.hostPath).toBe(join(dataDir, 'worktree-logs'))
-    expect(result!.permissionPath).toBe(join(dataDir, 'worktree-logs'))
   })
 
   test('resolves relative directory against projectDir', () => {
@@ -109,74 +108,6 @@ describe('resolveWorktreeLogTarget', () => {
     const result = resolveWorktreeLogTarget(config, { projectDir: testProjectDir })
     expect(result).not.toBeNull()
     expect(result!.hostPath).toBe(absolutePath)
-  })
-
-  test('computes permissionPath as hostPath when sandbox is false', () => {
-    const config: PluginConfig = {
-      loop: {
-        worktreeLogging: {
-          enabled: true,
-          directory: 'logs',
-        },
-      },
-    }
-
-    const result = resolveWorktreeLogTarget(config, { 
-      projectDir: testProjectDir,
-      sandbox: false,
-    })
-    expect(result).not.toBeNull()
-    expect(result!.permissionPath).toBe(result!.hostPath)
-  })
-
-  test('maps permissionPath to container path when sandbox is true and within mount', () => {
-    const config: PluginConfig = {
-      loop: {
-        worktreeLogging: {
-          enabled: true,
-          directory: 'logs',
-        },
-      },
-    }
-
-    const worktreeDir = join(testProjectDir, 'worktree')
-    mkdirSync(worktreeDir, { recursive: true })
-    
-    const result = resolveWorktreeLogTarget(config, { 
-      projectDir: worktreeDir,
-      sandboxHostDir: worktreeDir,
-      sandbox: true,
-    })
-    
-    expect(result).not.toBeNull()
-    expect(result!.hostPath).toBe(join(worktreeDir, 'logs'))
-    expect(result!.permissionPath).toBe('/workspace/logs')
-  })
-
-  test('sets permissionPath to null when path is outside sandbox mount', () => {
-    const outsidePath = '/tmp/outside-logs'
-    const config: PluginConfig = {
-      loop: {
-        worktreeLogging: {
-          enabled: true,
-          directory: outsidePath,
-        },
-      },
-    }
-
-    const worktreeDir = join(testProjectDir, 'worktree')
-    mkdirSync(worktreeDir, { recursive: true })
-    
-    const result = resolveWorktreeLogTarget(config, { 
-      projectDir: worktreeDir,
-      sandboxHostDir: worktreeDir,
-      sandbox: true,
-    })
-    
-    expect(result).not.toBeNull()
-    expect(result!.hostPath).toBe(outsidePath)
-    // Path outside mount should be null to prevent granting meaningless host-only rules
-    expect(result!.permissionPath).toBeNull()
   })
 
   test('expands tilde shorthand to home directory', () => {
@@ -243,34 +174,6 @@ describe('resolveWorktreeLogTarget', () => {
     expect(result!.hostPath).toBe(join(testProjectDir, 'logs/worktree'))
   })
 
-  test('computes permissionPath from normalized host path for sandbox mapping', () => {
-    const { homedir } = require('os')
-    const tildePath = '~/sandbox-logs'
-    const config: PluginConfig = {
-      loop: {
-        worktreeLogging: {
-          enabled: true,
-          directory: tildePath,
-        },
-      },
-    }
-
-    const worktreeDir = join(testProjectDir, 'worktree')
-    mkdirSync(worktreeDir, { recursive: true })
-    
-    // When tilde path resolves to a location within the sandbox mount
-    const result = resolveWorktreeLogTarget(config, { 
-      projectDir: worktreeDir,
-      sandboxHostDir: worktreeDir,
-      sandbox: true,
-    })
-    
-    // The hostPath should be expanded
-    expect(result).not.toBeNull()
-    expect(result!.hostPath).toBe(join(homedir(), 'sandbox-logs'))
-    // Permission path should be null since homedir is outside sandbox mount
-    expect(result!.permissionPath).toBeNull()
-  })
 })
 
 describe('ensureWorktreeLogDirectory', () => {
@@ -444,76 +347,9 @@ describe('buildLoopPermissionRuleset integration', () => {
     expect(ruleset).toContainEqual({ permission: 'question', pattern: '*', action: 'deny' })
     expect(ruleset).toContainEqual({ permission: '*', pattern: '*', action: 'allow' })
     expect(ruleset).toContainEqual({ permission: 'external_directory', pattern: '*', action: 'deny' })
-    expect(ruleset).toContainEqual({ permission: 'bash', pattern: '*', action: 'deny' })
-    expect(ruleset).toContainEqual({ permission: 'sh', pattern: '*', action: 'allow' })
     expect(ruleset).toContainEqual({ permission: 'loop-cancel', pattern: '*', action: 'deny' })
     expect(ruleset).toContainEqual({ permission: 'loop-status', pattern: '*', action: 'deny' })
   })
-})
-
-describe('sandbox permission path mapping', () => {
-  let testProjectDir: string
-
-  beforeEach(() => {
-    testProjectDir = TEST_DIR + '-sandbox-project-' + Math.random().toString(36).slice(2)
-    mkdirSync(testProjectDir, { recursive: true })
-  })
-
-  afterEach(() => {
-    if (existsSync(testProjectDir)) {
-      rmSync(testProjectDir, { recursive: true, force: true })
-    }
-  })
-
-  test('resolveWorktreeLogTarget maps to container path when sandboxed and within mount', () => {
-    const config: PluginConfig = {
-      loop: {
-        worktreeLogging: {
-          enabled: true,
-          directory: 'logs',
-        },
-      },
-    }
-
-    const worktreeDir = join(testProjectDir, 'worktree')
-    mkdirSync(worktreeDir, { recursive: true })
-
-    const result = resolveWorktreeLogTarget(config, {
-      projectDir: worktreeDir,
-      sandboxHostDir: worktreeDir,
-      sandbox: true,
-    })
-
-    expect(result).not.toBeNull()
-    expect(result!.hostPath).toBe(join(worktreeDir, 'logs'))
-    expect(result!.permissionPath).toBe('/workspace/logs')
-  })
-
-  test('resolveWorktreeLogTarget sets permissionPath to null when sandboxed but outside mount', () => {
-    const outsidePath = '/tmp/outside-logs'
-    const config: PluginConfig = {
-      loop: {
-        worktreeLogging: {
-          enabled: true,
-          directory: outsidePath,
-        },
-      },
-    }
-
-    const worktreeDir = join(testProjectDir, 'worktree')
-    mkdirSync(worktreeDir, { recursive: true })
-
-    const result = resolveWorktreeLogTarget(config, {
-      projectDir: worktreeDir,
-      sandboxHostDir: worktreeDir,
-      sandbox: true,
-    })
-
-    expect(result).not.toBeNull()
-    expect(result!.hostPath).toBe(outsidePath)
-    expect(result!.permissionPath).toBeNull()
-  })
-
 })
 
 describe('buildWorktreeCompletionPayload', () => {

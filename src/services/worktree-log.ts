@@ -2,8 +2,6 @@ import { mkdirSync, appendFileSync, existsSync } from 'fs'
 import { join, isAbsolute } from 'path'
 import { homedir } from 'os'
 import type { PluginConfig, Logger } from '../types'
-import { toContainerPath } from '../sandbox/path'
-import type { SandboxMount } from '../sandbox/path'
 import type { LoopUsageSummary } from '../loop/token-usage'
 import { formatUsageSummary } from '../utils/loop-format'
 
@@ -15,10 +13,6 @@ export interface WorktreeLogContext {
   projectDir: string
   /** Optional data directory for default path resolution. */
   dataDir?: string
-  /** Optional sandbox host directory for permission path mapping. */
-  sandboxHostDir?: string
-  /** Whether the loop is running in sandbox mode. */
-  sandbox?: boolean
 }
 
 /**
@@ -50,21 +44,16 @@ export interface WorktreeCompletionLogPayload {
 export interface BuildWorktreeCompletionPayloadResult {
   /** The serializable payload for logging. */
   payload: WorktreeCompletionLogPayload
-  /** The permission path for sandbox rules (may be null if outside sandbox mount). */
-  permissionPath: string | null
   /** The resolved host path for the log directory. */
   hostPath: string
 }
 
 /**
  * Result of resolving a worktree log target.
- * Contains both the host path and the permission path for sandbox-aware rules.
  */
 export interface WorktreeLogTarget {
   /** The absolute path on the host filesystem. */
   hostPath: string
-  /** The path to use for permission rules (may be container-mapped or null if unreachable). */
-  permissionPath: string | null
 }
 
 /**
@@ -125,33 +114,7 @@ export function resolveWorktreeLogTarget(
       ? normalizedDirectory
       : join(context.projectDir, normalizedDirectory)
     
-    // Compute permission path based on sandbox context
-    let permissionPath: string | null
-    if (context.sandbox) {
-      if (context.sandboxHostDir) {
-        // Build a single mount entry from sandboxHostDir for the toContainerPath call
-        const mounts: SandboxMount[] = [{ hostDir: context.sandboxHostDir, containerDir: '/workspace' }]
-        const mappedPath = toContainerPath(resolvedPath, mounts)
-        // Only use mapped path if it's actually within the container mount
-        // If the path is outside the mount, permissionPath should be null
-        // to prevent granting meaningless host-only external_directory rules
-        permissionPath = mappedPath.startsWith('/workspace/') || mappedPath === '/workspace'
-          ? mappedPath
-          : null
-      } else {
-        // Sandbox enabled but no sandboxHostDir provided - cannot compute valid permission path
-        // Default to null to avoid granting incorrect permissions
-        permissionPath = null
-      }
-    } else {
-      // Non-sandbox mode: use host path directly
-      permissionPath = resolvedPath
-    }
-
-    return {
-      hostPath: resolvedPath,
-      permissionPath,
-    }
+    return { hostPath: resolvedPath }
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err)
     logger?.error(`Worktree logging: failed to resolve directory "${directory}": ${errorMsg}`)
@@ -267,7 +230,7 @@ export function appendWorktreeLogEntry(
  * Builds a serializable payload for worktree completion logging.
  * This payload contains all data needed to write a log entry from the host session.
  * 
- * @returns The payload result with hostPath and permissionPath, or null if logging is disabled/misconfigured
+ * @returns The payload result with hostPath, or null if logging is disabled/misconfigured
  */
 export function buildWorktreeCompletionPayload(
   config: PluginConfig,
@@ -310,7 +273,6 @@ export function buildWorktreeCompletionPayload(
 
   return {
     payload,
-    permissionPath: logTarget.permissionPath,
     hostPath: logTarget.hostPath,
   }
 }

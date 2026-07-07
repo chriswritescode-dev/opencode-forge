@@ -28,11 +28,10 @@ export interface PromptContext {
  * active sandbox loop — including subagent sessions spawned via the Task tool — by
  * `createSandboxMessageHook`. Centralizing it here (rather than appending to each loop/audit
  * prompt body) ensures subagents, which never see the loop prompt text, still receive the
- * container context and shell-routing guidance. Single source of truth.
+ * container context. Single source of truth.
  */
 export const SANDBOX_CONTEXT_NOTE = [
-  '[Sandbox] This loop runs inside a container. Some paths, OS-specific commands, or tools may differ from your host system.',
-  'Use the sh tool for terminal commands in this loop; standard bash is disabled and will be denied, so shell commands execute in the loop container.',
+  '[Sandbox] This loop runs inside a container: bash tool commands execute in the loop container, not on the host. OS-specific commands or tools may differ from the host system.',
   'Focus on what the code does, not whether local tooling matches — this saves time and avoids false positives.',
 ].join('\n')
 

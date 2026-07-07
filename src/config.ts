@@ -87,10 +87,6 @@ export function createConfigHandler(
 
     config.agent = mergedAgents
     config.default_agent = 'code'
-    config.permission = {
-      ...((config.permission as Record<string, unknown> | undefined) ?? {}),
-      sh: 'deny',
-    }
 
     const userCommands = config.command as Record<string, unknown> | undefined
     const mergedCommands: Record<string, unknown> = { ...pluginCommands }

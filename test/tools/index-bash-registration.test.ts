@@ -12,32 +12,28 @@ function baseCtx(overrides: Partial<ToolContext>): ToolContext {
     dataDir: '/tmp',
     loopHandler: {} as never,
     loop: {} as never,
-    v2: {} as never,
+    client: {} as never,
     cleanup: async () => {},
-    input: {} as never,
     sandboxManager: null,
     plansRepo: {} as never,
     reviewFindingsRepo: {} as never,
     loopsRepo: {} as never,
     sectionPlansRepo: {} as never,
+    featureGroupsRepo: {} as never,
+    groupOrchestrator: {} as never,
     workspaceStatusRegistry: {} as never,
     pendingTeardowns: {} as never,
-    resolveSandboxForSession: async () => null,
+    resolveActiveLoopForSession: async () => null,
     ...overrides,
   }
 }
 
-describe('createTools bash registration', () => {
-  test('does not register sh when sandboxManager is null', () => {
-    const tools = createTools(baseCtx({ sandboxManager: null }))
-    expect(tools.bash).toBeUndefined()
-    expect(tools.sh).toBeUndefined()
-  })
-
-  test('registers sh without replacing standard bash when sandboxManager is non-null', () => {
-    const tools = createTools(baseCtx({ sandboxManager: {} as never }))
-    expect(tools.bash).toBeUndefined()
-    expect(tools.sh).toBeDefined()
-    expect(typeof tools.sh.execute).toBe('function')
+describe('createTools shell tool registration', () => {
+  test('never registers sh and never overrides bash, regardless of sandboxManager', () => {
+    for (const sandboxManager of [null, {} as never]) {
+      const tools = createTools(baseCtx({ sandboxManager }))
+      expect(tools.sh).toBeUndefined()
+      expect(tools.bash).toBeUndefined()
+    }
   })
 })

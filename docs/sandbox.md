@@ -21,17 +21,28 @@ The image includes Node.js 24, pnpm, Bun, Python 3 + uv, ripgrep, git, jq, and D
 
 1. Forge creates an isolated git worktree for the loop.
 2. If sandboxing is enabled and Docker is available, Forge starts one container for that loop.
-3. The worktree is bind-mounted at `/workspace` and remains writable.
+3. The worktree is bind-mounted writable at `/workspace` and at its identical host path, so absolute paths resolve the same on both sides.
 4. The source project is optionally mounted read-only at `/project` for reference.
-5. Sandbox-aware shell/search tools execute inside the container.
-6. Host-side file tools still operate on the host filesystem, so LSP and editor integration continue to work.
+5. Shell commands and search tools execute inside the container; file tools stay on the host, so LSP and editor integration continue to work.
+
+## Shell Routing
+
+Sandbox loops use opencode's native `bash` tool — streaming output, truncation with spill-to-file, timeouts, and abort all behave exactly as in a normal session. Routing happens underneath the tool:
+
+> Requires opencode >= 1.15.5 (the session-aware `shell.env` plugin hook). Enforced via the `engines.opencode` field in Forge's package.json: older opencode versions refuse to load the plugin instead of silently running sandbox loop commands on the host.
+
+1. Forge points opencode's `shell` config at a generated shim (`<dataDir>/forge-shell`).
+2. On every bash tool call, Forge's `shell.env` hook resolves the session to its loop. Sessions belonging to an active sandbox loop (including Task-tool subagents) get `FORGE_SANDBOX_CONTAINER` injected; the shim then runs the command via `docker exec -w "$PWD" <container> bash`.
+3. All other sessions get no container env, and the shim execs the host shell unchanged (respecting a user-configured `shell` via `FORGE_HOST_SHELL`).
+
+The shim fails closed: if the container is expected but `docker exec` fails (or the loop container cannot be restored), the command errors — it never silently runs on the host.
 
 ## Tool Behavior
 
 | Tool category | Behavior in sandbox loop |
 |---|---|
-| Shell/search tools | `bash`, `glob`, and `grep` route through Docker execution hooks. |
-| Forge `sh` tool | Runs commands inside the loop's sandbox container when available. |
+| Shell | Native `bash` tool, executed inside the loop container via the shell shim. |
+| Search tools | `glob` and `grep` route through Docker execution hooks. |
 | File tools | `read`, `write`, and `edit` operate on the host filesystem. |
 | Git operations managed by Forge | Worktree commits, cleanup, and branch management are handled on the host. |
 
@@ -122,13 +133,13 @@ Because agent commands run as the non-root host UID:GID, the nested daemon's soc
 
 ## Large Command Output
 
-When sandbox shell output exceeds the tool limit, overflow is written to `<worktree>/.forge/tmp/`. The worktree `.forge/` directory is added to git exclude so spill files are not committed.
+Shell output truncation is handled by opencode's native bash tool: when output exceeds the tool limit, the full output is spilled to opencode's tool-output directory on the host (readable from loop sessions, see below). The worktree `.forge/` scratch directory is added to git exclude so forge-written files are not committed.
 
 ## Tool-Output Access
 
 opencode spills large tool outputs to its truncation directory (`<opencode-data>/tool-output`, e.g. `~/.local/share/opencode/tool-output`) and references the saved file by absolute host path. Forge makes those overflow files readable from loop and audit sessions in two complementary ways:
 
-- **Container tools** (`sh`, `glob`, `grep`): the directory is bind-mounted **read-only at the identical container path**, so the same absolute path opencode reports resolves inside the container. The mount is added automatically when the directory exists; it is skipped when missing or already covered by the workspace mount.
+- **Container tools** (`bash`, `glob`, `grep`): the directory is bind-mounted **read-only at the identical container path**, so the same absolute path opencode reports resolves inside the container. The mount is added automatically when the directory exists; it is skipped when missing or already covered by the workspace mount.
 - **Host file tools** (`read`): the directory is granted an `external_directory` allow rule in the loop/audit permission ruleset (layered after the blanket external-directory deny), so reads succeed without prompting in the unattended loop. All other external directories remain denied unless added via `loop.allowExternalDirectories`.
 
 ## Resource Defaults

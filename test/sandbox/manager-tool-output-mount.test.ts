@@ -60,8 +60,9 @@ describe('SandboxManager tool-output mount', () => {
     await manager.start('test', '/home/user/worktrees/feature')
 
     const active = manager.getActive('test')
-    expect(active?.mounts).toHaveLength(1)
+    expect(active?.mounts).toHaveLength(2)
     expect(active?.mounts[0]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/workspace' })
+    expect(active?.mounts[1]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/home/user/worktrees/feature' })
   })
 
   test('skips the mount when no tool-output dir is configured', async () => {
@@ -73,7 +74,7 @@ describe('SandboxManager tool-output mount', () => {
     await manager.start('test', '/home/user/worktrees/feature')
 
     const active = manager.getActive('test')
-    expect(active?.mounts).toHaveLength(1)
+    expect(active?.mounts).toHaveLength(2)
   })
 
   test('skips the mount when it is nested inside the workspace', async () => {
@@ -91,8 +92,9 @@ describe('SandboxManager tool-output mount', () => {
     await manager.start('test', workspace)
 
     const active = manager.getActive('test')
-    expect(active?.mounts).toHaveLength(1)
+    expect(active?.mounts).toHaveLength(2)
     expect(active?.mounts[0]).toEqual({ hostDir: resolve(workspace), containerDir: '/workspace' })
+    expect(active?.mounts[1]).toEqual({ hostDir: resolve(workspace), containerDir: resolve(workspace) })
   })
 
   test('coexists with the project mount', async () => {
@@ -112,8 +114,9 @@ describe('SandboxManager tool-output mount', () => {
 
     const resolved = resolve(toolOutputDir)
     const active = manager.getActive('test')
-    expect(active?.mounts).toHaveLength(3)
-    expect(active?.mounts[1]).toEqual({ hostDir: '/main-project', containerDir: '/project', readOnly: true })
-    expect(active?.mounts[2]).toEqual({ hostDir: resolved, containerDir: resolved, readOnly: true })
+    expect(active?.mounts).toHaveLength(4)
+    expect(active?.mounts[1]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/home/user/worktrees/feature' })
+    expect(active?.mounts[2]).toEqual({ hostDir: '/main-project', containerDir: '/project', readOnly: true })
+    expect(active?.mounts[3]).toEqual({ hostDir: resolved, containerDir: resolved, readOnly: true })
   })
 })

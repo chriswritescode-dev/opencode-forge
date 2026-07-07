@@ -490,7 +490,7 @@ describe('executeRemoteLoop', () => {
 
   // ── sandbox=false remote ────────────────────────────────────────────────
 
-  test('forwards sandboxEnabled=false from remote config to forgeLoop and permission', async () => {
+  test('forwards sandboxEnabled=false from remote config to the forgeLoop envelope', async () => {
     const config: PluginConfig = {
       remotes: [
         { name: 'server1', url: REMOTE_URL, password: 'sekret', sandbox: false },
@@ -519,17 +519,5 @@ describe('executeRemoteLoop', () => {
     // forgeLoop envelope carries sandboxEnabled: false from forgeLoopOverrides
     expect(createParams.extra.forgeLoop).toBeDefined()
     expect(createParams.extra.forgeLoop.sandboxEnabled).toBe(false)
-
-    // session create permission should reflect sandbox=false (bash allowed, sh denied)
-    const sessionCreateParams = (remoteClient.session.create as ReturnType<typeof vi.fn>).mock.calls[0][0]
-    expect(sessionCreateParams.permission).toBeDefined()
-    const bashRule = sessionCreateParams.permission.find(
-      (r: { permission: string }) => r.permission === 'bash',
-    )
-    const shRule = sessionCreateParams.permission.find(
-      (r: { permission: string }) => r.permission === 'sh',
-    )
-    expect(bashRule?.action).toBe('allow')
-    expect(shRule?.action).toBe('deny')
   })
 })

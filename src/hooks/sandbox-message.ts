@@ -11,7 +11,7 @@ type SystemTransformInput = { sessionID?: string }
 type SystemTransformOutput = { system: string[] }
 
 /**
- * Appends the sandbox context note (container caveat + shell-routing guidance + review focus)
+ * Appends the sandbox context note (container caveat + review focus)
  * to the system prompt of any session that belongs to an active sandbox loop — including
  * subagent sessions spawned via the Task tool, which otherwise never receive this guidance
  * because they don't see the loop/audit prompt body where it used to live.

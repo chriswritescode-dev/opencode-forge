@@ -17,7 +17,6 @@ export function resolveLoopAllowedDirectories(config: PluginConfig | undefined):
 }
 
 export interface LoopPermissionRulesetOptions {
-  sandbox?: boolean
   /**
    * Absolute directory paths to grant access to via `external_directory` allow rules.
    * These are layered AFTER the blanket `external_directory` deny so last-match-wins
@@ -49,18 +48,6 @@ function buildExternalDirectoryAllowRules(allowDirectories: string[] = []): Perm
   return rules
 }
 
-function buildShellPermissionRules(sandbox: boolean): PermissionRule[] {
-  return sandbox
-    ? [
-        { permission: 'bash', pattern: '*', action: 'deny' },
-        { permission: 'sh',   pattern: '*', action: 'allow' },
-      ]
-    : [
-        { permission: 'sh',   pattern: '*', action: 'deny' },
-        { permission: 'bash', pattern: '*', action: 'allow' },
-      ]
-}
-
 /**
  * Builds the permission ruleset for loop sessions.
  *
@@ -70,7 +57,6 @@ function buildShellPermissionRules(sandbox: boolean): PermissionRule[] {
  * user-configured directories) are then allowed so spilled tool outputs remain readable.
  */
 export function buildLoopPermissionRuleset(options: LoopPermissionRulesetOptions = {}): PermissionRule[] {
-  const sandbox = options.sandbox ?? true
   const rules: PermissionRule[] = []
 
   // Blanket allow-all for worktree loops (isolated environment).
@@ -101,10 +87,9 @@ export function buildLoopPermissionRuleset(options: LoopPermissionRulesetOptions
     { permission: 'question',      pattern: '*', action: 'deny' },
   )
 
-  // Shell routing. Sandbox loops expose sh (container shell) and hide host bash;
-  // worktree-only loops expose bash and hide sh because there is no sandbox.
+  // Shell commands always use opencode's native bash tool (covered by the blanket allow);
+  // sandbox loops are routed into their container by the forge shell shim, not by permissions.
   rules.push(
-    ...buildShellPermissionRules(sandbox),
     { permission: 'loop-cancel',  pattern: '*', action: 'deny' },
     { permission: 'loop-status',  pattern: '*', action: 'deny' },
     { permission: 'launch-group', pattern: '*', action: 'deny' },
@@ -127,7 +112,6 @@ export function buildLoopPermissionRuleset(options: LoopPermissionRulesetOptions
  * user-configured directories) are then allowed so spilled tool outputs remain readable.
  */
 export function buildAuditSessionPermissionRuleset(options: LoopPermissionRulesetOptions = {}): PermissionRule[] {
-  const sandbox = options.sandbox ?? true
   const rules: PermissionRule[] = [
     { permission: '*', pattern: '*', action: 'allow' },
     { permission: 'external_directory', pattern: '*', action: 'deny' },
@@ -139,7 +123,6 @@ export function buildAuditSessionPermissionRuleset(options: LoopPermissionRulese
     { permission: 'write',       pattern: '*', action: 'deny' },
     { permission: 'multiedit',   pattern: '*', action: 'deny' },
     { permission: 'apply_patch', pattern: '*', action: 'deny' },
-    ...buildShellPermissionRules(sandbox),
     // Auditors must never launch loops or manage other loops.
     { permission: 'plan',         pattern: '*', action: 'deny' },
     { permission: 'plan_enter',   pattern: '*', action: 'deny' },

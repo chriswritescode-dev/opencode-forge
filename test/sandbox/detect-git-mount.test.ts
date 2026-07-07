@@ -65,7 +65,7 @@ describe('detectGitMount', () => {
     const calls = createMock.mock.calls
     expect(calls.length).toBe(1)
     const extraMounts = (calls[0][3] as { extraMounts?: string[] } | undefined)?.extraMounts ?? []
-    // No git mount should be present — output mounts have been removed
-    expect(extraMounts.length).toBe(0)
+    // No git mount should be present — only the identical-path worktree mount remains
+    expect(extraMounts).toEqual(['/some/project:/some/project'])
   })
 })

@@ -140,6 +140,12 @@ export function createSandboxManager(
     const mounts: SandboxMount[] = [
       { hostDir: absolute, containerDir: '/workspace' },
     ]
+    // Also mount the worktree at its identical host path so the shell shim can `docker exec
+    // -w "$PWD"` without any host↔container path translation, and command output references
+    // host paths directly.
+    if (absolute !== '/workspace') {
+      mounts.push({ hostDir: absolute, containerDir: absolute })
+    }
     const sourceProjectDir = config.sourceProjectDir
     const projectMountPath = config.projectMountPath ?? '/project'
     const hasProjectMount = config.mountProjectReadonly !== false
