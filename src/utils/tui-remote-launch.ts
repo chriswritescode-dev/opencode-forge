@@ -141,7 +141,6 @@ export async function executeRemoteLoop(
     auditorModel: req.auditorModel,
     executionVariant: req.executionVariant,
     auditorVariant: req.auditorVariant,
-    sandboxEnabled: remote.sandbox,
     extraWorkspaceFields: {
       startRef: sha,
       syncRef,

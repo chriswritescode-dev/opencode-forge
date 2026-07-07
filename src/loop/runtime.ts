@@ -162,7 +162,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       `Loop: [perm-diag] rotate loop=${loopName} state.worktree=${String(state.worktree)} state.sandbox=${String(state.sandbox)}`
     )
 
-    const permissionRuleset = buildLoopPermissionRuleset({ sandbox: state.sandbox ?? false, allowDirectories: resolveLoopAllowedDirectories(getConfig()) })
+    const permissionRuleset = buildLoopPermissionRuleset({ allowDirectories: resolveLoopAllowedDirectories(getConfig()) })
 
     const ensured = await ensureWorkspaceForLoop(loopName, state, 'during session rotation')
 
@@ -287,7 +287,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (!currentState.worktreeDir) return false
 
     const ensured = await ensureWorkspaceForLoop(loopName, currentState, 'before post-action creation')
-    const permission = buildLoopPermissionRuleset({ sandbox: currentState.sandbox ?? false, allowDirectories: resolveLoopAllowedDirectories(getConfig()) })
+    const permission = buildLoopPermissionRuleset({ allowDirectories: resolveLoopAllowedDirectories(getConfig()) })
     const created = await createLoopSessionWithWorkspace({
       client,
       title: formatPostActionSessionTitle(loopName),
@@ -778,7 +778,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       totalSections: currentState.totalSections ?? 0,
       worktreeDir: currentState.worktreeDir,
       workspaceId: ensured.workspaceId ?? currentState.workspaceId,
-      isSandbox: currentState.sandbox ?? false,
       auditorModel,
       prompt: finalAuditPrompt,
       allowDirectories: resolveLoopAllowedDirectories(getConfig()),
@@ -909,7 +908,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       totalSections: number
       worktreeDir: string
       workspaceId?: string
-      isSandbox: boolean
       auditorModel?: { providerID: string; modelID: string }
       prompt: string
       allowDirectories?: string[]
@@ -934,7 +932,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       totalSections: currentState.totalSections ?? 0,
       worktreeDir: currentState.worktreeDir,
       workspaceId: ensured.workspaceId ?? currentState.workspaceId,
-      isSandbox: currentState.sandbox ?? false,
       auditorModel,
       prompt: auditPrompt,
       allowDirectories: resolveLoopAllowedDirectories(currentConfig),

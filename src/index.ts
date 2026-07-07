@@ -21,6 +21,8 @@ import type { PluginConfig, CompactionConfig } from './types'
 import { createTools } from './tools'
 import { createToolExecuteBeforeHook, createToolExecuteAfterHook, createPlanApprovalEventHook } from './hooks'
 import { createSandboxToolBeforeHook, createSandboxToolAfterHook } from './hooks/sandbox-tools'
+import { createShellEnvHook } from './hooks/shell-env'
+import { ensureShellShim } from './sandbox/shell-shim'
 import type { ToolContext } from './tools'
 import { createForgeClientFromPluginInput } from './client/sdk-adapter'
 
@@ -250,6 +252,24 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         logger.error('Failed to initialize Docker sandbox manager', err)
       }
     }
+
+    // Sandbox shell routing: opencode's native bash tool is pointed at a shim (via the `shell`
+    // config key) that routes commands into the loop container when the shell.env hook injects
+    // the container name. Without a working shim there is no safe way to route sandbox loop
+    // commands, so degrade to worktree-only mode rather than silently executing on the host.
+    // Known ceiling: the shim is POSIX sh, so Windows hosts run worktree-only; a cmd/pwsh shim
+    // would be the upgrade path.
+    let shellShimPath: string | null = null
+    if (sandboxManager) {
+      shellShimPath = process.platform === 'win32' ? null : ensureShellShim(dataDir, logger)
+      if (!shellShimPath) {
+        logger.error('Sandbox shell shim unavailable; falling back to worktree-only mode')
+        sandboxManager = null
+      }
+    }
+    // The shell the user had configured before forge overrode `shell` with the shim; injected
+    // back via shell.env for non-sandbox sessions so their bash tool behavior is unchanged.
+    let userConfiguredShell: string | undefined
 
     if (sandboxManager && forgeClient) {
       const sandboxImage = config.sandbox?.image ?? 'oc-forge-sandbox:latest'
@@ -617,7 +637,6 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       loopSessionUsageRepo,
       workspaceStatusRegistry,
       pendingTeardowns,
-      resolveSandboxForSession,
       resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
       featureGroupsRepo,
       groupOrchestrator,
@@ -644,7 +663,25 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     return {
       getCleanup,
       tool: tools,
-      config: createConfigHandler(agents, config.agents, promptsDir),
+      config: (() => {
+        const handler = createConfigHandler(agents, config.agents, promptsDir)
+        return async (cfg: Record<string, unknown>) => {
+          await handler(cfg)
+          if (!shellShimPath) return
+          const existingShell = cfg.shell
+          if (typeof existingShell === 'string' && existingShell && existingShell !== shellShimPath) {
+            userConfiguredShell = existingShell
+          }
+          cfg.shell = shellShimPath
+        }
+      })(),
+      'shell.env': createShellEnvHook({
+        resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,
+        sandboxManager,
+        ...(hostExecUser ? { execUser: hostExecUser } : {}),
+        getUserConfiguredShell: () => userConfiguredShell,
+        logger,
+      }),
       'chat.message': async (input, output) => {
         await forgeSessionMessageAttachHook(input)
         await sessionHooks.onMessage(input, output)

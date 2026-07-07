@@ -168,7 +168,7 @@ describe('Audit session permissions', () => {
 
     // With the ForgeClient port, create params are passed directly (not wrapped in { body })
     const callParams = createCalls[0] as any
-    expect(callParams.permission).toEqual(buildAuditSessionPermissionRuleset({ sandbox: false, allowDirectories: resolveLoopAllowedDirectories(config) }))
+    expect(callParams.permission).toEqual(buildAuditSessionPermissionRuleset({ allowDirectories: resolveLoopAllowedDirectories(config) }))
     expect(callParams.permission).toContainEqual({
       permission: 'external_directory',
       pattern: '*',
@@ -177,12 +177,12 @@ describe('Audit session permissions', () => {
   })
 
   test('audit ruleset denies question tool (autonomy preservation)', () => {
-    const ruleset = buildAuditSessionPermissionRuleset({ sandbox: false })
+    const ruleset = buildAuditSessionPermissionRuleset()
     expect(ruleset).toContainEqual({ permission: 'question', pattern: '*', action: 'deny' })
   })
 
   test('loop ruleset (used by post-action sessions) does not deny skill or task', () => {
-    const ruleset = buildLoopPermissionRuleset({ sandbox: false })
+    const ruleset = buildLoopPermissionRuleset()
     const denyRules = ruleset.filter((r: { permission: string; action: string }) => r.action === 'deny')
     const deniedPermissions = denyRules.map((r: { permission: string }) => r.permission)
     expect(deniedPermissions).not.toContain('skill')

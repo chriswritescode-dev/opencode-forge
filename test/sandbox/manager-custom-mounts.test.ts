@@ -70,10 +70,11 @@ describe('SandboxManager custom mounts', () => {
     await manager.start('test', '/home/user/worktrees/feature')
 
     const active = manager.getActive('test')
-    expect(active?.mounts).toHaveLength(3)
+    expect(active?.mounts).toHaveLength(4)
     expect(active?.mounts[0]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/workspace' })
-    expect(active?.mounts[1]).toEqual({ hostDir: resolve(tmpRW), containerDir: '/cache', readOnly: false })
-    expect(active?.mounts[2]).toEqual({ hostDir: resolve(tmpRO), containerDir: '/ref', readOnly: true })
+    expect(active?.mounts[1]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/home/user/worktrees/feature' })
+    expect(active?.mounts[2]).toEqual({ hostDir: resolve(tmpRW), containerDir: '/cache', readOnly: false })
+    expect(active?.mounts[3]).toEqual({ hostDir: resolve(tmpRO), containerDir: '/ref', readOnly: true })
   })
 
   test('collision with project mount container path is skipped', async () => {
@@ -105,8 +106,8 @@ describe('SandboxManager custom mounts', () => {
 
     // Active mounts should include only the project mount, not the custom one
     const active = manager.getActive('test')
-    expect(active?.mounts).toHaveLength(2)
-    expect(active?.mounts[1]).toEqual({ hostDir: '/main-project', containerDir: '/project', readOnly: true })
+    expect(active?.mounts).toHaveLength(3)
+    expect(active?.mounts[2]).toEqual({ hostDir: '/main-project', containerDir: '/project', readOnly: true })
   })
 
   test('coexists with project mount', async () => {
@@ -135,10 +136,10 @@ describe('SandboxManager custom mounts', () => {
     // Custom mount
     expect(mounts).toContain(`${resolve(tmpCustom)}:/tools`)
 
-    // Active mounts should have 3 entries: workspace, project, custom
+    // Active mounts should have 4 entries: workspace, worktree self-mount, project, custom
     const active = manager.getActive('test')
-    expect(active?.mounts).toHaveLength(3)
-    expect(active?.mounts[1]).toEqual({ hostDir: '/main-project', containerDir: '/project', readOnly: true })
-    expect(active?.mounts[2]).toEqual({ hostDir: resolve(tmpCustom), containerDir: '/tools', readOnly: false })
+    expect(active?.mounts).toHaveLength(4)
+    expect(active?.mounts[2]).toEqual({ hostDir: '/main-project', containerDir: '/project', readOnly: true })
+    expect(active?.mounts[3]).toEqual({ hostDir: resolve(tmpCustom), containerDir: '/tools', readOnly: false })
   })
 })

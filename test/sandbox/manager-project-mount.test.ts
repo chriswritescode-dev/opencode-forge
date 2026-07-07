@@ -90,7 +90,7 @@ describe('SandboxManager project mount', () => {
     const calls = mockDocker.getCreateContainerCalls()
     const opts = calls[0][3] as { extraMounts?: string[] } | undefined
     const mounts = opts?.extraMounts ?? []
-    expect(mounts.every(m => !m.includes('/project'))).toBe(true)
+    expect(mounts.every(m => !m.includes(':/project'))).toBe(true)
   })
 
   test('does not add project mount when sourceProjectDir is not configured', async () => {
@@ -106,7 +106,7 @@ describe('SandboxManager project mount', () => {
     const calls = mockDocker.getCreateContainerCalls()
     const opts = calls[0][3] as { extraMounts?: string[] } | undefined
     const mounts = opts?.extraMounts ?? []
-    expect(mounts.every(m => !m.includes('/project'))).toBe(true)
+    expect(mounts.every(m => !m.includes(':/project'))).toBe(true)
   })
 
   test('mounts list on active sandbox includes both worktree and project mounts', async () => {
@@ -123,9 +123,10 @@ describe('SandboxManager project mount', () => {
     await manager.start('test', '/home/user/worktrees/feature')
 
     const active = manager.getActive('test')
-    expect(active?.mounts).toHaveLength(2)
+    expect(active?.mounts).toHaveLength(3)
     expect(active?.mounts[0]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/workspace' })
-    expect(active?.mounts[1]).toEqual({ hostDir: '/main-project', containerDir: '/project', readOnly: true })
+    expect(active?.mounts[1]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/home/user/worktrees/feature' })
+    expect(active?.mounts[2]).toEqual({ hostDir: '/main-project', containerDir: '/project', readOnly: true })
   })
 
   test('mounts list only has worktree mount when project mount is disabled', async () => {
@@ -141,8 +142,9 @@ describe('SandboxManager project mount', () => {
     await manager.start('test', '/home/user/worktrees/feature')
 
     const active = manager.getActive('test')
-    expect(active?.mounts).toHaveLength(1)
+    expect(active?.mounts).toHaveLength(2)
     expect(active?.mounts[0]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/workspace' })
+    expect(active?.mounts[1]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/home/user/worktrees/feature' })
   })
 
   describe('reconnect paths', () => {
@@ -169,9 +171,10 @@ describe('SandboxManager project mount', () => {
       expect(mockDocker.getCreateContainerCalls().length).toBe(1)
       // Mounts should include both worktree and project
       const active = manager.getActive('test')
-      expect(active?.mounts).toHaveLength(2)
+      expect(active?.mounts).toHaveLength(3)
       expect(active?.mounts[0]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/workspace' })
-      expect(active?.mounts[1]).toEqual({ hostDir: '/main-project', containerDir: '/project', readOnly: true })
+      expect(active?.mounts[1]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/home/user/worktrees/feature' })
+      expect(active?.mounts[2]).toEqual({ hostDir: '/main-project', containerDir: '/project', readOnly: true })
     })
 
     test('start() with already-running container does not add project mount when disabled', async () => {
@@ -189,8 +192,9 @@ describe('SandboxManager project mount', () => {
       await manager.start('test', '/home/user/worktrees/feature')
 
       const active = manager.getActive('test')
-      expect(active?.mounts).toHaveLength(1)
+      expect(active?.mounts).toHaveLength(2)
       expect(active?.mounts[0]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/workspace' })
+      expect(active?.mounts[1]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/home/user/worktrees/feature' })
     })
 
     test('restore() with already-running container preserves project mount in mounts list', async () => {
@@ -213,9 +217,10 @@ describe('SandboxManager project mount', () => {
       expect(mockDocker.getCreateContainerCalls().length).toBe(0)
       // Mounts should include both worktree and project
       const active = manager.getActive('foo')
-      expect(active?.mounts).toHaveLength(2)
+      expect(active?.mounts).toHaveLength(3)
       expect(active?.mounts[0]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/workspace' })
-      expect(active?.mounts[1]).toEqual({ hostDir: '/main-project', containerDir: '/project', readOnly: true })
+      expect(active?.mounts[1]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/home/user/worktrees/feature' })
+      expect(active?.mounts[2]).toEqual({ hostDir: '/main-project', containerDir: '/project', readOnly: true })
     })
 
     test('restore() with already-running container does not add project mount when disabled', async () => {
@@ -233,8 +238,9 @@ describe('SandboxManager project mount', () => {
       await manager.restore('foo', '/home/user/worktrees/feature', '2025-01-01T00:00:00.000Z')
 
       const active = manager.getActive('foo')
-      expect(active?.mounts).toHaveLength(1)
+      expect(active?.mounts).toHaveLength(2)
       expect(active?.mounts[0]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/workspace' })
+      expect(active?.mounts[1]).toEqual({ hostDir: '/home/user/worktrees/feature', containerDir: '/home/user/worktrees/feature' })
     })
   })
 })

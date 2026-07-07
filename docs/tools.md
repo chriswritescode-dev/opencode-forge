@@ -19,7 +19,6 @@ See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](c
 | `launch-group` | Launch a group of features (from a PRD or a pre-split list), each planned and run as its own loop, scheduled with a concurrency cap. | [`src/tools/group.ts`](../src/tools/group.ts) |
 | `group-status` | List groups, inspect one group's per-feature stages, or restart a non-completed group. | [`src/tools/group.ts`](../src/tools/group.ts) |
 | `group-cancel` | Cancel a group, optionally cancelling its running loops. | [`src/tools/group.ts`](../src/tools/group.ts) |
-| `sh` | Sandbox shell tool added when a sandbox manager is available. | [`src/tools/bash/index.ts`](../src/tools/bash/index.ts) |
 
 ## Plan Tools
 
@@ -154,10 +153,6 @@ Requires exactly one of `prd` or `features`.
 | `groupId` | Required group ID to cancel. |
 | `cancelRunningLoops` | Also cancel running loops for non-terminal features. |
 
-## Sandbox Shell Tool
+## Sandbox Shell
 
-### `sh`
-
-The `sh` tool is only added when a sandbox manager is available. It runs shell commands inside the sandbox container associated with the active loop session. Outside an active sandbox loop, the tool is not useful and the global default permission denies `sh` unless Forge explicitly grants sandbox context.
-
-For broader sandbox behavior, see [Sandbox](sandbox.md).
+Sandbox loops use opencode's native `bash` tool; Forge routes the underlying shell into the loop container via a generated shell shim and the `shell.env` hook. See [Sandbox](sandbox.md#shell-routing).

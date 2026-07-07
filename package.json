@@ -50,6 +50,9 @@
   ],
   "license": "MIT",
   "homepage": "https://github.com/chriswritescode-dev/opencode-forge",
+  "engines": {
+    "opencode": ">=1.15.5"
+  },
   "dependencies": {
     "@opencode-ai/plugin": "1.15.5",
     "@opencode-ai/sdk": "1.15.5",

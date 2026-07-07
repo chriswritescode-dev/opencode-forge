@@ -106,9 +106,4 @@ if (!bundledCli.startsWith('#!')) {
 }
 chmodSync(installerCliPath, 0o755)
 
-console.log('Copying bash prompt template...')
-const bashPromptDist = join(__dirname, '..', 'dist', 'tools', 'bash')
-mkdirSync(bashPromptDist, { recursive: true })
-cpSync(join(__dirname, '..', 'src', 'tools', 'bash', 'shell.txt'), join(bashPromptDist, 'shell.txt'))
-
 console.log('Build complete!')

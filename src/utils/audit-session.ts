@@ -12,7 +12,6 @@ interface RunAuditSessionInput {
   totalSections: number
   worktreeDir: string
   workspaceId?: string
-  isSandbox: boolean
   auditorModel?: { providerID: string; modelID: string }
   prompt: string
   /** Absolute directories to grant audit-session read access to despite worktree isolation. */
@@ -31,7 +30,7 @@ export async function createAuditSession(
   input: RunAuditSessionInput,
 ): Promise<RunAuditSessionResult | null> {
   const { client } = input
-  const permission = buildAuditSessionPermissionRuleset({ sandbox: input.isSandbox, allowDirectories: input.allowDirectories })
+  const permission = buildAuditSessionPermissionRuleset({ allowDirectories: input.allowDirectories })
   const created = await createLoopSessionWithWorkspace({
     client,
     title: formatAuditSessionTitle(input.loopName, {

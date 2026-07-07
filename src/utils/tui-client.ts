@@ -262,7 +262,6 @@ export interface LaunchTuiLoopOptions {
   executionVariant?: string
   auditorVariant?: string
   hostSessionId?: string
-  sandboxEnabled: boolean
   allowDirectories?: string[]
   /** Extra workspace fields merged into extra (e.g. startRef/syncRef/gitRemote). */
   extraWorkspaceFields?: Record<string, unknown>
@@ -332,7 +331,7 @@ export async function launchTuiLoop(
     }
 
     const parsedModel = parseModelString(opts.executionModel)
-    const permission = buildLoopPermissionRuleset({ sandbox: opts.sandboxEnabled, allowDirectories: opts.allowDirectories })
+    const permission = buildLoopPermissionRuleset({ allowDirectories: opts.allowDirectories })
     const session = await opts.client.session.create({
       workspaceID: workspace.id,
       title: loopName,
@@ -398,7 +397,6 @@ export async function connectForgeProject(
   api: TuiPluginApi,
   directory?: string,
   allowExternalDirectories?: string[],
-  sandboxEnabled?: boolean,
 ): Promise<ForgeProjectClient | null> {
   tuiDebug(`connect start directory=${directory ?? 'none'}`)
 
@@ -493,7 +491,6 @@ export async function connectForgeProject(
           executionVariant: req.executionVariant,
           auditorVariant: req.auditorVariant,
           hostSessionId: sessionId || undefined,
-          sandboxEnabled: sandboxEnabled ?? true,
           allowDirectories: allowExternalDirectories,
           onLaunched: (sid, wid) => selectTuiSession(api, client, sid, wid),
           debug: tuiDebug,

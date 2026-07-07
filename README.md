@@ -499,6 +499,7 @@ See [Sandbox](docs/sandbox.md) for setup, Docker-in-Docker behavior, host networ
 ### Prerequisites
 
 - Docker running on your machine
+- OpenCode >= 1.15.5 — sandbox shell routing relies on the session-aware `shell.env` plugin hook. Enforced via `engines.opencode`, so older versions refuse to load the plugin rather than silently running sandbox commands on the host. (Loops additionally require OpenCode >= 1.17.8 for workspace integration, see [Requirements](#requirements).)
 
 ### Setup
 

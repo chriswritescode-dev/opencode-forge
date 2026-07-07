@@ -59,7 +59,7 @@ describe('SandboxManager temp mount', () => {
     await manager.start('test', '/home/user/worktrees/feature')
 
     const active = manager.getActive('test')
-    expect(active?.mounts).toHaveLength(1)
+    expect(active?.mounts).toHaveLength(2)
   })
 
   test('skips the mount when it is nested inside the workspace', async () => {
@@ -77,8 +77,9 @@ describe('SandboxManager temp mount', () => {
     await manager.start('test', workspace)
 
     const active = manager.getActive('test')
-    expect(active?.mounts).toHaveLength(1)
+    expect(active?.mounts).toHaveLength(2)
     expect(active?.mounts[0]).toEqual({ hostDir: resolve(workspace), containerDir: '/workspace' })
+    expect(active?.mounts[1]).toEqual({ hostDir: resolve(workspace), containerDir: resolve(workspace) })
   })
 
   test('coexists with the tool-output mount', async () => {

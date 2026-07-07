@@ -30,6 +30,7 @@ vi.mock('../../src/services/execution', () => ({
 }))
 
 import { connectForgeProject } from '../../src/utils/tui-client'
+import { buildLoopPermissionRuleset } from '../../src/constants/loop'
 
 describe('Load Plans inline plan is sent as inline even when host session exists', () => {
   const PROJECT_ID = 'proj_test'
@@ -143,16 +144,8 @@ describe('Load Plans inline plan is sent as inline even when host session exists
     expect(promptArgs.parts[0].text).not.toContain('forge-plan:start')
   })
 
-  function lastAction(
-    permission: Array<{ permission: string; pattern: string; action: string }>,
-    toolName: string,
-  ): string | undefined {
-    const matches = permission.filter((r) => r.permission === toolName && r.pattern === '*')
-    return matches.length > 0 ? matches[matches.length - 1].action : undefined
-  }
-
-  test('bakes worktree-only permission (bash allowed) when sandbox is disabled', async () => {
-    const client = await connectForgeProject(mockApi, DIRECTORY, undefined, false)
+  test('bakes the loop permission ruleset (no sh/bash rules) into session.create', async () => {
+    const client = await connectForgeProject(mockApi, DIRECTORY)
     expect(client).not.toBeNull()
 
     await client!.plan.execute(SESSION_ID, {
@@ -164,24 +157,11 @@ describe('Load Plans inline plan is sent as inline even when host session exists
     })
 
     const createArgs = mockApi.client.session.create.mock.calls[0][0]
-    expect(lastAction(createArgs.permission, 'bash')).toBe('allow')
-    expect(lastAction(createArgs.permission, 'sh')).toBe('deny')
-  })
-
-  test('bakes sandbox permission (sh allowed, bash denied) when sandbox is enabled', async () => {
-    const client = await connectForgeProject(mockApi, DIRECTORY, undefined, true)
-    expect(client).not.toBeNull()
-
-    await client!.plan.execute(SESSION_ID, {
-      mode: 'loop',
-      title: 'My Plan',
-      plan: '# My Plan\n\nFresh content',
-      executionModel: undefined,
-      auditorModel: undefined,
-    })
-
-    const createArgs = mockApi.client.session.create.mock.calls[0][0]
-    expect(lastAction(createArgs.permission, 'bash')).toBe('deny')
-    expect(lastAction(createArgs.permission, 'sh')).toBe('allow')
+    expect(createArgs.permission).toEqual(buildLoopPermissionRuleset())
+    expect(
+      createArgs.permission.some(
+        (r: { permission: string }) => r.permission === 'sh' || r.permission === 'bash',
+      ),
+    ).toBe(false)
   })
 })
