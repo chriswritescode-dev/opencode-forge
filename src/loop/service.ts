@@ -29,7 +29,7 @@ export type LoopChangeReason =
   | 'insert' | 'delete' | 'terminate'
   | 'rotate' | 'phase' | 'iteration'
   | 'status' | 'session'
-  | 'sandbox' | 'workspace' | 'audit-result'
+  | 'sandbox' | 'workspace' | 'audit-result' | 'post-action-report'
   | 'model-failed' | 'error'
 
 export type LoopChangeNotifier = (reason: LoopChangeReason, loopName: string, hint?: { projectDir?: string; worktreeDir?: string }) => void
@@ -63,6 +63,7 @@ export interface LoopService {
   setModelFailed(name: string, failed: boolean): void
   setLastAuditResult(name: string, text: string): void
   clearLastAuditResult(name: string): void
+  setPostActionReport(name: string, text: string): void
   setSandboxContainer(name: string, containerName: string | null): void
   setStatus(name: string, status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'): void
   clearWorkspaceId(name: string): void
@@ -373,6 +374,13 @@ export function createLoopService(
     notifyLoopChange('audit-result', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }
 
+  function setPostActionReport(name: string, text: string): void {
+    if (text === '') return
+    const state = getAnyState(name)
+    loopsRepo.setPostActionReport(projectId, name, text)
+    notifyLoopChange('post-action-report', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
+  }
+
   function terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void {
     const state = getAnyState(name)
     loopsRepo.terminate(projectId, name, opts)
@@ -523,6 +531,7 @@ export function createLoopService(
     setModelFailed,
     setLastAuditResult,
     clearLastAuditResult,
+    setPostActionReport,
     setSandboxContainer,
     terminate,
     clearWorkspaceId,

@@ -314,5 +314,14 @@ export const migrations: Migration[] = [
       db.run(loadSql('133_create_feature_groups.sql'))
     },
   },
+  {
+    id: '134',
+    description: 'Add post_action_report column to loop_large_fields',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(loop_large_fields)').all() as Array<{ name: string }>
+      if (cols.some((c) => c.name === 'post_action_report')) return
+      db.run(loadSql('134_add_post_action_report.sql'))
+    },
+  },
 
 ]

@@ -105,7 +105,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   const { getFallbackModelForSession, captureLoopSessionUsage } = createUsageCapture({ client, logger, getConfig, projectId, loopSessionUsageRepo })
 
-  const { sendPromptWithFallback, getLastAssistantInfo } = createPromptDispatch({ client, logger, getConfig, loopService })
+  const { sendPromptWithFallback, getLastAssistantInfo, getAssistantTranscript } = createPromptDispatch({ client, logger, getConfig, loopService })
 
   const retryTimeouts = new Map<string, NodeJS.Timeout>()
   const idleRetryTimeouts = new Map<string, NodeJS.Timeout>()
@@ -1368,6 +1368,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     logger.log(`Loop: post-action complete for ${loopName}, terminating`)
     const trans = nextTransition(currentState, { type: 'post-action-complete' })
     if (trans.kind === 'terminate') {
+      // Persist the full assistant transcript of the post-action session before it is
+      // deleted on termination, so the run's details survive (loop-status/dashboard).
+      const report = await getAssistantTranscript(currentState.sessionId, currentState.worktreeDir)
+      if (report) {
+        loopService.setPostActionReport(loopName, report)
+      }
       // Capture the raw post-action assistant message as the loop's completion summary so the
       // outcome (alternate review verdict, CI result, etc.) is visible in loop-status/dashboard.
       // The loop still terminates `completed` — the plan itself was already cleared by the audit.

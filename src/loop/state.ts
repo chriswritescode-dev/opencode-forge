@@ -12,6 +12,7 @@ interface LoopStateBase {
   startedAt: string
   prompt?: string
   lastAuditResult?: string
+  postActionReport?: string
   errorCount: number
   auditCount: number
   status: LoopRow['status']
@@ -63,6 +64,7 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
     maxIterations: row.maxIterations,
     startedAt: new Date(row.startedAt).toISOString(),
     lastAuditResult: large?.lastAuditResult ?? undefined,
+    postActionReport: large?.postActionReport ?? undefined,
     errorCount: row.errorCount,
     auditCount: row.auditCount,
     status: row.status,

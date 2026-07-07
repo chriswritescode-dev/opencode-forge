@@ -76,6 +76,7 @@ describe('Loop Section Advancement', () => {
         project_id          TEXT NOT NULL,
         loop_name           TEXT NOT NULL,
         last_audit_result   TEXT,
+        post_action_report  TEXT,
         PRIMARY KEY (project_id, loop_name),
         FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
       )

@@ -437,6 +437,7 @@ export function LoopDetail(props: { dashLoop: DashboardLoop; onBack: () => void 
   // disappears, so unchanged groups (and their scroll/resize state) are not
   // rebuilt when the loop's data updates on a poll.
   const hasCompletion = createMemo(() => !!dl().loop.completionSummary)
+  const hasPostActionReport = createMemo(() => !!dl().postActionReport)
   const hasAudit = createMemo(() => !!dl().lastAuditResult)
   const hasPlan = createMemo(() => !!dl().plan)
   const hasSections = createMemo(() => !!dl().sections && dl().sections!.length > 0)
@@ -455,7 +456,9 @@ export function LoopDetail(props: { dashLoop: DashboardLoop; onBack: () => void 
 
     <!-- Detail body -->
     <div class="loop-detail">
-      ${() => (hasCompletion() ? MarkdownSection({ label: 'Completion Summary', src: () => dl().loop.completionSummary }) : '')}
+      <!-- The post-action report contains the completion summary (its last message), so show one or the other -->
+      ${() => (hasPostActionReport() ? MarkdownSection({ label: 'Post-Action Report', src: () => dl().postActionReport }) : '')}
+      ${() => (!hasPostActionReport() && hasCompletion() ? MarkdownSection({ label: 'Completion Summary', src: () => dl().loop.completionSummary }) : '')}
 
       <!-- Sections -->
       ${() => (hasSections() ? SectionsPanel({ sections: () => dl().sections! }) : '')}

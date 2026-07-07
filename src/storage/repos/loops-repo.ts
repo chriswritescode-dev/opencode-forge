@@ -35,6 +35,7 @@ export interface LoopRow {
 
 export interface LoopLargeFields {
   lastAuditResult: string | null
+  postActionReport?: string | null
 }
 
 export interface LoopsRepo {
@@ -54,6 +55,7 @@ export interface LoopsRepo {
   setModelFailed(projectId: string, loopName: string, failed: boolean): void
   setLastAuditResult(projectId: string, loopName: string, text: string): void
   clearLastAuditResult(projectId: string, loopName: string): void
+  setPostActionReport(projectId: string, loopName: string, text: string): void
   setSandboxContainer(projectId: string, loopName: string, containerName: string | null): void
   setPhaseAndResetError(projectId: string, loopName: string, phase: LoopRow['phase']): void
   setStatus(projectId: string, loopName: string, status: LoopRow['status']): void
@@ -195,7 +197,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
   `)
 
   const getLargeStmt = db.prepare(`
-    SELECT last_audit_result
+    SELECT last_audit_result, post_action_report
     FROM loop_large_fields
     WHERE project_id = ? AND loop_name = ?
   `)
@@ -272,6 +274,16 @@ export function createLoopsRepo(db: Database): LoopsRepo {
 
   const clearLastAuditResultStmt = db.prepare(`
     UPDATE loop_large_fields SET last_audit_result = NULL
+    WHERE project_id = ? AND loop_name = ?
+  `)
+
+  const setPostActionReportStmt = db.prepare(`
+    UPDATE loop_large_fields SET post_action_report = ?
+    WHERE project_id = ? AND loop_name = ?
+  `)
+
+  const clearPostActionReportStmt = db.prepare(`
+    UPDATE loop_large_fields SET post_action_report = NULL
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -384,10 +396,11 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     },
 
     getLarge(projectId: string, loopName: string): LoopLargeFields | null {
-      const row = getLargeStmt.get(projectId, loopName) as { last_audit_result: string | null } | null
+      const row = getLargeStmt.get(projectId, loopName) as { last_audit_result: string | null; post_action_report: string | null } | null
       if (!row) return null
       return {
         lastAuditResult: row.last_audit_result,
+        postActionReport: row.post_action_report,
       }
     },
 
@@ -452,6 +465,11 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       clearLastAuditResultStmt.run(projectId, loopName)
     },
 
+    setPostActionReport(projectId: string, loopName: string, text: string): void {
+      if (text === '') return
+      setPostActionReportStmt.run(text, projectId, loopName)
+    },
+
     setSandboxContainer(projectId: string, loopName: string, containerName: string | null): void {
       setSandboxContainerStmt.run(containerName, projectId, loopName)
     },
@@ -485,21 +503,27 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     },
 
     restart(projectId, loopName, opts) {
-      restartStmt.run(
-        opts.sessionId,
-        opts.phase,
-        opts.iteration,
-        opts.auditCount,
-        opts.sandbox ? 1 : 0,
-        opts.sandboxContainer,
-        opts.workspaceId,
-        opts.startedAt,
-        opts.currentSectionIndex,
-        opts.totalSections,
-        opts.finalAuditDone ? 1 : 0,
-        projectId,
-        loopName,
-      )
+      const runTxn = db.transaction(() => {
+        // Clear the stale post-action report alongside completion_summary: a restarted
+        // loop will produce a fresh post-action run (or none at all).
+        clearPostActionReportStmt.run(projectId, loopName)
+        restartStmt.run(
+          opts.sessionId,
+          opts.phase,
+          opts.iteration,
+          opts.auditCount,
+          opts.sandbox ? 1 : 0,
+          opts.sandboxContainer,
+          opts.workspaceId,
+          opts.startedAt,
+          opts.currentSectionIndex,
+          opts.totalSections,
+          opts.finalAuditDone ? 1 : 0,
+          projectId,
+          loopName,
+        )
+      })
+      runTxn()
     },
 
     setStatus(projectId: string, loopName: string, status: LoopRow['status']): void {
