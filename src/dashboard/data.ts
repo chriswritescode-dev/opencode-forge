@@ -15,6 +15,7 @@ import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 export interface DashboardLoop {
   loop: LoopRow
   lastAuditResult: string | null
+  postActionReport: string | null
   plan: string | null
   sections: SectionPlanRow[]
   findings: ReviewFindingRow[]
@@ -84,7 +85,9 @@ export function collectDashboardData(db: Database): DashboardPayload {
 
     const dashboardLoops: DashboardLoop[] = sortedLoops.map(loop => {
       const loopName = loop.loopName
-      const lastAuditResult = loopsRepo.getLarge(projectId, loopName)?.lastAuditResult ?? null
+      const large = loopsRepo.getLarge(projectId, loopName)
+      const lastAuditResult = large?.lastAuditResult ?? null
+      const postActionReport = large?.postActionReport ?? null
       const plan = plansRepo.getForLoop(projectId, loopName)?.content ?? null
       const sections = sectionPlansRepo.list(projectId, loopName)
       const findings = reviewFindingsRepo.listByLoopName(projectId, loopName)
@@ -92,7 +95,7 @@ export function collectDashboardData(db: Database): DashboardPayload {
       const elapsedSeconds = computeElapsedSeconds(loop.startedAt, loop.completedAt ?? undefined)
       const duration = elapsedSeconds > 0 ? formatDuration(elapsedSeconds) : null
 
-      return { loop, lastAuditResult, plan, sections, findings, usage, duration }
+      return { loop, lastAuditResult, postActionReport, plan, sections, findings, usage, duration }
     })
 
     projects.push({ projectId, projectDir, loops: dashboardLoops })

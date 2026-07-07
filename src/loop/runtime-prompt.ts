@@ -29,6 +29,8 @@ export interface PromptDispatch {
   sendPromptWithFallback(input: SendPromptInput): Promise<{ error?: unknown; usedModel?: { providerID: string; modelID: string } | undefined }>
 
   getLastAssistantInfo(sessionId: string, worktreeDir: string): Promise<{ text: string | null; error: string | null; lastMessageRole: string }>
+
+  getAssistantTranscript(sessionId: string, worktreeDir: string): Promise<string | null>
 }
 
 export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
@@ -128,8 +130,39 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
     }
   }
 
+  /**
+   * Join the text of every assistant message in a session into a single markdown
+   * transcript. Used to preserve the full post-action (e.g. pr-review) output
+   * before the session is deleted on loop termination.
+   */
+  async function getAssistantTranscript(sessionId: string, worktreeDir: string): Promise<string | null> {
+    try {
+      const messages = await client.session.messages({
+        sessionID: sessionId,
+        directory: worktreeDir,
+      }) as Array<{
+        info: { role: string }
+        parts: Array<{ type: string; text?: string }>
+      }>
+
+      const texts = messages
+        .filter((m) => m.info.role === 'assistant')
+        .map((m) => m.parts
+          .filter((p) => p.type === 'text' && typeof p.text === 'string')
+          .map((p) => p.text as string)
+          .join('\n'))
+        .filter((t) => t.trim() !== '')
+
+      return texts.length > 0 ? texts.join('\n\n---\n\n') : null
+    } catch (err) {
+      logger.error(`Loop: could not read session transcript for ${sessionId}`, err)
+      return null
+    }
+  }
+
   return {
     sendPromptWithFallback,
     getLastAssistantInfo,
+    getAssistantTranscript,
   }
 }

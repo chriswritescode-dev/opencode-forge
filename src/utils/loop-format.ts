@@ -146,3 +146,8 @@ export function formatCompletionSummary(summary: string): string[] {
   const preview = truncate(summary, 1000)
   return ['', 'Completion Summary (post-action):', `  ${preview}`]
 }
+
+/** Full, untruncated transcript of the post-action run (e.g. pr-review output). */
+export function formatPostActionReport(report: string): string[] {
+  return ['', 'Post-Action Report:', report]
+}

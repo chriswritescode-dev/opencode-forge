@@ -60,6 +60,7 @@ describe('LoopsRepo', () => {
         project_id          TEXT NOT NULL,
         loop_name           TEXT NOT NULL,
         last_audit_result   TEXT,
+        post_action_report  TEXT,
         PRIMARY KEY (project_id, loop_name),
         FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
       )
@@ -368,6 +369,39 @@ describe('LoopsRepo', () => {
       
       const large = repo.getLarge(testRow.projectId, testRow.loopName)
       expect(large!.lastAuditResult).toBe('Audit findings...')
+    })
+  })
+
+  describe('setPostActionReport', () => {
+    test('should set post action report and round-trip via getLarge', () => {
+      repo.insert(testRow, testLarge)
+
+      repo.setPostActionReport(testRow.projectId, testRow.loopName, 'PR review transcript...')
+
+      const large = repo.getLarge(testRow.projectId, testRow.loopName)
+      expect(large!.postActionReport).toBe('PR review transcript...')
+    })
+
+    test('should clear post action report on restart', () => {
+      repo.insert(testRow, testLarge)
+      repo.setPostActionReport(testRow.projectId, testRow.loopName, 'stale report')
+
+      repo.restart(testRow.projectId, testRow.loopName, {
+        sessionId: 'restart-session',
+        phase: 'coding',
+        iteration: 0,
+        auditCount: 0,
+        sandbox: false,
+        sandboxContainer: null,
+        workspaceId: null,
+        currentSectionIndex: 0,
+        totalSections: 0,
+        finalAuditDone: false,
+        startedAt: Date.now(),
+      })
+
+      const large = repo.getLarge(testRow.projectId, testRow.loopName)
+      expect(large!.postActionReport).toBeNull()
     })
   })
 
