@@ -69,6 +69,18 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
     return dir
   }
 
+  /**
+   * Whether this workspace's loop explicitly opted out of the sandbox
+   * (`extra.forgeLoop.sandboxEnabled === false`), e.g. a remote launch with
+   * `remotes[].sandbox: false`. Provisioning must honor the per-loop flag even
+   * when this server's own config has the sandbox enabled.
+   */
+  function isLoopSandboxOptedOut(info: WorkspaceInfo): boolean {
+    const forgeLoop = ((info.extra ?? {}) as { forgeLoop?: unknown }).forgeLoop
+    if (typeof forgeLoop !== 'object' || forgeLoop === null) return false
+    return (forgeLoop as { sandboxEnabled?: unknown }).sandboxEnabled === false
+  }
+
   function addToGitExclude(directory: string, patterns: string[]): void {
     if (patterns.length === 0) return
     const excludeRes = git.revParseGitPath(directory, 'info/exclude')
@@ -299,7 +311,9 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
       }
       addToGitExclude(info.directory, excludePatterns)
 
-      if (sandboxManager) {
+      if (sandboxManager && isLoopSandboxOptedOut(info)) {
+        logger.log(`forge-adapter: skipping sandbox provisioning for ${info.name} (loop opted out via sandboxEnabled=false)`)
+      } else if (sandboxManager) {
         try {
           const startedAt = new Date().toISOString()
           const sandbox = await sandboxManager.start(info.name, info.directory, startedAt)

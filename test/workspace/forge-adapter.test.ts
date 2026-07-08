@@ -252,6 +252,32 @@ describe('createForgeWorkspaceAdapter', () => {
     }
   })
 
+  it('create skips sandbox provisioning when forgeLoop.sandboxEnabled is false', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo-sandbox-optout-'))
+    try {
+      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const sandboxManager = {
+        start: vi.fn().mockRejectedValue(new Error('Docker is not available. Please ensure Docker is running.')),
+        stop: vi.fn().mockResolvedValue(undefined),
+      }
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+        sandboxManager,
+      })
+      const info = makeInfo('optout-loop', tmpRepo)
+      info.extra = { ...info.extra, forgeLoop: { sandboxEnabled: false } }
+      const configured = adapter.configure(info)
+
+      await adapter.create(configured, {})
+
+      expect(existsSync(configured.directory)).toBe(true)
+      expect(sandboxManager.start).not.toHaveBeenCalled()
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
   it('create cleans up worktree and sandbox when sandbox start fails', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-repo-sandbox-fail-'))
     try {
