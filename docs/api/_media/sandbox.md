@@ -100,7 +100,7 @@ Rules:
 - `host` and `container` must be absolute paths.
 - Mounts default to read-only.
 - Invalid entries are skipped and logged.
-- Mounts cannot collide with reserved paths such as `/workspace`, the project mount, git metadata, or earlier custom mounts.
+- Mounts cannot equal or nest inside reserved paths such as `/workspace`, the project mount, git metadata, or earlier custom mounts.
 
 Security note: read-write custom mounts give the sandbox write access to host paths. Use them only for trusted directories.
 

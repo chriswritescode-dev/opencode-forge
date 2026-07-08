@@ -3,7 +3,7 @@ import type { Logger, SandboxResources, SandboxMountConfig } from '../types'
 import { join, resolve, posix as posixPath } from 'path'
 import { mkdirSync, writeFileSync, rmSync, chmodSync, existsSync } from 'fs'
 import { defaultGitService, type GitService } from '../utils/git-service'
-import type { SandboxMount } from './path'
+import { isSameOrDescendantPath, type SandboxMount } from './path'
 
 export interface SandboxManagerConfig {
   image: string
@@ -43,7 +43,7 @@ function normalizeContainerPath(path: string): string {
 function containerPathsOverlap(a: string, b: string): boolean {
   const left = normalizeContainerPath(a)
   const right = normalizeContainerPath(b)
-  return left === right || left.startsWith(right + '/') || right.startsWith(left + '/')
+  return isSameOrDescendantPath(left, right) || isSameOrDescendantPath(right, left)
 }
 
 function findContainerPathCollision(container: string, used: ReadonlySet<string>): string | undefined {
@@ -73,14 +73,14 @@ export function resolveCustomMounts(
       continue
     }
     const containerDir = normalizeContainerPath(container)
-    const hostDir = resolve(host)
-    if (!existsSync(hostDir)) {
-      logger.log(`Sandbox: skipping custom mount; host path does not exist: ${hostDir}`)
-      continue
-    }
     const collision = findContainerPathCollision(containerDir, used)
     if (collision) {
       logger.log(`Sandbox: skipping custom mount; container path already in use: ${containerDir} conflicts with ${collision}`)
+      continue
+    }
+    const hostDir = resolve(host)
+    if (!existsSync(hostDir)) {
+      logger.log(`Sandbox: skipping custom mount; host path does not exist: ${hostDir}`)
       continue
     }
     used.add(containerDir)

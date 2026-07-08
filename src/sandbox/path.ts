@@ -4,21 +4,21 @@ export interface SandboxMount {
   readOnly?: boolean
 }
 
-function hasPrefix(path: string, prefix: string): boolean {
+export function isSameOrDescendantPath(path: string, prefix: string): boolean {
   if (path === prefix) return true
   return path.startsWith(prefix + '/')
 }
 
 export function toContainerPath(hostPath: string, mounts: SandboxMount[]): string {
   for (const mount of mounts) {
-    if (hasPrefix(hostPath, mount.containerDir)) {
+    if (isSameOrDescendantPath(hostPath, mount.containerDir)) {
       return hostPath
     }
   }
 
   let bestMatch: SandboxMount | undefined
   for (const mount of mounts) {
-    if (hasPrefix(hostPath, mount.hostDir)) {
+    if (isSameOrDescendantPath(hostPath, mount.hostDir)) {
       if (!bestMatch || mount.hostDir.length > bestMatch.hostDir.length) {
         bestMatch = mount
       }
@@ -35,7 +35,7 @@ export function toContainerPath(hostPath: string, mounts: SandboxMount[]): strin
 
 export function isInsideAnyMount(p: string, mounts: SandboxMount[]): boolean {
   for (const mount of mounts) {
-    if (hasPrefix(p, mount.hostDir) || hasPrefix(p, mount.containerDir)) {
+    if (isSameOrDescendantPath(p, mount.hostDir) || isSameOrDescendantPath(p, mount.containerDir)) {
       return true
     }
   }
