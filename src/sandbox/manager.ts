@@ -1,9 +1,9 @@
 import type { DockerService } from './docker'
 import type { Logger, SandboxResources, SandboxMountConfig } from '../types'
-import { join, resolve, isAbsolute } from 'path'
+import { join, resolve, posix as posixPath } from 'path'
 import { mkdirSync, writeFileSync, rmSync, chmodSync, existsSync } from 'fs'
 import { defaultGitService, type GitService } from '../utils/git-service'
-import type { SandboxMount } from './path'
+import { isSameOrDescendantPath, type SandboxMount } from './path'
 
 export interface SandboxManagerConfig {
   image: string
@@ -35,6 +35,24 @@ const DEFAULT_RESOURCES: Required<Pick<SandboxResources, 'memory' | 'cpus' | 'sh
   shmSize: '1g',
 }
 
+function normalizeContainerPath(path: string): string {
+  const normalized = posixPath.normalize(path)
+  return normalized.length > 1 && normalized.endsWith('/') ? normalized.slice(0, -1) : normalized
+}
+
+function containerPathsOverlap(a: string, b: string): boolean {
+  const left = normalizeContainerPath(a)
+  const right = normalizeContainerPath(b)
+  return isSameOrDescendantPath(left, right) || isSameOrDescendantPath(right, left)
+}
+
+function findContainerPathCollision(container: string, used: ReadonlySet<string>): string | undefined {
+  for (const existing of used) {
+    if (containerPathsOverlap(container, existing)) return existing
+  }
+  return undefined
+}
+
 export function resolveCustomMounts(
   raw: SandboxMountConfig[] | undefined,
   reservedContainerPaths: ReadonlySet<string>,
@@ -50,8 +68,14 @@ export function resolveCustomMounts(
       logger.log(`Sandbox: skipping custom mount with missing host/container path: ${JSON.stringify(entry)}`)
       continue
     }
-    if (!isAbsolute(container)) {
+    if (!posixPath.isAbsolute(container)) {
       logger.log(`Sandbox: skipping custom mount; container path must be absolute: ${container}`)
+      continue
+    }
+    const containerDir = normalizeContainerPath(container)
+    const collision = findContainerPathCollision(containerDir, used)
+    if (collision) {
+      logger.log(`Sandbox: skipping custom mount; container path already in use: ${containerDir} conflicts with ${collision}`)
       continue
     }
     const hostDir = resolve(host)
@@ -59,12 +83,8 @@ export function resolveCustomMounts(
       logger.log(`Sandbox: skipping custom mount; host path does not exist: ${hostDir}`)
       continue
     }
-    if (used.has(container)) {
-      logger.log(`Sandbox: skipping custom mount; container path already in use: ${container}`)
-      continue
-    }
-    used.add(container)
-    resolved.push({ hostDir, containerDir: container, readOnly: entry.readonly !== false })
+    used.add(containerDir)
+    resolved.push({ hostDir, containerDir, readOnly: entry.readonly !== false })
   }
   return resolved
 }
