@@ -16,4 +16,8 @@ Present a summary showing:
 
 If no loops are active, report that there are no active loops.
 
+## Accessing a Completed Loop's Work
+
+A completed loop's worktree is cleaned up, so the worktree directory no longer exists. The work is preserved on a local git branch that is never deleted. To inspect or switch to it, use the branch `forge/<loop-name>` (the loop name is slugified: lowercased with non-alphanumeric characters replaced by hyphens). Check out that branch directly rather than trying to `cd` into the pruned worktree path.
+
 $ARGUMENTS
