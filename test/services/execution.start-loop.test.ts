@@ -1475,7 +1475,7 @@ describe('handleStartGoal creates dedicated code session', () => {
     expect(state!.worktreeDir).toBe('/tmp/wt/goal')
     expect(state!.worktreeBranch).toBe('opencode/goal')
 
-    // ---- Source/invoking session is untouched ----
+    // ---- Source/invoking session is never warped or mutated ----
     // workspace.warp is called internally by createLoopSessionWithWorkspace →
     // bindSessionToWorkspace for the NEW session (not the invoking session)
     expect(client.workspace.warp).toHaveBeenCalledTimes(1)
@@ -1484,7 +1484,11 @@ describe('handleStartGoal creates dedicated code session', () => {
       sessionID: newSessionId,
     })
     expect(client.session.update).not.toHaveBeenCalled()
-    expect(client.session.abort).not.toHaveBeenCalled()
+
+    // ---- Invoking session's turn is aborted after successful launch so its
+    // agent cannot keep implementing the goal in the original directory ----
+    expect(client.session.abort).toHaveBeenCalledTimes(1)
+    expect((client.session.abort as any).mock.calls[0][0]).toEqual({ sessionID: invokingSessionId })
 
     // Goal text persisted in loop_large_fields, NOT in the plans table
     const largeFields = loopsRepo.getLarge(PROJECT_ID, result.data.loopName)

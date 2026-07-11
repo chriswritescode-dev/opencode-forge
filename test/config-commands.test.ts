@@ -35,7 +35,7 @@ describe('createConfigHandler commands', () => {
     expect(executeGoal).toBeDefined()
     expect(executeGoal.template).toContain('$ARGUMENTS')
     expect(executeGoal.template).toContain('execute-goal')
-    expect(executeGoal.template).toContain('warp')
+    expect(executeGoal.template).toContain('new dedicated code session')
     expect(executeGoal.agent).toBe('code')
     expect(executeGoal.subtask).toBe(false)
 

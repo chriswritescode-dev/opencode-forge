@@ -114,6 +114,12 @@ export interface AttachLoopInput {
   sandboxEnabled: boolean
   sandboxContainer?: string
   planText: string
+  /** Loop kind. Goal loops skip plan decomposition and prompt with the goal continuation prompt. */
+  kind?: 'plan' | 'goal'
+  /** Goal text for goal loops; persisted on state and used to build the initial prompt. */
+  goal?: string
+  /** Executor session binding for goal loops (the dedicated code session). */
+  executorSessionId?: string
   selectSession?: boolean
   selectSessionTiming?: 'after-create' | 'after-prompt'
   startWatchdog?: boolean
@@ -603,7 +609,11 @@ export async function attachLoopToSession(
     sendInitialPrompt = true,
     abortSourceSessionOnSuccess,
     onStarted,
+    kind,
+    goal,
+    executorSessionId,
   } = input
+  const isGoal = kind === 'goal'
 
   const loopModel = parseModelString(executionModel)
 
@@ -650,7 +660,7 @@ export async function attachLoopToSession(
       iteration: 1,
       maxIterations,
       startedAt: new Date().toISOString(),
-      prompt: planText,
+      prompt: isGoal ? undefined : planText,
       phase: 'coding',
       errorCount: 0,
       auditCount: 0,
@@ -667,6 +677,7 @@ export async function attachLoopToSession(
       currentSectionIndex: 0,
       totalSections: 0,
       finalAuditDone: false,
+      ...(isGoal ? { kind: 'goal' as const, goal, executorSessionId } : {}),
     }
 
     deps.loop.service.setState(loopName, state)
@@ -682,20 +693,26 @@ export async function attachLoopToSession(
       workspaceId,
     })
 
-    // === Section extraction ===
-    const { totalSections } = applyPlanDecomposition({
-      projectId: ctx.projectId,
-      loopName,
-      planText,
-      loopsRepo: deps.loopsRepo,
-      sectionPlansRepo: deps.sectionPlansRepo,
-    })
+    // === Initial prompt ===
     let promptText: string
-    if (totalSections > 0) {
-      const updatedState = { ...state, phase: 'coding' as const, currentSectionIndex: 0, totalSections }
-      promptText = deps.loop.service.buildSectionInitialPrompt(updatedState as import('../loop/state').LoopState)
+    if (isGoal) {
+      // Goal loops have no sections; the initial prompt is the same goal
+      // continuation prompt used on every later iteration.
+      promptText = deps.loop.service.buildContinuationPrompt(state)
     } else {
-      promptText = planText
+      const { totalSections } = applyPlanDecomposition({
+        projectId: ctx.projectId,
+        loopName,
+        planText,
+        loopsRepo: deps.loopsRepo,
+        sectionPlansRepo: deps.sectionPlansRepo,
+      })
+      if (totalSections > 0) {
+        const updatedState = { ...state, phase: 'coding' as const, currentSectionIndex: 0, totalSections }
+        promptText = deps.loop.service.buildSectionInitialPrompt(updatedState as import('../loop/state').LoopState)
+      } else {
+        promptText = planText
+      }
     }
 
     // Wait for sandbox readiness in worktree+sandbox mode (after persistence)
@@ -1378,64 +1395,43 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         }
       }
 
-      const state: import('../loop/state').LoopState = {
-        active: true,
+      // Persist state, wait for sandbox readiness, send the initial prompt, re-select
+      // the TUI post-prompt, and start the watchdog — the same shared path plan loops use.
+      const attachResult = await attachLoopToSession(deps, ctx, {
         sessionId: createdSessionId,
-        loopName: uniqueLoopName,
-        worktreeDir: hostWorktreeDir,
-        projectDir: ctx.directory,
+        workspaceId: createdWorkspaceId,
+        worktreeDir: hostWorktreeDir!,
         worktreeBranch,
-        iteration: 1,
-        maxIterations,
-        startedAt: new Date().toISOString(),
-        phase: 'coding',
-        errorCount: 0,
-        auditCount: 0,
-        status: 'running',
-        worktree: true,
-        sandbox: sandboxEnabled,
-        sandboxContainer,
+        loopName: uniqueLoopName,
+        displayName: title,
+        executionName: title,
+        hostSessionId,
         executionModel: resolvedExecutionModel,
         auditorModel: resolvedAuditorModel,
         executionVariant: resolvedExecutionVariant,
         auditorVariant: resolvedAuditorVariant,
-        workspaceId: createdWorkspaceId,
-        hostSessionId,
-        executorSessionId: createdSessionId,
-        currentSectionIndex: 0,
-        totalSections: 0,
-        finalAuditDone: false,
+        maxIterations,
+        sandboxEnabled,
+        sandboxContainer,
+        planText: '',
         kind: 'goal',
         goal,
-      }
+        executorSessionId: createdSessionId,
+        selectSession: true,
+        startWatchdog: true,
+        // Stop the invoking session's turn so its agent cannot keep implementing
+        // the goal in the original directory after launch.
+        abortSourceSessionOnSuccess: true,
+      })
 
-      deps.loop.service.setState(uniqueLoopName, state)
+      if (!attachResult.ok) {
+        loopStatePersisted = false
+        await rollbackGoalStart()
+        return fail(attachResult.code as ForgeExecutionError['code'], 503, attachResult.message)
+      }
       loopStatePersisted = true
-      deps.loop.service.registerLoopSession(createdSessionId, uniqueLoopName)
 
       deps.logger.log(`handleStartGoal: goal loop ${uniqueLoopName} started; new session=${createdSessionId} worktree=${hostWorktreeDir}`)
-
-      const parsedModel = parseModelString(resolvedExecutionModel)
-      const workspaceParam = createdWorkspaceId ? { workspace: createdWorkspaceId } : {}
-      const initialPrompt = deps.loop.service.buildContinuationPrompt(state)
-      try {
-        await deps.client.session.promptAsync({
-          sessionID: createdSessionId,
-          directory: hostWorktreeDir!,
-          parts: [{ type: 'text' as const, text: initialPrompt }],
-          agent: 'code',
-          ...workspaceParam,
-          ...(parsedModel ? { model: parsedModel } : {}),
-        })
-      } catch (promptErr) {
-        deps.logger.error('handleStartGoal: failed to send initial prompt', promptErr)
-        await rollbackGoalStart()
-        return fail('prompt_failed', 502, 'Goal session created but failed to send prompt')
-      }
-
-      if (deps.loopHandler) {
-        deps.loopHandler.startWatchdog(uniqueLoopName)
-      }
 
       return ok({
         operation: 'goal.start',
