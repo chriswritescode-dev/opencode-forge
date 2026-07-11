@@ -16,6 +16,33 @@ const z = tool.schema
 export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
   const { loopHandler, config, logger } = ctx
 
+  /**
+   * Detects when a newly created loop session resolved to a different opencode
+   * project than the one this plugin/TUI instance is scoped to. This happens
+   * when the launch directory had no git commit when opencode started (project
+   * id derives from the root commit), and it makes the session invisible to the
+   * TUI session list and un-navigable. Best effort — returns null when scopes
+   * match or the lookup fails.
+   */
+  async function projectScopeWarning(sessionId: string): Promise<string | null> {
+    try {
+      const info = await ctx.client.session.get({ sessionID: sessionId })
+      const sessionProject = (info as { projectID?: string })?.projectID
+      if (sessionProject && sessionProject !== ctx.projectId) {
+        logger.error(`loop: project scope mismatch — session ${sessionId} belongs to project ${sessionProject}, but this instance is scoped to ${ctx.projectId}`)
+        return [
+          '',
+          `WARNING: The new session belongs to project ${sessionProject}, but this opencode instance is scoped to project ${ctx.projectId}.`,
+          'This usually means the directory had no git commit when opencode started, so the TUI cannot list or switch to the new session.',
+          'The loop keeps running. Restart opencode in this directory to make the session visible.',
+        ].join('\n')
+      }
+    } catch {
+      // Best effort only — never block a successful launch on this check.
+    }
+    return null
+  }
+
   function makeService(sourceSessionId?: string) {
     const execCtx: ForgeExecutionRequestContext = {
       surface: 'tool',
@@ -167,6 +194,9 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           'The user can run loop-status or loop-cancel later if needed.',
         )
 
+        const scopeWarning = await projectScopeWarning(result.data.sessionId)
+        if (scopeWarning) lines.push(scopeWarning)
+
         return lines.join('\n')
       },
     }),
@@ -219,6 +249,9 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           'Your job is done — just confirm to the user that the goal loop has been launched.',
           'The user can run loop-status or loop-cancel later if needed.',
         ]
+
+        const scopeWarning = await projectScopeWarning(result.data.sessionId)
+        if (scopeWarning) lines.push(scopeWarning)
 
         return lines.join('\n')
       },

@@ -134,8 +134,8 @@ describe('execute-goal tool', () => {
     db.close()
   })
 
-  function setupTools() {
-    const { client: forgeClient } = createFakeForgeClient()
+  function setupTools(clientOverrides?: Parameters<typeof createFakeForgeClient>[0]) {
+    const { client: forgeClient } = createFakeForgeClient(clientOverrides)
     const logger = createLogger({ enabled: false, file: '' })
 
     const loopsRepo = createLoopsRepo(db)
@@ -165,6 +165,39 @@ describe('execute-goal tool', () => {
 
     return { tools, forgeClient, loopService }
   }
+
+  test('warns when the new session resolves to a different opencode project than the plugin scope', async () => {
+    const { tools } = setupTools({
+      session: {
+        get: async () => ({ id: 'ses_fake_1', projectID: 'other-project' }),
+      },
+    } as any)
+
+    const result = await tools['execute-goal'].execute(
+      { goal: 'Ship it' } as any,
+      { sessionID: 'src-session' } as any,
+    )
+
+    expect(result).toContain('Goal loop activated')
+    expect(result).toContain('WARNING: The new session belongs to project other-project')
+    expect(result).toContain(`scoped to project ${projectId}`)
+  })
+
+  test('no project scope warning when session project matches the plugin scope', async () => {
+    const { tools } = setupTools({
+      session: {
+        get: async () => ({ id: 'ses_fake_1', projectID: projectId }),
+      },
+    } as any)
+
+    const result = await tools['execute-goal'].execute(
+      { goal: 'Ship it' } as any,
+      { sessionID: 'src-session' } as any,
+    )
+
+    expect(result).toContain('Goal loop activated')
+    expect(result).not.toContain('WARNING: The new session belongs to project')
+  })
 
   test('rejects a blank goal without provisioning any workspace or session', async () => {
     const { tools, forgeClient } = setupTools()
