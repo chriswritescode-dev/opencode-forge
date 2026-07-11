@@ -177,17 +177,20 @@ interface LoopRowRaw {
   loop_kind: string | null
 }
 
+const LOOP_COLUMNS = `project_id, loop_name, status, current_session_id, worktree, worktree_dir,
+  worktree_branch, project_dir, max_iterations, iteration, audit_count,
+  error_count, phase, execution_model, auditor_model,
+  model_failed, sandbox, sandbox_container, started_at, completed_at,
+  termination_reason, completion_summary, workspace_id, host_session_id,
+  executor_session_id, current_section_index, total_sections, final_audit_done,
+  execution_variant, auditor_variant, loop_kind`
+
+const LOOP_COLUMN_PLACEHOLDERS = LOOP_COLUMNS.split(',').map(() => '?').join(', ')
+
 export function createLoopsRepo(db: Database): LoopsRepo {
   const insertStmt = db.prepare(`
-    INSERT INTO loops (
-      project_id, loop_name, status, current_session_id, worktree, worktree_dir,
-      worktree_branch, project_dir, max_iterations, iteration, audit_count,
-      error_count, phase, execution_model, auditor_model,
-      model_failed, sandbox, sandbox_container, started_at, completed_at,
-      termination_reason, completion_summary, workspace_id, host_session_id,
-      executor_session_id, current_section_index, total_sections, final_audit_done,
-      execution_variant, auditor_variant, loop_kind
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO loops (${LOOP_COLUMNS})
+    VALUES (${LOOP_COLUMN_PLACEHOLDERS})
   `)
 
   const upsertLargeStmt = db.prepare(`
@@ -199,13 +202,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
   `)
 
   const getStmt = db.prepare(`
-    SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir,
-           worktree_branch, project_dir, max_iterations, iteration, audit_count,
-           error_count, phase, execution_model, auditor_model,
-           model_failed, sandbox, sandbox_container, started_at, completed_at,
-           termination_reason, completion_summary, workspace_id, host_session_id,
-           executor_session_id, current_section_index, total_sections, final_audit_done,
-           execution_variant, auditor_variant, loop_kind
+    SELECT ${LOOP_COLUMNS}
     FROM loops
     WHERE project_id = ? AND loop_name = ?
   `)
@@ -217,25 +214,13 @@ export function createLoopsRepo(db: Database): LoopsRepo {
   `)
 
   const getBySessionIdStmt = db.prepare(`
-    SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir,
-           worktree_branch, project_dir, max_iterations, iteration, audit_count,
-           error_count, phase, execution_model, auditor_model,
-           model_failed, sandbox, sandbox_container, started_at, completed_at,
-           termination_reason, completion_summary, workspace_id, host_session_id,
-           executor_session_id, current_section_index, total_sections, final_audit_done,
-           execution_variant, auditor_variant, loop_kind
+    SELECT ${LOOP_COLUMNS}
     FROM loops
     WHERE project_id = ? AND current_session_id = ?
   `)
 
   const getByParticipantSessionIdStmt = db.prepare(`
-    SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir,
-           worktree_branch, project_dir, max_iterations, iteration, audit_count,
-           error_count, phase, execution_model, auditor_model,
-           model_failed, sandbox, sandbox_container, started_at, completed_at,
-           termination_reason, completion_summary, workspace_id, host_session_id,
-           executor_session_id, current_section_index, total_sections, final_audit_done,
-           execution_variant, auditor_variant, loop_kind
+    SELECT ${LOOP_COLUMNS}
     FROM loops
     WHERE project_id = ? AND status = 'running' AND (current_session_id = ? OR executor_session_id = ?)
     ORDER BY CASE WHEN current_session_id = ? THEN 0 ELSE 1 END
@@ -243,13 +228,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
   `)
 
   const listByStatusBase = `
-    SELECT project_id, loop_name, status, current_session_id, worktree, worktree_dir,
-           worktree_branch, project_dir, max_iterations, iteration, audit_count,
-           error_count, phase, execution_model, auditor_model,
-           model_failed, sandbox, sandbox_container, started_at, completed_at,
-           termination_reason, completion_summary, workspace_id, host_session_id,
-           executor_session_id, current_section_index, total_sections, final_audit_done,
-           execution_variant, auditor_variant, loop_kind
+    SELECT ${LOOP_COLUMNS}
     FROM loops
     WHERE project_id = ? AND status IN
   `

@@ -382,48 +382,24 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       logger.log(`Loop: configured model previously failed, using default model`)
     }
 
-    const { error: promptResultError, usedModel: actualModel } = await sendPromptWithFallback({
+    const { sent, usedModel } = await sendPromptWithRetryRecovery({
       loopName,
       sessionId: activeSessionId,
       promptText: continuationPrompt,
       agent: 'code',
       model: loopModel,
       variant: currentState.executionVariant,
+      errorContext,
+      sendErrorContext: `failed to send continuation prompt ${errorContext}`,
+      errorState: currentState,
+      activityTag: 'phase-activity',
     })
-
-    if (promptResultError) {
-      const retryFn = async () => {
-        const freshState = loopService.getActiveState(loopName)
-        if (!freshState?.active) throw new Error('loop_cancelled')
-        try {
-          await withInFlightGuard(loopName, activeSessionId, 'code', logger, async () => {
-            try {
-              await client.session.promptAsync({
-                sessionID: activeSessionId,
-                directory: freshState.worktreeDir,
-                ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
-                agent: 'code',
-                parts: [{ type: 'text' as const, text: continuationPrompt }],
-              })
-            } catch (err) {
-              await handlePromptError(loopName, currentState, `retry failed ${errorContext}`, err)
-            }
-          })
-        } catch (err) {
-          if (err instanceof ConcurrentPromptError) { logger.log(`Loop: ${errorContext} — retry rejected as concurrent prompt (prior guard active), skipping`); return }
-          throw err
-        }
-      }
-      await handlePromptError(loopName, currentState, `failed to send continuation prompt ${errorContext}`, promptResultError, retryFn)
-      return
-    }
-    if (actualModel) {
-      logger.log(`${errorContext} using model: ${actualModel.providerID}/${actualModel.modelID}`)
+    if (!sent) return
+    if (usedModel) {
+      logger.log(`${errorContext} using model: ${usedModel.providerID}/${usedModel.modelID}`)
     } else {
       logger.log(`${errorContext} using default model (fallback)`)
     }
-
-    watchdog.recordActivity(loopName, 'phase-activity')
   }
 
   async function rotateToCodingAfterAuditFailure(loopName: string, state: LoopState, reason: string): Promise<void> {
@@ -504,46 +480,17 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       `\n[Auditor session failed: ${reason}. Continuing without new findings — keep iterating; the auditor will be reattempted next round.]`,
     )
 
-    const loopModel = resolveLoopModel(getConfig(), loopService, loopName)
-    const { error } = await sendPromptWithFallback({
+    await sendPromptWithRetryRecovery({
       loopName,
       sessionId: executorSessionId,
       promptText: continuationPrompt,
       agent: 'code',
-      model: loopModel,
+      model: resolveLoopModel(getConfig(), loopService, loopName),
       variant: state.executionVariant,
+      errorContext: 'goal auditor recovery prompt',
+      errorState: recoveryState,
+      activityTag: 'goal-auditor-recovery-prompt-sent',
     })
-    if (error) {
-      logger.error(`recoverGoalAuditorFailure: failed to send continuation prompt`, error)
-      const retryFn = async () => {
-        const freshState = loopService.getActiveState(loopName)
-        if (!freshState?.active) throw new Error('loop_cancelled')
-        try {
-          await withInFlightGuard(loopName, executorSessionId, 'code', logger, async () => {
-            try {
-              await client.session.promptAsync({
-                sessionID: executorSessionId,
-                directory: freshState.worktreeDir,
-                ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
-                agent: 'code',
-                parts: [{ type: 'text' as const, text: continuationPrompt }],
-              })
-            } catch (err) {
-              await handlePromptError(loopName, freshState, 'retry failed goal auditor recovery prompt', err)
-            }
-          })
-        } catch (err) {
-          if (err instanceof ConcurrentPromptError) {
-            logger.log(`Loop: goal auditor recovery — retry rejected as concurrent prompt (prior guard active), skipping`)
-            return
-          }
-          throw err
-        }
-      }
-      await handlePromptError(loopName, recoveryState, 'failed to send goal auditor recovery prompt', error, retryFn)
-      return
-    }
-    watchdog.recordActivity(loopName, 'goal-auditor-recovery-prompt-sent')
   }
 
   function buildCodingPromptForCurrentState(state: LoopState): string {
@@ -579,37 +526,28 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (!freshState?.active || freshState.phase !== 'coding' || freshState.sessionId !== codeSessionId) return
 
       const currentConfig = getConfig()
-      const { error: promptResultError } = await sendPromptWithFallback({
+      await sendPromptWithRetryRecovery({
         loopName,
         sessionId: codeSessionId,
         promptText: recoveryPrompt,
         agent: 'code',
         model: resolveLoopModel(currentConfig, loopService, loopName),
         variant: freshState.executionVariant,
+        errorContext: 'failed to recover code launch',
+        sendErrorContext: 'failed to recover code launch',
+        errorState: freshState,
+        onSendError: () => clearPromptPending(loopName, logger),
+        isRetryValid: (fresh) => fresh.phase === 'coding' && fresh.sessionId === codeSessionId,
+        send: async (fresh) => {
+          await client.session.promptAsync({
+            sessionID: codeSessionId,
+            directory: fresh.worktreeDir,
+            ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
+            agent: 'code',
+            parts: [{ type: 'text' as const, text: recoveryPrompt }],
+          })
+        },
       })
-      if (promptResultError) {
-        clearPromptPending(loopName, logger)
-        logger.error(`Loop: failed to send recovery prompt for ${loopName}`, promptResultError)
-        const retryFn = async () => {
-          const fresh = loopService.getActiveState(loopName)
-          if (!fresh?.active || fresh.phase !== 'coding' || fresh.sessionId !== codeSessionId) throw new Error('loop_cancelled')
-          try {
-            await withInFlightGuard(loopName, codeSessionId, 'code', logger, async () => {
-              await client.session.promptAsync({
-                sessionID: codeSessionId,
-                directory: fresh.worktreeDir,
-                ...(fresh.workspaceId ? { workspace: fresh.workspaceId } : {}),
-                agent: 'code',
-                parts: [{ type: 'text' as const, text: recoveryPrompt }],
-              })
-            })
-          } catch (err) {
-            if (err instanceof ConcurrentPromptError) { logger.log('Loop: failed to recover code launch — retry rejected as concurrent prompt (prior guard active), skipping'); return }
-            throw err
-          }
-        }
-        await handlePromptError(loopName, freshState ?? state, 'failed to recover code launch', promptResultError, retryFn)
-      }
     } catch (err) {
       logger.error(`Loop: failed to recover code launch for ${loopName}`, err)
       await handlePromptError(loopName, state, 'failed to recover code launch', err)
@@ -775,9 +713,84 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
+  interface PromptRetryOptions {
+    loopName: string
+    sessionId: string
+    agent: 'code' | 'auditor-loop'
+    /** Base label used in retry logs; inner retry errors report `retry failed ${errorContext}`. */
+    errorContext: string
+    /** Extra freshness predicate beyond `freshState.active`; retry aborts (throws loop_cancelled) when it returns false. */
+    isRetryValid?: (fresh: LoopState) => boolean
+    /** Custom retry send action. When omitted, the default `client.session.promptAsync` send with inner handlePromptError catch is used (requires promptText). */
+    send?: (fresh: LoopState) => Promise<void>
+    promptText?: string
+  }
 
+  function buildPromptRetryFn(opts: PromptRetryOptions): () => Promise<void> {
+    const defaultSend = async (freshState: LoopState): Promise<void> => {
+      try {
+        await client.session.promptAsync({
+          sessionID: opts.sessionId,
+          directory: freshState.worktreeDir,
+          ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
+          agent: opts.agent,
+          parts: [{ type: 'text' as const, text: opts.promptText ?? '' }],
+        })
+      } catch (err) {
+        await handlePromptError(opts.loopName, freshState, `retry failed ${opts.errorContext}`, err)
+      }
+    }
+    const send = opts.send ?? defaultSend
+    return async () => {
+      const freshState = loopService.getActiveState(opts.loopName)
+      if (!freshState?.active || (opts.isRetryValid && !opts.isRetryValid(freshState))) throw new Error('loop_cancelled')
+      try {
+        await withInFlightGuard(opts.loopName, opts.sessionId, opts.agent, logger, () => send(freshState))
+      } catch (err) {
+        if (err instanceof ConcurrentPromptError) {
+          logger.log(`Loop: ${opts.errorContext} — retry rejected as concurrent prompt (prior guard active), skipping`)
+          return
+        }
+        throw err
+      }
+    }
+  }
 
+  interface SendPromptWithRetryRecoveryOptions extends PromptRetryOptions {
+    promptText: string
+    model?: Parameters<typeof sendPromptWithFallback>[0]['model']
+    variant?: string
+    /** State passed to handlePromptError when the initial send fails. */
+    errorState: LoopState
+    /** Context for the initial-send failure; defaults to `failed to send ${errorContext}`. */
+    sendErrorContext?: string
+    /** Watchdog activity tag recorded on successful send. Omit to skip. */
+    activityTag?: string
+    /** Invoked once when the initial send fails, before retry recovery (e.g. clearPromptPending). */
+    onSendError?: () => void
+  }
 
+  async function sendPromptWithRetryRecovery(
+    opts: SendPromptWithRetryRecoveryOptions,
+  ): Promise<{ sent: boolean; usedModel?: Awaited<ReturnType<typeof sendPromptWithFallback>>['usedModel'] }> {
+    const { error, usedModel } = await sendPromptWithFallback({
+      loopName: opts.loopName,
+      sessionId: opts.sessionId,
+      promptText: opts.promptText,
+      agent: opts.agent,
+      model: opts.model,
+      variant: opts.variant,
+    })
+    if (error) {
+      opts.onSendError?.()
+      const context = opts.sendErrorContext ?? `failed to send ${opts.errorContext}`
+      logger.error(`Loop: ${context} for ${opts.loopName}`, error)
+      await handlePromptError(opts.loopName, opts.errorState, context, error, buildPromptRetryFn(opts))
+      return { sent: false }
+    }
+    if (opts.activityTag) watchdog.recordActivity(opts.loopName, opts.activityTag)
+    return { sent: true, usedModel }
+  }
 
   async function recoverWatchdogStall(
     loopName: string,
@@ -1043,43 +1056,16 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           { ...currentState, iteration: currentState.iteration ?? 0 },
           'Audit could not be started after retries — continue iterating, the auditor will be reattempted next round.',
         )
-        const { error: promptErr } = await sendPromptWithFallback({
+        await sendPromptWithRetryRecovery({
           loopName,
           sessionId: executorSessionId,
           promptText: continuationPrompt,
           agent: 'code',
           model: resolveLoopModel(getConfig(), loopService, loopName),
           variant: currentState.executionVariant,
+          errorContext: 'goal continuation prompt after audit creation failure',
+          errorState: currentState,
         })
-        if (promptErr) {
-          logger.error(`Loop: failed to send goal continuation prompt after audit creation failure`, promptErr)
-          const retryFn = async () => {
-            const freshState = loopService.getActiveState(loopName)
-            if (!freshState?.active) throw new Error('loop_cancelled')
-            try {
-              await withInFlightGuard(loopName, executorSessionId, 'code', logger, async () => {
-                try {
-                  await client.session.promptAsync({
-                    sessionID: executorSessionId,
-                    directory: freshState.worktreeDir,
-                    ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
-                    agent: 'code',
-                    parts: [{ type: 'text' as const, text: continuationPrompt }],
-                  })
-                } catch (err) {
-                  await handlePromptError(loopName, freshState, 'retry failed goal continuation prompt after audit creation failure', err)
-                }
-              })
-            } catch (err) {
-              if (err instanceof ConcurrentPromptError) {
-                logger.log(`Loop: goal continuation after audit creation failure — retry rejected as concurrent prompt (prior guard active), skipping`)
-                return
-              }
-              throw err
-            }
-          }
-          await handlePromptError(loopName, currentState, 'failed to send goal continuation prompt after audit creation failure', promptErr, retryFn)
-        }
         return
       }
 
@@ -1163,27 +1149,23 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           }
         }
       }
-      const retryFn = async () => {
-        const fresh = loopService.getActiveState(loopName)
-        if (!fresh?.active) throw new Error('loop_cancelled')
-        const auditPromptText = loopService.buildAuditPrompt(fresh)
-        try {
-          await withInFlightGuard(loopName, created.auditSessionId, 'auditor-loop', logger, async () => {
-            const retryResult = await promptAuditSession(client, {
-              sessionId: created.auditSessionId,
-              worktreeDir: fresh.worktreeDir,
-              workspaceId: fresh.workspaceId,
-              prompt: auditPromptText,
-              auditorModel,
-              auditorVariant: fresh.auditorVariant,
-            })
-            if (!retryResult.ok) throw retryResult.error
+      const retryFn = buildPromptRetryFn({
+        loopName,
+        sessionId: created.auditSessionId,
+        agent: 'auditor-loop',
+        errorContext: 'failed to send audit prompt',
+        send: async (fresh) => {
+          const retryResult = await promptAuditSession(client, {
+            sessionId: created.auditSessionId,
+            worktreeDir: fresh.worktreeDir,
+            workspaceId: fresh.workspaceId,
+            prompt: loopService.buildAuditPrompt(fresh),
+            auditorModel,
+            auditorVariant: fresh.auditorVariant,
           })
-        } catch (err) {
-          if (err instanceof ConcurrentPromptError) { logger.log('Loop: failed to send audit prompt — retry rejected as concurrent prompt (prior guard active), skipping'); return }
-          throw err
-        }
-      }
+          if (!retryResult.ok) throw retryResult.error
+        },
+      })
       await handlePromptError(loopName, { ...currentState, phase: 'auditing' }, 'failed to send audit prompt', auditPromptErr, retryFn)
       return
     }
@@ -1216,31 +1198,28 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     // differ from the executor (notably after a restart), so it is only a legacy
     // fallback for in-flight loops predating the executor_session_id column.
     const executorSessionId = currentState.executorSessionId ?? currentState.hostSessionId ?? currentState.sessionId
-    const outstandingFindings = loopService.getOutstandingFindings(loopName)
-    if (outstandingFindings.length === 0) {
-      logger.log(`Loop: goal audit all-clear, terminating loop=${loopName} audits=${newAuditCount}`)
-      // Persist the bumped audit count before terminating so loop-status/history
-      // reflects the clean audit that authorized completion.
+
+    const persistAuditAndTerminate = async (reason: TerminationReason): Promise<void> => {
       loopService.replaceSession(loopName, {
         newSessionId: auditSessionId,
         phase: 'auditing',
         auditCount: newAuditCount,
         lastAuditResult: auditText || null,
       })
-      await terminateLoop(loopName, loopService.getActiveState(loopName) ?? currentState, { kind: 'completed' })
+      await terminateLoop(loopName, loopService.getActiveState(loopName) ?? currentState, reason)
+    }
+
+    const outstandingFindings = loopService.getOutstandingFindings(loopName)
+    if (outstandingFindings.length === 0) {
+      logger.log(`Loop: goal audit all-clear, terminating loop=${loopName} audits=${newAuditCount}`)
+      await persistAuditAndTerminate({ kind: 'completed' })
       return
     }
 
     const nextIteration = (currentState.iteration ?? 0) + 1
     if ((currentState.maxIterations ?? 0) > 0 && nextIteration > currentState.maxIterations) {
       logger.log(`Loop: goal max iterations reached (${nextIteration}/${currentState.maxIterations}), terminating`)
-      loopService.replaceSession(loopName, {
-        newSessionId: auditSessionId,
-        phase: 'auditing',
-        auditCount: newAuditCount,
-        lastAuditResult: auditText || null,
-      })
-      await terminateLoop(loopName, loopService.getActiveState(loopName) ?? currentState, { kind: 'max_iterations' })
+      await persistAuditAndTerminate({ kind: 'max_iterations' })
       return
     }
 
@@ -1264,45 +1243,17 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const continuationPrompt = loopService.buildContinuationPrompt(updatedState, auditText || undefined, outstandingBugs)
 
     const loopModel = resolveLoopModel(getConfig(), loopService, loopName)
-    const { error: promptErr } = await sendPromptWithFallback({
+    await sendPromptWithRetryRecovery({
       loopName,
       sessionId: executorSessionId,
       promptText: continuationPrompt,
       agent: 'code',
       model: loopModel,
       variant: currentState.executionVariant,
+      errorContext: 'goal continuation prompt',
+      errorState: updatedState,
+      activityTag: 'goal-continuation-prompt-sent',
     })
-    if (promptErr) {
-      logger.error(`Loop: failed to send goal continuation prompt for ${loopName}`, promptErr)
-      const retryFn = async () => {
-        const freshState = loopService.getActiveState(loopName)
-        if (!freshState?.active) throw new Error('loop_cancelled')
-        try {
-          await withInFlightGuard(loopName, executorSessionId, 'code', logger, async () => {
-            try {
-              await client.session.promptAsync({
-                sessionID: executorSessionId,
-                directory: freshState.worktreeDir,
-                ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
-                agent: 'code',
-                parts: [{ type: 'text' as const, text: continuationPrompt }],
-              })
-            } catch (err) {
-              await handlePromptError(loopName, freshState, 'retry failed goal continuation prompt', err)
-            }
-          })
-        } catch (err) {
-          if (err instanceof ConcurrentPromptError) {
-            logger.log(`Loop: goal continuation — retry rejected as concurrent prompt (prior guard active), skipping`)
-            return
-          }
-          throw err
-        }
-      }
-      await handlePromptError(loopName, updatedState, 'failed to send goal continuation prompt', promptErr, retryFn)
-      return
-    }
-    watchdog.recordActivity(loopName, 'goal-continuation-prompt-sent')
   }
 
   async function runAuditingPhase(loopName: string, _state: LoopState): Promise<void> {
