@@ -14,6 +14,7 @@ See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](c
 | `review-read` | Read review findings. | [`src/tools/review.ts`](../src/tools/review.ts) |
 | `review-delete` | Delete a review finding. | [`src/tools/review.ts`](../src/tools/review.ts) |
 | `execute-plan` | Start an iterative development loop in an isolated git worktree, or (with `mode: new-session`) launch the plan in a fresh standalone session. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
+| `execute-goal` | Start a managed goal loop in the current session: warp this session into an isolated Forge worktree and let the loop runner drive fresh auditors on idle until the goal is complete. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `loop-cancel` | Cancel an active loop. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `loop-status` | List loops, inspect one loop, or restart a restartable loop. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `launch-group` | Launch a group of features (from a PRD or a pre-split list), each planned and run as its own loop, scheduled with a concurrency cap. | [`src/tools/group.ts`](../src/tools/group.ts) |
@@ -100,6 +101,22 @@ Arguments:
 | `loopName` | Optional loop name, slugified and uniquified. |
 | `hostSessionId` | Optional host session ID for post-completion redirect. |
 | `mode` | Execution mode. `loop` (default) runs the iterative loop in an isolated git worktree. `new-session` launches the plan in a fresh standalone session running the code agent (no worktree, no loop, not tracked by `loop-status`/`loop-cancel`). |
+
+### `execute-goal`
+
+Starts a managed **goal loop** in the current session. Unlike `execute-plan`, it takes free-text goal (no plan, no decomposition, no approval flow) and warps this session into an isolated Forge worktree instead of creating a new executor session. The loop runner then drives fresh auditors on each executor idle and returns their review findings to this same session until the goal is complete.
+
+Arguments:
+
+| Argument | Description |
+|---|---|
+| `goal` | Required. Non-empty free text describing the goal; the first line is used to derive a title/loop name when omitted. |
+| `title` | Optional short title for the loop (derived from the goal when omitted). |
+| `loopName` | Optional loop name, slugified and uniquified. |
+| `maxIterations` | Optional maximum loop iterations. Defaults to the plugin config `loop.defaultMaxIterations`; `0` means unlimited (run until auditor all-clear or cancellation). |
+| `hostSessionId` | Optional host session ID for post-completion redirect; defaults to the invoking (`execute-goal`) session. |
+
+Worktree/session behavior, auditor/finding completion rule, iteration cap, and differences from `execute-plan` and `launch-group` are documented in [Loop System → Goal Loops](loop-system.md#goal-loops).
 
 ### `loop-cancel`
 

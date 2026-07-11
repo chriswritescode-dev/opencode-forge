@@ -80,7 +80,101 @@ function buildCoderDecisionsAuditorBlock(coderDecisions: string | null, includeS
   return `${separator}## Coder decisions & verification notes (this iteration)\nThe coding agent recorded the following. Use it to evaluate correctness. If a finding is explained by a documented decision, or you can reproduce the coder's passing verification method (e.g., required env vars), DELETE that finding with review-delete instead of re-reporting it.\n\n${coderDecisions}`
 }
 
+/**
+ * Goal-loop executor prompt used for both the initial/recovery coding pass and
+ * continuation after an audit. Goal loops have no plan, sections, or
+ * approval/planning flow — the agent implements and verifies the goal directly.
+ * The exact goal text is always restated so every iteration remains anchored to
+ * what was requested.
+ */
+function buildGoalCodingPrompt(ctx: PromptContext, state: LoopState, auditFindings?: string, outstandingBugs?: ReviewFindingRow[]): string {
+  const goal = state.goal ?? '(goal text missing)'
+
+  let systemLine = `Goal loop iteration ${String(state.iteration)}`
+  if (state.maxIterations > 0) {
+    systemLine += ` / ${String(state.maxIterations)}`
+  } else {
+    systemLine += ` | No max iterations set - loop runs until auditor all-clear or cancelled`
+  }
+
+  let prompt = `[${systemLine}]\n\n## Goal\n${goal}`
+
+  prompt += '\n\n---\nInstructions:\n- Implement the goal above directly in this worktree. Do not create a plan, decompose the goal into sections, or ask for approval — just do the work.\n- Write or update tests for the changes and run the project\'s verification (lint/typecheck/tests) before finishing.\n- Keep changes scoped to what the goal requires; reuse existing helpers and patterns rather than introducing speculative abstractions.'
+
+  if (auditFindings) {
+    prompt += `\n\n---\nThe code auditor reviewed your changes. You MUST address every bug and convention violation below — do not dismiss findings as unrelated to the goal. Fix them directly without creating a plan or asking for approval.\n\n${auditFindings}`
+  }
+
+  const outstandingFindings = ctx.getOutstandingFindings(state.loopName)
+  if (outstandingFindings.length > 0) {
+    const findingKeys = outstandingFindings.map((f) => `- \`${f.file}:${f.line}\``).join('\n')
+    prompt += `\n\n---\nOutstanding Review Findings (${String(outstandingFindings.length)})\n\nThese review findings are blocking loop completion. Fix these issues so they pass the next audit review.\n\n${findingKeys}`
+  }
+
+  prompt += buildRecurringFindingsCoderBlock(ctx, state, outstandingBugs)
+
+  return prompt + CODER_DECISIONS_INSTRUCTION
+}
+
+/**
+ * Goal-loop audit prompt. The auditor must verify BOTH that the goal is fully
+ * achieved AND that the code is correct/conventional. An unmet goal is reported
+ * as a `severity: "bug"` finding on the stable `GOAL` pseudo-path (line 1) so it
+ * blocks termination the same way code defects do. The loop runtime blocks
+ * completion while ANY outstanding finding (bug or warning) remains, so the
+ * auditor must delete resolved findings and may leave none outstanding to
+ * authorize termination.
+ */
+function buildGoalAuditPrompt(ctx: PromptContext, state: LoopState): string {
+  const goal = state.goal ?? '(goal text missing)'
+  const branchInfo = state.worktreeBranch ? ` (branch: ${state.worktreeBranch})` : ''
+  const reviewFindings = ctx.formatReviewFindings(state.loopName)
+  const coderDecisions = ctx.getCoderDecisions(state.loopName)
+
+  const parts: string[] = [
+    `Post-iteration ${String(state.iteration)} goal review${branchInfo}.`,
+    '',
+    'Goal:',
+    goal,
+    '',
+    'Existing review findings:',
+    reviewFindings,
+  ]
+
+  if (coderDecisions) {
+    parts.push('', '---', buildCoderDecisionsAuditorBlock(coderDecisions, false))
+  }
+
+  parts.push(
+    '',
+    'Review the code changes in this worktree against the goal above. Verify BOTH:',
+    '1. Goal completion: every part of the goal is implemented and working.',
+    '2. Code correctness: bugs, logic errors, missing error handling, and convention violations.',
+    'If you find bugs in related code that affect the correctness of this task, report them — even if the buggy code was not directly modified.',
+    '',
+    'Goal completeness check:',
+    '- For every part of the goal, verify it is implemented and working.',
+    '- If any part is unimplemented, partially implemented, or not working, you MUST write a `severity: "bug"` finding describing exactly which part of the goal is missing and what is required. Use `file` = the relevant source file when possible, otherwise use the stable pseudo-path `GOAL` with `line` = 1.',
+    '- When a previously reported goal-incomplete finding is now resolved, delete it with review-delete.',
+    '',
+    'For each existing finding above, verify whether it has been resolved. Delete resolved findings with review-delete and report any unresolved findings that still apply.',
+    'Outstanding findings block loop termination — the loop cannot complete while any finding (bug or warning) remains. Zero remaining findings authorizes termination.',
+    '',
+    'This is an automated loop — do not direct the agent to "create a plan" or "present for approval." Just report findings directly.',
+  )
+
+  const recurringBlock = buildRecurringFindingsAuditorBlock(ctx, state)
+  if (recurringBlock) {
+    parts.push('', recurringBlock)
+  }
+
+  return parts.join('\n')
+}
+
 export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, auditFindings?: string, outstandingBugs?: ReviewFindingRow[]): string {
+  if (state.kind === 'goal') {
+    return buildGoalCodingPrompt(ctx, state, auditFindings, outstandingBugs)
+  }
   if (state.totalSections > 0) {
     return buildSectionContinuationPrompt(ctx, state, auditFindings || '', outstandingBugs)
   }
@@ -110,6 +204,9 @@ export function buildContinuationPrompt(ctx: PromptContext, state: LoopState, au
 }
 
 export function buildAuditPrompt(ctx: PromptContext, state: LoopState): string {
+  if (state.kind === 'goal') {
+    return buildGoalAuditPrompt(ctx, state)
+  }
   if (state.totalSections > 0) {
     if (state.phase === 'final_auditing') {
       return buildFinalAuditPrompt(ctx, state)

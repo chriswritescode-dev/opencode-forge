@@ -171,6 +171,58 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
       },
     }),
 
+    'execute-goal': tool({
+      description: 'Start a managed goal loop that runs in the current session: creates an isolated Forge worktree, warps this session into it, registers the session as the loop executor, and starts the watchdog. No new session is created and no initial prompt is sent — continue executing the goal in this session.',
+      args: {
+        goal: z.string().describe('The goal to execute. Non-empty free text; the first line is used to derive a title/loop name when omitted.'),
+        title: z.string().optional().describe('Short title for the loop (derived from the goal when omitted)'),
+        loopName: z.string().optional().describe('Name for the loop (max 25 chars, auto-incremented if collision exists; derived from the title when omitted)'),
+        maxIterations: z.number().optional().describe('Maximum loop iterations (defaults to plugin config loop.defaultMaxIterations)'),
+        hostSessionId: z.string().optional().describe('Host session ID for post-completion redirect'),
+      },
+      execute: async (args, context) => {
+        const goalText = (args.goal ?? '').trim()
+        if (!goalText) {
+          return 'Goal text is required. Pass a non-empty goal argument.'
+        }
+
+        logger.log(`loop: starting goal loop for goal="${goalText.slice(0, 80)}"`)
+
+        const { service, execCtx } = makeService(context.sessionID)
+        const result = await service.dispatch(execCtx, {
+          type: 'goal.start',
+          goal: goalText,
+          title: args.title,
+          loopName: args.loopName,
+          maxIterations: args.maxIterations,
+          hostSessionId: args.hostSessionId,
+          executorSessionId: context.sessionID,
+        })
+
+        if (!result.ok) {
+          logger.error('loop: failed to start goal loop', result.error)
+          return `Failed to start goal loop: ${result.error.message}`
+        }
+
+        const maxInfo = result.data.maxIterations > 0 ? result.data.maxIterations.toString() : 'unlimited'
+        const lines: string[] = [
+          'Goal loop activated!',
+          '',
+          `Session: ${result.data.sessionId} (current session — no new session created)`,
+          `Loop name: ${result.data.loopName}`,
+          `Worktree: ${result.data.worktreeDir}`,
+          `Branch: ${result.data.worktreeBranch ?? 'unknown'}`,
+          `Max iterations: ${maxInfo}`,
+          '',
+          'Your session has been warped into the worktree and registered as the loop executor.',
+          'Continue executing the goal in this session — the loop runtime will keep the watchdog running.',
+          'The user can run loop-status or loop-cancel later if needed.',
+        ]
+
+        return lines.join('\n')
+      },
+    }),
+
     'loop-cancel': tool({
       description: 'Cancels the only active loop when called with no arguments. Pass a name to cancel a specific loop.',
       args: {
@@ -424,7 +476,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         }
 
         const maxInfo = state.maxIterations && state.maxIterations > 0 ? `${state.iteration} / ${state.maxIterations}` : `${state.iteration} (unlimited)`
-        const promptPreview = state.prompt && state.prompt.length > 100 ? `${state.prompt.substring(0, 97)}...` : (state.prompt ?? '')
+        const specification = state.kind === 'goal' ? state.goal : state.prompt
+        const specificationPreview = specification && specification.length > 100 ? `${specification.substring(0, 97)}...` : (specification ?? '')
 
         let sessionStatus = 'unknown'
         try {
@@ -547,7 +600,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           ...(stallError ? [`Last stall error: ${stallError}`] : []),
           ...(secondsSinceActivity !== null ? [`Last activity: ${secondsSinceActivity}s ago`] : []),
           '',
-          `Prompt: ${promptPreview}`,
+          `${state.kind === 'goal' ? 'Goal' : 'Prompt'}: ${specificationPreview}`,
         )
 
         return statusLines.join('\n')

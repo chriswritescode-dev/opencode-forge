@@ -267,6 +267,30 @@ describe('Loop Runtime cancel()', () => {
       expect(terminatedState!.active).toBe(false)
       expect(terminatedState!.terminationReason).toBe('user_aborted')
     })
+
+    test('cancel preserves goal kind and goal text on a goal loop', async () => {
+      const { loop } = createRuntime()
+      const executorSessionId = 'goal-executor-cancel'
+      const goalText = 'Add a /health endpoint with a test.'
+      const state = makeActiveState({
+        sessionId: executorSessionId,
+        hostSessionId: executorSessionId,
+        kind: 'goal',
+        goal: goalText,
+        totalSections: 0,
+      })
+      loop.start({ state })
+
+      await loop.cancel(state.loopName)
+
+      const terminatedState = loopService.getAnyState(state.loopName)!
+      expect(terminatedState.active).toBe(false)
+      expect(terminatedState.terminationReason).toBe('user_aborted')
+      // Goal identity survives cancellation for inspection / restart.
+      expect(terminatedState.kind).toBe('goal')
+      expect(terminatedState.goal).toBe(goalText)
+      expect(terminatedState.hostSessionId).toBe(executorSessionId)
+    })
   })
 
   describe('cancel fires termination callbacks', () => {

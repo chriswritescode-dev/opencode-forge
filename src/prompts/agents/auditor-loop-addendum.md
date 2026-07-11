@@ -1,4 +1,3 @@
-
 ## Loop Audit Context
 
 You are the primary agent of a dedicated, single-iteration audit session created by the loop runner. There is no parent agent calling you via the Task tool. After you finish your review and persist findings via `review-write` / `review-delete`, this session is deleted by the loop runner. Do not attempt to spawn long-running work — produce your review and stop.
@@ -8,6 +7,18 @@ Because this loop audit is not itself running as a subagent, use short-lived Tas
 - Keep the existing review-finding order unchanged: read active findings, check changed-file findings against the diff, delete resolved findings, then continue investigation.
 - Prefer focused explore subtasks for codebase pattern checks, dependency/caller inspection, related test discovery, or verification of separate changed areas.
 - Give each subtask a narrow prompt and ask it to return only findings, evidence, and file references; synthesize the results yourself before writing review findings.
+
+## Goal Loops
+
+Some loops are goal loops: they carry a free-text **Goal** instead of a plan and have no sections. The audit prompt for a goal loop restates the goal and asks you to verify BOTH that the goal is fully achieved AND that the code is correct and conventional.
+
+For goal loops:
+- Do NOT expect a plan, section content, section summaries, or `sectionIndex` attribution — there are none. The "Section Scoping", "Section Summaries", "Section Attribution", and "Deviation Acceptance" rules below do not apply.
+- When the goal is not fully met, write a `severity: "bug"` finding describing exactly which part of the goal is missing. Use `file` = the relevant source file when possible; otherwise use the stable pseudo-path `GOAL` with `line` = 1.
+- Delete resolved goal-incomplete findings (and any resolved code findings) with `review-delete` so they stop blocking termination.
+- Outstanding findings (bug or warning) block loop termination. Zero remaining findings authorizes loop termination.
+
+The "Coder Decisions", "Recurring Findings", and "Remediation Guidance" rules below still apply to goal loops.
 
 ## Section Scoping
 

@@ -1331,3 +1331,246 @@ describe('handleStartLoop variant config fallback', () => {
     db.close()
   })
 })
+
+describe('handleStartGoal current-session worktree startup', () => {
+  let db: Database
+  let loopsRepo: LoopsRepo
+  let plansRepo: PlansRepo
+  let reviewFindingsRepo: ReviewFindingsRepo
+  let sectionPlansRepo: SectionPlansRepo
+
+  const noopFn = () => {}
+
+  beforeEach(() => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'exec-start-goal-test-'))
+    db = new Database(join(tempDir, 'test.db'))
+    setupLoopsTestDb(db)
+
+    loopsRepo = createLoopsRepo(db)
+    plansRepo = createPlansRepo(db)
+    reviewFindingsRepo = createReviewFindingsRepo(db)
+    sectionPlansRepo = createSectionPlansRepo(db)
+  })
+
+  async function buildService(client: any, loopHandlerOverrides: any = {}) {
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, sectionPlansRepo)
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+      ...loopHandlerOverrides,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+      plansRepo,
+      loopsRepo,
+      loop: {
+        service: loopService,
+        listActive: (...args: any[]) => loopService.listActive(...args),
+        generateUniqueLoopName: (...args: any[]) => loopService.generateUniqueLoopName(...args),
+        findMatchByName: (...args: any[]) => loopService.findMatchByName(...args),
+      } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry,
+      client,
+      pendingTeardowns: mockPendingTeardowns,
+    })
+
+    return { service, loopService }
+  }
+
+  function goalClient(overrides?: any) {
+    return createFakeForgeClient({
+      workspace: {
+        create: async () => ({
+          id: 'ws_goal',
+          directory: '/tmp/wt/goal',
+          branch: 'opencode/goal',
+          type: 'worktree',
+          name: 'opencode/goal',
+          extra: null,
+          projectID: PROJECT_ID,
+          timeUsed: Date.now(),
+        }),
+        warp: async () => {},
+      },
+      ...overrides,
+    })
+  }
+
+  test('creates + warps a workspace, persists executor session id, and makes zero session.create calls', async () => {
+    const { client } = goalClient()
+    const { service, loopService } = await buildService(client)
+
+    const executorSessionId = 'caller-session-1'
+    const result = await service.dispatch(
+      { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test', sourceSessionId: executorSessionId },
+      {
+        type: 'goal.start' as const,
+        goal: 'Ship the goal-loop feature end to end',
+        executorSessionId,
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    // Never create a new executor session
+    expect(client.session.create).not.toHaveBeenCalled()
+
+    // Workspace created exactly once
+    expect(client.workspace.create).toHaveBeenCalledTimes(1)
+
+    // The executor session is warped into the workspace (bind via workspace.warp)
+    expect(client.workspace.warp).toHaveBeenCalledTimes(1)
+    const warpArgs = (client.workspace.warp as any).mock.calls[0][0]
+    expect(warpArgs.id).toBe('ws_goal')
+    expect(warpArgs.sessionID).toBe(executorSessionId)
+
+    // Persisted loop state: kind=goal, currentSessionId=executor, phase=coding, iteration 1, zero sections
+    const state = loopService.getActiveState(result.data.loopName)
+    expect(state).not.toBeNull()
+    expect(state!.kind).toBe('goal')
+    expect(state!.sessionId).toBe(executorSessionId)
+    expect(state!.phase).toBe('coding')
+    expect(state!.iteration).toBe(1)
+    expect(state!.totalSections).toBe(0)
+    expect(state!.currentSectionIndex).toBe(0)
+    expect(state!.workspaceId).toBe('ws_goal')
+    expect(state!.worktreeDir).toBe('/tmp/wt/goal')
+    expect(state!.worktreeBranch).toBe('opencode/goal')
+    expect(state!.goal).toBe('Ship the goal-loop feature end to end')
+
+    // Goal text persisted in loop_large_fields, NOT in the plans table
+    const largeFields = loopsRepo.getLarge(PROJECT_ID, result.data.loopName)
+    expect(largeFields).not.toBeNull()
+    expect(largeFields!.goal).toBe('Ship the goal-loop feature end to end')
+
+    const planRow = plansRepo.getForLoop(PROJECT_ID, result.data.loopName)
+    expect(planRow).toBeNull()
+
+    // Result echoes the executor session and goal
+    expect(result.data.sessionId).toBe(executorSessionId)
+    expect(result.data.goal).toBe('Ship the goal-loop feature end to end')
+    expect(result.data.workspaceId).toBe('ws_goal')
+    expect(result.data.worktreeDir).toBe('/tmp/wt/goal')
+  })
+
+  test('goal text survives reload (fresh loop service) without creating a plans-table record', async () => {
+    const { client } = goalClient()
+    const { service, loopService } = await buildService(client)
+
+    const executorSessionId = 'caller-session-2'
+    const result = await service.dispatch(
+      { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test', sourceSessionId: executorSessionId },
+      {
+        type: 'goal.start' as const,
+        goal: 'Refactor the storage layer for goal loops',
+        executorSessionId,
+      },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const loopName = result.data.loopName
+
+    // Simulate a restart/reload: a brand-new loop service reading the same DB
+    const reloadedService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, sectionPlansRepo)
+    const reloaded = reloadedService.getAnyState(loopName)
+    expect(reloaded).not.toBeNull()
+    expect(reloaded!.kind).toBe('goal')
+    expect(reloaded!.goal).toBe('Refactor the storage layer for goal loops')
+    expect(reloaded!.sessionId).toBe(executorSessionId)
+
+    // Still no plan row after reload
+    expect(plansRepo.getForLoop(PROJECT_ID, loopName)).toBeNull()
+
+    // Reference the original service to avoid an unused-variable lint
+    expect(loopService.getActiveState(loopName)?.goal).toBe('Refactor the storage layer for goal loops')
+  })
+
+  test('rollback on bind failure removes the workspace but never aborts the caller session', async () => {
+    const { client } = createFakeForgeClient({
+      workspace: {
+        create: async () => ({
+          id: 'ws_goal_bind_fail',
+          directory: '/tmp/wt/goal-bind-fail',
+          branch: 'opencode/goal-bind-fail',
+          type: 'worktree',
+          name: 'opencode/goal-bind-fail',
+          extra: null,
+          projectID: PROJECT_ID,
+          timeUsed: Date.now(),
+        }),
+        warp: async () => { throw new Error('workspace.warp rejected') },
+        remove: async () => {},
+      },
+    })
+    const { service, loopService } = await buildService(client)
+
+    const executorSessionId = 'caller-session-3'
+    const result = await service.dispatch(
+      { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test', sourceSessionId: executorSessionId },
+      {
+        type: 'goal.start' as const,
+        goal: 'Goal that fails to bind',
+        executorSessionId,
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.error.code).toBe('internal_error')
+    }
+
+    // Never create or abort the caller's session
+    expect(client.session.create).not.toHaveBeenCalled()
+    expect(client.session.abort).not.toHaveBeenCalled()
+
+    // Newly-created workspace is removed during rollback
+    expect(client.workspace.remove).toHaveBeenCalledTimes(1)
+    expect((client.workspace.remove as any).mock.calls[0][0]).toEqual({ id: 'ws_goal_bind_fail' })
+
+    // Loop state must not be persisted
+    const active = loopService.listActive().filter((s) => s.goal)
+    expect(active.length).toBe(0)
+
+    db.close()
+  })
+
+  test('rejects a blank/whitespace goal before any workspace provisioning', async () => {
+    const { client } = goalClient()
+    const { service } = await buildService(client)
+
+    const result = await service.dispatch(
+      { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test', sourceSessionId: 'caller-session-4' },
+      {
+        type: 'goal.start' as const,
+        goal: '   \n  ',
+        executorSessionId: 'caller-session-4',
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.error.code).toBe('bad_request')
+    }
+    expect(client.workspace.create).not.toHaveBeenCalled()
+    expect(client.session.create).not.toHaveBeenCalled()
+    expect(client.workspace.warp).not.toHaveBeenCalled()
+
+    db.close()
+  })
+})

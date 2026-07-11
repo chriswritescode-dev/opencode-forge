@@ -223,6 +223,805 @@ describe('Loop Runtime', () => {
     })
   })
 
+  describe('goal-loop idle transitions to auditor session', () => {
+    test('idle goal executor response creates a fresh auditor-loop session with a goal audit prompt and configured auditor model', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'I added the /health endpoint and its test.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client })
+
+      const goalText = 'Add a /health endpoint returning {"status":"ok"} with a test.'
+      const state = makeState({
+        phase: 'coding',
+        totalSections: 0,
+        auditCount: 0,
+        kind: 'goal',
+        goal: goalText,
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: state.sessionId,
+        },
+      })
+
+      const updatedState = loopService.getActiveState(state.loopName)
+      expect(updatedState).not.toBeNull()
+      expect(updatedState!.phase).toBe('auditing')
+      expect(updatedState!.kind).toBe('goal')
+      expect(updatedState!.goal).toBe(goalText)
+
+      // A fresh auditor session was created
+      const createCalls = calls.filter(c => c.method === 'session.create')
+      expect(createCalls.length).toBeGreaterThan(0)
+
+      // An auditor-loop prompt was sent carrying a goal audit prompt
+      const auditorCalls = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorCalls.length).toBeGreaterThan(0)
+      const lastAuditor = auditorCalls[auditorCalls.length - 1].params as any
+      const auditPrompt = (lastAuditor.parts as Array<{ type: string; text?: string }>)[0]?.text ?? ''
+      expect(auditPrompt).toContain('Goal:')
+      expect(auditPrompt).toContain(goalText)
+      expect(auditPrompt).toContain('Goal completion:')
+      expect(auditPrompt).toContain('Code correctness:')
+      expect(auditPrompt).toContain('`GOAL`')
+      expect(auditPrompt).toContain('authorizes termination')
+      // Goal audit prompts must omit plan/section/final-audit machinery
+      expect(auditPrompt).not.toContain('Implementation plan:')
+      expect(auditPrompt).not.toContain('Plan completeness check:')
+      expect(auditPrompt).not.toContain('[Final integration audit]')
+      expect(auditPrompt).not.toContain('Section under audit')
+
+      // The configured auditor model was applied to the audit prompt
+      expect(lastAuditor.model).toEqual({ providerID: 'test', modelID: 'auditor' })
+    })
+  })
+
+  describe('goal-loop audit results', () => {
+    test('dirty goal audit returns findings to the same warped executor session (no new code session)', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Goal endpoint missing error handling.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client })
+
+      const goalText = 'Add a /health endpoint with tests and error handling.'
+      const executorSessionId = 'goal-executor-session'
+      const auditorSessionId = 'goal-auditor-session'
+      // hostSessionId is the post-completion TUI redirect target and is intentionally
+      // DISTINCT from the executor — dirty-audit findings must reach the executor
+      // binding, not the redirect host.
+      const hostSessionId = 'goal-host-redirect'
+      const loopName = 'test-goal-dirty'
+      const state = makeState({
+        loopName,
+        sessionId: auditorSessionId,
+        hostSessionId,
+        executorSessionId,
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+        kind: 'goal',
+        goal: goalText,
+      })
+      loopService.setState(state.loopName, state)
+
+      // One outstanding bug finding => the audit is dirty.
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/health.ts',
+        line: 12,
+        severity: 'bug',
+        description: 'Missing error handling in /health endpoint',
+      })
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: auditorSessionId },
+      })
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.phase).toBe('coding')
+      // The executor session was retained — currentSessionId is the warped executor,
+      // never a freshly-created rotated code session.
+      expect(afterState!.sessionId).toBe(executorSessionId)
+      // The persisted executor binding is preserved across the dirty audit.
+      expect(afterState!.executorSessionId).toBe(executorSessionId)
+      expect(afterState!.hostSessionId).toBe(hostSessionId)
+      expect(afterState!.iteration).toBe(2)
+      expect(afterState!.auditCount).toBe(1)
+      expect(afterState!.kind).toBe('goal')
+      expect(afterState!.goal).toBe(goalText)
+      expect(afterState!.lastAuditResult).toContain('error handling')
+
+      // No new code session was created — the loop returned findings to the same session.
+      const createCalls = calls.filter(c => c.method === 'session.create')
+      expect(createCalls.length).toBe(0)
+
+      // A code continuation prompt was sent to the executor session carrying the goal.
+      const codePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code' && (c.params as any)?.sessionID === executorSessionId)
+      expect(codePrompts.length).toBeGreaterThan(0)
+      // Findings must NEVER be routed to the redirect host session.
+      const hostPrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.sessionID === hostSessionId)
+      expect(hostPrompts.length).toBe(0)
+      const continuationText = (codePrompts[codePrompts.length - 1].params as any)?.parts?.[0]?.text ?? ''
+      expect(continuationText).toContain('Goal')
+      expect(continuationText).toContain(goalText)
+      expect(continuationText).toContain('error handling')
+
+      // The completed auditor session was retired.
+      const deleteCalls = calls.filter(c => c.method === 'session.delete' && (c.params as any)?.sessionID === auditorSessionId)
+      expect(deleteCalls.length).toBeGreaterThan(0)
+    })
+
+    test('clean goal audit terminates without final-audit or post-action sessions', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'No issues found. Goal is fully implemented.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({
+        client,
+        loopConfig: {
+          loop: {
+            enabled: true,
+            defaultMaxIterations: 5,
+            // Post-action enabled — goal loops must still bypass it on clean audit.
+            postAction: { enabled: true, skill: 'pr-review' },
+          },
+        },
+      })
+
+      const goalText = 'Add a /health endpoint returning {"status":"ok"} with a test.'
+      const executorSessionId = 'goal-executor-clean'
+      const auditorSessionId = 'goal-auditor-clean'
+      const loopName = 'test-goal-clean'
+      const state = makeState({
+        loopName,
+        sessionId: auditorSessionId,
+        hostSessionId: 'goal-host-clean',
+        executorSessionId,
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+        kind: 'goal',
+        goal: goalText,
+      })
+      loopService.setState(state.loopName, state)
+
+      // No review findings => clean audit.
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: auditorSessionId },
+      })
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.terminationReason).toBe('completed')
+      expect(afterState!.auditCount).toBe(1)
+      expect(afterState!.lastAuditResult).toContain('No issues found')
+
+      // No post-action session was created and no final-audit/audit prompt was sent.
+      const codePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+      expect(codePrompts.length).toBe(0)
+      const auditorPrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorPrompts.length).toBe(0)
+      const createCalls = calls.filter(c => c.method === 'session.create')
+      expect(createCalls.length).toBe(0)
+    })
+
+    test('goal loop respect max iterations on a dirty audit', async () => {
+      const { client } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Still missing.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client })
+
+      const loopName = 'test-goal-maxiter'
+      const state = makeState({
+        loopName,
+        sessionId: 'goal-auditor-max',
+        hostSessionId: 'goal-host-max',
+        executorSessionId: 'goal-executor-max',
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 5,
+        maxIterations: 5,
+        kind: 'goal',
+        goal: 'finalize the thing',
+      })
+      loopService.setState(state.loopName, state)
+
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/thing.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'unfinished',
+      })
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: 'goal-auditor-max' },
+      })
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.terminationReason).toBe('max_iterations')
+    })
+
+    test('dirty goal audit after restart prompts the restarted executor, not the stale host session', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit found a remaining gap.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client })
+
+      const goalText = 'Add a /health endpoint with tests.'
+      // Simulate a restarted goal loop: the executor binding is the NEW session
+      // created by restart, while hostSessionId still points at the original
+      // (now-stale) pre-restart executor/host. Findings must reach the new executor.
+      const restartedExecutor = 'goal-executor-after-restart'
+      const staleHostSession = 'goal-executor-before-restart'
+      const auditorSessionId = 'goal-auditor-after-restart'
+      const loopName = 'test-goal-restart-dirty'
+      const state = makeState({
+        loopName,
+        sessionId: auditorSessionId,
+        hostSessionId: staleHostSession,
+        executorSessionId: restartedExecutor,
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+        kind: 'goal',
+        goal: goalText,
+      })
+      loopService.setState(state.loopName, state)
+
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName,
+        file: 'src/health.ts',
+        line: 5,
+        severity: 'bug',
+        description: 'Missing test coverage',
+      })
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: auditorSessionId },
+      })
+
+      const afterState = loopService.getActiveState(loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.phase).toBe('coding')
+      // currentSessionId and the executor binding are the restarted executor.
+      expect(afterState!.sessionId).toBe(restartedExecutor)
+      expect(afterState!.executorSessionId).toBe(restartedExecutor)
+      // hostSessionId is preserved as the redirect target, never reinterpreted as executor.
+      expect(afterState!.hostSessionId).toBe(staleHostSession)
+
+      // No new code session was created.
+      const createCalls = calls.filter(c => c.method === 'session.create')
+      expect(createCalls.length).toBe(0)
+
+      // The continuation went to the restarted executor, never the stale host.
+      const executorPrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.sessionID === restartedExecutor)
+      expect(executorPrompts.length).toBeGreaterThan(0)
+      const stalePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.sessionID === staleHostSession)
+      expect(stalePrompts.length).toBe(0)
+    })
+
+    test('dirty goal audit retries the continuation prompt after a transient failure and stays active', async () => {
+      const executorSessionId = 'goal-executor-retry'
+      const auditorSessionId = 'goal-auditor-retry'
+      let codePromptAttempts = 0
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit found a gap.' }] },
+          ],
+          promptAsync: async (params: any) => {
+            if (params?.agent === 'code' && params?.sessionID === executorSessionId) {
+              codePromptAttempts++
+              // sendPromptWithFallback exhausts its own model-fallback chain (two
+              // primary attempts + one default-model fallback = three failing calls)
+              // before surfacing the error to handlePromptError. The retryFn re-send
+              // (the 4th call) must succeed.
+              if (codePromptAttempts <= 3) throw new Error('transient transport error')
+            }
+          },
+        },
+      })
+      const { loop } = createRuntime({ client })
+
+      const loopName = 'test-goal-continuation-transient'
+      const state = makeState({
+        loopName,
+        sessionId: auditorSessionId,
+        hostSessionId: 'goal-host-retry',
+        executorSessionId,
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+        kind: 'goal',
+        goal: 'Add a /health endpoint with tests.',
+      })
+      loopService.setState(state.loopName, state)
+
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName,
+        file: 'src/health.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Missing error handling',
+      })
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: auditorSessionId },
+      })
+
+      // handlePromptError schedules the retry re-send after 2000ms; wait for it.
+      await new Promise(resolve => setTimeout(resolve, 2200))
+
+      const afterState = loopService.getActiveState(loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      // The retained warped executor is still current; no new code session was made.
+      expect(afterState!.phase).toBe('coding')
+      expect(afterState!.sessionId).toBe(executorSessionId)
+      expect(afterState!.executorSessionId).toBe(executorSessionId)
+      // Error count advanced by exactly one for the single transient failure
+      // (sendPromptWithFallback's internal retries do not touch loop error_count).
+      expect(afterState!.errorCount).toBe(1)
+
+      // Four code continuation prompts were directed at the executor: three failing
+      // sends inside sendPromptWithFallback's model-fallback chain and the successful
+      // retryFn re-send.
+      const executorPrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code' && (c.params as any)?.sessionID === executorSessionId)
+      expect(executorPrompts.length).toBe(4)
+      const retryText = (executorPrompts[3].params as any)?.parts?.[0]?.text ?? ''
+      expect(retryText).toContain('Add a /health endpoint with tests.')
+
+      // No replacement code session was created.
+      const createCalls = calls.filter(c => c.method === 'session.create')
+      expect(createCalls.length).toBe(0)
+    })
+
+    test('dirty goal audit with a persistently failing continuation retries once and leaves the loop recoverable on the retained executor', async () => {
+      const executorSessionId = 'goal-executor-exhaust'
+      const auditorSessionId = 'goal-auditor-exhaust'
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit found a gap.' }] },
+          ],
+          promptAsync: async (params: any) => {
+            // Every code continuation attempt to the executor fails.
+            if (params?.agent === 'code' && params?.sessionID === executorSessionId) {
+              throw new Error('persistent transport error')
+            }
+          },
+        },
+      })
+      const { loop } = createRuntime({ client })
+
+      const loopName = 'test-goal-continuation-exhaust'
+      const state = makeState({
+        loopName,
+        sessionId: auditorSessionId,
+        hostSessionId: 'goal-host-exhaust',
+        executorSessionId,
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+        kind: 'goal',
+        goal: 'Add a /health endpoint with tests.',
+      })
+      loopService.setState(state.loopName, state)
+
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName,
+        file: 'src/health.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Missing error handling',
+      })
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: auditorSessionId },
+      })
+
+      // The scheduled retryFn fires once after 2000ms and also fails; rather than
+      // terminating or sticking, the loop stays active on the retained executor so
+      // the watchdog can recover it (mirrors the rotateAndSendContinuation pattern).
+      await new Promise(resolve => setTimeout(resolve, 2200))
+
+      const afterState = loopService.getActiveState(loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      expect(afterState!.phase).toBe('coding')
+      expect(afterState!.sessionId).toBe(executorSessionId)
+      expect(afterState!.executorSessionId).toBe(executorSessionId)
+      // One increment for the surfaced failure plus one for the failed retry re-send.
+      expect(afterState!.errorCount).toBe(2)
+
+      // Three failing sends inside sendPromptWithFallback plus one retryFn re-send.
+      const executorPrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code' && (c.params as any)?.sessionID === executorSessionId)
+      expect(executorPrompts.length).toBe(4)
+
+      // No replacement code session was created.
+      const createCalls = calls.filter(c => c.method === 'session.create')
+      expect(createCalls.length).toBe(0)
+    })
+  })
+
+  describe('goal-loop auditor-creation failure retains executor', () => {
+    test('exhausted auditor-creation retries re-prompt the retained executor without creating a replacement code session', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          // The executor produced an assistant response (coding idle).
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Working on the goal.' }] },
+          ],
+          // Audit session creation fails every attempt — simulate auditor-creation exhaustion.
+          create: async () => { throw new Error('audit session create failed') },
+        },
+      })
+      const { loop, logs } = createRuntime({ client })
+
+      const executorSessionId = 'goal-executor-auditfail'
+      const loopName = 'test-goal-audit-create-fail'
+      const state = makeState({
+        loopName,
+        sessionId: executorSessionId,
+        hostSessionId: 'goal-host-auditfail',
+        executorSessionId,
+        phase: 'coding',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+        kind: 'goal',
+        goal: 'Add a /health endpoint with a test.',
+      })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(executorSessionId, loopName)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: executorSessionId },
+      })
+
+      const afterState = loopService.getActiveState(loopName)
+      expect(afterState).not.toBeNull()
+      // The loop stays in coding with the retained executor — no rotation.
+      expect(afterState!.phase).toBe('coding')
+      expect(afterState!.sessionId).toBe(executorSessionId)
+      expect(afterState!.executorSessionId).toBe(executorSessionId)
+
+      // No replacement code session was created (session.create attempts all threw
+      // for the auditor; rotateSession was NOT invoked, so no successful create).
+      const successfulCreateCalls = calls.filter(c => c.method === 'session.create')
+      // session.create was attempted for audits but every attempt threw.
+      expect(successfulCreateCalls.length).toBeGreaterThan(0)
+
+      // The retained executor was re-prompted with a continuation.
+      const executorPrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code' && (c.params as any)?.sessionID === executorSessionId)
+      expect(executorPrompts.length).toBeGreaterThan(0)
+
+      // The executor session was never scheduled for deletion (no rotation).
+      const executorDeleteCalls = calls.filter(c => c.method === 'session.delete' && (c.params as any)?.sessionID === executorSessionId)
+      expect(executorDeleteCalls.length).toBe(0)
+
+      // The goal-specific recovery branch was taken.
+      expect(logs.some(l => l.message.includes('retaining goal executor and re-prompting'))).toBe(true)
+    })
+
+    test('audit-creation failure retries the executor re-prompt after a transient failure and stays active', async () => {
+      const executorSessionId = 'goal-executor-auditfail-retry'
+      let codePromptAttempts = 0
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          // The executor produced an assistant response (coding idle).
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Working on the goal.' }] },
+          ],
+          // Audit session creation fails every attempt — simulate auditor-creation exhaustion.
+          create: async () => { throw new Error('audit session create failed') },
+          promptAsync: async (params: any) => {
+            if (params?.agent === 'code' && params?.sessionID === executorSessionId) {
+              codePromptAttempts++
+              // sendPromptWithFallback exhausts its own model-fallback chain (two
+              // primary attempts + one default-model fallback = three failing calls)
+              // before surfacing the error to handlePromptError. The retryFn re-send
+              // (the 4th call) must succeed.
+              if (codePromptAttempts <= 3) throw new Error('transient transport error')
+            }
+          },
+        },
+      })
+      const { loop } = createRuntime({ client })
+
+      const loopName = 'test-goal-audit-create-fail-retry'
+      const state = makeState({
+        loopName,
+        sessionId: executorSessionId,
+        hostSessionId: 'goal-host-auditfail-retry',
+        executorSessionId,
+        phase: 'coding',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+        errorCount: 0,
+        kind: 'goal',
+        goal: 'Add a /health endpoint with a test.',
+      })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(executorSessionId, loopName)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: executorSessionId },
+      })
+
+      // createAuditWithRetry exhausts with ~1.5s of backoff inside the tick; the
+      // failed executor re-prompt then schedules the retry re-send after 2000ms.
+      await new Promise(resolve => setTimeout(resolve, 2300))
+
+      const afterState = loopService.getActiveState(loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+      // Executor retained in coding; no rotation.
+      expect(afterState!.phase).toBe('coding')
+      expect(afterState!.sessionId).toBe(executorSessionId)
+      expect(afterState!.executorSessionId).toBe(executorSessionId)
+      // The audit-create errorCount was reset before the re-prompt, so the single
+      // transient failure advanced it to exactly one (without exhausting the cap).
+      expect(afterState!.errorCount).toBe(1)
+
+      // Four code prompts targeted the executor: three failing sends inside
+      // sendPromptWithFallback's model-fallback chain and the successful retryFn
+      // re-send.
+      const executorPrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code' && (c.params as any)?.sessionID === executorSessionId)
+      expect(executorPrompts.length).toBe(4)
+      const retryText = (executorPrompts[3].params as any)?.parts?.[0]?.text ?? ''
+      expect(retryText).toContain('Audit could not be started after retries')
+
+      // Auditor-creation was attempted (and failed); no replacement code session.
+      const successfulCreateCalls = calls.filter(c => c.method === 'session.create')
+      expect(successfulCreateCalls.length).toBeGreaterThan(0)
+      const executorDeleteCalls = calls.filter(c => c.method === 'session.delete' && (c.params as any)?.sessionID === executorSessionId)
+      expect(executorDeleteCalls.length).toBe(0)
+    })
+  })
+
+  describe('goal-loop auditor-failure recovery retains executor', () => {
+    test('auditor abort (no assistant response) re-prompts the retained executor without creating a new code session', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          // The auditor session has no assistant response yet (aborted mid-run).
+          messages: async () => [],
+        },
+      })
+      const { loop, logs } = createRuntime({ client })
+
+      const executorSessionId = 'goal-executor-abort'
+      const auditorSessionId = 'goal-auditor-abort'
+      const loopName = 'test-goal-auditor-abort'
+      const state = makeState({
+        loopName,
+        sessionId: auditorSessionId,
+        hostSessionId: 'goal-host-abort',
+        executorSessionId,
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+        kind: 'goal',
+        goal: 'Add a /health endpoint with a test.',
+      })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(auditorSessionId, loopName)
+
+      await loop.tick({
+        type: 'session.error',
+        properties: {
+          sessionID: auditorSessionId,
+          error: { name: 'AbortError' },
+        },
+      })
+
+      const afterState = loopService.getActiveState(loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.phase).toBe('coding')
+      // The retained executor becomes the active session — no rotation.
+      expect(afterState!.sessionId).toBe(executorSessionId)
+      expect(afterState!.executorSessionId).toBe(executorSessionId)
+
+      // No replacement code session was created.
+      const createCalls = calls.filter(c => c.method === 'session.create')
+      expect(createCalls.length).toBe(0)
+
+      // The executor was re-prompted with the recovery continuation.
+      const executorPrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code' && (c.params as any)?.sessionID === executorSessionId)
+      expect(executorPrompts.length).toBeGreaterThan(0)
+      const continuationText = (executorPrompts[executorPrompts.length - 1].params as any)?.parts?.[0]?.text ?? ''
+      expect(continuationText).toContain('Auditor session failed')
+      expect(continuationText).toContain('aborted')
+
+      // The aborted auditor session was retired; the executor was never deleted.
+      const auditorDeleteCalls = calls.filter(c => c.method === 'session.delete' && (c.params as any)?.sessionID === auditorSessionId)
+      expect(auditorDeleteCalls.length).toBeGreaterThan(0)
+      const executorDeleteCalls = calls.filter(c => c.method === 'session.delete' && (c.params as any)?.sessionID === executorSessionId)
+      expect(executorDeleteCalls.length).toBe(0)
+
+      // Findings never reach the redirect host.
+      const hostPrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.sessionID === 'goal-host-abort')
+      expect(hostPrompts.length).toBe(0)
+
+      expect(logs.some(l => l.message.includes('goal auditor failure'))).toBe(true)
+    })
+
+    test('auditor session error event re-prompts the retained executor and marks model failure for provider errors', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop, logs } = createRuntime({ client })
+
+      const executorSessionId = 'goal-executor-err'
+      const auditorSessionId = 'goal-auditor-err'
+      const loopName = 'test-goal-auditor-error'
+      const state = makeState({
+        loopName,
+        sessionId: auditorSessionId,
+        hostSessionId: 'goal-host-err',
+        executorSessionId,
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 2,
+        maxIterations: 5,
+        kind: 'goal',
+        goal: 'Add a /health endpoint with a test.',
+      })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(auditorSessionId, loopName)
+
+      await loop.tick({
+        type: 'session.error',
+        properties: {
+          sessionID: auditorSessionId,
+          error: { name: 'ProviderError', data: { message: 'provider api error' } },
+        },
+      })
+
+      const afterState = loopService.getActiveState(loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.phase).toBe('coding')
+      expect(afterState!.sessionId).toBe(executorSessionId)
+      expect(afterState!.executorSessionId).toBe(executorSessionId)
+      // Provider-style errors mark the model failed so the recovery prompt falls
+      // back to the default model.
+      expect(afterState!.modelFailed).toBe(true)
+
+      const createCalls = calls.filter(c => c.method === 'session.create')
+      expect(createCalls.length).toBe(0)
+
+      const executorPrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code' && (c.params as any)?.sessionID === executorSessionId)
+      expect(executorPrompts.length).toBeGreaterThan(0)
+      const continuationText = (executorPrompts[executorPrompts.length - 1].params as any)?.parts?.[0]?.text ?? ''
+      expect(continuationText).toContain('Auditor session failed')
+      expect(continuationText).toContain('provider api error')
+
+      const auditorDeleteCalls = calls.filter(c => c.method === 'session.delete' && (c.params as any)?.sessionID === auditorSessionId)
+      expect(auditorDeleteCalls.length).toBeGreaterThan(0)
+
+      expect(logs.some(l => l.message.includes('goal auditor failure'))).toBe(true)
+    })
+
+    test('auditor assistant-error response re-prompts the retained executor instead of rotating to a fresh code session', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          // The auditor produced an assistant message carrying a non-model error,
+          // landing in the audit assistant-error continuation path.
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop', error: { data: { message: 'tool execution crashed' } } }, parts: [{ type: 'text', text: '' }] },
+          ],
+        },
+      })
+      const { loop, logs } = createRuntime({ client })
+
+      const executorSessionId = 'goal-executor-asst-err'
+      const auditorSessionId = 'goal-auditor-asst-err'
+      const loopName = 'test-goal-auditor-assistant-error'
+      const state = makeState({
+        loopName,
+        sessionId: auditorSessionId,
+        hostSessionId: 'goal-host-asst-err',
+        executorSessionId,
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+        errorCount: 0,
+        kind: 'goal',
+        goal: 'Add a /health endpoint with a test.',
+      })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(auditorSessionId, loopName)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: auditorSessionId },
+      })
+
+      const afterState = loopService.getActiveState(loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.phase).toBe('coding')
+      expect(afterState!.sessionId).toBe(executorSessionId)
+      expect(afterState!.executorSessionId).toBe(executorSessionId)
+      // The audit did not complete, so the audit count is unchanged.
+      expect(afterState!.auditCount).toBe(0)
+
+      const createCalls = calls.filter(c => c.method === 'session.create')
+      expect(createCalls.length).toBe(0)
+
+      const executorPrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code' && (c.params as any)?.sessionID === executorSessionId)
+      expect(executorPrompts.length).toBeGreaterThan(0)
+      const continuationText = (executorPrompts[executorPrompts.length - 1].params as any)?.parts?.[0]?.text ?? ''
+      expect(continuationText).toContain('Auditor session failed')
+      expect(continuationText).toContain('tool execution crashed')
+
+      const auditorDeleteCalls = calls.filter(c => c.method === 'session.delete' && (c.params as any)?.sessionID === auditorSessionId)
+      expect(auditorDeleteCalls.length).toBeGreaterThan(0)
+      const executorDeleteCalls = calls.filter(c => c.method === 'session.delete' && (c.params as any)?.sessionID === executorSessionId)
+      expect(executorDeleteCalls.length).toBe(0)
+
+      expect(logs.some(l => l.message.includes('goal auditor failure'))).toBe(true)
+    })
+  })
+
   describe('clean non-sectioned audit terminates completed', () => {
     test('audit session returning clean assistant message terminates with completed', async () => {
       const { client, calls } = createFakeForgeClient({

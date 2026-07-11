@@ -60,6 +60,7 @@ function scheduleApprovalDispatch(
 const LOOP_BLOCKED_TOOLS: Record<string, string> = {
   question: 'The question tool is not available during a loop. Do not ask questions — continue working on the task autonomously.',
   'execute-plan': 'The execute-plan tool is not available during a loop. Focus on executing the current plan.',
+  'execute-goal': 'The execute-goal tool is not available during a loop. Focus on executing the current task.',
   'launch-group': 'The launch-group tool is not available during a loop. Focus on executing the current plan.',
   'group-status': 'The group-status tool is not available during a loop. Focus on executing the current plan.',
   'group-cancel': 'The group-cancel tool is not available during a loop. Focus on executing the current plan.',
@@ -79,8 +80,15 @@ interface LoopToolBlockingDeps {
   resolveActiveLoopForSession?: (sessionID: string) => Promise<{ active?: boolean; loopName?: string; phase?: string } | null>
 }
 
-function isActiveLoopToolSession(state: { active?: boolean; sessionId?: string }, sessionID: string): boolean {
-  return state.active === true && state.sessionId === sessionID
+function isActiveLoopToolSession(
+  state: { active?: boolean; sessionId?: string; executorSessionId?: string },
+  sessionID: string,
+): boolean {
+  // The loop's current session (auditor while auditing) and the persisted goal
+  // executor are both active loop participants whose recursive tool use must be
+  // blocked. Recognize either binding so a retained goal executor cannot start
+  // another loop while its loop is auditing.
+  return state.active === true && (state.sessionId === sessionID || state.executorSessionId === sessionID)
 }
 
 async function resolveBlockedLoopToolState(
@@ -90,7 +98,12 @@ async function resolveBlockedLoopToolState(
 ): Promise<{ active?: boolean; loopName?: string; phase?: string } | null> {
   if (deps.resolveActiveLoopForSession) return deps.resolveActiveLoopForSession(sessionID)
 
-  const loopName = loop.service.resolveLoopName(sessionID)
+  // Fallback resolution for callers that do not inject a resolver: include the
+  // persisted executor binding so a retained goal executor counts as an active
+  // loop participant during auditing. Fall back to current-session-only
+  // resolution when the participant lookup is unavailable (e.g. minimal mocks).
+  const resolveParticipant = loop.service.resolveLoopNameForParticipant ?? loop.service.resolveLoopName
+  const loopName = resolveParticipant(sessionID)
   const state = loopName ? loop.service.getActiveState(loopName) : null
   if (state?.active && isActiveLoopToolSession(state, sessionID)) return state
   return null

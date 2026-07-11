@@ -49,9 +49,11 @@ describe('LoopsRepo', () => {
         total_sections INTEGER NOT NULL DEFAULT 0,
         final_audit_done INTEGER NOT NULL DEFAULT 0,
         final_audit_attempts INTEGER NOT NULL DEFAULT 0,
-        execution_variant    TEXT,
-        auditor_variant      TEXT,
-        PRIMARY KEY (project_id, loop_name)
+      execution_variant    TEXT,
+      auditor_variant      TEXT,
+      loop_kind            TEXT NOT NULL DEFAULT 'plan',
+      executor_session_id  TEXT,
+      PRIMARY KEY (project_id, loop_name)
       )
     `)
     
@@ -61,12 +63,14 @@ describe('LoopsRepo', () => {
         loop_name           TEXT NOT NULL,
         last_audit_result   TEXT,
         post_action_report  TEXT,
+        goal                TEXT,
         PRIMARY KEY (project_id, loop_name),
         FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
       )
     `)
     
-    db.run(`CREATE UNIQUE INDEX idx_loops_session ON loops(project_id, current_session_id)`)
+    db.run(`CREATE UNIQUE INDEX idx_loops_session ON loops(project_id, current_session_id) WHERE status = 'running'`)
+    db.run(`CREATE INDEX idx_loops_executor_session ON loops(project_id, executor_session_id) WHERE status = 'running' AND executor_session_id IS NOT NULL`)
     
     repo = createLoopsRepo(db)
   })
@@ -110,6 +114,7 @@ describe('LoopsRepo', () => {
     finalAuditDone: 0,
     executionVariant: null,
     auditorVariant: null,
+    kind: 'plan',
   }
 
   const testLarge: LoopLargeFields = {
@@ -162,6 +167,63 @@ describe('LoopsRepo', () => {
       expect(retrieved).toBeTruthy()
       expect(retrieved!.phase).toBe('post_action')
       expect(retrieved!.loopName).toBe('post-action-loop')
+    })
+  })
+
+  describe('insert atomicity', () => {
+    beforeEach(() => {
+      db.run(`DROP TABLE loop_large_fields`)
+      db.run(`
+        CREATE TABLE loop_large_fields (
+          project_id          TEXT NOT NULL,
+          loop_name           TEXT NOT NULL,
+          last_audit_result   TEXT,
+          post_action_report  TEXT,
+          goal                TEXT CHECK(goal != '__TXN_FAIL_SENTINEL__'),
+          PRIMARY KEY (project_id, loop_name),
+          FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
+        )
+      `)
+      repo = createLoopsRepo(db)
+    })
+
+    test('rolls back the loops row when the large-field write fails (goal loop)', () => {
+      const row: LoopRow = {
+        ...testRow,
+        loopName: 'goal-txn-fail',
+        currentSessionId: 'goal-txn-session',
+        kind: 'goal',
+      }
+      const large: LoopLargeFields = {
+        lastAuditResult: null,
+        goal: '__TXN_FAIL_SENTINEL__',
+      }
+
+      expect(() => repo.insert(row, large)).toThrow()
+
+      expect(repo.get(row.projectId, row.loopName)).toBeNull()
+      expect(repo.getLarge(row.projectId, row.loopName)).toBeNull()
+    })
+
+    test('commit succeeds atomically when both writes are valid (goal loop)', () => {
+      const row: LoopRow = {
+        ...testRow,
+        loopName: 'goal-txn-ok',
+        currentSessionId: 'goal-txn-ok-session',
+        kind: 'goal',
+      }
+      const large: LoopLargeFields = {
+        lastAuditResult: null,
+        goal: 'Add a /health endpoint with tests.',
+      }
+
+      expect(repo.insert(row, large)).toBe(true)
+      const retrieved = repo.get(row.projectId, row.loopName)
+      expect(retrieved).not.toBeNull()
+      expect(retrieved!.kind).toBe('goal')
+      const largeRetrieved = repo.getLarge(row.projectId, row.loopName)
+      expect(largeRetrieved).not.toBeNull()
+      expect(largeRetrieved!.goal).toBe('Add a /health endpoint with tests.')
     })
   })
 
@@ -398,6 +460,7 @@ describe('LoopsRepo', () => {
         totalSections: 0,
         finalAuditDone: false,
         startedAt: Date.now(),
+        executorSessionId: null,
       })
 
       const large = repo.getLarge(testRow.projectId, testRow.loopName)
@@ -473,6 +536,107 @@ describe('LoopsRepo', () => {
       expect(repoAsAny.setDecompositionStatus).toBeUndefined()
       expect(repoAsAny.setDecompositionMode).toBeUndefined()
       expect(repoAsAny.setDecompositionSessionId).toBeUndefined()
+    })
+  })
+
+  describe('getByParticipantSessionId', () => {
+    test('should find running loop by current_session_id', () => {
+      const row: LoopRow = {
+        ...testRow,
+        loopName: 'participant-current',
+        currentSessionId: 'sess-current',
+        executorSessionId: null,
+      }
+      repo.insert(row, testLarge)
+
+      const found = repo.getByParticipantSessionId(testRow.projectId, 'sess-current')
+      expect(found).toBeTruthy()
+      expect(found!.loopName).toBe('participant-current')
+    })
+
+    test('should find running loop by executor_session_id', () => {
+      const row: LoopRow = {
+        ...testRow,
+        loopName: 'participant-executor',
+        currentSessionId: 'sess-other',
+        executorSessionId: 'sess-exec',
+      }
+      repo.insert(row, testLarge)
+
+      const found = repo.getByParticipantSessionId(testRow.projectId, 'sess-exec')
+      expect(found).toBeTruthy()
+      expect(found!.loopName).toBe('participant-executor')
+    })
+
+    test('should return null for non-existent session', () => {
+      const found = repo.getByParticipantSessionId(testRow.projectId, 'non-existent')
+      expect(found).toBeNull()
+    })
+
+    test('should ignore terminated loop history by current_session_id', () => {
+      const row: LoopRow = {
+        ...testRow,
+        loopName: 'terminal-current',
+        currentSessionId: 'sess-terminal-current',
+        executorSessionId: 'sess-terminal-exec',
+      }
+      repo.insert(row, testLarge)
+      repo.terminate(testRow.projectId, 'terminal-current', {
+        status: 'completed',
+        reason: 'done',
+        completedAt: Date.now(),
+      })
+
+      expect(repo.getByParticipantSessionId(testRow.projectId, 'sess-terminal-current')).toBeNull()
+      expect(repo.getByParticipantSessionId(testRow.projectId, 'sess-terminal-exec')).toBeNull()
+    })
+
+    test('should deterministically prefer current-session match over executor-only match', () => {
+      const loopWithCurrent: LoopRow = {
+        ...testRow,
+        loopName: 'current-match',
+        currentSessionId: 'shared-sess',
+        executorSessionId: null,
+      }
+      const loopWithExecutor: LoopRow = {
+        ...testRow,
+        loopName: 'executor-match',
+        currentSessionId: 'different-sess',
+        executorSessionId: 'shared-sess',
+      }
+      repo.insert(loopWithCurrent, testLarge)
+      repo.insert(loopWithExecutor, testLarge)
+
+      const found = repo.getByParticipantSessionId(testRow.projectId, 'shared-sess')
+      expect(found).toBeTruthy()
+      expect(found!.loopName).toBe('current-match')
+    })
+
+    test('should allow reusing a terminated loop\'s current_session_id for a new running loop', () => {
+      const firstRow: LoopRow = {
+        ...testRow,
+        loopName: 'reuse-first',
+        currentSessionId: 'reuse-sess',
+      }
+      repo.insert(firstRow, testLarge)
+      repo.terminate(testRow.projectId, 'reuse-first', {
+        status: 'completed',
+        reason: 'done',
+        completedAt: Date.now(),
+      })
+
+      const secondRow: LoopRow = {
+        ...testRow,
+        loopName: 'reuse-second',
+        currentSessionId: 'reuse-sess',
+      }
+
+      expect(() => repo.insert(secondRow, testLarge)).not.toThrow()
+
+      const found = repo.getByParticipantSessionId(testRow.projectId, 'reuse-sess')
+      expect(found).toBeTruthy()
+      expect(found!.loopName).toBe('reuse-second')
+      expect(found!.status).toBe('running')
     })
   })
 })

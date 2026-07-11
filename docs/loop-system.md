@@ -84,6 +84,8 @@ interface LoopState {
   currentSectionIndex: number
   totalSections: number
   finalAuditDone: boolean
+  kind?: 'plan' | 'goal'             // Discriminator: plan loops persist a plan; goal loops persist goal text
+  goal?: string                      // Goal text for goal loops (undefined for plan loops)
 }
 ```
 
@@ -278,9 +280,47 @@ Cancellation:
 | Final audit retry limit | Loop terminates with `terminationReason: 'final_audit_retry_exhausted'` |
 | Stall timeout | Loop terminates with `terminationReason: 'stall_timeout'` after the configured consecutive stall limit |
 
+## Goal Loops
+
+A **goal loop** (`kind: 'goal'`) is a lightweight alternative to a plan loop for work that does not need a structured plan. It is started by the `/execute-goal <prompt>` slash command (or the `execute-goal` tool) with free-text goal text.
+
+### Lifecycle differences from plan loops
+
+- **No plan, no decomposition, no approval.** The goal text is persisted in `loop_large_fields.goal` (never in the `plans` table) and is the auditor's authoritative scope. There are no sections, no `final_auditing` phase, and no `post_action` phase.
+- **Single warped executor session.** The invoking session is warped into an isolated Forge worktree via `workspace.warp` (no `session.create`). The executor session is preserved across audits — only auditor sessions rotate. The loop runner sends no initial prompt; the slash-command code agent keeps implementing the goal in its already-active session.
+- **Idle-driven audits.** When the executor goes idle, the loop runner starts a fresh `auditor-loop` session against the worktree (same as plan loops). The auditor verifies both goal completion and code correctness, and may block termination with `severity: "bug"` findings (using the stable pseudo-path `GOAL` with `line: 1` when no source location applies for an unmet part of the goal).
+- **Dirty audits return to the same session.** When findings remain, the auditor's response is sent straight back to the warped executor session (no session rotation, no new code session) as a goal continuation prompt — the executor fixes the findings and goes idle again to trigger the next audit.
+- **Clean audits terminate immediately.** When a completed auditor pass leaves zero outstanding review findings (any severity), the loop terminates with `completed` — no final audit, no post-completion action.
+
+### Completion rule
+
+A goal loop completes only after the auditor has run at least once and leaves no open review findings. The configured `loop.postAction` is never invoked for goal loops.
+
+### Iteration cap
+
+`maxIterations` bounds the number of coding iterations (`0` = unlimited, the default unless overridden by the command or `loop.defaultMaxIterations`). When the cap is reached with findings still open, the loop terminates with `max_iterations`.
+
+### Visibility, cancellation, and recursion
+
+Goal loops are fully visible to `loop-status`, cancellable with `loop-cancel`, and restartable with `loop-status ... restart=true`. Restart preserves the goal kind and goal text, skips plan decomposition, and resumes from a fresh session.
+
+`execute-goal` is added to the same loop/audit denial lists as `execute-plan`, `launch-group`, and the group tools, so an active executor or auditor session cannot recursively start another goal loop. Auditors exclude `execute-goal` from their tools.
+
+### Differences from `execute-plan` and `launch-group`
+
+| Aspect | `execute-plan` (loop) | `execute-goal` | `launch-group` |
+|---|---|---|---|
+| Input | Structured plan (persisted in `plans`) | Free-text goal | PRD / pre-split feature list |
+| Sections / milestones | Yes (decomposed) | No | Per feature (each feature is its own loop) |
+| Executor session | Fresh session per iteration | Invoking session, warped and preserved | Fresh session per feature loop |
+| Final audit | Yes (after all sections) | No | Per feature loop |
+| Post-completion action | Yes (when configured) | Never | Per feature loop |
+| Slash command | `/execute-plan` | `/execute-goal` | None (agent-invoked) |
+
 ## Tool Restrictions
 
 Inside active loop sessions:
 - `git push` is denied (permission hook)
 - `execute-plan` is blocked (tool hooks)
+- `execute-goal` is blocked (tool hooks)
 - `question` is blocked (tool hooks)

@@ -279,6 +279,32 @@ describe('Loop Runtime start()', () => {
       expect(persisted.phase).toBe('coding')
     })
 
+    test('goal loop state persists kind, goal text, and hostSessionId (executor binding)', () => {
+      const { loop } = createRuntime()
+      const executorSessionId = 'warped-executor-session'
+      const goalText = 'Add a /health endpoint with a test.'
+      const state = makeState({
+        sessionId: executorSessionId,
+        hostSessionId: executorSessionId,
+        kind: 'goal',
+        goal: goalText,
+        totalSections: 0,
+        phase: 'coding',
+      })
+
+      loop.start({ state })
+
+      const persisted = loopService.getActiveState(state.loopName)!
+      expect(persisted.kind).toBe('goal')
+      expect(persisted.goal).toBe(goalText)
+      expect(persisted.totalSections).toBe(0)
+      // The executor session is the warped invoking session; never a fresh session.
+      expect(persisted.sessionId).toBe(executorSessionId)
+      expect(persisted.hostSessionId).toBe(executorSessionId)
+      // Goal loops must not persist a plan prompt into the plans table.
+      expect(plansRepo.getForLoop(PROJECT_ID, state.loopName)).toBeNull()
+    })
+
   })
 
   describe('start generates unique loop names', () => {
