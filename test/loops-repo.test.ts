@@ -241,6 +241,22 @@ describe('LoopsRepo', () => {
       expect(found).toBeNull()
     })
 
+    test('should resolve a reused session ID to the running loop', () => {
+      repo.insert(testRow, testLarge)
+      repo.terminate(testRow.projectId, testRow.loopName, {
+        status: 'completed',
+        reason: 'done',
+        completedAt: Date.now(),
+      })
+      const running: LoopRow = {
+        ...testRow,
+        loopName: 'running-loop',
+      }
+      repo.insert(running, testLarge)
+
+      expect(repo.getBySessionId(testRow.projectId, testRow.currentSessionId)?.loopName).toBe('running-loop')
+    })
+
     test('should enforce unique session ID constraint', () => {
       repo.insert(testRow, testLarge)
       
@@ -536,107 +552,6 @@ describe('LoopsRepo', () => {
       expect(repoAsAny.setDecompositionStatus).toBeUndefined()
       expect(repoAsAny.setDecompositionMode).toBeUndefined()
       expect(repoAsAny.setDecompositionSessionId).toBeUndefined()
-    })
-  })
-
-  describe('getByParticipantSessionId', () => {
-    test('should find running loop by current_session_id', () => {
-      const row: LoopRow = {
-        ...testRow,
-        loopName: 'participant-current',
-        currentSessionId: 'sess-current',
-        executorSessionId: null,
-      }
-      repo.insert(row, testLarge)
-
-      const found = repo.getByParticipantSessionId(testRow.projectId, 'sess-current')
-      expect(found).toBeTruthy()
-      expect(found!.loopName).toBe('participant-current')
-    })
-
-    test('should find running loop by executor_session_id', () => {
-      const row: LoopRow = {
-        ...testRow,
-        loopName: 'participant-executor',
-        currentSessionId: 'sess-other',
-        executorSessionId: 'sess-exec',
-      }
-      repo.insert(row, testLarge)
-
-      const found = repo.getByParticipantSessionId(testRow.projectId, 'sess-exec')
-      expect(found).toBeTruthy()
-      expect(found!.loopName).toBe('participant-executor')
-    })
-
-    test('should return null for non-existent session', () => {
-      const found = repo.getByParticipantSessionId(testRow.projectId, 'non-existent')
-      expect(found).toBeNull()
-    })
-
-    test('should ignore terminated loop history by current_session_id', () => {
-      const row: LoopRow = {
-        ...testRow,
-        loopName: 'terminal-current',
-        currentSessionId: 'sess-terminal-current',
-        executorSessionId: 'sess-terminal-exec',
-      }
-      repo.insert(row, testLarge)
-      repo.terminate(testRow.projectId, 'terminal-current', {
-        status: 'completed',
-        reason: 'done',
-        completedAt: Date.now(),
-      })
-
-      expect(repo.getByParticipantSessionId(testRow.projectId, 'sess-terminal-current')).toBeNull()
-      expect(repo.getByParticipantSessionId(testRow.projectId, 'sess-terminal-exec')).toBeNull()
-    })
-
-    test('should deterministically prefer current-session match over executor-only match', () => {
-      const loopWithCurrent: LoopRow = {
-        ...testRow,
-        loopName: 'current-match',
-        currentSessionId: 'shared-sess',
-        executorSessionId: null,
-      }
-      const loopWithExecutor: LoopRow = {
-        ...testRow,
-        loopName: 'executor-match',
-        currentSessionId: 'different-sess',
-        executorSessionId: 'shared-sess',
-      }
-      repo.insert(loopWithCurrent, testLarge)
-      repo.insert(loopWithExecutor, testLarge)
-
-      const found = repo.getByParticipantSessionId(testRow.projectId, 'shared-sess')
-      expect(found).toBeTruthy()
-      expect(found!.loopName).toBe('current-match')
-    })
-
-    test('should allow reusing a terminated loop\'s current_session_id for a new running loop', () => {
-      const firstRow: LoopRow = {
-        ...testRow,
-        loopName: 'reuse-first',
-        currentSessionId: 'reuse-sess',
-      }
-      repo.insert(firstRow, testLarge)
-      repo.terminate(testRow.projectId, 'reuse-first', {
-        status: 'completed',
-        reason: 'done',
-        completedAt: Date.now(),
-      })
-
-      const secondRow: LoopRow = {
-        ...testRow,
-        loopName: 'reuse-second',
-        currentSessionId: 'reuse-sess',
-      }
-
-      expect(() => repo.insert(secondRow, testLarge)).not.toThrow()
-
-      const found = repo.getByParticipantSessionId(testRow.projectId, 'reuse-sess')
-      expect(found).toBeTruthy()
-      expect(found!.loopName).toBe('reuse-second')
-      expect(found!.status).toBe('running')
     })
   })
 })

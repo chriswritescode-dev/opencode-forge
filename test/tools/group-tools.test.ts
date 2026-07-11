@@ -253,6 +253,27 @@ describe('Group tools', () => {
       const group = ctx.repo.getGroup(PROJECT_ID, groupId!)
       expect(group!.maxConcurrent).toBe(5)
     })
+
+    test('returns committed-project error for global project without startGroup side effects', async () => {
+      const globalTools = createGroupTools({
+        groupOrchestrator: ctx.orchestrator,
+        featureGroupsRepo: ctx.repo,
+        projectId: 'global',
+      } as any)
+
+      const result = toolOutput(await globalTools['launch-group'].execute(
+        {
+          title: 'Global Group',
+          features: [{ title: 'F1', description: 'D1' }],
+        },
+        { sessionID: 'session-1' } as any,
+      ))
+
+      expect(result).toContain('at least one commit')
+
+      const groups = ctx.repo.listGroups('global')
+      expect(groups).toHaveLength(0)
+    })
   })
 
   // ── group-status ──────────────────────────────────────────────────────────
@@ -355,6 +376,21 @@ describe('Group tools', () => {
         {} as any,
       ))
       expect(result).toContain('Specify a groupId to restart')
+    })
+
+    test('restart returns committed-project error for global project before orchestrator side effects', async () => {
+      const globalTools = createGroupTools({
+        groupOrchestrator: ctx.orchestrator,
+        featureGroupsRepo: ctx.repo,
+        projectId: 'global',
+      } as any)
+
+      const result = toolOutput(await globalTools['group-status'].execute(
+        { groupId: 'any-id', restart: true },
+        {} as any,
+      ))
+
+      expect(result).toContain('at least one commit')
     })
   })
 

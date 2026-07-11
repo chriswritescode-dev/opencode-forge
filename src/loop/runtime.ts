@@ -377,7 +377,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       resetError: !assistantErrorDetected && currentState.errorCount > 0,
       auditCount: stateUpdates.auditCount,
       lastAuditResult: stateUpdates.lastAuditResult ?? null,
-      executorSessionId: activeSessionId,
+      ...(currentState.kind === 'goal' ? { executorSessionId: activeSessionId } : {}),
     })
 
     const nextIteration = stateUpdates.iteration ?? currentState.iteration
@@ -416,7 +416,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       newSessionId,
       phase: 'coding',
       resetError: false,
-      executorSessionId: newSessionId,
+      ...(state.kind === 'goal' ? { executorSessionId: newSessionId } : {}),
     })
     loopService.setLastAuditResult(loopName, state.lastAuditResult ?? '')
     const isModelError = /provider|auth|model|api\s*error/i.test(reason)
@@ -996,7 +996,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           newSessionId: rotatedSessionId,
           phase: 'coding',
           resetError: false,
-          executorSessionId: rotatedSessionId,
+          ...(currentState.kind === 'goal' ? { executorSessionId: rotatedSessionId } : {}),
         })
         const continuationPrompt = loopService.buildContinuationPrompt(
           { ...currentState, iteration: currentState.iteration ?? 0 },

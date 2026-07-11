@@ -31,6 +31,7 @@ import { markPromptSent, clearPromptPending, terminationStatusFor, parseTerminat
 import { ConcurrentPromptError } from '../loop/in-flight-guard'
 import { getRestartability, type RestartBlockedReason } from '../loop/restartability'
 import { loopBranchExists } from '../workspace/forge-naming'
+import { getWorktreeProjectPreconditionError } from '../workspace/forge-worktree'
 import { resolveHostSessionDirectory } from '../utils/resolve-project-root'
 import { resolvePostActionConfig, type ResolvedPostActionConfig } from '../loop/post-action-config'
 
@@ -1012,7 +1013,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
    * to the TUI and cannot be selected, so fail fast with the remedy instead.
    */
   function guardCommittedProject(ctx: ForgeExecutionRequestContext): ForgeExecutionResponse<never> | null {
-    if (ctx.projectId === 'global') {
+    const errorMsg = getWorktreeProjectPreconditionError(ctx.projectId)
+    if (errorMsg) {
       deps.client.tui.publish({
         directory: ctx.directory,
         body: {
@@ -1031,10 +1033,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       return fail(
         'bad_request',
         400,
-        'This directory has no committed git project (opencode resolved project "global"). ' +
-        'Worktree loops require a repository with at least one commit; otherwise the loop session ' +
-        'is created under a different project and is invisible to this opencode instance. ' +
-        'Create an initial commit, restart opencode, and retry.',
+        errorMsg,
       )
     }
     return null
@@ -1341,7 +1340,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     let createdWorkspaceId: string | undefined
     let hostWorktreeDir: string | undefined
     let worktreeBranch: string | undefined
-    let loopStatePersisted = false
     let sandboxStarted = false
     let sandboxStartAttempted = false
     let sandboxContainer: string | undefined
@@ -1349,10 +1347,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const rollbackGoalStart = async (): Promise<void> => {
       if (createdSessionId) {
         await deps.client.session.abort({ sessionID: createdSessionId }).catch(() => {})
-      }
-      if (loopStatePersisted) {
-        deps.loop.service.deleteState(uniqueLoopName)
-        loopStatePersisted = false
       }
       if ((sandboxStarted || sandboxStartAttempted) && deps.sandboxManager) {
         await deps.sandboxManager.stop(uniqueLoopName).catch(() => {})
@@ -1467,11 +1461,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       })
 
       if (!attachResult.ok) {
-        loopStatePersisted = false
         await rollbackGoalStart()
         return fail(attachResult.code as ForgeExecutionError['code'], 503, attachResult.message)
       }
-      loopStatePersisted = true
 
       deps.logger.log(`handleStartGoal: goal loop ${uniqueLoopName} started; new session=${createdSessionId} worktree=${hostWorktreeDir}`)
 
@@ -1895,8 +1887,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         auditorVariant: stoppedState.auditorVariant,
         workspaceId: stoppedState.workspaceId,
         hostSessionId: stoppedState.hostSessionId,
-        // A restart creates a fresh executor session. For goal loops that session
-        // becomes the new warped executor; plan loops have no retained executor.
         executorSessionId: stoppedState.kind === 'goal' ? effectiveSessionId : undefined,
         currentSectionIndex: stoppedState.currentSectionIndex,
         totalSections: stoppedState.totalSections,

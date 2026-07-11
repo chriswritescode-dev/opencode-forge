@@ -69,6 +69,25 @@ RUN useradd -m -u 1000 forge \
 RUN corepack pnpm add -g fallow@2.101.0 --global-bin-dir /usr/local/bin \
     && chmod -R 0777 /home/forge
 
+# --- Optional: in-container browser testing (Chromium + Chrome DevTools MCP) ---
+# Lets loops drive a browser inside the sandbox against dev servers that also run
+# inside the sandbox (shared network namespace, plain localhost) with zero host
+# exposure. Opt-in per project via `loop.worktreeOpencodeConfig`; see
+# docs/sandbox.md "Browser testing". Delete this whole block to build a slimmer
+# image without browser support.
+#
+# Debian's chromium package is used because Google Chrome ships no linux/arm64
+# build (Apple Silicon hosts run linux/arm64 containers). The trailing chmod
+# re-asserts store permissions after a root pnpm install — see the fallow note
+# above; it applies to every root pnpm step.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        chromium \
+        fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+RUN corepack pnpm add -g chrome-devtools-mcp@1.5.0 --global-bin-dir /usr/local/bin \
+    && chmod -R 0777 /home/forge
+# --- End optional browser testing block ---
+
 # Docker Engine (daemon + CLI + buildx + compose) from Docker's official apt
 # repository. This enables Docker-in-Docker: when the container is launched with
 # FORGE_DIND=1 (privileged), the entrypoint starts a nested, isolated dockerd so

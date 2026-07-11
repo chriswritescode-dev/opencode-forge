@@ -93,7 +93,7 @@ Execution flow dialog with mode and model selection:
 ## Features
 
 - **Plans** — architect produces marked plans that are auto-captured to SQL storage
-- **Execution** — approved-plan launch paths plus direct `/execute-goal` work in the invoking session; plan loops can also target a configured remote opencode server (see [Configuration](_media/configuration.md#remotes))
+- **Execution** — approved-plan launch paths plus direct `/execute-goal` loops in dedicated worktree sessions; plan loops can also target a configured remote opencode server (see [Configuration](_media/configuration.md#remotes))
 - **Loops** — iterative coding/auditing with isolated git worktree and optional Docker sandbox
 - **Review Findings** — persistent, loop-scoped review findings across loop sessions
 - **TUI** — sidebar and execution dialog
@@ -132,7 +132,7 @@ Loops always run in an isolated git worktree; Docker sandbox is used automatical
 | Tool | Description |
 |------|-------------|
 | `execute-plan` | Execute a plan using an iterative development loop in an isolated git worktree, or `mode: new-session` to launch it in a fresh standalone session. Args: `title` required; `plan`, `loopName`, `hostSessionId`, `mode` optional. |
-| `execute-goal` | Execute a non-empty goal in the invoking session inside an isolated worktree. Fresh auditors run on idle until no findings remain. |
+| `execute-goal` | Execute a free-text goal in rotating dedicated code and auditor sessions inside an isolated git worktree. Args: `goal` required; `title`, `loopName`, `maxIterations`, `hostSessionId` optional. |
 | `loop-cancel` | Cancel an active loop by worktree name |
 | `loop-status` | List active/recent loops or get detailed status by worktree name, including cumulative token usage when available. Supports `restart=true` to restart any non-completed loop (`running`, `cancelled`, `errored`, `stalled`). Completed loops are history-only and cannot be restarted. |
 
@@ -145,7 +145,7 @@ Loops always run in an isolated git worktree; Docker sandbox is used automatical
 | `/review` | Run a code review on current changes | auditor (subtask) |
 | `/review-plan` | Review a completed implementation against its original plan | auditor (subtask) |
 | `/execute-plan` | Start an iterative development loop in a worktree (or a fresh session with `mode: new-session`) | code |
-| `/execute-goal` | Execute a goal directly in the invoking session inside a managed worktree loop | code |
+| `/execute-goal` | Execute a free-text goal in dedicated worktree sessions until an audit leaves no findings | code |
 | `/loop-status` | Check status of all active loops | code |
 | `/loop-cancel` | Cancel the active loop | code |
 
@@ -494,6 +494,10 @@ Symptoms include:
 
 The flag must be set before OpenCode starts — setting it inside an already-running session is too late. If OpenCode is launched by a desktop app, service manager, shell alias, terminal profile, or wrapper script, set the variable there and fully restart OpenCode.
 
+### Workspace prerequisites
+
+Worktree loops require a git repository with at least one commit. OpenCode scopes its instance to project `global` when started in a directory without a root commit, and worktree loop sessions created against a `global` project are invisible to the TUI. If you see a "No git commit in this project" error, create an initial commit and restart OpenCode.
+
 ## Docker Sandbox
 
 Run loop iterations inside an isolated Docker container. Sandbox is optional: when Docker is available and configured, Forge provisions a loop container automatically; otherwise loops run in worktree-only mode.
@@ -503,6 +507,7 @@ See [Sandbox](_media/sandbox.md) for setup, Docker-in-Docker behavior, host netw
 ### Prerequisites
 
 - Docker running on your machine
+- OpenCode >= 1.15.5 — sandbox shell routing relies on the session-aware `shell.env` plugin hook. Enforced via `engines.opencode`, so older versions refuse to load the plugin rather than silently running sandbox commands on the host. (Loops additionally require OpenCode >= 1.17.8 for workspace integration, see [Requirements](#requirements).)
 
 ### Setup
 

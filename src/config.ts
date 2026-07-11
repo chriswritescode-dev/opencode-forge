@@ -13,7 +13,7 @@ function buildPluginCommands(promptsDir?: string): Record<string, PluginCommand>
       template: loadPrompt(['commands','review-plan.md'], promptsDir) },
     'execute-plan': { description: 'Execute a plan in an iterative development loop, or a fresh standalone session', agent: 'code', subtask: false,
       template: loadPrompt(['commands','execute-plan.md'], promptsDir) },
-    'execute-goal': { description: 'Execute a goal directly in the current session inside an isolated Forge worktree loop', agent: 'code', subtask: false,
+    'execute-goal': { description: 'Execute a goal in a dedicated session inside an isolated Forge worktree loop', agent: 'code', subtask: false,
       template: loadPrompt(['commands','execute-goal.md'], promptsDir) },
     'launch-group': { description: 'Decompose a request into features and launch them as parallel planning + development loops', agent: 'code', subtask: false,
       template: loadPrompt(['commands','launch-group.md'], promptsDir) },

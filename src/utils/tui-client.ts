@@ -14,7 +14,7 @@ import { parseModelString } from './model-fallback'
 import { listConnectedWorkspaces } from './workspace-listing'
 import { type ForgeLoopExtra } from '../services/execution'
 import { buildLoopPermissionRuleset } from '../constants/loop'
-import { getForgeWorkspaceLoopName, removeExistingForgeLoopWorkspaces } from '../workspace/forge-worktree'
+import { getForgeWorkspaceLoopName, removeExistingForgeLoopWorkspaces, getWorktreeProjectPreconditionError } from '../workspace/forge-worktree'
 import { classifyWorkspaceCreateThrow } from '../workspace/workspace-create-error'
 import { fetchLoopsList } from './tui-loop-store'
 import { decomposeDeterministically } from '../services/deterministic-decomposer'
@@ -278,6 +278,13 @@ export async function launchTuiLoop(
   opts: LaunchTuiLoopOptions,
 ): Promise<{ sessionId: string; loopName: string; worktreeDir?: string; workspaceId: string } | { error: string } | null> {
   const debug = opts.debug ?? tuiDebug
+
+  const committedError = getWorktreeProjectPreconditionError(opts.projectId)
+  if (committedError) {
+    debug(`launchTuiLoop: blocked — ${committedError}`)
+    return { error: committedError }
+  }
+
   const loopName = opts.loopNameReserved
     ? opts.requestedLoopName
     : await reserveTuiLoopName(opts.client, opts.projectId, opts.requestedLoopName)

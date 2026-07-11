@@ -172,6 +172,8 @@ Outstanding `severity: 'bug'` findings block loop completion — the loop termin
 
 Loops always run in an isolated git worktree. Sandbox is optional: when Docker is available and `sandbox.mode = 'docker'` is configured, a sandbox container is provisioned automatically; otherwise the loop runs in worktree-only mode.
 
+Worktree loops require a repository with at least one commit. If OpenCode started before the initial commit, it resolves the project as `global`; create the commit, restart OpenCode, and retry. Forge rejects `execute-plan` loop mode, `execute-goal`, local or remote TUI loop launch, and feature-group launch/restart before creating workspaces, sessions, or group state when this precondition is not met.
+
 > Note: this applies to the `execute-plan` tool's default `mode: loop`. The same tool also accepts `mode: new-session`, which bypasses the loop entirely and runs the plan in a fresh standalone session with no worktree or sandbox (see [Tools Reference](tools.md#execute-plan)).
 
 ```mermaid
@@ -287,9 +289,9 @@ A **goal loop** (`kind: 'goal'`) is a lightweight alternative to a plan loop for
 ### Lifecycle differences from plan loops
 
 - **No plan, no decomposition, no approval.** The goal text is persisted in `loop_large_fields.goal` (never in the `plans` table) and is the auditor's authoritative scope. There are no sections, no `final_auditing` phase, and no `post_action` phase.
-- **Single warped executor session.** The invoking session is warped into an isolated Forge worktree via `workspace.warp` (no `session.create`). The executor session is preserved across audits — only auditor sessions rotate. The loop runner sends no initial prompt; the slash-command code agent keeps implementing the goal in its already-active session.
+- **Dedicated rotating sessions.** Forge creates a code session in the isolated worktree, sends the goal as its initial prompt, and leaves the invoking session unchanged as the post-completion host redirect target. As with plan loops, each completed code or audit pass is retired before the next session takes over.
 - **Idle-driven audits.** When the executor goes idle, the loop runner starts a fresh `auditor-loop` session against the worktree (same as plan loops). The auditor verifies both goal completion and code correctness, and may block termination with `severity: "bug"` findings (using the stable pseudo-path `GOAL` with `line: 1` when no source location applies for an unmet part of the goal).
-- **Dirty audits return to the same session.** When findings remain, the auditor's response is sent straight back to the warped executor session (no session rotation, no new code session) as a goal continuation prompt — the executor fixes the findings and goes idle again to trigger the next audit.
+- **Dirty audits create a fresh code session.** When findings remain, Forge creates and selects a new code session in the worktree and sends a continuation prompt containing the goal and outstanding findings. That session goes idle to trigger the next audit.
 - **Clean audits terminate immediately.** When a completed auditor pass leaves zero outstanding review findings (any severity), the loop terminates with `completed` — no final audit, no post-completion action.
 
 ### Completion rule
@@ -312,7 +314,7 @@ Goal loops are fully visible to `loop-status`, cancellable with `loop-cancel`, a
 |---|---|---|---|
 | Input | Structured plan (persisted in `plans`) | Free-text goal | PRD / pre-split feature list |
 | Sections / milestones | Yes (decomposed) | No | Per feature (each feature is its own loop) |
-| Executor session | Fresh session per iteration | Invoking session, warped and preserved | Fresh session per feature loop |
+| Executor session | Fresh session per iteration | Fresh dedicated session per coding pass | Fresh session per feature loop |
 | Final audit | Yes (after all sections) | No | Per feature loop |
 | Post-completion action | Yes (when configured) | Never | Per feature loop |
 | Slash command | `/execute-plan` | `/execute-goal` | None (agent-invoked) |

@@ -138,14 +138,17 @@ export interface DockerServiceOpts {
   execUser?: string
 }
 
+/** Deterministic sandbox container name for a loop worktree. */
+export function sandboxContainerName(worktreeName: string): string {
+  return `forge-${worktreeName}`
+}
+
 export function createDockerService(logger: Logger, opts: DockerServiceOpts = {}): DockerService {
   const DEFAULT_TIMEOUT = 120000
   const BUILD_TIMEOUT = 600000
   const execUser = opts.execUser
 
-  function containerName(worktreeName: string): string {
-    return `forge-${worktreeName}`
-  }
+  const containerName = sandboxContainerName
 
   async function checkDocker(): Promise<boolean> {
     try {

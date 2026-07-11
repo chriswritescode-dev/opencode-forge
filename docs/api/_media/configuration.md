@@ -100,9 +100,10 @@ The written file is added to the worktree's git exclude so it never appears in `
 
 Notes:
 - The written file is ephemeral. Forge deletes its own `opencode.jsonc` before any teardown commit (and the whole worktree is removed on completion), so it can never land in loop history — even if the git-exclude write failed. A repository-tracked `opencode.jsonc` is never deleted (forge did not write it). Because the file is removed at teardown, a restarted loop is rewritten from the current `loop.worktreeOpencodeConfig`, so edits take effect on the next run.
-- MCP servers declared here run as **host** processes from the worktree directory. When [Sandbox](sandbox.md) is enabled, only `bash`/`glob`/`grep` execute inside the container; the MCP commands themselves are not container-isolated.
+- MCP servers declared here run as **host** processes from the worktree directory. When [Sandbox](sandbox.md) is enabled, only `bash`/`glob`/`grep` execute inside the container; the MCP commands themselves are not container-isolated. To run an MCP server *inside* the loop's sandbox container, use the placeholder below with a `docker exec -i` command.
+- The string `{{FORGE_SANDBOX_CONTAINER}}` in any config value is replaced with the loop's sandbox container name (`forge-<loop>`) when the file is written. For loops without a sandbox, `mcp` entries referencing the placeholder are dropped instead, so the same config works with and without the sandbox.
 
-Example — expose Chrome DevTools MCP inside every loop:
+Example — Chrome DevTools MCP running inside the loop's sandbox container (Chromium and `chrome-devtools-mcp` ship preinstalled in the sandbox image; see [Sandbox › Browser Testing](sandbox.md#browser-testing)):
 
 ```jsonc
 {
@@ -111,7 +112,12 @@ Example — expose Chrome DevTools MCP inside every loop:
       "mcp": {
         "chrome-devtools": {
           "type": "local",
-          "command": ["npx", "chrome-devtools-mcp@latest", "--isolated"],
+          "command": [
+            "docker", "exec", "-i", "{{FORGE_SANDBOX_CONTAINER}}",
+            "chrome-devtools-mcp", "--headless", "--isolated",
+            "--executablePath=/usr/bin/chromium",
+            "--chromeArg=--no-sandbox", "--chromeArg=--disable-dev-shm-usage"
+          ],
           "enabled": true
         }
       }
@@ -119,6 +125,8 @@ Example — expose Chrome DevTools MCP inside every loop:
   }
 }
 ```
+
+Without the sandbox, a host-side server works too (Chrome runs on the host and cannot reach in-container dev servers): `"command": ["npx", "chrome-devtools-mcp@latest", "--isolated"]`.
 
 ## Group Launch
 

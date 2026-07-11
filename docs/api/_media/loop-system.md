@@ -84,6 +84,8 @@ interface LoopState {
   currentSectionIndex: number
   totalSections: number
   finalAuditDone: boolean
+  kind?: 'plan' | 'goal'             // Discriminator: plan loops persist a plan; goal loops persist goal text
+  goal?: string                      // Goal text for goal loops (undefined for plan loops)
 }
 ```
 
@@ -170,6 +172,8 @@ Outstanding `severity: 'bug'` findings block loop completion — the loop termin
 
 Loops always run in an isolated git worktree. Sandbox is optional: when Docker is available and `sandbox.mode = 'docker'` is configured, a sandbox container is provisioned automatically; otherwise the loop runs in worktree-only mode.
 
+Worktree loops require a repository with at least one commit. If OpenCode started before the initial commit, it resolves the project as `global`; create the commit, restart OpenCode, and retry. Forge rejects `execute-plan` loop mode, `execute-goal`, local or remote TUI loop launch, and feature-group launch/restart before creating workspaces, sessions, or group state when this precondition is not met.
+
 > Note: this applies to the `execute-plan` tool's default `mode: loop`. The same tool also accepts `mode: new-session`, which bypasses the loop entirely and runs the plan in a fresh standalone session with no worktree or sandbox (see [Tools Reference](tools.md#execute-plan)).
 
 ```mermaid
@@ -254,8 +258,7 @@ After a clean final audit, before worktree teardown, the loop may run a **post-c
 - **Best-effort:** The post-action result is not re-audited; it applies only safe, scoped fixes. The question tool is blocked — any finding requiring clarification is auto-deferred.
 - On idle (`post-action-complete`), the loop terminates normally.
 - If the post-action session fails to create, the loop terminates as completed without retrying.
-- **Outcome capture:** On `post-action-complete`, the post-action session's full assistant transcript (every assistant text message in the session) is persisted in `loop_large_fields.post_action_report` before the session is deleted on termination. The raw final assistant message is also stored separately in `loops.completion_summary` for backward compatibility. The loop status is **always** `completed` regardless of what the post-action reported — the plan itself was already cleared by the final audit; the report only provides context (alternate-review verdict, CI result, etc.). The report is captured only on the clean `post-action-complete` path; idle-exhausted, error, and abort-without-assistant terminations leave it empty. The report is cleared automatically if the loop is restarted.
-- **Viewing the report:** The post-action report is surfaced in `loop-status` (inactive loops) and the dashboard (loop detail → "Post-Action Report" panel). When a report exists it replaces the truncated completion summary in both surfaces; loops completed before the report feature was added continue to show the summary as before.
+- **Outcome capture:** On `post-action-complete`, the post-action session's raw final assistant message is stored verbatim in the loop's `completion_summary` (surfaced as **Completion Summary** in the dashboard). The loop status is **always** `completed` regardless of what the post-action reported — the plan itself was already cleared by the final audit; the summary only provides context (alternate-review verdict, CI result, etc.). Completion summary is captured only on the clean `post-action-complete` path; idle-exhausted, error, and abort-without-assistant terminations leave it empty.
 
 ## Cancellation
 
@@ -281,9 +284,40 @@ Cancellation:
 
 ## Goal Loops
 
-`/execute-goal <prompt>` starts a lightweight goal loop without a stored plan, decomposition, sections, final audit, or post-action. Forge creates an isolated worktree and warps the invoking code session into it instead of creating an executor session. The exact goal is persisted separately from plans and remains the auditor's authoritative scope.
+A **goal loop** (`kind: 'goal'`) is a lightweight alternative to a plan loop for work that does not need a structured plan. It is started by the `/execute-goal <prompt>` slash command (or the `execute-goal` tool) with free-text goal text.
 
-When the executor goes idle, Forge creates a fresh `auditor-loop` session. Open findings return to the same retained executor session for remediation. A completed audit with zero open findings completes the loop. `maxIterations` bounds dirty audit cycles; `0` means unlimited. Goal loops remain visible to `loop-status`, cancellable with `loop-cancel`, and restartable when the normal restartability rules allow it.
+### Lifecycle differences from plan loops
+
+- **No plan, no decomposition, no approval.** The goal text is persisted in `loop_large_fields.goal` (never in the `plans` table) and is the auditor's authoritative scope. There are no sections, no `final_auditing` phase, and no `post_action` phase.
+- **Dedicated rotating sessions.** Forge creates a code session in the isolated worktree, sends the goal as its initial prompt, and leaves the invoking session unchanged as the post-completion host redirect target. As with plan loops, each completed code or audit pass is retired before the next session takes over.
+- **Idle-driven audits.** When the executor goes idle, the loop runner starts a fresh `auditor-loop` session against the worktree (same as plan loops). The auditor verifies both goal completion and code correctness, and may block termination with `severity: "bug"` findings (using the stable pseudo-path `GOAL` with `line: 1` when no source location applies for an unmet part of the goal).
+- **Dirty audits create a fresh code session.** When findings remain, Forge creates and selects a new code session in the worktree and sends a continuation prompt containing the goal and outstanding findings. That session goes idle to trigger the next audit.
+- **Clean audits terminate immediately.** When a completed auditor pass leaves zero outstanding review findings (any severity), the loop terminates with `completed` — no final audit, no post-completion action.
+
+### Completion rule
+
+A goal loop completes only after the auditor has run at least once and leaves no open review findings. The configured `loop.postAction` is never invoked for goal loops.
+
+### Iteration cap
+
+`maxIterations` bounds the number of coding iterations (`0` = unlimited, the default unless overridden by the command or `loop.defaultMaxIterations`). When the cap is reached with findings still open, the loop terminates with `max_iterations`.
+
+### Visibility, cancellation, and recursion
+
+Goal loops are fully visible to `loop-status`, cancellable with `loop-cancel`, and restartable with `loop-status ... restart=true`. Restart preserves the goal kind and goal text, skips plan decomposition, and resumes from a fresh session.
+
+`execute-goal` is added to the same loop/audit denial lists as `execute-plan`, `launch-group`, and the group tools, so an active executor or auditor session cannot recursively start another goal loop. Auditors exclude `execute-goal` from their tools.
+
+### Differences from `execute-plan` and `launch-group`
+
+| Aspect | `execute-plan` (loop) | `execute-goal` | `launch-group` |
+|---|---|---|---|
+| Input | Structured plan (persisted in `plans`) | Free-text goal | PRD / pre-split feature list |
+| Sections / milestones | Yes (decomposed) | No | Per feature (each feature is its own loop) |
+| Executor session | Fresh session per iteration | Fresh dedicated session per coding pass | Fresh session per feature loop |
+| Final audit | Yes (after all sections) | No | Per feature loop |
+| Post-completion action | Yes (when configured) | Never | Per feature loop |
+| Slash command | `/execute-plan` | `/execute-goal` | None (agent-invoked) |
 
 ## Tool Restrictions
 

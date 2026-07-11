@@ -41,7 +41,6 @@ export interface LoopService {
   deleteState(name: string): void
   registerLoopSession(sessionId: string, loopName: string): void
   resolveLoopName(sessionId: string): string | null
-  resolveLoopNameForParticipant(sessionId: string): string | null
   buildContinuationPrompt(state: LoopState, auditFindings?: string, outstandingBugs?: ReviewFindingRow[]): string
   buildAuditPrompt(state: LoopState): string
   listActive(): LoopState[]
@@ -173,10 +172,6 @@ export function createLoopService(
 
   function resolveLoopName(sessionId: string): string | null {
     return loopsRepo.getBySessionId(projectId, sessionId)?.loopName ?? null
-  }
-
-  function resolveLoopNameForParticipant(sessionId: string): string | null {
-    return loopsRepo.getByParticipantSessionId(projectId, sessionId)?.loopName ?? null
   }
 
   function replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null; executorSessionId?: string | null }): void {
@@ -516,7 +511,6 @@ export function createLoopService(
     deleteState,
     registerLoopSession,
     resolveLoopName,
-    resolveLoopNameForParticipant,
     setStatus,
     buildContinuationPrompt,
     buildAuditPrompt,

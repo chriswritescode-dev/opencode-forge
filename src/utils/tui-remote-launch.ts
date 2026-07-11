@@ -131,7 +131,7 @@ export async function executeRemoteLoop(
   const launchResult = await launchTuiLoop({
     client: remoteClient,
     directory: matched.worktree,
-    projectId: null,
+    projectId: matched.id,
     requestedLoopName: finalLoopName,
     loopNameReserved: true,
     connectPollIntervalMs: 500,

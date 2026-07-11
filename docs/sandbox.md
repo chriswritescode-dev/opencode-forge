@@ -115,6 +115,40 @@ Rules:
 
 Security note: read-write custom mounts give the sandbox write access to host paths. Use them only for trusted directories.
 
+## Browser Testing
+
+The sandbox image ships with Chromium and the [`chrome-devtools-mcp`](https://github.com/ChromeDevTools/chrome-devtools-mcp) server preinstalled so loops can validate what they build with a real browser — fully inside the container. The browser shares the container's network namespace, so a dev server the agent starts via `bash` is reachable at plain `localhost:<port>` with nothing exposed on the host. Debian's `chromium` package is used because Google Chrome has no linux/arm64 build (Apple Silicon hosts run linux/arm64 containers).
+
+Wiring it up is opt-in, via [`loop.worktreeOpencodeConfig`](configuration.md#worktree-opencode-config). opencode spawns MCP servers as host processes, so the command is a thin `docker exec -i` stdio pipe into the loop's container — the same trust boundary as the sandbox shell shim. The `{{FORGE_SANDBOX_CONTAINER}}` placeholder is replaced with the loop's container name when the worktree config is written:
+
+```jsonc
+{
+  "loop": {
+    "worktreeOpencodeConfig": {
+      "mcp": {
+        "chrome-devtools": {
+          "type": "local",
+          "command": [
+            "docker", "exec", "-i", "{{FORGE_SANDBOX_CONTAINER}}",
+            "chrome-devtools-mcp", "--headless", "--isolated",
+            "--executablePath=/usr/bin/chromium",
+            "--chromeArg=--no-sandbox", "--chromeArg=--disable-dev-shm-usage"
+          ],
+          "enabled": true
+        }
+      }
+    }
+  }
+}
+```
+
+Notes:
+
+- `--chromeArg=--no-sandbox` is required: the exec runs as root and the container's seccomp profile blocks Chromium's user-namespace sandbox. The per-loop container is already the isolation boundary.
+- `--chromeArg=--disable-dev-shm-usage` avoids crashes from the small default `/dev/shm`.
+- Loops without a sandbox (opt-out via `sandboxEnabled: false`, or sandbox disabled) automatically drop MCP entries referencing `{{FORGE_SANDBOX_CONTAINER}}`, so the config stays valid everywhere.
+- Don't need browser support? Delete the marked "browser testing" block in `container/Dockerfile` and rebuild the image for a slimmer sandbox.
+
 ## Docker-in-Docker
 
 Each sandbox container runs a nested Docker daemon so loops can build and run containers without touching the host Docker daemon.

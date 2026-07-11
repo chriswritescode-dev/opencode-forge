@@ -14,7 +14,7 @@ See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](c
 | `review-read` | Read review findings. | [`src/tools/review.ts`](../src/tools/review.ts) |
 | `review-delete` | Delete a review finding. | [`src/tools/review.ts`](../src/tools/review.ts) |
 | `execute-plan` | Start an iterative development loop in an isolated git worktree, or (with `mode: new-session`) launch the plan in a fresh standalone session. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
-| `execute-goal` | Start a managed goal loop in the current session: warp this session into an isolated Forge worktree and let the loop runner drive fresh auditors on idle until the goal is complete. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
+| `execute-goal` | Start a managed goal loop in a dedicated code session inside an isolated Forge worktree. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `loop-cancel` | Cancel an active loop. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `loop-status` | List loops, inspect one loop, or restart a restartable loop. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `launch-group` | Launch a group of features (from a PRD or a pre-split list), each planned and run as its own loop, scheduled with a concurrency cap. | [`src/tools/group.ts`](../src/tools/group.ts) |
@@ -104,7 +104,7 @@ Arguments:
 
 ### `execute-goal`
 
-Starts a managed **goal loop** in the current session. Unlike `execute-plan`, it takes free-text goal (no plan, no decomposition, no approval flow) and warps this session into an isolated Forge worktree instead of creating a new executor session. The loop runner then drives fresh auditors on each executor idle and returns their review findings to this same session until the goal is complete.
+Starts a managed **goal loop** from free-text goal input, with no plan, decomposition, approval flow, final audit, or post-action. Forge creates a dedicated code session inside an isolated worktree and sends the goal as its initial prompt. When that coding pass goes idle, Forge replaces it with a fresh auditor session; a dirty audit then creates a fresh code session for remediation. The invoking session remains the host redirect target and is not warped into the worktree.
 
 Arguments:
 

@@ -14,13 +14,12 @@ See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](c
 | `review-read` | Read review findings. | [`src/tools/review.ts`](../src/tools/review.ts) |
 | `review-delete` | Delete a review finding. | [`src/tools/review.ts`](../src/tools/review.ts) |
 | `execute-plan` | Start an iterative development loop in an isolated git worktree, or (with `mode: new-session`) launch the plan in a fresh standalone session. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
-| `execute-goal` | Start a managed goal loop in the current session, warped into an isolated Forge worktree with fresh auditors on idle. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
+| `execute-goal` | Start a managed goal loop in a dedicated code session inside an isolated Forge worktree. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `loop-cancel` | Cancel an active loop. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `loop-status` | List loops, inspect one loop, or restart a restartable loop. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `launch-group` | Launch a group of features (from a PRD or a pre-split list), each planned and run as its own loop, scheduled with a concurrency cap. | [`src/tools/group.ts`](../src/tools/group.ts) |
 | `group-status` | List groups, inspect one group's per-feature stages, or restart a non-completed group. | [`src/tools/group.ts`](../src/tools/group.ts) |
 | `group-cancel` | Cancel a group, optionally cancelling its running loops. | [`src/tools/group.ts`](../src/tools/group.ts) |
-| `sh` | Sandbox shell tool added when a sandbox manager is available. | [`src/tools/bash/index.ts`](../src/tools/bash/index.ts) |
 
 ## Plan Tools
 
@@ -105,15 +104,19 @@ Arguments:
 
 ### `execute-goal`
 
-Starts a managed goal loop in the invoking session. The session is warped into an isolated Forge worktree; no executor session is created. Each executor idle transition creates a fresh auditor, and dirty findings return to the same executor until an audit leaves no open findings.
+Starts a managed **goal loop** from free-text goal input, with no plan, decomposition, approval flow, final audit, or post-action. Forge creates a dedicated code session inside an isolated worktree and sends the goal as its initial prompt. When that coding pass goes idle, Forge replaces it with a fresh auditor session; a dirty audit then creates a fresh code session for remediation. The invoking session remains the host redirect target and is not warped into the worktree.
+
+Arguments:
 
 | Argument | Description |
 |---|---|
-| `goal` | Required non-empty free-text goal. |
-| `title` | Optional title, derived from the goal when omitted. |
+| `goal` | Required. Non-empty free text describing the goal; the first line is used to derive a title/loop name when omitted. |
+| `title` | Optional short title for the loop (derived from the goal when omitted). |
 | `loopName` | Optional loop name, slugified and uniquified. |
-| `maxIterations` | Optional iteration cap; `0` means unlimited. |
-| `hostSessionId` | Optional host session ID for post-completion redirect. |
+| `maxIterations` | Optional maximum loop iterations. Defaults to the plugin config `loop.defaultMaxIterations`; `0` means unlimited (run until auditor all-clear or cancellation). |
+| `hostSessionId` | Optional host session ID for post-completion redirect; defaults to the invoking (`execute-goal`) session. |
+
+Worktree/session behavior, auditor/finding completion rule, iteration cap, and differences from `execute-plan` and `launch-group` are documented in [Loop System → Goal Loops](loop-system.md#goal-loops).
 
 ### `loop-cancel`
 
@@ -167,10 +170,6 @@ Requires exactly one of `prd` or `features`.
 | `groupId` | Required group ID to cancel. |
 | `cancelRunningLoops` | Also cancel running loops for non-terminal features. |
 
-## Sandbox Shell Tool
+## Sandbox Shell
 
-### `sh`
-
-The `sh` tool is only added when a sandbox manager is available. It runs shell commands inside the sandbox container associated with the active loop session. Outside an active sandbox loop, the tool is not useful and the global default permission denies `sh` unless Forge explicitly grants sandbox context.
-
-For broader sandbox behavior, see [Sandbox](sandbox.md).
+Sandbox loops use opencode's native `bash` tool; Forge routes the underlying shell into the loop container via a generated shell shim and the `shell.env` hook. See [Sandbox](sandbox.md#shell-routing).

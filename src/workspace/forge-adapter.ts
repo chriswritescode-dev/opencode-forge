@@ -9,6 +9,7 @@ import { cleanupLoopWorktree } from '../utils/worktree-cleanup'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import { forgeSyncRef, DEFAULT_GIT_REMOTE } from '../utils/remote-config'
 import { writeWorktreeOpencodeConfig, WORKTREE_OPENCODE_CONFIG_FILENAME } from './worktree-opencode-config'
+import { sandboxContainerName } from '../sandbox/docker'
 
 
 /**
@@ -301,9 +302,11 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
       // Idempotently add .forge/ (overflow/scratch) and any forge-written
       // opencode config to git exclude so they never enter loop commits.
       const excludePatterns = ['.forge/']
+      const sandboxProvisioned = Boolean(sandboxManager) && !isLoopSandboxOptedOut(info)
       const cfgResult = writeWorktreeOpencodeConfig({
         directory: info.directory,
         config: worktreeOpencodeConfig,
+        sandboxContainerName: sandboxProvisioned ? sandboxContainerName(info.name) : undefined,
         logger,
       })
       if (cfgResult.written) {

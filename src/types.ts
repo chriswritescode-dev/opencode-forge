@@ -75,11 +75,11 @@ export interface LoopConfig {
    */
   tmpDir?: string
   /**
-   * Inline opencode config object written verbatim as `opencode.jsonc` at the root of each
-   * freshly created loop worktree, enabling per-loop opencode customization (primarily MCP
-   * servers, e.g. `{ "mcp": { ... } }`). Written only when the worktree has no existing
-   * `opencode.json`/`opencode.jsonc` (committed configs are never overwritten). The written file
-   * is added to the worktree's git exclude so it never enters loop commits. An empty object or
+   * Inline opencode config object written as `opencode.jsonc` at the root of each freshly created
+   * loop worktree, enabling per-loop opencode customization (primarily MCP servers). The
+   * `{{FORGE_SANDBOX_CONTAINER}}` token is replaced in string values for sandboxed loops; MCP
+   * entries containing it are omitted when no sandbox exists. Existing project configs are never
+   * overwritten, and the generated file is excluded from loop commits. An empty object or
    * omission disables the behavior.
    */
   worktreeOpencodeConfig?: Record<string, unknown>

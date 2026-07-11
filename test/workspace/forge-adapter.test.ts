@@ -494,6 +494,76 @@ describe('createForgeWorkspaceAdapter', () => {
     }
   })
 
+  it('create substitutes the sandbox container placeholder when a sandbox is provisioned', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-placeholder-'))
+    try {
+      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const sandboxManager = {
+        start: vi.fn().mockResolvedValue({ containerName: 'forge-placeholder-loop' }),
+        stop: vi.fn().mockResolvedValue(undefined),
+      }
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+        sandboxManager,
+        worktreeOpencodeConfig: {
+          mcp: {
+            'chrome-devtools': {
+              type: 'local',
+              command: ['docker', 'exec', '-i', '{{FORGE_SANDBOX_CONTAINER}}', 'chrome-devtools-mcp'],
+              enabled: true,
+            },
+          },
+        },
+      })
+      const configured = adapter.configure(makeInfo('placeholder-loop', tmpRepo))
+
+      await adapter.create(configured, {})
+
+      const written = JSON.parse(readFileSync(join(configured.directory, 'opencode.jsonc'), 'utf-8'))
+      expect(written.mcp['chrome-devtools'].command).toEqual([
+        'docker', 'exec', '-i', 'forge-placeholder-loop', 'chrome-devtools-mcp',
+      ])
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
+  it('create drops placeholder mcp entries when the loop opts out of the sandbox', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-placeholder-optout-'))
+    try {
+      execSync('git init && git commit --allow-empty -m init', { cwd: tmpRepo, encoding: 'utf-8' })
+      const sandboxManager = {
+        start: vi.fn().mockResolvedValue({ containerName: 'unused' }),
+        stop: vi.fn().mockResolvedValue(undefined),
+      }
+      const adapter = createForgeWorkspaceAdapter({
+        dataDir: tmpDataDir,
+        logger,
+        sandboxManager,
+        worktreeOpencodeConfig: {
+          mcp: {
+            'chrome-devtools': {
+              type: 'local',
+              command: ['docker', 'exec', '-i', '{{FORGE_SANDBOX_CONTAINER}}', 'chrome-devtools-mcp'],
+              enabled: true,
+            },
+          },
+        },
+      })
+      const info = makeInfo('placeholder-optout-loop', tmpRepo)
+      info.extra = { ...info.extra, forgeLoop: { sandboxEnabled: false } }
+      const configured = adapter.configure(info)
+
+      await adapter.create(configured, {})
+
+      expect(sandboxManager.start).not.toHaveBeenCalled()
+      expect(existsSync(join(configured.directory, 'opencode.jsonc'))).toBe(false)
+    } finally {
+      if (existsSync(tmpRepo)) rmSync(tmpRepo, { recursive: true, force: true })
+    }
+  })
+
   it('create does not overwrite a committed opencode.jsonc', async () => {
     const tmpRepo = mkdtempSync(join(tmpdir(), 'forge-adapter-committed-'))
     try {

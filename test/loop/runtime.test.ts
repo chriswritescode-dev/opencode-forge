@@ -742,7 +742,6 @@ describe('Loop Runtime', () => {
       const afterState = loopService.getActiveState(loopName)
       expect(afterState).not.toBeNull()
       expect(afterState!.phase).toBe('coding')
-      // A fresh code session was created (rotation) — not the retained executor.
       const newSessionId = afterState!.sessionId
       expect(newSessionId).not.toBe(executorSessionId)
       expect(afterState!.executorSessionId).toBe(newSessionId)
@@ -878,7 +877,6 @@ describe('Loop Runtime', () => {
       const afterState = loopService.getActiveState(loopName)
       expect(afterState).not.toBeNull()
       expect(afterState!.phase).toBe('coding')
-      // A fresh code session was created — not the retained executor.
       const newSessionId = afterState!.sessionId
       expect(newSessionId).not.toBe(auditorSessionId)
       expect(newSessionId).not.toBe(executorSessionId)
@@ -938,7 +936,6 @@ describe('Loop Runtime', () => {
       const afterState = loopService.getActiveState(loopName)
       expect(afterState).not.toBeNull()
       expect(afterState!.phase).toBe('coding')
-      // A fresh code session was created — not the retained executor.
       const newSessionId = afterState!.sessionId
       expect(newSessionId).not.toBe(auditorSessionId)
       expect(newSessionId).not.toBe(executorSessionId)
@@ -1000,7 +997,6 @@ describe('Loop Runtime', () => {
       const afterState = loopService.getActiveState(loopName)
       expect(afterState).not.toBeNull()
       expect(afterState!.phase).toBe('coding')
-      // A fresh code session was created — not the retained executor.
       const newSessionId = afterState!.sessionId
       expect(newSessionId).not.toBe(auditorSessionId)
       expect(newSessionId).not.toBe(executorSessionId)
@@ -2318,6 +2314,10 @@ describe('stall handling terminates with stall timeout when configured cap is re
       for (const call of codePrompts) {
         expect((call.params as any)?.variant).toBe('thinking-max')
       }
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.executorSessionId).toBeUndefined()
     })
 
     test('auditor prompt sends auditorVariant from loop state', async () => {

@@ -151,4 +151,31 @@ describe('plan.execute(loop) workspace.create failure', () => {
     // Post-create failures should still return null (generic)
     expect(result).toBeNull()
   }, 10000)
+
+  test('returns committed-project error for global project before any workspace side effects', async () => {
+    const api = createMockApi()
+
+    ;(api.client as any).project.current = vi.fn(async () => ({
+      data: { id: 'global' },
+      error: undefined,
+    }))
+
+    const project = await connectForgeProject(api, '/test/project')
+    expect(project).not.toBeNull()
+    if (!project) return
+
+    const result = await project.plan.execute('sess-1', {
+      mode: 'loop',
+      title: 'Global Project Loop',
+      plan: '# Test\n\nShould fail fast.',
+    })
+
+    expect(result).not.toBeNull()
+    expect(result).toHaveProperty('error')
+    if (result && 'error' in result) {
+      expect(result.error).toContain('at least one commit')
+    }
+
+    expect(api.client.experimental.workspace.create).not.toHaveBeenCalled()
+  })
 })

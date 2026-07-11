@@ -27,7 +27,7 @@ interface LoopStateBase {
   auditorModel?: string
   workspaceId?: string
   hostSessionId?: string
-  /** Goal-loop executor session binding (the warped session kept alive across audits). Undefined for plan loops. */
+  /** Goal-loop coding session binding. Undefined for plan loops and while a goal loop is auditing. */
   executorSessionId?: string
   currentSectionIndex: number
   totalSections: number

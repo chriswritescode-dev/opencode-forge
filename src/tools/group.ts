@@ -1,5 +1,6 @@
 import { tool } from '@opencode-ai/plugin'
 import type { ToolContext } from './types'
+import { getWorktreeProjectPreconditionError } from '../workspace/forge-worktree'
 
 const z = tool.schema
 
@@ -43,6 +44,11 @@ export function createGroupTools(ctx: ToolContext): Record<string, ReturnType<ty
           return 'Provide either prd (PRD text to split) or features (pre-split feature list), but not both.'
         }
 
+        const committedError = getWorktreeProjectPreconditionError(projectId)
+        if (committedError) {
+          return committedError
+        }
+
         const result = await groupOrchestrator.startGroup({
           title: args.title,
           ...(args.prd ? { prd: args.prd } : { features: args.features!.map(f => ({ title: f.title, description: f.description })) }),
@@ -81,6 +87,10 @@ export function createGroupTools(ctx: ToolContext): Record<string, ReturnType<ty
         if (args.restart) {
           if (!args.groupId) {
             return 'Specify a groupId to restart. Use group-status to see available groups.'
+          }
+          const committedError = getWorktreeProjectPreconditionError(projectId)
+          if (committedError) {
+            return committedError
           }
           const result = await groupOrchestrator.restartGroup(args.groupId)
           return result.message

@@ -37,6 +37,24 @@ export type CreateWorktreeWorkspaceResult =
   | { ok: true; workspace: CreatedWorktreeWorkspace }
   | { ok: false; error: WorkspaceCreateError }
 
+/**
+ * Checks whether the given project ID is valid for worktree loops.
+ * Worktree loops require a committed git project — when opencode starts in a
+ * directory without a root commit it scopes the instance to project 'global'.
+ * Returns an actionable error message string, or `null` if the project is valid.
+ */
+export function getWorktreeProjectPreconditionError(projectId: string | null): string | null {
+  if (projectId === 'global') {
+    return (
+      'This directory has no committed git project (opencode resolved project "global"). ' +
+      'Worktree loops require a repository with at least one commit; otherwise the loop session ' +
+      'is created under a different project and is invisible to this opencode instance. ' +
+      'Create an initial commit, restart opencode, and retry.'
+    )
+  }
+  return null
+}
+
 export function getForgeWorkspaceLoopName(entry: Pick<ForgeWorkspaceEntry, 'extra'>): string | undefined {
   const loopName = entry.extra?.loopName
   return typeof loopName === 'string' && loopName.length > 0 ? loopName : undefined

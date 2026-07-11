@@ -4,9 +4,7 @@ import { resolve } from 'path'
 
 export interface SessionLoopResolverDeps {
   loop: {
-    service: Pick<LoopService, 'resolveLoopName' | 'getActiveState'> & {
-      resolveLoopNameForParticipant?: (sessionId: string) => string | null
-    }
+    service: Pick<LoopService, 'resolveLoopName' | 'getActiveState'>
     listActive(): Array<{ loopName: string; worktreeDir: string; sandbox?: boolean; worktree?: boolean; active: boolean; workspaceId?: string }>
   }
   getParentSessionId(sessionId: string): Promise<string | null>
@@ -33,19 +31,9 @@ const MAX_PARENT_DEPTH = 10
 export function createSessionLoopResolver(deps: SessionLoopResolverDeps): {
   resolveActiveLoopForSession(sessionId: string): Promise<ResolvedLoop | null>
 } {
-  // Goal loops retain a warped executor session alongside the rotating auditor
-  // session. The executor is persisted in executor_session_id, distinct from
-  // current_session_id (the auditor while auditing). Active-loop resolution must
-  // treat both as loop participants so tool blocking and loop permissions apply
-  // to the retained executor while its loop is auditing. Resolve participant-
-  // aware first, then fall back to current-session-only resolution for callers
-  // whose service does not expose the participant lookup.
-  const resolveLoopParticipantName = (sessionId: string): string | null =>
-    deps.loop.service.resolveLoopNameForParticipant?.(sessionId) ?? deps.loop.service.resolveLoopName(sessionId)
-
   return {
     async resolveActiveLoopForSession(sessionId: string): Promise<ResolvedLoop | null> {
-      const directLoopName = resolveLoopParticipantName(sessionId)
+      const directLoopName = deps.loop.service.resolveLoopName(sessionId)
       const directState = directLoopName ? deps.loop.service.getActiveState(directLoopName) : null
 
       deps.logger.debug(
@@ -72,7 +60,7 @@ export function createSessionLoopResolver(deps: SessionLoopResolverDeps): {
           `[session-resolver] session=${sessionId} ancestor[${depth}]=${parentId} active=${directState?.loopName ?? 'none'}`,
         )
 
-        const parentLoopName = resolveLoopParticipantName(parentId)
+        const parentLoopName = deps.loop.service.resolveLoopName(parentId)
         const parentState = parentLoopName ? deps.loop.service.getActiveState(parentLoopName) : null
         if (parentState?.active) {
           deps.logger.log(`[session-resolver] session=${sessionId} resolved via ancestor=${parentId} depth=${depth} loop=${parentState.loopName}`)

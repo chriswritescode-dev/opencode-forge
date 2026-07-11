@@ -49,7 +49,6 @@ export interface LoopsRepo {
   get(projectId: string, loopName: string): LoopRow | null
   getLarge(projectId: string, loopName: string): LoopLargeFields | null
   getBySessionId(projectId: string, sessionId: string): LoopRow | null
-  getByParticipantSessionId(projectId: string, sessionId: string): LoopRow | null
   listByStatus(projectId: string, statuses: LoopRow['status'][]): LoopRow[]
   listAll(projectId: string): LoopRow[]
   updatePhase(projectId: string, loopName: string, phase: LoopRow['phase']): void
@@ -224,15 +223,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
   const getBySessionIdStmt = db.prepare(`
     SELECT ${LOOP_COLUMNS}
     FROM loops
-    WHERE project_id = ? AND current_session_id = ?
-  `)
-
-  const getByParticipantSessionIdStmt = db.prepare(`
-    SELECT ${LOOP_COLUMNS}
-    FROM loops
-    WHERE project_id = ? AND status = 'running' AND (current_session_id = ? OR executor_session_id = ?)
-    ORDER BY CASE WHEN current_session_id = ? THEN 0 ELSE 1 END
-    LIMIT 1
+    WHERE project_id = ? AND current_session_id = ? AND status = 'running'
   `)
 
   const listByStatusBase = `
@@ -429,11 +420,6 @@ export function createLoopsRepo(db: Database): LoopsRepo {
 
     getBySessionId(projectId: string, sessionId: string): LoopRow | null {
       const row = getBySessionIdStmt.get(projectId, sessionId) as LoopRowRaw | null
-      return row ? mapRow(row) : null
-    },
-
-    getByParticipantSessionId(projectId: string, sessionId: string): LoopRow | null {
-      const row = getByParticipantSessionIdStmt.get(projectId, sessionId, sessionId, sessionId) as LoopRowRaw | null
       return row ? mapRow(row) : null
     },
 

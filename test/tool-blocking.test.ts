@@ -147,12 +147,9 @@ describe('Tool Blocking Logic', () => {
   describe('Goal-loop recursion blocking during auditing', () => {
     const hostLoopName = 'goal-loop-auditing'
     const auditorSessionId = 'goal-auditor-toolblock'
-    const executorSessionId = 'goal-executor-toolblock'
     const unrelatedSessionId = 'unrelated-session-toolblock'
 
     function setStateAuditing(loopService: ReturnType<typeof createLoopService>): void {
-      // Active goal loop mid-audit: current_session_id is the auditor; the warped
-      // executor is persisted separately in executor_session_id.
       loopService.setState(hostLoopName, {
         active: true,
         sessionId: auditorSessionId,
@@ -179,7 +176,6 @@ describe('Tool Blocking Logic', () => {
         totalSections: 0,
         finalAuditDone: false,
         hostSessionId: 'goal-host-toolblock',
-        executorSessionId,
         kind: 'goal',
         goal: 'Add a /health endpoint with a test.',
       })
@@ -193,18 +189,7 @@ describe('Tool Blocking Logic', () => {
       } as unknown as ToolContext
     }
 
-    test('participant resolution recognizes the retained goal executor as an active loop session', () => {
-      setStateAuditing(loopService)
-      // The auditor (current_session_id) resolves...
-      expect(loopService.resolveLoopNameForParticipant(auditorSessionId)).toBe(hostLoopName)
-      // ...and so does the retained executor (executor_session_id), even though it
-      // is not the loop's current session during auditing.
-      expect(loopService.resolveLoopNameForParticipant(executorSessionId)).toBe(hostLoopName)
-      // An unrelated session is not a participant.
-      expect(loopService.resolveLoopNameForParticipant(unrelatedSessionId)).toBeNull()
-    })
-
-    test('resolver-backed before hook blocks recursive tools for both auditor and retained executor', async () => {
+    test('resolver-backed before hook blocks recursive tools for the auditor session', async () => {
       setStateAuditing(loopService)
       const resolver = createSessionLoopResolver({
         loop: {
@@ -218,30 +203,20 @@ describe('Tool Blocking Logic', () => {
         resolveActiveLoopForSession: resolver.resolveActiveLoopForSession,
       })!
 
-      // Auditor session: blocked from starting another loop.
       await expect(hook({ tool: 'execute-goal', sessionID: auditorSessionId, callID: 'c-aud' }, { args: {} }))
         .rejects.toThrow('execute-goal tool is not available')
       await expect(hook({ tool: 'execute-plan', sessionID: auditorSessionId, callID: 'c-aud-plan' }, { args: {} }))
         .rejects.toThrow('execute-plan tool is not available')
 
-      // Retained executor session: also blocked while its loop is auditing.
-      await expect(hook({ tool: 'execute-goal', sessionID: executorSessionId, callID: 'c-exec' }, { args: {} }))
-        .rejects.toThrow('execute-goal tool is not available')
-      await expect(hook({ tool: 'execute-plan', sessionID: executorSessionId, callID: 'c-exec-plan' }, { args: {} }))
-        .rejects.toThrow('execute-plan tool is not available')
-
-      // Unrelated session: unaffected.
       await expect(hook({ tool: 'execute-goal', sessionID: unrelatedSessionId, callID: 'c-unrel' }, { args: {} }))
         .resolves.toBeUndefined()
     })
 
-    test('fallback before hook (no injected resolver) blocks both auditor and retained executor', async () => {
+    test('fallback before hook blocks only the current auditor session', async () => {
       setStateAuditing(loopService)
       const hook = createToolExecuteBeforeHook(makeCtx(loopService))!
 
       await expect(hook({ tool: 'execute-goal', sessionID: auditorSessionId, callID: 'c-aud' }, { args: {} }))
-        .rejects.toThrow('execute-goal tool is not available')
-      await expect(hook({ tool: 'execute-goal', sessionID: executorSessionId, callID: 'c-exec' }, { args: {} }))
         .rejects.toThrow('execute-goal tool is not available')
       await expect(hook({ tool: 'execute-goal', sessionID: unrelatedSessionId, callID: 'c-unrel' }, { args: {} }))
         .resolves.toBeUndefined()

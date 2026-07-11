@@ -343,10 +343,6 @@ export const migrations: Migration[] = [
   {
     id: '136',
     description: 'Add executor_session_id column to loops for goal-loop executor binding',
-    // Goal loops keep the warped executor session alive across audits and must
-    // return dirty-audit findings to it. host_session_id is the post-completion
-    // TUI redirect target and may differ from the executor (notably after a
-    // restart), so a dedicated, persisted executor binding is required.
     apply: (db: Database) => {
       const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
       if (cols.some((c) => c.name === 'executor_session_id')) return
