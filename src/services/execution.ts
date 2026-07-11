@@ -1321,7 +1321,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       createdWorkspaceId = ws.workspaceId
 
       // Bind the EXISTING executor session to the workspace. Never call session.create.
-      let bindFailed = false
       try {
         await bindSessionToWorkspace(
           deps.client,
@@ -1333,10 +1332,6 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         )
       } catch (bindErr) {
         deps.logger.error('handleStartGoal: failed to bind executor session to workspace', bindErr)
-        bindFailed = true
-      }
-
-      if (bindFailed) {
         await rollbackGoalStart()
         return fail('internal_error', 500, 'Failed to bind executor session to workspace')
       }
