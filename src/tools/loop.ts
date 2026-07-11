@@ -215,7 +215,8 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           `Max iterations: ${maxInfo}`,
           '',
           'A new code session has been created in the worktree with the goal as the initial prompt.',
-          'The loop runtime will keep the watchdog running.',
+          'That session implements the goal — NOT this one. Do not edit files or attempt the goal here.',
+          'Your job is done — just confirm to the user that the goal loop has been launched.',
           'The user can run loop-status or loop-cancel later if needed.',
         ]
 

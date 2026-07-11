@@ -2,7 +2,7 @@
 
 `$ARGUMENTS` must contain the non-empty goal text the user wants executed directly. If it is blank or only whitespace, ask the user to restate the goal and stop.
 
-Do NOT create a plan, decompose the goal into sections, or ask for approval. The goal is implemented directly.
+Do NOT create a plan, decompose the goal into sections, or ask for approval. The goal is implemented directly by the loop.
 
 ## Step 2: Start the Goal Loop
 
@@ -12,18 +12,13 @@ Call the `execute-goal` tool with the full goal text:
 - loopName: Optional loop name. Forge slugifies it and auto-increments on collision.
 - maxIterations: Optional maximum loop iterations. Defaults to the plugin config `loop.defaultMaxIterations`.
 
-This warps your current session into an isolated Forge worktree, registers it as the loop executor, and starts the watchdog. No new session is created and no initial prompt is sent by the loop runner — you keep running in this session.
+This creates an isolated Forge worktree and a new dedicated code session inside it, sends the goal as that session's initial prompt, and starts the watchdog. Docker sandboxing is used automatically when configured and available.
 
-## Step 3: Implement the Goal Directly
+## Step 3: You Are Done
 
-Implement the goal in this now-warped session:
-- Edit files, write/update tests, and run the project's verification (lint/typecheck/tests) before finishing.
-- Reuse existing helpers and patterns; keep changes scoped to what the goal requires.
-- Do NOT call `execute-plan`, `launch-group`, the `question` tool, or any plan/approval flow.
+The new session implements the goal — NOT this session. Do not edit files, run builds, or attempt the goal here. Just confirm to the user that the goal loop has been launched.
 
-## Step 4: Let the Loop Drive Audits
-
-When you go idle, the loop runner automatically starts a fresh auditor session against your worktree and returns review findings to this same session on the next iteration. Keep addressing every finding the auditor reports — both goal-completeness gaps and code defects — until an auditor pass leaves zero open findings, which completes the loop.
+The loop automatically audits the work when the session goes idle and rotates in fresh code sessions until an auditor pass leaves zero open findings, which completes the loop.
 
 Use `loop-status` to inspect progress or `loop-cancel` to stop early. Both work for goal loops exactly as they do for plan loops.
 
