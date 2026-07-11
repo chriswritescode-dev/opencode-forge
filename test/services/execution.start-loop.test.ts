@@ -1715,4 +1715,36 @@ describe('handleStartGoal creates dedicated code session', () => {
 
     db.close()
   })
+
+  test.each([
+    ['goal.start', { type: 'goal.start' as const, goal: 'Ship it', executorSessionId: 'invoker-6' }],
+    ['loop.start', { type: 'loop.start' as const, source: { kind: 'inline' as const, planText: '# Plan\nDo it' }, title: 'Plan' }],
+  ])('%s in an uncommitted project (projectId=global) fails fast with a toast and provisions nothing', async (_label, command) => {
+    const { client } = goalClient()
+    const { service } = await buildService(client)
+
+    const result = await service.dispatch(
+      { surface: 'tool', projectId: 'global', directory: '/tmp/test', sourceSessionId: 'invoker-6' },
+      command as any,
+    )
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.error.code).toBe('bad_request')
+      expect(result.error.message).toContain('at least one commit')
+    }
+
+    // Nothing provisioned
+    expect(client.workspace.create).not.toHaveBeenCalled()
+    expect(client.session.create).not.toHaveBeenCalled()
+
+    // Error toast published to the TUI
+    expect(client.tui.publish).toHaveBeenCalledTimes(1)
+    const toast = (client.tui.publish as any).mock.calls[0][0]
+    expect(toast.body.type).toBe('tui.toast.show')
+    expect(toast.body.properties.variant).toBe('error')
+    expect(toast.body.properties.message).toContain('restart opencode')
+
+    db.close()
+  })
 })

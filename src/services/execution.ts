@@ -1004,6 +1004,42 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     })
   }
   
+  /**
+   * Worktree loops require a committed git project. When opencode starts in a
+   * directory without a root commit it scopes the instance to project 'global',
+   * while sessions created in the forge worktree resolve their project from the
+   * root commit (which forge itself creates). The resulting session is invisible
+   * to the TUI and cannot be selected, so fail fast with the remedy instead.
+   */
+  function guardCommittedProject(ctx: ForgeExecutionRequestContext): ForgeExecutionResponse<never> | null {
+    if (ctx.projectId === 'global') {
+      deps.client.tui.publish({
+        directory: ctx.directory,
+        body: {
+          type: 'tui.toast.show',
+          properties: {
+            title: 'Loop start blocked',
+            message: 'No git commit in this project — the loop session would be invisible to this opencode instance. Commit, restart opencode, and retry.',
+            variant: 'error',
+            duration: 10_000,
+          },
+        },
+      }).catch((err: unknown) => {
+        deps.logger.error('guardCommittedProject: failed to publish toast', err)
+      })
+
+      return fail(
+        'bad_request',
+        400,
+        'This directory has no committed git project (opencode resolved project "global"). ' +
+        'Worktree loops require a repository with at least one commit; otherwise the loop session ' +
+        'is created under a different project and is invisible to this opencode instance. ' +
+        'Create an initial commit, restart opencode, and retry.',
+      )
+    }
+    return null
+  }
+
   async function handleStartLoop(
     ctx: ForgeExecutionRequestContext,
     command: StartLoopCommand,
@@ -1012,6 +1048,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     if (deps.config.loop?.enabled === false) {
       return fail('disabled', 403, 'Loops are disabled in plugin config')
     }
+
+    const projectGuard = guardCommittedProject(ctx)
+    if (projectGuard) return projectGuard
 
     // Resolve plan text
     const planResult = await resolvePlanSource(ctx, command.source, deps)
@@ -1272,6 +1311,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     if (deps.config.loop?.enabled === false) {
       return fail('disabled', 403, 'Loops are disabled in plugin config')
     }
+
+    const projectGuard = guardCommittedProject(ctx)
+    if (projectGuard) return projectGuard
 
     const goal = (command.goal ?? '').trim()
     if (!goal) {
