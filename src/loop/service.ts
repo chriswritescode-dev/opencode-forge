@@ -70,7 +70,7 @@ export interface LoopService {
   clearWorkspaceId(name: string): void
   setWorkspaceId(name: string, workspaceId: string): void
   terminate(name: string, opts: { status: 'completed' | 'cancelled' | 'errored' | 'stalled'; reason: string; completedAt: number; summary?: string }): void
-  replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void
+  replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null; executorSessionId?: string | null }): void
   getSectionPlan(state: LoopState, index: number): SectionPlanRow | null
   getNextIncompleteSectionPlan(state: LoopState): SectionPlanRow | null
   getCompletedSectionDigest(state: LoopState): { index: number; title: string; summaryDone: string | null; summaryDeviations: string | null; summaryFollowUps: string | null }[]
@@ -179,7 +179,7 @@ export function createLoopService(
     return loopsRepo.getByParticipantSessionId(projectId, sessionId)?.loopName ?? null
   }
 
-  function replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }): void {
+  function replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null; executorSessionId?: string | null }): void {
     const state = getAnyState(name)
     loopsRepo.replaceSession(projectId, name, {
       sessionId: opts.newSessionId,
@@ -188,6 +188,7 @@ export function createLoopService(
       resetError: opts.resetError,
       auditCount: opts.auditCount,
       lastAuditResult: opts.lastAuditResult,
+      executorSessionId: opts.executorSessionId,
     })
     notifyLoopChange('rotate', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
   }

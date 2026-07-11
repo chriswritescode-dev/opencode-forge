@@ -1332,7 +1332,7 @@ describe('handleStartLoop variant config fallback', () => {
   })
 })
 
-describe('handleStartGoal current-session worktree startup', () => {
+describe('handleStartGoal creates dedicated code session', () => {
   let db: Database
   let loopsRepo: LoopsRepo
   let plansRepo: PlansRepo
@@ -1352,7 +1352,32 @@ describe('handleStartGoal current-session worktree startup', () => {
     sectionPlansRepo = createSectionPlansRepo(db)
   })
 
-  async function buildService(client: any, loopHandlerOverrides: any = {}) {
+  function goalClient(overrides?: any) {
+    return createFakeForgeClient({
+      workspace: {
+        create: async () => ({
+          id: 'ws_goal',
+          directory: '/tmp/wt/goal',
+          branch: 'opencode/goal',
+          type: 'worktree',
+          name: 'opencode/goal',
+          extra: null,
+          projectID: PROJECT_ID,
+          timeUsed: Date.now(),
+        }),
+      },
+      session: {
+        create: async () => ({ id: 'new-goal-session' }),
+        promptAsync: async () => {},
+      },
+      tui: {
+        selectSession: async () => {},
+      },
+      ...overrides,
+    })
+  }
+
+  async function buildService(client: any, loopHandlerOverrides: any = {}, sandboxManager?: any) {
     const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, PROJECT_ID, mockLogger, undefined, undefined, sectionPlansRepo)
 
     const mockLoopHandler = {
@@ -1386,100 +1411,160 @@ describe('handleStartGoal current-session worktree startup', () => {
       sectionPlansRepo,
       workspaceStatusRegistry: mockWorkspaceStatusRegistry,
       client,
+      sandboxManager,
       pendingTeardowns: mockPendingTeardowns,
     })
 
     return { service, loopService }
   }
 
-  function goalClient(overrides?: any) {
-    return createFakeForgeClient({
-      workspace: {
-        create: async () => ({
-          id: 'ws_goal',
-          directory: '/tmp/wt/goal',
-          branch: 'opencode/goal',
-          type: 'worktree',
-          name: 'opencode/goal',
-          extra: null,
-          projectID: PROJECT_ID,
-          timeUsed: Date.now(),
-        }),
-        warp: async () => {},
-      },
-      ...overrides,
-    })
-  }
-
-  test('creates + warps a workspace, persists executor session id, and makes zero session.create calls', async () => {
+  test('creates workspace + new session with worktree/workspace/permissions, sends initial prompt, and sets state IDs to new session', async () => {
     const { client } = goalClient()
     const { service, loopService } = await buildService(client)
 
-    const executorSessionId = 'caller-session-1'
+    const invokingSessionId = 'invoker-session-1'
     const result = await service.dispatch(
-      { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test', sourceSessionId: executorSessionId },
+      { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test', sourceSessionId: invokingSessionId },
       {
         type: 'goal.start' as const,
-        goal: 'Ship the goal-loop feature end to end',
-        executorSessionId,
+        goal: 'Refactor the storage layer for goal loops',
+        executorSessionId: invokingSessionId,
       },
     )
 
     expect(result.ok).toBe(true)
     if (!result.ok) return
 
-    // Never create a new executor session
-    expect(client.session.create).not.toHaveBeenCalled()
+    // ---- session.create was called with worktree directory, workspace, and loop permissions ----
+    expect(client.session.create).toHaveBeenCalledTimes(1)
+    const sessionCreateArgs = (client.session.create as any).mock.calls[0][0]
+    expect(sessionCreateArgs.directory).toBe('/tmp/wt/goal')
+    expect(sessionCreateArgs.workspaceID).toBe('ws_goal')
+    expect(sessionCreateArgs.permission).toEqual(
+      buildLoopPermissionRuleset({ allowDirectories: resolveLoopAllowedDirectories({}) }),
+    )
 
-    // Workspace created exactly once
-    expect(client.workspace.create).toHaveBeenCalledTimes(1)
+    // The new session ID is returned in the result
+    const newSessionId = 'new-goal-session'
+    expect(result.data.sessionId).toBe(newSessionId)
 
-    // The executor session is warped into the workspace (bind via workspace.warp)
-    expect(client.workspace.warp).toHaveBeenCalledTimes(1)
-    const warpArgs = (client.workspace.warp as any).mock.calls[0][0]
-    expect(warpArgs.id).toBe('ws_goal')
-    expect(warpArgs.sessionID).toBe(executorSessionId)
+    // ---- TUI select receives the new session and workspace ----
+    expect(client.tui.selectSession).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionID: newSessionId, workspace: 'ws_goal' }),
+    )
 
-    // Persisted loop state: kind=goal, currentSessionId=executor, phase=coding, iteration 1, zero sections
+    // ---- Initial prompt contains original goal, uses worktree directory, workspace, and code model ----
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(1)
+    const promptArgs = (client.session.promptAsync as any).mock.calls[0][0]
+    expect(promptArgs.sessionID).toBe(newSessionId)
+    expect(promptArgs.directory).toBe('/tmp/wt/goal')
+    expect(promptArgs.agent).toBe('code')
+    expect(promptArgs.parts[0].text).toContain('## Goal\nRefactor the storage layer for goal loops')
+    expect(promptArgs.parts[0].text).toContain('Implement the goal above directly in this worktree')
+    expect(promptArgs.workspace).toBe('ws_goal')
+
+    // ---- State IDs use the new session for both sessionId and executorSessionId ----
     const state = loopService.getActiveState(result.data.loopName)
     expect(state).not.toBeNull()
+    expect(state!.sessionId).toBe(newSessionId)
+    expect(state!.executorSessionId).toBe(newSessionId)
+    expect(state!.hostSessionId).toBe(invokingSessionId)
     expect(state!.kind).toBe('goal')
-    expect(state!.sessionId).toBe(executorSessionId)
-    expect(state!.phase).toBe('coding')
-    expect(state!.iteration).toBe(1)
-    expect(state!.totalSections).toBe(0)
-    expect(state!.currentSectionIndex).toBe(0)
+    expect(state!.goal).toBe('Refactor the storage layer for goal loops')
     expect(state!.workspaceId).toBe('ws_goal')
     expect(state!.worktreeDir).toBe('/tmp/wt/goal')
     expect(state!.worktreeBranch).toBe('opencode/goal')
-    expect(state!.goal).toBe('Ship the goal-loop feature end to end')
+
+    // ---- Source/invoking session is untouched ----
+    // workspace.warp is called internally by createLoopSessionWithWorkspace →
+    // bindSessionToWorkspace for the NEW session (not the invoking session)
+    expect(client.workspace.warp).toHaveBeenCalledTimes(1)
+    expect((client.workspace.warp as any).mock.calls[0][0]).toEqual({
+      id: 'ws_goal',
+      sessionID: newSessionId,
+    })
+    expect(client.session.update).not.toHaveBeenCalled()
+    expect(client.session.abort).not.toHaveBeenCalled()
 
     // Goal text persisted in loop_large_fields, NOT in the plans table
     const largeFields = loopsRepo.getLarge(PROJECT_ID, result.data.loopName)
     expect(largeFields).not.toBeNull()
-    expect(largeFields!.goal).toBe('Ship the goal-loop feature end to end')
+    expect(largeFields!.goal).toBe('Refactor the storage layer for goal loops')
 
     const planRow = plansRepo.getForLoop(PROJECT_ID, result.data.loopName)
     expect(planRow).toBeNull()
 
-    // Result echoes the executor session and goal
-    expect(result.data.sessionId).toBe(executorSessionId)
-    expect(result.data.goal).toBe('Ship the goal-loop feature end to end')
-    expect(result.data.workspaceId).toBe('ws_goal')
-    expect(result.data.worktreeDir).toBe('/tmp/wt/goal')
+    db.close()
+  })
+
+  test('applies loop permissions via createLoopSessionWithWorkspace, starts sandbox before prompting for the new session', async () => {
+    const { client } = goalClient()
+    const sandboxManager = {
+      start: vi.fn().mockResolvedValue({ containerName: 'goal-sandbox' }),
+      stop: vi.fn().mockResolvedValue(undefined),
+      getActive: vi.fn().mockReturnValue(null),
+      isActive: vi.fn().mockReturnValue(false),
+      isLive: vi.fn().mockResolvedValue(false),
+      isLiveByName: vi.fn().mockResolvedValue(false),
+      cleanupOrphans: vi.fn().mockResolvedValue(0),
+      restore: vi.fn().mockResolvedValue(undefined),
+      provisionDependencies: vi.fn().mockResolvedValue(undefined),
+    }
+    const { service, loopService } = await buildService(client, {}, sandboxManager)
+
+    const invokingSessionId = 'invoker-session-sandboxed'
+    const result = await service.dispatch(
+      { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test', sourceSessionId: invokingSessionId },
+      {
+        type: 'goal.start' as const,
+        goal: 'Run this goal with sandbox isolation',
+        executorSessionId: invokingSessionId,
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    // Permissions passed to session.create, NOT via session.update
+    expect(client.session.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        permission: buildLoopPermissionRuleset({ allowDirectories: resolveLoopAllowedDirectories({}) }),
+      }),
+    )
+    expect(client.session.update).not.toHaveBeenCalled()
+
+    // Sandbox started after session create, before prompt
+    expect(sandboxManager.start).toHaveBeenCalledWith(result.data.loopName, '/tmp/wt/goal')
+    const sandboxCallOrder = sandboxManager.start.mock.invocationCallOrder[0]
+    const sessionCreateCallOrder = (client.session.create as any).mock.invocationCallOrder[0]
+    expect(sessionCreateCallOrder).toBeLessThan(sandboxCallOrder)
+
+    // promptAsync called after sandbox start
+    expect(client.session.promptAsync).toHaveBeenCalled()
+    const promptCallOrder = (client.session.promptAsync as any).mock.invocationCallOrder[0]
+    expect(sandboxCallOrder).toBeLessThan(promptCallOrder)
+
+    expect(loopService.getActiveState(result.data.loopName)).toMatchObject({
+      sandbox: true,
+      sandboxContainer: 'goal-sandbox',
+      sessionId: 'new-goal-session',
+      executorSessionId: 'new-goal-session',
+    })
+
+    db.close()
   })
 
   test('goal text survives reload (fresh loop service) without creating a plans-table record', async () => {
     const { client } = goalClient()
-    const { service, loopService } = await buildService(client)
+    const { service } = await buildService(client)
 
-    const executorSessionId = 'caller-session-2'
+    const invokingSessionId = 'invoker-session-2'
     const result = await service.dispatch(
-      { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test', sourceSessionId: executorSessionId },
+      { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test', sourceSessionId: invokingSessionId },
       {
         type: 'goal.start' as const,
         goal: 'Refactor the storage layer for goal loops',
-        executorSessionId,
+        executorSessionId: invokingSessionId,
       },
     )
     expect(result.ok).toBe(true)
@@ -1492,41 +1577,42 @@ describe('handleStartGoal current-session worktree startup', () => {
     expect(reloaded).not.toBeNull()
     expect(reloaded!.kind).toBe('goal')
     expect(reloaded!.goal).toBe('Refactor the storage layer for goal loops')
-    expect(reloaded!.sessionId).toBe(executorSessionId)
+    // The new session ID is persisted
+    expect(reloaded!.sessionId).toBe('new-goal-session')
 
     // Still no plan row after reload
     expect(plansRepo.getForLoop(PROJECT_ID, loopName)).toBeNull()
 
-    // Reference the original service to avoid an unused-variable lint
-    expect(loopService.getActiveState(loopName)?.goal).toBe('Refactor the storage layer for goal loops')
+    db.close()
   })
 
-  test('rollback on bind failure removes the workspace but never aborts the caller session', async () => {
+  test('rollback on session create failure removes workspace but never aborts the invoking session', async () => {
     const { client } = createFakeForgeClient({
       workspace: {
         create: async () => ({
-          id: 'ws_goal_bind_fail',
-          directory: '/tmp/wt/goal-bind-fail',
-          branch: 'opencode/goal-bind-fail',
+          id: 'ws_goal_create_fail',
+          directory: '/tmp/wt/goal-create-fail',
+          branch: 'opencode/goal-create-fail',
           type: 'worktree',
-          name: 'opencode/goal-bind-fail',
+          name: 'opencode/goal-create-fail',
           extra: null,
           projectID: PROJECT_ID,
           timeUsed: Date.now(),
         }),
-        warp: async () => { throw new Error('workspace.warp rejected') },
-        remove: async () => {},
+      },
+      session: {
+        create: async () => { throw new Error('session.create rejected') },
       },
     })
     const { service, loopService } = await buildService(client)
 
-    const executorSessionId = 'caller-session-3'
+    const invokingSessionId = 'invoker-session-3'
     const result = await service.dispatch(
-      { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test', sourceSessionId: executorSessionId },
+      { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test', sourceSessionId: invokingSessionId },
       {
         type: 'goal.start' as const,
-        goal: 'Goal that fails to bind',
-        executorSessionId,
+        goal: 'Goal that fails session create',
+        executorSessionId: invokingSessionId,
       },
     )
 
@@ -1535,13 +1621,65 @@ describe('handleStartGoal current-session worktree startup', () => {
       expect(result.error.code).toBe('internal_error')
     }
 
-    // Never create or abort the caller's session
-    expect(client.session.create).not.toHaveBeenCalled()
+    // Never abort the invoking/host session
     expect(client.session.abort).not.toHaveBeenCalled()
 
     // Newly-created workspace is removed during rollback
     expect(client.workspace.remove).toHaveBeenCalledTimes(1)
-    expect((client.workspace.remove as any).mock.calls[0][0]).toEqual({ id: 'ws_goal_bind_fail' })
+    expect((client.workspace.remove as any).mock.calls[0][0]).toEqual({ id: 'ws_goal_create_fail' })
+
+    // Loop state must not be persisted
+    const active = loopService.listActive().filter((s) => s.goal)
+    expect(active.length).toBe(0)
+
+    db.close()
+  })
+
+  test('rollback on prompt failure aborts only the created goal session, never the invoking session', async () => {
+    const { client } = createFakeForgeClient({
+      workspace: {
+        create: async () => ({
+          id: 'ws_goal_prompt_fail',
+          directory: '/tmp/wt/goal-prompt-fail',
+          branch: 'opencode/goal-prompt-fail',
+          type: 'worktree',
+          name: 'opencode/goal-prompt-fail',
+          extra: null,
+          projectID: PROJECT_ID,
+          timeUsed: Date.now(),
+        }),
+      },
+      session: {
+        create: async () => ({ id: 'goal-session-to-abort' }),
+        promptAsync: async () => { throw new Error('prompt failed') },
+      },
+      tui: {
+        selectSession: async () => {},
+      },
+    })
+    const { service, loopService } = await buildService(client)
+
+    const invokingSessionId = 'invoker-session-4'
+    const result = await service.dispatch(
+      { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test', sourceSessionId: invokingSessionId },
+      {
+        type: 'goal.start' as const,
+        goal: 'Goal that fails prompt',
+        executorSessionId: invokingSessionId,
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.error.code).toBe('prompt_failed')
+    }
+
+    // The CREATED goal session is aborted during rollback
+    expect(client.session.abort).toHaveBeenCalledTimes(1)
+    expect((client.session.abort as any).mock.calls[0][0]).toEqual({ sessionID: 'goal-session-to-abort' })
+
+    // Workspace removed during rollback
+    expect(client.workspace.remove).toHaveBeenCalledTimes(1)
 
     // Loop state must not be persisted
     const active = loopService.listActive().filter((s) => s.goal)
@@ -1555,11 +1693,11 @@ describe('handleStartGoal current-session worktree startup', () => {
     const { service } = await buildService(client)
 
     const result = await service.dispatch(
-      { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test', sourceSessionId: 'caller-session-4' },
+      { surface: 'tool', projectId: PROJECT_ID, directory: '/tmp/test', sourceSessionId: 'invoker-session-5' },
       {
         type: 'goal.start' as const,
         goal: '   \n  ',
-        executorSessionId: 'caller-session-4',
+        executorSessionId: 'invoker-session-5',
       },
     )
 

@@ -33,6 +33,7 @@ import { createUsageCapture } from './runtime-usage'
 import { createPromptDispatch } from './runtime-prompt'
 import { createWorkspaceLifecycle, isWorkspaceNotFoundError } from './runtime-workspace'
 import { loopRegistry } from '../utils/loop-registry'
+import { selectSessionBestEffort } from '../utils/tui-navigation'
 
 import { parseCoderDecisions } from '../utils/coder-decisions'
 import { resolvePostActionConfig } from './post-action-config'
@@ -198,6 +199,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
 
     loopService.registerLoopSession(newSessionId, loopName)
+
+    await selectSessionBestEffort(client, state.projectDir ?? state.worktreeDir, logger, {
+      sessionID: newSessionId,
+      workspace: ensured.workspaceId ?? state.workspaceId,
+    })
 
     watchdog.stop(loopName)
     watchdog.start(loopName)
@@ -371,6 +377,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       resetError: !assistantErrorDetected && currentState.errorCount > 0,
       auditCount: stateUpdates.auditCount,
       lastAuditResult: stateUpdates.lastAuditResult ?? null,
+      executorSessionId: activeSessionId,
     })
 
     const nextIteration = stateUpdates.iteration ?? currentState.iteration
@@ -403,21 +410,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   async function rotateToCodingAfterAuditFailure(loopName: string, state: LoopState, reason: string): Promise<void> {
-    // Goal loops keep the warped executor session across auditor failures — only
-    // auditor sessions rotate. Re-prompt the retained executor so it keeps
-    // iterating; the auditor will be reattempted on the next coding idle. Plan
-    // loops keep the historical rotation-to-fresh-code-session recovery.
-    if (state.kind === 'goal') {
-      await recoverGoalAuditorFailure(loopName, state, reason)
-      return
-    }
-
     const newSessionId = await rotateSession(loopName, state)
 
     loopService.replaceSession(loopName, {
       newSessionId,
       phase: 'coding',
       resetError: false,
+      executorSessionId: newSessionId,
     })
     loopService.setLastAuditResult(loopName, state.lastAuditResult ?? '')
     const isModelError = /provider|auth|model|api\s*error/i.test(reason)
@@ -441,56 +440,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (error) {
       logger.error(`rotateToCodingAfterAuditFailure: failed to send continuation prompt`, error)
     }
-  }
-
-  /**
-   * Goal-loop auditor-failure recovery: restore the persisted executor as the
-   * active coding session (no rotation), retire the failed auditor session, and
-   * re-prompt the executor to keep iterating. Mirrors the retained-executor
-   * retry pattern used when auditor creation exhausts retries.
-   */
-  async function recoverGoalAuditorFailure(loopName: string, state: LoopState, reason: string): Promise<void> {
-    const auditSessionId = state.sessionId
-    const executorSessionId = state.executorSessionId ?? state.hostSessionId ?? state.sessionId
-    logger.error(`Loop: goal auditor failure for ${loopName}: ${reason}, retaining executor ${executorSessionId} and re-prompting`)
-
-    loopService.replaceSession(loopName, {
-      newSessionId: executorSessionId,
-      phase: 'coding',
-      resetError: false,
-    })
-    loopService.setLastAuditResult(loopName, state.lastAuditResult ?? '')
-    const isModelError = /provider|auth|model|api\s*error/i.test(reason)
-    if (isModelError) {
-      loopService.setModelFailed(loopName, true)
-    }
-
-    void scheduleSessionDelete({
-      loopName,
-      sessionId: auditSessionId,
-      directory: state.worktreeDir,
-      context: 'after goal auditor failure',
-      phase: 'auditing',
-      state,
-    })
-
-    const recoveryState = loopService.getActiveState(loopName) ?? { ...state, sessionId: executorSessionId }
-    const continuationPrompt = loopService.buildContinuationPrompt(
-      { ...recoveryState, iteration: recoveryState.iteration ?? 0 },
-      `\n[Auditor session failed: ${reason}. Continuing without new findings — keep iterating; the auditor will be reattempted next round.]`,
-    )
-
-    await sendPromptWithRetryRecovery({
-      loopName,
-      sessionId: executorSessionId,
-      promptText: continuationPrompt,
-      agent: 'code',
-      model: resolveLoopModel(getConfig(), loopService, loopName),
-      variant: state.executionVariant,
-      errorContext: 'goal auditor recovery prompt',
-      errorState: recoveryState,
-      activityTag: 'goal-auditor-recovery-prompt-sent',
-    })
   }
 
   function buildCodingPromptForCurrentState(state: LoopState): string {
@@ -1039,43 +988,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     })
 
     if (!created) {
-      // Goal loops must retain their warped executor session — only auditor sessions
-      // rotate. Re-prompt the retained executor so it keeps iterating; the auditor
-      // will be reattempted on the next coding idle. Plan loops keep the historical
-      // rotation-to-fresh-code-session recovery.
-      if (currentState.kind === 'goal') {
-        const executorSessionId = currentState.executorSessionId ?? currentState.hostSessionId ?? currentState.sessionId
-        logger.error(`Loop: audit session creation failed after ${MAX_RETRIES} attempts for ${loopName}, retaining goal executor and re-prompting`)
-        // createAuditWithRetry saturates error_count to MAX_RETRIES while exhausting
-        // auditor provisioning; the executor re-prompt is a distinct recovery
-        // operation and must get its own retry budget (mirrors resetErrorCountIfNeeded,
-        // which clears these stale audit-create failures on the next successful idle).
-        loopService.resetError(loopName)
-        currentState = loopService.getActiveState(loopName) ?? currentState
-        const continuationPrompt = loopService.buildContinuationPrompt(
-          { ...currentState, iteration: currentState.iteration ?? 0 },
-          'Audit could not be started after retries — continue iterating, the auditor will be reattempted next round.',
-        )
-        await sendPromptWithRetryRecovery({
-          loopName,
-          sessionId: executorSessionId,
-          promptText: continuationPrompt,
-          agent: 'code',
-          model: resolveLoopModel(getConfig(), loopService, loopName),
-          variant: currentState.executionVariant,
-          errorContext: 'goal continuation prompt after audit creation failure',
-          errorState: currentState,
-        })
-        return
-      }
-
       logger.error(`Loop: audit session creation failed after ${MAX_RETRIES} attempts for ${loopName}, rotating to fresh code session`)
+      loopService.resetError(loopName)
       try {
         const rotatedSessionId = await rotateSession(loopName, currentState)
         loopService.replaceSession(loopName, {
           newSessionId: rotatedSessionId,
           phase: 'coding',
           resetError: false,
+          executorSessionId: rotatedSessionId,
         })
         const continuationPrompt = loopService.buildContinuationPrompt(
           { ...currentState, iteration: currentState.iteration ?? 0 },
@@ -1112,12 +1033,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       phase: 'auditing',
     })
 
-    // The retired session is a code session. Goal loops keep the warped executor
-    // session alive across audits so dirty-audit findings can be returned to it;
-    // only the auditor sessions rotate. Plan loops retire the code session here.
-    if (currentState.kind !== 'goal') {
-      void scheduleSessionDelete({ loopName, sessionId: codeSessionId, directory: currentState.worktreeDir, context: 'after audit creation', phase: 'coding', state: currentState })
-    }
+    // The retired session is a code session.
+    void scheduleSessionDelete({ loopName, sessionId: codeSessionId, directory: currentState.worktreeDir, context: 'after audit creation', phase: 'coding', state: currentState })
 
     const { error: auditPromptErr, usedModel: actualAuditorModel } = await sendPromptWithFallback({
       loopName,
@@ -1182,8 +1099,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
    * Goal-loop audit result handler. Goal loops have no sections, final audit,
    * or post-action phase: a completed auditor pass with zero outstanding review
    * findings (any severity) terminates the loop; otherwise the auditor's
-   * findings are returned to the retained executor session (no session
-   * rotation) for direct remediation. Only auditor sessions rotate.
+   * findings trigger a fresh code session rotation for remediation.
+   * The new code session becomes both state.sessionId and state.executorSessionId.
    */
   async function runGoalAuditResult(
     loopName: string,
@@ -1192,12 +1109,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     newAuditCount: number,
   ): Promise<void> {
     const auditSessionId = currentState.sessionId
-    // Goal loops keep the warped executor session alive across audits and return
-    // dirty-audit findings to it. Use the persisted executor binding as the source
-    // of truth; hostSessionId is a post-completion TUI redirect target that may
-    // differ from the executor (notably after a restart), so it is only a legacy
-    // fallback for in-flight loops predating the executor_session_id column.
-    const executorSessionId = currentState.executorSessionId ?? currentState.hostSessionId ?? currentState.sessionId
 
     const persistAuditAndTerminate = async (reason: TerminationReason): Promise<void> => {
       loopService.replaceSession(loopName, {
@@ -1226,26 +1137,33 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const outstandingBugs = loopService.getOutstandingFindings(loopName, 'bug')
     bumpDirtyAuditRecurrence(loopName, outstandingBugs)
 
-    // Return findings to the warped executor session — no new code session is
-    // created. Replace currentSessionId back to the executor and retire the
-    // auditor session that just completed.
+    // Create a fresh code session and re-bind both sessionId and executorSessionId to it.
+    let newSessionId: string
+    try {
+      newSessionId = await rotateSession(loopName, currentState, {
+        iteration: nextIteration,
+      })
+    } catch (err) {
+      logger.error(`Loop: session rotation failed during goal dirty audit, continuing with existing session`, err)
+      newSessionId = currentState.sessionId
+    }
+
     loopService.replaceSession(loopName, {
-      newSessionId: executorSessionId,
+      newSessionId,
       phase: 'coding',
       iteration: nextIteration,
       auditCount: newAuditCount,
       lastAuditResult: auditText || null,
+      executorSessionId: newSessionId,
     })
 
-    void scheduleSessionDelete({ loopName, sessionId: auditSessionId, directory: currentState.worktreeDir, context: 'after goal dirty audit', phase: 'auditing', state: currentState })
-
-    const updatedState = loopService.getActiveState(loopName) ?? { ...currentState, sessionId: executorSessionId, iteration: nextIteration }
+    const updatedState = loopService.getActiveState(loopName) ?? { ...currentState, sessionId: newSessionId, iteration: nextIteration }
     const continuationPrompt = loopService.buildContinuationPrompt(updatedState, auditText || undefined, outstandingBugs)
 
     const loopModel = resolveLoopModel(getConfig(), loopService, loopName)
     await sendPromptWithRetryRecovery({
       loopName,
-      sessionId: executorSessionId,
+      sessionId: newSessionId,
       promptText: continuationPrompt,
       agent: 'code',
       model: loopModel,
@@ -1434,13 +1352,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       )
     } else {
       logger.log(`Loop: audit error detected, continuing without incrementing audit count`)
-      // Goal loops must retain their warped executor session — only auditor
-      // sessions rotate. Re-prompt the retained executor instead of rotating to
-      // a fresh code session. Plan loops keep the historical rotation recovery.
-      if (currentState.kind === 'goal') {
-        await recoverGoalAuditorFailure(loopName, currentState, assistantError ?? 'assistant error')
-        return
-      }
       const nextIteration = (currentState.iteration ?? 0) + 1
       const continuationPrompt = loopService.buildContinuationPrompt(
         { ...currentState, iteration: nextIteration },

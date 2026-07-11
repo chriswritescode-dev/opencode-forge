@@ -172,7 +172,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
     }),
 
     'execute-goal': tool({
-      description: 'Start a managed goal loop that runs in the current session: creates an isolated Forge worktree, warps this session into it, registers the session as the loop executor, and starts the watchdog. No new session is created and no initial prompt is sent — continue executing the goal in this session.',
+      description: 'Start a managed goal loop that runs in a new dedicated session: creates an isolated Forge worktree and code session, sends the goal as the initial prompt, registers the new session as the loop executor, and starts the watchdog. The invoking session remains hostSessionId and is not warped or mutated.',
       args: {
         goal: z.string().describe('The goal to execute. Non-empty free text; the first line is used to derive a title/loop name when omitted.'),
         title: z.string().optional().describe('Short title for the loop (derived from the goal when omitted)'),
@@ -208,14 +208,14 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         const lines: string[] = [
           'Goal loop activated!',
           '',
-          `Session: ${result.data.sessionId} (current session — no new session created)`,
+          `Session: ${result.data.sessionId} (new dedicated session)`,
           `Loop name: ${result.data.loopName}`,
           `Worktree: ${result.data.worktreeDir}`,
           `Branch: ${result.data.worktreeBranch ?? 'unknown'}`,
           `Max iterations: ${maxInfo}`,
           '',
-          'Your session has been warped into the worktree and registered as the loop executor.',
-          'Continue executing the goal in this session — the loop runtime will keep the watchdog running.',
+          'A new code session has been created in the worktree with the goal as the initial prompt.',
+          'The loop runtime will keep the watchdog running.',
           'The user can run loop-status or loop-cancel later if needed.',
         ]
 

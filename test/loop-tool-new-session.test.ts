@@ -180,7 +180,7 @@ describe('execute-goal tool', () => {
     expect((forgeClient.workspace.warp as any).mock.calls.length).toBe(0)
   })
 
-  test('dispatches a managed goal loop: warps the current session, never creates a session, persists goal text', async () => {
+  test('dispatches a managed goal loop in a new worktree session and persists goal text', async () => {
     const { tools, forgeClient, loopService } = setupTools()
 
     const result = await tools['execute-goal'].execute(
@@ -189,24 +189,23 @@ describe('execute-goal tool', () => {
     )
 
     expect(typeof result === 'string' && result.includes('Goal loop activated')).toBe(true)
-    expect(result).toContain('src-session')
-    expect(result).toContain('no new session created')
+    expect(result).toContain('ses_fake_1')
+    expect(result).toContain('new dedicated session')
 
-    // Never create a new executor session
-    expect((forgeClient.session.create as any).mock.calls.length).toBe(0)
+    expect((forgeClient.session.create as any).mock.calls.length).toBe(1)
 
-    // Workspace created and the current session warped into it
     expect((forgeClient.workspace.create as any).mock.calls.length).toBe(1)
     expect((forgeClient.workspace.warp as any).mock.calls.length).toBe(1)
     const warpArgs = (forgeClient.workspace.warp as any).mock.calls[0][0]
-    expect(warpArgs.sessionID).toBe('src-session')
+    expect(warpArgs.sessionID).toBe('ses_fake_1')
 
-    // Persisted goal-loop state (no plan row)
     const active = loopService.listActive()
     expect(active.length).toBe(1)
     const state = active[0]
     expect(state.kind).toBe('goal')
-    expect(state.sessionId).toBe('src-session')
+    expect(state.sessionId).toBe('ses_fake_1')
+    expect(state.executorSessionId).toBe('ses_fake_1')
+    expect(state.hostSessionId).toBe('src-session')
     expect(state.goal).toBe('Ship the execute-goal feature end to end')
     expect(state.phase).toBe('coding')
     expect(state.totalSections).toBe(0)

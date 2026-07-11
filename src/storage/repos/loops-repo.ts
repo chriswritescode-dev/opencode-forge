@@ -69,7 +69,15 @@ export interface LoopsRepo {
   replaceSession(
     projectId: string,
     loopName: string,
-    opts: { sessionId: string; phase: LoopRow['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }
+    opts: {
+      sessionId: string
+      phase: LoopRow['phase']
+      iteration?: number
+      resetError?: boolean
+      auditCount?: number
+      lastAuditResult?: string | null
+      executorSessionId?: string | null
+    }
   ): void
   restart(
     projectId: string,
@@ -314,7 +322,8 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       current_session_id = ?,
       phase = ?,
       iteration = COALESCE(?, iteration),
-      audit_count = COALESCE(?, audit_count)
+      audit_count = COALESCE(?, audit_count),
+      executor_session_id = COALESCE(?, executor_session_id)
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -500,7 +509,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     replaceSession(
       projectId: string,
       loopName: string,
-      opts: { sessionId: string; phase: LoopRow['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null }
+      opts: { sessionId: string; phase: LoopRow['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null; executorSessionId?: string | null }
     ): void {
       const runTxn = db.transaction(() => {
         replaceSessionStmt.run(
@@ -508,6 +517,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
           opts.phase,
           opts.iteration ?? null,
           opts.auditCount ?? null,
+          opts.executorSessionId ?? null,
           projectId,
           loopName
         )

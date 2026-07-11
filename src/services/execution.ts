@@ -220,13 +220,13 @@ export function buildStartLoopCommand(input: BuildStartLoopCommandInput): StartL
 
 export interface StartGoalCommand {
   type: 'goal.start'
-  /** Free-text goal the invoking session will continue executing. Must be non-blank. */
+  /** Free-text goal that will be sent as the initial prompt to a new dedicated code session. Must be non-blank. */
   goal: string
   title?: string
   loopName?: string
   maxIterations?: number
   hostSessionId?: string
-  /** The already-active session that will be warped into the worktree and registered as the loop executor. */
+  /** The invoking session; used only as hostSessionId and must never be aborted/deleted. */
   executorSessionId: string
 }
 
@@ -1267,6 +1267,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     }
 
     const title = command.title?.trim() || deriveTitleFromGoal(goal)
+    const sessionTitle = formatLoopSessionTitle(title, { iteration: 1, currentSectionIndex: 0, totalSections: 0 })
     const baseName = command.loopName?.trim() ? slugify(command.loopName) : slugify(title)
     const uniqueLoopName = deps.loop.generateUniqueLoopName(baseName)
 
@@ -1277,17 +1278,26 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const resolvedAuditorVariant = deps.config.auditorVariant
     const hostSessionId = command.hostSessionId ?? ctx.sourceSessionId ?? executorSessionId
 
-    // Track newly-created resources for rollback. The executor session is the
-    // caller's active session and must NEVER be aborted/deleted on failure.
+    let createdSessionId: string | null = null
     let createdWorkspaceId: string | undefined
     let hostWorktreeDir: string | undefined
     let worktreeBranch: string | undefined
     let loopStatePersisted = false
+    let sandboxStarted = false
+    let sandboxStartAttempted = false
+    let sandboxContainer: string | undefined
 
     const rollbackGoalStart = async (): Promise<void> => {
+      if (createdSessionId) {
+        await deps.client.session.abort({ sessionID: createdSessionId }).catch(() => {})
+      }
       if (loopStatePersisted) {
         deps.loop.service.deleteState(uniqueLoopName)
         loopStatePersisted = false
+      }
+      if ((sandboxStarted || sandboxStartAttempted) && deps.sandboxManager) {
+        await deps.sandboxManager.stop(uniqueLoopName).catch(() => {})
+        sandboxContainer = undefined
       }
       if (createdWorkspaceId) {
         await deps.client.workspace.remove({ id: createdWorkspaceId }).catch(() => {})
@@ -1303,8 +1313,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     }
 
     try {
-      const { createBuiltinWorktreeWorkspace, bindSessionToWorkspace } = await import('../workspace/forge-worktree')
-
+      const { createBuiltinWorktreeWorkspace } = await import('../workspace/forge-worktree')
       const wsResult = await createBuiltinWorktreeWorkspace(
         deps.client,
         { loopName: uniqueLoopName, directory: ctx.directory },
@@ -1320,26 +1329,58 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       worktreeBranch = ws.branch
       createdWorkspaceId = ws.workspaceId
 
-      // Bind the EXISTING executor session to the workspace. Never call session.create.
-      try {
-        await bindSessionToWorkspace(
-          deps.client,
-          createdWorkspaceId,
-          executorSessionId,
-          deps.logger,
-          { loopName: uniqueLoopName },
-          deps.workspaceStatusRegistry,
-        )
-      } catch (bindErr) {
-        deps.logger.error('handleStartGoal: failed to bind executor session to workspace', bindErr)
+      const sandboxEnabled = isSandboxEnabled(deps.config, deps.sandboxManager)
+      const permissionRuleset = buildLoopPermissionRuleset({ allowDirectories: resolveLoopAllowedDirectories(deps.config) })
+
+      const createResult = await createLoopSessionWithWorkspace({
+        client: deps.client,
+        title: sessionTitle,
+        directory: hostWorktreeDir!,
+        permission: permissionRuleset,
+        workspaceId: createdWorkspaceId,
+        loopName: uniqueLoopName,
+        logPrefix: 'handleStartGoal',
+        logger: deps.logger,
+        workspaceStatusRegistry: deps.workspaceStatusRegistry,
+      })
+      if (!createResult) {
+        deps.logger.error('handleStartGoal: failed to create session')
         await rollbackGoalStart()
-        return fail('internal_error', 500, 'Failed to bind executor session to workspace')
+        return fail('internal_error', 500, 'Failed to create goal session')
+      }
+      createdSessionId = createResult.sessionId
+
+      await selectInitialWorktreeSession(createdSessionId, createResult.boundWorkspaceId, 'goal start', {
+        selectSession: true,
+        logger: deps.logger,
+        workspaceStatusRegistry: deps.workspaceStatusRegistry,
+        selectSessionFn: (sel) => selectSessionBestEffort(deps.client, deps.directory, deps.logger, sel),
+      })
+
+      if (sandboxEnabled && deps.sandboxManager) {
+        const existingSandbox = deps.sandboxManager.getActive(uniqueLoopName)
+        if (existingSandbox) {
+          sandboxContainer = existingSandbox.containerName
+          sandboxStarted = true
+          deps.logger.log(`handleStartGoal: sandbox container ${existingSandbox.containerName} already provisioned`)
+        } else {
+          try {
+            sandboxStartAttempted = true
+            const result = await deps.sandboxManager.start(uniqueLoopName, hostWorktreeDir!)
+            sandboxContainer = result.containerName
+            sandboxStarted = true
+            deps.logger.log(`handleStartGoal: sandbox container ${result.containerName} started`)
+          } catch (sandboxErr) {
+            deps.logger.error('handleStartGoal: failed to start sandbox; rolling back', sandboxErr)
+            await rollbackGoalStart()
+            return fail('internal_error', 500, 'Failed to start sandbox')
+          }
+        }
       }
 
-      // Persist goal-loop state: kind='goal', phase='coding', iteration 1, zero sections.
       const state: import('../loop/state').LoopState = {
         active: true,
-        sessionId: executorSessionId,
+        sessionId: createdSessionId,
         loopName: uniqueLoopName,
         worktreeDir: hostWorktreeDir,
         projectDir: ctx.directory,
@@ -1352,13 +1393,15 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         auditCount: 0,
         status: 'running',
         worktree: true,
+        sandbox: sandboxEnabled,
+        sandboxContainer,
         executionModel: resolvedExecutionModel,
         auditorModel: resolvedAuditorModel,
         executionVariant: resolvedExecutionVariant,
         auditorVariant: resolvedAuditorVariant,
         workspaceId: createdWorkspaceId,
         hostSessionId,
-        executorSessionId,
+        executorSessionId: createdSessionId,
         currentSectionIndex: 0,
         totalSections: 0,
         finalAuditDone: false,
@@ -1368,21 +1411,35 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       deps.loop.service.setState(uniqueLoopName, state)
       loopStatePersisted = true
-      deps.loop.service.registerLoopSession(executorSessionId, uniqueLoopName)
+      deps.loop.service.registerLoopSession(createdSessionId, uniqueLoopName)
 
-      deps.logger.log(`handleStartGoal: goal loop ${uniqueLoopName} started; executor session=${executorSessionId} warped to ${hostWorktreeDir}`)
+      deps.logger.log(`handleStartGoal: goal loop ${uniqueLoopName} started; new session=${createdSessionId} worktree=${hostWorktreeDir}`)
 
-      // Start the watchdog so the loop runtime observes the executor session.
+      const parsedModel = parseModelString(resolvedExecutionModel)
+      const workspaceParam = createdWorkspaceId ? { workspace: createdWorkspaceId } : {}
+      const initialPrompt = deps.loop.service.buildContinuationPrompt(state)
+      try {
+        await deps.client.session.promptAsync({
+          sessionID: createdSessionId,
+          directory: hostWorktreeDir!,
+          parts: [{ type: 'text' as const, text: initialPrompt }],
+          agent: 'code',
+          ...workspaceParam,
+          ...(parsedModel ? { model: parsedModel } : {}),
+        })
+      } catch (promptErr) {
+        deps.logger.error('handleStartGoal: failed to send initial prompt', promptErr)
+        await rollbackGoalStart()
+        return fail('prompt_failed', 502, 'Goal session created but failed to send prompt')
+      }
+
       if (deps.loopHandler) {
         deps.loopHandler.startWatchdog(uniqueLoopName)
       }
 
-      // No initial executor prompt is sent: the slash-command code agent keeps
-      // executing the goal in its already-active session.
-
       return ok({
         operation: 'goal.start',
-        sessionId: executorSessionId,
+        sessionId: createdSessionId,
         loopName: uniqueLoopName,
         worktreeDir: hostWorktreeDir,
         worktreeBranch,
