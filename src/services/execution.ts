@@ -17,6 +17,7 @@ import { extractPlanExecutionMetadata } from '../utils/plan-execution'
 import { parseModelString } from '../utils/model-fallback'
 
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
+import { slugify } from '../utils/logger'
 import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories } from '../constants/loop'
 import { findPartialMatch } from '../utils/partial-match'
 import { isSandboxEnabled } from '../sandbox/context'
@@ -217,6 +218,18 @@ export function buildStartLoopCommand(input: BuildStartLoopCommandInput): StartL
   }
 }
 
+export interface StartGoalCommand {
+  type: 'goal.start'
+  /** Free-text goal the invoking session will continue executing. Must be non-blank. */
+  goal: string
+  title?: string
+  loopName?: string
+  maxIterations?: number
+  hostSessionId?: string
+  /** The already-active session that will be warped into the worktree and registered as the loop executor. */
+  executorSessionId: string
+}
+
 export interface RestartLoopCommand {
   type: 'loop.restart'
   selector: LoopSelector
@@ -241,6 +254,7 @@ export type ForgeExecutionCommand =
   | ExecutePlanNewSessionCommand
   | ExecutePlanHereCommand
   | StartLoopCommand
+  | StartGoalCommand
   | RestartLoopCommand
   | CancelLoopCommand
   | GetLoopStatusCommand
@@ -293,6 +307,18 @@ export interface LoopStartedResult {
   deduped?: boolean
 }
 
+export interface GoalStartedResult {
+  operation: 'goal.start'
+  sessionId: string
+  loopName: string
+  worktreeDir?: string
+  worktreeBranch?: string
+  workspaceId?: string
+  hostSessionId?: string
+  maxIterations: number
+  goal: string
+}
+
 export interface LoopRestartedResult {
   operation: 'loop.restart'
   loopName: string
@@ -320,6 +346,8 @@ export interface LoopCancelledResult {
 export interface LoopStatusView {
   loopName: string
   displayName: string
+  kind: 'plan' | 'goal'
+  goal?: string
   status: 'running' | 'completed' | 'cancelled' | 'errored' | 'stalled'
   phase?: string
   iteration: number
@@ -370,6 +398,7 @@ export type ForgeExecutionResult<C extends ForgeExecutionCommand> =
   C extends ExecutePlanNewSessionCommand ? PlanExecutionStartedResult :
   C extends ExecutePlanHereCommand ? PlanExecutionStartedResult :
   C extends StartLoopCommand ? LoopStartedResult :
+  C extends StartGoalCommand ? GoalStartedResult :
   C extends RestartLoopCommand ? LoopRestartedResult :
   C extends CancelLoopCommand ? LoopCancelledResult :
   C extends GetLoopStatusCommand ? LoopStatusResult :
@@ -1209,7 +1238,171 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       inFlightLoopStarts.delete(dedupeKey)
     }
   }
-  
+
+  /**
+   * Derive a short title from a goal's first non-empty line, capped to a bounded length.
+   */
+  function deriveTitleFromGoal(goal: string): string {
+    const firstLine = goal.split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? goal.trim()
+    const cap = 80
+    return firstLine.length > cap ? `${firstLine.slice(0, cap - 1)}…` : firstLine
+  }
+
+  async function handleStartGoal(
+    ctx: ForgeExecutionRequestContext,
+    command: StartGoalCommand,
+  ): Promise<ForgeExecutionResponse<GoalStartedResult>> {
+    if (deps.config.loop?.enabled === false) {
+      return fail('disabled', 403, 'Loops are disabled in plugin config')
+    }
+
+    const goal = (command.goal ?? '').trim()
+    if (!goal) {
+      return fail('bad_request', 400, 'Goal text is required')
+    }
+
+    const executorSessionId = command.executorSessionId
+    if (!executorSessionId) {
+      return fail('bad_request', 400, 'executorSessionId is required')
+    }
+
+    const title = command.title?.trim() || deriveTitleFromGoal(goal)
+    const baseName = command.loopName?.trim() ? slugify(command.loopName) : slugify(title)
+    const uniqueLoopName = deps.loop.generateUniqueLoopName(baseName)
+
+    const maxIterations = command.maxIterations ?? deps.config.loop?.defaultMaxIterations ?? 0
+    const resolvedExecutionModel = deps.config.executionModel
+    const resolvedAuditorModel = deps.config.auditorModel
+    const resolvedExecutionVariant = deps.config.executionVariant
+    const resolvedAuditorVariant = deps.config.auditorVariant
+    const hostSessionId = command.hostSessionId ?? ctx.sourceSessionId ?? executorSessionId
+
+    // Track newly-created resources for rollback. The executor session is the
+    // caller's active session and must NEVER be aborted/deleted on failure.
+    let createdWorkspaceId: string | undefined
+    let hostWorktreeDir: string | undefined
+    let worktreeBranch: string | undefined
+    let loopStatePersisted = false
+
+    const rollbackGoalStart = async (): Promise<void> => {
+      if (loopStatePersisted) {
+        deps.loop.service.deleteState(uniqueLoopName)
+        loopStatePersisted = false
+      }
+      if (createdWorkspaceId) {
+        await deps.client.workspace.remove({ id: createdWorkspaceId }).catch(() => {})
+      }
+      if (hostWorktreeDir) {
+        const { cleanupLoopWorktree } = await import('../utils/worktree-cleanup')
+        await cleanupLoopWorktree({
+          worktreeDir: hostWorktreeDir,
+          logPrefix: 'handleStartGoal',
+          logger: deps.logger,
+        })
+      }
+    }
+
+    try {
+      const { createBuiltinWorktreeWorkspace, bindSessionToWorkspace } = await import('../workspace/forge-worktree')
+
+      const wsResult = await createBuiltinWorktreeWorkspace(
+        deps.client,
+        { loopName: uniqueLoopName, directory: ctx.directory },
+        deps.logger,
+        deps.workspaceStatusRegistry,
+      )
+      if (!wsResult.ok) {
+        deps.logger.error(`handleStartGoal: failed to create worktree workspace (${wsResult.error.reason})`, wsResult.error.cause ?? '')
+        return fail('internal_error', 500, wsResult.error.message, { reason: wsResult.error.reason })
+      }
+      const ws = wsResult.workspace
+      hostWorktreeDir = ws.directory
+      worktreeBranch = ws.branch
+      createdWorkspaceId = ws.workspaceId
+
+      // Bind the EXISTING executor session to the workspace. Never call session.create.
+      let bindFailed = false
+      try {
+        await bindSessionToWorkspace(
+          deps.client,
+          createdWorkspaceId,
+          executorSessionId,
+          deps.logger,
+          { loopName: uniqueLoopName },
+          deps.workspaceStatusRegistry,
+        )
+      } catch (bindErr) {
+        deps.logger.error('handleStartGoal: failed to bind executor session to workspace', bindErr)
+        bindFailed = true
+      }
+
+      if (bindFailed) {
+        await rollbackGoalStart()
+        return fail('internal_error', 500, 'Failed to bind executor session to workspace')
+      }
+
+      // Persist goal-loop state: kind='goal', phase='coding', iteration 1, zero sections.
+      const state: import('../loop/state').LoopState = {
+        active: true,
+        sessionId: executorSessionId,
+        loopName: uniqueLoopName,
+        worktreeDir: hostWorktreeDir,
+        projectDir: ctx.directory,
+        worktreeBranch,
+        iteration: 1,
+        maxIterations,
+        startedAt: new Date().toISOString(),
+        phase: 'coding',
+        errorCount: 0,
+        auditCount: 0,
+        status: 'running',
+        worktree: true,
+        executionModel: resolvedExecutionModel,
+        auditorModel: resolvedAuditorModel,
+        executionVariant: resolvedExecutionVariant,
+        auditorVariant: resolvedAuditorVariant,
+        workspaceId: createdWorkspaceId,
+        hostSessionId,
+        executorSessionId,
+        currentSectionIndex: 0,
+        totalSections: 0,
+        finalAuditDone: false,
+        kind: 'goal',
+        goal,
+      }
+
+      deps.loop.service.setState(uniqueLoopName, state)
+      loopStatePersisted = true
+      deps.loop.service.registerLoopSession(executorSessionId, uniqueLoopName)
+
+      deps.logger.log(`handleStartGoal: goal loop ${uniqueLoopName} started; executor session=${executorSessionId} warped to ${hostWorktreeDir}`)
+
+      // Start the watchdog so the loop runtime observes the executor session.
+      if (deps.loopHandler) {
+        deps.loopHandler.startWatchdog(uniqueLoopName)
+      }
+
+      // No initial executor prompt is sent: the slash-command code agent keeps
+      // executing the goal in its already-active session.
+
+      return ok({
+        operation: 'goal.start',
+        sessionId: executorSessionId,
+        loopName: uniqueLoopName,
+        worktreeDir: hostWorktreeDir,
+        worktreeBranch,
+        workspaceId: createdWorkspaceId,
+        hostSessionId,
+        maxIterations,
+        goal,
+      })
+    } catch (err) {
+      deps.logger.error('handleStartGoal: unexpected error', err)
+      await rollbackGoalStart()
+      return fail('internal_error', 500, 'Failed to start goal loop')
+    }
+  }
+
   async function handleLoopStatus(
     _ctx: ForgeExecutionRequestContext,
     command: GetLoopStatusCommand,
@@ -1304,6 +1497,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       return {
         loopName: state.loopName,
         displayName: state.loopName, // Could extract from plan if needed
+        kind: state.kind ?? 'plan',
+        goal: state.goal,
         status: statusFromState(state),
         phase: state.phase,
         iteration: state.iteration,
@@ -1481,7 +1676,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             auditorVariant: latestState.auditorVariant,
             workspaceId: latestState.workspaceId,
             hostSessionId: latestState.hostSessionId,
+            executorSessionId: latestState.executorSessionId,
             sandbox: latestState.sandbox,
+            kind: latestState.kind,
+            goal: latestState.goal,
           })
         }
       }
@@ -1557,8 +1755,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         selectSessionFn: (sel) => selectSessionBestEffort(deps.client, deps.directory, deps.logger, sel),
       })
 
-      // Unified section extraction on restart — preserve existing progress if sections exist
-      if (!stoppedState.totalSections) {
+      // Unified section extraction on restart — preserve existing progress if sections exist.
+      // Goal loops never decompose: they carry goal text, not a plan, so applying plan
+      // decomposition would reinterpret the goal as a plan and corrupt the loop.
+      if (!stoppedState.totalSections && stoppedState.kind !== 'goal') {
         const planText = stoppedState.prompt ?? ''
         const { totalSections } = applyPlanDecomposition({
           projectId: ctx.projectId,
@@ -1605,9 +1805,15 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         auditorVariant: stoppedState.auditorVariant,
         workspaceId: stoppedState.workspaceId,
         hostSessionId: stoppedState.hostSessionId,
+        // A restart creates a fresh executor session. For goal loops that session
+        // becomes the new warped executor; plan loops have no retained executor.
+        executorSessionId: stoppedState.kind === 'goal' ? effectiveSessionId : undefined,
         currentSectionIndex: stoppedState.currentSectionIndex,
         totalSections: stoppedState.totalSections,
         finalAuditDone: stoppedState.finalAuditDone,
+        // Goal loops preserve their discriminator and goal text across restart.
+        kind: stoppedState.kind,
+        goal: stoppedState.goal,
       }
       // Build appropriate prompt based on persisted state
       let promptText: string
@@ -1616,6 +1822,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       if (stoppedState.phase === 'post_action') {
         postActionCfg = resolvePostActionConfig(deps.config)
         promptText = deps.loop.service.buildPostActionPrompt(stoppedState, { skill: postActionCfg.skill, prompt: postActionCfg.prompt })
+      } else if (stoppedState.kind === 'goal') {
+        // Goal loops have no plan, sections, or approval flow — restate the goal
+        // directly as a fresh coding pass. No initial audit findings on restart.
+        promptText = deps.loop.service.buildContinuationPrompt(stoppedState, undefined)
       } else if (stoppedState.totalSections > 0) {
         // Use persisted section state to build the correct section prompt
         if (stoppedState.phase === 'final_auditing') {
@@ -1654,6 +1864,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         totalSections: newState.totalSections,
         finalAuditDone: newState.finalAuditDone,
         startedAt: new Date(newState.startedAt).getTime(),
+        executorSessionId: newState.executorSessionId ?? null,
       })
 
       deps.loop.service.registerLoopSession(effectiveSessionId, stoppedState.loopName)
@@ -1773,6 +1984,8 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         return handlePlanHere(ctx, command) as Promise<ForgeExecutionResponse<ForgeExecutionResult<C>>>
       case 'loop.start':
         return handleStartLoop(ctx, command) as Promise<ForgeExecutionResponse<ForgeExecutionResult<C>>>
+      case 'goal.start':
+        return handleStartGoal(ctx, command) as Promise<ForgeExecutionResponse<ForgeExecutionResult<C>>>
       case 'loop.status':
         return handleLoopStatus(ctx, command) as Promise<ForgeExecutionResponse<ForgeExecutionResult<C>>>
       case 'loop.cancel':

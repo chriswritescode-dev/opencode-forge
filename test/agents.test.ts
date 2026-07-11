@@ -58,6 +58,7 @@ describe('Agent definitions', () => {
       expect(auditorAgent.tools?.exclude).toContain('plan')
       expect(auditorAgent.tools?.exclude).toContain('plan_exit')
       expect(auditorAgent.tools?.exclude).toContain('execute-plan')
+      expect(auditorAgent.tools?.exclude).toContain('execute-goal')
       expect(auditorAgent.tools?.exclude).toContain('loop-cancel')
       expect(auditorAgent.tools?.exclude).toContain('loop-status')
     })

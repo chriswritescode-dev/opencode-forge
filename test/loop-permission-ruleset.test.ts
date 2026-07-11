@@ -29,6 +29,7 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'plan_enter',         pattern: '*', action: 'deny' },
       { permission: 'plan_exit',          pattern: '*', action: 'deny' },
       { permission: 'execute-plan',       pattern: '*', action: 'deny' },
+      { permission: 'execute-goal',       pattern: '*', action: 'deny' },
       { permission: 'question',           pattern: '*', action: 'deny' },
       { permission: 'loop-cancel',        pattern: '*', action: 'deny' },
       { permission: 'loop-status',        pattern: '*', action: 'deny' },
@@ -99,6 +100,7 @@ describe('buildAuditSessionPermissionRuleset', () => {
     expect(rules.some(r => r.permission === 'plan_enter' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'plan_exit' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'execute-plan' && r.pattern === '*' && r.action === 'deny')).toBe(true)
+    expect(rules.some(r => r.permission === 'execute-goal' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'question' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'loop-cancel' && r.pattern === '*' && r.action === 'deny')).toBe(true)
     expect(rules.some(r => r.permission === 'loop-status' && r.pattern === '*' && r.action === 'deny')).toBe(true)

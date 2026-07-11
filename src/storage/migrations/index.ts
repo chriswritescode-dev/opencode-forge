@@ -323,5 +323,55 @@ export const migrations: Migration[] = [
       db.run(loadSql('134_add_post_action_report.sql'))
     },
   },
+  {
+    id: '135',
+    description: 'Add loop_kind discriminator to loops and goal text to loop_large_fields',
+    // Guard each ALTER independently so partial legacy schemas (one column
+    // present, the other absent) repair correctly. The migration runner wraps
+    // apply() in a transaction, so both ALTERs that do run land atomically.
+    apply: (db: Database) => {
+      const loopsCols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      if (!loopsCols.some((c) => c.name === 'loop_kind')) {
+        db.run('ALTER TABLE loops ADD COLUMN loop_kind TEXT NOT NULL DEFAULT \'plan\'')
+      }
+      const largeCols = db.prepare('PRAGMA table_info(loop_large_fields)').all() as Array<{ name: string }>
+      if (!largeCols.some((c) => c.name === 'goal')) {
+        db.run('ALTER TABLE loop_large_fields ADD COLUMN goal TEXT')
+      }
+    },
+  },
+  {
+    id: '136',
+    description: 'Add executor_session_id column to loops for goal-loop executor binding',
+    // Goal loops keep the warped executor session alive across audits and must
+    // return dirty-audit findings to it. host_session_id is the post-completion
+    // TUI redirect target and may differ from the executor (notably after a
+    // restart), so a dedicated, persisted executor binding is required.
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      if (cols.some((c) => c.name === 'executor_session_id')) return
+      db.run('ALTER TABLE loops ADD COLUMN executor_session_id TEXT')
+    },
+  },
+  {
+    id: '137',
+    description: 'Replace idx_loops_session with partial unique index on running rows; add executor participant lookup index',
+    apply: (db: Database) => {
+      const idxRow = db.prepare(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_loops_session'"
+      ).get() as { sql: string | null } | null
+
+      if (!idxRow || !idxRow.sql || !idxRow.sql.includes("status = 'running'")) {
+        db.run('DROP INDEX IF EXISTS idx_loops_session')
+        db.run(
+          "CREATE UNIQUE INDEX IF NOT EXISTS idx_loops_session ON loops(project_id, current_session_id) WHERE status = 'running'"
+        )
+      }
+
+      db.run(
+        "CREATE INDEX IF NOT EXISTS idx_loops_executor_session ON loops(project_id, executor_session_id) WHERE status = 'running' AND executor_session_id IS NOT NULL"
+      )
+    },
+  },
 
 ]

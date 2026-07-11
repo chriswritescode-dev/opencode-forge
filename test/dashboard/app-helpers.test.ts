@@ -58,6 +58,7 @@ function mockLoopRow(overrides: Partial<DashboardLoop['loop']> = {}): DashboardL
     finalAuditDone: 0,
     executionVariant: null,
     auditorVariant: null,
+    kind: 'plan',
     ...overrides,
   }
 }

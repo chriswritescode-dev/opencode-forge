@@ -93,7 +93,7 @@ Execution flow dialog with mode and model selection:
 ## Features
 
 - **Plans** — architect produces marked plans that are auto-captured to SQL storage
-- **Execution** — `New session`, `Execute here`, and `Loop` launch paths for approved plans; loops can also target a configured remote opencode server (see [Configuration](_media/configuration.md#remotes))
+- **Execution** — approved-plan launch paths plus direct `/execute-goal` work in the invoking session; plan loops can also target a configured remote opencode server (see [Configuration](_media/configuration.md#remotes))
 - **Loops** — iterative coding/auditing with isolated git worktree and optional Docker sandbox
 - **Review Findings** — persistent, loop-scoped review findings across loop sessions
 - **TUI** — sidebar and execution dialog
@@ -124,7 +124,7 @@ Forge provides these tool groups:
 
 - **Plan tools** — `plan-read`, `section-read`
 - **Review tools** — `review-write`, `review-read`, `review-delete`
-- **Loop tools** — `execute-plan`, `loop-cancel`, `loop-status`
+- **Loop tools** — `execute-plan`, `execute-goal`, `loop-cancel`, `loop-status`
 - **Sandbox shell** — `sh` when a sandbox manager is available
 
 Loops always run in an isolated git worktree; Docker sandbox is used automatically when available.
@@ -132,6 +132,7 @@ Loops always run in an isolated git worktree; Docker sandbox is used automatical
 | Tool | Description |
 |------|-------------|
 | `execute-plan` | Execute a plan using an iterative development loop in an isolated git worktree, or `mode: new-session` to launch it in a fresh standalone session. Args: `title` required; `plan`, `loopName`, `hostSessionId`, `mode` optional. |
+| `execute-goal` | Execute a non-empty goal in the invoking session inside an isolated worktree. Fresh auditors run on idle until no findings remain. |
 | `loop-cancel` | Cancel an active loop by worktree name |
 | `loop-status` | List active/recent loops or get detailed status by worktree name, including cumulative token usage when available. Supports `restart=true` to restart any non-completed loop (`running`, `cancelled`, `errored`, `stalled`). Completed loops are history-only and cannot be restarted. |
 
@@ -144,6 +145,7 @@ Loops always run in an isolated git worktree; Docker sandbox is used automatical
 | `/review` | Run a code review on current changes | auditor (subtask) |
 | `/review-plan` | Review a completed implementation against its original plan | auditor (subtask) |
 | `/execute-plan` | Start an iterative development loop in a worktree (or a fresh session with `mode: new-session`) | code |
+| `/execute-goal` | Execute a goal directly in the invoking session inside a managed worktree loop | code |
 | `/loop-status` | Check status of all active loops | code |
 | `/loop-cancel` | Cancel the active loop | code |
 

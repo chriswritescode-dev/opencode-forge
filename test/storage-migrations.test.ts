@@ -703,3 +703,388 @@ test('migration 132 is idempotent on re-opened databases', () => {
 
   db2.close()
 })
+
+test('migration 135 adds loop_kind to loops and goal to loop_large_fields on fresh databases', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const loopsCols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+  expect(loopsCols.some((c) => c.name === 'loop_kind')).toBe(true)
+
+  const largeCols = db.prepare('PRAGMA table_info(loop_large_fields)').all() as Array<{ name: string }>
+  expect(largeCols.some((c) => c.name === 'goal')).toBe(true)
+
+  // Existing inserted rows default to kind='plan'
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-1', 'loop-plan', 'running', 'sess-1', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
+  `).run()
+  const row = db.prepare("SELECT loop_kind FROM loops WHERE project_id = 'proj-1' AND loop_name = 'loop-plan'").get() as { loop_kind: string }
+  expect(row.loop_kind).toBe('plan')
+
+  db.close()
+})
+
+const LEGACY_MIGRATION_IDS_THROUGH_134 = [
+  '100','101','102','103','105','106','107','108','110','111','112','113','114','115',
+  '116','117','118','119','120','121','122','123','124','125','126','127','128','129',
+  '130','131','132','133','134',
+]
+
+/**
+ * Build a legacy database frozen just before migration 135, simulating the
+ * post-134 schema. {@link partial} controls which (if any) of the two
+ * migration-135 columns already exist, to exercise partial-schema repair.
+ */
+function buildLegacyPost134Db(partial: { loopKind?: boolean; goal?: boolean } = {}): string {
+  const dbPath = createTempDb()
+  const db = new Database(dbPath)
+  db.run(`
+    CREATE TABLE migrations (
+      id TEXT PRIMARY KEY,
+      description TEXT NOT NULL,
+      applied_at INTEGER NOT NULL
+    );
+  `)
+  const loopKindCol = partial.loopKind ? 'loop_kind TEXT NOT NULL DEFAULT \'plan\',' : ''
+  const goalCol = partial.goal ? 'goal TEXT,' : ''
+  db.run(`
+    CREATE TABLE loops (
+      project_id           TEXT NOT NULL,
+      loop_name            TEXT NOT NULL,
+      status               TEXT NOT NULL CHECK(status IN ('running','completed','cancelled','errored','stalled')),
+      current_session_id   TEXT NOT NULL,
+      worktree             INTEGER NOT NULL,
+      worktree_dir         TEXT NOT NULL,
+      worktree_branch      TEXT,
+      project_dir          TEXT NOT NULL,
+      max_iterations       INTEGER NOT NULL,
+      iteration            INTEGER NOT NULL DEFAULT 0,
+      audit_count          INTEGER NOT NULL DEFAULT 0,
+      error_count          INTEGER NOT NULL DEFAULT 0,
+      phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing','final_auditing','post_action')),
+      execution_model      TEXT,
+      auditor_model        TEXT,
+      model_failed         INTEGER NOT NULL DEFAULT 0,
+      sandbox              INTEGER NOT NULL DEFAULT 0,
+      sandbox_container    TEXT,
+      started_at           INTEGER NOT NULL,
+      completed_at         INTEGER,
+      termination_reason   TEXT,
+      completion_summary   TEXT,
+      workspace_id         TEXT,
+      host_session_id      TEXT,
+      current_section_index INTEGER NOT NULL DEFAULT 0,
+      total_sections       INTEGER NOT NULL DEFAULT 0,
+      final_audit_done     INTEGER NOT NULL DEFAULT 0,
+      execution_variant    TEXT,
+      auditor_variant      TEXT,
+      ${loopKindCol}
+      PRIMARY KEY (project_id, loop_name)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_loops_session ON loops(project_id, current_session_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_loops_project_name ON loops(project_id, loop_name);
+
+    CREATE TABLE loop_large_fields (
+      project_id          TEXT NOT NULL,
+      loop_name           TEXT NOT NULL,
+      last_audit_result   TEXT,
+      post_action_report  TEXT,
+      ${goalCol}
+      PRIMARY KEY (project_id, loop_name),
+      FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
+    );
+
+    CREATE TABLE plans (
+      project_id   TEXT NOT NULL,
+      loop_name    TEXT,
+      session_id   TEXT,
+      content      TEXT NOT NULL,
+      updated_at   INTEGER NOT NULL,
+      CHECK (loop_name IS NOT NULL OR session_id IS NOT NULL),
+      CHECK (NOT (loop_name IS NOT NULL AND session_id IS NOT NULL)),
+      UNIQUE (project_id, loop_name),
+      UNIQUE (project_id, session_id)
+    );
+
+    CREATE TABLE review_findings (
+      project_id   TEXT NOT NULL,
+      loop_name    TEXT NOT NULL DEFAULT '',
+      file         TEXT NOT NULL,
+      line         INTEGER NOT NULL,
+      severity     TEXT NOT NULL CHECK(severity IN ('bug','warning')),
+      description  TEXT NOT NULL,
+      scenario     TEXT,
+      section_index INTEGER NOT NULL DEFAULT 0,
+      created_at   INTEGER NOT NULL,
+      PRIMARY KEY (project_id, loop_name, file, line, section_index)
+    );
+
+    CREATE TABLE section_plans (
+      project_id   TEXT NOT NULL,
+      loop_name    TEXT NOT NULL,
+      section_index INTEGER NOT NULL,
+      title        TEXT NOT NULL,
+      content      TEXT NOT NULL,
+      status       TEXT NOT NULL DEFAULT 'pending',
+      attempts     INTEGER NOT NULL DEFAULT 0,
+      started_at   INTEGER,
+      completed_at INTEGER,
+      summary_done TEXT,
+      summary_deviations TEXT,
+      summary_followups TEXT,
+      PRIMARY KEY (project_id, loop_name, section_index)
+    );
+
+    CREATE TABLE tui_preferences (
+      project_id TEXT PRIMARY KEY,
+      recent_models TEXT,
+      execution_preferences TEXT
+    );
+  `)
+  for (const id of LEGACY_MIGRATION_IDS_THROUGH_134) {
+    db.prepare('INSERT INTO migrations (id, description, applied_at) VALUES (?, ?, ?)').run(id, 'legacy', 1)
+  }
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-legacy', 'legacy-loop', 'running', 'sess-legacy', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
+  `).run()
+  db.prepare(`
+    INSERT INTO loop_large_fields (project_id, loop_name, last_audit_result)
+    VALUES ('proj-legacy', 'legacy-loop', 'audit text')
+  `).run()
+  db.close()
+  return dbPath
+}
+
+test('migration 135 backfills loop_kind=plan on legacy rows and accepts goal kind', () => {
+  const dbPath = buildLegacyPost134Db()
+
+  const migrated = openForgeDatabase(dbPath)
+
+  // loop_kind column now exists and legacy rows hydrate as 'plan'
+  const loopCols = migrated.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+  expect(loopCols.some((c) => c.name === 'loop_kind')).toBe(true)
+  const legacyRow = migrated.prepare("SELECT loop_kind FROM loops WHERE project_id = 'proj-legacy' AND loop_name = 'legacy-loop'").get() as { loop_kind: string }
+  expect(legacyRow.loop_kind).toBe('plan')
+
+  // goal column now exists on loop_large_fields
+  const largeCols = migrated.prepare('PRAGMA table_info(loop_large_fields)').all() as Array<{ name: string }>
+  expect(largeCols.some((c) => c.name === 'goal')).toBe(true)
+
+  // A goal loop row can be inserted with kind='goal' and goal text
+  migrated.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at, loop_kind)
+    VALUES ('proj-1', 'goal-loop', 'running', 'sess-goal', 0, '/tmp/wt', '/tmp/proj', 0, 1, 0, 0, 'coding', 1, 'goal')
+  `).run()
+  migrated.prepare(`
+    INSERT INTO loop_large_fields (project_id, loop_name, last_audit_result, goal)
+    VALUES ('proj-1', 'goal-loop', NULL, 'Ship the feature')
+  `).run()
+  const goalRow = migrated.prepare("SELECT loop_kind, goal FROM loops l JOIN loop_large_fields f ON l.project_id = f.project_id AND l.loop_name = f.loop_name WHERE l.loop_name = 'goal-loop'").get() as { loop_kind: string; goal: string }
+  expect(goalRow.loop_kind).toBe('goal')
+  expect(goalRow.goal).toBe('Ship the feature')
+
+  // Migration 135 recorded exactly once
+  const count = migrated.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('135') as { count: number }
+  expect(count.count).toBe(1)
+
+  migrated.close()
+})
+
+test('migration 135 is idempotent on re-opened databases', () => {
+  const dbPath = createTempDb()
+
+  const db1 = openForgeDatabase(dbPath)
+  db1.close()
+
+  const db2 = openForgeDatabase(dbPath)
+
+  const loopsCols = db2.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+  expect(loopsCols.some((c) => c.name === 'loop_kind')).toBe(true)
+  const largeCols = db2.prepare('PRAGMA table_info(loop_large_fields)').all() as Array<{ name: string }>
+  expect(largeCols.some((c) => c.name === 'goal')).toBe(true)
+
+  const count = db2.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('135') as { count: number }
+  expect(count.count).toBe(1)
+
+  db2.close()
+})
+
+test('migration 135 repairs partial legacy schema with only loop_kind present', () => {
+  // loop_kind already exists on loops, but goal is absent from loop_large_fields.
+  const dbPath = buildLegacyPost134Db({ loopKind: true })
+
+  const migrated = openForgeDatabase(dbPath)
+
+  // loop_kind preserved and still defaults the legacy row to 'plan'
+  const loopsCols = migrated.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+  expect(loopsCols.filter((c) => c.name === 'loop_kind').length).toBe(1)
+  const legacyRow = migrated.prepare("SELECT loop_kind FROM loops WHERE project_id = 'proj-legacy' AND loop_name = 'legacy-loop'").get() as { loop_kind: string }
+  expect(legacyRow.loop_kind).toBe('plan')
+
+  // goal column added
+  const largeCols = migrated.prepare('PRAGMA table_info(loop_large_fields)').all() as Array<{ name: string }>
+  expect(largeCols.filter((c) => c.name === 'goal').length).toBe(1)
+
+  const count = migrated.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('135') as { count: number }
+  expect(count.count).toBe(1)
+
+  migrated.close()
+})
+
+test('migration 135 repairs partial legacy schema with only goal present', () => {
+  // goal already exists on loop_large_fields, but loop_kind is absent on loops.
+  const dbPath = buildLegacyPost134Db({ goal: true })
+
+  const migrated = openForgeDatabase(dbPath)
+
+  // loop_kind added and backfills the pre-existing legacy row to 'plan'
+  const loopsCols = migrated.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+  expect(loopsCols.filter((c) => c.name === 'loop_kind').length).toBe(1)
+  const legacyRow = migrated.prepare("SELECT loop_kind FROM loops WHERE project_id = 'proj-legacy' AND loop_name = 'legacy-loop'").get() as { loop_kind: string }
+  expect(legacyRow.loop_kind).toBe('plan')
+
+  // goal column preserved (not duplicated)
+  const largeCols = migrated.prepare('PRAGMA table_info(loop_large_fields)').all() as Array<{ name: string }>
+  expect(largeCols.filter((c) => c.name === 'goal').length).toBe(1)
+
+  const count = migrated.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('135') as { count: number }
+  expect(count.count).toBe(1)
+
+  migrated.close()
+})
+
+test('migration 136 adds nullable executor_session_id column to loops on fresh databases', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string; notnull: number }>
+  const execCol = cols.find((c) => c.name === 'executor_session_id')
+  expect(execCol).toBeDefined()
+  // Nullable so plan loops (and legacy rows) can leave it unset.
+  expect(execCol!.notnull).toBe(0)
+
+  db.close()
+})
+
+test('migration 136 is idempotent on re-opened databases', () => {
+  const dbPath = createTempDb()
+
+  const db1 = openForgeDatabase(dbPath)
+  db1.close()
+
+  const db2 = openForgeDatabase(dbPath)
+
+  const cols = db2.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+  expect(cols.filter((c) => c.name === 'executor_session_id').length).toBe(1)
+
+  const count = db2.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('136') as { count: number }
+  expect(count.count).toBe(1)
+
+  db2.close()
+})
+
+test('migration 137 replaces idx_loops_session with partial unique index on running rows', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const idxRow = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_loops_session'"
+  ).get() as { sql: string } | null
+
+  expect(idxRow).not.toBeNull()
+  expect(idxRow!.sql).toContain('status = \'running\'')
+  expect(idxRow!.sql).toContain('UNIQUE')
+
+  db.close()
+})
+
+test('migration 137 adds idx_loops_executor_session partial index', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const idxRow = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_loops_executor_session'"
+  ).get() as { sql: string } | null
+
+  expect(idxRow).not.toBeNull()
+  expect(idxRow!.sql).toContain('status = \'running\'')
+  expect(idxRow!.sql).toContain('executor_session_id IS NOT NULL')
+
+  db.close()
+})
+
+test('migration 137 allows terminated loop session ID reuse', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-1', 'loop-a', 'running', 'reuse-sess', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
+  `).run()
+  db.prepare(`
+    UPDATE loops SET status = 'completed', completed_at = 2, termination_reason = 'done'
+    WHERE project_id = 'proj-1' AND loop_name = 'loop-a'
+  `).run()
+
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-1', 'loop-b', 'running', 'reuse-sess', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 2)
+  `).run()
+
+  const rows = db.prepare(
+    "SELECT loop_name, status FROM loops WHERE project_id = 'proj-1' AND current_session_id = 'reuse-sess' ORDER BY started_at"
+  ).all() as Array<{ loop_name: string; status: string }>
+
+  expect(rows).toHaveLength(2)
+  expect(rows[0].loop_name).toBe('loop-a')
+  expect(rows[0].status).toBe('completed')
+  expect(rows[1].loop_name).toBe('loop-b')
+  expect(rows[1].status).toBe('running')
+
+  db.close()
+})
+
+test('migration 137 preserves existing running loop unique session constraint', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-1', 'loop-a', 'running', 'dup-sess', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
+  `).run()
+
+  expect(() => {
+    db.prepare(`
+      INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+      VALUES ('proj-1', 'loop-b', 'running', 'dup-sess', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 2)
+    `).run()
+  }).toThrow(/UNIQUE constraint failed/)
+
+  db.close()
+})
+
+test('migration 137 is idempotent on re-opened databases', () => {
+  const dbPath = createTempDb()
+
+  const db1 = openForgeDatabase(dbPath)
+  db1.close()
+
+  const db2 = openForgeDatabase(dbPath)
+
+  const sessionIdx = db2.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_loops_session'"
+  ).get() as { sql: string } | null
+  expect(sessionIdx!.sql).toContain('status = \'running\'')
+
+  const execIdx = db2.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_loops_executor_session'"
+  ).get() as { sql: string } | null
+  expect(execIdx).not.toBeNull()
+
+  const count = db2.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('137') as { count: number }
+  expect(count.count).toBe(1)
+
+  db2.close()
+})

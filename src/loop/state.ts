@@ -27,11 +27,17 @@ interface LoopStateBase {
   auditorModel?: string
   workspaceId?: string
   hostSessionId?: string
+  /** Goal-loop executor session binding (the warped session kept alive across audits). Undefined for plan loops. */
+  executorSessionId?: string
   currentSectionIndex: number
   totalSections: number
   finalAuditDone: boolean
   executionVariant?: string
   auditorVariant?: string
+  /** Discriminator: plan loops persist a plan; goal loops persist goal text only. */
+  kind?: 'plan' | 'goal'
+  /** Goal text for goal loops. Undefined for plan loops. */
+  goal?: string
 }
 
 export interface CodingState extends LoopStateBase {
@@ -79,11 +85,14 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
     auditorModel: row.auditorModel ?? undefined,
     workspaceId: row.workspaceId ?? undefined,
     hostSessionId: row.hostSessionId ?? undefined,
+    executorSessionId: row.executorSessionId ?? undefined,
     currentSectionIndex: row.currentSectionIndex,
     totalSections: row.totalSections,
     finalAuditDone: row.finalAuditDone === 1,
     executionVariant: row.executionVariant ?? undefined,
     auditorVariant: row.auditorVariant ?? undefined,
+    kind: row.kind,
+    goal: large?.goal ?? undefined,
   }
 
   switch (row.phase) {
@@ -124,10 +133,12 @@ export function loopStateToRow(state: LoopState, projectId: string): Omit<LoopRo
     completionSummary: state.completionSummary ?? null,
     workspaceId: state.workspaceId ?? null,
     hostSessionId: state.hostSessionId ?? null,
+    executorSessionId: state.executorSessionId ?? null,
     currentSectionIndex: state.currentSectionIndex,
     totalSections: state.totalSections,
     finalAuditDone: state.finalAuditDone ? 1 : 0,
     executionVariant: state.executionVariant ?? null,
     auditorVariant: state.auditorVariant ?? null,
+    kind: state.kind ?? 'plan',
   }
 }

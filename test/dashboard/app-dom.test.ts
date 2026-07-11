@@ -43,6 +43,7 @@ function makeLoop(over: Record<string, any> = {}): any {
       finalAuditDone: 0,
       executionVariant: null,
       auditorVariant: null,
+      kind: 'plan',
       ...loopOver,
     },
     lastAuditResult: null,

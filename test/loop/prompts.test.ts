@@ -30,6 +30,12 @@ const defaultState = {
   finalAuditDone: false,
 }
 
+const goalState = {
+  ...defaultState,
+  kind: 'goal' as const,
+  goal: 'Add a /health endpoint that returns {"status":"ok"} and a test covering it.',
+}
+
 const sectionState = {
   ...defaultState,
   totalSections: 2,
@@ -417,6 +423,124 @@ describe('prompt builders (src/loop/prompts)', () => {
       })
       const result = buildFinalAuditFixPrompt(ctx, { ...sectionState }, 'audit text')
       expect(result).not.toContain('## Outstanding findings')
+    })
+  })
+
+  describe('goal-loop prompts', () => {
+    test('continuation/recovery restates the exact goal and forbids planning/approval flows', () => {
+      const ctx = makeCtx()
+      const result = buildContinuationPrompt(ctx, { ...goalState })
+      expect(result).toContain('## Goal')
+      expect(result).toContain(goalState.goal)
+      expect(result).toContain('Implement the goal above directly')
+      expect(result).toContain('Do not create a plan, decompose the goal into sections, or ask for approval')
+      expect(result).toContain('coder-decisions:start')
+      // Goal prompts must not include plan/section machinery
+      expect(result).not.toContain('## Master Plan')
+      expect(result).not.toContain('## Section plan')
+      expect(result).not.toContain('Prior Sections')
+      expect(result).not.toContain(SECTION_SUMMARY_START_MARKER)
+      expect(result).not.toContain('Implementation plan:')
+      expect(result).not.toContain('Plan completeness check:')
+    })
+
+    test('continuation includes auditor feedback and requires direct remediation', () => {
+      const ctx = makeCtx()
+      const result = buildContinuationPrompt(ctx, { ...goalState }, 'Bug: /health returns 500. Fix null check.')
+      expect(result).toContain('## Goal')
+      expect(result).toContain(goalState.goal)
+      expect(result).toContain('code auditor reviewed your changes')
+      expect(result).toContain('Bug: /health returns 500. Fix null check.')
+      expect(result).toContain('Fix them directly without creating a plan or asking for approval')
+    })
+
+    test('continuation lists outstanding review findings blocking completion', () => {
+      const ctx = makeCtx({
+        getOutstandingFindings: () => [
+          { file: 'src/health.ts', line: 12, severity: 'bug', description: 'Missing null check', scenario: null, loopName: 'test-loop', sectionIndex: null, projectId: 'p', createdAt: 0 },
+        ],
+      })
+      const result = buildContinuationPrompt(ctx, { ...goalState })
+      expect(result).toContain('Outstanding Review Findings (1)')
+      expect(result).toContain('`src/health.ts:12`')
+    })
+
+    test('continuation preserves recurring-findings escalation block', () => {
+      const findings: ReviewFindingRow[] = [
+        { file: 'src/bug.ts', line: 5, severity: 'bug', description: 'Recurring bug', scenario: null, loopName: 'test-loop', sectionIndex: null, projectId: 'p', createdAt: 0 },
+      ]
+      const recurrence = new Map<string, number>([['x:src/bug.ts:5', 3]])
+      const ctx = makeCtx({
+        getOutstandingFindings: (_loopName, severity) => severity === 'bug' ? findings : [],
+        getFindingRecurrence: () => recurrence,
+      })
+      const result = buildContinuationPrompt(ctx, { ...goalState })
+      expect(result).toContain('Recurring blocking findings')
+      expect(result).toContain('src/bug.ts:5')
+    })
+
+    test('audit prompt restates the goal, requires both goal completion and correctness', () => {
+      const ctx = makeCtx()
+      const result = buildAuditPrompt(ctx, { ...goalState, iteration: 2, phase: 'auditing' })
+      expect(result).toContain('Post-iteration 2 goal review')
+      expect(result).toContain('Goal:')
+      expect(result).toContain(goalState.goal)
+      expect(result).toContain('Goal completion:')
+      expect(result).toContain('Code correctness:')
+      expect(result).toContain('Existing review findings:')
+    })
+
+    test('audit prompt requires goal-incomplete bug findings on GOAL pseudo-path with line 1', () => {
+      const ctx = makeCtx()
+      const result = buildAuditPrompt(ctx, { ...goalState, phase: 'auditing' })
+      expect(result).toContain('severity: "bug"')
+      expect(result).toContain('`GOAL`')
+      expect(result).toContain('`line` = 1')
+      expect(result).toContain('delete it with review-delete')
+      expect(result).toContain('Zero remaining findings authorizes termination')
+      expect(result).toContain('Outstanding findings block loop termination')
+    })
+
+    test('audit prompt includes coder decisions block when present', () => {
+      const ctx = makeCtx({
+        getCoderDecisions: () => '### Decisions\n- Used existing route helper\n### Verification\n- `pnpm test`',
+      })
+      const result = buildAuditPrompt(ctx, { ...goalState, phase: 'auditing' })
+      expect(result).toContain('Coder decisions & verification notes')
+      expect(result).toContain('Used existing route helper')
+      expect(result).toContain('DELETE that finding with review-delete')
+    })
+
+    test('audit prompt omits coder decisions block when null', () => {
+      const ctx = makeCtx()
+      const result = buildAuditPrompt(ctx, { ...goalState, phase: 'auditing' })
+      expect(result).not.toContain('Coder decisions & verification notes')
+    })
+
+    test('audit prompt omits plan/section/final-audit machinery', () => {
+      const ctx = makeCtx()
+      const result = buildAuditPrompt(ctx, { ...goalState, phase: 'auditing' })
+      expect(result).not.toContain('Implementation plan:')
+      expect(result).not.toContain('Plan completeness check:')
+      expect(result).not.toContain('## Section')
+      expect(result).not.toContain('Section under audit')
+      expect(result).not.toContain('Master Plan')
+      expect(result).not.toContain('[Final integration audit]')
+      expect(result).not.toContain(SECTION_SUMMARY_START_MARKER)
+    })
+
+    test('audit prompt includes branch info when present', () => {
+      const ctx = makeCtx()
+      const result = buildAuditPrompt(ctx, { ...goalState, worktreeBranch: 'goal/health', phase: 'auditing' })
+      expect(result).toContain('(branch: goal/health)')
+    })
+
+    test('final_auditing phase on a goal loop does not route to final-audit prompt', () => {
+      const ctx = makeCtx()
+      const result = buildAuditPrompt(ctx, { ...goalState, phase: 'final_auditing' })
+      expect(result).toContain('Post-iteration 1 goal review')
+      expect(result).not.toContain('[Final integration audit]')
+      expect(result).not.toContain('Master Plan')
     })
   })
 })

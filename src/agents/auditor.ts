@@ -10,6 +10,7 @@ const AUDITOR_TOOL_EXCLUDES = [
   'plan',
   'plan_exit',
   'execute-plan',
+  'execute-goal',
   'loop-cancel',
   'loop-status',
   'launch-group',

@@ -115,6 +115,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       auditorModel: null,
       executionVariant: null,
       auditorVariant: null,
+      kind: 'plan',
       modelFailed: false,
       sandbox: false,
       sandboxContainer: null,
@@ -934,6 +935,10 @@ describe('handleLoopRestart restartability rules', () => {
     worktreeBranch: string | null
     projectDir: string
     workspaceId: string | null
+    kind: 'plan' | 'goal'
+    hostSessionId: string | null
+    executorSessionId: string | null
+    goal: string | null
   }> = {}) {
     const defaults = {
       loopName: 'test-loop',
@@ -949,6 +954,10 @@ describe('handleLoopRestart restartability rules', () => {
       worktreeBranch: null as string | null,
       projectDir: '/tmp',
       workspaceId: null as string | null,
+      kind: 'plan' as 'plan' | 'goal',
+      hostSessionId: null as string | null,
+      executorSessionId: null as string | null,
+      goal: null as string | null,
     }
     const opts = { ...defaults, ...overrides }
     loopsRepo.insert({
@@ -969,6 +978,7 @@ describe('handleLoopRestart restartability rules', () => {
       auditorModel: null,
       executionVariant: null,
       auditorVariant: null,
+      kind: opts.kind,
       modelFailed: false,
       sandbox: false,
       sandboxContainer: null,
@@ -977,11 +987,12 @@ describe('handleLoopRestart restartability rules', () => {
       terminationReason: opts.terminationReason,
       completionSummary: null,
       workspaceId: opts.workspaceId,
-      hostSessionId: null,
+      hostSessionId: opts.hostSessionId,
+      executorSessionId: opts.executorSessionId,
       currentSectionIndex: opts.currentSectionIndex,
       totalSections: opts.totalSections,
       finalAuditDone: 0,
-    }, { lastAuditResult: null })
+    }, { lastAuditResult: null, goal: opts.goal })
   }
 
   async function createMockService(opts?: { sandboxManager?: unknown }) {
@@ -997,6 +1008,7 @@ describe('handleLoopRestart restartability rules', () => {
       setPhase: noopFn,
       buildSectionInitialPrompt: () => 'section prompt',
       buildFinalAuditPrompt: () => 'audit prompt',
+      buildContinuationPrompt: () => 'goal restart prompt',
       generateUniqueLoopName: (name) => name,
     }
 
@@ -1360,5 +1372,45 @@ describe('handleLoopRestart restartability rules', () => {
 
     const newState = loopService.getActiveState(loopName)
     expect(newState).toBeNull()
+  })
+
+  test('goal loop restart repoints executorSessionId to the new session while preserving hostSessionId', async () => {
+    const loopName = 'goal-restart-binding'
+    insertLoop({
+      loopName,
+      status: 'cancelled',
+      terminationReason: 'user_aborted',
+      phase: 'auditing',
+      kind: 'goal',
+      // Pre-restart state: a stale executor binding and a distinct host redirect.
+      hostSessionId: 'original-host-session',
+      executorSessionId: 'original-executor-session',
+      goal: 'Ship the /health endpoint with tests.',
+    })
+
+    const { service, client } = await createMockService()
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName } },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const newState = loopService.getActiveState(loopName)!
+    expect(newState).not.toBeNull()
+    expect(newState.kind).toBe('goal')
+    expect(newState.goal).toBe('Ship the /health endpoint with tests.')
+    // The executor binding is repointed at the freshly-created restart session.
+    expect(newState.executorSessionId).toBe('new-session-restart')
+    expect(newState.sessionId).toBe('new-session-restart')
+    // The host redirect target is preserved across restart (not reinterpreted as executor).
+    expect(newState.hostSessionId).toBe('original-host-session')
+
+    // The restart prompt went to the new executor session as a code prompt.
+    const codePrompt = (client.session.promptAsync as any).mock.calls.find(
+      (c: any[]) => c[0]?.agent === 'code' && c[0]?.sessionID === 'new-session-restart',
+    )
+    expect(codePrompt).toBeDefined()
   })
 })

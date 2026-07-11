@@ -14,6 +14,7 @@ See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](c
 | `review-read` | Read review findings. | [`src/tools/review.ts`](../src/tools/review.ts) |
 | `review-delete` | Delete a review finding. | [`src/tools/review.ts`](../src/tools/review.ts) |
 | `execute-plan` | Start an iterative development loop in an isolated git worktree, or (with `mode: new-session`) launch the plan in a fresh standalone session. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
+| `execute-goal` | Start a managed goal loop in the current session, warped into an isolated Forge worktree with fresh auditors on idle. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `loop-cancel` | Cancel an active loop. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `loop-status` | List loops, inspect one loop, or restart a restartable loop. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `launch-group` | Launch a group of features (from a PRD or a pre-split list), each planned and run as its own loop, scheduled with a concurrency cap. | [`src/tools/group.ts`](../src/tools/group.ts) |
@@ -101,6 +102,18 @@ Arguments:
 | `loopName` | Optional loop name, slugified and uniquified. |
 | `hostSessionId` | Optional host session ID for post-completion redirect. |
 | `mode` | Execution mode. `loop` (default) runs the iterative loop in an isolated git worktree. `new-session` launches the plan in a fresh standalone session running the code agent (no worktree, no loop, not tracked by `loop-status`/`loop-cancel`). |
+
+### `execute-goal`
+
+Starts a managed goal loop in the invoking session. The session is warped into an isolated Forge worktree; no executor session is created. Each executor idle transition creates a fresh auditor, and dirty findings return to the same executor until an audit leaves no open findings.
+
+| Argument | Description |
+|---|---|
+| `goal` | Required non-empty free-text goal. |
+| `title` | Optional title, derived from the goal when omitted. |
+| `loopName` | Optional loop name, slugified and uniquified. |
+| `maxIterations` | Optional iteration cap; `0` means unlimited. |
+| `hostSessionId` | Optional host session ID for post-completion redirect. |
 
 ### `loop-cancel`
 

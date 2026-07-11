@@ -279,9 +279,16 @@ Cancellation:
 | Final audit retry limit | Loop terminates with `terminationReason: 'final_audit_retry_exhausted'` |
 | Stall timeout | Loop terminates with `terminationReason: 'stall_timeout'` after the configured consecutive stall limit |
 
+## Goal Loops
+
+`/execute-goal <prompt>` starts a lightweight goal loop without a stored plan, decomposition, sections, final audit, or post-action. Forge creates an isolated worktree and warps the invoking code session into it instead of creating an executor session. The exact goal is persisted separately from plans and remains the auditor's authoritative scope.
+
+When the executor goes idle, Forge creates a fresh `auditor-loop` session. Open findings return to the same retained executor session for remediation. A completed audit with zero open findings completes the loop. `maxIterations` bounds dirty audit cycles; `0` means unlimited. Goal loops remain visible to `loop-status`, cancellable with `loop-cancel`, and restartable when the normal restartability rules allow it.
+
 ## Tool Restrictions
 
 Inside active loop sessions:
 - `git push` is denied (permission hook)
 - `execute-plan` is blocked (tool hooks)
+- `execute-goal` is blocked (tool hooks)
 - `question` is blocked (tool hooks)

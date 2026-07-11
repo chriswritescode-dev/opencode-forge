@@ -120,6 +120,7 @@ describe('review-write', () => {
       finalAuditDone: 0,
       executionVariant: null,
       auditorVariant: null,
+      kind: 'plan',
     }, { lastAuditResult: null })
 
     const result = await tools['review-write'].execute(
@@ -303,6 +304,7 @@ describe('review-read', () => {
       finalAuditDone: 0,
       executionVariant: null,
       auditorVariant: null,
+      kind: 'plan',
     }, { lastAuditResult: null })
 
     const result = await tools['review-read'].execute(
@@ -411,6 +413,7 @@ describe('review-delete', () => {
       finalAuditDone: 0,
       executionVariant: null,
       auditorVariant: null,
+      kind: 'plan',
     }, { lastAuditResult: null })
 
     // Delete from alpha loop context

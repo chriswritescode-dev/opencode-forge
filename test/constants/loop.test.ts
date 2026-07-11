@@ -21,6 +21,7 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'plan_enter', pattern: '*', action: 'deny' },
       { permission: 'plan_exit', pattern: '*', action: 'deny' },
       { permission: 'execute-plan', pattern: '*', action: 'deny' },
+      { permission: 'execute-goal', pattern: '*', action: 'deny' },
       { permission: 'question', pattern: '*', action: 'deny' },
       { permission: 'loop-cancel', pattern: '*', action: 'deny' },
       { permission: 'loop-status', pattern: '*', action: 'deny' },
@@ -28,6 +29,13 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'group-status', pattern: '*', action: 'deny' },
       { permission: 'group-cancel', pattern: '*', action: 'deny' },
     ])
+  })
+
+  it('denies execute-goal in both loop and audit rulesets so active sessions cannot recurse', () => {
+    const loopRules = buildLoopPermissionRuleset()
+    const auditRules = buildAuditSessionPermissionRuleset()
+    expect(loopRules).toContainEqual({ permission: 'execute-goal', pattern: '*', action: 'deny' })
+    expect(auditRules).toContainEqual({ permission: 'execute-goal', pattern: '*', action: 'deny' })
   })
 
   it('emits no sh or bash permission rules (native bash is covered by the blanket allow)', () => {
