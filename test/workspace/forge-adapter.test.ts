@@ -52,7 +52,7 @@ describe('createForgeWorkspaceAdapter', () => {
       name: 'my-loop',
       branch: 'forge/my-loop',
       directory: join(tmpDataDir, 'worktrees', 'my-loop'),
-      extra: { loopName: 'my-loop' },
+      extra: { loopName: 'my-loop', workspaceCreatedAt: expect.any(Number) },
       projectID: 'p1',
     })
   })

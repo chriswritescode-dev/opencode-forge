@@ -152,10 +152,11 @@ export async function executeRemoteLoop(
     debug,
   })
 
-  if (!launchResult || 'error' in launchResult) {
-    const errMsg = launchResult && 'error' in launchResult ? launchResult.error : 'Failed to launch remote loop'
-    debug(`remote-launch: launchTuiLoop FAILED: ${errMsg}`)
-    return { error: errMsg }
+  if ('error' in launchResult) {
+    debug(`remote-launch: launchTuiLoop FAILED: ${launchResult.error}`)
+    const cleanup = git.push(req.localDirectory, remote.gitRemote, `:${syncRef}`, false)
+    debug(`remote-launch: sync ref cleanup ${cleanup.ok ? 'ok' : `failed: ${cleanup.stderr.trim() || 'unknown error'}`}`)
+    return { error: launchResult.error }
   }
 
   debug(`remote-launch: launched loop="${launchResult.loopName}" session=${launchResult.sessionId} on "${remote.name}"`)

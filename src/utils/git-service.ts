@@ -20,6 +20,8 @@ export interface GitService {
   revParseGitCommonDir(cwd: string): GitResult
   revParseGitPath(cwd: string, path: string): GitResult
   revParseHead(cwd: string): GitResult
+  /** Resolve any ref (branch, tag, SHA) to a full commit SHA. */
+  revParseRef(cwd: string, ref: string): GitResult
   commitExists(cwd: string, sha: string): boolean
   push(cwd: string, remote: string, refspec: string, force: boolean): GitResult
   fetchRef(cwd: string, remote: string, ref: string): GitResult
@@ -82,6 +84,10 @@ export function createGitService(): GitService {
 
     revParseHead(cwd: string): GitResult {
       return runGit(['rev-parse', 'HEAD'], cwd)
+    },
+
+    revParseRef(cwd: string, ref: string): GitResult {
+      return runGit(['rev-parse', '--verify', `${ref}^{commit}`], cwd)
     },
 
     commitExists(cwd: string, sha: string): boolean {

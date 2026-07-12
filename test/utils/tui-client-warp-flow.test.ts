@@ -297,7 +297,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
     expect(result).toEqual({ error: 'Failed to create worktree workspace: no data returned' })
   })
 
-  test('failure: session.create returns error → returns null', async () => {
+  test('failure: session.create returns error → returns {error} with cause', async () => {
     mockApi.client.session.create.mockResolvedValueOnce({ error: new Error('session create fail') })
 
     const client = await connectForgeProject(mockApi, DIRECTORY)
@@ -311,7 +311,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
       },
     )
 
-    expect(result).toBeNull()
+    expect(result).toEqual({ error: expect.stringContaining('session create fail') })
     // workspace.create should still have been called but downstream after session.create shouldn't
     expect(mockApi.client.experimental.workspace.create).toHaveBeenCalled()
     expect(mockApi.client.tui.selectSession).not.toHaveBeenCalled()

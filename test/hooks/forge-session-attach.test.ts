@@ -391,6 +391,61 @@ describe('createForgeSessionAttachHook', () => {
     expect(mockAttachLoop).not.toHaveBeenCalled()
   })
 
+  test('fresh TUI launch colliding with restartable terminal row fails loudly instead of leaving a zombie session', async () => {
+    const workspaceRemove = vi.fn().mockResolvedValue(undefined)
+    const tuiPublish = vi.fn().mockResolvedValue(undefined)
+    const loopsRepoGet = vi.fn().mockReturnValue({ projectId: 'proj_1', loopName: 'collide-loop', status: 'cancelled' })
+    mockAttachLoop.mockResolvedValueOnce({ ok: false, code: 'conflict', message: 'Loop collide-loop is terminal' })
+    const deps = buildHookDeps({
+      workspaceRemove,
+      tuiPublish,
+      loopsRepoGet,
+      sessionGet: vi.fn().mockResolvedValue({
+        id: 'sess_collide',
+        workspaceID: 'ws_collide',
+        directory: '/tmp/wt/collide',
+        projectID: 'proj_1',
+      }),
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_collide',
+          type: 'forge',
+          directory: '/tmp/wt/collide',
+          extra: {
+            loopName: 'collide-loop',
+            projectDirectory: '/tmp/wt/collide',
+            workspaceCreatedAt: Date.now(),
+            forgeLoop: {
+              title: 'Collide Loop',
+              planSource: 'inline',
+              planText: '# Plan',
+              initialPromptOwner: 'tui',
+              pendingAttachStartedAt: Date.now(),
+            },
+          },
+        },
+      ]),
+    })
+
+    const handler = createForgeSessionMessageAttachHook(deps as any)
+
+    await handler({ sessionID: 'sess_collide' })
+
+    expect(mockAttachLoop).toHaveBeenCalledTimes(1)
+    expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_collide' })
+    expect(deps.execDeps.pendingTeardowns.set).toHaveBeenCalledWith(
+      'collide-loop',
+      expect.objectContaining({ doRemoveWorktree: false }),
+    )
+    expect(tuiPublish).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.objectContaining({
+        properties: expect.objectContaining({
+          message: expect.stringContaining('terminal status'),
+        }),
+      }),
+    }))
+  })
+
   test('inline planSource resolves planText inline', async () => {
     const deps = buildHookDeps({
       workspaceList: vi.fn().mockResolvedValue([

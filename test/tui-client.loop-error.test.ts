@@ -120,7 +120,7 @@ describe('plan.execute(loop) workspace.create failure', () => {
     }
   })
 
-  test('returns null for non-create failures in the post-create flow', async () => {
+  test('returns error detail for non-create failures in the post-create flow', async () => {
     const api = createMockApi()
 
     // Mock workspace.status to report the workspace as connected so awaitWorkspaceConnected resolves quickly
@@ -148,8 +148,12 @@ describe('plan.execute(loop) workspace.create failure', () => {
       plan: '# Test\n\nPost-create failure test.',
     })
 
-    // Post-create failures should still return null (generic)
-    expect(result).toBeNull()
+    // Post-create failures surface the underlying cause instead of a generic null
+    expect(result).not.toBeNull()
+    expect(result).toHaveProperty('error')
+    if (result && 'error' in result) {
+      expect(result.error).toContain('session create failed')
+    }
   }, 10000)
 
   test('returns committed-project error for global project before any workspace side effects', async () => {

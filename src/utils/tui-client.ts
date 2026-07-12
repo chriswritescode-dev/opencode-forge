@@ -276,7 +276,7 @@ export interface LaunchTuiLoopOptions {
 
 export async function launchTuiLoop(
   opts: LaunchTuiLoopOptions,
-): Promise<{ sessionId: string; loopName: string; worktreeDir?: string; workspaceId: string } | { error: string } | null> {
+): Promise<{ sessionId: string; loopName: string; worktreeDir?: string; workspaceId: string } | { error: string }> {
   const debug = opts.debug ?? tuiDebug
 
   const committedError = getWorktreeProjectPreconditionError(opts.projectId)
@@ -360,7 +360,7 @@ export async function launchTuiLoop(
     } catch (err) {
       debug(`launchTuiLoop: promptAsync failed session=${session.id} workspace=${workspace.id} error=${err instanceof Error ? err.message : String(err)}`)
       await opts.client.workspace.remove({ id: workspace.id }).catch(() => undefined)
-      return null
+      return { error: `Failed to send initial loop prompt: ${err instanceof Error ? err.message : String(err)}` }
     }
     debug(`launchTuiLoop: promptAsync ok session=${session.id} workspace=${workspace.id}`)
 
@@ -376,7 +376,7 @@ export async function launchTuiLoop(
     }
   } catch (err) {
     debug(`launchTuiLoop: post-create flow failed error=${err instanceof Error ? err.message : String(err)}`)
-    return null
+    return { error: `Loop launch failed: ${err instanceof Error ? err.message : String(err)}` }
   }
 }
 
@@ -501,7 +501,7 @@ export async function connectForgeProject(
           allowDirectories: allowExternalDirectories,
           onLaunched: (sid, wid) => selectTuiSession(api, client, sid, wid),
           debug: tuiDebug,
-        }) ?? null
+        })
       }
 
       return null

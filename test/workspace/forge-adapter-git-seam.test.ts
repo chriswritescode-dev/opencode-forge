@@ -339,11 +339,12 @@ describe('createForgeWorkspaceAdapter with fake GitService', () => {
     expect(fake.commitExists).not.toHaveBeenCalled()
   })
 
-  it('SHA pinned with existing branch: no startPoint passed (branch wins)', async () => {
+  it('SHA pinned with existing branch at the pinned tip: reused without startPoint', async () => {
     fake = createFakeGitService({
       isInsideWorkTree: vi.fn(() => true),
       branchExists: vi.fn(() => true), // branch already exists
       commitExists: vi.fn(() => true),
+      revParseRef: vi.fn(() => ({ ok: true, status: 0, stdout: 'abc123full\n', stderr: '' })),
     })
     const adapter = createForgeWorkspaceAdapter({
       dataDir: tmpDataDir,
@@ -363,7 +364,7 @@ describe('createForgeWorkspaceAdapter with fake GitService', () => {
 
     await adapter.create(configured, {})
 
-    // Branch exists, so createBranch=false and no startPoint
+    // Branch exists at the pinned SHA, so createBranch=false and no startPoint
     expect(fake.worktreeAdd).toHaveBeenCalledWith(
       projectDir,
       configured.directory,
@@ -372,6 +373,73 @@ describe('createForgeWorkspaceAdapter with fake GitService', () => {
       undefined,
     )
     expect(fake.fetchRef).not.toHaveBeenCalled()
+  })
+
+  it('SHA pinned with existing branch at a different tip: rejects with actionable error', async () => {
+    fake = createFakeGitService({
+      isInsideWorkTree: vi.fn(() => true),
+      branchExists: vi.fn(() => true),
+      commitExists: vi.fn(() => true),
+      revParseRef: vi.fn((_cwd: string, ref: string) => ({
+        ok: true,
+        status: 0,
+        stdout: ref.startsWith('refs/heads/') ? 'oldtip1234567\n' : 'pinned1234567\n',
+        stderr: '',
+      })),
+    })
+    const adapter = createForgeWorkspaceAdapter({
+      dataDir: tmpDataDir,
+      logger,
+      gitService: fake,
+    })
+    const info = {
+      id: 'ws-1',
+      type: 'forge' as const,
+      name: '',
+      branch: null,
+      directory: null,
+      extra: { loopName: 'stale-pin-loop', projectDirectory: projectDir, startRef: 'pinned1234567' },
+      projectID: 'p1',
+    }
+    const configured = adapter.configure(info)
+
+    await expect(adapter.create(configured, {})).rejects.toThrow(
+      /branch forge\/stale-pin-loop already exists at oldtip1 but this launch pinned pinned1/,
+    )
+    expect(fake.worktreeAdd).not.toHaveBeenCalled()
+  })
+
+  it('configure re-stamps workspaceCreatedAt and pendingAttachStartedAt with the server clock', () => {
+    fake = createFakeGitService()
+    const adapter = createForgeWorkspaceAdapter({
+      dataDir: tmpDataDir,
+      logger,
+      gitService: fake,
+    })
+    const skewedPast = Date.now() - 60 * 60 * 1000
+    const info = {
+      id: 'ws-1',
+      type: 'forge' as const,
+      name: '',
+      branch: null,
+      directory: null,
+      extra: {
+        loopName: 'restamp-loop',
+        projectDirectory: projectDir,
+        workspaceCreatedAt: skewedPast,
+        forgeLoop: { initialPromptOwner: 'tui', pendingAttachStartedAt: skewedPast, planText: '# P' },
+      },
+      projectID: 'p1',
+    }
+
+    const before = Date.now()
+    const configured = adapter.configure(info) as typeof info & { extra: Record<string, unknown> }
+    const extra = configured.extra as { workspaceCreatedAt: number; forgeLoop: { pendingAttachStartedAt: number; planText: string; initialPromptOwner: string } }
+
+    expect(extra.workspaceCreatedAt).toBeGreaterThanOrEqual(before)
+    expect(extra.forgeLoop.pendingAttachStartedAt).toBeGreaterThanOrEqual(before)
+    expect(extra.forgeLoop.planText).toBe('# P')
+    expect(extra.forgeLoop.initialPromptOwner).toBe('tui')
   })
 
   it('remove: deletes sync ref on shared remote for pinned loops on final teardown', async () => {

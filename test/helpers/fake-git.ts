@@ -16,6 +16,7 @@ export function createFakeGitService(overrides?: Partial<GitService>): GitServic
     revParseGitCommonDir: vi.fn<[string], GitResult>(() => ({ ...defaultOk })),
     revParseGitPath: vi.fn<[string, string], GitResult>(() => ({ ...defaultOk })),
     revParseHead: vi.fn<[string], GitResult>(() => ({ ...defaultOk })),
+    revParseRef: vi.fn<[string, string], GitResult>(() => ({ ...defaultOk })),
     commitExists: vi.fn<[string, string], boolean>(() => false),
     push: vi.fn<[string, string, string, boolean], GitResult>(() => ({ ...defaultOk })),
     fetchRef: vi.fn<[string, string, string], GitResult>(() => ({ ...defaultOk })),

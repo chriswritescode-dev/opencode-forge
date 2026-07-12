@@ -143,7 +143,20 @@ async function attachForgeSession(
       projectDirectory,
     )
 
-    if (action.action === 'keep' && action.reason !== 'running' && action.reason !== 'pending-attach') {
+    // A fresh TUI-owned launch (remote or local) whose name collides with a
+    // terminal loop row classifies as keep/pending-start (the classifier must
+    // keep restart-in-flight workspaces). Silently skipping here would leave a
+    // zombie session that runs the first prompt but never loops. Proceed to
+    // attachLoopToSession instead so its conflict handling fails loudly
+    // (toast + workspace removal). Restart-created workspaces carry no
+    // forgeLoop config and still skip below.
+    const isTerminalNameConflict =
+      action.action === 'keep' &&
+      action.reason === 'pending-start' &&
+      cfg?.initialPromptOwner === 'tui' &&
+      isPendingAttachWorkspace(classifyEntry)
+
+    if (action.action === 'keep' && action.reason !== 'running' && action.reason !== 'pending-attach' && !isTerminalNameConflict) {
       // bad config or wrong-project — toast and bail, do not attach
       deps.logger.log(
         `[forge-session-attach] skip session=${sessionId} workspace=${workspaceId} reason=${action.reason}`,
@@ -151,7 +164,7 @@ async function attachForgeSession(
       return
     }
 
-    if ((action.action === 'remove-fully' && action.reason === 'missing-row') || (action.action === 'keep' && action.reason === 'pending-attach')) {
+    if ((action.action === 'remove-fully' && action.reason === 'missing-row') || (action.action === 'keep' && action.reason === 'pending-attach') || isTerminalNameConflict) {
       // Fresh attach (no loop row yet) - proceed to attach
       if (!cfg) {
         if (action.action === 'remove-fully') {

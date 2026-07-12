@@ -167,6 +167,33 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
     })
   }
 
+  /**
+   * Re-stamp launcher-provided attach timestamps with this server's clock.
+   *
+   * Remote launches stamp `workspaceCreatedAt` and
+   * `forgeLoop.pendingAttachStartedAt` on the launching machine, but the
+   * attach/pending-start grace windows are evaluated against this server's
+   * clock (classify-stale.ts). Clock skew between the two machines beyond the
+   * grace window would otherwise expire a fresh workspace immediately.
+   * `configure` runs exactly once at creation on the owning server, so it is
+   * the single normalization point.
+   */
+  function restampAttachTimestamps(extra: unknown): unknown {
+    if (typeof extra !== 'object' || extra === null) return extra
+    const now = Date.now()
+    const record = extra as Record<string, unknown>
+    const result: Record<string, unknown> = { ...record, workspaceCreatedAt: now }
+    const forgeLoop = record.forgeLoop
+    if (
+      typeof forgeLoop === 'object' &&
+      forgeLoop !== null &&
+      typeof (forgeLoop as Record<string, unknown>).pendingAttachStartedAt === 'number'
+    ) {
+      result.forgeLoop = { ...(forgeLoop as Record<string, unknown>), pendingAttachStartedAt: now }
+    }
+    return result
+  }
+
   function deriveSyncPin(info: WorkspaceInfo, loopName: string): { startRef: string; syncRef: string; gitRemote: string } | null {
     const extra = (info.extra ?? {}) as Record<string, unknown>
     const startRef = typeof extra.startRef === 'string' && extra.startRef.length > 0 ? extra.startRef : null
@@ -226,6 +253,7 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
         name: loopName,
         branch: forgeBranchName(loopName),
         directory: forgeWorktreeDir(dataDir, loopName),
+        extra: restampAttachTimestamps(info.extra),
       }
     },
     async create(info) {
@@ -255,6 +283,22 @@ export function createForgeWorkspaceAdapter(deps: ForgeAdapterDeps): WorkspaceAd
 
       // Detect orphan state from a prior failed run: branch may exist without a live worktree.
       const branchExists = git.branchExists(projectDir, info.branch)
+
+      // A pinned launch must run exactly the pushed SHA. Reusing a leftover
+      // same-named branch at a different tip would silently run old code, so
+      // fail with an actionable error instead.
+      if (pin && branchExists) {
+        const tipRes = git.revParseRef(projectDir, `refs/heads/${info.branch}`)
+        const tip = tipRes.ok ? tipRes.stdout.trim() : ''
+        const pinnedRes = git.revParseRef(projectDir, pin.startRef)
+        const pinned = pinnedRes.ok ? pinnedRes.stdout.trim() : pin.startRef
+        if (tip !== pinned) {
+          throw new Error(
+            `forge workspace adapter: branch ${info.branch} already exists at ${tip ? tip.substring(0, 7) : 'unknown'} ` +
+            `but this launch pinned ${pinned.substring(0, 7)}; delete the stale branch or use a different loop name`,
+          )
+        }
+      }
 
       // Only pass startPoint when creating a new branch; existing branches always win.
       const startPoint = pin && !branchExists ? pin.startRef : undefined
