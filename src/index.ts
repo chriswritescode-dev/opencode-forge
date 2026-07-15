@@ -30,7 +30,7 @@ import { LRUCache } from './utils/lru-cache'
 import { createSessionLoopResolver } from './services/session-loop-resolver'
 import { createPlanCaptureEventHook } from './hooks/plan-capture'
 import { createForgeSessionAttachHook, createForgeSessionMessageAttachHook } from './hooks/forge-session-attach'
-import { createLoopPermissionRejectHook } from './hooks/loop-permission'
+import { createLoopPermissionPatcher } from './hooks/loop-permission'
 import { createSandboxMessageHook } from './hooks/sandbox-message'
 import { createGroupOrchestratorEventHook } from './hooks/group-orchestrator'
 import { createGroupOrchestrator, mapLoopStateToOutcome, type GroupOrchestrator, type GroupEffects } from './services/group-orchestrator'
@@ -458,7 +458,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       getSessionDirectory: sessionDirectoryLookup,
       logger,
     })
-    const loopPermissionRejectHook = createLoopPermissionRejectHook({
+    const loopPermissionPatcher = createLoopPermissionPatcher({
       client: forgeClient,
       sessionLoopResolver,
       directory,
@@ -684,6 +684,9 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       }),
       'chat.message': async (input, output) => {
         await forgeSessionMessageAttachHook(input)
+        // Fallback for filtered session.created events: subagent sessions inside
+        // loops must carry the loop ruleset before their first LLM step.
+        await loopPermissionPatcher.ensurePatched({ sessionID: input.sessionID })
         await sessionHooks.onMessage(input, output)
       },
       'experimental.chat.system.transform': async (input, output) => {
@@ -703,7 +706,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         await planCaptureEventHook(eventInput)
         await loopHandler.onEvent(eventInput)
         await groupOrchestratorEventHook(eventInput)
-        await loopPermissionRejectHook(eventInput)
+        await loopPermissionPatcher.onSessionCreated(eventInput)
         await forgeSessionAttachHook(eventInput)
         await sessionHooks.onEvent(eventInput)
         await planApprovalEventHook(eventInput)
@@ -714,6 +717,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           logger.log(`[tool-before] ${input.tool} callID=${input.callID} session=${input.sessionID} loop=${resolved.loopName} sandbox=${resolved.sandbox ? 'yes' : 'no'}`)
           if (resolved.active) {
             loopHandler.recordActivity(resolved.loopName, `tool-before:${input.tool}`)
+            await loopPermissionPatcher.ensurePatched({ sessionID: input.sessionID, resolved })
           }
         }
         await toolExecuteBeforeHook!(input, output)

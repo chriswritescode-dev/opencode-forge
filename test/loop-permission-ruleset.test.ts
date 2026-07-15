@@ -1,7 +1,7 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest'
 import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset } from '../src/constants/loop'
 import { resolveOpencodeToolOutputDir } from '../src/utils/opencode-paths'
-import { createLoopPermissionRejectHook, __resetLoopPermissionCache } from '../src/hooks/loop-permission'
+import { createLoopPermissionPatcher, __resetLoopPermissionCache } from '../src/hooks/loop-permission'
 import { createAuditSession } from '../src/utils/audit-session'
 import { createLoopSessionWithWorkspace } from '../src/utils/loop-session'
 import type { Logger } from '../src/types'
@@ -239,14 +239,14 @@ describe('createLoopSessionWithWorkspace passes loop permission rules into sessi
   })
 })
 
-describe('createLoopPermissionRejectHook', () => {
+describe('createLoopPermissionPatcher (session.created path)', () => {
   test('does not update subagent session permissions when the session is outside an active loop', async () => {
     const mockGet = vi.fn(async () => ({ permission: buildLoopPermissionRuleset() }))
     const mockUpdate = vi.fn(async () => {})
     const mockResolve = vi.fn(async () => null)
     const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
 
-    const hook = createLoopPermissionRejectHook({
+    const hook = createLoopPermissionPatcher({
       client: {
         session: {
           get: mockGet,
@@ -260,7 +260,7 @@ describe('createLoopPermissionRejectHook', () => {
       logger,
     })
 
-    await hook({
+    await hook.onSessionCreated({
       event: {
         type: 'session.created',
         properties: {
@@ -284,7 +284,7 @@ describe('createLoopPermissionRejectHook', () => {
     const mockUpdate = vi.fn(async () => {})
     const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
 
-    const hook = createLoopPermissionRejectHook({
+    const hook = createLoopPermissionPatcher({
       client: {
         session: {
           get: mockGet,
@@ -303,7 +303,7 @@ describe('createLoopPermissionRejectHook', () => {
       logger,
     })
 
-    await hook({
+    await hook.onSessionCreated({
       event: {
         type: 'session.created',
         properties: {
@@ -331,7 +331,7 @@ describe('createLoopPermissionRejectHook', () => {
     const mockUpdate = vi.fn(async () => {})
     const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
 
-    const hook = createLoopPermissionRejectHook({
+    const hook = createLoopPermissionPatcher({
       client: { session: { get: mockGet, update: mockUpdate } } as any,
       sessionLoopResolver: {
         resolveActiveLoopForSession: vi.fn(async () => ({
@@ -345,7 +345,7 @@ describe('createLoopPermissionRejectHook', () => {
       logger,
     })
 
-    await hook({
+    await hook.onSessionCreated({
       event: {
         type: 'session.created',
         properties: { info: { id: 'child-session', parentID: 'parent-session' } },
@@ -365,7 +365,7 @@ describe('createLoopPermissionRejectHook', () => {
     const mockUpdate = vi.fn(async () => {})
     const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
 
-    const hook = createLoopPermissionRejectHook({
+    const hook = createLoopPermissionPatcher({
       client: { session: { get: mockGet, update: mockUpdate } } as any,
       sessionLoopResolver: {
         resolveActiveLoopForSession: vi.fn(async () => ({
@@ -380,7 +380,7 @@ describe('createLoopPermissionRejectHook', () => {
       getAllowExternalDirectories: () => [VAULT],
     })
 
-    await hook({
+    await hook.onSessionCreated({
       event: {
         type: 'session.created',
         properties: { info: { id: 'child-session', parentID: 'parent-session' } },
@@ -400,7 +400,7 @@ describe('createLoopPermissionRejectHook', () => {
     const mockUpdate = vi.fn(async () => {})
     const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
 
-    const hook = createLoopPermissionRejectHook({
+    const hook = createLoopPermissionPatcher({
       client: { session: { get: mockGet, update: mockUpdate } } as any,
       sessionLoopResolver: {
         resolveActiveLoopForSession: vi.fn(async () => ({
@@ -420,9 +420,140 @@ describe('createLoopPermissionRejectHook', () => {
         properties: { info: { id: 'child-session', parentID: 'parent-session' } },
       },
     }
-    await hook(event)
-    await hook(event)
+    await hook.onSessionCreated(event)
+    await hook.onSessionCreated(event)
 
     expect(mockUpdate).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('createLoopPermissionPatcher.ensurePatched (fallback path)', () => {
+  const ACTIVE_LOOP = {
+    loopName: 'active-loop',
+    active: true,
+    worktreeDir: '/repo/.worktrees/active-loop',
+    sandbox: false,
+  }
+
+  function makePatcher(overrides: {
+    sessions?: Record<string, { parentID?: string; permission?: unknown }>
+    resolve?: () => Promise<unknown>
+  }) {
+    const sessions = overrides.sessions ?? {}
+    const mockGet = vi.fn(async ({ sessionID }: { sessionID: string }) => {
+      const session = sessions[sessionID]
+      if (!session) throw new Error(`not found: ${sessionID}`)
+      return session
+    })
+    const mockUpdate = vi.fn(async () => {})
+    const mockResolve = vi.fn(overrides.resolve ?? (async () => ACTIVE_LOOP))
+    const logger = { log: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger
+
+    const patcher = createLoopPermissionPatcher({
+      client: { session: { get: mockGet, update: mockUpdate } } as any,
+      sessionLoopResolver: { resolveActiveLoopForSession: mockResolve } as any,
+      directory: '/repo',
+      logger,
+    })
+    return { patcher, mockGet, mockUpdate, mockResolve }
+  }
+
+  test('patches an unpatched subagent session inside an active loop', async () => {
+    const parentPermission = buildLoopPermissionRuleset()
+    const { patcher, mockUpdate } = makePatcher({
+      sessions: {
+        'child-session': {
+          parentID: 'loop-session',
+          permission: [{ permission: 'external_directory', pattern: '*', action: 'deny' }],
+        },
+        'loop-session': { permission: parentPermission },
+      },
+    })
+
+    await patcher.ensurePatched({ sessionID: 'child-session' })
+
+    expect(mockUpdate).toHaveBeenCalledWith({
+      sessionID: 'child-session',
+      directory: '/repo/.worktrees/active-loop',
+      permission: parentPermission,
+    })
+  })
+
+  test('accepts a pre-resolved loop and skips its own resolver call', async () => {
+    const { patcher, mockUpdate, mockResolve } = makePatcher({
+      sessions: {
+        'child-session': { parentID: 'loop-session', permission: [] },
+        'loop-session': { permission: buildLoopPermissionRuleset() },
+      },
+    })
+
+    await patcher.ensurePatched({ sessionID: 'child-session', resolved: ACTIVE_LOOP as any })
+
+    expect(mockResolve).not.toHaveBeenCalled()
+    expect(mockUpdate).toHaveBeenCalledTimes(1)
+  })
+
+  test('skips sessions that already carry a blanket allow rule and caches the result', async () => {
+    const { patcher, mockGet, mockUpdate } = makePatcher({
+      sessions: {
+        'child-session': { parentID: 'loop-session', permission: buildLoopPermissionRuleset() },
+      },
+    })
+
+    await patcher.ensurePatched({ sessionID: 'child-session' })
+    await patcher.ensurePatched({ sessionID: 'child-session' })
+
+    expect(mockUpdate).not.toHaveBeenCalled()
+    expect(mockGet).toHaveBeenCalledTimes(1)
+  })
+
+  test('skips loop root sessions (no parentID) and caches the result', async () => {
+    const { patcher, mockGet, mockUpdate } = makePatcher({
+      sessions: {
+        'loop-session': { permission: [{ permission: 'external_directory', pattern: '*', action: 'deny' }] },
+      },
+    })
+
+    await patcher.ensurePatched({ sessionID: 'loop-session' })
+    await patcher.ensurePatched({ sessionID: 'loop-session' })
+
+    expect(mockUpdate).not.toHaveBeenCalled()
+    expect(mockGet).toHaveBeenCalledTimes(1)
+  })
+
+  test('does nothing for sessions outside an active loop', async () => {
+    const { patcher, mockGet, mockUpdate } = makePatcher({ resolve: async () => null })
+
+    await patcher.ensurePatched({ sessionID: 'host-session' })
+
+    expect(mockGet).not.toHaveBeenCalled()
+    expect(mockUpdate).not.toHaveBeenCalled()
+  })
+
+  test('does not cache on fetch failure so a later attempt can retry', async () => {
+    const { patcher, mockGet, mockUpdate } = makePatcher({ sessions: {} })
+
+    await patcher.ensurePatched({ sessionID: 'child-session' })
+    await patcher.ensurePatched({ sessionID: 'child-session' })
+
+    expect(mockGet).toHaveBeenCalledTimes(2)
+    expect(mockUpdate).not.toHaveBeenCalled()
+  })
+
+  test('falls back to the loop-default ruleset when the parent lacks a blanket allow', async () => {
+    const { patcher, mockUpdate } = makePatcher({
+      sessions: {
+        'child-session': { parentID: 'other-subagent', permission: [] },
+        'other-subagent': { permission: [{ permission: 'task', pattern: '*', action: 'deny' }] },
+      },
+    })
+
+    await patcher.ensurePatched({ sessionID: 'child-session' })
+
+    expect(mockUpdate).toHaveBeenCalledWith({
+      sessionID: 'child-session',
+      directory: '/repo/.worktrees/active-loop',
+      permission: buildLoopPermissionRuleset(),
+    })
   })
 })
