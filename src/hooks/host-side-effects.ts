@@ -281,6 +281,7 @@ function resolveReasonLabel(reason: TerminationReason): string {
       return 'stalled'
     case 'error_max_retries':
     case 'worktree_failed':
+    case 'provider_limit':
       return 'errored'
     case 'session_creation_failed':
     case 'audit_retry_exhausted':

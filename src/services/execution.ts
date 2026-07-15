@@ -15,6 +15,7 @@ import type { createLoopEventHandler } from '../hooks'
 import type { SandboxManager } from '../sandbox/manager'
 import { extractPlanExecutionMetadata } from '../utils/plan-execution'
 import { parseModelString } from '../utils/model-fallback'
+import { classifyProviderLimit, extractErrorSignal } from '../loop/provider-limit'
 
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
 import { slugify } from '../utils/logger'
@@ -271,7 +272,7 @@ export type ForgeExecutionCommand =
 // ============================================================================
 
 export interface ForgeExecutionError {
-  code: 'bad_request' | 'not_found' | 'conflict' | 'disabled' | 'prompt_failed' | 'lifecycle_failed' | 'internal_error'
+  code: 'bad_request' | 'not_found' | 'conflict' | 'disabled' | 'prompt_failed' | 'lifecycle_failed' | 'internal_error' | 'provider_limit'
   status: number
   message: string
   candidates?: string[]
@@ -588,7 +589,7 @@ export async function attachLoopToSession(
   deps: ForgeExecutionServiceDeps,
   ctx: ForgeExecutionRequestContext,
   input: AttachLoopInput,
-): Promise<{ ok: true; loopName: string } | { ok: false; code: 'already_attached' | 'conflict' | 'internal_error' | 'prompt_failed'; message: string }> {
+): Promise<{ ok: true; loopName: string } | { ok: false; code: 'already_attached' | 'conflict' | 'internal_error' | 'prompt_failed' | 'provider_limit'; message: string }> {
   const {
     sessionId,
     workspaceId,
@@ -683,6 +684,7 @@ export async function attachLoopToSession(
 
     deps.loop.service.setState(loopName, state)
     deps.loop.service.registerLoopSession(sessionId, loopName)
+    deps.loop.registerSessionReverseIndex(sessionId, loopName)
 
     deps.logger.log(`attachLoopToSession: state stored for loop=${loopName}`)
 
@@ -741,6 +743,7 @@ export async function attachLoopToSession(
           } catch (cleanupErr) {
             deps.logger.error('attachLoopToSession: failed to remove sandbox container after timeout', cleanupErr)
           }
+          deps.loop.unregisterSessionReverseIndex(sessionId)
           deps.loop.service.deleteState(loopName)
           return { ok: false, code: 'internal_error', message: `Sandbox not ready: ${waitResult.reason}` }
         }
@@ -799,7 +802,14 @@ export async function attachLoopToSession(
     })
 
     if (promptResult.result.error) {
+      const limitReason = classifyProviderLimit(extractErrorSignal(promptResult.result.error))
+      if (limitReason) {
+        deps.logger.error('attachLoopToSession: initial prompt hit provider limit, terminating loop', promptResult.result.error)
+        await deps.loop.terminate(loopName, { kind: 'provider_limit', message: limitReason })
+        return { ok: false, code: 'provider_limit', message: `Provider limit on initial prompt: ${limitReason}` }
+      }
       deps.logger.error('attachLoopToSession: failed to send prompt', promptResult.result.error)
+      deps.loop.unregisterSessionReverseIndex(sessionId)
       deps.loop.service.deleteState(loopName)
       return { ok: false, code: 'prompt_failed', message: 'Loop session created but failed to send prompt' }
     }
@@ -833,6 +843,7 @@ export async function attachLoopToSession(
     const isAlreadyExists = msg.includes('already exists') || msg.includes('UNIQUE constraint failed')
     deps.logger.error('attachLoopToSession: unexpected error', err)
     if (!isAlreadyExists) {
+      deps.loop.unregisterSessionReverseIndex(sessionId)
       deps.loop.service.deleteState(loopName)
     } else {
       deps.logger.log(`attachLoopToSession: preserving existing loop ${loopName} despite collision`)
@@ -1253,7 +1264,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       })
 
       if (!attachResult.ok) {
-        await rollbackLoopStart()
+        // Provider-limit failures already terminate the loop row via
+        // attachLoopToSession; rolling back would delete the restartable
+        // errored row and workspace, defeating loop-status restart=true.
+        if (attachResult.code !== 'provider_limit') {
+          await rollbackLoopStart()
+        }
         return fail(attachResult.code as ForgeExecutionError['code'], 503, attachResult.message)
       }
 
@@ -1461,7 +1477,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       })
 
       if (!attachResult.ok) {
-        await rollbackGoalStart()
+        // Provider-limit failures already terminate the loop row via
+        // attachLoopToSession; rolling back would delete the restartable
+        // errored row and workspace, defeating loop-status restart=true.
+        if (attachResult.code !== 'provider_limit') {
+          await rollbackGoalStart()
+        }
         return fail(attachResult.code as ForgeExecutionError['code'], 503, attachResult.message)
       }
 
@@ -1948,6 +1969,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       })
 
       deps.loop.service.registerLoopSession(effectiveSessionId, stoppedState.loopName)
+      deps.loop.registerSessionReverseIndex(effectiveSessionId, stoppedState.loopName)
 
       const restartVariant = promptAgent === 'auditor-loop'
         ? stoppedState.auditorVariant
@@ -1998,6 +2020,21 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       }
 
       if (promptResult.error) {
+        // Classify provider-limit errors before generic rollback so that a
+        // capped account terminates the loop with the provider_limit reason
+        // instead of silently reverting to the previous terminal state.
+        const limitReason = classifyProviderLimit(extractErrorSignal(promptResult.error))
+        if (limitReason) {
+          deps.logger.error(`loop-restart: provider limit detected for ${stoppedState.loopName}: ${limitReason}, terminating`)
+          clearPromptPending(stoppedState.loopName, deps.logger)
+          deps.loop.unregisterSessionReverseIndex(effectiveSessionId)
+          await deps.loop.terminate(stoppedState.loopName, { kind: 'provider_limit', message: limitReason })
+          if (restartSandbox && deps.sandboxManager) {
+            await deps.sandboxManager.stop(stoppedState.loopName).catch(() => {})
+          }
+          return { ok: false, error: `Provider limit on restart prompt: ${limitReason}` }
+        }
+
         const isConcurrent = promptResult.error instanceof ConcurrentPromptError
         if (!isConcurrent) {
           clearPromptPending(stoppedState.loopName, deps.logger)
@@ -2005,10 +2042,14 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         deps.logger.error('loop-restart: failed to send prompt', promptResult.error)
         // Save section plans before deleteState (which cascades to section_plans)
         const savedPlans = deps.sectionPlansRepo?.list(ctx.projectId, stoppedState.loopName) ?? []
+        deps.loop.unregisterSessionReverseIndex(effectiveSessionId)
         deps.loop.service.deleteState(stoppedState.loopName)
         try {
           deps.loop.service.setState(previousState.loopName, previousState)
-          if (previousState.active) deps.loop.service.registerLoopSession(previousState.sessionId, previousState.loopName)
+          if (previousState.active) {
+            deps.loop.service.registerLoopSession(previousState.sessionId, previousState.loopName)
+            deps.loop.registerSessionReverseIndex(previousState.sessionId, previousState.loopName)
+          }
           // Restore section plans after setState
           if (savedPlans.length > 0) {
             deps.sectionPlansRepo?.restoreAll(savedPlans)

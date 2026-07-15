@@ -8,6 +8,9 @@ export {
 
 export type { TerminationReason } from './termination'
 
+export { classifyProviderLimit } from './provider-limit'
+export type { ProviderErrorSignal } from './provider-limit'
+
 export {
   markPromptSent,
   clearPromptPending,

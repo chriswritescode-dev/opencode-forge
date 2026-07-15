@@ -156,4 +156,71 @@ describe('sendLoopPrompt', () => {
     expect(result.result.error).toBeUndefined()
     expect(performPrompt).toHaveBeenCalledTimes(1)
   })
+
+  test('fatal provider error stops retry and skips fallback', async () => {
+    const fatalError = Object.assign(new Error('usage limit reached'), { statusCode: 403 })
+    const performPrompt = vi.fn()
+      .mockResolvedValueOnce({ error: fatalError })
+      .mockResolvedValueOnce({})
+
+    const result = await sendLoopPrompt({
+      loopName,
+      sessionId,
+      agent,
+      logger: createMockLogger(),
+      primaryModel: testModel,
+      fallbackModel: { providerID: 'fb', modelID: 'fb-model' },
+      performPrompt,
+    })
+
+    expect(result.result.error).toBe(fatalError)
+    expect(result.usedModel).toEqual(testModel)
+    // Only 1 call: the fatal error stops retry immediately (no 2nd attempt, no fallback)
+    expect(performPrompt).toHaveBeenCalledTimes(1)
+    expect(performPrompt).toHaveBeenCalledWith(testModel)
+    expect(clearPromptPendingMock).toHaveBeenCalledTimes(1)
+  })
+
+  test('non-fatal error still retries and falls back', async () => {
+    const transientError = new Error('overloaded_error')
+    const performPrompt = vi.fn()
+      .mockResolvedValueOnce({ error: transientError })
+      .mockResolvedValueOnce({ error: transientError })
+      .mockResolvedValueOnce({}) // fallback succeeds
+
+    const result = await sendLoopPrompt({
+      loopName,
+      sessionId,
+      agent,
+      logger: createMockLogger(),
+      primaryModel: testModel,
+      fallbackModel: { providerID: 'fb', modelID: 'fb-model' },
+      performPrompt,
+    })
+
+    expect(result.result.error).toBeUndefined()
+    expect(result.usedModel).toBeUndefined()
+    // 2 primary attempts + 1 fallback
+    expect(performPrompt).toHaveBeenCalledTimes(3)
+  })
+
+  test('ProviderAuthError stops retry immediately', async () => {
+    const authError = Object.assign(new Error('invalid API key'), {
+      name: 'ProviderAuthError',
+    })
+    const performPrompt = vi.fn().mockResolvedValue({ error: authError })
+
+    const result = await sendLoopPrompt({
+      loopName,
+      sessionId,
+      agent,
+      logger: createMockLogger(),
+      primaryModel: testModel,
+      fallbackModel: { providerID: 'fb', modelID: 'fb-model' },
+      performPrompt,
+    })
+
+    expect(result.result.error).toBe(authError)
+    expect(performPrompt).toHaveBeenCalledTimes(1)
+  })
 })

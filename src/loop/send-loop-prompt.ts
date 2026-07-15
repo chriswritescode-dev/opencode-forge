@@ -2,6 +2,7 @@ import type { Logger } from '../types'
 import { retryWithModelFallback } from '../utils/model-fallback'
 import { clearPromptPending } from './idle-gate'
 import { withInFlightGuard, ConcurrentPromptError, type PromptAgent } from './in-flight-guard'
+import { extractErrorSignal, classifyProviderLimit } from './provider-limit'
 
 export interface SendLoopPromptOptions {
   loopName: string
@@ -51,6 +52,8 @@ export async function sendLoopPrompt(opts: SendLoopPromptOptions): Promise<SendL
     () => attempt(fallback),
     primary,
     logger,
+    2,
+    (error) => classifyProviderLimit(extractErrorSignal(error)) !== null,
   )
 
   if (result.error && !(result.error instanceof ConcurrentPromptError) && clearOnError) {

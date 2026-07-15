@@ -35,6 +35,7 @@ import { createWorkspaceLifecycle, isWorkspaceNotFoundError } from './runtime-wo
 import { loopRegistry } from '../utils/loop-registry'
 import { selectSessionBestEffort } from '../utils/tui-navigation'
 
+import { classifyProviderLimit, extractErrorSignal } from './provider-limit'
 import { parseCoderDecisions } from '../utils/coder-decisions'
 import { resolvePostActionConfig } from './post-action-config'
 
@@ -66,6 +67,8 @@ export interface LoopRuntimeDeps {
   loopSessionUsageRepo?: LoopSessionUsageRepo
   /** Optional injected LoopService (test seam). Defaults to a real one built from the repos. */
   loopService?: LoopService
+  /** Optional parent-session lookup for ancestor-aware session→loop resolution (child/subagent support). */
+  getParentSessionId?: (sessionId: string) => Promise<string | null>
 }
 
 export interface StartLoopInput {
@@ -94,6 +97,24 @@ export interface Loop {
   generateUniqueLoopName(baseName: string): string
   /** Transition a running loop's phase. */
   setPhase(name: string, phase: LoopState['phase']): void
+  /**
+   * Populate the in-memory reverse index for a session that was registered
+   * through a path that does not call {@link start} (e.g. production execution
+   * service via {@link attachLoopToSession}). This ensures stale-session error
+   * events can still resolve their loop after session rotation.
+   */
+  registerSessionReverseIndex(sessionId: string, loopName: string): void
+  /**
+   * Remove a session from the in-memory reverse index. Called during rollback
+   * when attach or restart fails so that delayed errors from the orphaned session
+   * cannot terminate a later loop that reuses the same name.
+   */
+  unregisterSessionReverseIndex(sessionId: string): void
+  /**
+   * Wire the parent-session lookup for ancestor-aware session→loop resolution.
+   * Called after construction because the lookup depends on the Loop instance itself.
+   */
+  setParentSessionLookup(lookup: (sessionId: string) => Promise<string | null>): void
   /** Access the underlying LoopService for state/prompt/section operations. */
   service: LoopService
 }
@@ -103,6 +124,7 @@ export { isWorkspaceNotFoundError } from './runtime-workspace'
 export function createLoop(deps: LoopRuntimeDeps): Loop {
   const { loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, logger, getConfig, onTerminated, notify, loopConfig, sectionPlansRepo, loopSessionUsageRepo } = deps
   const loopService = deps.loopService ?? createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, loopConfig, notify, sectionPlansRepo)
+  let getParentSessionId = deps.getParentSessionId
 
   const { getFallbackModelForSession, captureLoopSessionUsage } = createUsageCapture({ client, logger, getConfig, projectId, loopSessionUsageRepo })
 
@@ -130,6 +152,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
   const loopRetainedSessions = new Map<string, RetainedSessionMeta[]>()
   const SESSION_RETENTION = 0
+  const sessionToLoop = new Map<string, string>()
+  /** Per-loop admission guard: prevents concurrent terminateLoop calls from executing side effects twice. */
+  const terminatingLoops = new Set<string>()
   function withStateLock<T>(loopName: string, fn: () => Promise<T>): Promise<T> {
     const prev = stateLocks.get(loopName) ?? Promise.resolve()
     const nextPromise = prev.catch(() => undefined).then(() => fn())
@@ -140,6 +165,40 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       }
     })
     return nextPromise
+  }
+
+  /**
+   * Resolve a session ID to its owning loop name, checking the DB index,
+   * the in-memory reverse index, and (optionally) the ancestor chain.
+   * The ancestor walk handles child/subagent sessions whose parent is the
+   * registered loop session.
+   */
+  async function resolveSessionLoopName(sessionId: string): Promise<string | null> {
+    const direct = loopService.resolveLoopName(sessionId)
+    if (direct) return direct
+
+    const fromReverse = sessionToLoop.get(sessionId)
+    if (fromReverse) return fromReverse
+
+    if (!getParentSessionId) return null
+
+    const seen = new Set<string>([sessionId])
+    let current = sessionId
+    for (let depth = 0; depth < 10; depth++) {
+      const parentId = await getParentSessionId(current)
+      if (!parentId || seen.has(parentId)) break
+      seen.add(parentId)
+
+      const parentLoop = loopService.resolveLoopName(parentId)
+      if (parentLoop) return parentLoop
+
+      const parentReverse = sessionToLoop.get(parentId)
+      if (parentReverse) return parentReverse
+
+      current = parentId
+    }
+
+    return null
   }
 
   const { detachFromWorkspace, recoverFromMissingWorkspace, ensureWorkspaceForLoop } = createWorkspaceLifecycle({ client, logger, loopService })
@@ -199,6 +258,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
 
     loopService.registerLoopSession(newSessionId, loopName)
+    sessionToLoop.set(newSessionId, loopName)
+    // Retain the old session in the reverse index so delayed errors from the
+    // pre-rotation session still resolve to this loop after DB-level replacement.
+    sessionToLoop.set(oldSessionId, loopName)
 
     await selectSessionBestEffort(client, state.projectDir ?? state.worktreeDir, logger, {
       sessionID: newSessionId,
@@ -225,12 +288,21 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     currentState: LoopState,
     assistantError: string | null,
     phase: string,
+    errorSignal?: { name?: string; message?: string; statusCode?: number } | null,
   ): Promise<{ assistantErrorDetected: boolean; currentState: LoopState } | null> {
     if (!assistantError) {
       return { assistantErrorDetected: false, currentState }
     }
 
     logger.error(`Loop: assistant error detected in ${phase} phase: ${assistantError}`)
+
+    const limitReason = classifyProviderLimit(errorSignal ?? {})
+    if (limitReason) {
+      logger.error(`Loop: provider limit detected in ${phase} assistant error for ${loopName}: ${limitReason}, terminating`)
+      await terminateLoop(loopName, currentState, { kind: 'provider_limit', message: limitReason })
+      return null
+    }
+
     const isModelError = /provider|auth|model|api\s*error/i.test(assistantError)
     if (isModelError) {
       const nextErrorCount = loopService.incrementError(loopName)
@@ -310,9 +382,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
 
     loopService.registerLoopSession(created.sessionId, loopName)
+    sessionToLoop.set(created.sessionId, loopName)
 
     const prompt = loopService.buildPostActionPrompt(currentState, { skill: cfg.skill, prompt: cfg.prompt })
     loopService.setPhaseAndResetError(loopName, 'post_action')
+    // Retain the old session in the reverse index so delayed errors from the
+    // pre-transition session still resolve to this loop after DB-level replacement.
+    sessionToLoop.set(currentState.sessionId, loopName)
     loopService.replaceSession(loopName, { newSessionId: created.sessionId, phase: 'post_action' })
     void scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after post-action creation', phase: currentState.phase, state: currentState })
 
@@ -323,8 +399,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const fallbackModel = configuredModel ? auditorModel : undefined
     const { error } = await sendPromptWithFallback({ loopName, sessionId: created.sessionId, promptText: prompt, agent: 'code', model: primaryModel, fallbackModel, variant: currentState.executionVariant })
     if (error) {
+      const targetState = loopService.getActiveState(loopName) ?? currentState
       logger.error(`Loop: failed to send post-action prompt for ${loopName}, completing without action`, error)
-      await terminateLoop(loopName, loopService.getActiveState(loopName) ?? currentState, { kind: 'completed' })
+      await terminateLoop(loopName, targetState, { kind: 'completed' })
       return true
     }
     watchdog.recordActivity(loopName, 'post-action-prompt-sent')
@@ -438,7 +515,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       variant: state.executionVariant,
     })
     if (error) {
-      logger.error(`rotateToCodingAfterAuditFailure: failed to send continuation prompt`, error)
+      await handlePromptError(loopName, loopService.getActiveState(loopName) ?? state, 'rotateToCodingAfterAuditFailure: failed to send continuation prompt', error)
     }
   }
 
@@ -545,6 +622,25 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   async function terminateLoop(loopName: string, state: LoopState, reason: TerminationReason, summary?: string): Promise<void> {
+    // Atomic admission guard: only one terminateLoop call per loop can proceed
+    // at a time.  Concurrent callers (e.g. user cancel vs. provider-limit
+    // detection vs. watchdog) see the flag and skip, preventing double execution
+    // of usage capture, abort, persistence, and host teardown.
+    if (terminatingLoops.has(loopName)) {
+      logger.debug(`Loop: terminateLoop called for already-terminating loop ${loopName}, skipping`)
+      return
+    }
+    terminatingLoops.add(loopName)
+
+    try {
+    // Idempotency guard: if the loop was already terminated by a concurrent
+    // path (e.g. watchdog vs. runtime event), skip duplicate side effects.
+    const current = loopService.getActiveState(loopName)
+    if (!current?.active) {
+      logger.debug(`Loop: terminateLoop called for already-terminated loop ${loopName}, skipping`)
+      return
+    }
+
     const sessionId = state.sessionId
     watchdog.stop(loopName)
     loopRegistry.remove(loopName)
@@ -587,6 +683,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       loopRetainedSessions.delete(loopName)
     }
 
+    // Clean up session→loop reverse index for this loop
+    for (const [sid, ln] of sessionToLoop) {
+      if (ln === loopName) sessionToLoop.delete(sid)
+    }
+    sessionToLoop.delete(sessionId)
+
     // Capture usage for the final active session before termination
     const fallbackModel = getFallbackModelForSession(state, state.phase)
     const role: 'code' | 'auditor' = state.phase === 'auditing' || state.phase === 'final_auditing' ? 'auditor' : 'code'
@@ -621,6 +723,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (onTerminated) {
       await onTerminated(state, reason)
     }
+    } finally {
+      terminatingLoops.delete(loopName)
+    }
   }
 
   async function handlePromptError(loopName: string, _state: LoopState, context: string, err: unknown, retryFn?: () => Promise<void>): Promise<void> {
@@ -632,6 +737,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const currentState = loopService.getActiveState(loopName)
     if (!currentState?.active) {
       logger.log(`Loop: loop ${loopName} already terminated, ignoring error: ${context}`)
+      return
+    }
+
+    const signal = extractErrorSignal(err)
+    const limitReason = classifyProviderLimit(signal)
+    if (limitReason) {
+      logger.error(`Loop: ${context} — provider limit detected, terminating without retry`)
+      await terminateLoop(loopName, currentState, { kind: 'provider_limit', message: limitReason })
       return
     }
 
@@ -766,12 +879,27 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     })
   }
 
+  /**
+   * Atomically check active state and terminate inside the state lock.
+   * Prevents duplicate side-effects when the watchdog and runtime detect the
+   * same provider limit concurrently — the second caller sees the loop
+   * already terminated and skips.
+   */
+  async function tryTerminateLoop(loopName: string, _state: LoopState, reason: TerminationReason): Promise<void> {
+    await withStateLock(loopName, async () => {
+      const fresh = loopService.getActiveState(loopName)
+      if (!fresh?.active) return
+      await terminateLoop(loopName, fresh, reason)
+    })
+  }
+
   const watchdog = createLoopWatchdog({
     loopService,
     client,
     logger,
     recover: recoverWatchdogStall,
-    terminate: terminateLoop,
+    terminate: tryTerminateLoop,
+    resolveSessionLoopName,
   })
 
   /**
@@ -841,10 +969,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     loopService.setPhaseAndResetError(loopName, 'final_auditing')
 
+    // Retain the old session in the reverse index so delayed errors from the
+    // pre-transition session still resolve to this loop after DB-level replacement.
+    sessionToLoop.set(currentState.sessionId, loopName)
     loopService.replaceSession(loopName, {
       newSessionId: created.auditSessionId,
       phase: 'final_auditing',
     })
+    sessionToLoop.set(created.auditSessionId, loopName)
 
     // The retired session is a code session (pre-final-audit)
     void scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after final audit creation', phase: 'coding', state: currentState })
@@ -888,6 +1020,20 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const assistantInfo = await getLastAssistantInfo(currentState.sessionId, currentState.worktreeDir)
     const assistantError = assistantInfo.error
     const lastMessageRole = assistantInfo.lastMessageRole
+
+    // Classify persisted provider-limit errors before the no-assistant gate.
+    // A finish:'error' assistant message has lastMessageRole 'assistant:error'
+    // which the gate treats as missing, but a provider limit must terminate
+    // immediately rather than entering the idle-retry path.
+    if (assistantInfo.errorSignal) {
+      const limitReason = classifyProviderLimit(assistantInfo.errorSignal)
+      if (limitReason) {
+        logger.error(`Loop: provider limit in persisted coding error for ${loopName}: ${limitReason}, terminating`)
+        await terminateLoop(loopName, currentState, { kind: 'provider_limit', message: limitReason })
+        return
+      }
+    }
+
     if (lastMessageRole !== 'assistant') {
       const attempts = idleRetryAttempts.get(loopName) ?? 0
       if (attempts < MAX_IDLE_RETRIES) {
@@ -922,7 +1068,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
     codingLaunchRecoveryAttempts.delete(loopName)
 
-    const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantError, 'coding')
+    const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantError, 'coding', assistantInfo.errorSignal)
     if (!errorResult) return
     const assistantErrorDetected = errorResult.assistantErrorDetected
     currentState = errorResult.currentState
@@ -1010,7 +1156,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           variant: currentState.executionVariant,
         })
         if (promptErr) {
-          logger.error(`Loop: failed to send continuation prompt after audit creation failure`, promptErr)
+          await handlePromptError(loopName, loopService.getActiveState(loopName) ?? currentState, 'failed to send continuation prompt after audit creation failure', promptErr)
         }
         return
       } catch (err) {
@@ -1028,10 +1174,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       }
     }
 
+    // Retain the old session in the reverse index so delayed errors from the
+    // pre-transition session still resolve to this loop after DB-level replacement.
+    sessionToLoop.set(codeSessionId, loopName)
     loopService.replaceSession(loopName, {
       newSessionId: created.auditSessionId,
       phase: 'auditing',
     })
+    sessionToLoop.set(created.auditSessionId, loopName)
 
     // The retired session is a code session.
     void scheduleSessionDelete({ loopName, sessionId: codeSessionId, directory: currentState.worktreeDir, context: 'after audit creation', phase: 'coding', state: currentState })
@@ -1046,6 +1196,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     })
 
     if (auditPromptErr) {
+      let effectiveErr: unknown = auditPromptErr
       if (isWorkspaceNotFoundError(auditPromptErr) && currentState.workspaceId) {
         const recovered = await recoverFromMissingWorkspace(loopName, currentState, created.auditSessionId, 'during audit prompt recovery')
         currentState = loopService.getActiveState(loopName) ?? currentState
@@ -1064,6 +1215,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             watchdog.recordActivity(loopName, 'audit-recover')
             return
           }
+          // Resend failed — use the actual resend error for classification and retry
+          effectiveErr = retryResult.error
         }
       }
       const retryFn = buildPromptRetryFn({
@@ -1083,7 +1236,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           if (!retryResult.ok) throw retryResult.error
         },
       })
-      await handlePromptError(loopName, { ...currentState, phase: 'auditing' }, 'failed to send audit prompt', auditPromptErr, retryFn)
+      await handlePromptError(loopName, { ...currentState, phase: 'auditing' }, 'failed to send audit prompt', effectiveErr, retryFn)
       return
     }
     if (actualAuditorModel) {
@@ -1194,11 +1347,22 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const auditSessionId = currentState.sessionId
 
-    const { text: auditText, error: assistantError, lastMessageRole } = await getLastAssistantInfo(auditSessionId, currentState.worktreeDir)
+    const { text: auditText, error: assistantError, errorSignal: auditErrorSignal, lastMessageRole } = await getLastAssistantInfo(auditSessionId, currentState.worktreeDir)
+
+    // Classify persisted provider-limit errors before the no-assistant gate
+    // so that finish:'error' assistant messages terminate immediately.
+    if (auditErrorSignal) {
+      const limitReason = classifyProviderLimit(auditErrorSignal)
+      if (limitReason) {
+        logger.error(`Loop: provider limit in persisted auditing error for ${loopName}: ${limitReason}, terminating`)
+        await terminateLoop(loopName, currentState, { kind: 'provider_limit', message: limitReason })
+        return
+      }
+    }
 
     if (await handleIdleNoAssistantGate(loopName, currentState, lastMessageRole, { phaseLabel: 'auditing phase', exhaustedReason: { kind: 'audit_retry_exhausted' }, rerun: runAuditingPhase })) return
 
-    const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantError, 'auditing')
+    const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantError, 'auditing', auditErrorSignal)
     if (!errorResult) {
       return
     }
@@ -1393,11 +1557,22 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     const auditSessionId = currentState.sessionId
 
-    const { text: auditText, error: assistantError, lastMessageRole } = await getLastAssistantInfo(auditSessionId, currentState.worktreeDir)
+    const { text: auditText, error: assistantError, errorSignal: finalAuditErrorSignal, lastMessageRole } = await getLastAssistantInfo(auditSessionId, currentState.worktreeDir)
+
+    // Classify persisted provider-limit errors before the no-assistant gate
+    // so that finish:'error' assistant messages terminate immediately.
+    if (finalAuditErrorSignal) {
+      const limitReason = classifyProviderLimit(finalAuditErrorSignal)
+      if (limitReason) {
+        logger.error(`Loop: provider limit in persisted final audit error for ${loopName}: ${limitReason}, terminating`)
+        await terminateLoop(loopName, currentState, { kind: 'provider_limit', message: limitReason })
+        return
+      }
+    }
 
     if (await handleIdleNoAssistantGate(loopName, currentState, lastMessageRole, { phaseLabel: 'final audit phase', exhaustedReason: { kind: 'final_audit_retry_exhausted' }, rerun: runFinalAuditPhase })) return
 
-    const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantError, 'final_auditing')
+    const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantError, 'final_auditing', finalAuditErrorSignal)
     if (!errorResult) return
     const assistantErrorDetected = errorResult.assistantErrorDetected
     currentState = errorResult.currentState
@@ -1543,7 +1718,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
 
     if (event.type === 'session.error') {
-      const errorProps = event.properties as { sessionID?: string; error?: { name?: string; data?: { message?: string } } }
+      const errorProps = event.properties as { sessionID?: string; error?: { name?: string; data?: { message?: string; statusCode?: number } } }
       const eventSessionId = errorProps?.sessionID
       const errorName = errorProps?.error?.name
       const isAbort = errorName === 'MessageAbortedError' || errorName === 'AbortError'
@@ -1588,11 +1763,23 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         return
       }
 
-      const loopName = loopService.resolveLoopName(eventSessionId)
+      const loopName = await resolveSessionLoopName(eventSessionId)
       if (!loopName) return
       await withStateLock(loopName, async () => {
         const state = loopService.getActiveState(loopName)
         if (!state?.active) return
+
+        const limitReason = classifyProviderLimit({
+          name: errorName,
+          message: errorProps?.error?.data?.message,
+          statusCode: errorProps?.error?.data?.statusCode,
+        })
+        if (limitReason) {
+          logger.error(`Loop: provider limit detected for ${loopName}: ${limitReason}, terminating`)
+          await terminateLoop(loopName, state, { kind: 'provider_limit', message: limitReason })
+          return
+        }
+
         const isCurrentSession = state.sessionId === eventSessionId
         if (!isCurrentSession) {
           logger.log(`Loop: ignoring stale error event for session ${eventSessionId} (current=${state.sessionId})`)
@@ -1633,7 +1820,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     if (event.type !== 'session.status') return
 
-    const status = event.properties?.status as { type?: string } | undefined
+    const status = event.properties?.status as { type?: string; attempt?: number; message?: string } | undefined
     const sessionId = event.properties?.sessionID as string
     if (!sessionId) return
 
@@ -1646,6 +1833,23 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (loopName) {
         clearPromptInFlightBySession(loopName, sessionId)
       }
+      return
+    }
+
+    if (status?.type === 'retry') {
+      const loopName = await resolveSessionLoopName(sessionId)
+      if (!loopName) return
+      const limitReason = classifyProviderLimit({ message: status.message })
+      if (!limitReason) {
+        logger.debug(`Loop: provider retry in progress for ${loopName} (attempt=${status.attempt ?? '?'})`)
+        return
+      }
+      await withStateLock(loopName, async () => {
+        const state = loopService.getActiveState(loopName)
+        if (!state?.active) return
+        logger.error(`Loop: provider limit detected via retry status for ${loopName}: ${limitReason}, terminating`)
+        await terminateLoop(loopName, state, { kind: 'provider_limit', message: limitReason })
+      })
       return
     }
 
@@ -1714,6 +1918,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     idleRetryAttempts.clear()
     codingLaunchRecoveryAttempts.clear()
     loopRetainedSessions.clear()
+    sessionToLoop.clear()
+    terminatingLoops.clear()
     watchdog.clearAll()
     stateLocks.clear()
     sessionsAwaitingBusy.clear()
@@ -1752,6 +1958,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
     idleRetryAttempts.delete(loopName)
     codingLaunchRecoveryAttempts.delete(loopName)
+    terminatingLoops.delete(loopName)
 
     const retained = loopRetainedSessions.get(loopName)
     if (retained) {
@@ -1835,19 +2042,41 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     loopService.setState(state.loopName, state)
     loopService.registerLoopSession(state.sessionId, state.loopName)
+    sessionToLoop.set(state.sessionId, state.loopName)
     loopRegistry.add(state.loopName)
     logger.log(`Loop: started loop=${state.loopName} session=${state.sessionId}`)
   }
 
   function restart(name: string, params: { newState: LoopState; newSessionId: string }): void {
+    // Retain the old session in the reverse index before deleting state so that
+    // delayed errors from the pre-restart session still resolve to this loop.
+    const oldState = loopService.getAnyState(name)
     loopService.deleteState(name)
     loopService.setState(name, params.newState)
     loopService.registerLoopSession(params.newSessionId, name)
+    sessionToLoop.set(params.newSessionId, name)
+    if (oldState?.sessionId) {
+      sessionToLoop.set(oldState.sessionId, name)
+    }
     loopRegistry.add(name)
   }
 
   function setPhase(name: string, phase: LoopState['phase']): void {
     loopService.setPhase(name, phase)
+  }
+
+  /**
+   * Populate the in-memory reverse index for a session that was registered
+   * through a path that does not call {@link start} (e.g. production execution
+   * service via {@link attachLoopToSession}). This ensures stale-session error
+   * events can still resolve their loop after session rotation.
+   */
+  function registerSessionReverseIndex(sessionId: string, loopName: string): void {
+    sessionToLoop.set(sessionId, loopName)
+  }
+
+  function unregisterSessionReverseIndex(sessionId: string): void {
+    sessionToLoop.delete(sessionId)
   }
 
   return {
@@ -1871,6 +2100,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     restart,
     generateUniqueLoopName,
     setPhase,
+    registerSessionReverseIndex,
+    unregisterSessionReverseIndex,
+    setParentSessionLookup(lookup: (sessionId: string) => Promise<string | null>) {
+      getParentSessionId = lookup
+    },
     service: loopService,
   }
 }

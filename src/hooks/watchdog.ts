@@ -1,4 +1,5 @@
 import type { LoopService, LoopState, TerminationReason } from '../loop'
+import { classifyProviderLimit } from '../loop/provider-limit'
 import type { Logger } from '../types'
 import type { ForgeClient } from '../client/port'
 
@@ -56,6 +57,8 @@ export function createLoopWatchdog(input: {
   logger: Logger
   recover(loopName: string, state: LoopState, context: LoopWatchdogRecoveryContext): Promise<void>
   terminate(loopName: string, state: LoopState, reason: TerminationReason): Promise<void>
+  /** Ancestor-aware session→loop resolver for child/subagent sessions. Falls back to loopService.resolveLoopName when absent. */
+  resolveSessionLoopName?: (sessionId: string) => Promise<string | null>
   statusRetryAttempts?: number
   statusRetryBackoffMs?: number
 }): LoopWatchdog {
@@ -187,18 +190,48 @@ export function createLoopWatchdog(input: {
         }
 
         // Check if any session registered to this loop is busy (main session + child/subagent sessions)
-        const resolvedLoopName = input.loopService.resolveLoopName(state.sessionId) ?? loopName
+        const resolvedLoopName = input.resolveSessionLoopName
+          ? (await input.resolveSessionLoopName(state.sessionId) ?? loopName)
+          : (input.loopService.resolveLoopName(state.sessionId) ?? loopName)
         let anyBusy = false
+        let anyRetrying = false
         for (const [sid, snap] of Object.entries(statusResult.data)) {
-          if ((snap as SessionStatusSnapshot).type === 'busy' && input.loopService.resolveLoopName(sid) === resolvedLoopName) {
+          const snapshot = snap as SessionStatusSnapshot
+          if (snapshot.type !== 'busy' && snapshot.type !== 'retry') continue
+          const sidLoop = input.resolveSessionLoopName
+            ? await input.resolveSessionLoopName(sid)
+            : input.loopService.resolveLoopName(sid)
+          if (sidLoop !== resolvedLoopName) continue
+
+          if (snapshot.type === 'busy') {
             anyBusy = true
-            break
+            // Continue scanning: a provider-limit retry in another session takes precedence
+          }
+
+          if (snapshot.type === 'retry') {
+            const limitReason = classifyProviderLimit({ message: snapshot.message })
+            if (limitReason) {
+              // Re-fetch active state to avoid terminating with a stale snapshot.
+              // The loop may have been cancelled, restarted, or rotated during the
+              // async status poll and ancestor-resolution window.
+              const freshState = input.loopService.getActiveState(loopName)
+              if (!freshState?.active) return
+              await input.terminate(loopName, freshState, { kind: 'provider_limit', message: limitReason })
+              return
+            }
+            anyRetrying = true
           }
         }
 
         if (anyBusy) {
           resetActivity(loopName, 'status:busy')
           input.logger.debug(`Loop watchdog: loop ${loopName} remains busy (main or child session), resetting timer`)
+          return
+        }
+
+        if (anyRetrying) {
+          resetActivity(loopName, 'status:retry')
+          input.logger.debug(`Loop watchdog: provider retry in progress for ${loopName}, resetting timer`)
           return
         }
 
