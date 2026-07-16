@@ -451,6 +451,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     })
 
     const parentSessionLookup = createParentSessionLookup({ client: forgeClient, directory, loop: loopHandler.loop, logger })
+    loopHandler.loop.setParentSessionLookup(parentSessionLookup)
     const sessionDirectoryLookup = createSessionDirectoryLookup({ client: forgeClient, directory, loop: loopHandler.loop })
     const sessionLoopResolver = createSessionLoopResolver({
       loop: loopHandler.loop,

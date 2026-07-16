@@ -216,6 +216,8 @@ describe('handleLoopRestart from stall_timeout', () => {
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
           generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+          registerSessionReverseIndex: () => {},
+          unregisterSessionReverseIndex: () => {},
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
@@ -331,6 +333,8 @@ describe('handleLoopRestart from stall_timeout', () => {
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
           generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+          registerSessionReverseIndex: () => {},
+          unregisterSessionReverseIndex: () => {},
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
@@ -426,6 +430,8 @@ describe('handleLoopRestart from stall_timeout', () => {
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
           generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+          registerSessionReverseIndex: () => {},
+          unregisterSessionReverseIndex: () => {},
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
@@ -539,6 +545,8 @@ describe('handleLoopRestart from stall_timeout', () => {
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
           generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+          registerSessionReverseIndex: () => {},
+          unregisterSessionReverseIndex: () => {},
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
@@ -637,6 +645,8 @@ describe('handleLoopRestart from stall_timeout', () => {
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
           generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+          registerSessionReverseIndex: () => {},
+          unregisterSessionReverseIndex: () => {},
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
@@ -745,6 +755,8 @@ describe('handleLoopRestart from stall_timeout', () => {
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
           generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+          registerSessionReverseIndex: () => {},
+          unregisterSessionReverseIndex: () => {},
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
@@ -848,6 +860,8 @@ describe('handleLoopRestart from stall_timeout', () => {
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
           generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+          registerSessionReverseIndex: () => {},
+          unregisterSessionReverseIndex: () => {},
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
@@ -995,7 +1009,7 @@ describe('handleLoopRestart restartability rules', () => {
     }, { lastAuditResult: null, goal: opts.goal })
   }
 
-  async function createMockService(opts?: { sandboxManager?: unknown }) {
+  async function createMockService(opts?: { sandboxManager?: unknown; terminate?: (name: string, reason: any) => Promise<boolean> }) {
     const noopFn = () => {}
     const mockLoopService: Partial<LoopService> = {
       listActive: () => loopService.listActive(),
@@ -1048,6 +1062,18 @@ describe('handleLoopRestart restartability rules', () => {
       get: () => undefined,
     }
 
+    // Default terminate: persist errored status and termination reason, then mark inactive.
+    const defaultTerminate = async (name: string, reason: any) => {
+      const state = loopService.getActiveState(name)
+      if (!state?.active) return false
+      loopService.terminate(name, {
+        status: 'errored',
+        reason: reason.kind === 'provider_limit' ? `provider_limit: ${reason.message}` : reason.kind,
+        completedAt: Date.now(),
+      })
+      return true
+    }
+
     const { createForgeExecutionService } = await import('../../src/services/execution')
     const service = createForgeExecutionService({
       projectId: PROJECT_ID,
@@ -1068,6 +1094,9 @@ describe('handleLoopRestart restartability rules', () => {
           listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
           setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
           generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+          registerSessionReverseIndex: () => {},
+          unregisterSessionReverseIndex: () => {},
+          terminate: opts?.terminate ?? defaultTerminate,
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
@@ -1412,5 +1441,94 @@ describe('handleLoopRestart restartability rules', () => {
       (c: any[]) => c[0]?.agent === 'code' && c[0]?.sessionID === 'new-session-restart',
     )
     expect(codePrompt).toBeDefined()
+  })
+
+  test('restart prompt failure with provider limit terminates loop instead of rolling back', async () => {
+    const loopName = 'provider-limit-restart-loop'
+    insertLoop({
+      loopName,
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'coding',
+    })
+
+    const terminateSpy = vi.fn(async (name: string, reason: any) => {
+      const state = loopService.getActiveState(name)
+      if (!state?.active) return false
+      loopService.terminate(name, {
+        status: 'errored',
+        reason: reason.kind === 'provider_limit' ? `provider_limit: ${reason.message}` : reason.kind,
+        completedAt: Date.now(),
+      })
+      return true
+    })
+    const { service, client } = await createMockService({ terminate: terminateSpy })
+
+    // Prompt fails with a usage-limit error
+    ;(client.session.promptAsync as any).mockImplementation(async () => {
+      throw { name: 'APIError', data: { message: 'You have reached your usage limit', statusCode: 429 } }
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: loopName },
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+
+    // Terminate was called with provider_limit reason
+    expect(terminateSpy).toHaveBeenCalledOnce()
+    const [terminatedName, reason] = terminateSpy.mock.calls[0]
+    expect(terminatedName).toBe(loopName)
+    expect(reason).toEqual({ kind: 'provider_limit', message: expect.stringContaining('usage limit') })
+
+    // State is errored with provider_limit reason (set by the default terminate mock)
+    const newState = loopService.getAnyState(loopName)
+    expect(newState).not.toBeNull()
+    expect(newState?.status).toBe('errored')
+    expect(newState?.terminationReason).toContain('provider_limit')
+
+    // New session was NOT rolled back (state was terminated, not reverted)
+    expect(newState?.sessionId).toBe('new-session-restart')
+  })
+
+  test('restart prompt failure with non-provider-limit error still rolls back', async () => {
+    const loopName = 'generic-fail-restart-loop'
+    insertLoop({
+      loopName,
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'coding',
+    })
+
+    const terminateSpy = vi.fn(async () => true)
+    const { service, client } = await createMockService({ terminate: terminateSpy })
+
+    // Prompt fails with a generic non-provider-limit error
+    ;(client.session.promptAsync as any).mockImplementation(async () => {
+      throw { name: 'NotFoundError', data: { message: 'Session not found: ses_x' } }
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: loopName },
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+
+    // Terminate was NOT called (rolled back instead)
+    expect(terminateSpy).not.toHaveBeenCalled()
+
+    // State was rolled back (new state deleted)
+    const newState = loopService.getActiveState(loopName)
+    expect(newState).toBeNull()
   })
 })

@@ -28,7 +28,7 @@ export interface SendPromptInput {
 export interface PromptDispatch {
   sendPromptWithFallback(input: SendPromptInput): Promise<{ error?: unknown; usedModel?: { providerID: string; modelID: string } | undefined }>
 
-  getLastAssistantInfo(sessionId: string, worktreeDir: string): Promise<{ text: string | null; error: string | null; lastMessageRole: string }>
+  getLastAssistantInfo(sessionId: string, worktreeDir: string): Promise<{ text: string | null; error: string | null; errorSignal: { name?: string; message?: string; statusCode?: number } | null; lastMessageRole: string }>
 
   getAssistantTranscript(sessionId: string, worktreeDir: string): Promise<string | null>
 }
@@ -88,32 +88,41 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
     return { error: result.error, usedModel }
   }
 
-  async function getLastAssistantInfo(sessionId: string, worktreeDir: string): Promise<{ text: string | null; error: string | null; lastMessageRole: string }> {
+  async function getLastAssistantInfo(sessionId: string, worktreeDir: string): Promise<{ text: string | null; error: string | null; errorSignal: { name?: string; message?: string; statusCode?: number } | null; lastMessageRole: string }> {
     try {
       const messages = await client.session.messages({
         sessionID: sessionId,
         directory: worktreeDir,
         limit: 4,
       }) as Array<{
-        info: { role: string; finish?: string; error?: { name?: string; data?: { message?: string } } }
+        info: { role: string; finish?: string; error?: { name?: string; data?: { message?: string; statusCode?: number } } }
         parts: Array<{ type: string; text?: string }>
       }>
 
       const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null
 
       if (!lastMessage) {
-        return { text: null, error: null, lastMessageRole: 'none' }
+        return { text: null, error: null, errorSignal: null, lastMessageRole: 'none' }
       }
 
       if (lastMessage.info.role !== 'assistant') {
         logger.log(`Loop: no assistant message found in session ${sessionId}, last message role: ${lastMessage.info.role ?? 'unknown'}`)
-        return { text: null, error: null, lastMessageRole: lastMessage.info.role ?? 'unknown' }
+        return { text: null, error: null, errorSignal: null, lastMessageRole: lastMessage.info.role ?? 'unknown' }
       }
 
       const lastAssistant = lastMessage
+      const error = lastAssistant.info.error?.data?.message ?? lastAssistant.info.error?.name ?? null
+      const errorSignal = lastAssistant.info.error
+        ? {
+            name: lastAssistant.info.error.name,
+            message: lastAssistant.info.error.data?.message,
+            statusCode: lastAssistant.info.error.data?.statusCode,
+          }
+        : null
+
       if (lastAssistant.info.finish && lastAssistant.info.finish !== 'stop') {
         logger.log(`Loop: assistant message in session ${sessionId} is not final yet (finish=${lastAssistant.info.finish})`)
-        return { text: null, error: null, lastMessageRole: `assistant:${lastAssistant.info.finish}` }
+        return { text: null, error, errorSignal, lastMessageRole: `assistant:${lastAssistant.info.finish}` }
       }
 
       const text = lastAssistant.parts
@@ -121,12 +130,10 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
         .map((p) => p.text as string)
         .join('\n') || null
 
-      const error = lastAssistant.info.error?.data?.message ?? lastAssistant.info.error?.name ?? null
-
-      return { text, error, lastMessageRole: 'assistant' }
+      return { text, error, errorSignal, lastMessageRole: 'assistant' }
     } catch (err) {
       logger.error(`Loop: could not read session messages`, err)
-      return { text: null, error: null, lastMessageRole: 'error' }
+      return { text: null, error: null, errorSignal: null, lastMessageRole: 'error' }
     }
   }
 

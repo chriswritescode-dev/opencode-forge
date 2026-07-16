@@ -309,10 +309,16 @@ async function attachForgeSession(
             { workspaceId, loopName, action: removalAction, reasonLabel: 'attach-conflict-terminal' },
           )
         } else if (!result.ok && result.code !== 'already_attached') {
-          publishAttachFailureToast(deps, ws.directory ?? deps.directory, `Forge loop "${loopName}"`, `Failed to start loop: ${result.message}`)
+          const row = deps.execDeps.loopsRepo.get(sessionProjectId, loopName)
+          const removalAction = row?.status === 'cancelled' || row?.status === 'errored' || row?.status === 'stalled'
+            ? 'remove-registration-only'
+            : 'remove-fully'
+          publishAttachFailureToast(deps, ws.directory ?? deps.directory, `Forge loop "${loopName}"`, removalAction === 'remove-registration-only'
+            ? `Loop "${loopName}" is in terminal status. Use Loop-status restart to resume.`
+            : `Failed to start loop: ${result.message}`)
           await removeForgeWorkspaceWithContext(
             { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
-            { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-failed' },
+            { workspaceId, loopName, action: removalAction, reasonLabel: 'attach-failed' },
           )
         }
       } catch (err) {

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   terminationStatusFor,
   terminationReasonToString,
+  parseTerminationReasonString,
   type TerminationReason,
 } from '../../src/loop/termination'
 
@@ -56,6 +57,10 @@ describe('terminationStatusFor', () => {
 
   it('maps error_max_retries with message to errored', () => {
     expect(terminationStatusFor({ kind: 'error_max_retries', message: 'assistant error' })).toBe('errored')
+  })
+
+  it('maps provider_limit with message to errored', () => {
+    expect(terminationStatusFor({ kind: 'provider_limit', message: 'usage limit hit' })).toBe('errored')
   })
 })
 
@@ -112,5 +117,18 @@ describe('terminationReasonToString', () => {
 
   it('preserves coding_no_assistant string exactly', () => {
     expect(terminationReasonToString({ kind: 'coding_no_assistant' })).toBe('coding_no_assistant')
+  })
+
+  it('stringifies provider_limit with message', () => {
+    const reason: TerminationReason = { kind: 'provider_limit', message: 'usage limit hit' }
+    expect(terminationReasonToString(reason)).toBe('provider_limit: usage limit hit')
+  })
+})
+
+describe('parseTerminationReasonString', () => {
+  it('round-trips provider_limit', () => {
+    const reason: TerminationReason = { kind: 'provider_limit', message: 'usage limit hit' }
+    const str = terminationReasonToString(reason)
+    expect(parseTerminationReasonString(str)).toEqual(reason)
   })
 })

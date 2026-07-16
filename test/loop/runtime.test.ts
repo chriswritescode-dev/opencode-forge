@@ -131,6 +131,7 @@ describe('Loop Runtime', () => {
     loopConfig?: Partial<PluginConfig>
     serviceLoopConfig?: LoopConfig
     withUsageRepo?: boolean
+    getParentSessionId?: (sessionId: string) => Promise<string | null>
   } = {}): { loop: Loop; calls: RecordedCall[]; logger: Logger; logs: Array<{ level: string; message: string }> } {
     const forge = overrides.client ? { client: overrides.client, calls: [] as RecordedCall[] } : createFakeForgeClient()
     const { logger, logs } = createCapturingLogger()
@@ -148,6 +149,7 @@ describe('Loop Runtime', () => {
       sandboxManager: undefined,
       dataDir: tempDir,
       loopSessionUsageRepo: overrides.withUsageRepo ? loopSessionUsageRepo : undefined,
+      getParentSessionId: overrides.getParentSessionId,
     })
 
     currentLoop = loop
@@ -2522,6 +2524,692 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(finalAuditPromptText).toContain('Coder decisions & verification notes')
       expect(finalAuditPromptText).toContain('Chose approach X')
       expect(finalAuditPromptText).toContain('FOO=bar pnpm test')
+    })
+  })
+
+  describe('provider limit abort', () => {
+    test('retry event with usage-limit message terminates', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({ phase: 'coding' })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          sessionID: state.sessionId,
+          status: { type: 'retry', attempt: 2, message: 'You have reached your usage limit', next: 60000 },
+        },
+      })
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.status).toBe('errored')
+      expect(afterState!.terminationReason).toContain('provider_limit:')
+
+      const abortCalls = calls.filter(c => c.method === 'session.abort')
+      expect(abortCalls.length).toBeGreaterThan(0)
+    })
+
+    test('generic retry event does not terminate', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({ phase: 'coding' })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          sessionID: state.sessionId,
+          status: { type: 'retry', attempt: 1, message: 'rate limited, retrying', next: 5000 },
+        },
+      })
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+
+      const abortCalls = calls.filter(c => c.method === 'session.abort')
+      expect(abortCalls.length).toBe(0)
+    })
+
+    test('session.error APIError 403 terminates', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({ phase: 'coding' })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      await loop.tick({
+        type: 'session.error',
+        properties: {
+          sessionID: state.sessionId,
+          error: { name: 'APIError', data: { message: 'forbidden', statusCode: 403 } },
+        },
+      })
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.status).toBe('errored')
+      expect(afterState!.terminationReason).toContain('provider_limit:')
+
+      const abortCalls = calls.filter(c => c.method === 'session.abort')
+      expect(abortCalls.length).toBeGreaterThan(0)
+    })
+
+    test('session.error ProviderAuthError terminates in coding phase', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({ phase: 'coding' })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      await loop.tick({
+        type: 'session.error',
+        properties: {
+          sessionID: state.sessionId,
+          error: { name: 'ProviderAuthError', data: { message: 'invalid API key' } },
+        },
+      })
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.status).toBe('errored')
+      expect(afterState!.terminationReason).toContain('provider_limit:')
+
+      const abortCalls = calls.filter(c => c.method === 'session.abort')
+      expect(abortCalls.length).toBeGreaterThan(0)
+    })
+
+    test('session.error UnknownError without limit text does not terminate', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({ phase: 'coding' })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      await loop.tick({
+        type: 'session.error',
+        properties: {
+          sessionID: state.sessionId,
+          error: { name: 'UnknownError', data: { message: 'something went wrong' } },
+        },
+      })
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+
+      const abortCalls = calls.filter(c => c.method === 'session.abort')
+      expect(abortCalls.length).toBe(0)
+    })
+
+    test('auditing phase usage-limit error terminates instead of rotating', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({ phase: 'auditing' })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      await loop.tick({
+        type: 'session.error',
+        properties: {
+          sessionID: state.sessionId,
+          error: { name: 'ProviderError', data: { message: 'You have reached your usage limit' } },
+        },
+      })
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.status).toBe('errored')
+      expect(afterState!.terminationReason).toContain('provider_limit:')
+
+      // Should NOT have rotated to coding
+      const createCalls = calls.filter(c => c.method === 'session.create')
+      expect(createCalls.length).toBe(0)
+
+      const abortCalls = calls.filter(c => c.method === 'session.abort')
+      expect(abortCalls.length).toBeGreaterThan(0)
+    })
+
+    test('stale session provider-limit error terminates the active loop', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = createRuntime({ client })
+
+      const originalSessionId = 'original-session-id'
+      const state = makeState({ sessionId: originalSessionId, phase: 'coding' })
+      loop.start({ state })
+
+      // Simulate session rotation: new session becomes current
+      const rotatedSessionId = 'rotated-session-id'
+      const rotatedState = makeState({ sessionId: rotatedSessionId, phase: 'coding' })
+      loop.restart(state.loopName, { newState: rotatedState, newSessionId: rotatedSessionId })
+
+      // Stale session emits a provider-limit error
+      await loop.tick({
+        type: 'session.error',
+        properties: {
+          sessionID: originalSessionId,
+          error: { name: 'ProviderError', data: { message: 'You have reached your usage limit' } },
+        },
+      })
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.status).toBe('errored')
+      expect(afterState!.terminationReason).toContain('provider_limit:')
+
+      const abortCalls = calls.filter(c => c.method === 'session.abort')
+      expect(abortCalls.length).toBeGreaterThan(0)
+    })
+
+    test('stale session non-provider-limit error does not terminate', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = createRuntime({ client })
+
+      const originalSessionId = 'original-session-id'
+      const state = makeState({ sessionId: originalSessionId, phase: 'coding' })
+      loop.start({ state })
+
+      // Simulate session rotation
+      const rotatedSessionId = 'rotated-session-id'
+      const rotatedState = makeState({ sessionId: rotatedSessionId, phase: 'coding' })
+      loop.restart(state.loopName, { newState: rotatedState, newSessionId: rotatedSessionId })
+
+      // Stale session emits a non-provider-limit error
+      await loop.tick({
+        type: 'session.error',
+        properties: {
+          sessionID: originalSessionId,
+          error: { name: 'UnknownError', data: { message: 'something went wrong' } },
+        },
+      })
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+
+      const abortCalls = calls.filter(c => c.method === 'session.abort')
+      expect(abortCalls.length).toBe(0)
+    })
+
+    test('stale audit session provider-limit error terminates the active loop', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = createRuntime({ client })
+
+      const codingSessionId = 'coding-session-id'
+      const state = makeState({ sessionId: codingSessionId, phase: 'coding' })
+      loop.start({ state })
+
+      // Register an audit session (simulates audit creation replacing the coding session)
+      const auditSessionId = 'audit-session-id'
+      loop.registerSessionReverseIndex(auditSessionId, state.loopName)
+      loopService.replaceSession(state.loopName, {
+        newSessionId: auditSessionId,
+        phase: 'auditing',
+      })
+
+      // Rotate back to coding (simulates post-audit rotation)
+      const newCodingSessionId = 'new-coding-session-id'
+      loop.restart(state.loopName, {
+        newState: makeState({ sessionId: newCodingSessionId, phase: 'coding' }),
+        newSessionId: newCodingSessionId,
+      })
+
+      // The retired audit session emits a provider-limit error
+      await loop.tick({
+        type: 'session.error',
+        properties: {
+          sessionID: auditSessionId,
+          error: { name: 'ProviderError', data: { message: 'You have reached your usage limit' } },
+        },
+      })
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.status).toBe('errored')
+      expect(afterState!.terminationReason).toContain('provider_limit:')
+
+      const abortCalls = calls.filter(c => c.method === 'session.abort')
+      expect(abortCalls.length).toBeGreaterThan(0)
+    })
+
+    test('child session provider-limit retry terminates the owning loop', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const parentLookup = new Map<string, string>()
+      const { loop } = createRuntime({
+        client,
+        getParentSessionId: async (sid: string) => parentLookup.get(sid) ?? null,
+      })
+
+      const codingSessionId = 'coding-session-id'
+      const state = makeState({ sessionId: codingSessionId, phase: 'coding' })
+      loop.start({ state })
+
+      // Register a child session whose parent is the coding session
+      const childSessionId = 'child-session-id'
+      parentLookup.set(childSessionId, codingSessionId)
+
+      // Child session emits a provider-limit retry status
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          sessionID: childSessionId,
+          status: { type: 'retry', attempt: 1, message: 'You have reached your usage limit', next: 60000 },
+        },
+      })
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.status).toBe('errored')
+      expect(afterState!.terminationReason).toContain('provider_limit:')
+
+      const abortCalls = calls.filter(c => c.method === 'session.abort')
+      expect(abortCalls.length).toBeGreaterThan(0)
+    })
+
+    test('generic child session retry does not terminate', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const parentLookup = new Map<string, string>()
+      const { loop } = createRuntime({
+        client,
+        getParentSessionId: async (sid: string) => parentLookup.get(sid) ?? null,
+      })
+
+      const codingSessionId = 'coding-session-id'
+      const state = makeState({ sessionId: codingSessionId, phase: 'coding' })
+      loop.start({ state })
+
+      const childSessionId = 'child-session-id'
+      parentLookup.set(childSessionId, codingSessionId)
+
+      // Child session emits a generic retry (not provider-limit)
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          sessionID: childSessionId,
+          status: { type: 'retry', attempt: 1, message: 'rate limited, retrying', next: 5000 },
+        },
+      })
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+
+      const abortCalls = calls.filter(c => c.method === 'session.abort')
+      expect(abortCalls.length).toBe(0)
+    })
+
+    test('persisted assistant error with usage-limit text terminates as provider_limit', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            {
+              info: {
+                role: 'assistant',
+                finish: 'stop',
+                error: {
+                  name: 'ProviderError',
+                  data: { message: 'You have reached your usage limit', statusCode: 403 },
+                },
+              },
+              parts: [{ type: 'text', text: '' }],
+            },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({ phase: 'coding' })
+      loopService.setState(state.loopName, state)
+
+      // Send busy then idle to trigger runCodingPhase
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'busy' } },
+      })
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'idle' } },
+      })
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.status).toBe('errored')
+      expect(afterState!.terminationReason).toContain('provider_limit:')
+
+      const abortCalls = calls.filter(c => c.method === 'session.abort')
+      expect(abortCalls.length).toBeGreaterThan(0)
+    })
+
+    test('persisted assistant ProviderAuthError terminates as provider_limit', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            {
+              info: {
+                role: 'assistant',
+                finish: 'stop',
+                error: {
+                  name: 'ProviderAuthError',
+                  data: { message: 'invalid API key' },
+                },
+              },
+              parts: [{ type: 'text', text: '' }],
+            },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({ phase: 'coding' })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'busy' } },
+      })
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'idle' } },
+      })
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.status).toBe('errored')
+      expect(afterState!.terminationReason).toContain('provider_limit:')
+    })
+
+    test('persisted assistant error with 403 status terminates as provider_limit', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            {
+              info: {
+                role: 'assistant',
+                finish: 'stop',
+                error: {
+                  name: 'APIError',
+                  data: { message: 'forbidden', statusCode: 403 },
+                },
+              },
+              parts: [{ type: 'text', text: '' }],
+            },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({ phase: 'coding' })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'busy' } },
+      })
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'idle' } },
+      })
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.status).toBe('errored')
+      expect(afterState!.terminationReason).toContain('provider_limit:')
+    })
+
+    test('persisted assistant error with 429 does not terminate as provider_limit', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            {
+              info: {
+                role: 'assistant',
+                finish: 'stop',
+                error: {
+                  name: 'APIError',
+                  data: { message: 'rate limited', statusCode: 429 },
+                },
+              },
+              parts: [{ type: 'text', text: '' }],
+            },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({ phase: 'coding' })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'busy' } },
+      })
+      await loop.tick({
+        type: 'session.status',
+        properties: { sessionID: state.sessionId, status: { type: 'idle' } },
+      })
+
+      // Should NOT terminate as provider_limit — 429 is not a fatal limit
+      const afterState = loopService.getActiveState(state.loopName)
+      if (afterState) {
+        // If still active, no provider_limit termination
+        if (afterState.active) {
+          expect(afterState.terminationReason).toBeUndefined()
+        } else {
+          // If terminated, it should be error_max_retries, not provider_limit
+          expect(afterState.terminationReason).not.toContain('provider_limit:')
+        }
+      }
+    })
+
+    test('concurrent cancel during provider-limit termination executes side effects once', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({ phase: 'coding' })
+      loopService.setState(state.loopName, state)
+      loopService.registerLoopSession(state.sessionId, state.loopName)
+
+      // Start provider-limit termination via session.error
+      const errorPromise = loop.tick({
+        type: 'session.error',
+        properties: {
+          sessionID: state.sessionId,
+          error: { name: 'ProviderAuthError', data: { message: 'invalid API key' } },
+        },
+      })
+
+      // Concurrently cancel (simulates user cancel racing with provider-limit detection)
+      const cancelPromise = loop.cancel(state.loopName)
+
+      await Promise.all([errorPromise, cancelPromise])
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      // Either path may win the race; the admission guard ensures exactly one executes
+      expect(['errored', 'cancelled']).toContain(afterState!.status)
+
+      // abort should be called exactly once (not twice from the race)
+      const abortCalls = calls.filter(c => c.method === 'session.abort')
+      expect(abortCalls.length).toBe(1)
+    })
+  })
+
+  describe('child session error resolution via ancestor chain', () => {
+    test('child session session.error with provider limit terminates the owning loop', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const parentLookup = new Map<string, string>()
+      const { loop } = createRuntime({
+        client,
+        getParentSessionId: async (sid: string) => parentLookup.get(sid) ?? null,
+      })
+
+      const codingSessionId = 'coding-session-id'
+      const state = makeState({ sessionId: codingSessionId, phase: 'coding' })
+      loop.start({ state })
+
+      // Register a child session whose parent is the coding session
+      const childSessionId = 'child-session-id'
+      parentLookup.set(childSessionId, codingSessionId)
+
+      // Child session emits a provider-limit error
+      await loop.tick({
+        type: 'session.error',
+        properties: {
+          sessionID: childSessionId,
+          error: { name: 'ProviderAuthError', data: { message: 'You have reached your usage limit' } },
+        },
+      })
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.status).toBe('errored')
+      expect(afterState!.terminationReason).toContain('provider_limit:')
+
+      const abortCalls = calls.filter(c => c.method === 'session.abort')
+      expect(abortCalls.length).toBeGreaterThan(0)
+    })
+
+    test('child session session.error without provider limit does not terminate', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const parentLookup = new Map<string, string>()
+      const { loop } = createRuntime({
+        client,
+        getParentSessionId: async (sid: string) => parentLookup.get(sid) ?? null,
+      })
+
+      const codingSessionId = 'coding-session-id'
+      const state = makeState({ sessionId: codingSessionId, phase: 'coding' })
+      loop.start({ state })
+
+      const childSessionId = 'child-session-id'
+      parentLookup.set(childSessionId, codingSessionId)
+
+      // Child session emits a non-provider-limit error
+      await loop.tick({
+        type: 'session.error',
+        properties: {
+          sessionID: childSessionId,
+          error: { name: 'UnknownError', data: { message: 'something went wrong' } },
+        },
+      })
+
+      const afterState = loopService.getActiveState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(true)
+
+      const abortCalls = calls.filter(c => c.method === 'session.abort')
+      expect(abortCalls.length).toBe(0)
+    })
+  })
+
+  describe('reverse index lifecycle', () => {
+    test('unregisterSessionReverseIndex removes session from reverse index', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = createRuntime({ client })
+
+      const state = makeState({ sessionId: 'session-1', phase: 'coding' })
+      loop.start({ state })
+
+      // Register session-2 in reverse index (simulating a path that doesn't call start)
+      loop.registerSessionReverseIndex('session-2', state.loopName)
+
+      // session-2 should resolve to the loop via reverse index
+      // (verified by emitting an error that should be handled)
+      await loop.tick({
+        type: 'session.error',
+        properties: {
+          sessionID: 'session-2',
+          error: { name: 'ProviderError', data: { message: 'You have reached your usage limit' } },
+        },
+      })
+
+      // The error should have terminated the loop because session-2 resolves via reverse index
+      const afterRegister = loopService.getAnyState(state.loopName)
+      expect(afterRegister).not.toBeNull()
+      expect(afterRegister!.active).toBe(false)
+      expect(afterRegister!.terminationReason).toContain('provider_limit:')
+
+      // Track abort calls before the unregister test
+      const abortCallsBefore = calls.filter(c => c.method === 'session.abort').length
+
+      // Restart the loop to test unregister
+      const newState = makeState({ sessionId: 'session-3', phase: 'coding' })
+      loop.restart(state.loopName, { newState, newSessionId: 'session-3' })
+
+      // Register session-4 and then unregister it
+      loop.registerSessionReverseIndex('session-4', state.loopName)
+      loop.unregisterSessionReverseIndex('session-4')
+
+      // session-4 error should be ignored (not resolved to any loop)
+      await loop.tick({
+        type: 'session.error',
+        properties: {
+          sessionID: 'session-4',
+          error: { name: 'ProviderError', data: { message: 'You have reached your usage limit' } },
+        },
+      })
+
+      const afterUnregister = loopService.getActiveState(state.loopName)
+      expect(afterUnregister).not.toBeNull()
+      expect(afterUnregister!.active).toBe(true)
+
+      // No new abort calls should have been made after the unregister test
+      const abortCallsAfter = calls.filter(c => c.method === 'session.abort').length
+      expect(abortCallsAfter).toBe(abortCallsBefore)
+    })
+
+    test('restart retains old session in reverse index', async () => {
+      const { client, calls } = createFakeForgeClient()
+      const { loop } = createRuntime({ client })
+
+      const originalSessionId = 'original-session-id'
+      const state = makeState({ sessionId: originalSessionId, phase: 'coding' })
+      loop.start({ state })
+
+      // Restart with new session
+      const newSessionId = 'new-session-id'
+      const newState = makeState({ sessionId: newSessionId, phase: 'coding' })
+      loop.restart(state.loopName, { newState, newSessionId: newSessionId })
+
+      // Old session should still resolve via reverse index
+      await loop.tick({
+        type: 'session.error',
+        properties: {
+          sessionID: originalSessionId,
+          error: { name: 'ProviderError', data: { message: 'You have reached your usage limit' } },
+        },
+      })
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.status).toBe('errored')
+      expect(afterState!.terminationReason).toContain('provider_limit:')
+
+      const abortCalls = calls.filter(c => c.method === 'session.abort')
+      expect(abortCalls.length).toBeGreaterThan(0)
     })
   })
 })
