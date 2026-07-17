@@ -8,6 +8,10 @@ import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopService } from '../../src/loop/service'
+import { createLoopEventHandler } from '../../src/hooks/loop'
+import { createLoopSessionUsageRepo } from '../../src/storage/repos/loop-session-usage-repo'
+import { createLoopEventsRepo } from '../../src/storage/repos/loop-events-repo'
+import { createLoopRunsRepo } from '../../src/storage/repos/loop-runs-repo'
 import type { Logger } from '../../src/types'
 import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
 import type { PlansRepo } from '../../src/storage/repos/plans-repo'
@@ -1530,5 +1534,405 @@ describe('handleLoopRestart restartability rules', () => {
     // State was rolled back (new state deleted)
     const newState = loopService.getActiveState(loopName)
     expect(newState).toBeNull()
+  })
+})
+
+describe('handleLoopRestart metrics finalization', () => {
+  let db: Database
+  let loopsRepo: LoopsRepo
+  let plansRepo: PlansRepo
+  let reviewFindingsRepo: ReviewFindingsRepo
+  let sectionPlansRepo: SectionPlansRepo
+  let loopSessionUsageRepo: ReturnType<typeof createLoopSessionUsageRepo>
+  let loopEventsRepo: ReturnType<typeof createLoopEventsRepo>
+  let loopRunsRepo: ReturnType<typeof createLoopRunsRepo>
+  let loopHandler: ReturnType<typeof createLoopEventHandler> | null = null
+
+  const mockWorkspaceStatusRegistry = {
+    awaitConnected: async () => ({ connected: true }),
+  }
+  const mockPendingTeardowns = {
+    register: () => {},
+    unregister: () => {},
+    get: () => undefined,
+  }
+
+  beforeEach(() => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'exec-restart-metrics-test-'))
+    db = new Database(join(tempDir, 'test.db'))
+
+    setupLoopsTestDb(db)
+
+    loopsRepo = createLoopsRepo(db)
+    plansRepo = createPlansRepo(db)
+    reviewFindingsRepo = createReviewFindingsRepo(db)
+    sectionPlansRepo = createSectionPlansRepo(db)
+    loopSessionUsageRepo = createLoopSessionUsageRepo(db)
+    loopEventsRepo = createLoopEventsRepo(db)
+    loopRunsRepo = createLoopRunsRepo(db)
+    // loopHandler is created inside each test once the test-specific fake
+    // client is ready so createLoopEventHandler binds a real client.
+    loopHandler = null
+  })
+
+  afterEach(() => {
+    try {
+      loopHandler?.clearAllRetryTimeouts()
+    } catch {}
+    try { db.close() } catch {}
+  })
+
+  function seedActiveLoop(loopName: string, startedAtMs: number): void {
+    loopsRepo.insert({
+      projectId: PROJECT_ID,
+      loopName,
+      status: 'running',
+      currentSessionId: 'old-active-session',
+      worktree: false,
+      worktreeDir: '/tmp',
+      worktreeBranch: null,
+      projectDir: '/tmp',
+      maxIterations: 5,
+      iteration: 2,
+      auditCount: 1,
+      errorCount: 0,
+      phase: 'coding',
+      executionModel: null,
+      auditorModel: null,
+      executionVariant: null,
+      auditorVariant: null,
+      kind: 'plan',
+      modelFailed: false,
+      sandbox: false,
+      sandboxContainer: null,
+      startedAt: startedAtMs,
+      completedAt: null,
+      terminationReason: null,
+      completionSummary: null,
+      workspaceId: null,
+      hostSessionId: null,
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: 0,
+    }, { lastAuditResult: null })
+  }
+
+  test('active restart records loop_terminated and a loop_runs row keyed by the prior started_at', async () => {
+    const loopName = 'metrics-active-restart'
+    const oldStartedAt = 1_700_000_000_000
+
+    // Fake client that returns usages-bearing assistant messages keyed by
+    // session so the old active run and the replacement run each capture a
+    // distinct token total.
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-active-session' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async (params: any) => {
+          if (params?.sessionID === 'old-active-session') {
+            return [
+              {
+                info: {
+                  role: 'assistant', finish: 'stop', cost: 0.07,
+                  tokens: { input: 900, output: 450, reasoning: 30, cache: { read: 0, write: 0 } },
+                },
+                parts: [{ type: 'text' as const, text: 'In-flight coding work before restart.' }],
+              },
+            ]
+          }
+          if (params?.sessionID === 'new-active-session') {
+            return [
+              {
+                info: {
+                  role: 'assistant', finish: 'stop', cost: 0.04,
+                  tokens: { input: 350, output: 125, reasoning: 5, cache: { read: 0, write: 0 } },
+                },
+                parts: [{ type: 'text' as const, text: 'Replacement-run coding work.' }],
+              },
+            ]
+          }
+          return []
+        },
+        status: async () => ({}),
+      },
+      workspace: { list: async () => [], remove: async () => {} },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+    })
+
+    // Re-create the loop handler so its captured client is the one above.
+    // The metrics-recording path runs through this real handler; in-memory
+    // state derives from loopsRepo on demand, so we only need to seed the DB row.
+    loopHandler = createLoopEventHandler(
+      loopsRepo,
+      plansRepo,
+      reviewFindingsRepo,
+      PROJECT_ID,
+      client,
+      mockLogger,
+      () => ({ loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' } as any),
+      undefined,
+      undefined,
+      undefined,
+      sectionPlansRepo,
+      undefined,
+      undefined,
+      loopSessionUsageRepo,
+      loopEventsRepo,
+      loopRunsRepo,
+    )
+
+    seedActiveLoop(loopName, oldStartedAt)
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' } as any,
+      logger: mockLogger,
+      dataDir: '/tmp',
+      plansRepo,
+      loopsRepo,
+      loop: loopHandler.loop,
+      loopHandler,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
+      pendingTeardowns: mockPendingTeardowns as any,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName }, force: true },
+    )
+    expect(result.ok).toBe(true)
+
+    // The active session was aborted before finalization, then its usage was
+    // captured. messages() is still fetchable after abort, so the row lands.
+    const oldUsage = loopSessionUsageRepo.listSessionUsage(PROJECT_ID, loopName)
+      .find((u) => u.sessionId === 'old-active-session')
+    expect(oldUsage).toBeDefined()
+    expect(oldUsage!.runStartedAt).toBe(oldStartedAt)
+    expect(oldUsage!.inputTokens).toBe(900)
+    expect(oldUsage!.outputTokens).toBe(450)
+    expect(oldUsage!.cost).toBeCloseTo(0.07, 6)
+
+    // loop_terminated event appended under the prior run identity.
+    const terminatedEvent = loopEventsRepo
+      .listByLoop(PROJECT_ID, loopName, oldStartedAt)
+      .find((e) => e.eventType === 'loop_terminated')
+    expect(terminatedEvent).toBeDefined()
+    expect(terminatedEvent!.outcome).toBe('restarted')
+    expect(terminatedEvent!.runStartedAt).toBe(oldStartedAt)
+    expect(terminatedEvent!.iteration).toBe(2)
+
+    // loop_runs summary row for the prior run, keyed by the old started_at,
+    // status=cancelled/restarted with totals from the captured usage.
+    const oldRun = loopRunsRepo.listByProject(PROJECT_ID)
+      .find((r) => r.startedAt === oldStartedAt)
+    expect(oldRun).toBeDefined()
+    expect(oldRun!.status).toBe('cancelled')
+    expect(oldRun!.terminationReason).toBe('restarted')
+    expect(oldRun!.iterations).toBe(2)
+    expect(oldRun!.inputTokens).toBe(900)
+    expect(oldRun!.outputTokens).toBe(450)
+    expect(oldRun!.cost).toBeCloseTo(0.07, 6)
+
+    // The replacement run was started fresh; its loop_runs row does not yet exist
+    // (it will only be written when the new run terminates).
+    const newStartedAt = loopsRepo.get(PROJECT_ID, loopName)!.startedAt
+    expect(newStartedAt).not.toBe(oldStartedAt)
+    expect(loopRunsRepo.listByProject(PROJECT_ID).filter((r) => r.startedAt === newStartedAt)).toHaveLength(0)
+
+    // Drive the replacement run through termination so its own loop_runs row is
+    // written. loopHandler.terminate delegates to runtime.terminateLoop, which
+    // captures the new session's usage and writes a loop_runs row keyed by the
+    // new started_at. The two runs must each surface in loop_runs with their own
+    // distinct token totals — covering the auditor's "both runs and their
+    // token totals" requirement.
+    const terminated = await loopHandler.terminateLoopByName(loopName, { kind: 'completed' })
+    expect(terminated).toBe(true)
+
+    const runs = loopRunsRepo.listByProject(PROJECT_ID)
+    expect(runs).toHaveLength(2)
+    const oldRunRow = runs.find((r) => r.startedAt === oldStartedAt)!
+    const newRunRow = runs.find((r) => r.startedAt === newStartedAt)!
+    expect(oldRunRow.status).toBe('cancelled')
+    expect(oldRunRow.terminationReason).toBe('restarted')
+    expect(oldRunRow.inputTokens).toBe(900)
+    expect(oldRunRow.outputTokens).toBe(450)
+    expect(oldRunRow.cost).toBeCloseTo(0.07, 6)
+    expect(newRunRow.status).toBe('completed')
+    expect(newRunRow.terminationReason).toBe('completed')
+    expect(newRunRow.inputTokens).toBe(350)
+    expect(newRunRow.outputTokens).toBe(125)
+    expect(newRunRow.cost).toBeCloseTo(0.04, 6)
+
+    // Two distinct loop_terminated events keyed by their respective run identity.
+    const newTerminatedEvent = loopEventsRepo
+      .listByLoop(PROJECT_ID, loopName, newStartedAt)
+      .find((e) => e.eventType === 'loop_terminated')
+    expect(newTerminatedEvent).toBeDefined()
+    expect(newTerminatedEvent!.outcome).toBe('completed')
+  })
+
+  test('same-millisecond restart yields a strictly-later started_at so runs/events/usage stay isolated', async () => {
+    const loopName = 'ms-collision-restart'
+    const frozenMs = 1_700_000_000_000
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-ms-session' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async (params: any) => {
+          if (params?.sessionID === 'old-active-session') {
+            return [
+              {
+                info: {
+                  role: 'assistant', finish: 'stop', cost: 0.07,
+                  tokens: { input: 900, output: 450, reasoning: 30, cache: { read: 0, write: 0 } },
+                },
+                parts: [{ type: 'text' as const, text: 'In-flight coding work before restart.' }],
+              },
+            ]
+          }
+          if (params?.sessionID === 'new-ms-session') {
+            return [
+              {
+                info: {
+                  role: 'assistant', finish: 'stop', cost: 0.04,
+                  tokens: { input: 350, output: 125, reasoning: 5, cache: { read: 0, write: 0 } },
+                },
+                parts: [{ type: 'text' as const, text: 'Replacement-run coding work.' }],
+              },
+            ]
+          }
+          return []
+        },
+        status: async () => ({}),
+      },
+      workspace: { list: async () => [], remove: async () => {} },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+    })
+
+    loopHandler = createLoopEventHandler(
+      loopsRepo,
+      plansRepo,
+      reviewFindingsRepo,
+      PROJECT_ID,
+      client,
+      mockLogger,
+      () => ({ loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' } as any),
+      undefined,
+      undefined,
+      undefined,
+      sectionPlansRepo,
+      undefined,
+      undefined,
+      loopSessionUsageRepo,
+      loopEventsRepo,
+      loopRunsRepo,
+    )
+
+    // Seed an active run whose startedAt equals the exact ms we will freeze
+    // Date.now() at during the restart — i.e. force-restart within one ms.
+    seedActiveLoop(loopName, frozenMs)
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: { loop: { enabled: true }, executionModel: 'prov/exec', auditorModel: 'prov/aud' } as any,
+      logger: mockLogger,
+      dataDir: '/tmp',
+      plansRepo,
+      loopsRepo,
+      loop: loopHandler.loop,
+      loopHandler,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
+      pendingTeardowns: mockPendingTeardowns as any,
+    })
+
+    vi.useFakeTimers({ now: frozenMs })
+    try {
+      const result = await service.dispatch(
+        { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+        { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName }, force: true },
+      )
+      expect(result.ok).toBe(true)
+    } finally {
+      // Restore real timers before driving termination so setInterval/setTimeout
+      // in the runtime path fire normally.
+      vi.useRealTimers()
+    }
+
+    // Strictly later started_at is the root-cause fix: must be > frozenMs.
+    const newStartedAt = loopsRepo.get(PROJECT_ID, loopName)!.startedAt
+    expect(newStartedAt).toBe(frozenMs + 1)
+
+    // The prior run's metrics survived the restart, keyed by the frozen ms.
+    const oldUsage = loopSessionUsageRepo.listSessionUsage(PROJECT_ID, loopName)
+      .find((u) => u.sessionId === 'old-active-session')
+    expect(oldUsage).toBeDefined()
+    expect(oldUsage!.runStartedAt).toBe(frozenMs)
+    expect(oldUsage!.inputTokens).toBe(900)
+
+    const oldTerminatedEvent = loopEventsRepo
+      .listByLoop(PROJECT_ID, loopName, frozenMs)
+      .find((e) => e.eventType === 'loop_terminated')
+    expect(oldTerminatedEvent).toBeDefined()
+    expect(oldTerminatedEvent!.outcome).toBe('restarted')
+    expect(oldTerminatedEvent!.runStartedAt).toBe(frozenMs)
+
+    const oldRun = loopRunsRepo.listByProject(PROJECT_ID)
+      .find((r) => r.startedAt === frozenMs)
+    expect(oldRun).toBeDefined()
+    expect(oldRun!.status).toBe('cancelled')
+    expect(oldRun!.terminationReason).toBe('restarted')
+    expect(oldRun!.inputTokens).toBe(900)
+    expect(oldRun!.outputTokens).toBe(450)
+
+    // New run's summary must not have overwritten the prior run at frozenMs.
+    expect(loopRunsRepo.listByProject(PROJECT_ID).filter((r) => r.startedAt === newStartedAt)).toHaveLength(0)
+
+    // Drive the replacement run to completion under real timers so its own
+    // loop_runs row lands at newStartedAt with isolated totals.
+    const terminated = await loopHandler.terminateLoopByName(loopName, { kind: 'completed' })
+    expect(terminated).toBe(true)
+
+    const runs = loopRunsRepo.listByProject(PROJECT_ID)
+    expect(runs).toHaveLength(2)
+    const oldRunRow = runs.find((r) => r.startedAt === frozenMs)!
+    const newRunRow = runs.find((r) => r.startedAt === newStartedAt)!
+    expect(oldRunRow.inputTokens).toBe(900)
+    expect(oldRunRow.outputTokens).toBe(450)
+    expect(oldRunRow.cost).toBeCloseTo(0.07, 6)
+    expect(newRunRow.status).toBe('completed')
+    expect(newRunRow.terminationReason).toBe('completed')
+    expect(newRunRow.inputTokens).toBe(350)
+    expect(newRunRow.outputTokens).toBe(125)
+    expect(newRunRow.cost).toBeCloseTo(0.04, 6)
+
+    // loop_session_usage rows for the two sessions carry distinct run_started_at.
+    const newUsage = loopSessionUsageRepo.listSessionUsage(PROJECT_ID, loopName)
+      .find((u) => u.sessionId === 'new-ms-session')
+    expect(newUsage).toBeDefined()
+    expect(newUsage!.runStartedAt).toBe(newStartedAt)
+    expect(newUsage!.inputTokens).toBe(350)
+
+    // Each run has its own loop_terminated event under its run_started_at.
+    const newTerminatedEvent = loopEventsRepo
+      .listByLoop(PROJECT_ID, loopName, newStartedAt)
+      .find((e) => e.eventType === 'loop_terminated')
+    expect(newTerminatedEvent).toBeDefined()
+    expect(newTerminatedEvent!.outcome).toBe('completed')
+    expect(newTerminatedEvent!.runStartedAt).toBe(newStartedAt)
   })
 })

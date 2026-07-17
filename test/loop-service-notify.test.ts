@@ -546,7 +546,7 @@ describe('LoopChangeNotifier', () => {
   })
 
   describe('terminateAll', () => {
-    it('should be called with terminate reason for each loop when terminateAll is called', () => {
+    it('should be called with terminate reason for each loop when terminateAll is called', async () => {
       const { mockLoopsRepo, mockPlansRepo, mockReviewFindingsRepo, mockLogger } = createMockRepos()
 
       const now = Date.now()
@@ -579,8 +579,19 @@ describe('LoopChangeNotifier', () => {
       }
 
       // Mock listActive to return two loops with valid row data
-      mockLoopsRepo.listByStatus = () => [validRow, { ...validRow, loopName: 'loop-2' }]
+      const loop2Row = { ...validRow, loopName: 'loop-2' }
+      mockLoopsRepo.listByStatus = () => [validRow, loop2Row]
       mockLoopsRepo.getLarge = () => ({ lastAuditResult: null })
+      // Runtime.terminateAll now routes each active loop through per-loop
+      // terminateLoop(), whose idempotency guard calls loopService.getActiveState()
+      // (which resolves via loopsRepo.get) to detect loops already terminated by a
+      // concurrent path. Without a per-name get() override here, every loop would
+      // look terminated-before-start and the notifier would never fire.
+      mockLoopsRepo.get = (_projectId: string, name: string) => {
+        if (name === 'loop-1') return validRow
+        if (name === 'loop-2') return loop2Row
+        return null
+      }
 
       const notifyCalls: Array<{ reason: string; loopName: string }> = []
       const notify: LoopChangeNotifier = (reason, loopName, _hint) => {
@@ -599,7 +610,10 @@ describe('LoopChangeNotifier', () => {
         notify,
       })
 
-      loop.terminateAll()
+      // Runtime.terminateAll() now awaits per-loop terminateLoop() (so it can
+      // capture usage, write metrics, and run host side-effects), so the call
+      // must be awaited before observing notifier side-effects.
+      await loop.terminateAll()
 
       expect(notifyCalls.length).toBe(2)
       expect(notifyCalls[0].reason).toBe('terminate')

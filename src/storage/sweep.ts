@@ -44,3 +44,29 @@ export function sweepExpiredLoops(db: Database, ttlMs: number): number {
 
   return run(cutoff)
 }
+
+/**
+ * Sweeps expired loop metrics rows from `loop_events` and `loop_runs`.
+ *
+ * Both tables intentionally have no FK to `loops` so their rows survive
+ * `sweepExpiredLoops`. This function enforces their own retention window
+ * keyed on `created_at`.
+ *
+ * @param db - Database instance
+ * @param ttlMs - TTL in milliseconds; rows whose `created_at` is older than `now() - ttlMs` are deleted
+ * @returns Total number of rows deleted across both tables
+ */
+export function sweepExpiredLoopMetrics(db: Database, ttlMs: number): number {
+  const cutoff = Date.now() - ttlMs
+
+  const deleteEvents = db.prepare('DELETE FROM loop_events WHERE created_at < ?')
+  const deleteRuns = db.prepare('DELETE FROM loop_runs WHERE created_at < ?')
+
+  const run = db.transaction((cutoffMs: unknown) => {
+    const eventsResult = deleteEvents.run(cutoffMs) as unknown as { changes: number }
+    const runsResult = deleteRuns.run(cutoffMs) as unknown as { changes: number }
+    return Number(eventsResult.changes) + Number(runsResult.changes)
+  }) as (cutoffMs: number) => number
+
+  return run(cutoff)
+}

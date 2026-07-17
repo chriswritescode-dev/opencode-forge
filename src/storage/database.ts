@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite'
 import { mkdirSync, existsSync } from 'fs'
 import { openSqliteWithIntegrityGuard } from './sqlite-open'
 import { migrations } from './migrations'
-import { sweepExpiredLoops } from './sweep'
+import { sweepExpiredLoops, sweepExpiredLoopMetrics } from './sweep'
 
 // Path resolvers live in a sqlite-free module so lightweight consumers (e.g. permission
 // rulesets) can import them without pulling in the storage layer. Re-exported here to keep
@@ -59,15 +59,17 @@ function bootstrapForgeSchema(db: Database): void {
 
 interface ForgeDatabaseOptions {
   completedLoopTtlMs?: number
+  metricsTtlMs?: number
 }
 
 const DEFAULT_COMPLETED_LOOP_TTL_MS = 7 * 24 * 60 * 60 * 1000
+const DEFAULT_METRICS_TTL_MS = 90 * 24 * 60 * 60 * 1000
 
 type CachedDb = { db: Database; refCount: number }
 const dbCache = new Map<string, CachedDb>()
 
 function cacheKey(dbPath: string, options?: ForgeDatabaseOptions): string {
-  return `${dbPath}::${options?.completedLoopTtlMs ?? DEFAULT_COMPLETED_LOOP_TTL_MS}`
+  return `${dbPath}::${options?.completedLoopTtlMs ?? DEFAULT_COMPLETED_LOOP_TTL_MS}::${options?.metricsTtlMs ?? DEFAULT_METRICS_TTL_MS}`
 }
 
 export function openForgeDatabase(dbPath: string, options?: ForgeDatabaseOptions): Database {
@@ -80,6 +82,9 @@ export function openForgeDatabase(dbPath: string, options?: ForgeDatabaseOptions
 
   const ttlMs = options?.completedLoopTtlMs ?? DEFAULT_COMPLETED_LOOP_TTL_MS
   sweepExpiredLoops(db, ttlMs)
+
+  const metricsTtlMs = options?.metricsTtlMs ?? DEFAULT_METRICS_TTL_MS
+  sweepExpiredLoopMetrics(db, metricsTtlMs)
 
   return db
 }

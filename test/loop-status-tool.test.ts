@@ -687,6 +687,7 @@ describe('loop-status cumulative usage', () => {
       cacheWriteTokens: 200,
       messageCount: 10,
       capturedAt: Date.now(),
+      runStartedAt: 1_700_000_000_000,
     })
     
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
@@ -772,6 +773,7 @@ describe('loop-status cumulative usage', () => {
       cacheWriteTokens: 400,
       messageCount: 20,
       capturedAt: Date.now() - 10000,
+      runStartedAt: 1_700_000_000_000,
     })
     
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
@@ -858,6 +860,7 @@ describe('loop-status cumulative usage', () => {
         cacheWriteTokens: 200,
         messageCount: 10,
         capturedAt: Date.now(),
+        runStartedAt: 1_700_000_000_000,
       },
       {
         projectId,
@@ -873,6 +876,7 @@ describe('loop-status cumulative usage', () => {
         cacheWriteTokens: 300,
         messageCount: 15,
         capturedAt: Date.now(),
+        runStartedAt: 1_700_000_000_000,
       },
     ])
     
@@ -965,6 +969,7 @@ describe('loop-status cumulative usage', () => {
       cacheWriteTokens: 400,
       messageCount: 15,
       capturedAt: Date.now() - 10000,
+      runStartedAt: 1_700_000_000_000,
     })
     
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
@@ -1060,6 +1065,7 @@ describe('loop-status cumulative usage', () => {
         cacheWriteTokens: 400,
         messageCount: 15,
         capturedAt: Date.now() - 10000,
+        runStartedAt: 1_700_000_000_000,
       },
       {
         projectId,
@@ -1075,6 +1081,7 @@ describe('loop-status cumulative usage', () => {
         cacheWriteTokens: 40,
         messageCount: 5,
         capturedAt: Date.now(),
+        runStartedAt: 1_700_000_000_000,
       },
     ])
     
@@ -1250,6 +1257,7 @@ describe('loop-status cumulative usage', () => {
       cacheWriteTokens: 360,
       messageCount: 12,
       capturedAt: Date.now() - 10000,
+      runStartedAt: 1_700_000_000_000,
     })
     
     const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
@@ -1347,6 +1355,7 @@ describe('loop-status cumulative usage', () => {
         cacheWriteTokens: 380,
         messageCount: 14,
         capturedAt: Date.now() - 10000,
+        runStartedAt: 1_700_000_000_000,
       },
       {
         projectId,
@@ -1362,6 +1371,7 @@ describe('loop-status cumulative usage', () => {
         cacheWriteTokens: 45,
         messageCount: 6,
         capturedAt: Date.now(),
+        runStartedAt: 1_700_000_000_000,
       },
     ])
     

@@ -1784,6 +1784,14 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             kind: latestState.kind,
             goal: latestState.goal,
           })
+
+          // Finalize the outgoing run before replacing started_at below. Without
+          // this a force-restart loses the prior run's loop_runs summary and the
+          // active session's usage never lands in the run-scoped aggregate.
+          // Defensive guard lets older partial mock handlers omit the method.
+          if (typeof deps.loopHandler!.finalizeRunForRestart === 'function') {
+            await deps.loopHandler!.finalizeRunForRestart(stoppedState.loopName, { kind: 'restarted' })
+          }
         }
       }
 
@@ -1884,6 +1892,17 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           ? 'post_action' as const
           : 'coding' as const
 
+      // Restarted run identity must be strictly later than the outgoing run's
+      // started_at millisecond. loop_runs PKs on (project_id, loop_name,
+      // started_at) and loop_session_usage/loop_events stamp run_started_at from
+      // state.startedAt; a same-millisecond restart would overwrite the prior
+      // run's summary and merge its token totals. Force at least +1 ms.
+      const priorStartedAtMs = Date.parse(previousState.startedAt)
+      const nowMs = Date.now()
+      const newStartedAtMs = Number.isFinite(priorStartedAtMs)
+        ? Math.max(nowMs, priorStartedAtMs + 1)
+        : nowMs
+
       const newState: import('../loop/state').LoopState = {
         active: true,
         sessionId: effectiveSessionId,
@@ -1893,7 +1912,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         worktreeBranch: stoppedState.worktreeBranch,
         iteration: stoppedState.iteration,
         maxIterations: stoppedState.maxIterations,
-        startedAt: new Date().toISOString(),
+        startedAt: new Date(newStartedAtMs).toISOString(),
         prompt: stoppedState.prompt,
         phase: restartPhase,
         errorCount: 0,

@@ -20,6 +20,12 @@ export interface UsageCapture {
     directory: string
     role: 'code' | 'auditor' | 'unknown'
     fallbackModel?: string
+    /**
+     * Ms-epoch of the loop's started_at. Stamped on every persisted usage row
+     * so per-run aggregation can filter by exact equality instead of the
+     * ambiguous captured_at lower bound. Required when usage is persisted.
+     */
+    runStartedAt: number
   }): Promise<void>
 }
 
@@ -58,6 +64,7 @@ export function createUsageCapture(deps: UsageCaptureDeps): UsageCapture {
     directory: string
     role: 'code' | 'auditor' | 'unknown'
     fallbackModel?: string
+    runStartedAt: number
   }): Promise<void> {
     if (!loopSessionUsageRepo) {
       return
@@ -95,6 +102,7 @@ export function createUsageCapture(deps: UsageCaptureDeps): UsageCapture {
         cacheWriteTokens: modelUsage.tokens.cacheWrite,
         messageCount: modelUsage.messageCount,
         capturedAt: Date.now(),
+        runStartedAt: input.runStartedAt,
       }))
 
       loopSessionUsageRepo.upsertSessionUsage(rows)

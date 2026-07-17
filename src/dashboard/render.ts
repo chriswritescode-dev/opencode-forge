@@ -270,7 +270,82 @@ export function renderDashboardHtml(): string {
     font-family: inherit; flex-shrink: 0;
   }
   .copy-btn:hover { background: #30363d; color: #c9d1d9; }
-  .dashboard-summary { margin-bottom: 12px; }</style>
+  .dashboard-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+  .dashboard-summary .totals { margin: 0; }
+  .dashboard-summary .timestamp { margin: 0; }
+  .metrics-nav-link {
+    display: inline-block; padding: 4px 12px; border-radius: 12px;
+    font-size: 0.8rem; cursor: pointer; user-select: none;
+    background: #21262d; color: #58a6ff; border: 1px solid #30363d;
+    margin-left: auto;
+  }
+  .metrics-nav-link:hover { background: #30363d; }
+  .metrics-nav-link.selected { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+  .metrics-layout .project-detail { padding: 0; }
+  .loop-metrics-panel {
+    display: flex; flex-direction: column; gap: 10px;
+    margin-top: 12px; padding: 12px 14px;
+    border: 1px solid #30363d; border-radius: 8px; background: #161b22;
+  }
+  .loop-metrics-panel h4 {
+    color: #f0f6fc; margin: 0 0 4px; font-size: 0.95rem;
+  }
+  .metrics-blocks { display: flex; flex-direction: column; gap: 12px; }
+  .metrics-block {
+    border: 1px solid #21262d; border-radius: 6px; padding: 10px 12px;
+    background: #0d1117;
+  }
+  .metrics-block-title {
+    font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.05em;
+    color: #8b949e; margin-bottom: 6px;
+  }
+  .metrics-block-legend {
+    font-size: 0.72rem; color: #8b949e; margin-bottom: 6px;
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  }
+  .metrics-legend-dot {
+    display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    flex: 0 0 9px; margin-left: 4px;
+  }
+  .metrics-empty {
+    font-size: 0.82rem; color: #8b949e; font-style: italic; padding: 6px 0;
+  }
+  .forge-chart { width: 100%; }
+  .forge-chart-svg {
+    width: 100%; height: 120px; display: block;
+    background: #0d1117; border-radius: 4px;
+  }
+  .forge-chart-xlabel {
+    fill: #8b949e; font-family: 'SF Mono','Fira Code',Menlo,Consolas,monospace;
+    font-size: 8px;
+  }
+  .forge-chart-empty { font-size: 0.78rem; color: #484f58; padding: 8px 0; font-style: italic; }
+  .forge-dot-strip { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }
+  .forge-dot {
+    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    flex: 0 0 10px; cursor: help; border: 1px solid rgba(255,255,255,0.1);
+  }
+  .forge-dot-clean { background: #3fb950; }
+  .forge-dot-dirty { background: #f85149; }
+  .forge-dot-unknown { background: #6e7681; }
+  .runs-view {
+    border: 1px solid #30363d; border-radius: 8px; padding: 12px 16px;
+    background: #161b22; display: flex; flex-direction: column; gap: 12px;
+  }
+  .runs-view h2 { color: #f0f6fc; }
+  .runs-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+  .runs-table th {
+    text-align: left; font-size: 0.66rem; text-transform: uppercase;
+    letter-spacing: 0.05em; color: #8b949e; font-weight: 600;
+    padding: 6px 8px; border-bottom: 1px solid #30363d; white-space: nowrap;
+  }
+  .runs-table td { padding: 6px 8px; border-bottom: 1px solid #21262d; vertical-align: middle; }
+  .runs-row:hover { background: #161b22; }
+  .runs-loop { color: #58a6ff; font-weight: 600; }
+  .runs-models, .runs-num, .runs-duration, .runs-updated {
+    font-family: 'SF Mono','Fira Code',Menlo,Consolas,monospace; font-size: 0.74rem; color: #8b949e;
+  }
+  .runs-cost { color: #3fb950; font-family: 'SF Mono','Fira Code',Menlo,Consolas,monospace; font-size: 0.74rem; }</style>
 </head>
 <body>
   <div id="forge-app-root"></div>

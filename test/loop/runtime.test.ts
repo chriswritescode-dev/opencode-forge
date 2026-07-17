@@ -8,6 +8,8 @@ import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import { createLoopSessionUsageRepo, type LoopSessionUsageRepo } from '../../src/storage/repos/loop-session-usage-repo'
+import { createLoopEventsRepo, type LoopEventsRepo } from '../../src/storage/repos/loop-events-repo'
+import { createLoopRunsRepo, type LoopRunsRepo } from '../../src/storage/repos/loop-runs-repo'
 import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoop, type Loop } from '../../src/loop/runtime'
@@ -22,6 +24,7 @@ import type { Logger, PluginConfig, LoopConfig } from '../../src/types'
 import { createFakeForgeClient, type RecordedCall } from '../helpers/fake-client'
 import type { ForgeClient } from '../../src/client/port'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
+import { SECTION_SUMMARY_START_MARKER, SECTION_SUMMARY_END_MARKER } from '../../src/loop/section-summary'
 
 const PROJECT_ID = 'test-project'
 
@@ -54,6 +57,8 @@ describe('Loop Runtime', () => {
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
   let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
   let loopSessionUsageRepo: LoopSessionUsageRepo
+  let loopEventsRepo: LoopEventsRepo
+  let loopRunsRepo: LoopRunsRepo
   let currentLoop: Loop | null = null
 
   beforeEach(() => {
@@ -66,6 +71,8 @@ describe('Loop Runtime', () => {
     reviewFindingsRepo = createReviewFindingsRepo(db)
     sectionPlansRepo = createSectionPlansRepo(db)
     loopSessionUsageRepo = createLoopSessionUsageRepo(db)
+    loopEventsRepo = createLoopEventsRepo(db)
+    loopRunsRepo = createLoopRunsRepo(db)
 
     loopService = createLoopService(
       loopsRepo,
@@ -131,12 +138,14 @@ describe('Loop Runtime', () => {
     loopConfig?: Partial<PluginConfig>
     serviceLoopConfig?: LoopConfig
     withUsageRepo?: boolean
+    withMetricsRepos?: boolean
     getParentSessionId?: (sessionId: string) => Promise<string | null>
   } = {}): { loop: Loop; calls: RecordedCall[]; logger: Logger; logs: Array<{ level: string; message: string }> } {
     const forge = overrides.client ? { client: overrides.client, calls: [] as RecordedCall[] } : createFakeForgeClient()
     const { logger, logs } = createCapturingLogger()
     const config: PluginConfig = { ...mockConfig, ...(overrides.loopConfig ?? {}) }
 
+    const enableMetrics = overrides.withMetricsRepos ?? false
     const loop = createLoop({
       loopsRepo,
       plansRepo,
@@ -148,7 +157,9 @@ describe('Loop Runtime', () => {
       getConfig: () => config,
       sandboxManager: undefined,
       dataDir: tempDir,
-      loopSessionUsageRepo: overrides.withUsageRepo ? loopSessionUsageRepo : undefined,
+      loopSessionUsageRepo: (overrides.withUsageRepo || enableMetrics) ? loopSessionUsageRepo : undefined,
+      loopEventsRepo: enableMetrics ? loopEventsRepo : undefined,
+      loopRunsRepo: enableMetrics ? loopRunsRepo : undefined,
       getParentSessionId: overrides.getParentSessionId,
     })
 
@@ -3210,6 +3221,978 @@ describe('stall handling terminates with stall timeout when configured cap is re
 
       const abortCalls = calls.filter(c => c.method === 'session.abort')
       expect(abortCalls.length).toBeGreaterThan(0)
+    })
+  })
+
+  describe('loop metrics emission', () => {
+    test('non-sectioned coding→auditing dirty continue emits coding_done(audit_started) and audit_done(dirty/continue) events', async () => {
+      const { client } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Implementation done.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client, withMetricsRepos: true })
+
+      const loopName = 'metrics-dirty-continue'
+      const codingSessionId = 'metrics-coding-session'
+      const state = makeState({
+        loopName,
+        sessionId: codingSessionId,
+        phase: 'coding',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+      })
+      loopService.setState(state.loopName, state)
+
+      // Tick 1: coding idle → emit coding_done(audit_started) and create the audit session.
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: codingSessionId },
+      })
+
+      const afterCoding = loopService.getActiveState(loopName)!
+      expect(afterCoding.phase).toBe('auditing')
+      const auditSessionId = afterCoding.sessionId
+
+      // Seed an outstanding bug finding so the audit is dirty.
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName,
+        file: 'src/foo.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'bug in foo',
+      })
+
+      // Switch the assistant transcript to an audit-flavored response before the
+      // auditor idle tick, so the auditor session reports a real reply.
+      ;(client.session.messages as any).mockImplementation(async () => [
+        { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit found a bug.' }] },
+      ])
+
+      // Clear the awaiting-busy gate set when the audit prompt was sent.
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'busy' }, sessionID: auditSessionId },
+      })
+
+      // Tick 2: audit idle → dirty continue.
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: auditSessionId },
+      })
+
+      const events = loopEventsRepo.listByLoop(PROJECT_ID, loopName)
+      const codingDone = events.find((e) => e.eventType === 'coding_done')
+      expect(codingDone).toBeDefined()
+      expect(codingDone!.outcome).toBe('audit_started')
+      expect(codingDone!.role).toBe('code')
+      expect(codingDone!.sessionId).toBe(codingSessionId)
+
+      const auditDone = events.find((e) => e.eventType === 'audit_done')
+      expect(auditDone).toBeDefined()
+      expect(auditDone!.verdict).toBe('dirty')
+      expect(auditDone!.outcome).toBe('continue')
+      expect(auditDone!.role).toBe('auditor')
+      expect(auditDone!.sessionId).toBe(auditSessionId)
+      expect(auditDone!.findingsTotal).toBe(1)
+      expect(auditDone!.findingsBugs).toBe(1)
+      // Run row is only written on termination; loop is still active.
+      expect(loopRunsRepo.listByProject(PROJECT_ID)).toHaveLength(0)
+      expect(events.find((e) => e.eventType === 'loop_terminated')).toBeUndefined()
+    })
+
+    test('clean non-sectioned audit emits audit_done(clean/terminate), loop_terminated, and a completed loop_runs row with run totals', async () => {
+      const { client } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            {
+              info: {
+                role: 'assistant', finish: 'stop', cost: 0.01,
+                tokens: { input: 100, output: 50, reasoning: 10, cache: { read: 0, write: 0 } },
+                model: 'auditor-model',
+              },
+              parts: [{ type: 'text', text: 'All clear. No issues found.' }],
+            },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client, withMetricsRepos: true })
+
+      const loopName = 'metrics-clean-terminate'
+      const auditorSessionId = 'metrics-audit-clean'
+      const state = makeState({
+        loopName,
+        sessionId: auditorSessionId,
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 1,
+        iteration: 1,
+        maxIterations: 3,
+      })
+      loopService.setState(state.loopName, state)
+      // No review findings → clean audit.
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: auditorSessionId },
+      })
+
+      const events = loopEventsRepo.listByLoop(PROJECT_ID, loopName)
+      const auditDone = events.find((e) => e.eventType === 'audit_done')
+      expect(auditDone).toBeDefined()
+      expect(auditDone!.verdict).toBe('clean')
+      expect(auditDone!.outcome).toBe('terminate')
+
+      const terminated = events.find((e) => e.eventType === 'loop_terminated')
+      expect(terminated).toBeDefined()
+
+      const runs = loopRunsRepo.listByProject(PROJECT_ID)
+      expect(runs).toHaveLength(1)
+      const run = runs[0]
+      expect(run.status).toBe('completed')
+      expect(run.durationMs!).toBeGreaterThan(0)
+      // Run totals match usage captured for the auditor session before termination.
+      expect(run.cost).toBeCloseTo(0.01, 6)
+      expect(run.inputTokens).toBe(100)
+      expect(run.outputTokens).toBe(50)
+      expect(run.reasoningTokens).toBe(10)
+      expect(run.messageCount).toBe(1)
+    })
+
+    test('sectioned dirty section audit emits audit_done(section_retry) row with the section index', async () => {
+      const { client } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit found bugs in section.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client, withMetricsRepos: true })
+
+      const loopName = 'metrics-section-dirty'
+      const auditorSessionId = 'metrics-section-audit'
+      const state = makeState({
+        loopName,
+        sessionId: auditorSessionId,
+        phase: 'auditing',
+        totalSections: 2,
+        currentSectionIndex: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+      })
+      loopService.setState(state.loopName, state)
+
+      // One outstanding bug finding in section 0 (no section summary → dirty path).
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName,
+        file: 'src/bar.ts',
+        line: 4,
+        severity: 'bug',
+        description: 'section bug',
+        sectionIndex: 0,
+      })
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: auditorSessionId },
+      })
+
+      const events = loopEventsRepo.listByLoop(PROJECT_ID, loopName)
+      const auditDone = events.find((e) => e.eventType === 'audit_done')
+      expect(auditDone).toBeDefined()
+      expect(auditDone!.verdict).toBe('dirty')
+      expect(auditDone!.outcome).toBe('section_retry')
+      expect(auditDone!.sectionIndex).toBe(0)
+      expect(auditDone!.sessionId).toBe(auditorSessionId)
+      expect(auditDone!.role).toBe('auditor')
+      expect(auditDone!.findingsBugs).toBe(1)
+      expect(auditDone!.findingsTotal).toBe(1)
+    })
+
+    test('one dirty + one clean audit in a run yields loop_runs dirtyAudits=1 and cleanAudits=1', async () => {
+      const codingAssistant = async () => [
+        { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Coding pass complete.' }] },
+      ]
+      const auditDirtyAssistant = async () => [
+        { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit found a gap.' }] },
+      ]
+      const auditCleanAssistant = async () => [
+        { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Goal fully implemented.' }] },
+      ]
+      const { client } = createFakeForgeClient({ session: { messages: codingAssistant } })
+      const { loop } = createRuntime({ client, withMetricsRepos: true })
+
+      const loopName = 'metrics-run-summary'
+      const firstAuditorSessionId = 'metrics-run-auditor-1'
+      const state = makeState({
+        loopName,
+        sessionId: firstAuditorSessionId,
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+        kind: 'goal',
+        goal: 'Add a /health endpoint with tests.',
+      })
+      loopService.setState(state.loopName, state)
+
+      // Seed an outstanding bug finding → first audit dirty continue.
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName,
+        file: 'src/health.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'missing test coverage',
+      })
+      ;(client.session.messages as any).mockImplementation(auditDirtyAssistant)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: firstAuditorSessionId },
+      })
+
+      // After the dirty audit the loop rotates to a fresh coding session for remediation.
+      const afterDirty = loopService.getActiveState(loopName)!
+      expect(afterDirty.phase).toBe('coding')
+      const codingSessionId2 = afterDirty.sessionId
+
+      // Simulate the bug being fixed before the next coding pass completes.
+      reviewFindingsRepo.delete(PROJECT_ID, 'src/health.ts', 1, { loopName })
+
+      // Coding idle → emits coding_done(audit_started) and creates the second audit session.
+      ;(client.session.messages as any).mockImplementation(codingAssistant)
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'busy' }, sessionID: codingSessionId2 },
+      })
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: codingSessionId2 },
+      })
+
+      const afterCoding = loopService.getActiveState(loopName)!
+      expect(afterCoding.phase).toBe('auditing')
+      const secondAuditorSessionId = afterCoding.sessionId
+
+      // Audit idle → clean terminate.
+      ;(client.session.messages as any).mockImplementation(auditCleanAssistant)
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'busy' }, sessionID: secondAuditorSessionId },
+      })
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: secondAuditorSessionId },
+      })
+
+      const finalState = loopService.getAnyState(loopName)
+      expect(finalState!.active).toBe(false)
+      expect(finalState!.terminationReason).toBe('completed')
+
+      const runs = loopRunsRepo.listByProject(PROJECT_ID)
+      expect(runs).toHaveLength(1)
+      const run = runs[0]
+      expect(run.dirtyAudits).toBe(1)
+      expect(run.cleanAudits).toBe(1)
+      expect(run.status).toBe('completed')
+    })
+
+    test('non-sectioned dirty audit at the iteration cap emits audit_done(dirty/max_iterations), not continue, and terminates with max_iterations', async () => {
+      const { client } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit found a remaining gap.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client, withMetricsRepos: true })
+
+      const loopName = 'metrics-dirty-cap'
+      const auditorSessionId = 'metrics-auditor-dirty-cap'
+      const state = makeState({
+        loopName,
+        sessionId: auditorSessionId,
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 0,
+        // iteration equals the cap; the dirty auditor pass increments to 6 which
+        // exceeds maxIterations=5 → the audit_done event must say max_iterations,
+        // not continue, otherwise the only audit event lies about termination.
+        iteration: 5,
+        maxIterations: 5,
+      })
+      loopService.setState(state.loopName, state)
+
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName,
+        file: 'src/cap.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'still buggy at cap',
+      })
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: auditorSessionId },
+      })
+
+      const finalState = loopService.getAnyState(loopName)!
+      expect(finalState.active).toBe(false)
+      expect(finalState.terminationReason).toBe('max_iterations')
+
+      const events = loopEventsRepo.listByLoop(PROJECT_ID, loopName)
+      const auditDone = events.find((e) => e.eventType === 'audit_done')
+      expect(auditDone).toBeDefined()
+      expect(auditDone!.verdict).toBe('dirty')
+      expect(auditDone!.outcome).toBe('max_iterations')
+      expect(auditDone!.sessionId).toBe(auditorSessionId)
+      expect(auditDone!.findingsTotal).toBe(1)
+      expect(auditDone!.findingsBugs).toBe(1)
+      // Exactly one audit_done for the run; no continue event leaks.
+      expect(events.filter((e) => e.eventType === 'audit_done')).toHaveLength(1)
+      expect(events.find((e) => e.eventType === 'audit_done' && e.outcome === 'continue')).toBeUndefined()
+
+      const terminated = events.find((e) => e.eventType === 'loop_terminated')
+      expect(terminated).toBeDefined()
+
+      const runs = loopRunsRepo.listByProject(PROJECT_ID)
+      expect(runs).toHaveLength(1)
+      expect(runs[0].dirtyAudits).toBe(1)
+      expect(runs[0].cleanAudits).toBe(0)
+      expect(runs[0].status).toBe('errored')
+      // auditCount must include this capped dirty audit pass (1). The prior bug
+      // recorded auditCount=0 because the non-sectioned max_iterations terminal
+      // path passed the pre-audit state to terminateLoop without persisting the
+      // new audit count first.
+      expect(runs[0].auditCount).toBe(1)
+    })
+
+    test('clean section audit at the iteration cap emits exactly one audit_done event with outcome=max_iterations/verdict=clean (cleanAudits=1, not 2)', async () => {
+      const { client } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            {
+              info: { role: 'assistant', finish: 'stop' },
+              parts: [{ type: 'text', text: `Audit clean.\n${SECTION_SUMMARY_START_MARKER}\n### Done\n- Implemented module.\n### Deviations\n- None\n### Follow-ups\n- None\n${SECTION_SUMMARY_END_MARKER}` }],
+            },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client, withMetricsRepos: true })
+
+      const loopName = 'metrics-section-clean-cap'
+      const auditorSessionId = 'metrics-section-clean-audit'
+      const state = makeState({
+        loopName,
+        sessionId: auditorSessionId,
+        phase: 'auditing',
+        totalSections: 2,
+        currentSectionIndex: 0,
+        auditCount: 0,
+        // iteration equals the cap; clean section 0 wants to advance to section 1
+        // at nextIter=6 which exceeds maxIterations=5 → must terminate with one
+        // audit_done(clean, max_iterations) event, not section_clean + max_iterations.
+        iteration: 5,
+        maxIterations: 5,
+      })
+      loopService.setState(state.loopName, state)
+
+      // No bug findings in section 0 → section is clean and would advance.
+      // A warning-only finding in section 0 verifies findingsTotal reflects
+      // all severities for the audited section even on the terminal event.
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName,
+        file: 'src/warn.ts',
+        line: 2,
+        severity: 'warning',
+        description: 'cosmetic warning in section 0',
+        sectionIndex: 0,
+      })
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: auditorSessionId },
+      })
+
+      const finalState = loopService.getAnyState(loopName)!
+      expect(finalState.active).toBe(false)
+      expect(finalState.terminationReason).toBe('max_iterations')
+
+      const events = loopEventsRepo.listByLoop(PROJECT_ID, loopName)
+      const auditDoneEvents = events.filter((e) => e.eventType === 'audit_done')
+      expect(auditDoneEvents).toHaveLength(1)
+      const auditDone = auditDoneEvents[0]
+      expect(auditDone!.verdict).toBe('clean')
+      expect(auditDone!.outcome).toBe('max_iterations')
+      expect(auditDone!.sectionIndex).toBe(0)
+      // Total findings for the audited section = the warning; bugs in section 0 = 0.
+      expect(auditDone!.findingsTotal).toBe(1)
+      expect(auditDone!.findingsBugs).toBe(0)
+
+      const runs = loopRunsRepo.listByProject(PROJECT_ID)
+      expect(runs).toHaveLength(1)
+      // Exactly one clean audit counted, not two (the prior bug double-counted).
+      expect(runs[0].cleanAudits).toBe(1)
+      expect(runs[0].dirtyAudits).toBe(0)
+      expect(runs[0].status).toBe('errored')
+      // The section audit pass bumped the audit count to 1 before termination;
+      // the prior auditCount-stale-by-one bug would have left this at 0.
+      expect(runs[0].auditCount).toBe(1)
+    })
+
+    test('sectioned dirty audit counts findings scoped to the current section only (warnings + cross-section bugs excluded)', async () => {
+      const { client } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit found bugs.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client, withMetricsRepos: true })
+
+      const loopName = 'metrics-section-scoped-findings'
+      const auditorSessionId = 'metrics-section-scoped-audit'
+      const state = makeState({
+        loopName,
+        sessionId: auditorSessionId,
+        phase: 'auditing',
+        totalSections: 2,
+        currentSectionIndex: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+      })
+      loopService.setState(state.loopName, state)
+
+      // Section 0 (audited): 1 bug + 1 warning → findingsTotal=2, findingsBugs=1.
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName,
+        file: 'src/sec0-bug.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'bug in section 0',
+        sectionIndex: 0,
+      })
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName,
+        file: 'src/sec0-warn.ts',
+        line: 2,
+        severity: 'warning',
+        description: 'warning in section 0',
+        sectionIndex: 0,
+      })
+      // A bug in section 1 must NOT inflate section 0's totals.
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName,
+        file: 'src/sec1-bug.ts',
+        line: 3,
+        severity: 'bug',
+        description: 'bug in section 1',
+        sectionIndex: 1,
+      })
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: auditorSessionId },
+      })
+
+      const events = loopEventsRepo.listByLoop(PROJECT_ID, loopName)
+      const auditDone = events.find((e) => e.eventType === 'audit_done')
+      expect(auditDone).toBeDefined()
+      expect(auditDone!.verdict).toBe('dirty')
+      expect(auditDone!.outcome).toBe('section_retry')
+      expect(auditDone!.sectionIndex).toBe(0)
+      // Prior bug passed sectionAllBugFindings.length (bugs across all sections = 2)
+      // as findingsTotal; correct value is the audited section's total (bug+warning) = 2,
+      // and findingsBugs scoped to section 0 = 1. The cross-section bug must NOT
+      // inflate findingsBugs (the prior bug already had this right via sectionBugFindings
+      // derived from all-section bugs then filtered — this test pins both counts).
+      expect(auditDone!.findingsTotal).toBe(2)
+      expect(auditDone!.findingsBugs).toBe(1)
+    })
+
+    test('clean last-section audit transitions to a clean final audit and loop_runs.auditCount reflects every section audit pass (not stale by one)', async () => {
+      const sectionAuditAssistant = async () => [
+        {
+          info: { role: 'assistant', finish: 'stop' },
+          parts: [{
+            type: 'text',
+            text: `Audit clean.\n${SECTION_SUMMARY_START_MARKER}\n### Done\n- Implemented module.\n### Deviations\n- None\n### Follow-ups\n- None\n${SECTION_SUMMARY_END_MARKER}`,
+          }],
+        },
+      ]
+      const finalAuditAssistant = async () => [
+        { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Final audit clean. No outstanding bugs.' }] },
+      ]
+      const { client } = createFakeForgeClient({ session: { messages: sectionAuditAssistant } })
+      const { loop } = createRuntime({ client, withMetricsRepos: true })
+
+      const loopName = 'metrics-final-clean-section'
+      const sectionAuditorSessionId = 'metrics-section-audit-final'
+      // Start mid-run on the last section (auditCount already 1 from the prior
+      // clean section-0 audit). The current pass should bump auditCount to 2,
+      // transition to final audit, and terminate on a clean final audit.
+      const state = makeState({
+        loopName,
+        sessionId: sectionAuditorSessionId,
+        phase: 'auditing',
+        totalSections: 2,
+        currentSectionIndex: 1,
+        auditCount: 1,
+        iteration: 2,
+        maxIterations: 10,
+      })
+      loopService.setState(state.loopName, state)
+
+      // Tick 1: section 1 audit clean → section completes → startFinalAuditTransition.
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: sectionAuditorSessionId },
+      })
+
+      // The loop should now be in final_auditing with a fresh audit session.
+      const afterSection = loopService.getActiveState(loopName)!
+      expect(afterSection.phase).toBe('final_auditing')
+      const finalAuditSessionId = afterSection.sessionId
+
+      // Tick 2 (busy+idle clears the prompt-in-flight gate): final audit clean → terminate.
+      ;(client.session.messages as any).mockImplementation(finalAuditAssistant)
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'busy' }, sessionID: finalAuditSessionId },
+      })
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: finalAuditSessionId },
+      })
+
+      const finalState = loopService.getAnyState(loopName)!
+      expect(finalState.active).toBe(false)
+      expect(finalState.terminationReason).toBe('completed')
+
+      const events = loopEventsRepo.listByLoop(PROJECT_ID, loopName)
+      // One clean audit_done per section pass plus one clean final_audit_done.
+      const sectionAuditDone = events.find((e) => e.eventType === 'audit_done')
+      expect(sectionAuditDone).toBeDefined()
+      expect(sectionAuditDone!.verdict).toBe('clean')
+      expect(sectionAuditDone!.sectionIndex).toBe(1)
+      const finalAuditDone = events.find((e) => e.eventType === 'final_audit_done')
+      expect(finalAuditDone).toBeDefined()
+      expect(finalAuditDone!.verdict).toBe('clean')
+
+      const runs = loopRunsRepo.listByProject(PROJECT_ID)
+      expect(runs).toHaveLength(1)
+      expect(runs[0].status).toBe('completed')
+      expect(runs[0].cleanAudits).toBe(2)
+      // auditCount must include this last section audit (2 total for a 2-section loop).
+      // The prior bug recorded auditCount=1 because the transition path used the
+      // pre-audit state without persisting the increment before final-audit fetch.
+      expect(runs[0].auditCount).toBe(2)
+    })
+
+    test('sectioned dirty section audit at the iteration cap emits one audit_done(dirty/max_iterations) and loop_runs.auditCount reflects the capped pass (not stale by one)', async () => {
+      const { client } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit found bugs in section.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client, withMetricsRepos: true })
+
+      const loopName = 'metrics-section-dirty-cap'
+      const auditorSessionId = 'metrics-section-dirty-cap-audit'
+      const state = makeState({
+        loopName,
+        sessionId: auditorSessionId,
+        phase: 'auditing',
+        totalSections: 2,
+        currentSectionIndex: 0,
+        auditCount: 0,
+        // iteration at the cap; the dirty section auditor pass increments the
+        // iteration to 6, exceeding maxIterations=5 → terminate.
+        iteration: 5,
+        maxIterations: 5,
+      })
+      loopService.setState(state.loopName, state)
+
+      // One outstanding bug finding in section 0 → dirty audit, but the cap fires
+      // before the dirty section_retry event is emitted.
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName,
+        file: 'src/cap-bug.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'section bug at cap',
+        sectionIndex: 0,
+      })
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: auditorSessionId },
+      })
+
+      const finalState = loopService.getAnyState(loopName)!
+      expect(finalState.active).toBe(false)
+      expect(finalState.terminationReason).toBe('max_iterations')
+
+      const events = loopEventsRepo.listByLoop(PROJECT_ID, loopName)
+      const auditDoneEvents = events.filter((e) => e.eventType === 'audit_done')
+      expect(auditDoneEvents).toHaveLength(1)
+      expect(auditDoneEvents[0]!.verdict).toBe('dirty')
+      expect(auditDoneEvents[0]!.outcome).toBe('max_iterations')
+      expect(auditDoneEvents[0]!.sectionIndex).toBe(0)
+
+      const runs = loopRunsRepo.listByProject(PROJECT_ID)
+      expect(runs).toHaveLength(1)
+      expect(runs[0].dirtyAudits).toBe(1)
+      expect(runs[0].cleanAudits).toBe(0)
+      expect(runs[0].status).toBe('errored')
+      // auditCount must include this capped dirty audit pass (1).
+      // The prior bug recorded auditCount=0 because the dirty max_iterations
+      // terminal path used the pre-audit state without persisting the bump.
+      expect(runs[0].auditCount).toBe(1)
+    })
+
+    test('terminateAll routes each active loop through terminateLoop, recording a loop_terminated event and a loop_runs summary row per loop', async () => {
+      const { client } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            {
+              info: {
+                role: 'assistant', finish: 'stop', cost: 0.02,
+                tokens: { input: 30, output: 20, reasoning: 5, cache: { read: 0, write: 0 } },
+                model: 'coding-model',
+              },
+              parts: [{ type: 'text', text: 'Mid-run coding.' }],
+            },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client, withMetricsRepos: true })
+
+      const loopA = 'metrics-bulk-a'
+      const loopB = 'metrics-bulk-b'
+      const sessionA = 'bulk-coding-a'
+      const sessionB = 'bulk-coding-b'
+      const startedAtA = Date.now()
+      const startedAtB = Date.now()
+      const stateA = makeState({
+        loopName: loopA,
+        sessionId: sessionA,
+        phase: 'coding',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 2,
+        maxIterations: 5,
+        startedAt: new Date(startedAtA).toISOString(),
+      })
+      const stateB = makeState({
+        loopName: loopB,
+        sessionId: sessionB,
+        phase: 'coding',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+        startedAt: new Date(startedAtB).toISOString(),
+      })
+      loopService.setState(stateA.loopName, stateA)
+      loopService.setState(stateB.loopName, stateB)
+
+      await loop.terminateAll()
+
+      const finalA = loopService.getAnyState(loopA)!
+      const finalB = loopService.getAnyState(loopB)!
+      expect(finalA.active).toBe(false)
+      expect(finalB.active).toBe(false)
+      expect(finalA.terminationReason).toBe('shutdown')
+      expect(finalB.terminationReason).toBe('shutdown')
+
+      const eventsA = loopEventsRepo.listByLoop(PROJECT_ID, loopA)
+      const eventsB = loopEventsRepo.listByLoop(PROJECT_ID, loopB)
+      const terminatedA = eventsA.find((e) => e.eventType === 'loop_terminated')
+      const terminatedB = eventsB.find((e) => e.eventType === 'loop_terminated')
+      expect(terminatedA).toBeDefined()
+      expect(terminatedB).toBeDefined()
+      expect(terminatedA!.outcome).toBe('shutdown')
+      expect(terminatedB!.outcome).toBe('shutdown')
+      expect(terminatedA!.iteration).toBe(2)
+      expect(terminatedB!.iteration).toBe(1)
+
+      const runs = loopRunsRepo.listByProject(PROJECT_ID)
+      expect(runs).toHaveLength(2)
+      const runA = runs.find((r) => r.loopName === loopA)!
+      const runB = runs.find((r) => r.loopName === loopB)!
+      expect(runA.status).toBe('cancelled')
+      expect(runB.status).toBe('cancelled')
+      expect(runA.terminationReason).toBe('shutdown')
+      expect(runB.terminationReason).toBe('shutdown')
+      // Run totals reflect the final usage capture taken during terminateLoop.
+      expect(runA.iterations).toBe(2)
+      expect(runB.iterations).toBe(1)
+      expect(runA.durationMs!).toBeGreaterThan(0)
+      expect(runB.durationMs!).toBeGreaterThan(0)
+      expect(runA.inputTokens).toBe(30)
+      expect(runA.outputTokens).toBe(20)
+      expect(runA.cost).toBeCloseTo(0.02, 6)
+    })
+
+    test('clean section audit → final-audit transition retires the auditor session with auditor role and model attribution', async () => {
+      // Bug 2: startFinalAuditTransition hardcoded phase: 'coding' for the
+      // retired pre-final-audit session. When the transition starts from a
+      // section audit, the retired session is an auditor session, not a code
+      // session, so its usage must be attributed to role='auditor' with the
+      // auditor fallback model. The assistant message below carries no explicit
+      // model metadata, forcing the fallback path.
+      const sectionAuditAssistant = async () => [
+        {
+          info: {
+            role: 'assistant', finish: 'stop', cost: 0.004,
+            tokens: { input: 120, output: 60, reasoning: 5, cache: { read: 0, write: 0 } },
+          },
+          parts: [{
+            type: 'text',
+            text: `Audit clean.\n${SECTION_SUMMARY_START_MARKER}\n### Done\n- Implemented module.\n### Deviations\n- None\n### Follow-ups\n- None\n${SECTION_SUMMARY_END_MARKER}`,
+          }],
+        },
+      ]
+      const { client } = createFakeForgeClient({ session: { messages: sectionAuditAssistant } })
+      const { loop } = createRuntime({ client, withUsageRepo: true })
+
+      const loopName = 'metrics-final-attribution'
+      const sectionAuditorSessionId = 'metrics-final-attribution-audit'
+      const state = makeState({
+        loopName,
+        sessionId: sectionAuditorSessionId,
+        phase: 'auditing',
+        totalSections: 1,
+        currentSectionIndex: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 10,
+        executionModel: 'exec/model',
+        auditorModel: 'audit/model',
+      })
+      loopService.setState(loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: sectionAuditorSessionId },
+      })
+
+      expect(loopService.getActiveState(loopName)!.phase).toBe('final_auditing')
+
+      // Allow the fire-and-forget trim of the section auditor session to land.
+      await new Promise(resolve => setTimeout(resolve, 10))
+
+      const usage = loopSessionUsageRepo.getAggregate(PROJECT_ID, loopName)
+      expect(usage).not.toBeNull()
+      // Retired auditor session must be attributed to the auditor fallback
+      // model, never the execution model.
+      expect(usage!.byModel).toHaveProperty('audit/model')
+      expect(usage!.byModel['audit/model'].messageCount).toBeGreaterThan(0)
+      expect(usage!.byModel).not.toHaveProperty('exec/model')
+    })
+
+    test('terminateLoop awaits an in-flight trimmed-session usage capture before writing loop_runs, so run totals include the delayed session', async () => {
+      // Bug 1: scheduleSessionDelete trims sessions outside the (0-length)
+      // retention window via a fire-and-forget async path, shifting the session
+      // out of the retain queue before its usage capture completes. terminateLoop
+      // reading the queue would miss that mid-trim capture and write loop_runs
+      // prematurely, permanently undercounting the run. Fix: track pending
+      // usage captures and await them before recording the run summary.
+      const codingSessionId = 'metrics-race-coding'
+      const startedAt = Date.now()
+
+      let releaseTrim: () => void = () => {}
+      const trimGate = new Promise<void>((resolve) => { releaseTrim = resolve })
+
+      // The coding session's transcript is fetched three times during the
+      // coding→audit rotation: (1) getLastAssistantInfo (limit=4), (2) the
+      // metrics coding_done recorder, (3) scheduleSessionDelete's trim capture.
+      // Gate only the trim call on `trimGate` so the tick itself completes
+      // before the delay kicks in.
+      let codingMessagesCalls = 0
+      const messages = async (params: any) => {
+        if (params?.sessionID === codingSessionId) {
+          codingMessagesCalls++
+          if (codingMessagesCalls === 3) {
+            await trimGate
+          }
+          return [{
+            info: {
+              role: 'assistant', finish: 'stop', cost: 0.03,
+              tokens: { input: 400, output: 200, reasoning: 10, cache: { read: 0, write: 0 } },
+              model: 'coding-model',
+            },
+            parts: [{ type: 'text', text: 'Coding pass.' }],
+          }]
+        }
+        // Audit / final session transcript resolves immediately.
+        return [{
+          info: {
+            role: 'assistant', finish: 'stop', cost: 0.01,
+            tokens: { input: 50, output: 25, reasoning: 5, cache: { read: 0, write: 0 } },
+            model: 'audit-model',
+          },
+          parts: [{ type: 'text', text: 'All clear, terminating.' }],
+        }]
+      }
+
+      const { client } = createFakeForgeClient({ session: { messages } })
+      const { loop } = createRuntime({ client, withMetricsRepos: true })
+
+      const loopName = 'metrics-race-run'
+      const initialState = makeState({
+        loopName,
+        sessionId: codingSessionId,
+        phase: 'coding',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+        startedAt: new Date(startedAt).toISOString(),
+        auditorModel: 'audit-model',
+        executionModel: 'coding-model',
+      })
+      loopService.setState(loopName, initialState)
+
+      // Tick: coding→auditing rotation. scheduleSessionDelete fires for the
+      // coding session; its trim messages() fetch blocks on trimGate.
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: codingSessionId },
+      })
+
+      expect(loopService.getActiveState(loopName)!.phase).toBe('auditing')
+
+      // Cancel concurrently with the in-flight trim capture. terminateLoop
+      // captures the live audit session then awaits pending usage captures.
+      const cancelPromise = loop.cancel(loopName)
+
+      // Give terminateLoop enough runway to capture the live audit session and
+      // reach the pending-captures await. Without the fix, loop_runs would
+      // already be written with only the audit session's usage; with the fix
+      // it blocks on the trim's transcript fetch.
+      await new Promise(resolve => setTimeout(resolve, 20))
+      expect(loopRunsRepo.listByProject(PROJECT_ID)).toHaveLength(0)
+
+      // Release the delayed transcript fetch. terminateLoop completes and writes
+      // the run row with totals from BOTH sessions.
+      releaseTrim()
+      await cancelPromise
+
+      const runs = loopRunsRepo.listByProject(PROJECT_ID)
+      expect(runs).toHaveLength(1)
+      const run = runs[0]
+      expect(run.inputTokens).toBe(450)
+      expect(run.outputTokens).toBe(225)
+      expect(run.cost).toBeCloseTo(0.04, 5)
+    })
+
+    test('finalizeRunForRestart captures the active run usage and writes a cancelled/restarted loop_runs row keyed by the old started_at', async () => {
+      // Regression for the auditor's "metrics before active restart" finding.
+      // A force-restart clears runtime state and stamps a new started_at without
+      // recording termination metrics for the prior run; its active session usage
+      // was never captured. Fix: route restarts through finalizeRunForRestart
+      // before started_at resets, so the old run gets a loop_terminated event,
+      // a loop_runs summary, and the live session's usage.
+      const codingSessionId = 'restart-finalize-coding'
+      const startedAtMs = 1_700_000_000_000
+      const startedAt = new Date(startedAtMs).toISOString()
+
+      const { client } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            {
+              info: {
+                role: 'assistant', finish: 'stop', cost: 0.05,
+                tokens: { input: 800, output: 400, reasoning: 50, cache: { read: 0, write: 0 } },
+                model: 'coding-model',
+              },
+              parts: [{ type: 'text', text: 'Coding pass before restart.' }],
+            },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client, withMetricsRepos: true })
+
+      const loopName = 'metrics-restart-finalize'
+      const state = makeState({
+        loopName,
+        sessionId: codingSessionId,
+        phase: 'coding',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 2,
+        maxIterations: 5,
+        startedAt,
+        executionModel: 'coding-model',
+      })
+      loopService.setState(loopName, state)
+
+      // Finalize the active run as a restart would, before started_at resets.
+      // The loop stays active afterward; the caller (the restart command) is
+      // responsible for replacing state and registering the new session.
+      await loop.finalizeRunForRestart(loopName, { kind: 'restarted' })
+
+      expect(loopService.getActiveState(loopName)?.active).toBe(true)
+
+      // Active session usage captured under the old run identity.
+      const usage = loopSessionUsageRepo.listSessionUsage(PROJECT_ID, loopName)
+      expect(usage.find((u) => u.sessionId === codingSessionId && u.runStartedAt === startedAtMs)).toBeDefined()
+
+      // loop_terminated event appended under the old run identity.
+      const terminated = loopEventsRepo
+        .listByLoop(PROJECT_ID, loopName, startedAtMs)
+        .find((e) => e.eventType === 'loop_terminated')
+      expect(terminated).toBeDefined()
+      expect(terminated!.outcome).toBe('restarted')
+      expect(terminated!.runStartedAt).toBe(startedAtMs)
+      expect(terminated!.iteration).toBe(2)
+
+      // loop_runs summary keyed by the old started_at with cancelled/restarted
+      // status/reason and totals driven by the captured usage.
+      const runs = loopRunsRepo.listByProject(PROJECT_ID)
+      expect(runs).toHaveLength(1)
+      const run = runs[0]
+      expect(run.startedAt).toBe(startedAtMs)
+      expect(run.status).toBe('cancelled')
+      expect(run.terminationReason).toBe('restarted')
+      expect(run.iterations).toBe(2)
+      expect(run.inputTokens).toBe(800)
+      expect(run.outputTokens).toBe(400)
+      expect(run.cost).toBeCloseTo(0.05, 6)
+    })
+
+    test('finalizeRunForRestart on a non-active loop is a no-op that records nothing', async () => {
+      const { client } = createFakeForgeClient({
+        session: { messages: async () => [] },
+      })
+      const { loop } = createRuntime({ client, withMetricsRepos: true })
+
+      const loopName = 'metrics-restart-inactive'
+      // No state set → getActiveState returns null. Finalize must no-op.
+      await loop.finalizeRunForRestart(loopName, { kind: 'restarted' })
+
+      expect(loopEventsRepo.listByLoop(PROJECT_ID, loopName)).toHaveLength(0)
+      expect(loopRunsRepo.listByProject(PROJECT_ID)).toHaveLength(0)
     })
   })
 })

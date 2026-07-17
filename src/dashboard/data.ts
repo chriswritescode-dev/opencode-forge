@@ -5,11 +5,15 @@ import {
   createReviewFindingsRepo,
   createSectionPlansRepo,
   createLoopSessionUsageRepo,
+  createLoopEventsRepo,
+  createLoopRunsRepo,
 } from '../storage'
 import type { LoopRow } from '../storage'
 import type { SectionPlanRow } from '../storage'
 import type { ReviewFindingRow } from '../storage'
 import type { LoopUsageAggregate } from '../storage'
+import type { LoopEventRow } from '../storage'
+import type { LoopRunRow } from '../storage'
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 
 export interface DashboardLoop {
@@ -21,12 +25,14 @@ export interface DashboardLoop {
   findings: ReviewFindingRow[]
   usage: LoopUsageAggregate | null
   duration: string | null
+  events: LoopEventRow[]
 }
 
 export interface DashboardProject {
   projectId: string
   projectDir: string | null
   loops: DashboardLoop[]
+  runs: LoopRunRow[]
 }
 
 export interface DashboardTotals {
@@ -51,12 +57,21 @@ export function collectDashboardData(db: Database): DashboardPayload {
   const reviewFindingsRepo = createReviewFindingsRepo(db)
   const sectionPlansRepo = createSectionPlansRepo(db)
   const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
+  const loopEventsRepo = createLoopEventsRepo(db)
+  const loopRunsRepo = createLoopRunsRepo(db)
 
-  const projectIdRows = db.prepare(
+  const loopProjectIdRows = db.prepare(
     'SELECT DISTINCT project_id FROM loops ORDER BY project_id'
   ).all() as { project_id: string }[]
+  const runsProjectIds = loopRunsRepo.listProjectIds()
 
-  const projectIds = projectIdRows.map(r => r.project_id)
+  const projectIds = Array.from(
+    new Set<string>([
+      ...loopProjectIdRows.map(r => r.project_id),
+      ...runsProjectIds,
+    ]),
+  ).sort()
+
   const projects: DashboardProject[] = []
   const totals: DashboardTotals = {
     projects: 0,
@@ -71,7 +86,7 @@ export function collectDashboardData(db: Database): DashboardPayload {
   for (const projectId of projectIds) {
     const loopRows = loopsRepo.listAll(projectId)
 
-    // Determine projectDir from first (most recent) loop row
+    // Determine projectDir from first (most recent) loop row; null when no live loops remain.
     const projectDir = loopRows.length > 0 ? loopRows[0].projectDir : null
 
     // Sort: running first, then by startedAt desc within each group
@@ -94,13 +109,16 @@ export function collectDashboardData(db: Database): DashboardPayload {
       const usage = loopSessionUsageRepo.getAggregate(projectId, loopName)
       const elapsedSeconds = computeElapsedSeconds(loop.startedAt, loop.completedAt ?? undefined)
       const duration = elapsedSeconds > 0 ? formatDuration(elapsedSeconds) : null
+      const events = loopEventsRepo.listByLoop(projectId, loopName, loop.startedAt)
 
-      return { loop, lastAuditResult, postActionReport, plan, sections, findings, usage, duration }
+      return { loop, lastAuditResult, postActionReport, plan, sections, findings, usage, duration, events }
     })
 
-    projects.push({ projectId, projectDir, loops: dashboardLoops })
+    const runs = loopRunsRepo.listByProject(projectId)
 
-    // Accumulate totals
+    projects.push({ projectId, projectDir, loops: dashboardLoops, runs })
+
+    // Accumulate totals; swept-only projects contribute runs but no loop status counts.
     totals.projects = projectIds.length
     totals.loops += sortedLoops.length
     for (const loop of sortedLoops) {

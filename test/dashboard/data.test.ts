@@ -7,6 +7,8 @@ import { createPlansRepo } from '../../src/storage'
 import { createReviewFindingsRepo } from '../../src/storage'
 import { createSectionPlansRepo } from '../../src/storage'
 import { createLoopSessionUsageRepo, type LoopSessionUsageRow } from '../../src/storage'
+import { createLoopEventsRepo, type LoopEventRow } from '../../src/storage'
+import { createLoopRunsRepo, type LoopRunRow } from '../../src/storage'
 
 function makeLoopRow(overrides?: Partial<LoopRow>): LoopRow {
   return {
@@ -40,6 +42,67 @@ function makeLoopRow(overrides?: Partial<LoopRow>): LoopRow {
     executionVariant: null,
     auditorVariant: null,
     kind: 'plan',
+    ...overrides,
+  }
+}
+
+function makeLoopEventRow(overrides?: Partial<LoopEventRow>): LoopEventRow {
+  return {
+    projectId: 'test-project',
+    loopName: 'test-loop',
+    runStartedAt: 1000,
+    eventType: 'coding_done',
+    outcome: 'section_done',
+    verdict: null,
+    iteration: 1,
+    sectionIndex: 0,
+    sessionId: 'session-1',
+    role: 'code',
+    model: 'claude-sonnet-4-20250514',
+    cost: 0.01,
+    inputTokens: 100,
+    outputTokens: 50,
+    reasoningTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    messageCount: 5,
+    findingsTotal: null,
+    findingsBugs: null,
+    detail: null,
+    createdAt: 1001,
+    ...overrides,
+  }
+}
+
+function makeLoopRunRow(overrides?: Partial<LoopRunRow>): LoopRunRow {
+  return {
+    projectId: 'test-project',
+    loopName: 'test-loop',
+    startedAt: 1000,
+    completedAt: 2000,
+    status: 'completed',
+    terminationReason: null,
+    loopKind: 'plan',
+    executionModel: 'claude-sonnet-4-20250514',
+    auditorModel: null,
+    executionVariant: null,
+    auditorVariant: null,
+    iterations: 5,
+    auditCount: 2,
+    errorCount: 0,
+    totalSections: 1,
+    sectionRetries: 0,
+    cleanAudits: 2,
+    dirtyAudits: 0,
+    cost: 0.03,
+    inputTokens: 300,
+    outputTokens: 130,
+    reasoningTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    messageCount: 13,
+    durationMs: 1000,
+    createdAt: 1000,
     ...overrides,
   }
 }
@@ -145,6 +208,7 @@ describe('collectDashboardData', () => {
       cacheWriteTokens: 400,
       messageCount: 10,
       capturedAt: Date.now(),
+      runStartedAt: 1_700_000_000_000,
     })
 
     const payload = collectDashboardData(db!)
@@ -363,5 +427,162 @@ describe('collectDashboardData', () => {
     expect(payload.totals.cancelled).toBe(1)
     expect(payload.totals.errored).toBe(1)
     expect(payload.totals.stalled).toBe(1)
+  })
+
+  // ─── Cycle 5: loop events and runs payload ──────────────────────────
+
+  test('payload exposes per-loop events (id-ordered) and per-project runs (startedAt desc)', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    const loopEventsRepo = createLoopEventsRepo(db!)
+    const loopRunsRepo = createLoopRunsRepo(db!)
+
+    const projectId = 'p1'
+    const startedAt = 5_000
+
+    loopsRepo.insert(
+      makeLoopRow({
+        projectId,
+        loopName: 'l1',
+        status: 'running',
+        startedAt,
+      }),
+      { lastAuditResult: null },
+    )
+
+    loopEventsRepo.insert(
+      makeLoopEventRow({
+        projectId,
+        loopName: 'l1',
+        runStartedAt: startedAt,
+        eventType: 'coding_done',
+        outcome: 'section_done',
+        role: 'code',
+        createdAt: startedAt + 1,
+      }),
+    )
+    loopEventsRepo.insert(
+      makeLoopEventRow({
+        projectId,
+        loopName: 'l1',
+        runStartedAt: startedAt,
+        eventType: 'audit_done',
+        outcome: 'clean',
+        verdict: 'clean',
+        role: 'auditor',
+        findingsTotal: 0,
+        findingsBugs: 0,
+        createdAt: startedAt + 2,
+      }),
+    )
+
+    loopRunsRepo.upsert(
+      makeLoopRunRow({
+        projectId,
+        loopName: 'l1',
+        startedAt,
+        completedAt: null,
+        status: 'running',
+        iterations: 1,
+        auditCount: 1,
+        cleanAudits: 1,
+        durationMs: null,
+        createdAt: startedAt,
+      }),
+    )
+
+    const payload = collectDashboardData(db!)
+
+    expect(payload.projects).toHaveLength(1)
+    const dashLoop = payload.projects[0].loops[0]
+    expect(dashLoop.events).toHaveLength(2)
+    expect(dashLoop.events[0].eventType).toBe('coding_done')
+    expect(dashLoop.events[1].eventType).toBe('audit_done')
+
+    const runs = payload.projects[0].runs
+    expect(runs).toHaveLength(1)
+    expect(runs[0].loopName).toBe('l1')
+    expect(runs[0].startedAt).toBe(startedAt)
+  })
+
+  test('runs include swept loops whose loops row was deleted, with empty loops array', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    const loopRunsRepo = createLoopRunsRepo(db!)
+
+    const projectId = 'p2'
+    const startedAt = 7_000
+
+    // Seed the loops row, then drop it to simulate a swept loop whose metrics survived.
+    loopsRepo.insert(
+      makeLoopRow({
+        projectId,
+        loopName: 'swept-loop',
+        status: 'completed',
+        startedAt,
+        completedAt: startedAt + 100,
+      }),
+      { lastAuditResult: null },
+    )
+    loopsRepo.delete(projectId, 'swept-loop')
+
+    loopRunsRepo.upsert(
+      makeLoopRunRow({
+        projectId,
+        loopName: 'swept-loop',
+        startedAt,
+        completedAt: startedAt + 100,
+        status: 'completed',
+        terminationReason: 'max_iterations',
+        iterations: 10,
+        auditCount: 5,
+        cleanAudits: 5,
+        durationMs: 100,
+        createdAt: startedAt,
+      }),
+    )
+
+    const payload = collectDashboardData(db!)
+
+    // Project surfaces via loop_runs even though no live loops remain.
+    expect(payload.projects).toHaveLength(1)
+    expect(payload.projects[0].projectId).toBe(projectId)
+    expect(payload.projects[0].projectDir).toBeNull()
+    expect(payload.projects[0].loops).toEqual([])
+    expect(payload.projects[0].runs).toHaveLength(1)
+    expect(payload.projects[0].runs[0].loopName).toBe('swept-loop')
+
+    // Swept-only project contributes no loop status totals.
+    expect(payload.totals.projects).toBe(1)
+    expect(payload.totals.loops).toBe(0)
+    expect(payload.totals.completed).toBe(0)
+  })
+
+  test('project ids are the union of loops and loop_runs, de-duplicated and ordered', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    const loopRunsRepo = createLoopRunsRepo(db!)
+
+    loopsRepo.insert(
+      makeLoopRow({
+        projectId: 'alpha',
+        loopName: 'live',
+        status: 'running',
+        startedAt: 900,
+      }),
+      { lastAuditResult: null },
+    )
+    loopRunsRepo.upsert(
+      makeLoopRunRow({
+        projectId: 'beta',
+        loopName: 'swept',
+        startedAt: 100,
+        completedAt: 200,
+      }),
+    )
+
+    const payload = collectDashboardData(db!)
+
+    expect(payload.projects.map((p) => p.projectId)).toEqual(['alpha', 'beta'])
+    expect(payload.totals.projects).toBe(2)
+    expect(payload.totals.loops).toBe(1)
+    expect(payload.totals.running).toBe(1)
   })
 })

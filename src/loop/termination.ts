@@ -5,6 +5,7 @@ export type TerminationReason =
   | { kind: 'cancelled' }
   | { kind: 'user_aborted' }
   | { kind: 'shutdown' }
+  | { kind: 'restarted' }
   | { kind: 'max_iterations' }
   | { kind: 'stall_timeout' }
   | { kind: 'missing_worktree_dir' }
@@ -23,6 +24,7 @@ export function terminationStatusFor(reason: TerminationReason): TerminationStat
     case 'cancelled':
     case 'user_aborted':
     case 'shutdown':
+    case 'restarted':
       return 'cancelled'
     case 'stall_timeout':
       return 'stalled'
@@ -56,7 +58,7 @@ export function parseTerminationReasonString(str: string): TerminationReason {
 
   // For simple kinds without messages
   const knownKinds = [
-    'completed', 'cancelled', 'user_aborted', 'shutdown',
+    'completed', 'cancelled', 'user_aborted', 'shutdown', 'restarted',
     'max_iterations', 'stall_timeout', 'missing_worktree_dir',
     'session_creation_failed', 'audit_retry_exhausted',
     'final_audit_retry_exhausted', 'coding_no_assistant',

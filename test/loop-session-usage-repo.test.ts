@@ -52,11 +52,13 @@ function createTestDb(): Database {
       cache_write_tokens INTEGER NOT NULL DEFAULT 0,
       message_count     INTEGER NOT NULL DEFAULT 0,
       captured_at       INTEGER NOT NULL,
+      run_started_at    INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (project_id, loop_name, session_id, model),
       FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
     );
 
     CREATE INDEX idx_loop_session_usage_project_loop ON loop_session_usage(project_id, loop_name);
+    CREATE INDEX idx_loop_session_usage_run ON loop_session_usage(project_id, loop_name, run_started_at);
   `)
   return db
 }
@@ -97,6 +99,9 @@ describe('LoopSessionUsageRepo', () => {
       cacheWriteTokens: 300,
       messageCount: 5,
       capturedAt: Date.now(),
+      // Default run identity matches the loop row's seeded started_at; tests that
+      // exercise run isolation override this with a per-run value.
+      runStartedAt: 1_700_000_000_000,
       ...overrides,
     }
   }
@@ -264,6 +269,125 @@ describe('LoopSessionUsageRepo', () => {
       expect(agg?.totalCacheWriteTokens).toBe(900)
       expect(agg?.totalCost).toBe(0.03)
       expect(agg?.totalMessageCount).toBe(15)
+    })
+  })
+
+  describe('getAggregateForRun', () => {
+    test('returns null when no usage exists for the run', () => {
+      const agg = repo.getAggregateForRun(projectId, loopName, 1_700_000_000_000)
+      expect(agg).toBeNull()
+    })
+
+    test('includes only rows whose run_started_at exactly matches (restart isolation)', () => {
+      // Run 1 and run 2 share the same loop_name but stamp different
+      // run_started_at values at capture time. Aggregation by equality keeps
+      // each run isolated even though both runs' rows coexist in the table.
+      repo.upsertSessionUsage(createUsageRow({
+        sessionId: 'run1-session-a',
+        model: 'model-a',
+        inputTokens: 1000,
+        outputTokens: 500,
+        runStartedAt: 1000,
+        capturedAt: 1500,
+      }))
+      repo.upsertSessionUsage(createUsageRow({
+        sessionId: 'run1-session-b',
+        model: 'model-b',
+        inputTokens: 2000,
+        outputTokens: 1000,
+        runStartedAt: 1000,
+        capturedAt: 1600,
+      }))
+
+      const run1 = repo.getAggregateForRun(projectId, loopName, 1000)
+      expect(run1?.totalInputTokens).toBe(3000)
+      expect(run1?.totalOutputTokens).toBe(1500)
+
+      // Restart: run 1's rows remain; run 2 captures a fresh, smaller row
+      // under a new session id, stamping run 2's started_at.
+      repo.upsertSessionUsage(createUsageRow({
+        sessionId: 'run2-session-a',
+        model: 'model-a',
+        inputTokens: 3000,
+        outputTokens: 1500,
+        runStartedAt: 2000,
+        capturedAt: 2500,
+      }))
+
+      // Run 2 aggregate must include ONLY run 2's rows — prior-run rows
+      // stamp run_started_at = 1000, which does not equal 2000.
+      const run2 = repo.getAggregateForRun(projectId, loopName, 2000)
+      expect(run2?.totalInputTokens).toBe(3000)
+      expect(run2?.totalOutputTokens).toBe(1500)
+      expect(run2?.byModel['model-a'].inputTokens).toBe(3000)
+      expect(run2?.byModel['model-b']).toBeUndefined()
+    })
+
+    test('restart with equal-millisecond capturedAt still isolates by run identity', () => {
+      // Regression for the auditor's timestamp-collision finding.
+      //
+      // Original bug: run aggregation filtered `captured_at >= runStartedAt`.
+      // If a prior run captured usage in the same Date.now() millisecond as
+      // the restarted run's startedAt, the new run folded the prior run's row
+      // into its aggregate.
+      //
+      // Fix: every usage row stamps run_started_at from the loop's started_at
+      // at capture time, and aggregation filters by equality on that column.
+      // captured_at collisions no longer matter because the row's run identity
+      // is preserved independently of when it was captured.
+
+      // Prior run: startedAt = 1000, captured usage in the same ms as the
+      // restarted run's startedAt (1001). Under the old filter this row would
+      // leak into run 2's aggregate (1001 >= 1001).
+      repo.upsertSessionUsage(createUsageRow({
+        sessionId: 'run1-session',
+        model: 'model-b',
+        inputTokens: 9999,
+        runStartedAt: 1000,
+        capturedAt: 1001,
+      }))
+
+      // Restarted run: new startedAt identity (1001). Captures its own usage.
+      repo.upsertSessionUsage(createUsageRow({
+        sessionId: 'run2-session',
+        model: 'model-a',
+        inputTokens: 2000,
+        runStartedAt: 1001,
+        capturedAt: 1001,
+      }))
+
+      // Run 2's aggregate must include ONLY its own row — the prior-run row
+      // stamps run_started_at = 1000 (run 1's identity), not 1001, so it is
+      // excluded despite the captured_at collision.
+      const run2 = repo.getAggregateForRun(projectId, loopName, 1001)
+      expect(run2?.totalInputTokens).toBe(2000)
+      expect(run2?.byModel['model-a'].inputTokens).toBe(2000)
+      expect(run2?.byModel['model-b']).toBeUndefined()
+    })
+
+    test('matched row stamps run_started_at exactly equal to the queried run identity', () => {
+      repo.upsertSessionUsage(createUsageRow({
+        sessionId: 'session-exact',
+        model: 'model-a',
+        inputTokens: 1000,
+        runStartedAt: 1234,
+      }))
+
+      const agg = repo.getAggregateForRun(projectId, loopName, 1234)
+      expect(agg?.totalInputTokens).toBe(1000)
+    })
+
+    test('excludes rows stamped with a different run_started_at', () => {
+      repo.upsertSessionUsage(createUsageRow({
+        sessionId: 'prior-run-session',
+        model: 'model-a',
+        inputTokens: 5000,
+        runStartedAt: 999, // different run
+        capturedAt: 999,
+      }))
+
+      const agg = repo.getAggregateForRun(projectId, loopName, 1000)
+      expect(agg).toBeNull()
     })
   })
 

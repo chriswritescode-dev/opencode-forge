@@ -4,7 +4,7 @@ import type { ForgeClient, SessionGetParams } from './client/port'
 import { buildAgents } from './agents'
 import { createConfigHandler } from './config'
 import { createSessionHooks, createLoopEventHandler } from './hooks'
-import { initializeDatabase, resolveDataDir, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo } from './storage'
+import { initializeDatabase, resolveDataDir, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo, createLoopEventsRepo, createLoopRunsRepo } from './storage'
 import type { LoopChangeNotifier } from './loop'
 import { loadPluginConfig, resolveBundledContainerDir, resolvePromptsDir } from './setup'
 import { resolveLogPath } from './storage'
@@ -325,13 +325,15 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       logger.log(`Registered forge workspace adapter (worktrees under ${join(dataDir, 'worktrees')})`)
     }
 
-    const db = initializeDatabase(dataDir, { completedLoopTtlMs: config.completedLoopTtlMs })
+    const db = initializeDatabase(dataDir, { completedLoopTtlMs: config.completedLoopTtlMs, metricsTtlMs: config.metricsTtlMs })
 
     const loopsRepo = createLoopsRepo(db)
     const plansRepo = createPlansRepo(db)
     const reviewFindingsRepo = createReviewFindingsRepo(db)
     const sectionPlansRepo = createSectionPlansRepo(db)
     const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
+    const loopEventsRepo = createLoopEventsRepo(db)
+    const loopRunsRepo = createLoopRunsRepo(db)
     const featureGroupsRepo = createFeatureGroupsRepo(db)
 
     // Mark any groups left in non-terminal status (extracting/planning/running) from a
@@ -370,7 +372,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       }
     }
 
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo, loopEventsRepo, loopRunsRepo)
 
     const promptsDir = resolvePromptsDir()
     const agents = buildAgents(promptsDir)

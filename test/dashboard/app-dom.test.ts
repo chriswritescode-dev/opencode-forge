@@ -60,6 +60,7 @@ function makePayload(over: Record<string, any> = {}): any {
   const loopOver = over.loop || {}
   const dashLoopOver = over.dashLoop || {}
   const totalsOver = over.totals || {}
+  const runs = over.runs ?? []
   return {
     generatedAt: Date.now(),
     projects: [
@@ -67,6 +68,7 @@ function makePayload(over: Record<string, any> = {}): any {
         projectId: 'p1',
         projectDir: '/proj/p1',
         loops: [makeLoop({ ...dashLoopOver, loop: loopOver })],
+        runs,
       },
     ],
     totals: {
@@ -412,5 +414,201 @@ describe('dashboard App fine-grained reactivity', () => {
 
     expect(container.querySelector('.totals')?.textContent).toContain('Running: 0')
     expect(container.querySelector('.totals')?.textContent).toContain('Completed: 1')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Loop metrics panel + #metrics runs view
+// ---------------------------------------------------------------------------
+
+function loopEvent(over: Record<string, any> = {}): any {
+  return {
+    projectId: 'p1',
+    loopName: 'loop-a',
+    runStartedAt: 1700000000000,
+    eventType: 'coding_done',
+    outcome: null,
+    verdict: null,
+    iteration: 1,
+    sectionIndex: null,
+    sessionId: null,
+    role: 'code',
+    model: null,
+    cost: 0.1,
+    inputTokens: 100,
+    outputTokens: 50,
+    reasoningTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    messageCount: 1,
+    findingsTotal: null,
+    findingsBugs: null,
+    detail: null,
+    createdAt: 1700000000000,
+    ...over,
+  }
+}
+
+describe('dashboard App loop metrics panel', () => {
+  test('loop detail with events renders the metrics panel charts with correct bar counts', async () => {
+    payload = makePayload({
+      loop: { totalSections: 1 },
+      dashLoop: {
+        events: [
+          loopEvent({ eventType: 'coding_done', iteration: 1, inputTokens: 100, outputTokens: 50, cost: 0.1 }),
+          loopEvent({ eventType: 'coding_done', iteration: 2, inputTokens: 200, outputTokens: 80, cost: 0.2 }),
+          loopEvent({ eventType: 'audit_done', iteration: 1, verdict: 'clean', inputTokens: 30, outputTokens: 10, cost: 0.05 }),
+          loopEvent({ eventType: 'audit_done', iteration: 2, verdict: 'dirty', inputTokens: 40, outputTokens: 12, cost: 0.07 }),
+          loopEvent({ eventType: 'final_audit_done', iteration: 2, verdict: 'clean', inputTokens: 5, outputTokens: 3, cost: 0.01 }),
+          loopEvent({ eventType: 'coding_done', iteration: 3, inputTokens: 220, outputTokens: 90, cost: 0.25 }),
+          loopEvent({ eventType: 'audit_done', iteration: 3, verdict: 'clean', inputTokens: 35, outputTokens: 11, cost: 0.06 }),
+          loopEvent({ eventType: 'loop_terminated', iteration: null, outcome: 'completed', inputTokens: 0, outputTokens: 0, cost: 0 }),
+        ],
+        sections: [
+          {
+            projectId: 'p1',
+            loopName: 'loop-a',
+            sectionIndex: 0,
+            title: 'Phase 1',
+            content: '',
+            status: 'completed',
+            attempts: 1,
+            startedAt: 1700000000000,
+            completedAt: 1700000500000,
+          },
+        ],
+      },
+    })
+    window.location.hash = '#p1/loop-a'
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const panel = container.querySelector('.loop-metrics-panel') as HTMLElement
+    expect(panel).toBeTruthy()
+
+    // Three StackedBarCharts: tokens, cost, section retries. Audit is a DotStrip.
+    const charts = container.querySelectorAll('.forge-chart')
+    expect(charts.length).toBe(3)
+
+    // Tokens chart: 3 iterations x 4 segments = 12 rects, 3 bar groups
+    const tokensSvg = charts[0].querySelector('svg.forge-chart-svg') as SVGElement
+    expect(tokensSvg).toBeTruthy()
+    expect(tokensSvg.querySelectorAll('g').length).toBe(3)
+    expect(tokensSvg.querySelectorAll('rect').length).toBe(12)
+
+    // Cost chart: 3 iterations x 1 segment = 3 rects
+    const costSvg = charts[1].querySelector('svg.forge-chart-svg') as SVGElement
+    expect(costSvg.querySelectorAll('rect').length).toBe(3)
+
+    // Audit outcomes dot strip: 4 audit/final_audit events (3 clean, 1 dirty)
+    const dots = container.querySelectorAll('.forge-dot-strip .forge-dot')
+    expect(dots.length).toBe(4)
+    expect(container.querySelectorAll('.forge-dot-strip .forge-dot-clean').length).toBe(3)
+    expect(container.querySelectorAll('.forge-dot-strip .forge-dot-dirty').length).toBe(1)
+
+    // Section retries chart: 1 section, 0 retries → 1 bar with zero height
+    const retrySvg = charts[2].querySelector('svg.forge-chart-svg') as SVGElement
+    expect(retrySvg.querySelectorAll('g').length).toBe(1)
+  })
+
+  test('empty events renders the metrics empty-state note', async () => {
+    payload = makePayload({ dashLoop: { events: [] } })
+    window.location.hash = '#p1/loop-a'
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const panel = container.querySelector('.loop-metrics-panel') as HTMLElement
+    expect(panel).toBeTruthy()
+    expect(panel.querySelector('.metrics-empty')).toBeTruthy()
+    expect(container.querySelector('.forge-chart')).toBeFalsy()
+    expect(container.querySelector('.forge-dot-strip')).toBeFalsy()
+  })
+
+  test('#metrics route renders the runs table with one row per run', async () => {
+    payload = makePayload({
+      totals: { running: 0, completed: 1 },
+      loop: { status: 'completed', completedAt: 1700000500000 },
+      runs: [
+        {
+          projectId: 'p1',
+          loopName: 'loop-a',
+          startedAt: 1700000000000,
+          completedAt: 1700000500000,
+          status: 'completed',
+          terminationReason: null,
+          loopKind: 'plan',
+          executionModel: 'claude-3',
+          auditorModel: 'gpt-4',
+          executionVariant: null,
+          auditorVariant: null,
+          iterations: 3,
+          auditCount: 2,
+          errorCount: 0,
+          totalSections: 1,
+          sectionRetries: 0,
+          cleanAudits: 2,
+          dirtyAudits: 0,
+          cost: 0.42,
+          inputTokens: 1000,
+          outputTokens: 600,
+          reasoningTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          messageCount: 8,
+          durationMs: 500000,
+          createdAt: 1700000000000,
+        },
+      ],
+    })
+    window.location.hash = '#metrics'
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    expect(container.querySelector('.runs-view')).toBeTruthy()
+    const rows = container.querySelectorAll('tr.runs-row')
+    expect(rows.length).toBe(1)
+    expect(rows[0].textContent).toContain('loop-a')
+    // Cost-per-run chart above the table
+    const costChart = container.querySelector('.runs-view .forge-chart svg.forge-chart-svg')
+    expect(costChart).toBeTruthy()
+  })
+
+  describe('dashboard App metrics navigation regression', () => {
+    test('Metrics → Metrics → Back: re-clicking Metrics at #metrics does not suppress the next Back hashchange', async () => {
+      // Regression: the previous navigateMetrics() always set the hashchange
+      // suppression flag and assigned location.hash = 'metrics', even when the
+      // hash was already 'metrics'. Because no hashchange event fires when the
+      // hash does not actually change, the flag stayed set, so the next Back
+      // navigation was discarded — leaving the metrics view mounted with an empty
+      // hash. syncHash only arms the suppression flag when the hash changes.
+      payload = makePayload({
+        totals: { running: 1, completed: 0 },
+        dashLoop: { events: [] },
+      })
+      window.location.hash = '#metrics'
+      dispose = render(() => App() as unknown as Element, container)
+      await flush()
+
+      // Mounted on the metrics route.
+      const navLink = container.querySelector('.metrics-nav-link') as HTMLElement
+      expect(navLink).toBeTruthy()
+      expect(container.querySelector('.runs-view')).toBeTruthy()
+
+      // Re-click Metrics while already at #metrics: hash is unchanged so the
+      // browser fires no hashchange event. navigateMetrics must NOT arm the
+      // suppression flag (the bug left it set).
+      navLink.click()
+      await flush()
+      expect(container.querySelector('.runs-view')).toBeTruthy()
+
+      // Simulate Back: hash becomes empty and the browser fires a hashchange.
+      window.location.hash = ''
+      window.dispatchEvent(new Event('hashchange'))
+      await flush()
+
+      // The metrics view is unmounted; the standard dashboard layout is shown.
+      expect(container.querySelector('.runs-view')).toBeFalsy()
+      expect(container.querySelector('.dash-layout')).toBeTruthy()
+    })
   })
 })
