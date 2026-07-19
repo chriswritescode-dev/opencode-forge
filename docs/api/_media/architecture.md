@@ -84,7 +84,7 @@ See [loop-system.md](loop-system.md) for detailed documentation.
 
 ### Components
 
-- **Loop Runtime** (`src/loop/runtime.ts`) - Factory for creating Loop instances (`createLoop()` returns a `Loop` interface with ~50 methods)
+- **Loop Runtime** (`src/loop/runtime.ts`) - Factory for the orchestration-focused `Loop` facade; state CRUD and prompt/section operations are exposed through its `service` seam
 - **Loop Service** (`src/loop/service.ts`) - State management for loops (DB-backed via SQLite)
 - **State Machine** (`src/loop/state.ts`) - Discriminated union `LoopState` with 4 phases: `coding`, `auditing`, `final_auditing`, `post_action`
 - **Transition Table** (`src/loop/transitions.ts`) - Pure `nextTransition()` function for phase transitions
@@ -167,7 +167,7 @@ OpenCode Forge uses `bun:sqlite` for all data persistence. The storage layer is 
 - `initializeDatabase(dataDir, options)` - Creates SQLite DB in the data directory
 - `closeDatabase()` - Closes database connections on shutdown
 - `resolveDataDir()` - Resolves platform-appropriate data directory (`~/.local/share/opencode/forge`)
-- Migrations are sequential SQL files (numbered 100-131) tracked in a `migrations` table
+- Migrations are sequential and explicitly registered in `src/storage/migrations/index.ts`.
 
 ### Repository Pattern
 
@@ -180,6 +180,8 @@ All data access goes through typed repository interfaces created via factory fun
 | `ReviewFindingsRepo` | CRUD for review findings | `ReviewFindingRow`, `ReviewFindingsRepo` |
 | `SectionPlansRepo` | CRUD for milestone (section) plans used in decomposed loops | `SectionPlanRow`, `SectionPlansRepo` |
 | `LoopSessionUsageRepo` | Per-session token/cost usage across rotated loop sessions | `LoopSessionUsageRow`, `LoopUsageAggregate` |
+| `LoopEventsRepo` | Append-only phase and termination metrics scoped to a loop run | `LoopEventRow` |
+| `LoopRunsRepo` | Retained per-run summaries and paginated metrics history | `LoopRunRow` |
 | `TuiPrefsRepo` | TUI preferences persistence | `TuiPrefsRepo` |
 
 Each repository is project-scoped via `projectId` parameter.

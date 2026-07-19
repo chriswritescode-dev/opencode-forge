@@ -130,6 +130,31 @@ describe('LoopRunsRepo', () => {
     expect(ids).toEqual(['proj1', 'proj2'])
   })
 
+  test('listPage paginates deterministically across projects and reports total', () => {
+    repo.upsert(sampleRow({ projectId: 'proj2', loopName: 'z', startedAt: 300 }))
+    repo.upsert(sampleRow({ projectId: 'proj1', loopName: 'b', startedAt: 300 }))
+    repo.upsert(sampleRow({ projectId: 'proj1', loopName: 'a', startedAt: 300 }))
+    repo.upsert(sampleRow({ projectId: 'proj1', loopName: 'old', startedAt: 100 }))
+
+    const first = repo.listPage({ limit: 2, offset: 0 })
+    const second = repo.listPage({ limit: 2, offset: 2 })
+
+    expect(first.total).toBe(4)
+    expect(first.rows.map(row => `${row.projectId}/${row.loopName}`)).toEqual(['proj1/a', 'proj1/b'])
+    expect(second.rows.map(row => `${row.projectId}/${row.loopName}`)).toEqual(['proj2/z', 'proj1/old'])
+  })
+
+  test('listPage optionally scopes rows and total to one project', () => {
+    repo.upsert(sampleRow({ projectId: 'proj1', loopName: 'new', startedAt: 300 }))
+    repo.upsert(sampleRow({ projectId: 'proj1', loopName: 'old', startedAt: 100 }))
+    repo.upsert(sampleRow({ projectId: 'proj2', loopName: 'other', startedAt: 400 }))
+
+    const page = repo.listPage({ projectId: 'proj1', limit: 1, offset: 1 })
+
+    expect(page.total).toBe(2)
+    expect(page.rows.map(row => row.loopName)).toEqual(['old'])
+  })
+
   test('sweepOlderThan deletes rows with created_at older than cutoff and returns count', () => {
     repo.upsert(sampleRow({ loopName: 'old', startedAt: 100, completedAt: 200, createdAt: 1000 }))
     repo.upsert(sampleRow({ loopName: 'new', startedAt: 300, completedAt: 400, createdAt: 5000 }))

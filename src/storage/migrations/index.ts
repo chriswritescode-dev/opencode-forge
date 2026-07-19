@@ -394,5 +394,20 @@ export const migrations: Migration[] = [
       }
     },
   },
+  {
+    id: '140',
+    description: 'Add pagination indexes to loop_runs',
+    apply: (db: Database) => {
+      // Guard against schemas where migration 138 is registered as applied
+      // but the loop_runs table is physically absent (legacy test fixtures);
+      // skip rather than index a non-existent table. Fresh DBs create the
+      // table via migration 138, then this adds the pagination indexes.
+      const tableRow = db.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='loop_runs'"
+      ).get() as { '1'?: number } | null
+      if (!tableRow) return
+      db.run(loadSql('140_loop_runs_pagination_indexes.sql'))
+    },
+  },
 
 ]

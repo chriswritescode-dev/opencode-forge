@@ -3257,6 +3257,10 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const afterCoding = loopService.getActiveState(loopName)!
       expect(afterCoding.phase).toBe('auditing')
       const auditSessionId = afterCoding.sessionId
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect((client.session.messages as any).mock.calls.filter(
+        ([input]: [{ sessionID?: string }]) => input.sessionID === codingSessionId,
+      )).toHaveLength(2)
 
       // Seed an outstanding bug finding so the audit is dirty.
       reviewFindingsRepo.write({
@@ -4032,6 +4036,9 @@ describe('stall handling terminates with stall timeout when configured cap is re
       const messages = async (params: any) => {
         if (params?.sessionID === codingSessionId) {
           codingMessagesCalls++
+          if (codingMessagesCalls === 2) {
+            throw new Error('phase metrics fetch failed')
+          }
           if (codingMessagesCalls === 3) {
             await trimGate
           }

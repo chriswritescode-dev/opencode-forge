@@ -33,8 +33,14 @@ export interface LoopRunRow {
 export interface LoopRunsRepo {
   upsert(row: LoopRunRow): void
   listByProject(projectId: string): LoopRunRow[]
+  listPage(options: { projectId?: string; limit: number; offset: number }): LoopRunsPage
   listProjectIds(): string[]
   sweepOlderThan(cutoffMs: number): number
+}
+
+export interface LoopRunsPage {
+  rows: LoopRunRow[]
+  total: number
 }
 
 interface LoopRunRowRaw {
@@ -123,6 +129,32 @@ export function createLoopRunsRepo(db: Database): LoopRunsRepo {
 
   const listProjectIdsStmt = db.prepare('SELECT DISTINCT project_id FROM loop_runs')
 
+  const listPageStmt = db.prepare(`
+    SELECT project_id, loop_name, started_at, completed_at, status, termination_reason,
+           loop_kind, execution_model, auditor_model, execution_variant, auditor_variant,
+           iterations, audit_count, error_count, total_sections, section_retries,
+           clean_audits, dirty_audits, cost, input_tokens, output_tokens, reasoning_tokens,
+           cache_read_tokens, cache_write_tokens, message_count, duration_ms, created_at
+    FROM loop_runs
+    ORDER BY started_at DESC, project_id ASC, loop_name ASC
+    LIMIT ? OFFSET ?
+  `)
+
+  const listPageByProjectStmt = db.prepare(`
+    SELECT project_id, loop_name, started_at, completed_at, status, termination_reason,
+           loop_kind, execution_model, auditor_model, execution_variant, auditor_variant,
+           iterations, audit_count, error_count, total_sections, section_retries,
+           clean_audits, dirty_audits, cost, input_tokens, output_tokens, reasoning_tokens,
+           cache_read_tokens, cache_write_tokens, message_count, duration_ms, created_at
+    FROM loop_runs
+    WHERE project_id = ?
+    ORDER BY started_at DESC, project_id ASC, loop_name ASC
+    LIMIT ? OFFSET ?
+  `)
+
+  const countStmt = db.prepare('SELECT COUNT(*) AS total FROM loop_runs')
+  const countByProjectStmt = db.prepare('SELECT COUNT(*) AS total FROM loop_runs WHERE project_id = ?')
+
   const sweepStmt = db.prepare('DELETE FROM loop_runs WHERE created_at < ?')
 
   return {
@@ -161,6 +193,16 @@ export function createLoopRunsRepo(db: Database): LoopRunsRepo {
     listByProject(projectId: string): LoopRunRow[] {
       const raw = listByProjectStmt.all(projectId) as LoopRunRowRaw[]
       return raw.map(mapRow)
+    },
+
+    listPage(options): LoopRunsPage {
+      const raw = (options.projectId === undefined
+        ? listPageStmt.all(options.limit, options.offset)
+        : listPageByProjectStmt.all(options.projectId, options.limit, options.offset)) as LoopRunRowRaw[]
+      const count = (options.projectId === undefined
+        ? countStmt.get()
+        : countByProjectStmt.get(options.projectId)) as { total: number }
+      return { rows: raw.map(mapRow), total: count.total }
     },
 
     listProjectIds(): string[] {

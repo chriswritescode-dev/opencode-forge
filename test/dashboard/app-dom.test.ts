@@ -103,7 +103,20 @@ beforeEach(() => {
     return 1 as unknown as ReturnType<typeof setInterval>
   }) as typeof setInterval)
   vi.stubGlobal('clearInterval', (() => {}) as typeof clearInterval)
-  ;(globalThis as any).fetch = vi.fn(async () => ({ json: async () => payload }))
+  ;(globalThis as any).fetch = vi.fn(async (input: string) => {
+    const url = String(input)
+    const body = url.startsWith('/api/loop-detail')
+      ? payload.projects[0]?.loops[0]
+      : url.startsWith('/api/runs')
+        ? {
+            runs: payload.projects.flatMap((project: any) => project.runs ?? []),
+            total: payload.projects.reduce((total: number, project: any) => total + (project.runs?.length ?? 0), 0),
+            offset: 0,
+            limit: 50,
+          }
+        : payload
+    return { ok: true, status: 200, json: async () => body }
+  })
   window.location.hash = '#p1/loop-a'
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -135,6 +148,15 @@ async function poll(next: any): Promise<void> {
 // ---------------------------------------------------------------------------
 
 describe('dashboard App loop list', () => {
+  test('list route requests only summary data', async () => {
+    window.location.hash = '#p1'
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const urls = vi.mocked(fetch).mock.calls.map(call => String(call[0]))
+    expect(urls).toEqual(['/api/data'])
+  })
+
   test('renders the project loop list as a table and opens a loop on row click', async () => {
     window.location.hash = '#p1'
     payload = makePayload()
@@ -153,6 +175,9 @@ describe('dashboard App loop list', () => {
     ;(container.querySelector('tr.lt-row') as HTMLElement).click()
     await flush()
     expect(container.querySelector('.loop-detail-header')).toBeTruthy()
+    const urls = vi.mocked(fetch).mock.calls.map(call => String(call[0]))
+    expect(urls.some(url => url.startsWith('/api/loop-detail?'))).toBe(true)
+    expect(urls.some(url => url.startsWith('/api/runs?'))).toBe(false)
   })
 })
 
@@ -450,6 +475,26 @@ function loopEvent(over: Record<string, any> = {}): any {
 }
 
 describe('dashboard App loop metrics panel', () => {
+  test('opens a loop with metric events from the project loop list', async () => {
+    payload = makePayload({
+      dashLoop: {
+        events: [
+          loopEvent({ eventType: 'coding_done', inputTokens: 100, outputTokens: 50 }),
+          loopEvent({ eventType: 'audit_done', verdict: 'clean', inputTokens: 30, outputTokens: 10 }),
+        ],
+      },
+    })
+    window.location.hash = '#p1'
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    ;(container.querySelector('tr.lt-row') as HTMLElement).click()
+    await flush()
+
+    expect(container.querySelector('.loop-detail-header')).toBeTruthy()
+    expect(container.querySelector('.loop-metrics-panel .forge-chart-plot')).toBeTruthy()
+  })
+
   test('loop detail with events renders the metrics panel charts with correct bar counts', async () => {
     payload = makePayload({
       loop: { totalSections: 1 },
@@ -486,29 +531,24 @@ describe('dashboard App loop metrics panel', () => {
     const panel = container.querySelector('.loop-metrics-panel') as HTMLElement
     expect(panel).toBeTruthy()
 
-    // Three StackedBarCharts: tokens, cost, section retries. Audit is a DotStrip.
     const charts = container.querySelectorAll('.forge-chart')
     expect(charts.length).toBe(3)
 
-    // Tokens chart: 3 iterations x 4 segments = 12 rects, 3 bar groups
-    const tokensSvg = charts[0].querySelector('svg.forge-chart-svg') as SVGElement
-    expect(tokensSvg).toBeTruthy()
-    expect(tokensSvg.querySelectorAll('g').length).toBe(3)
-    expect(tokensSvg.querySelectorAll('rect').length).toBe(12)
+    const tokenColumns = charts[0].querySelectorAll('.forge-chart-column')
+    expect(tokenColumns.length).toBe(3)
+    expect(charts[0].querySelectorAll('.forge-chart-segment').length).toBe(12)
+    expect(tokenColumns[0].querySelector('.forge-chart-label')?.textContent).toBe('#1')
+    expect(tokenColumns[0].querySelector('.forge-chart-value')?.textContent).toBe('190')
 
-    // Cost chart: 3 iterations x 1 segment = 3 rects
-    const costSvg = charts[1].querySelector('svg.forge-chart-svg') as SVGElement
-    expect(costSvg.querySelectorAll('rect').length).toBe(3)
+    expect(charts[1].querySelectorAll('.forge-chart-segment').length).toBe(3)
 
-    // Audit outcomes dot strip: 4 audit/final_audit events (3 clean, 1 dirty)
-    const dots = container.querySelectorAll('.forge-dot-strip .forge-dot')
-    expect(dots.length).toBe(4)
-    expect(container.querySelectorAll('.forge-dot-strip .forge-dot-clean').length).toBe(3)
-    expect(container.querySelectorAll('.forge-dot-strip .forge-dot-dirty').length).toBe(1)
+    const auditSteps = container.querySelectorAll('.forge-audit-timeline .forge-audit-step')
+    expect(auditSteps.length).toBe(4)
+    expect(container.querySelectorAll('.forge-audit-timeline .forge-audit-clean').length).toBe(6)
+    expect(container.querySelectorAll('.forge-audit-timeline .forge-audit-dirty').length).toBe(2)
+    expect(auditSteps[0].textContent).toContain('Iteration 1Clean')
 
-    // Section retries chart: 1 section, 0 retries → 1 bar with zero height
-    const retrySvg = charts[2].querySelector('svg.forge-chart-svg') as SVGElement
-    expect(retrySvg.querySelectorAll('g').length).toBe(1)
+    expect(charts[2].querySelector('.forge-chart-empty')?.textContent).toBe('No section retries.')
   })
 
   test('empty events renders the metrics empty-state note', async () => {
@@ -521,7 +561,7 @@ describe('dashboard App loop metrics panel', () => {
     expect(panel).toBeTruthy()
     expect(panel.querySelector('.metrics-empty')).toBeTruthy()
     expect(container.querySelector('.forge-chart')).toBeFalsy()
-    expect(container.querySelector('.forge-dot-strip')).toBeFalsy()
+    expect(container.querySelector('.forge-audit-timeline')).toBeFalsy()
   })
 
   test('#metrics route renders the runs table with one row per run', async () => {
@@ -568,9 +608,12 @@ describe('dashboard App loop metrics panel', () => {
     const rows = container.querySelectorAll('tr.runs-row')
     expect(rows.length).toBe(1)
     expect(rows[0].textContent).toContain('loop-a')
-    // Cost-per-run chart above the table
-    const costChart = container.querySelector('.runs-view .forge-chart svg.forge-chart-svg')
+    const costChart = container.querySelector('.runs-view .forge-chart-plot')
     expect(costChart).toBeTruthy()
+    expect(container.querySelector('.runs-page-status')?.textContent).toContain('Showing 1-1 of 1 runs on this page')
+    const urls = vi.mocked(fetch).mock.calls.map(call => String(call[0]))
+    expect(urls.some(url => url.startsWith('/api/runs?'))).toBe(true)
+    expect(urls.some(url => url.startsWith('/api/loop-detail?'))).toBe(false)
   })
 
   describe('dashboard App metrics navigation regression', () => {

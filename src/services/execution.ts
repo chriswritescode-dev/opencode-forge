@@ -1784,21 +1784,20 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             kind: latestState.kind,
             goal: latestState.goal,
           })
-
-          // Finalize the outgoing run before replacing started_at below. Without
-          // this a force-restart loses the prior run's loop_runs summary and the
-          // active session's usage never lands in the run-scoped aggregate.
-          // Defensive guard lets older partial mock handlers omit the method.
-          if (typeof deps.loopHandler!.finalizeRunForRestart === 'function') {
-            await deps.loopHandler!.finalizeRunForRestart(stoppedState.loopName, { kind: 'restarted' })
-          }
         }
       }
 
       if (stoppedState.phase === 'post_action' && !resolvePostActionConfig(deps.config).enabled) {
         deps.logger.log(`loop-restart: ${stoppedState.loopName} was in post_action but postAction is disabled; marking completed without restart`)
+        if (typeof deps.loopHandler!.finalizeRunForRestart === 'function') {
+          await deps.loopHandler!.finalizeRunForRestart(stoppedState.loopName, { kind: 'completed' })
+        }
         deps.loop.service.terminate(stoppedState.loopName, { status: 'completed', reason: 'completed', completedAt: Date.now() })
         return { ok: false, error: 'Loop implementation already completed; post-action is disabled — nothing to restart.' }
+      }
+
+      if (typeof deps.loopHandler!.finalizeRunForRestart === 'function') {
+        await deps.loopHandler!.finalizeRunForRestart(stoppedState.loopName, { kind: 'restarted' })
       }
 
       stoppedState.iteration = 1

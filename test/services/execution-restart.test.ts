@@ -1013,7 +1013,11 @@ describe('handleLoopRestart restartability rules', () => {
     }, { lastAuditResult: null, goal: opts.goal })
   }
 
-  async function createMockService(opts?: { sandboxManager?: unknown; terminate?: (name: string, reason: any) => Promise<boolean> }) {
+  async function createMockService(opts?: {
+    sandboxManager?: unknown
+    terminate?: (name: string, reason: any) => Promise<boolean>
+    finalizeRunForRestart?: (name: string, reason: any) => Promise<void>
+  }) {
     const noopFn = () => {}
     const mockLoopService: Partial<LoopService> = {
       listActive: () => loopService.listActive(),
@@ -1028,6 +1032,7 @@ describe('handleLoopRestart restartability rules', () => {
       buildFinalAuditPrompt: () => 'audit prompt',
       buildContinuationPrompt: () => 'goal restart prompt',
       generateUniqueLoopName: (name) => name,
+      terminate: (name, input) => loopService.terminate(name, input),
     }
 
     const { client } = createFakeForgeClient({
@@ -1054,6 +1059,7 @@ describe('handleLoopRestart restartability rules', () => {
       runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
       startWatchdog: noopFn,
       clearLoopTimers: noopFn,
+      finalizeRunForRestart: opts?.finalizeRunForRestart,
     }
 
     const mockWorkspaceStatusRegistry = {
@@ -1534,6 +1540,33 @@ describe('handleLoopRestart restartability rules', () => {
     // State was rolled back (new state deleted)
     const newState = loopService.getActiveState(loopName)
     expect(newState).toBeNull()
+  })
+
+  test('active post-action restart finalizes as completed when post-action is disabled', async () => {
+    const loopName = 'disabled-post-action'
+    insertLoop({
+      loopName,
+      status: 'running',
+      terminationReason: null,
+      phase: 'post_action',
+      active: true,
+    })
+    const finalizeRunForRestart = vi.fn().mockResolvedValue(undefined)
+    const { service } = await createMockService({ finalizeRunForRestart })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: loopName },
+        force: true,
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    expect(finalizeRunForRestart).toHaveBeenCalledOnce()
+    expect(finalizeRunForRestart).toHaveBeenCalledWith(loopName, { kind: 'completed' })
+    expect(loopService.getAnyState(loopName)?.status).toBe('completed')
   })
 })
 

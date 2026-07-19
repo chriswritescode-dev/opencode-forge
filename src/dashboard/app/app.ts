@@ -1,8 +1,7 @@
 import { createSignal, createMemo, createEffect, onMount, onCleanup } from 'solid-js'
 import { createStore, reconcile } from 'solid-js/store'
 import html from 'solid-js/html'
-import type { DashboardPayload, DashboardLoop } from './types'
-import type { LoopRunRow } from '../../storage'
+import type { DashboardPayload, DashboardLoop, DashboardLoopSummary, DashboardRunsPage } from './types'
 import { parseRoute, buildLoopHash, syncHash, dataHash, loopMatchesFilters } from './helpers'
 import {
   TotalsBar,
@@ -28,6 +27,8 @@ export function App() {
     projects: [],
     totals: { projects: 0, loops: 0, running: 0, completed: 0, cancelled: 0, errored: 0, stalled: 0 },
   })
+  const [detailState, setDetailState] = createStore<{ value: DashboardLoop | null }>({ value: null })
+  const [runsState, setRunsState] = createStore<DashboardRunsPage>({ runs: [], total: 0, offset: 0, limit: 50 })
   const [loaded, setLoaded] = createSignal(false)
   const [activeStatuses, setActiveStatuses] = createSignal<Set<string>>(new Set())
   const [searchText, setSearchText] = createSignal('')
@@ -39,10 +40,12 @@ export function App() {
   // Non-reactive refs
   const lastDataHashRef = { current: '' }
   const suppressHashChangeRef = { current: false }
+  let detailRequest = 0
+  let runsRequest = 0
 
   // ── Data fetching ───────────────────────────────────────────────────────
 
-  const load = async () => {
+  const loadSummary = async () => {
     try {
       const res = await fetch('/api/data', { cache: 'no-store' })
       const json: DashboardPayload = await res.json()
@@ -59,20 +62,79 @@ export function App() {
     }
   }
 
+  const loadDetail = async () => {
+    const projectId = selectedProjectId()
+    const loopName = selectedLoopName()
+    if (metricsSelected() || !projectId || !loopName) return
+    const request = ++detailRequest
+    try {
+      const params = new URLSearchParams({ projectId, loopName })
+      const res = await fetch('/api/loop-detail?' + params, { cache: 'no-store' })
+      if (!res.ok) throw new Error('HTTP ' + res.status)
+      const json: DashboardLoop = await res.json()
+      if (request !== detailRequest || metricsSelected() || selectedProjectId() !== projectId || selectedLoopName() !== loopName) return
+      const current = detailState.value
+      if (current?.loop.projectId === projectId && current.loop.loopName === loopName) {
+        setDetailState('value', reconcile(json))
+      } else {
+        setDetailState('value', json)
+      }
+      setLoadError(null)
+    } catch (err: unknown) {
+      if (request !== detailRequest) return
+      const msg = err instanceof Error ? err.message : String(err)
+      setLoadError('Failed to load loop detail: ' + msg)
+    }
+  }
+
+  const loadRuns = async () => {
+    if (!metricsSelected()) return
+    const projectId = selectedProjectId()
+    const offset = runsState.offset
+    const request = ++runsRequest
+    try {
+      const params = new URLSearchParams({ offset: String(offset), limit: String(runsState.limit) })
+      if (projectId) params.set('projectId', projectId)
+      const res = await fetch('/api/runs?' + params, { cache: 'no-store' })
+      if (!res.ok) throw new Error('HTTP ' + res.status)
+      const json: DashboardRunsPage = await res.json()
+      if (request !== runsRequest || !metricsSelected() || selectedProjectId() !== projectId) return
+      setRunsState(reconcile(json))
+      setLoadError(null)
+    } catch (err: unknown) {
+      if (request !== runsRequest) return
+      const msg = err instanceof Error ? err.message : String(err)
+      setLoadError('Failed to load runs: ' + msg)
+    }
+  }
+
+  const refresh = async () => {
+    await loadSummary()
+    if (metricsSelected()) await loadRuns()
+    else if (selectedLoopName()) await loadDetail()
+  }
+
   // ── Navigation ──────────────────────────────────────────────────────────
 
   const navigate = (projectId: string | null, loopName: string | null) => {
+    detailRequest++
+    runsRequest++
     setMetricsSelected(false)
     setSelectedProjectId(projectId)
     setSelectedLoopName(loopName)
+    if (!loopName) setDetailState('value', null)
     syncHashTo(projectId, loopName, suppressHashChangeRef)
+    if (loopName) void loadDetail()
   }
 
   // Leave the project/loop selection intact so RunsView can filter by the
   // currently-selected project; only the route signal flips.
   const navigateMetrics = () => {
+    detailRequest++
     setMetricsSelected(true)
+    setRunsState('offset', 0)
     syncHash('metrics', suppressHashChangeRef)
+    void loadRuns()
   }
 
   // ── Event handlers ──────────────────────────────────────────────────────
@@ -96,7 +158,7 @@ export function App() {
     const search = searchText()
     const result: MatchedEntry[] = []
     for (const proj of state.projects) {
-      const matched: DashboardLoop[] = []
+      const matched: DashboardLoopSummary[] = []
       for (const dashLoop of proj.loops) {
         if (loopMatchesFilters(dashLoop.loop, proj, statuses, search)) {
           matched.push(dashLoop)
@@ -117,7 +179,7 @@ export function App() {
     return found ?? entries[0]
   })
 
-  const activeLoop = createMemo<DashboardLoop | null>(() => {
+  const activeLoopSummary = createMemo<DashboardLoopSummary | null>(() => {
     const entry = selectedEntry()
     const name = selectedLoopName()
     if (!entry || !name) return null
@@ -139,14 +201,16 @@ export function App() {
   )
 
   const detailView = createMemo<Node | string>(() => {
-    const loop = activeLoop()
+    const loop = detailState.value
+    const summary = activeLoopSummary()
+    if (!summary || loop?.loop.projectId !== summary.loop.projectId || loop.loop.loopName !== summary.loop.loopName) return ''
     return loop
       ? (LoopDetail({ dashLoop: loop, onBack: () => navigate(selectedProjectId(), null) }) as Node)
       : ''
   })
 
   const listView = createMemo<Node | string>(() => {
-    if (activeLoop()) return ''
+    if (selectedLoopName()) return ''
     const e = selectedEntry()
     if (!e) return ''
     const pid = selectedProjectId()
@@ -157,19 +221,23 @@ export function App() {
   // filtered to the selected project's runs when one is active in the sidebar.
   // Swept-only projects (loops array empty, runs non-empty) are included via
   // their `runs` arrays.
-  const metricsRuns = createMemo<LoopRunRow[]>(() => {
-    const pid = selectedProjectId()
-    const out: LoopRunRow[] = []
-    for (const proj of state.projects) {
-      if (pid !== null && proj.projectId !== pid) continue
-      for (const r of proj.runs) out.push(r)
-    }
-    return out
-  })
-
   const metricsView = createMemo<Node | string>(() => {
     if (!loaded() || !metricsSelected()) return ''
-    return RunsView({ runs: metricsRuns }) as Node
+    return RunsView({
+      runs: () => runsState.runs,
+      offset: () => runsState.offset,
+      limit: () => runsState.limit,
+      total: () => runsState.total,
+      onPrevious: () => {
+        setRunsState('offset', Math.max(0, runsState.offset - runsState.limit))
+        void loadRuns()
+      },
+      onNext: () => {
+        if (runsState.offset + runsState.limit >= runsState.total) return
+        setRunsState('offset', runsState.offset + runsState.limit)
+        void loadRuns()
+      },
+    }) as Node
   })
 
   // ── Effects ─────────────────────────────────────────────────────────────
@@ -184,6 +252,7 @@ export function App() {
     if (entries.length === 0) {
       setSelectedProjectId(null)
       setSelectedLoopName(null)
+      setDetailState('value', null)
       return
     }
     const pid = selectedProjectId()
@@ -191,6 +260,7 @@ export function App() {
     if (!exists) {
       setSelectedProjectId(entries[0].proj.projectId)
       setSelectedLoopName(null)
+      setDetailState('value', null)
     }
   })
 
@@ -230,9 +300,9 @@ export function App() {
     }
 
     // Initial load + poll
-    load()
+    refresh()
     const id = setInterval(() => {
-      load()
+      refresh()
     }, 5000)
 
     // Hash change listener (browser back/forward)
@@ -243,16 +313,23 @@ export function App() {
       }
       const route = parseRoute(location.hash)
       if (route.kind === 'metrics') {
+        detailRequest++
         setMetricsSelected(true)
+        setRunsState('offset', 0)
+        void loadRuns()
         return
       }
+      runsRequest++
       setMetricsSelected(false)
       if (route.kind === 'loop') {
         setSelectedProjectId(route.projectId)
         setSelectedLoopName(route.loopName)
+        if (route.loopName) void loadDetail()
+        else setDetailState('value', null)
       } else {
         setSelectedProjectId(null)
         setSelectedLoopName(null)
+        setDetailState('value', null)
       }
     }
     window.addEventListener('hashchange', onHashChange)

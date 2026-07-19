@@ -1,7 +1,12 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { openForgeDatabase, closeDatabase } from '../../src/storage/database'
-import { collectDashboardData, type DashboardPayload } from '../../src/dashboard/data'
+import {
+  collectDashboardData,
+  collectDashboardLoopDetail,
+  collectDashboardRunsPage,
+  type DashboardPayload,
+} from '../../src/dashboard/data'
 import { createLoopsRepo, type LoopRow } from '../../src/storage'
 import { createPlansRepo } from '../../src/storage'
 import { createReviewFindingsRepo } from '../../src/storage'
@@ -159,10 +164,11 @@ describe('collectDashboardData', () => {
 
     const projectId = 'p1'
     const loopName = 'l1'
+    const startedAt = 1_700_000_000_000
 
     // Insert loop row
     loopsRepo.insert(
-      makeLoopRow({ projectId, loopName }),
+      makeLoopRow({ projectId, loopName, startedAt }),
       { lastAuditResult: 'audit-result-1' },
     )
 
@@ -208,7 +214,7 @@ describe('collectDashboardData', () => {
       cacheWriteTokens: 400,
       messageCount: 10,
       capturedAt: Date.now(),
-      runStartedAt: 1_700_000_000_000,
+      runStartedAt: startedAt,
     })
 
     const payload = collectDashboardData(db!)
@@ -218,19 +224,87 @@ describe('collectDashboardData', () => {
     expect(payload.projects[0].projectDir).toBe('/tmp/test')
     expect(payload.projects[0].loops).toHaveLength(1)
 
-    const dashLoop = payload.projects[0].loops[0]
-    expect(dashLoop.loop.loopName).toBe(loopName)
-    expect(dashLoop.loop.status).toBe('running')
-    expect(dashLoop.lastAuditResult).toBe('audit-result-1')
-    expect(dashLoop.plan).toBe('plan-content-1')
-    expect(dashLoop.sections).toHaveLength(2)
-    expect(dashLoop.findings).toHaveLength(1)
-    expect(dashLoop.usage).not.toBeNull()
-    expect(dashLoop.usage!.totalCost).toBe(0.005)
+    const summary = payload.projects[0].loops[0]
+    expect(summary.loop.loopName).toBe(loopName)
+    expect(summary.loop.status).toBe('running')
+    expect(summary.findings).toHaveLength(1)
+    expect(summary.usage?.totalCost).toBe(0.005)
+    expect(summary).not.toHaveProperty('lastAuditResult')
+    expect(summary).not.toHaveProperty('postActionReport')
+    expect(summary).not.toHaveProperty('plan')
+    expect(summary).not.toHaveProperty('sections')
+    expect(summary).not.toHaveProperty('events')
+
+    const detail = collectDashboardLoopDetail(db!, projectId, loopName)
+    expect(detail?.lastAuditResult).toBe('audit-result-1')
+    expect(detail?.plan).toBe('plan-content-1')
+    expect(detail?.sections).toHaveLength(2)
 
     expect(payload.totals.projects).toBe(1)
     expect(payload.totals.loops).toBe(1)
     expect(payload.totals.running).toBe(1)
+  })
+
+  test('returns per-model usage only for the selected loop run', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    const usageRepo = createLoopSessionUsageRepo(db!)
+    const projectId = 'p1'
+    const loopName = 'reused-name'
+    const currentStartedAt = 2000
+
+    loopsRepo.insert(
+      makeLoopRow({ projectId, loopName, startedAt: currentStartedAt }),
+      { lastAuditResult: null },
+    )
+    usageRepo.upsertSessionUsage([
+      {
+        projectId,
+        loopName,
+        sessionId: 'old-session',
+        role: 'code',
+        model: 'old-model',
+        cost: 1,
+        inputTokens: 1000,
+        outputTokens: 100,
+        reasoningTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        messageCount: 1,
+        capturedAt: 1000,
+        runStartedAt: 1000,
+      },
+      {
+        projectId,
+        loopName,
+        sessionId: 'current-session',
+        role: 'auditor',
+        model: 'current-model',
+        cost: 2,
+        inputTokens: 2000,
+        outputTokens: 200,
+        reasoningTokens: 20,
+        cacheReadTokens: 10,
+        cacheWriteTokens: 5,
+        messageCount: 2,
+        capturedAt: currentStartedAt,
+        runStartedAt: currentStartedAt,
+      },
+    ])
+
+    const usage = collectDashboardLoopDetail(db!, projectId, loopName)?.usage
+
+    expect(usage?.totalInputTokens).toBe(2000)
+    expect(usage?.byModel).toEqual({
+      'current-model': {
+        cost: 2,
+        inputTokens: 2000,
+        outputTokens: 200,
+        reasoningTokens: 20,
+        cacheReadTokens: 10,
+        cacheWriteTokens: 5,
+        messageCount: 2,
+      },
+    })
   })
 
   test('computes a human-readable duration from started/completed timestamps', () => {
@@ -431,7 +505,7 @@ describe('collectDashboardData', () => {
 
   // ─── Cycle 5: loop events and runs payload ──────────────────────────
 
-  test('payload exposes per-loop events (id-ordered) and per-project runs (startedAt desc)', () => {
+  test('detail exposes per-loop events and runs page exposes historical runs', () => {
     const loopsRepo = createLoopsRepo(db!)
     const loopEventsRepo = createLoopEventsRepo(db!)
     const loopRunsRepo = createLoopRunsRepo(db!)
@@ -490,18 +564,16 @@ describe('collectDashboardData', () => {
       }),
     )
 
-    const payload = collectDashboardData(db!)
+    const detail = collectDashboardLoopDetail(db!, projectId, 'l1')
+    expect(detail?.events).toHaveLength(2)
+    expect(detail?.events[0].eventType).toBe('coding_done')
+    expect(detail?.events[1].eventType).toBe('audit_done')
 
-    expect(payload.projects).toHaveLength(1)
-    const dashLoop = payload.projects[0].loops[0]
-    expect(dashLoop.events).toHaveLength(2)
-    expect(dashLoop.events[0].eventType).toBe('coding_done')
-    expect(dashLoop.events[1].eventType).toBe('audit_done')
-
-    const runs = payload.projects[0].runs
-    expect(runs).toHaveLength(1)
-    expect(runs[0].loopName).toBe('l1')
-    expect(runs[0].startedAt).toBe(startedAt)
+    const page = collectDashboardRunsPage(db!, { projectId, offset: 0, limit: 50 })
+    expect(page.runs).toHaveLength(1)
+    expect(page.runs[0].loopName).toBe('l1')
+    expect(page.runs[0].startedAt).toBe(startedAt)
+    expect(page.total).toBe(1)
   })
 
   test('runs include swept loops whose loops row was deleted, with empty loops array', () => {
@@ -541,22 +613,18 @@ describe('collectDashboardData', () => {
     )
 
     const payload = collectDashboardData(db!)
-
-    // Project surfaces via loop_runs even though no live loops remain.
     expect(payload.projects).toHaveLength(1)
     expect(payload.projects[0].projectId).toBe(projectId)
-    expect(payload.projects[0].projectDir).toBeNull()
     expect(payload.projects[0].loops).toEqual([])
-    expect(payload.projects[0].runs).toHaveLength(1)
-    expect(payload.projects[0].runs[0].loopName).toBe('swept-loop')
-
-    // Swept-only project contributes no loop status totals.
     expect(payload.totals.projects).toBe(1)
     expect(payload.totals.loops).toBe(0)
-    expect(payload.totals.completed).toBe(0)
+
+    const page = collectDashboardRunsPage(db!, { offset: 0, limit: 50 })
+    expect(page.runs).toHaveLength(1)
+    expect(page.runs[0].loopName).toBe('swept-loop')
   })
 
-  test('project ids are the union of loops and loop_runs, de-duplicated and ordered', () => {
+  test('summary project ids include historical-run-only projects without loading run rows', () => {
     const loopsRepo = createLoopsRepo(db!)
     const loopRunsRepo = createLoopRunsRepo(db!)
 

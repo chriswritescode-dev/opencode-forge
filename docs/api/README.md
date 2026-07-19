@@ -69,11 +69,11 @@ The server plugin provides the core hooks, tools, agents, plan storage, loop orc
 
 ## Dashboard
 
-Forge includes a read-only observability Dashboard — a standalone Bun HTTP server (`src/dashboard/`) that serves a SolidJS single-page app at `GET /` and JSON state at `GET /api/data`. Launch it from the TUI command palette (`Open dashboard`) or via `pnpm dashboard`. The dashboard **never mutates** loop, workspace, or storage state.
+Forge includes a read-only observability Dashboard — a standalone Bun HTTP server (`src/dashboard/`) that serves a SolidJS single-page app and read-only JSON APIs. Launch it from the TUI command palette (`Open dashboard`) or via `pnpm dashboard`. The dashboard **never mutates** loop, workspace, or storage state.
 
 ### Views
 
-The dashboard shows a **Loops view** by default — groups loops by project with filterable project/loop lists, loop detail (plan, sections, findings, usage, audit results, completion summary), and live polled state (5 s interval). Supports `#<projectId>/<loopName>` deep linking.
+The dashboard shows a **Loops view** by default — groups loops by project with filterable project/loop lists, loop detail (plan, sections, findings, current-run usage, audit results, completion summary), and live polled state (5 s interval). A separate **Run Metrics** view at `#metrics` pages through retained run history. Loop detail supports `#<projectId>/<loopName>` deep linking.
 
 ### API Endpoints
 
@@ -82,7 +82,9 @@ All endpoints are read-only (non-GET requests return 404):
 | Endpoint | Description |
 |----------|-------------|
 | `GET /` | HTML page (inlined SolidJS app) |
-| `GET /api/data` | JSON snapshot of Forge loop/project state |
+| `GET /api/data` | Lightweight loop/project summary snapshot |
+| `GET /api/loop-detail?projectId=…&loopName=…` | Full detail for one loop and its current run |
+| `GET /api/runs?projectId=…&offset=0&limit=50` | Paginated historical run metrics; `projectId` is optional |
 
 ## Screenshots
 

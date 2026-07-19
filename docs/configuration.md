@@ -10,6 +10,7 @@ See also: [Tools](tools.md), [Agents and Slash Commands](agents-and-commands.md)
 |---|---:|---|
 | `dataDir` | `""` | Data directory for `forge.db`, worktrees, and logs. Empty resolves to the platform data dir. |
 | `completedLoopTtlMs` | `604800000` | TTL for completed/cancelled/errored/stalled loops before cleanup sweep. |
+| `metricsTtlMs` | `7776000000` | Independent TTL for historical loop events and run summaries. |
 | `executionModel` | `""` | Fallback model override for plan execution sessions. Format: `provider/model`. |
 | `auditorModel` | `""` | Fallback model override for auditor sessions. Format: `provider/model`. |
 | `executionVariant` | `""` | Default reasoning/thinking variant for the execution model (e.g. `high`, `max`). |

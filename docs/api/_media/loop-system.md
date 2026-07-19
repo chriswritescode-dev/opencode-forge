@@ -187,7 +187,7 @@ graph TD
     G --> H[Branch preserved]
 ```
 
-When a workspace carries a SHA pin (`extra.startRef`, set by remote loop launches), the new branch is created from that exact commit instead of the clone's current `HEAD`. If the commit is not present locally, the adapter fetches the sync ref (`extra.syncRef`, default `refs/forge/<loopName>`) from the configured git remote first, and fails with a descriptive error when the SHA still cannot be resolved. Existing branches always win — the pin is ignored when the loop branch already exists. On final teardown the sync ref is deleted from the shared git remote. See [Configuration → Remotes](configuration.md#remotes).
+When a workspace carries a SHA pin (`extra.startRef`, set by remote loop launches), the new branch is created from that exact commit instead of the clone's current `HEAD`. If the commit is not present locally, the adapter fetches the sync ref (`extra.syncRef`, default `refs/forge/<loopName>`) from the configured git remote first, and fails with a descriptive error when the SHA still cannot be resolved. If the loop branch already exists, its tip must match the pinned SHA — a leftover same-named branch at a different commit fails creation with an actionable error instead of silently running old code (unpinned workspaces still reuse existing branches). On final teardown the sync ref is deleted from the shared git remote. See [Configuration → Remotes](configuration.md#remotes).
 
 Benefits of worktree isolation:
 - Isolation from ongoing development

@@ -139,9 +139,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const loopService = deps.loopService ?? createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, loopConfig, notify, sectionPlansRepo)
   let getParentSessionId = deps.getParentSessionId
 
-  const { getFallbackModelForSession, captureLoopSessionUsage } = createUsageCapture({ client, logger, getConfig, projectId, loopSessionUsageRepo })
+  const { getFallbackModelForSession, refreshSessionUsage, captureLoopSessionUsage } = createUsageCapture({ client, logger, getConfig, projectId, loopSessionUsageRepo })
 
-  const metrics = createLoopMetricsRecorder({ client, logger, projectId, loopEventsRepo, loopRunsRepo, loopSessionUsageRepo })
+  const metrics = createLoopMetricsRecorder({ client, logger, projectId, loopEventsRepo, loopRunsRepo, loopSessionUsageRepo, refreshSessionUsage })
 
   const { sendPromptWithFallback, getLastAssistantInfo, getAssistantTranscript } = createPromptDispatch({ client, logger, getConfig, loopService })
 
@@ -683,6 +683,51 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
+  async function captureRetainedSessions(
+    loopName: string,
+    context: string,
+    options: { deleteSessions: boolean; skipSessionId?: string },
+  ): Promise<void> {
+    const retained = loopRetainedSessions.get(loopName)
+    if (!retained) return
+    for (const entry of retained) {
+      if (entry.sessionId === options.skipSessionId) continue
+      await captureLoopSessionUsage({
+        loopName,
+        sessionId: entry.sessionId,
+        directory: entry.directory,
+        role: entry.role,
+        fallbackModel: entry.fallbackModel,
+        runStartedAt: entry.runStartedAt,
+      }).catch((err: unknown) => {
+        logger.error(`Loop: failed to capture usage for retained session ${entry.sessionId} on ${context} (loop=${loopName})`, err)
+      })
+      if (options.deleteSessions) {
+        void client.session.delete({ sessionID: entry.sessionId, directory: entry.directory }).catch((err: unknown) => {
+          logger.error(`Loop: failed to delete retained session ${entry.sessionId} on ${context} (loop=${loopName})`, err)
+        })
+      }
+    }
+    loopRetainedSessions.delete(loopName)
+  }
+
+  function clearSessionReverseIndex(loopName: string): void {
+    for (const [sessionId, indexedLoopName] of sessionToLoop) {
+      if (indexedLoopName === loopName) sessionToLoop.delete(sessionId)
+    }
+  }
+
+  async function captureActiveSessionUsage(state: LoopState): Promise<void> {
+    await captureLoopSessionUsage({
+      loopName: state.loopName,
+      sessionId: state.sessionId,
+      directory: state.worktreeDir,
+      role: state.phase === 'auditing' || state.phase === 'final_auditing' ? 'auditor' : 'code',
+      fallbackModel: getFallbackModelForSession(state, state.phase),
+      runStartedAt: new Date(state.startedAt).getTime(),
+    })
+  }
+
   async function terminateLoop(loopName: string, state: LoopState, reason: TerminationReason, summary?: string): Promise<void> {
     // Atomic admission guard: only one terminateLoop call per loop can proceed
     // at a time.  Concurrent callers (e.g. user cancel vs. provider-limit
@@ -724,45 +769,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     clearPromptPending(loopName, logger)
     clearPromptInFlight(loopName)
 
-    const retained = loopRetainedSessions.get(loopName)
-    if (retained) {
-      // Capture usage for retained sessions before deletion using stored metadata
-      for (const entry of retained) {
-        if (entry.sessionId === sessionId) continue
-        await captureLoopSessionUsage({
-          loopName,
-          sessionId: entry.sessionId,
-          directory: entry.directory,
-          role: entry.role,
-          fallbackModel: entry.fallbackModel,
-          runStartedAt: entry.runStartedAt,
-        }).catch((err: unknown) => {
-          logger.error(`Loop: failed to capture usage for retained session ${entry.sessionId} on terminate (loop=${loopName})`, err)
-        })
-        void client.session.delete({ sessionID: entry.sessionId, directory: entry.directory }).catch((err: unknown) => {
-          logger.error(`Loop: failed to delete retained session ${entry.sessionId} on terminate (loop=${loopName})`, err)
-        })
-      }
-      loopRetainedSessions.delete(loopName)
-    }
-
-    // Clean up session→loop reverse index for this loop
-    for (const [sid, ln] of sessionToLoop) {
-      if (ln === loopName) sessionToLoop.delete(sid)
-    }
-    sessionToLoop.delete(sessionId)
-
-    // Capture usage for the final active session before termination
-    const fallbackModel = getFallbackModelForSession(state, state.phase)
-    const role: 'code' | 'auditor' = state.phase === 'auditing' || state.phase === 'final_auditing' ? 'auditor' : 'code'
-    await captureLoopSessionUsage({
-      loopName,
-      sessionId: state.sessionId,
-      directory: state.worktreeDir,
-      role,
-      fallbackModel,
-      runStartedAt: new Date(state.startedAt).getTime(),
-    })
+    await captureRetainedSessions(loopName, 'terminate', { deleteSessions: true, skipSessionId: sessionId })
+    clearSessionReverseIndex(loopName)
+    await captureActiveSessionUsage(state)
 
     // Wait for any usage captures still in flight from scheduleSessionDelete
     // trims that have already shifted their session out of the retain queue.
@@ -827,43 +836,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       // belong to the outgoing run; without capture here they would never land
       // in the run-scoped aggregate (their run identity was stamped at queue
       // time, so capture uses the stored entry rather than fresh state).
-      const retained = loopRetainedSessions.get(loopName)
-      if (retained) {
-        for (const entry of retained) {
-          if (entry.sessionId === state.sessionId) continue
-          await captureLoopSessionUsage({
-            loopName,
-            sessionId: entry.sessionId,
-            directory: entry.directory,
-            role: entry.role,
-            fallbackModel: entry.fallbackModel,
-            runStartedAt: entry.runStartedAt,
-          }).catch((err: unknown) => {
-            logger.error(`Loop: failed to capture usage for retained session ${entry.sessionId} on restart (loop=${loopName})`, err)
-          })
-        }
-        loopRetainedSessions.delete(loopName)
-      }
-
-      // Drop reverse-index entries for the outgoing run's sessions. The restart
-      // caller registers the new session afterward; leaving stale entries would
-      // let delayed errors from the old sessions terminate the replacement run.
-      for (const [sid, ln] of sessionToLoop) {
-        if (ln === loopName) sessionToLoop.delete(sid)
-      }
-
-      // Capture usage for the active session before loopsRepo.restart resets
-      // started_at (so the row stamps the outgoing run identity).
-      const fallbackModel = getFallbackModelForSession(state, state.phase)
-      const role: 'code' | 'auditor' = state.phase === 'auditing' || state.phase === 'final_auditing' ? 'auditor' : 'code'
-      await captureLoopSessionUsage({
-        loopName,
-        sessionId: state.sessionId,
-        directory: state.worktreeDir,
-        role,
-        fallbackModel,
-        runStartedAt: new Date(state.startedAt).getTime(),
-      })
+      await captureRetainedSessions(loopName, 'restart', { deleteSessions: false, skipSessionId: state.sessionId })
+      clearSessionReverseIndex(loopName)
+      await captureActiveSessionUsage(state)
 
       // Ensure any in-flight capture from a concurrent scheduleSessionDelete
       // trim lands before the run summary is computed.
@@ -2327,24 +2302,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     codingLaunchRecoveryAttempts.delete(loopName)
     terminatingLoops.delete(loopName)
 
-    const retained = loopRetainedSessions.get(loopName)
-    if (retained) {
-      // Capture usage for retained sessions before deletion using stored metadata
-      for (const entry of retained) {
-        await captureLoopSessionUsage({
-          loopName,
-          sessionId: entry.sessionId,
-          directory: entry.directory,
-          role: entry.role,
-          fallbackModel: entry.fallbackModel,
-          runStartedAt: entry.runStartedAt,
-        }).catch((err: unknown) => {
-          logger.error(`Loop: failed to capture usage for retained session ${entry.sessionId} on clear (loop=${loopName})`, err)
-        })
-        void client.session.delete({ sessionID: entry.sessionId, directory: entry.directory }).catch(() => {})
-      }
-      loopRetainedSessions.delete(loopName)
-    }
+    await captureRetainedSessions(loopName, 'clear', { deleteSessions: true })
   }
 
   function runExclusive<T>(loopName: string, fn: () => Promise<T>): Promise<T> {

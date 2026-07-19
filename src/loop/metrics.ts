@@ -4,18 +4,20 @@ import type { LoopEventsRepo, LoopEventType, LoopEventRole, LoopEventVerdict } f
 import type { LoopRunsRepo } from '../storage/repos/loop-runs-repo'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
 import type { LoopState } from './state'
-import { summarizeAssistantUsage, type AssistantMessageInfo, type TokenBreakdown, emptyTokenBreakdown } from './token-usage'
+import { fetchSessionUsage, type SessionUsageInput } from './runtime-usage'
+import { type LoopUsageSummary, type TokenBreakdown, emptyTokenBreakdown } from './token-usage'
 
-export interface LoopMetricsDeps {
+interface LoopMetricsDeps {
   client: ForgeClient
   logger: Logger
   projectId: string
   loopEventsRepo?: LoopEventsRepo
   loopRunsRepo?: LoopRunsRepo
   loopSessionUsageRepo?: LoopSessionUsageRepo
+  refreshSessionUsage?: (input: SessionUsageInput) => Promise<import('./token-usage').LoopUsageSummary>
 }
 
-export interface PhaseEventInput {
+interface PhaseEventInput {
   state: LoopState
   eventType: 'coding_done' | 'audit_done' | 'final_audit_done' | 'post_action_done'
   outcome: string
@@ -28,19 +30,20 @@ export interface PhaseEventInput {
   fallbackModel?: string
 }
 
-export interface TerminationInput {
+interface TerminationInput {
   status: string
   reason: string
   completedAt: number
 }
 
-export interface LoopMetricsRecorder {
+interface LoopMetricsRecorder {
   recordPhaseEvent(input: PhaseEventInput): Promise<void>
   recordTermination(state: LoopState, input: TerminationInput): void
 }
 
 export function createLoopMetricsRecorder(deps: LoopMetricsDeps): LoopMetricsRecorder {
   const { client, logger, projectId, loopEventsRepo, loopRunsRepo, loopSessionUsageRepo } = deps
+  const refreshSessionUsage = deps.refreshSessionUsage ?? ((input: SessionUsageInput) => fetchSessionUsage(client, input))
 
   /**
    * Convert a LoopState.startedAt (ISO string) to the millisecond epoch value
@@ -51,30 +54,23 @@ export function createLoopMetricsRecorder(deps: LoopMetricsDeps): LoopMetricsRec
   }
 
   /**
-   * Reduce a usage summary's perModel entries to single totals and pick the
-   * dominant (highest-cost, ties keep the first-seen) model label.
+   * Reduce a usage summary to the dominant-model label and total message
+   * count. Total cost and total tokens are the canonical fields already
+   * computed by `summarizeAssistantUsage` (see token-usage.ts), so we
+   * read them directly instead of re-accumulating perModel — keeping one
+   * source of truth for token/cost aggregation.
    */
-  function reduceUsage(perModel: Array<{ model: string; cost: number; tokens: TokenBreakdown; messageCount: number }>): {
+  function reduceUsage(summary: LoopUsageSummary): {
     model: string | null
     cost: number
     tokens: TokenBreakdown
     messageCount: number
   } {
-    let totalCost = 0
-    let totalTokens = emptyTokenBreakdown()
-    let totalMessages = 0
+    let messageCount = 0
     let dominantModel: string | null = null
     let dominantCost = -1
-    for (const entry of perModel) {
-      totalCost += entry.cost
-      totalTokens = {
-        input: totalTokens.input + entry.tokens.input,
-        output: totalTokens.output + entry.tokens.output,
-        reasoning: totalTokens.reasoning + entry.tokens.reasoning,
-        cacheRead: totalTokens.cacheRead + entry.tokens.cacheRead,
-        cacheWrite: totalTokens.cacheWrite + entry.tokens.cacheWrite,
-      }
-      totalMessages += entry.messageCount
+    for (const entry of summary.perModel) {
+      messageCount += entry.messageCount
       // Strictly-greater comparison keeps the first-seen model on a tie.
       // summarizeAssistantUsage returns perModel sorted alphabetically, so a
       // tie resolves deterministically to the alphabetically-first model.
@@ -83,7 +79,12 @@ export function createLoopMetricsRecorder(deps: LoopMetricsDeps): LoopMetricsRec
         dominantModel = entry.model
       }
     }
-    return { model: dominantModel, cost: totalCost, tokens: totalTokens, messageCount: totalMessages }
+    return {
+      model: dominantModel,
+      cost: summary.totalCost,
+      tokens: summary.totalTokens,
+      messageCount,
+    }
   }
 
   /**
@@ -110,15 +111,13 @@ export function createLoopMetricsRecorder(deps: LoopMetricsDeps): LoopMetricsRec
     }
 
     try {
-      const messages = await client.session.messages({
-        sessionID: input.sessionId,
+      const summary = await refreshSessionUsage({
+        sessionId: input.sessionId,
         directory: input.directory,
-      }) as Array<{ info: AssistantMessageInfo }>
-      const summary = summarizeAssistantUsage(messages, {
         role: input.role,
         fallbackModel: input.fallbackModel,
       })
-      usage = reduceUsage(summary.perModel)
+      usage = reduceUsage(summary)
     } catch (err) {
       logger.debug(
         `Loop: failed to summarize usage for phase event ${input.eventType} (session ${input.sessionId}); recording zeroed usage`,

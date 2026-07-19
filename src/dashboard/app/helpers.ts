@@ -1,4 +1,4 @@
-import type { DashboardPayload, DashboardProject, DashboardLoop } from './types'
+import type { DashboardPayload, DashboardProject, DashboardLoop, DashboardLoopSummary } from './types'
 import type { LoopEventRow, LoopRunRow, SectionPlanRow } from '../../storage'
 import { formatDuration, computeElapsedSeconds } from '../../utils/duration'
 
@@ -81,7 +81,7 @@ export function sectionStatusClass(s: string): string {
 }
 
 export function loopMatchesFilters(
-  loop: DashboardLoop['loop'],
+  loop: DashboardLoopSummary['loop'],
   project: DashboardProject,
   activeStatuses: Set<string>,
   searchText: string,

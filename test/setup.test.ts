@@ -185,7 +185,7 @@ describe('bundled sample config', () => {
     expect(parsed.compaction?.maxContextTokens).toBeDefined()
   })
 
-  test('bundled config includes dataDir and completedLoopTtlMs', () => {
+  test('bundled config includes data and retention defaults', () => {
     const bundledConfigPath = join(testDir, '..', 'forge-config.jsonc')
     const content = readFileSync(bundledConfigPath, 'utf-8')
     
@@ -209,6 +209,7 @@ describe('bundled sample config', () => {
     
     expect(parsed.dataDir).toBeDefined()
     expect(parsed.completedLoopTtlMs).toBe(604800000)
+    expect(parsed.metricsTtlMs).toBe(7776000000)
   })
 
   test('bundled config includes loop.worktreeLogging and is disabled by default', () => {
