@@ -342,12 +342,14 @@ Each created via `createXxxRepo(db)` factory with project-scoped queries:
 | `PlansRepo` | `plans` | `PlanRow` |
 | `ReviewFindingsRepo` | `review_findings` | `ReviewFindingRow` |
 | `SectionPlansRepo` | `section_plans` | `SectionPlanRow` — one row per **milestone** (decomposed plan section). See [Loop System](loop-system.md#milestones-aka-sections). |
+| `LoopTransitionsRepo` | `loop_transitions` | `LoopTransitionRow` — append-only phase-transition log per loop |
+| `PlanAmendmentsRepo` | `plan_amendments` | `PlanAmendmentRow` — append-only plan-amendment audit trail |
 | `LoopSessionUsageRepo` | `loop_session_usage` | `LoopSessionUsageRow`, `LoopUsageAggregate` |
 | `TuiPrefsRepo` | `tui_preferences` | N/A |
 
 ### Migrations
 
-Sequential numbered `.sql` files (100–131) tracked in a `migrations` table.
+Migrations are registered explicitly, in execution order, in the `migrations` array (ids 100–143; inline migrations are valid, so not every id ships a `.sql` file) and tracked in a `migrations` table.
 
 See [storage/migrations/README.md](../src/storage/migrations/README.md) for migration details.
 
@@ -368,6 +370,7 @@ Implements tools callable by AI agents during conversations.
 | `review-delete` | `review.ts` | Delete a review finding by file and line |
 | `plan-read` | `plan-kv.ts` | Retrieve plans with pagination and pattern search |
 | `section-read` | `section-read.ts` | Retrieve a specific section of a plan |
+| `plan-adjust` | `plan-adjust.ts` | Auditor-only: replace the remaining sections of the active loop plan (logged as a plan amendment) |
 | `execute-plan` | `loop.ts` | Execute a plan using an iterative development loop, or `mode: new-session` for a fresh standalone session. Args: `title` required; `plan`, `loopName`, `hostSessionId`, `mode` optional. |
 | `execute-goal` | `loop.ts` | Execute a non-empty goal in a dedicated session inside a managed worktree. Args: `goal` required; `title`, `loopName`, `maxIterations`, `hostSessionId` optional. |
 | `loop-status` | `loop.ts` | List active/recent loops, show cumulative usage for detailed status, or restart loops with `restart`/`force` arguments |

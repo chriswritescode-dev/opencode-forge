@@ -3,6 +3,7 @@ import type { LoopChangeNotifier, LoopService } from './service'
 import { createLoopService, MAX_RETRIES } from './service'
 import { generateUniqueName } from './name-uniqueness'
 import type { LoopState } from './state'
+import { transitionSectionIndex } from './state'
 import type { Logger, PluginConfig, LoopConfig } from '../types'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { PlansRepo } from '../storage/repos/plans-repo'
@@ -73,8 +74,6 @@ export interface LoopRuntimeDeps {
   loopService?: LoopService
   /** Optional parent-session lookup for ancestor-aware session→loop resolution (child/subagent support). */
   getParentSessionId?: (sessionId: string) => Promise<string | null>
-  /** Optional per-loop async lock for serialising mutations with tick(). */
-  runExclusive?: <T>(loopName: string, fn: () => Promise<T>) => Promise<T>
 }
 
 export interface StartLoopInput {
@@ -202,7 +201,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       fromPhase: entry.fromPhase,
       toPhase: entry.toPhase,
       iteration: overrideIter ?? state.iteration ?? 0,
-      sectionIndex: overrideSection ?? (state.totalSections > 0 ? (state.currentSectionIndex ?? 0) : null),
+      sectionIndex: overrideSection ?? transitionSectionIndex(state),
     })
   }
 
@@ -507,7 +506,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       fromPhase: currentState.phase,
       toPhase: 'post_action',
       iteration: currentState.iteration ?? 0,
-      sectionIndex: currentState.totalSections > 0 ? (currentState.currentSectionIndex ?? 0) : null,
+      sectionIndex: transitionSectionIndex(currentState),
     })
 
     void scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after post-action creation', phase: currentState.phase, state: currentState })
@@ -640,7 +639,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       fromPhase: state.phase,
       toPhase: 'coding',
       iteration: state.iteration ?? 0,
-      sectionIndex: state.totalSections > 0 ? (state.currentSectionIndex ?? 0) : null,
+      sectionIndex: transitionSectionIndex(state),
     })
     loopService.setLastAuditResult(loopName, state.lastAuditResult ?? '')
     const isModelError = /provider|auth|model|api\s*error/i.test(reason)
@@ -854,11 +853,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     })
 
     const now = Date.now()
-    const terminationStatus = terminationStatusFor(reason)
-    const terminationReasonText = terminationReasonToString(reason)
     loopService.terminate(loopName, {
-      status: terminationStatus,
-      reason: terminationReasonText,
+      status: terminationStatusFor(reason),
+      reason: terminationReasonToString(reason),
       completedAt: now,
       summary,
     })
@@ -867,15 +864,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     // admission guard above so concurrent terminate attempts produce at most one
     // row. Captures every bypass path (cancel/stall/provider-limit/watchdog/
     // missing-worktree) that never flows through `nextTransition`.
-    loopService.recordTransition(loopName, {
-      eventType: reason.kind,
-      transitionKind: 'terminate',
+    loopService.recordTerminalTransition(loopName, {
+      reason,
       fromPhase: state.phase,
-      toPhase: null,
-      status: terminationStatus,
-      reason: terminationReasonText,
       iteration: state.iteration ?? 0,
-      sectionIndex: state.totalSections > 0 ? (state.currentSectionIndex ?? 0) : null,
+      sectionIndex: transitionSectionIndex(state),
     })
 
     try {
@@ -1832,7 +1825,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const freshAuditRow = loopsRepo.get(projectId, loopName)
     if (freshAuditRow && freshAuditRow.totalSections > (currentState.totalSections ?? 0)) {
       logger.log(`Loop: amendment appended sections while in final_auditing; reverting to auditing at section ${currentState.currentSectionIndex}`)
-      loopService.setPhase(loopName, 'auditing')
+      // Route through the recording setPhase wrapper (not loopService.setPhase)
+      // so the revert satisfies the "every phase change produces exactly one
+      // loop_transitions row" invariant.
+      setPhase(loopName, 'auditing')
       loopService.incrementSectionAttempts(loopName, currentState.currentSectionIndex ?? 0)
       return
     }
@@ -1944,7 +1940,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           fromPhase: 'final_audit_fix',
           toPhase: 'coding',
           iteration: nextIter,
-          sectionIndex: currentState.totalSections > 0 ? (currentState.currentSectionIndex ?? 0) : null,
+          sectionIndex: transitionSectionIndex(currentState),
         })
         await handlePromptError(loopName, currentState, 'failed to send final-audit fix prompt', promptErr)
         return
@@ -2408,7 +2404,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       status: shutdownStatus,
       reason: shutdownReasonText,
       iteration: fresh.iteration ?? 0,
-      sectionIndex: fresh.totalSections > 0 ? (fresh.currentSectionIndex ?? 0) : null,
+      sectionIndex: transitionSectionIndex(fresh),
     })
     loopService.terminate(loopName, {
       status: shutdownStatus,
@@ -2589,16 +2585,21 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       sessionToLoop.set(oldState.sessionId, name)
     }
     loopRegistry.add(name)
-    // Record exactly one phase-changing restart row. The previous destructive
-    // implementation recorded nothing while erasing prior history via cascade.
-    loopService.recordTransition(name, {
-      eventType: 'restart',
-      transitionKind: 'rotate',
-      fromPhase,
-      toPhase: params.newState.phase,
-      iteration: params.newState.iteration ?? 0,
-      sectionIndex: params.newState.totalSections > 0 ? (params.newState.currentSectionIndex ?? 0) : null,
-    })
+    // Record at most one phase-changing restart row, matching the production
+    // restart path in services/execution.ts (eventType 'restart', kind 'phase',
+    // skipped when the restart preserves the persisted phase). The previous
+    // destructive implementation recorded nothing while erasing prior history
+    // via cascade.
+    if (fromPhase !== params.newState.phase) {
+      loopService.recordTransition(name, {
+        eventType: 'restart',
+        transitionKind: 'phase',
+        fromPhase,
+        toPhase: params.newState.phase,
+        iteration: params.newState.iteration ?? 0,
+        sectionIndex: transitionSectionIndex(params.newState),
+      })
+    }
   }
 
   function setPhase(name: string, phase: LoopState['phase']): void {
@@ -2617,7 +2618,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         fromPhase,
         toPhase: phase,
         iteration: priorState.iteration ?? 0,
-        sectionIndex: priorState.totalSections > 0 ? (priorState.currentSectionIndex ?? 0) : null,
+        sectionIndex: transitionSectionIndex(priorState),
       })
     }
   }

@@ -377,41 +377,52 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     DELETE FROM loop_large_fields WHERE project_id = ? AND loop_name = ?
   `)
 
+  /**
+   * Positional bind values shared by the INSERT and restore-UPDATE statements
+   * (every loops column except the project_id/loop_name key). Adding a loops
+   * column requires updating only this list plus the two SQL statements.
+   */
+  function loopRowValues(row: LoopRow): (string | number | null)[] {
+    return [
+      row.status,
+      row.currentSessionId,
+      row.worktree ? 1 : 0,
+      row.worktreeDir,
+      row.worktreeBranch,
+      row.projectDir,
+      row.maxIterations,
+      row.iteration,
+      row.auditCount,
+      row.errorCount,
+      row.phase,
+      row.executionModel,
+      row.auditorModel,
+      row.modelFailed ? 1 : 0,
+      row.sandbox ? 1 : 0,
+      row.sandboxContainer,
+      row.startedAt,
+      row.completedAt,
+      row.terminationReason,
+      row.completionSummary,
+      row.workspaceId,
+      row.hostSessionId,
+      row.executorSessionId ?? null,
+      row.currentSectionIndex ?? 0,
+      row.totalSections ?? 0,
+      row.finalAuditDone ?? 0,
+      row.executionVariant ?? null,
+      row.auditorVariant ?? null,
+      row.kind ?? 'plan',
+    ]
+  }
+
   return {
     insert(row: LoopRow, large: LoopLargeFields): boolean {
       const runInsert = db.transaction(() => {
         const result = insertStmt.run(
           row.projectId,
           row.loopName,
-          row.status,
-          row.currentSessionId,
-          row.worktree ? 1 : 0,
-          row.worktreeDir,
-          row.worktreeBranch,
-          row.projectDir,
-          row.maxIterations,
-          row.iteration,
-          row.auditCount,
-          row.errorCount,
-          row.phase,
-          row.executionModel,
-          row.auditorModel,
-          row.modelFailed ? 1 : 0,
-          row.sandbox ? 1 : 0,
-          row.sandboxContainer,
-          row.startedAt,
-          row.completedAt,
-          row.terminationReason,
-          row.completionSummary,
-          row.workspaceId,
-          row.hostSessionId,
-          row.executorSessionId ?? null,
-          row.currentSectionIndex ?? 0,
-          row.totalSections ?? 0,
-          row.finalAuditDone ?? 0,
-          row.executionVariant ?? null,
-          row.auditorVariant ?? null,
-          row.kind ?? 'plan',
+          ...loopRowValues(row),
         ) as unknown as { changes: number }
         if (result.changes === 0) {
           return false
@@ -425,35 +436,7 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     restore(row: LoopRow, large: LoopLargeFields): void {
       const runRestore = db.transaction(() => {
         const result = restoreStmt.run(
-          row.status,
-          row.currentSessionId,
-          row.worktree ? 1 : 0,
-          row.worktreeDir,
-          row.worktreeBranch,
-          row.projectDir,
-          row.maxIterations,
-          row.iteration,
-          row.auditCount,
-          row.errorCount,
-          row.phase,
-          row.executionModel,
-          row.auditorModel,
-          row.modelFailed ? 1 : 0,
-          row.sandbox ? 1 : 0,
-          row.sandboxContainer,
-          row.startedAt,
-          row.completedAt,
-          row.terminationReason,
-          row.completionSummary,
-          row.workspaceId,
-          row.hostSessionId,
-          row.executorSessionId ?? null,
-          row.currentSectionIndex ?? 0,
-          row.totalSections ?? 0,
-          row.finalAuditDone ?? 0,
-          row.executionVariant ?? null,
-          row.auditorVariant ?? null,
-          row.kind ?? 'plan',
+          ...loopRowValues(row),
           row.projectId,
           row.loopName,
         ) as unknown as { changes: number }
@@ -463,36 +446,8 @@ export function createLoopsRepo(db: Database): LoopsRepo {
           insertStmt.run(
             row.projectId,
             row.loopName,
-            row.status,
-            row.currentSessionId,
-            row.worktree ? 1 : 0,
-            row.worktreeDir,
-            row.worktreeBranch,
-            row.projectDir,
-            row.maxIterations,
-            row.iteration,
-            row.auditCount,
-            row.errorCount,
-            row.phase,
-            row.executionModel,
-            row.auditorModel,
-            row.modelFailed ? 1 : 0,
-            row.sandbox ? 1 : 0,
-            row.sandboxContainer,
-            row.startedAt,
-            row.completedAt,
-            row.terminationReason,
-            row.completionSummary,
-            row.workspaceId,
-            row.hostSessionId,
-            row.executorSessionId ?? null,
-            row.currentSectionIndex ?? 0,
-            row.totalSections ?? 0,
-            row.finalAuditDone ?? 0,
-            row.executionVariant ?? null,
-            row.auditorVariant ?? null,
-            row.kind ?? 'plan',
-          ) as unknown as { changes: number }
+            ...loopRowValues(row),
+          )
         }
         upsertLargeStmt.run(row.projectId, row.loopName, large.lastAuditResult, large.postActionReport ?? null, large.goal ?? null)
       })

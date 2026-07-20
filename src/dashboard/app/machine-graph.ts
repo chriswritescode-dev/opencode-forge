@@ -1,5 +1,6 @@
 import html from 'solid-js/html'
 import { createMemo } from 'solid-js'
+import { formatRelativeTime } from './helpers'
 import type { LoopRow, LoopTransitionRow } from './types'
 
 // ── Live state-machine canvas ────────────────────────────────────────────
@@ -72,6 +73,15 @@ const EDGES: MgEdge[] = [
     labelX: 370,
     labelY: 16,
   },
+  // Amendment revert: a plan amendment appended sections while the loop was in
+  // final_auditing, so it steps back to auditing to execute them (recorded via
+  // the setPhase wrapper as eventType 'set-phase' in runtime.runFinalAuditPhase).
+  {
+    key: 'final_auditing→auditing',
+    d: 'M 315 42 Q 295 24 275 42',
+    labelX: 295,
+    labelY: 30,
+  },
   // Recovery back-edge across the whole top row: persisted by
   // `rotateToCodingAfterAuditFailure` (runtime.ts:617-635) when a
   // `final_auditing` session aborts (eventType 'final-audit-session-aborted'
@@ -130,15 +140,6 @@ const EDGES: MgEdge[] = [
   { key: 'post_action→terminal', d: 'M 520 78 L 600 142', labelX: 565, labelY: 95 },
   { key: 'final_audit_fix→terminal', d: 'M 425 160 L 600 160', labelX: 512, labelY: 152 },
 ]
-
-function relTime(ts: number): string {
-  if (!ts) return ''
-  const diff = Math.max(0, Math.floor((Date.now() - ts) / 1000))
-  if (diff < 60) return diff + 's ago'
-  if (diff < 3600) return Math.floor(diff / 60) + 'm ago'
-  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago'
-  return Math.floor(diff / 86400) + 'd ago'
-}
 
 // Build the visual edge-count key for a persisted transition row. Terminal
 // rows (`toPhase === null`, recorded by `terminateLoop`) collapse onto a
@@ -224,7 +225,7 @@ export function LoopMachineGraph(props: {
                 html`<div class="mg-history-row">
                   <span class="mg-history-event">${t.eventType}</span>
                   <span class="mg-history-flow">${t.fromPhase} → ${flowTargetFor(t)}</span>
-                  <span class="mg-history-time">${relTime(t.createdAt)}</span>
+                  <span class="mg-history-time">${formatRelativeTime(t.createdAt)}</span>
                 </div>`,
             )}
       </div>

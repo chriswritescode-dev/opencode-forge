@@ -30,12 +30,12 @@ import { applyPlanDecomposition } from './section-bootstrap'
 import { sendLoopPrompt } from '../loop/send-loop-prompt'
 import { markPromptSent, clearPromptPending, terminationStatusFor, parseTerminationReasonString, isWorkspaceNotFoundError } from '../loop'
 import { ConcurrentPromptError } from '../loop/in-flight-guard'
+import { transitionSectionIndex } from '../loop/state'
 import { getRestartability, type RestartBlockedReason } from '../loop/restartability'
 import { loopBranchExists } from '../workspace/forge-naming'
 import { getWorktreeProjectPreconditionError } from '../workspace/forge-worktree'
 import { resolveHostSessionDirectory } from '../utils/resolve-project-root'
 import { resolvePostActionConfig, type ResolvedPostActionConfig } from '../loop/post-action-config'
-import { loopStateToRow } from '../loop/state'
 
 /**
  * A freshly created + warped loop session can transiently report "Session not
@@ -1830,15 +1830,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         // throws into the restart flow.
         const fromPhase = stoppedState.phase
         const iteration = stoppedState.iteration ?? 0
-        const sectionIndex = stoppedState.totalSections > 0 ? (stoppedState.currentSectionIndex ?? 0) : null
+        const sectionIndex = transitionSectionIndex(stoppedState)
         deps.loop.service.terminate(stoppedState.loopName, { status: 'completed', reason: 'completed', completedAt: Date.now() })
-        deps.loop.service.recordTransition(stoppedState.loopName, {
-          eventType: 'completed',
-          transitionKind: 'terminate',
+        deps.loop.service.recordTerminalTransition(stoppedState.loopName, {
+          reason: { kind: 'completed' },
           fromPhase,
-          toPhase: null,
-          status: 'completed',
-          reason: 'completed',
           iteration,
           sectionIndex,
         })
@@ -1982,6 +1978,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         // Goal loops have no plan, sections, or approval flow — restate the goal
         // directly as a fresh coding pass. No initial audit findings on restart.
         promptText = deps.loop.service.buildContinuationPrompt(stoppedState, undefined)
+      } else if (stoppedState.phase === 'final_audit_fix') {
+        // Resume fixing the final-audit findings rather than re-coding the last
+        // section: lastAuditResult was persisted when the fix phase was entered
+        // (runtime.runFinalAuditPhase) precisely for this recovery path.
+        const outstandingBugs = deps.loop.service.getOutstandingFindings(stoppedState.loopName, 'bug')
+        promptText = deps.loop.service.buildFinalAuditFixPrompt(stoppedState, stoppedState.lastAuditResult ?? '', outstandingBugs)
       } else if (stoppedState.totalSections > 0) {
         // Use persisted section state to build the correct section prompt
         if (stoppedState.phase === 'final_auditing') {
@@ -2042,9 +2044,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           fromPhase: stoppedState.phase,
           toPhase: restartPhase,
           iteration: 1,
-          sectionIndex: stoppedState.totalSections > 0
-            ? (stoppedState.currentSectionIndex ?? 0)
-            : null,
+          sectionIndex: transitionSectionIndex(stoppedState),
         })
       }
 
@@ -2154,18 +2154,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             // row in place so transition history is preserved.
             restoreRow = previousState
           }
-          const restoredLoopRow = loopStateToRow(restoreRow, ctx.projectId)
-          deps.loopsRepo.restore(restoredLoopRow, {
-            lastAuditResult: restoreRow.lastAuditResult ?? null,
-            postActionReport: restoreRow.postActionReport ?? null,
-            goal: restoredLoopRow.kind === 'goal' ? restoreRow.goal ?? null : null,
-          })
+          deps.loop.service.restoreState(restoreRow.loopName, restoreRow)
           const restartFromPhase = restartPhase
           const restartToPhase = previousState.phase ?? 'coding'
           const iteration = previousState.iteration ?? 0
-          const sectionIndex = previousState.totalSections > 0
-            ? (previousState.currentSectionIndex ?? 0)
-            : null
+          const sectionIndex = transitionSectionIndex(previousState)
           // Log the rollback restoration whenever the restart actually changed
           // the persisted phase, so the transition history stays continuous:
           //   previousPhase -> restartPhase (pre-prompt 'restart' phase row)
@@ -2199,13 +2192,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             // Terminal transition row for the active-rollback path. Inactive
             // rollback restores the unchanged inactive row and emits no
             // terminal row (nothing terminally changed).
-            deps.loop.service.recordTransition(previousState.loopName, {
-              eventType: 'restart_prompt_failed',
-              transitionKind: 'terminate',
+            deps.loop.service.recordTerminalTransition(previousState.loopName, {
+              reason: { kind: 'restart_prompt_failed' },
               fromPhase: restartToPhase,
-              toPhase: null,
-              status: 'errored',
-              reason: 'restart_prompt_failed',
               iteration,
               sectionIndex,
             })

@@ -371,7 +371,7 @@ Model and variant selection follows this priority order:
 
 ## Loop
 
-The loop is an iterative development system with four phases, ending with an optional post-completion action:
+The loop is an iterative development system with five persisted phases (`coding`, `auditing`, `final_auditing`, `final_audit_fix`, `post_action`), ending with an optional post-completion action:
 
 1. **Coding phase** — A Code session works on the task
 2. **Auditing phase** — The Auditor agent reviews changes against project conventions and stored review findings

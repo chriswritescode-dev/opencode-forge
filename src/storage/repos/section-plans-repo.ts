@@ -36,18 +36,14 @@ export interface SectionPlansRepo {
   restoreAll(rows: SectionPlanRow[]): void
   /**
    * Run `fn` inside a single database transaction on the shared `db` that every
-   * repo in this composition root is constructed with. Used to make cross-repo
-   * writes (section replacement, loop-row update, amendment insert) atomic.
-   * Nested `db.transaction` calls inside `fn` become savepoints that roll back
-   * with the outer transaction when `fn` throws.
-   */
-  transaction<T>(fn: () => T): T
-  /**
-   * Same as `transaction` but acquires a write lock up front via
-   * `BEGIN IMMEDIATE`. Use this when `fn` reads authoritative loop row state
-   * and writes against it, so a concurrent writer (e.g. a section advance
-   * bumping `current_section_index`) cannot commit between the read and the
-   * write inside `fn`.
+   * repo in this composition root is constructed with, acquiring a write lock
+   * up front via `BEGIN IMMEDIATE`. Used to make cross-repo writes (section
+   * replacement, loop-row update, amendment insert) atomic when `fn` reads
+   * authoritative loop row state and writes against it, so a concurrent writer
+   * (e.g. a section advance bumping `current_section_index`) cannot commit
+   * between the read and the write inside `fn`. Nested `db.transaction` calls
+   * inside `fn` become savepoints that roll back with the outer transaction
+   * when `fn` throws.
    */
   immediateTransaction<T>(fn: () => T): T
   replacePendingSections(args: {
@@ -265,11 +261,6 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
           row.summaryFollowUps, row.startedAt, row.completedAt, row.createdAt,
         )
       }
-    },
-
-    transaction<T>(fn: () => T): T {
-      const run = db.transaction(fn)
-      return run()
     },
 
     immediateTransaction<T>(fn: () => T): T {

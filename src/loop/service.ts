@@ -20,6 +20,7 @@ import {
   type PromptContext,
 } from './prompts'
 import { parseSectionSummary as _parseSectionSummary } from './section-summary'
+import { terminationStatusFor, terminationReasonToString, type TerminationReason } from './termination'
 import { generateUniqueName } from './name-uniqueness'
 import { bumpRecurrence, findingRecurrenceKey } from './finding-recurrence'
 
@@ -27,7 +28,7 @@ export const MAX_RETRIES = 3
 const STALL_TIMEOUT_MS = 60_000
 const MAX_CONSECUTIVE_STALLS = 5
 /** Hard cap on the total number of sections a loop may have after amendment. */
-const MAX_TOTAL_SECTIONS = 24
+export const MAX_TOTAL_SECTIONS = 24
 
 export type LoopChangeReason =
   | 'insert' | 'delete' | 'terminate'
@@ -105,6 +106,13 @@ export interface LoopService {
     iteration: number
     sectionIndex?: number | null
   }): void
+  recordTerminalTransition(name: string, entry: {
+    reason: TerminationReason
+    fromPhase: string
+    iteration: number
+    sectionIndex: number | null
+    eventType?: string
+  }): void
   adjustRemainingSections(name: string, args: {
     sections: { title: string; content: string }[]
     rationale: string
@@ -153,9 +161,14 @@ export function createLoopService(
     return state
   }
 
-  function setState(name: string, state: LoopState): void {
+  /**
+   * Shared persistence body for {@link setState} (fresh INSERT) and
+   * {@link restoreState} (in-place UPDATE preserving child rows).
+   */
+  function persistState(name: string, state: LoopState, mode: 'insert' | 'restore'): void {
+    const label = mode === 'insert' ? 'setState' : 'restoreState'
     if (state.loopName !== name) {
-      throw new Error(`setState: name parameter "${name}" does not match state.loopName "${state.loopName}"`)
+      throw new Error(`${label}: name parameter "${name}" does not match state.loopName "${state.loopName}"`)
     }
     const row = loopStateToRow(state, projectId)
     const large: LoopLargeFields = {
@@ -164,14 +177,22 @@ export function createLoopService(
       // Goal loops persist their goal solely in loop_large_fields, never in plans.
       goal: row.kind === 'goal' ? (state.goal ?? null) : null,
     }
-    const ok = loopsRepo.insert(row, large)
-    if (!ok) {
-      throw new Error(`setState: loop "${name}" already exists`)
+    if (mode === 'insert') {
+      const ok = loopsRepo.insert(row, large)
+      if (!ok) {
+        throw new Error(`setState: loop "${name}" already exists`)
+      }
+    } else {
+      loopsRepo.restore(row, large)
     }
     if (row.kind !== 'goal' && state.prompt) {
       plansRepo.writeForLoop(projectId, name, state.prompt)
     }
-    notifyLoopChange('insert', name, { projectDir: state.projectDir, worktreeDir: state.worktreeDir })
+    notifyLoopChange(mode === 'insert' ? 'insert' : 'rotate', name, { projectDir: state.projectDir, worktreeDir: state.worktreeDir })
+  }
+
+  function setState(name: string, state: LoopState): void {
+    persistState(name, state, 'insert')
   }
 
   function deleteState(name: string): void {
@@ -184,20 +205,7 @@ export function createLoopService(
   }
 
   function restoreState(name: string, state: LoopState): void {
-    if (state.loopName !== name) {
-      throw new Error(`restoreState: name parameter "${name}" does not match state.loopName "${state.loopName}"`)
-    }
-    const row = loopStateToRow(state, projectId)
-    const large: LoopLargeFields = {
-      lastAuditResult: state.lastAuditResult ?? null,
-      postActionReport: state.postActionReport ?? null,
-      goal: row.kind === 'goal' ? (state.goal ?? null) : null,
-    }
-    loopsRepo.restore(row, large)
-    if (row.kind !== 'goal' && state.prompt) {
-      plansRepo.writeForLoop(projectId, name, state.prompt)
-    }
-    notifyLoopChange('rotate', name, { projectDir: state.projectDir, worktreeDir: state.worktreeDir })
+    persistState(name, state, 'restore')
   }
 
   function setStatus(name: string, status: LoopRow['status']): void {
@@ -596,6 +604,32 @@ export function createLoopService(
     }
   }
 
+  /**
+   * Record the single terminal transition row for a loop. Wraps
+   * `terminationStatusFor`/`terminationReasonToString` so the terminal row
+   * shape (transitionKind 'terminate', toPhase null, derived status/reason)
+   * has exactly one definition across the runtime and execution service.
+   */
+  function recordTerminalTransition(name: string, entry: {
+    reason: TerminationReason
+    fromPhase: string
+    iteration: number
+    sectionIndex: number | null
+    /** Defaults to `reason.kind`. */
+    eventType?: string
+  }): void {
+    recordTransition(name, {
+      eventType: entry.eventType ?? entry.reason.kind,
+      transitionKind: 'terminate',
+      fromPhase: entry.fromPhase,
+      toPhase: null,
+      status: terminationStatusFor(entry.reason),
+      reason: terminationReasonToString(entry.reason),
+      iteration: entry.iteration,
+      sectionIndex: entry.sectionIndex,
+    })
+  }
+
     async function adjustRemainingSections(name: string, args: {
     sections: { title: string; content: string }[]
     rationale: string
@@ -651,7 +685,7 @@ export function createLoopService(
           // loop's current session, preventing a stale auditor session from
           // modifying the plan after session rotation.
           if (args.auditorSessionId && row.currentSessionId !== args.auditorSessionId) {
-            return { ok: false as const, error: `session mismatch: only the current auditor session may adjust the plan` }
+            return { ok: false as const, error: `session mismatch: only the current auditor session may adjust the plan for loop ${name}` }
           }
 
           const fromIndex = row.currentSectionIndex + 1
@@ -790,6 +824,7 @@ export function createLoopService(
     bulkInsertSections,
     setTotalSections,
     recordTransition,
+    recordTerminalTransition,
     adjustRemainingSections,
   }
 }

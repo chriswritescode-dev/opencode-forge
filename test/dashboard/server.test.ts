@@ -281,12 +281,14 @@ describe('createRequestHandler', () => {
     expect(amendment.source).toBe('auditor')
     expect(amendment.rationale).toBe('remove two redundant sections')
     expect(amendment.appliedAtSection).toBe(4)
+    // Section content is stripped from the poll payload (the UI renders only
+    // index+title); the full snapshots stay in plan_amendments.
     expect(amendment.sectionsBefore).toBe(JSON.stringify([
-      { index: 4, title: 'Old Section A', content: 'a' },
-      { index: 5, title: 'Old Section B', content: 'b' },
+      { index: 4, title: 'Old Section A' },
+      { index: 5, title: 'Old Section B' },
     ]))
     expect(amendment.sectionsAfter).toBe(JSON.stringify([
-      { index: 4, title: 'New Section A', content: 'a-new' },
+      { index: 4, title: 'New Section A' },
     ]))
     expect(typeof amendment.id).toBe('number')
     expect(typeof amendment.createdAt).toBe('number')

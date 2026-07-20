@@ -167,7 +167,7 @@ OpenCode Forge uses `bun:sqlite` for all data persistence. The storage layer is 
 - `initializeDatabase(dataDir, options)` - Creates SQLite DB in the data directory
 - `closeDatabase()` - Closes database connections on shutdown
 - `resolveDataDir()` - Resolves platform-appropriate data directory (`~/.local/share/opencode/forge`)
-- Migrations are sequential SQL files (numbered 100-131) tracked in a `migrations` table
+- Migrations are registered explicitly in execution order (ids 100-143; not every id ships a SQL file) and tracked in a `migrations` table
 
 ### Repository Pattern
 
@@ -179,6 +179,8 @@ All data access goes through typed repository interfaces created via factory fun
 | `PlansRepo` | CRUD for plans | `PlanRow`, `PlansRepo` |
 | `ReviewFindingsRepo` | CRUD for review findings | `ReviewFindingRow`, `ReviewFindingsRepo` |
 | `SectionPlansRepo` | CRUD for milestone (section) plans used in decomposed loops | `SectionPlanRow`, `SectionPlansRepo` |
+| `LoopTransitionsRepo` | Append-only loop phase-transition log | `LoopTransitionRow` |
+| `PlanAmendmentsRepo` | Append-only audit trail of mid-loop plan amendments | `PlanAmendmentRow` |
 | `LoopSessionUsageRepo` | Per-session token/cost usage across rotated loop sessions | `LoopSessionUsageRow`, `LoopUsageAggregate` |
 | `TuiPrefsRepo` | TUI preferences persistence | `TuiPrefsRepo` |
 

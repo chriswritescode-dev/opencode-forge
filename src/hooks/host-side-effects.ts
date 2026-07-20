@@ -287,6 +287,7 @@ function resolveReasonLabel(reason: TerminationReason): string {
     case 'audit_retry_exhausted':
     case 'final_audit_retry_exhausted':
     case 'coding_no_assistant':
+    case 'restart_prompt_failed':
       return 'errored'
     case 'missing_worktree_dir':
       return 'removed'

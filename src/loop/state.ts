@@ -113,6 +113,15 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
   }
 }
 
+/**
+ * Section index recorded on a loop_transitions row: the current section for
+ * sectioned loops, null for goal/non-sectioned loops. Single source of truth
+ * for every transition-recording call site.
+ */
+export function transitionSectionIndex(state: Pick<LoopState, 'totalSections' | 'currentSectionIndex'>): number | null {
+  return state.totalSections > 0 ? (state.currentSectionIndex ?? 0) : null
+}
+
 export function loopStateToRow(state: LoopState, projectId: string): Omit<LoopRow, 'createdAt' | 'updatedAt'> {
   return {
     projectId,

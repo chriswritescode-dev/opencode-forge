@@ -1089,7 +1089,7 @@ test('migration 137 is idempotent on re-opened databases', () => {
   db2.close()
 })
 
-test('migration 138 extends loops phase CHECK to include final_audit_fix', () => {
+test('migration 141 extends loops phase CHECK to include final_audit_fix', () => {
   const dbPath = createTempDb()
   const db = openForgeDatabase(dbPath)
 
@@ -1107,7 +1107,7 @@ test('migration 138 extends loops phase CHECK to include final_audit_fix', () =>
   db.close()
 })
 
-test('migration 138 is idempotent on re-opened databases', () => {
+test('migration 141 is idempotent on re-opened databases', () => {
   const dbPath = createTempDb()
 
   const db1 = openForgeDatabase(dbPath)
@@ -1118,7 +1118,7 @@ test('migration 138 is idempotent on re-opened databases', () => {
   const row = db2.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get() as { sql: string }
   expect(row.sql).toContain("'final_audit_fix'")
 
-  const count = db2.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('138') as { count: number }
+  const count = db2.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('141') as { count: number }
   expect(count.count).toBe(1)
 
   db2.close()

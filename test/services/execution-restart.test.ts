@@ -206,6 +206,9 @@ describe('handleLoopRestart from stall_timeout', () => {
       buildSectionInitialPrompt: buildSectionInitialPromptSpy,
       buildFinalAuditPrompt: buildFinalAuditPromptSpy,
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
       generateUniqueLoopName: () => 'stall-loop',
     }
 
@@ -324,6 +327,9 @@ describe('handleLoopRestart from stall_timeout', () => {
       buildSectionInitialPrompt: () => 'section prompt',
       buildFinalAuditPrompt: () => 'audit prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
       generateUniqueLoopName: () => 'iter-loop',
     }
 
@@ -420,6 +426,9 @@ describe('handleLoopRestart from stall_timeout', () => {
       buildSectionInitialPrompt: () => 'section prompt',
       buildFinalAuditPrompt: () => 'audit prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
       generateUniqueLoopName: () => 'worktree-loop',
     }
 
@@ -538,6 +547,9 @@ describe('handleLoopRestart from stall_timeout', () => {
       buildSectionInitialPrompt: buildSectionInitialPromptSpy,
       buildFinalAuditPrompt: buildFinalAuditPromptSpy,
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
       generateUniqueLoopName: () => 'final-audit-loop',
     }
 
@@ -639,6 +651,9 @@ describe('handleLoopRestart from stall_timeout', () => {
       buildSectionInitialPrompt: buildSectionInitialPromptSpy,
       buildFinalAuditPrompt: buildFinalAuditPromptSpy,
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
       generateUniqueLoopName: () => 'post-action-loop',
     }
 
@@ -752,6 +767,9 @@ describe('handleLoopRestart from stall_timeout', () => {
       buildSectionInitialPrompt: () => 'section prompt',
       buildFinalAuditPrompt: () => 'audit prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
       generateUniqueLoopName: () => 'race-loop',
     }
 
@@ -876,6 +894,9 @@ describe('handleLoopRestart from stall_timeout', () => {
       buildSectionInitialPrompt: () => 'section prompt',
       buildFinalAuditPrompt: () => 'audit prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
       generateUniqueLoopName: () => 'audit-restart-loop',
     }
 
@@ -959,6 +980,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     const noopFn = () => {}
     const buildSectionInitialPromptSpy = vi.fn()
     const buildFinalAuditPromptSpy = vi.fn()
+    const buildFinalAuditFixPromptSpy = vi.fn(() => 'fix prompt')
 
     // Simulate the phase transition happening while the lock is contended:
     // the first under-lock getActiveState call mutates the persisted phase from
@@ -986,7 +1008,11 @@ describe('handleLoopRestart from stall_timeout', () => {
       setPhase: (name, phase) => loopService.setPhase(name, phase),
       buildSectionInitialPrompt: buildSectionInitialPromptSpy,
       buildFinalAuditPrompt: buildFinalAuditPromptSpy,
+      buildFinalAuditFixPrompt: buildFinalAuditFixPromptSpy,
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
       generateUniqueLoopName: () => 'final-audit-race',
     }
 
@@ -1073,12 +1099,14 @@ describe('handleLoopRestart from stall_timeout', () => {
     if (!result.ok) return
     expect(result.data.previousSessionId).toBe('fix-session')
 
-    // Authoritative under-lock phase was 'final_audit_fix', which this section
-    // maps to a coding restart pass — phase 'coding', code agent, section prompt.
+    // Authoritative under-lock phase was 'final_audit_fix', which restarts as a
+    // coding pass (phase 'coding', code agent) that resumes fixing the
+    // final-audit findings via the fix prompt — not by re-coding the section.
     const newState = loopService.getActiveState('final-audit-race')!
     expect(newState.phase).toBe('coding')
 
-    expect(buildSectionInitialPromptSpy).toHaveBeenCalledTimes(1)
+    expect(buildFinalAuditFixPromptSpy).toHaveBeenCalledTimes(1)
+    expect(buildSectionInitialPromptSpy).not.toHaveBeenCalled()
     expect(buildFinalAuditPromptSpy).not.toHaveBeenCalled()
 
     const promptCall = (client.session.promptAsync as any).mock.calls[0][0]
@@ -1139,7 +1167,11 @@ describe('handleLoopRestart from stall_timeout', () => {
       terminate: (name, opts) => loopService.terminate(name, opts),
       buildSectionInitialPrompt: buildSectionInitialPromptSpy,
       buildFinalAuditPrompt: buildFinalAuditPromptSpy,
+      buildFinalAuditFixPrompt: () => 'fix prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
       generateUniqueLoopName: () => 'final-audit-failed-restart-race',
     }
 
@@ -1275,6 +1307,9 @@ describe('handleLoopRestart from stall_timeout', () => {
       setPhase: noopFn,
       terminate: (name, opts) => loopService.terminate(name, opts),
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
       buildPostActionPrompt: () => 'should-not-be-called',
       buildSectionInitialPrompt: () => 'should-not-be-called',
       buildFinalAuditPrompt: () => 'should-not-be-called',
@@ -1492,6 +1527,9 @@ describe('handleLoopRestart restartability rules', () => {
       buildFinalAuditPrompt: () => 'audit prompt',
       buildContinuationPrompt: () => 'goal restart prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
       generateUniqueLoopName: (name) => name,
     }
 
@@ -2286,6 +2324,9 @@ describe('handleLoopRestart restartability rules', () => {
       buildFinalAuditPrompt: () => 'audit prompt',
       buildContinuationPrompt: () => 'goal restart prompt',
       recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
       generateUniqueLoopName: (name) => name,
     }
 

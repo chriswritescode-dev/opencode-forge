@@ -299,15 +299,15 @@ describe('plan-adjust tool', () => {
     })
 
     test('rejects when caller session != loop auditor session', async () => {
+      insertLoop('test-loop', {
+        currentSessionId: 'correct-audit-session',
+        totalSections: 3,
+      })
+
       const stubService = {
         ...loopService,
         resolveLoopName: (sessionId: string) =>
           (sessionId === 'wrong-audit-session' ? 'test-loop' : null),
-        getAnyState: (_name: string) => ({
-          active: true,
-          sessionId: 'correct-audit-session',
-          phase: 'auditing' as const,
-        } as any),
       }
 
       const tool = createPlanAdjustTool({ loop: { service: stubService } } as any)
@@ -319,7 +319,7 @@ describe('plan-adjust tool', () => {
         ? JSON.parse(resultStr)
         : JSON.parse((resultStr as any).output)
 
-      expect(result.error).toContain('Session mismatch')
+      expect(result.error).toContain('session mismatch')
       expect(result.error).toContain('test-loop')
     })
 

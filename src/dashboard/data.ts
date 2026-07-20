@@ -57,29 +57,66 @@ export interface DashboardPayload {
   totals: DashboardTotals
 }
 
-export function collectDashboardData(db: Database): DashboardPayload {
-  // For older databases (pre-migration 139/140), the new tables may not exist.
-  // Detect availability so the dashboard serves 200 with empty collections instead of failing.
-  const hasTransitionsTable = hasTable(db, 'loop_transitions')
-  const hasAmendmentsTable = hasTable(db, 'plan_amendments')
+/** Check whether *tbl* exists on this database. */
+function hasTable(database: Database, tbl: string): boolean {
+  const row = database
+    .prepare(
+      "SELECT COUNT(*) AS cnt FROM sqlite_master WHERE type = 'table' AND name = ?",
+    )
+    .get(tbl) as { cnt: number }
+  return (row?.cnt ?? 0) > 0
+}
 
-  const loopsRepo = createLoopsRepo(db)
-  const plansRepo = createPlansRepo(db)
-  const reviewFindingsRepo = createReviewFindingsRepo(db)
-  const sectionPlansRepo = createSectionPlansRepo(db)
-  const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
-  const loopTransitionsRepo = hasTransitionsTable ? createLoopTransitionsRepo(db) : null
-  const amendmentsRepo = hasAmendmentsTable ? createPlanAmendmentsRepo(db) : null
+interface DashboardRepos {
+  loopsRepo: ReturnType<typeof createLoopsRepo>
+  plansRepo: ReturnType<typeof createPlansRepo>
+  reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
+  sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
+  loopSessionUsageRepo: ReturnType<typeof createLoopSessionUsageRepo>
+  loopTransitionsRepo: ReturnType<typeof createLoopTransitionsRepo> | null
+  amendmentsRepo: ReturnType<typeof createPlanAmendmentsRepo> | null
+}
 
-  /** Check whether *tbl* exists on this database. */
-  function hasTable(database: Database, tbl: string): boolean {
-    const row = database
-      .prepare(
-        "SELECT COUNT(*) AS cnt FROM sqlite_master WHERE type = 'table' AND name = ?",
-      )
-      .get(tbl) as { cnt: number }
-    return (row?.cnt ?? 0) > 0
+// The dashboard poll handler calls collectDashboardData every 5s per open tab;
+// cache the prepared repos (and the table probes — the table set cannot change
+// after startup) per database handle instead of re-preparing on every request.
+const repoCache = new WeakMap<Database, DashboardRepos>()
+
+function reposFor(db: Database): DashboardRepos {
+  let repos = repoCache.get(db)
+  if (!repos) {
+    repos = {
+      loopsRepo: createLoopsRepo(db),
+      plansRepo: createPlansRepo(db),
+      reviewFindingsRepo: createReviewFindingsRepo(db),
+      sectionPlansRepo: createSectionPlansRepo(db),
+      loopSessionUsageRepo: createLoopSessionUsageRepo(db),
+      // For older databases (pre-migration 142/143), the new tables may not exist.
+      // Detect availability so the dashboard serves 200 with empty collections instead of failing.
+      loopTransitionsRepo: hasTable(db, 'loop_transitions') ? createLoopTransitionsRepo(db) : null,
+      amendmentsRepo: hasTable(db, 'plan_amendments') ? createPlanAmendmentsRepo(db) : null,
+    }
+    repoCache.set(db, repos)
   }
+  return repos
+}
+
+/**
+ * The dashboard renders only section index+title from amendment snapshots;
+ * strip the multi-KB section content before it enters the poll payload. The
+ * full snapshots stay in plan_amendments as the audit trail.
+ */
+function projectAmendmentSections(json: string): string {
+  try {
+    const rows = JSON.parse(json) as { index: number; title: string }[]
+    return JSON.stringify(rows.map((r) => ({ index: r.index, title: r.title })))
+  } catch {
+    return '[]'
+  }
+}
+
+export function collectDashboardData(db: Database): DashboardPayload {
+  const { loopsRepo, plansRepo, reviewFindingsRepo, sectionPlansRepo, loopSessionUsageRepo, loopTransitionsRepo, amendmentsRepo } = reposFor(db)
 
   const projectIdRows = db.prepare(
     'SELECT DISTINCT project_id FROM loops ORDER BY project_id'
@@ -122,7 +159,13 @@ export function collectDashboardData(db: Database): DashboardPayload {
       const findings = reviewFindingsRepo.listByLoopName(projectId, loopName)
       const usage = loopSessionUsageRepo.getAggregate(projectId, loopName)
       const transitions = loopTransitionsRepo ? loopTransitionsRepo.listForLoop(projectId, loopName, 100) : []
-      const amendments = amendmentsRepo ? amendmentsRepo.listForLoop(projectId, loopName) : []
+      const amendments = amendmentsRepo
+        ? amendmentsRepo.listForLoop(projectId, loopName).map((a) => ({
+            ...a,
+            sectionsBefore: projectAmendmentSections(a.sectionsBefore),
+            sectionsAfter: projectAmendmentSections(a.sectionsAfter),
+          }))
+        : []
       const elapsedSeconds = computeElapsedSeconds(loop.startedAt, loop.completedAt ?? undefined)
       const duration = elapsedSeconds > 0 ? formatDuration(elapsedSeconds) : null
 

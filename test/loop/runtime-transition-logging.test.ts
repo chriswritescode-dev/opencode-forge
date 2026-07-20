@@ -728,9 +728,10 @@ describe('Runtime transition logging', () => {
       expect(rows[0].eventType).toBe('section-clean')
       expect(rows[1].id).toBe(seededRows[1].id)
       expect(rows[1].eventType).toBe('audit-clear')
-      // The new restart row appends after the seeded rows in chronological id order.
+      // The new restart row appends after the seeded rows in chronological id
+      // order, matching the production restart row shape (kind 'phase').
       expect(rows[2].eventType).toBe('restart')
-      expect(rows[2].transitionKind).toBe('rotate')
+      expect(rows[2].transitionKind).toBe('phase')
       expect(rows[2].fromPhase).toBe('auditing')
       expect(rows[2].toPhase).toBe('coding')
       expect(rows[2].iteration).toBe(3)

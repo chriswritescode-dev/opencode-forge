@@ -1,5 +1,6 @@
 import { tool } from '@opencode-ai/plugin'
 import type { ToolContext } from './types'
+import { MAX_TOTAL_SECTIONS } from '../loop/service'
 
 const z = tool.schema
 
@@ -12,7 +13,7 @@ export function createPlanAdjustTool(ctx: ToolContext): ReturnType<typeof tool> 
       sections: z.array(z.object({
         title: z.string(),
         content: z.string(),
-      })).min(0).max(20).describe('Replacement list for remaining sections (from current index + 1 onwards). Omit completed/curre section; max 20 total sections allowed.'),
+      })).min(0).max(MAX_TOTAL_SECTIONS).describe(`Replacement list for remaining sections (from current index + 1 onwards). Omit completed and current sections; the resulting total (completed + current + replacements) may not exceed ${MAX_TOTAL_SECTIONS} sections.`),
       rationale: z.string().min(1).describe('Why the plan needs adjustment. Never use to relax acceptance criteria or verification — the objective is immutable.'),
     },
     execute: async (args, toolCtx) => {
@@ -23,21 +24,9 @@ export function createPlanAdjustTool(ctx: ToolContext): ReturnType<typeof tool> 
         return JSON.stringify({ error: 'Not in a loop session. This tool can only be used within an active loop session.' })
       }
 
-      const state = loop.service.getAnyState(loopName)
-      if (!state) return JSON.stringify({ error: `Loop "${loopName}" not found.` })
-
-      if (!state.active) {
-        return JSON.stringify({ error: `Loop "${loopName}" is not active.` })
-      }
-
-      if (state.phase !== 'auditing') {
-        return JSON.stringify({ error: `Plan adjustment is only allowed during auditing phase (current phase: ${state.phase}).` })
-      }
-
-      if (state.sessionId !== sessionId) {
-        return JSON.stringify({ error: `Session mismatch: this tool can only be used by the current auditor session for loop "${loopName}".` })
-      }
-
+      // Guards (loop exists, active, auditing phase, session authorization,
+      // section cap) are enforced authoritatively inside adjustRemainingSections
+      // under its write lock; the tool only resolves the loop and surfaces errors.
       const result = await loop.service.adjustRemainingSections(loopName, {
         sections: args.sections,
         rationale: args.rationale,
