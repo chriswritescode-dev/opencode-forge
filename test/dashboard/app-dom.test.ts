@@ -457,6 +457,17 @@ describe('dashboard App machine graph', () => {
     expect(auditing!.classList.contains('mg-node-active')).toBe(false)
   })
 
+  test('renders graph elements in the SVG namespace', async () => {
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const svg = container.querySelector('svg.mg-svg')
+    expect(svg).toBeTruthy()
+    for (const element of svg!.querySelectorAll('g, path, rect, text')) {
+      expect(element.namespaceURI).toBe('http://www.w3.org/2000/svg')
+    }
+  })
+
   test('poll reconciliation preserves the SVG root and moves the active class', async () => {
     dispose = render(() => App() as unknown as Element, container)
     await flush()

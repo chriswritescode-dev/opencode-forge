@@ -157,6 +157,13 @@ function flowTargetFor(t: LoopTransitionRow): string {
   return t.toPhase ?? t.status ?? ''
 }
 
+function svgChild<T extends SVGElement>(template: Node | Node[]): T {
+  const root = Array.isArray(template) ? template[0] : template
+  const child = root instanceof SVGSVGElement ? root.firstElementChild : null
+  if (!(child instanceof SVGElement)) throw new Error('Expected an SVG child')
+  return child as T
+}
+
 export function LoopMachineGraph(props: {
   loop: () => LoopRow
   transitions: () => LoopTransitionRow[]
@@ -176,6 +183,38 @@ export function LoopMachineGraph(props: {
     return m
   })
 
+  const edges = EDGES.map((edge) =>
+    svgChild<SVGGElement>(html`<svg>
+      <g class="mg-edge" data-edge-key=${edge.key}>
+        <path class="mg-edge-path" d=${edge.d} marker-end="url(#mg-arrow)"></path>
+        <text class="mg-edge-label" x=${edge.labelX} y=${edge.labelY} text-anchor="middle">${() => {
+          const n = counts().get(edge.key)
+          return n ? String(n) : ''
+        }}</text>
+      </g>
+    </svg>`),
+  )
+
+  const phaseNodes = PHASE_NODES.map((node) => {
+    const rx = node.cx - NODE_W / 2
+    const ry = node.cy - NODE_H / 2
+    return svgChild<SVGGElement>(html`<svg>
+      <g class=${() =>
+        'mg-node' +
+        (lp().phase === node.phase && isRunning() ? ' mg-node-active' : '')}>
+        <rect x=${rx} y=${ry} width=${NODE_W} height=${NODE_H} rx="6"></rect>
+        <text class="mg-node-label" x=${node.cx} y=${node.cy} text-anchor="middle" dominant-baseline="middle">${node.label}</text>
+      </g>
+    </svg>`)
+  })
+
+  const terminalNode = svgChild<SVGGElement>(html`<svg>
+    <g class="mg-terminal">
+      <rect x=${TERMINAL_CX - NODE_W / 2} y=${TERMINAL_CY - NODE_H / 2} width=${NODE_W} height=${NODE_H} rx="6"></rect>
+      <text class="mg-terminal-label" x=${TERMINAL_CX} y=${TERMINAL_CY} text-anchor="middle" dominant-baseline="middle">${() => lp().status}</text>
+    </g>
+  </svg>`)
+
   return html`<div class="mg-graph">
     <svg class="mg-svg" viewBox="0 0 720 220" preserveAspectRatio="xMidYMid meet">
       <defs>
@@ -184,32 +223,9 @@ export function LoopMachineGraph(props: {
         </marker>
       </defs>
 
-      ${EDGES.map((edge) => html`<g class="mg-edge" data-edge-key=${edge.key}>
-        <path class="mg-edge-path" d=${edge.d} marker-end="url(#mg-arrow)"></path>
-        <text class="mg-edge-label" x=${edge.labelX} y=${edge.labelY} text-anchor="middle">${() => {
-          const n = counts().get(edge.key)
-          return n ? String(n) : ''
-        }}</text>
-      </g>`)}
-
-      ${PHASE_NODES.map((node) => {
-        const rx = node.cx - NODE_W / 2
-        const ry = node.cy - NODE_H / 2
-        return html`<g class=${() =>
-          'mg-node' +
-          (lp().phase === node.phase && isRunning() ? ' mg-node-active' : '')}>
-          <rect x=${rx} y=${ry} width=${NODE_W} height=${NODE_H} rx="6"></rect>
-          <text class="mg-node-label" x=${node.cx} y=${node.cy} text-anchor="middle" dominant-baseline="middle">${node.label}</text>
-        </g>`
-      })}
-
-      ${() =>
-        isRunning()
-          ? ''
-          : html`<g class="mg-terminal">
-              <rect x=${TERMINAL_CX - NODE_W / 2} y=${TERMINAL_CY - NODE_H / 2} width=${NODE_W} height=${NODE_H} rx="6"></rect>
-              <text class="mg-terminal-label" x=${TERMINAL_CX} y=${TERMINAL_CY} text-anchor="middle" dominant-baseline="middle">${() => lp().status}</text>
-            </g>`}
+      ${edges}
+      ${phaseNodes}
+      ${() => (isRunning() ? '' : terminalNode)}
     </svg>
 
     <div class="mg-history">
