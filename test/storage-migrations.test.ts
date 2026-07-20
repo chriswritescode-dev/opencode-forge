@@ -1088,3 +1088,38 @@ test('migration 137 is idempotent on re-opened databases', () => {
 
   db2.close()
 })
+
+test('migration 138 extends loops phase CHECK to include final_audit_fix', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get() as { sql: string }
+  expect(row.sql).toContain("'final_audit_fix'")
+
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-1', 'loop-final-fix', 'running', 'session-final-fix', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'final_audit_fix', 1)
+  `).run()
+
+  const inserted = db.prepare("SELECT phase FROM loops WHERE project_id = 'proj-1' AND loop_name = 'loop-final-fix'").get() as { phase: string }
+  expect(inserted.phase).toBe('final_audit_fix')
+
+  db.close()
+})
+
+test('migration 138 is idempotent on re-opened databases', () => {
+  const dbPath = createTempDb()
+
+  const db1 = openForgeDatabase(dbPath)
+  db1.close()
+
+  const db2 = openForgeDatabase(dbPath)
+
+  const row = db2.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get() as { sql: string }
+  expect(row.sql).toContain("'final_audit_fix'")
+
+  const count = db2.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('138') as { count: number }
+  expect(count.count).toBe(1)
+
+  db2.close()
+})

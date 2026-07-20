@@ -5,14 +5,22 @@ import {
   createReviewFindingsRepo,
   createSectionPlansRepo,
   createLoopSessionUsageRepo,
+  createLoopTransitionsRepo,
+  createPlanAmendmentsRepo,
 } from '../storage'
 import type { LoopRow } from '../storage'
 import type { SectionPlanRow } from '../storage'
 import type { ReviewFindingRow } from '../storage'
 import type { LoopUsageAggregate } from '../storage'
+import type { LoopTransitionRow } from '../storage'
+import type { PlanAmendmentRow } from '../storage'
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 
+export type { LoopRow, LoopTransitionRow }
+
 export interface DashboardLoop {
+  /** Stable identity for keyed store reconciliation (unique within a project's loop set). */
+  id: string
   loop: LoopRow
   lastAuditResult: string | null
   postActionReport: string | null
@@ -21,9 +29,13 @@ export interface DashboardLoop {
   findings: ReviewFindingRow[]
   usage: LoopUsageAggregate | null
   duration: string | null
+  transitions: LoopTransitionRow[]
+  amendments: PlanAmendmentRow[]
 }
 
 export interface DashboardProject {
+  /** Stable identity for keyed store reconciliation; equals `projectId`. */
+  id: string
   projectId: string
   projectDir: string | null
   loops: DashboardLoop[]
@@ -46,11 +58,28 @@ export interface DashboardPayload {
 }
 
 export function collectDashboardData(db: Database): DashboardPayload {
+  // For older databases (pre-migration 139/140), the new tables may not exist.
+  // Detect availability so the dashboard serves 200 with empty collections instead of failing.
+  const hasTransitionsTable = hasTable(db, 'loop_transitions')
+  const hasAmendmentsTable = hasTable(db, 'plan_amendments')
+
   const loopsRepo = createLoopsRepo(db)
   const plansRepo = createPlansRepo(db)
   const reviewFindingsRepo = createReviewFindingsRepo(db)
   const sectionPlansRepo = createSectionPlansRepo(db)
   const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
+  const loopTransitionsRepo = hasTransitionsTable ? createLoopTransitionsRepo(db) : null
+  const amendmentsRepo = hasAmendmentsTable ? createPlanAmendmentsRepo(db) : null
+
+  /** Check whether *tbl* exists on this database. */
+  function hasTable(database: Database, tbl: string): boolean {
+    const row = database
+      .prepare(
+        "SELECT COUNT(*) AS cnt FROM sqlite_master WHERE type = 'table' AND name = ?",
+      )
+      .get(tbl) as { cnt: number }
+    return (row?.cnt ?? 0) > 0
+  }
 
   const projectIdRows = db.prepare(
     'SELECT DISTINCT project_id FROM loops ORDER BY project_id'
@@ -92,13 +121,15 @@ export function collectDashboardData(db: Database): DashboardPayload {
       const sections = sectionPlansRepo.list(projectId, loopName)
       const findings = reviewFindingsRepo.listByLoopName(projectId, loopName)
       const usage = loopSessionUsageRepo.getAggregate(projectId, loopName)
+      const transitions = loopTransitionsRepo ? loopTransitionsRepo.listForLoop(projectId, loopName, 100) : []
+      const amendments = amendmentsRepo ? amendmentsRepo.listForLoop(projectId, loopName) : []
       const elapsedSeconds = computeElapsedSeconds(loop.startedAt, loop.completedAt ?? undefined)
       const duration = elapsedSeconds > 0 ? formatDuration(elapsedSeconds) : null
 
-      return { loop, lastAuditResult, postActionReport, plan, sections, findings, usage, duration }
+      return { id: loopName, loop, lastAuditResult, postActionReport, plan, sections, findings, usage, duration, transitions, amendments }
     })
 
-    projects.push({ projectId, projectDir, loops: dashboardLoops })
+    projects.push({ id: projectId, projectId, projectDir, loops: dashboardLoops })
 
     // Accumulate totals
     totals.projects = projectIds.length

@@ -369,5 +369,32 @@ export const migrations: Migration[] = [
       )
     },
   },
+  {
+    id: '138',
+    description: "Extend loops phase CHECK to include 'final_audit_fix'",
+    apply: (db: Database) => {
+      const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='loops'").get() as { sql: string } | null
+      if (row?.sql?.includes("'final_audit_fix'")) return
+      db.run(loadSql('138_extend_loops_phase_check_final_audit_fix.sql'))
+    },
+  },
+  {
+    id: '139',
+    description: 'Create loop_transitions table for persisted transition log',
+    apply: (db: Database) => {
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='loop_transitions'").all()
+      if (tables.length > 0) return
+      db.run(loadSql('139_create_loop_transitions.sql'))
+    },
+  },
+  {
+    id: '140',
+    description: 'Create plan_amendments table for adaptive-plan adjustment audit trail',
+    apply: (db: Database) => {
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='plan_amendments'").all()
+      if (tables.length > 0) return
+      db.run(loadSql('140_create_plan_amendments.sql'))
+    },
+  },
 
 ]

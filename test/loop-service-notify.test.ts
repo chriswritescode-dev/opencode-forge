@@ -580,6 +580,14 @@ describe('LoopChangeNotifier', () => {
 
       // Mock listActive to return two loops with valid row data
       mockLoopsRepo.listByStatus = () => [validRow, { ...validRow, loopName: 'loop-2' }]
+      // terminateAll now re-fetches authoritative per-loop state via get() before
+      // recording each shutdown row. Both rows must resolve by name so the
+      // shutdown record+persist path runs for each loop and fires its notify.
+      mockLoopsRepo.get = ((_projectId: string, name: string) => {
+        if (name === 'loop-1') return validRow
+        if (name === 'loop-2') return { ...validRow, loopName: 'loop-2' }
+        return null
+      }) as any
       mockLoopsRepo.getLarge = () => ({ lastAuditResult: null })
 
       const notifyCalls: Array<{ reason: string; loopName: string }> = []

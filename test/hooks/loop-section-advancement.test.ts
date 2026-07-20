@@ -7,16 +7,44 @@ import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
+import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
 import { createLoopService } from '../../src/loop/service'
 import type { LoopState } from '../../src/loop/state'
 import { createLoopEventHandler } from '../../src/hooks/loop'
 import type { Logger, PluginConfig } from '../../src/types'
+import { createFakeForgeClient } from '../helpers/fake-client'
 
 const mockLogger: Logger = {
   log: () => {},
   error: () => {},
   debug: () => {},
 }
+
+const mockConfig: PluginConfig = {
+  executionModel: 'test/model',
+  auditorModel: 'test/auditor',
+  loop: {
+    enabled: true,
+    defaultMaxIterations: 5,
+  },
+}
+
+const sectionSummaryText = (done: string) =>
+  `<!-- section-summary:start -->
+### Done
+- ${done}
+### Deviations
+- None
+### Follow-ups
+- None
+<!-- section-summary:end -->`
+
+const assistantMessage = (text: string) => [
+  {
+    info: { role: 'assistant', finish: 'stop' },
+    parts: [{ type: 'text' as const, text }],
+  },
+]
 
 describe('Loop Section Advancement', () => {
   let db: Database
@@ -25,6 +53,7 @@ describe('Loop Section Advancement', () => {
   let plansRepo: ReturnType<typeof createPlansRepo>
   let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
   let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
+  let loopTransitionsRepo: ReturnType<typeof createLoopTransitionsRepo>
   let tempDir: string
   const projectId = 'test-project'
 
@@ -134,11 +163,31 @@ describe('Loop Section Advancement', () => {
       )
     `)
 
+    db.run(`
+      CREATE TABLE loop_transitions (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id      TEXT NOT NULL,
+        loop_name       TEXT NOT NULL,
+        event_type      TEXT NOT NULL,
+        transition_kind TEXT NOT NULL,
+        from_phase      TEXT NOT NULL,
+        to_phase        TEXT,
+        status          TEXT,
+        reason          TEXT,
+        iteration       INTEGER NOT NULL DEFAULT 0,
+        section_index   INTEGER,
+        created_at      INTEGER NOT NULL,
+        FOREIGN KEY (project_id, loop_name) REFERENCES loops(project_id, loop_name) ON DELETE CASCADE
+      )
+    `)
+    db.run(`CREATE INDEX IF NOT EXISTS idx_loop_transitions_loop ON loop_transitions (project_id, loop_name, id)`)
+
     loopsRepo = createLoopsRepo(db)
     plansRepo = createPlansRepo(db)
     reviewFindingsRepo = createReviewFindingsRepo(db)
     sectionPlansRepo = createSectionPlansRepo(db)
-    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger, undefined, undefined, sectionPlansRepo)
+    loopTransitionsRepo = createLoopTransitionsRepo(db)
+    loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger, undefined, undefined, sectionPlansRepo, loopTransitionsRepo)
   })
 
   afterEach(() => {
@@ -659,6 +708,128 @@ describe('Loop Section Advancement', () => {
 
       const state = loopService.getActiveState('test-loop')!
       expect(loopService.getSectionPlan(state, 0)!.status).toBe('pending')
+    })
+  })
+
+  describe('Cross-cutting: persisted transition log', () => {
+    /**
+     * Drive the real runtime via createLoopEventHandler and assert that each
+     * phase change/termination lands a row in loop_transitions. These tests
+     * intentionally do NOT call loopService.recordTransition directly: a
+     * regression that strips runtime logging would fail them, not silently
+     * pass.
+     */
+    test('a clean section advance via the runtime records a section-clean/advance-section row', async () => {
+      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 2, iteration: 1, max_iterations: 5 })
+      insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
+      insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
+
+      // Build a handler bound to the same DB so the runtime writes transition
+      // rows into the shared loop_transitions_repo.
+      const { client: forgeClient } = createFakeForgeClient({
+        session: { messages: async () => assistantMessage(sectionSummaryText('completed section 1 cleanly')) },
+      })
+      const handler = createLoopEventHandler(
+        loopsRepo,
+        plansRepo,
+        reviewFindingsRepo,
+        projectId,
+        forgeClient,
+        mockLogger,
+        () => mockConfig,
+        undefined,
+        tempDir,
+        undefined,
+        sectionPlansRepo,
+        undefined,
+        undefined,
+        undefined,
+        loopTransitionsRepo,
+      )
+
+      // The persisted loops row's current_session_id is 'sess-1' (insertLoop
+      // default) so the idle event resolves to this loop via getBySessionId.
+      await handler.onEvent({
+        event: {
+          type: 'session.status',
+          properties: { status: { type: 'idle' }, sessionID: 'sess-1' },
+        },
+      })
+
+      const rows = loopTransitionsRepo.listForLoop(projectId, 'test-loop')
+      expect(rows).toHaveLength(1)
+      expect(rows[0].eventType).toBe('section-clean')
+      expect(rows[0].transitionKind).toBe('advance-section')
+      expect(rows[0].fromPhase).toBe('auditing')
+      expect(rows[0].toPhase).toBe('coding')
+      // recordTransitionEntry uses the pre-transition snapshot: iteration=1,
+      // currentSectionIndex=0 (the section that was just audited clean).
+      expect(rows[0].iteration).toBe(1)
+      expect(rows[0].sectionIndex).toBe(0)
+
+      // The runtime actually advanced the persisted section pointer too.
+      const after = loopService.getActiveState('test-loop')!
+      expect(after.currentSectionIndex).toBe(1)
+      expect(after.phase).toBe('coding')
+
+      handler.clearAllRetryTimeouts()
+    })
+
+    test('a runtime max-iterations termination records exactly one terminate row', async () => {
+      // iteration=1, maxIterations=1 → the very next iteration cap fires.
+      insertLoop({ phase: 'auditing', current_section_index: 0, total_sections: 2, iteration: 1, max_iterations: 1 })
+      insertSectionPlan(0, 'Section 1', 'Content 1', 'in_progress')
+      insertSectionPlan(1, 'Section 2', 'Content 2', 'pending')
+
+      // Dirty audit text (no section-summary) routes through the section-dirty
+      // branch, which calls nextIterationOrTerminate; the cap terminates the
+      // loop without first logging a rotate row.
+      const { client: forgeClient } = createFakeForgeClient({
+        session: { messages: async () => assistantMessage('dirty audit: found issues') },
+      })
+      const handler = createLoopEventHandler(
+        loopsRepo,
+        plansRepo,
+        reviewFindingsRepo,
+        projectId,
+        forgeClient,
+        mockLogger,
+        () => mockConfig,
+        undefined,
+        tempDir,
+        undefined,
+        sectionPlansRepo,
+        undefined,
+        undefined,
+        undefined,
+        loopTransitionsRepo,
+      )
+
+      await handler.onEvent({
+        event: {
+          type: 'session.status',
+          properties: { status: { type: 'idle' }, sessionID: 'sess-1' },
+        },
+      })
+
+      const rows = loopTransitionsRepo.listForLoop(projectId, 'test-loop')
+      expect(rows).toHaveLength(1)
+      expect(rows[0].transitionKind).toBe('terminate')
+      expect(rows[0].eventType).toBe('max_iterations')
+      expect(rows[0].fromPhase).toBe('auditing')
+      expect(rows[0].toPhase).toBeNull()
+      // terminationStatusFor('max_iterations') falls through to 'errored'.
+      expect(rows[0].status).toBe('errored')
+      expect(rows[0].reason).toBe('max_iterations')
+      expect(rows[0].iteration).toBe(1)
+      expect(rows[0].sectionIndex).toBe(0)
+
+      // The loop is persisted as terminated.
+      const after = loopService.getAnyState('test-loop')!
+      expect(after.active).toBe(false)
+      expect(after.terminationReason).toBe('max_iterations')
+
+      handler.clearAllRetryTimeouts()
     })
   })
 })

@@ -270,7 +270,85 @@ export function renderDashboardHtml(): string {
     font-family: inherit; flex-shrink: 0;
   }
   .copy-btn:hover { background: #30363d; color: #c9d1d9; }
-  .dashboard-summary { margin-bottom: 12px; }</style>
+  .dashboard-summary { margin-bottom: 12px; }
+  .mg-graph {
+    margin-bottom: 16px; padding: 12px 16px;
+    border: 1px solid #30363d; border-radius: 8px; background: #161b22;
+  }
+  .mg-svg { width: 100%; height: auto; display: block; max-height: 240px; }
+  .mg-edge-path {
+    fill: none; stroke: #30363d; stroke-width: 1.5;
+    transition: stroke 0.3s ease;
+  }
+  .mg-edge-label {
+    fill: #8b949e; font-size: 9px; font-family: 'SF Mono','Fira Code',Menlo,Consolas,monospace;
+    pointer-events: none;
+  }
+  .mg-node rect {
+    fill: #0d1117; stroke: #30363d; stroke-width: 1.5;
+    transition: fill 0.2s ease, stroke 0.2s ease;
+  }
+  .mg-node-label {
+    fill: #c9d1d9; font-size: 11px; font-weight: 600;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    pointer-events: none;
+  }
+  .mg-node-active rect {
+    fill: rgba(31, 111, 235, 0.18);
+    stroke: #1f6feb; stroke-width: 2.5;
+  }
+  .mg-node-active .mg-node-label { fill: #f0f6fc; }
+  .mg-terminal rect {
+    fill: #0d1117; stroke: #6e7681; stroke-width: 1.5; stroke-dasharray: 4 3;
+  }
+  .mg-terminal-label {
+    fill: #8b949e; font-size: 11px; font-weight: 600; text-transform: uppercase;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    pointer-events: none;
+  }
+  .mg-history {
+    margin-top: 12px; border-top: 1px solid #21262d; padding-top: 8px;
+  }
+  .mg-history-title {
+    font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.05em;
+    color: #8b949e; margin-bottom: 6px;
+  }
+  .mg-history-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
+  .mg-history-row {
+    display: flex; align-items: baseline; gap: 8px; font-size: 0.76rem;
+    padding: 3px 6px; border-radius: 4px; background: #0d1117;
+  }
+  .mg-history-event {
+    color: #58a6ff; font-weight: 600; flex: 0 0 auto;
+    font-family: 'SF Mono','Fira Code',Menlo,Consolas,monospace;
+  }
+  .mg-history-flow { color: #c9d1d9; flex: 1 1 auto; min-width: 0; }
+  .mg-history-time {
+    color: #8b949e; flex: 0 0 auto;
+    font-family: 'SF Mono','Fira Code',Menlo,Consolas,monospace;
+  }
+  .amendments-panel { margin-bottom: 8px; }
+  .amendments-panel h4 { color: #f0f6fc; margin: 8px 0 4px; font-size: 0.95rem; }
+  .amendments-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+  .amendment-row { border: 1px solid #21262d; border-radius: 4px; background: #0d1117; }
+  .amendment-head {
+    display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+    cursor: pointer; user-select: none; font-size: 0.8rem;
+  }
+  .amendment-head:hover { background: #161b22; }
+  .amendment-time { color: #8b949e; font-family: 'SF Mono','Fira Code',Menlo,Consolas,monospace; font-size: 0.72rem; flex: 0 0 auto; }
+  .amendment-section { color: #c9d1d9; font-size: 0.78rem; }
+  .amendment-source { color: #58a6ff; font-size: 0.72rem; font-weight: 600; text-transform: uppercase; flex: 0 0 auto; }
+  .amendment-caret { color: #8b949e; font-size: 0.7rem; flex: 0 0 10px; }
+  .amendment-body { display: none; padding: 6px 10px 8px; border-top: 1px solid #21262d; }
+  .amendment-rationale { font-size: 0.78rem; color: #8b949e; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .amendment-diff { display: flex; gap: 12px; }
+  .amendment-diff-before, .amendment-diff-after { flex: 1; }
+  .amendment-diff-label { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.05em; color: #8b949e; margin-bottom: 2px; }
+  .amendment-diff-item { font-size: 0.76rem; color: #c9d1d9; padding: 1px 0; }
+  .amendment-diff-before .amendment-diff-item { color: #f85149; }
+  .amendment-diff-after .amendment-diff-item { color: #3fb950; }
+</style>
 </head>
 <body>
   <div id="forge-app-root"></div>

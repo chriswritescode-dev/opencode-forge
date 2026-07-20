@@ -3,6 +3,8 @@ import type { LoopsRepo, LoopRow, LoopLargeFields } from '../storage/repos/loops
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo, ReviewFindingRow } from '../storage/repos/review-findings-repo'
 import type { SectionPlansRepo, SectionPlanRow } from '../storage/repos/section-plans-repo'
+import type { LoopTransitionsRepo } from '../storage/repos/loop-transitions-repo'
+import type { PlanAmendmentsRepo } from '../storage/repos/plan-amendments-repo'
 import type { LoopState } from './state'
 import { loopRowToState, loopStateToRow } from './state'
 import {
@@ -24,13 +26,15 @@ import { bumpRecurrence, findingRecurrenceKey } from './finding-recurrence'
 export const MAX_RETRIES = 3
 const STALL_TIMEOUT_MS = 60_000
 const MAX_CONSECUTIVE_STALLS = 5
+/** Hard cap on the total number of sections a loop may have after amendment. */
+const MAX_TOTAL_SECTIONS = 24
 
 export type LoopChangeReason =
   | 'insert' | 'delete' | 'terminate'
   | 'rotate' | 'phase' | 'iteration'
   | 'status' | 'session'
   | 'sandbox' | 'workspace' | 'audit-result' | 'post-action-report'
-  | 'model-failed' | 'error'
+  | 'model-failed' | 'error' | 'sections-adjusted'
 
 export type LoopChangeNotifier = (reason: LoopChangeReason, loopName: string, hint?: { projectDir?: string; worktreeDir?: string }) => void
 
@@ -38,6 +42,8 @@ export interface LoopService {
   getActiveState(name: string): LoopState | null
   getAnyState(name: string): LoopState | null
   setState(name: string, state: LoopState): void
+  /** In-place row restore via UPDATE (preserves child rows such as loop_transitions/section_plans that would be cascade-deleted by deleteState + setState). Falls back to INSERT if the row was concurrently deleted. */
+  restoreState(name: string, state: LoopState): void
   deleteState(name: string): void
   registerLoopSession(sessionId: string, loopName: string): void
   resolveLoopName(sessionId: string): string | null
@@ -89,6 +95,21 @@ export interface LoopService {
   startSection(loopName: string, index: number): void
   bulkInsertSections(loopName: string, sections: { index: number; title: string; content: string }[]): void
   setTotalSections(loopName: string, total: number): void
+  recordTransition(name: string, entry: {
+    eventType: string
+    transitionKind: string
+    fromPhase: string
+    toPhase: string | null
+    status?: string | null
+    reason?: string | null
+    iteration: number
+    sectionIndex?: number | null
+  }): void
+  adjustRemainingSections(name: string, args: {
+    sections: { title: string; content: string }[]
+    rationale: string
+    auditorSessionId?: string
+  }): Promise<{ ok: true; totalSections: number } | { ok: false; error: string }>
 }
 
 export function createLoopService(
@@ -100,6 +121,9 @@ export function createLoopService(
   loopConfig?: LoopConfig,
   notify?: LoopChangeNotifier,
   sectionPlansRepo?: SectionPlansRepo,
+  loopTransitionsRepo?: LoopTransitionsRepo,
+  planAmendmentsRepo?: PlanAmendmentsRepo,
+  runExclusive?: <T>(loopName: string, fn: () => Promise<T>) => Promise<T>,
 ): LoopService {
   const notifyLoopChange: LoopChangeNotifier = notify ?? (() => {})
   const coderDecisionsByLoop = new Map<string, string>()
@@ -136,6 +160,7 @@ export function createLoopService(
     const row = loopStateToRow(state, projectId)
     const large: LoopLargeFields = {
       lastAuditResult: state.lastAuditResult ?? null,
+      postActionReport: state.postActionReport ?? null,
       // Goal loops persist their goal solely in loop_large_fields, never in plans.
       goal: row.kind === 'goal' ? (state.goal ?? null) : null,
     }
@@ -156,6 +181,23 @@ export function createLoopService(
     coderDecisionsByLoop.delete(name)
     findingRecurrenceByLoop.delete(name)
     notifyLoopChange('delete', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
+  }
+
+  function restoreState(name: string, state: LoopState): void {
+    if (state.loopName !== name) {
+      throw new Error(`restoreState: name parameter "${name}" does not match state.loopName "${state.loopName}"`)
+    }
+    const row = loopStateToRow(state, projectId)
+    const large: LoopLargeFields = {
+      lastAuditResult: state.lastAuditResult ?? null,
+      postActionReport: state.postActionReport ?? null,
+      goal: row.kind === 'goal' ? (state.goal ?? null) : null,
+    }
+    loopsRepo.restore(row, large)
+    if (row.kind !== 'goal' && state.prompt) {
+      plansRepo.writeForLoop(projectId, name, state.prompt)
+    }
+    notifyLoopChange('rotate', name, { projectDir: state.projectDir, worktreeDir: state.worktreeDir })
   }
 
   function setStatus(name: string, status: LoopRow['status']): void {
@@ -482,6 +524,14 @@ export function createLoopService(
   }
 
   function setCurrentSectionIndex(loopName: string, index: number): void {
+    // Defensive clamp against suffix-deletion races: if `current_section_index`
+    // was persisted from a snapshot where `total_sections = N` but the loop row
+    // has since been amended to `total_sections < index`, clamp the index so
+    // the invariant `current_section_index < total_sections` always holds.
+    const row = loopsRepo.get(projectId, loopName)
+    if (row && row.totalSections > 0 && index >= row.totalSections) {
+      index = row.totalSections - 1
+    }
     loopsRepo.setCurrentSectionIndex(projectId, loopName, index)
   }
 
@@ -500,14 +550,194 @@ export function createLoopService(
     sectionPlansRepo.bulkInsert({ projectId, loopName, sections })
   }
 
+  /** Defensive clamp for `totalSections` when reduced by a suffix deletion.
+
+   * When `setTotalSections` lowers the total, any already-persisted
+   * `current_section_index` may be in the deleted region.  Clamp it
+   * back to `total - 1` to preserve the invariant that the current index
+   * never exceeds the highest valid section index.  */
   function setTotalSections(loopName: string, total: number): void {
     loopsRepo.setTotalSections(projectId, loopName, total)
+    if (total > 0) {
+      const row = loopsRepo.get(projectId, loopName)
+      if (row && row.currentSectionIndex >= total) {
+        loopsRepo.setCurrentSectionIndex(projectId, loopName, total - 1)
+      }
+    }
+  }
+
+  function recordTransition(name: string, entry: {
+    eventType: string
+    transitionKind: string
+    fromPhase: string
+    toPhase: string | null
+    status?: string | null
+    reason?: string | null
+    iteration: number
+    sectionIndex?: number | null
+  }): void {
+    if (!loopTransitionsRepo) return
+    try {
+      loopTransitionsRepo.insert({
+        projectId,
+        loopName: name,
+        eventType: entry.eventType,
+        transitionKind: entry.transitionKind,
+        fromPhase: entry.fromPhase,
+        toPhase: entry.toPhase,
+        status: entry.status ?? null,
+        reason: entry.reason ?? null,
+        iteration: entry.iteration,
+        sectionIndex: entry.sectionIndex ?? null,
+      })
+    } catch (err) {
+      // Persisted transition logging is best-effort: never propagate into the runtime.
+      logger.error(`Loop: failed to record transition for ${name}`, err as Error)
+    }
+  }
+
+    async function adjustRemainingSections(name: string, args: {
+    sections: { title: string; content: string }[]
+    rationale: string
+    auditorSessionId?: string
+  }): Promise<{ ok: true; totalSections: number } | { ok: false; error: string }> {
+    if (!sectionPlansRepo) {
+      return { ok: false, error: 'section plans repository is not configured' }
+    }
+    if (!planAmendmentsRepo) {
+      return { ok: false, error: 'plan amendments repository is not configured' }
+    }
+    if (!args.rationale || args.rationale.trim().length === 0) {
+      return { ok: false, error: 'rationale must not be empty' }
+    }
+    // Empty `sections` is permitted: it removes the entire pending suffix
+    // (Phase 8 auditors may delete remaining work, not just replace it).
+
+    // Serialization with the runtime's `tick()` promise chain prevents a
+    // stale in-memory decision from the auditing runner from racing against
+    // a concurrent section advance.  `BEGIN IMMEDIATE` still serialises the
+    // writes, but runExclusive serialises the read-then-write decision so
+    // the phase / index we operate on is the authoritative one at lock
+    // acquisition time.
+    type AdjustResult =
+      | { ok: true; totalSections: number; hint: { projectDir: string; worktreeDir: string } }
+      | { ok: false; error: string }
+
+    function isAdjustedOk(r: AdjustResult): r is { ok: true; totalSections: number; hint: { projectDir: string; worktreeDir: string } } {
+      return r.ok
+    }
+
+    function inner(): AdjustResult {
+      let txnResult: AdjustResult
+      try {
+        txnResult = sectionPlansRepo!.immediateTransaction(() => {
+          const row = loopsRepo.get(projectId, name)
+          if (!row) {
+            return { ok: false as const, error: `loop ${name} does not exist` }
+          }
+          if (row.status !== 'running') {
+            return { ok: false as const, error: `loop ${name} is not active` }
+          }
+          if (row.kind === 'goal') {
+            return { ok: false as const, error: 'goal loops do not support section amendment' }
+          }
+          if (row.totalSections === 0) {
+            return { ok: false as const, error: 'loop has no sectioned plan' }
+          }
+          if (row.phase !== 'auditing') {
+            return { ok: false as const, error: `adjustments are only allowed during auditing (current phase: ${row.phase})` }
+          }
+          // Defensive session authorization: ensures the caller holds the
+          // loop's current session, preventing a stale auditor session from
+          // modifying the plan after session rotation.
+          if (args.auditorSessionId && row.currentSessionId !== args.auditorSessionId) {
+            return { ok: false as const, error: `session mismatch: only the current auditor session may adjust the plan` }
+          }
+
+          const fromIndex = row.currentSectionIndex + 1
+          const newTotal = fromIndex + args.sections.length
+          if (newTotal > MAX_TOTAL_SECTIONS) {
+            return { ok: false as const, error: `resulting total sections (${newTotal}) would exceed cap ${MAX_TOTAL_SECTIONS}` }
+          }
+          if (newTotal === 0) {
+            return { ok: false as const, error: 'resulting total sections would be zero' }
+          }
+
+          const beforeRows = sectionPlansRepo!.list(projectId, name)
+            .filter((r) => r.sectionIndex >= fromIndex)
+            .map((r) => ({ index: r.sectionIndex, title: r.title, content: r.content }))
+          const sectionsBefore = JSON.stringify(beforeRows)
+
+          const replaceResult = sectionPlansRepo!.replacePendingSections({
+            projectId,
+            loopName: name,
+            fromIndex,
+            sections: args.sections,
+          })
+          if (!replaceResult.ok) {
+            return replaceResult
+          }
+
+          loopsRepo.setTotalSections(projectId, name, newTotal)
+
+          const afterRows = sectionPlansRepo!.list(projectId, name)
+            .filter((r) => r.sectionIndex >= fromIndex)
+            .map((r) => ({ index: r.sectionIndex, title: r.title, content: r.content }))
+          const sectionsAfter = JSON.stringify(afterRows)
+
+          planAmendmentsRepo!.insert({
+            projectId,
+            loopName: name,
+            source: 'auditor',
+            rationale: args.rationale,
+            appliedAtSection: row.currentSectionIndex,
+            sectionsBefore,
+            sectionsAfter,
+          })
+
+          return {
+            ok: true as const,
+            totalSections: newTotal,
+            hint: { projectDir: row.projectDir, worktreeDir: row.worktreeDir },
+          }
+        })
+      } catch (err) {
+        logger.error(`Loop: failed to apply section adjustment for ${name}`, err as Error)
+        return { ok: false, error: (err as Error).message ?? 'section adjustment failed' }
+      }
+
+      if (!isAdjustedOk(txnResult)) {
+        return { ok: false, error: txnResult.error }
+      }
+
+      try {
+        notifyLoopChange('sections-adjusted', name, {
+          projectDir: txnResult.hint.projectDir,
+          worktreeDir: txnResult.hint.worktreeDir,
+        })
+      } catch (notifyErr) {
+        logger.error(`Loop: sections-adjusted notification failed for ${name}`, notifyErr as Error)
+      }
+      return { ok: true, totalSections: txnResult.totalSections, hint: txnResult.hint }
+    }
+
+    // Strip the `hint` before returning to callers — it's only used for the notification inside inner().
+    function stripHint(r: AdjustResult): { ok: true; totalSections: number } | { ok: false; error: string } {
+      if (isAdjustedOk(r)) return { ok: r.ok, totalSections: r.totalSections }
+      return r
+    }
+
+    if (runExclusive) {
+      return runExclusive(name, async () => stripHint(inner()))
+    }
+    return stripHint(inner())
   }
 
   return {
     getActiveState,
     getAnyState,
     setState,
+    restoreState,
     deleteState,
     registerLoopSession,
     resolveLoopName,
@@ -559,5 +789,7 @@ export function createLoopService(
     startSection,
     bulkInsertSections,
     setTotalSections,
+    recordTransition,
+    adjustRemainingSections,
   }
 }

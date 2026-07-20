@@ -7,12 +7,14 @@ import { createLoopsRepo } from '../../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
+import { createLoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
 import { createLoopService } from '../../src/loop/service'
 import type { Logger } from '../../src/types'
 import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
 import type { PlansRepo } from '../../src/storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../../src/storage/repos/review-findings-repo'
 import type { SectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
+import type { LoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
 import type { LoopService } from '../../src/loop/service'
 const Database = require('better-sqlite3')
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
@@ -27,12 +29,42 @@ const mockLogger: Logger = {
 
 const PROJECT_ID = 'test-project'
 
+/**
+ * Minimal non-reentrant mutex emulating the runtime's per-loop state lock
+ * (`withStateLock`). Used by the provider-limit deadlock regression test to
+ * prove that `deps.loop.terminate` is no longer invoked while `runExclusive`
+ * still holds the lock.
+ */
+function createNonReentrantMutex() {
+  let locked = false
+  const waiters: Array<() => void> = []
+  return {
+    acquire: (): Promise<void> => {
+      if (!locked) {
+        locked = true
+        return Promise.resolve()
+      }
+      return new Promise<void>((resolve) => waiters.push(resolve))
+    },
+    release: (): void => {
+      const next = waiters.shift()
+      if (next) {
+        next()
+      } else {
+        locked = false
+      }
+    },
+    isLocked: (): boolean => locked,
+  }
+}
+
 describe('handleLoopRestart from stall_timeout', () => {
   let db: Database
   let loopsRepo: LoopsRepo
   let plansRepo: PlansRepo
   let reviewFindingsRepo: ReviewFindingsRepo
   let sectionPlansRepo: SectionPlansRepo
+  let loopTransitionsRepo: LoopTransitionsRepo
   let loopService: LoopService
 
   const mockWorkspaceStatusRegistry = {
@@ -55,6 +87,7 @@ describe('handleLoopRestart from stall_timeout', () => {
     plansRepo = createPlansRepo(db)
     reviewFindingsRepo = createReviewFindingsRepo(db)
     sectionPlansRepo = createSectionPlansRepo(db)
+    loopTransitionsRepo = createLoopTransitionsRepo(db)
     loopService = createLoopService(
       loopsRepo,
       plansRepo,
@@ -63,8 +96,8 @@ describe('handleLoopRestart from stall_timeout', () => {
       mockLogger,
       undefined,
       undefined,
-      undefined,
       sectionPlansRepo,
+      loopTransitionsRepo,
     )
   })
 
@@ -172,6 +205,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setPhase: noopFn,
       buildSectionInitialPrompt: buildSectionInitialPromptSpy,
       buildFinalAuditPrompt: buildFinalAuditPromptSpy,
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
       generateUniqueLoopName: () => 'stall-loop',
     }
 
@@ -289,6 +323,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setPhase: noopFn,
       buildSectionInitialPrompt: () => 'section prompt',
       buildFinalAuditPrompt: () => 'audit prompt',
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
       generateUniqueLoopName: () => 'iter-loop',
     }
 
@@ -384,6 +419,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setPhase: noopFn,
       buildSectionInitialPrompt: () => 'section prompt',
       buildFinalAuditPrompt: () => 'audit prompt',
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
       generateUniqueLoopName: () => 'worktree-loop',
     }
 
@@ -501,6 +537,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setPhase: noopFn,
       buildSectionInitialPrompt: buildSectionInitialPromptSpy,
       buildFinalAuditPrompt: buildFinalAuditPromptSpy,
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
       generateUniqueLoopName: () => 'final-audit-loop',
     }
 
@@ -601,6 +638,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       buildPostActionPrompt: buildPostActionPromptSpy,
       buildSectionInitialPrompt: buildSectionInitialPromptSpy,
       buildFinalAuditPrompt: buildFinalAuditPromptSpy,
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
       generateUniqueLoopName: () => 'post-action-loop',
     }
 
@@ -713,6 +751,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setPhase: (name, phase) => loopService.setPhase(name, phase),
       buildSectionInitialPrompt: () => 'section prompt',
       buildFinalAuditPrompt: () => 'audit prompt',
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
       generateUniqueLoopName: () => 'race-loop',
     }
 
@@ -836,6 +875,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       setPhase: (name, phase) => loopService.setPhase(name, phase),
       buildSectionInitialPrompt: () => 'section prompt',
       buildFinalAuditPrompt: () => 'audit prompt',
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
       generateUniqueLoopName: () => 'audit-restart-loop',
     }
 
@@ -898,6 +938,429 @@ describe('handleLoopRestart from stall_timeout', () => {
     expect((client.session.abort as any).mock.calls).toHaveLength(1)
     expect((client.session.abort as any).mock.calls[0][0].sessionID).toBe('session-old')
   })
+
+  test('restart uses phase re-fetched under the lock, not the stale pre-lock snapshot (final_auditing -> final_audit_fix race)', async () => {
+    // The pre-lock snapshot (captured via listActive/listRecent before runExclusive
+    // acquires the lock) sees phase 'final_auditing'. While we wait for the lock,
+    // the loop transitions to final_audit_fix. The authoritative state fetched
+    // inside the lock must drive the restart decision so we restart as a coding
+    // pass (phase 'coding', 'code' agent), not as an auditor session.
+    insertLoop({
+      loopName: 'final-audit-race',
+      phase: 'final_auditing',
+      currentSectionIndex: 5,
+      iteration: 6,
+      totalSections: 5,
+      status: 'running',
+      terminationReason: null,
+      active: true,
+    })
+
+    const noopFn = () => {}
+    const buildSectionInitialPromptSpy = vi.fn()
+    const buildFinalAuditPromptSpy = vi.fn()
+
+    // Simulate the phase transition happening while the lock is contended:
+    // the first under-lock getActiveState call mutates the persisted phase from
+    // 'final_auditing' to 'final_audit_fix' and rotates the current session id
+    // from 'session-old' to 'fix-session' before returning, so the
+    // authoritative state that drives the restart decision includes the session
+    // we actually abort (and must report as previousSessionId), not the stale
+    // pre-lock audit session.
+    let transitioned = false
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => {
+        if (!transitioned) {
+          transitioned = true
+          loopsRepo.updatePhase(PROJECT_ID, name, 'final_audit_fix')
+          loopsRepo.setCurrentSessionId(PROJECT_ID, name, 'fix-session')
+        }
+        return loopService.getActiveState(name)
+      },
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: (sid: string, name: string) => loopService.registerLoopSession(sid, name),
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: (name, phase) => loopService.setPhase(name, phase),
+      buildSectionInitialPrompt: buildSectionInitialPromptSpy,
+      buildFinalAuditPrompt: buildFinalAuditPromptSpy,
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      generateUniqueLoopName: () => 'final-audit-race',
+    }
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-code-session' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: { list: async () => [], remove: async () => {} },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+    })
+
+    let capturedPreLockPhase: string | undefined
+    let capturedPreLockSessionId: string | undefined
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => {
+        // Capture the pre-lock snapshot's phase and sessionId as observed by
+        // the outer dispatch code, before the under-lock transition mutates
+        // the DB. This proves the under-lock refresh was necessary.
+        const preLock = mockLoopService.listActive!().find((s) => s.loopName === name)
+        capturedPreLockPhase = preLock?.phase
+        capturedPreLockSessionId = preLock?.sessionId
+        return fn()
+      },
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+
+      plansRepo,
+      loopsRepo,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+          registerSessionReverseIndex: () => {},
+          unregisterSessionReverseIndex: () => {},
+        } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
+      pendingTeardowns: mockPendingTeardowns as any,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'final-audit-race' },
+        force: true,
+      },
+    )
+
+    expect(result.ok).toBe(true)
+
+    // Sanity: the pre-lock snapshot really did observe 'final_auditing' and the
+    // stale audit session. Without the under-lock sync, restart would have
+    // selected the auditor agent and reported the wrong previous session.
+    expect(capturedPreLockPhase).toBe('final_auditing')
+    expect(capturedPreLockSessionId).toBe('session-old')
+
+    // The restart response reports the authoritative under-lock session that we
+    // actually aborted (the fix-session), not the stale pre-lock audit session.
+    if (!result.ok) return
+    expect(result.data.previousSessionId).toBe('fix-session')
+
+    // Authoritative under-lock phase was 'final_audit_fix', which this section
+    // maps to a coding restart pass — phase 'coding', code agent, section prompt.
+    const newState = loopService.getActiveState('final-audit-race')!
+    expect(newState.phase).toBe('coding')
+
+    expect(buildSectionInitialPromptSpy).toHaveBeenCalledTimes(1)
+    expect(buildFinalAuditPromptSpy).not.toHaveBeenCalled()
+
+    const promptCall = (client.session.promptAsync as any).mock.calls[0][0]
+    expect(promptCall.agent).toBe('code')
+    expect(promptCall.sessionID).toBe('new-code-session')
+  })
+
+  test('failed restart on an active loop terminates it restartable instead of resurrecting the aborted session (final_auditing -> final_audit_fix race with prompt failure)', async () => {
+    // The pre-lock snapshot sees phase 'final_auditing' with sessionId
+    // 'session-old'. While we wait for the lock, the loop transitions to
+    // final_audit_fix and rotates to a new fix session 'fix-session'. The
+    // restart observes this authoritative state under the lock, aborts the
+    // fix session, and starts a fresh restart pass. When the restart prompt
+    // delivery fails, rollback MUST NOT resurrect the aborted fix-session as a
+    // live registered session — that would strand the loop active with a dead
+    // session and no watchdog. Instead, the loop is terminated as errored
+    // (restartable without force), preserving the authoritative under-lock
+    // phase so a later restart resumes from final_audit_fix rather than the
+    // stale pre-lock phase.
+    insertLoop({
+      loopName: 'final-audit-failed-restart-race',
+      phase: 'final_auditing',
+      currentSectionIndex: 5,
+      iteration: 6,
+      totalSections: 5,
+      status: 'running',
+      terminationReason: null,
+      active: true,
+    })
+
+    const noopFn = () => {}
+    const buildSectionInitialPromptSpy = vi.fn()
+    const buildFinalAuditPromptSpy = vi.fn()
+
+    // Simulate the phase transition AND session rotation happening while the
+    // lock is contended: the first under-lock getActiveState call mutates the
+    // persisted phase (final_auditing -> final_audit_fix) and current
+    // session id (session-old -> fix-session) before returning, so the
+    // authoritative under-lock state drives both restart decisions and the
+    // rollback target.
+    let transitioned = false
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => {
+        if (!transitioned) {
+          transitioned = true
+          loopsRepo.updatePhase(PROJECT_ID, name, 'final_audit_fix')
+          loopsRepo.setCurrentSessionId(PROJECT_ID, name, 'fix-session')
+        }
+        return loopService.getActiveState(name)
+      },
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: (sid: string, name: string) => loopService.registerLoopSession(sid, name),
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: (name, phase) => loopService.setPhase(name, phase),
+      terminate: (name, opts) => loopService.terminate(name, opts),
+      buildSectionInitialPrompt: buildSectionInitialPromptSpy,
+      buildFinalAuditPrompt: buildFinalAuditPromptSpy,
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      generateUniqueLoopName: () => 'final-audit-failed-restart-race',
+    }
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-code-session' }),
+        get: async () => ({}),
+        // Restart prompt delivery fails — triggers rollback path.
+        promptAsync: async () => { throw new Error('prompt delivery failed') },
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: { list: async () => [], remove: async () => {} },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+    })
+
+    let capturedPreLockPhase: string | undefined
+    let capturedPreLockSessionId: string | undefined
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => {
+        // Capture the pre-lock snapshot as observed by the outer dispatch
+        // code, before the under-lock transition mutates the DB. This proves
+        // the rollback target was stale without the under-lock refresh.
+        const preLock = mockLoopService.listActive!().find((s) => s.loopName === name)
+        capturedPreLockPhase = preLock?.phase
+        capturedPreLockSessionId = preLock?.sessionId
+        return fn()
+      },
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+
+      plansRepo,
+      loopsRepo,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+          registerSessionReverseIndex: () => {},
+          unregisterSessionReverseIndex: () => {},
+        } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
+      pendingTeardowns: mockPendingTeardowns as any,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'final-audit-failed-restart-race' },
+        force: true,
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.message).toContain('could not send prompt to new session')
+
+    // Sanity: the pre-lock snapshot really did observe final_auditing + the
+    // old audit session. Without the under-lock refresh, rollback would have
+    // restored these stale values.
+    expect(capturedPreLockPhase).toBe('final_auditing')
+    expect(capturedPreLockSessionId).toBe('session-old')
+
+    // The under-lock abort targeted the authoritative fix-session, not the
+    // stale audit session — restart aborts the session it actually observed.
+    const abortCall = (client.session.abort as any).mock.calls[0][0]
+    expect(abortCall.sessionID).toBe('fix-session')
+
+    // Rollback terminated the loop as errored (restartable), preserving the
+    // authoritative under-lock phase so a later restart resumes from
+    // final_audit_fix rather than the stale pre-lock final_auditing. The
+    // aborted fix-session is NOT re-registered as live.
+    expect(loopService.getActiveState('final-audit-failed-restart-race')).toBeNull()
+    const restoredState = loopService.getAnyState('final-audit-failed-restart-race')!
+    expect(restoredState).not.toBeNull()
+    expect(restoredState.active).toBe(false)
+    expect(restoredState.status).toBe('errored')
+    expect(restoredState.terminationReason).toBe('restart_prompt_failed')
+    expect(restoredState.phase).toBe('final_audit_fix')
+
+    // Neither the aborted fix-session nor the fresh restart session resolves to
+    // this loop — rollback must not resurrect a dead session as live.
+    expect(loopService.resolveLoopName('fix-session')).toBeNull()
+    expect(loopService.resolveLoopName('new-code-session')).toBeNull()
+  })
+
+  test('post-action-disabled restart records the completed terminal transition row', async () => {
+    insertLoop({
+      loopName: 'post-action-disabled-loop',
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      currentSectionIndex: 0,
+      iteration: 2,
+      totalSections: 0,
+      phase: 'post_action',
+    })
+
+    const noopFn = () => {}
+
+    // The disabled-post-action restart branch calls loop.service.terminate and
+    // loop.service.recordTransition. Delegate both to the real loopService so
+    // the terminal row is persisted through the same shared path used by the
+    // runtime.
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: noopFn,
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: noopFn,
+      terminate: (name, opts) => loopService.terminate(name, opts),
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      buildPostActionPrompt: () => 'should-not-be-called',
+      buildSectionInitialPrompt: () => 'should-not-be-called',
+      buildFinalAuditPrompt: () => 'should-not-be-called',
+      generateUniqueLoopName: () => 'post-action-disabled-loop',
+    }
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'should-not-be-used' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: { list: async () => [], remove: async () => {} },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+    })
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      // postAction NOT configured → resolvePostActionConfig returns enabled=false.
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+
+      plansRepo,
+      loopsRepo,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+          registerSessionReverseIndex: () => {},
+          unregisterSessionReverseIndex: () => {},
+        } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
+      pendingTeardowns: mockPendingTeardowns as any,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'post-action-disabled-loop' },
+      },
+    )
+
+    // The restart returns the disabled-post-action error outcome (the restart
+    // service wraps the in-lock failure as a 500 internal_error response,
+    // which is the existing behavior of the dispatch path; the row assertion
+    // below is what we actually care about for the bug fix).
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.status).toBe(500)
+    expect(result.error.message).toContain('post-action is disabled')
+
+    // Exactly one terminal transition row was persisted through the shared path.
+    const rows = loopTransitionsRepo.listForLoop(PROJECT_ID, 'post-action-disabled-loop')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].eventType).toBe('completed')
+    expect(rows[0].transitionKind).toBe('terminate')
+    expect(rows[0].fromPhase).toBe('post_action')
+    expect(rows[0].toPhase).toBeNull()
+    expect(rows[0].status).toBe('completed')
+    expect(rows[0].reason).toBe('completed')
+    expect(rows[0].iteration).toBe(2)
+  })
 })
 
 describe('handleLoopRestart restartability rules', () => {
@@ -906,7 +1369,9 @@ describe('handleLoopRestart restartability rules', () => {
   let plansRepo: PlansRepo
   let reviewFindingsRepo: ReviewFindingsRepo
   let sectionPlansRepo: SectionPlansRepo
+  let loopTransitionsRepo: LoopTransitionsRepo
   let loopService: LoopService
+  let notifySpy: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
     const tempDir = mkdtempSync(join(tmpdir(), 'exec-restart-rules-test-'))
@@ -918,6 +1383,8 @@ describe('handleLoopRestart restartability rules', () => {
     plansRepo = createPlansRepo(db)
     reviewFindingsRepo = createReviewFindingsRepo(db)
     sectionPlansRepo = createSectionPlansRepo(db)
+    loopTransitionsRepo = createLoopTransitionsRepo(db)
+    notifySpy = vi.fn()
     loopService = createLoopService(
       loopsRepo,
       plansRepo,
@@ -925,9 +1392,9 @@ describe('handleLoopRestart restartability rules', () => {
       PROJECT_ID,
       mockLogger,
       undefined,
-      undefined,
-      undefined,
+      notifySpy,
       sectionPlansRepo,
+      loopTransitionsRepo,
     )
   })
 
@@ -1020,9 +1487,11 @@ describe('handleLoopRestart restartability rules', () => {
       setState: (name, state) => loopService.setState(name, state),
       deleteState: (name) => loopService.deleteState(name),
       setPhase: noopFn,
+      terminate: (name, opts) => loopService.terminate(name, opts),
       buildSectionInitialPrompt: () => 'section prompt',
       buildFinalAuditPrompt: () => 'audit prompt',
       buildContinuationPrompt: () => 'goal restart prompt',
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
       generateUniqueLoopName: (name) => name,
     }
 
@@ -1530,5 +1999,402 @@ describe('handleLoopRestart restartability rules', () => {
     // State was rolled back (new state deleted)
     const newState = loopService.getActiveState(loopName)
     expect(newState).toBeNull()
+  })
+
+  test('successful phase-changing restart records exactly one restart phase transition row', async () => {
+    const loopName = 'success-phase-change-restart'
+    insertLoop({
+      loopName,
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'auditing',
+      iteration: 3,
+      totalSections: 0,
+    })
+
+    const { service } = await createMockService()
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName } },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const rows = loopTransitionsRepo.listForLoop(PROJECT_ID, loopName)
+    // Exactly one row: pre-prompt restart phase transition (auditing -> coding).
+    // The duplicate post-success log at the old line-2170 site is gone.
+    expect(rows).toHaveLength(1)
+    expect(rows[0].eventType).toBe('restart')
+    expect(rows[0].transitionKind).toBe('phase')
+    expect(rows[0].fromPhase).toBe('auditing')
+    expect(rows[0].toPhase).toBe('coding')
+    // The loop is running again, so no terminate notify should have fired.
+    expect(notifySpy.mock.calls.find((c: any[]) => c[0] === 'terminate' && c[1] === loopName)).toBeUndefined()
+  })
+
+  test('successful same-phase restart (final_auditing preserved) records no transition rows', async () => {
+    const loopName = 'success-same-phase-restart'
+    insertLoop({
+      loopName,
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'final_auditing',
+      iteration: 3,
+      totalSections: 0,
+    })
+
+    const { service } = await createMockService()
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName } },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const rows = loopTransitionsRepo.listForLoop(PROJECT_ID, loopName)
+    // Persisted phase equals restart phase (final_auditing), so no phase
+    // change to log — zero rows.
+    expect(rows).toHaveLength(0)
+  })
+
+  test('inactive-loop prompt failure records only a rollback transition row and fires no terminate notify', async () => {
+    const loopName = 'inactive-fail-rollback'
+    insertLoop({
+      loopName,
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'auditing',
+      iteration: 2,
+      totalSections: 0,
+    })
+
+    const { service, client } = await createMockService()
+    ;(client.session.promptAsync as any).mockImplementation(async () => {
+      throw { name: 'NotFoundError', data: { message: 'Session not found: ses_x' } }
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName } },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+
+    const rows = loopTransitionsRepo.listForLoop(PROJECT_ID, loopName)
+    // Two rows for an inactive rollback whose restart changed the phase:
+    //   1. previousPhase -> restartPhase (pre-prompt restart phase row)
+    //   2. restartPhase -> previousPhase (rollback restoration row)
+    // No terminal row — the inactive row is restored unchanged.
+    expect(rows).toHaveLength(2)
+    expect(rows[0].eventType).toBe('restart')
+    expect(rows[0].transitionKind).toBe('phase')
+    expect(rows[0].fromPhase).toBe('auditing')
+    expect(rows[0].toPhase).toBe('coding')
+    expect(rows[1].eventType).toBe('restart_prompt_failed')
+    expect(rows[1].transitionKind).toBe('rollback')
+    expect(rows[1].fromPhase).toBe('coding')
+    expect(rows[1].toPhase).toBe('auditing')
+    expect(rows[1].status).toBeNull()
+    expect(rows[1].reason).toBeNull()
+
+    // Restore preserved the prior terminal row state — loop stays inactive.
+    const restoredState = loopService.getAnyState(loopName)!
+    expect(restoredState.active).toBe(false)
+    expect(restoredState.status).toBe('stalled')
+    expect(restoredState.phase).toBe('auditing')
+    expect(restoredState.terminationReason).toBe('stall_timeout')
+
+    // No terminate notify fired (group orchestration must not learn about a
+    // no-op rollback on an already-stopped loop).
+    expect(notifySpy.mock.calls.find((c: any[]) => c[0] === 'terminate' && c[1] === loopName)).toBeUndefined()
+  })
+
+  test('active-loop prompt failure records ordered restart/rollback/terminate rows and fires terminate notify', async () => {
+    const loopName = 'active-fail-rollback'
+    insertLoop({
+      loopName,
+      status: 'running',
+      terminationReason: null,
+      phase: 'auditing',
+      iteration: 4,
+      totalSections: 0,
+      active: true,
+    })
+
+    const { service, client } = await createMockService()
+    ;(client.session.promptAsync as any).mockImplementation(async () => {
+      throw { name: 'NotFoundError', data: { message: 'Session not found: ses_x' } }
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName }, force: true },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+
+    const rows = loopTransitionsRepo.listForLoop(PROJECT_ID, loopName)
+    // Ordered: previousPhase -> restartPhase (restart phase), restartPhase ->
+    // previousPhase (rollback), previousPhase -> null (terminate).
+    expect(rows).toHaveLength(3)
+    expect(rows[0].eventType).toBe('restart')
+    expect(rows[0].transitionKind).toBe('phase')
+    expect(rows[0].fromPhase).toBe('auditing')
+    expect(rows[0].toPhase).toBe('coding')
+    expect(rows[1].eventType).toBe('restart_prompt_failed')
+    expect(rows[1].transitionKind).toBe('rollback')
+    expect(rows[1].fromPhase).toBe('coding')
+    expect(rows[1].toPhase).toBe('auditing')
+    expect(rows[2].eventType).toBe('restart_prompt_failed')
+    expect(rows[2].transitionKind).toBe('terminate')
+    expect(rows[2].fromPhase).toBe('auditing')
+    expect(rows[2].toPhase).toBeNull()
+    expect(rows[2].status).toBe('errored')
+    expect(rows[2].reason).toBe('restart_prompt_failed')
+
+    // Active-rollback routed through loopService.terminate so group
+    // orchestration is informed via the terminate notify.
+    const terminateNotify = notifySpy.mock.calls.find(
+      (c: any[]) => c[0] === 'terminate' && c[1] === loopName,
+    )
+    expect(terminateNotify).toBeDefined()
+
+    const restoredState = loopService.getAnyState(loopName)!
+    expect(restoredState.active).toBe(false)
+    expect(restoredState.status).toBe('errored')
+    expect(restoredState.terminationReason).toBe('restart_prompt_failed')
+    expect(restoredState.phase).toBe('auditing')
+  })
+
+  test('provider-limit restart records only the terminal transition row and fires terminate notify', async () => {
+    const loopName = 'provider-limit-transition-row'
+    insertLoop({
+      loopName,
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'auditing',
+      iteration: 2,
+      totalSections: 0,
+    })
+
+    // Use the default mock terminate (sets errored + provider_limit reason).
+    const { service, client } = await createMockService()
+    ;(client.session.promptAsync as any).mockImplementation(async () => {
+      throw { name: 'APIError', data: { message: 'You have reached your usage limit', statusCode: 429 } }
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName } },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+
+    // Provider-limit branch routes through deps.loop.terminate (the runtime
+    // helper) — that path emits the terminate notify via the spy'd mock
+    // defaultTerminate. No rollback rows: the limit branch returns before the
+    // generic rollback path.
+    const terminateNotify = notifySpy.mock.calls.find(
+      (c: any[]) => c[0] === 'terminate' && c[1] === loopName,
+    )
+    expect(terminateNotify).toBeDefined()
+  })
+
+  test('provider-limit termination runs outside the runExclusive lock (non-reentrant deadlock regression)', async () => {
+    // Regression guard: the buggy implementation called `deps.loop.terminate`
+    // inside the runExclusive callback. `deps.loop.terminate` ->
+    // `terminateLoopByName` -> `withStateLock` is non-reentrant, so while the
+    // runExclusive callback still held the per-loop state lock, the inner
+    // lock acquisition would block forever and the restart request would hang.
+    // The fix defers termination to AFTER runExclusive releases the lock.
+    //
+    // We emulate the runtime's per-loop non-reentrant mutex here and route both
+    // `runExclusive` and `deps.loop.terminate` through it. With the regression
+    // present, the inner terminate's acquire() would never resolve and the
+    // Promise.race would reject with the deadlock sentinel. With the fix, the
+    // callback returns the provider-limit outcome WITHOUT calling terminate; the
+    // outer flow performs the canonical termination after the lock is released.
+    const loopName = 'provider-limit-deadlock-regression'
+    insertLoop({
+      loopName,
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'coding',
+      iteration: 2,
+      totalSections: 0,
+    })
+
+    const mutex = createNonReentrantMutex()
+    let terminateAttemptedInsideLock = false
+    let terminateCalls = 0
+    let lastTerminateArgs: { name: string; reason: any } | null = null
+    const terminateSpy = async (name: string, reason: any) => {
+      terminateCalls++
+      lastTerminateArgs = { name, reason }
+      // Emulate runtime.terminate -> terminateLoopByName -> terminateLoop ->
+      // withStateLock by attempting to acquire the SAME per-loop mutex. If
+      // runExclusive still holds it (regression), this await never resolves.
+      if (mutex.isLocked()) terminateAttemptedInsideLock = true
+      await mutex.acquire()
+      try {
+        const state = loopService.getActiveState(name)
+        if (!state?.active) return false
+        const status = 'errored' as const
+        const reasonText = reason.kind === 'provider_limit' ? `provider_limit: ${reason.message}` : reason.kind
+        // Mirror runtime.terminateLoop: record the terminal transition row
+        // inside the admission guard, then persist the cancellation.
+        loopService.recordTransition(name, {
+          eventType: reason.kind,
+          transitionKind: 'terminate',
+          fromPhase: state.phase,
+          toPhase: null,
+          status,
+          reason: reasonText,
+          iteration: state.iteration ?? 0,
+          sectionIndex: state.totalSections > 0 ? (state.currentSectionIndex ?? 0) : null,
+        })
+        loopService.terminate(name, {
+          status,
+          reason: reasonText,
+          completedAt: Date.now(),
+        })
+      } finally {
+        mutex.release()
+      }
+      return true
+    }
+
+    const noopFn = () => {}
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: noopFn,
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: noopFn,
+      terminate: (name, opts) => loopService.terminate(name, opts),
+      buildSectionInitialPrompt: () => 'section prompt',
+      buildFinalAuditPrompt: () => 'audit prompt',
+      buildContinuationPrompt: () => 'goal restart prompt',
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      generateUniqueLoopName: (name) => name,
+    }
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-session-restart' }),
+        get: async () => ({}),
+        promptAsync: async () => {
+          throw { name: 'APIError', data: { message: 'You have reached your usage limit', statusCode: 429 } }
+        },
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: {
+        create: async () => ({ id: 'ws-new', directory: '/tmp', branch: 'main' }),
+        list: async () => [],
+        remove: async () => {},
+        warp: async () => {},
+        syncList: async () => {},
+      },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+    })
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+        await mutex.acquire()
+        try { return await fn() } finally { mutex.release() }
+      },
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const mockWorkspaceStatusRegistryInline = {
+      awaitConnected: async () => ({ connected: true }),
+    }
+    const mockPendingTeardownsInline = {
+      register: noopFn,
+      unregister: noopFn,
+      get: () => undefined,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+      plansRepo,
+      loopsRepo,
+      loop: {
+        service: mockLoopService,
+        listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+        listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+        setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+        generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+        registerSessionReverseIndex: () => {},
+        unregisterSessionReverseIndex: () => {},
+        terminate: terminateSpy,
+      } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistryInline as any,
+      pendingTeardowns: mockPendingTeardownsInline as any,
+      client,
+    })
+
+    // Race the dispatch against a deadlock sentinel. With the regression, the
+    // inner terminate await would block forever and the race rejects. With the
+    // fix, the dispatch completes well within the timeout.
+    const result = await Promise.race([
+      service.dispatch(
+        { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+        { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName } },
+      ),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('provider-limit restart deadlocked')), 2000)),
+    ]) as any
+
+    expect(result.ok).toBe(false)
+
+    // Termination ran exactly once — outside the runExclusive lock.
+    expect(terminateCalls).toBe(1)
+    expect(terminateAttemptedInsideLock).toBe(false)
+    expect((lastTerminateArgs as any)?.name).toBe(loopName)
+    expect((lastTerminateArgs as any)?.reason).toEqual({ kind: 'provider_limit', message: expect.stringContaining('usage limit') })
+
+    // Persisted state: errored + provider_limit reason.
+    const newState = loopService.getAnyState(loopName)
+    expect(newState).not.toBeNull()
+    expect(newState?.active).toBe(false)
+    expect(newState?.status).toBe('errored')
+    expect(newState?.terminationReason).toContain('provider_limit')
+
+    // Exactly one terminal transition row (provider_limit), and no rollback
+    // rows — the provider-limit branch returns before the generic rollback.
+    const rows = loopTransitionsRepo.listForLoop(PROJECT_ID, loopName)
+    expect(rows.filter((r) => r.transitionKind === 'terminate')).toHaveLength(1)
+    const termRow = rows.find((r) => r.transitionKind === 'terminate')!
+    expect(termRow.eventType).toBe('provider_limit')
+    expect(termRow.fromPhase).toBe('coding')
+    expect(termRow.toPhase).toBeNull()
+    expect(termRow.status).toBe('errored')
+    expect(termRow.reason).toContain('provider_limit')
+    expect(rows.filter((r) => r.transitionKind === 'rollback')).toHaveLength(0)
   })
 })

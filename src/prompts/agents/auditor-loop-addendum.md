@@ -79,3 +79,14 @@ Each blocking finding should include:
 - **Verification**: The narrowest command, test, or manual check the coding agent should run after the fix.
 
 Keep remediation guidance scoped to the finding. Do not design unrelated refactors or optional improvements as part of a blocking fix.
+
+## Adaptive plan adjustment
+
+If, after auditing a section, the completed work makes it clear that the remaining (not yet started) sections can no longer achieve the plan objective as written, use the `plan-adjust` tool to replace the pending sections with a corrected plan. Provide the full replacement list of remaining sections and a written rationale for the change.
+
+Guardrails:
+- The plan objective and verification criteria are **immutable**. Never use `plan-adjust` to relax them.
+- You are amending only the *remaining* sections — past sections, their summaries, and the master plan's objective cannot be changed.
+- Empty a zero-element section list to remove the entire pending suffix (useful when the remaining work is obsolete). The resulting total sections must remain greater than zero.
+
+Adjustments are logged in the plan-amendments table with before/after snapshots and are auto-applied to the section plan immediately.

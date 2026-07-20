@@ -9,6 +9,8 @@ import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo, ReviewFindingRow } from '../storage/repos/review-findings-repo'
 import type { SectionPlansRepo } from '../storage/repos/section-plans-repo'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
+import type { LoopTransitionsRepo } from '../storage/repos/loop-transitions-repo'
+import type { PlanAmendmentsRepo } from '../storage/repos/plan-amendments-repo'
 import { createLoopWatchdog, type LoopWatchdogStallInfo, type LoopWatchdogRecoveryContext } from '../hooks/watchdog'
 import { resolveLoopModel, resolveLoopAuditorModel } from '../utils/loop-helpers'
 import { parseModelString } from '../utils/model-fallback'
@@ -28,7 +30,7 @@ import {
 } from './in-flight-guard'
 import type { TerminationReason } from './termination'
 import { terminationStatusFor, terminationReasonToString } from './termination'
-import { nextTransition } from './transitions'
+import { nextTransition, type TransitionEvent, type Transition } from './transitions'
 import { createUsageCapture } from './runtime-usage'
 import { createPromptDispatch } from './runtime-prompt'
 import { createWorkspaceLifecycle, isWorkspaceNotFoundError } from './runtime-workspace'
@@ -65,10 +67,14 @@ export interface LoopRuntimeDeps {
   loopConfig?: LoopConfig
   sectionPlansRepo?: SectionPlansRepo
   loopSessionUsageRepo?: LoopSessionUsageRepo
+  loopTransitionsRepo?: LoopTransitionsRepo
+  planAmendmentsRepo?: PlanAmendmentsRepo
   /** Optional injected LoopService (test seam). Defaults to a real one built from the repos. */
   loopService?: LoopService
   /** Optional parent-session lookup for ancestor-aware session→loop resolution (child/subagent support). */
   getParentSessionId?: (sessionId: string) => Promise<string | null>
+  /** Optional per-loop async lock for serialising mutations with tick(). */
+  runExclusive?: <T>(loopName: string, fn: () => Promise<T>) => Promise<T>
 }
 
 export interface StartLoopInput {
@@ -122,8 +128,13 @@ export interface Loop {
 export { isWorkspaceNotFoundError } from './runtime-workspace'
 
 export function createLoop(deps: LoopRuntimeDeps): Loop {
-  const { loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, logger, getConfig, onTerminated, notify, loopConfig, sectionPlansRepo, loopSessionUsageRepo } = deps
-  const loopService = deps.loopService ?? createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, loopConfig, notify, sectionPlansRepo)
+  const { loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, logger, getConfig, onTerminated, notify, loopConfig, sectionPlansRepo, loopSessionUsageRepo, loopTransitionsRepo, planAmendmentsRepo } = deps
+
+  // `runExclusive` (the in-loop lock using withStateLock) is declared later
+  // in this function but is hoisted, so it's always available here.
+  const loopService = deps.loopService ?? createLoopService(
+    loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, loopConfig, notify, sectionPlansRepo, loopTransitionsRepo, planAmendmentsRepo, runExclusive,
+  )
   let getParentSessionId = deps.getParentSessionId
 
   const { getFallbackModelForSession, captureLoopSessionUsage } = createUsageCapture({ client, logger, getConfig, projectId, loopSessionUsageRepo })
@@ -140,10 +151,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   const MAX_CODE_LAUNCH_RECOVERIES = MAX_RETRIES
 
   const codingLaunchRecoveryAttempts = new Map<string, number>()
-  // Loops currently in "fix → re-final-audit" mode. When a final audit comes back dirty
-  // we rotate to a coding session with the findings, then on coding idle we transition
-  // straight back to final_auditing (skipping the per-section audit).
-  const pendingFinalAuditFix = new Set<string>()
   interface RetainedSessionMeta {
     sessionId: string
     role: 'code' | 'auditor'
@@ -160,11 +167,73 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const nextPromise = prev.catch(() => undefined).then(() => fn())
     stateLocks.set(loopName, nextPromise)
     void nextPromise.finally(() => {
-      if (stateLocks.get(loopName) === nextPromise) {
-        stateLocks.delete(loopName)
-      }
+    if (stateLocks.get(loopName) === nextPromise) {
+      stateLocks.delete(loopName)
+    }
+  })
+  return nextPromise
+}
+
+  /**
+   * Optional metadata passed into shared commit helpers (rotateAndSendContinuation,
+   * startFinalAuditTransition) so the non-terminal transition row is recorded
+   * AFTER the persisted phase commit but BEFORE the prompt send. Logging between
+   * those two points guarantees (a) no phantom row when phase persistence fails
+   * and (b) the row's id precedes any terminate row produced by a downstream
+   * prompt-send failure (chronological id order).
+   */
+  type TransitionLogEntry = {
+    eventType: string
+    transitionKind: string
+    fromPhase: LoopState['phase']
+    toPhase: LoopState['phase'] | null
+  }
+
+  function recordTransitionEntry(
+    loopName: string,
+    state: LoopState,
+    entry: TransitionLogEntry,
+    overrideIter?: number,
+    overrideSection?: number | null,
+  ): void {
+    loopService.recordTransition(loopName, {
+      eventType: entry.eventType,
+      transitionKind: entry.transitionKind,
+      fromPhase: entry.fromPhase,
+      toPhase: entry.toPhase,
+      iteration: overrideIter ?? state.iteration ?? 0,
+      sectionIndex: overrideSection ?? (state.totalSections > 0 ? (state.currentSectionIndex ?? 0) : null),
     })
-    return nextPromise
+  }
+
+  /**
+   * Persist a non-terminal phase transition derived from a `nextTransition` result.
+   * Terminal transitions are logged inside `terminateLoop` (whose `terminatingLoops`
+   * admission guard is the single source of truth for terminal rows), so callers
+   * MUST only invoke this helper for `continue`/`rotate`/`advance-section`/
+   * `rewind-section`/`fix-for-final-audit`/`start-final-audit` outcomes.
+   * `noop` outcomes produce no row.
+   *
+   * NOTE: callers must invoke this AFTER the corresponding phase persistence
+   * (replaceSession / setPhase) succeeds. For paths routed through
+   * `rotateAndSendContinuation` or `startFinalAuditTransition`, pass the
+   * transition descriptor into those helpers instead so the row lands between
+   * the phase commit and the prompt send.
+   */
+  function logTransition(
+    loopName: string,
+    state: LoopState,
+    event: TransitionEvent,
+    trans: Transition,
+    toPhase: LoopState['phase'] | null,
+  ): void {
+    if (trans.kind === 'noop' || trans.kind === 'terminate') return
+    recordTransitionEntry(loopName, state, {
+      eventType: event.type,
+      transitionKind: trans.kind,
+      fromPhase: state.phase,
+      toPhase,
+    })
   }
 
   /**
@@ -346,11 +415,45 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       logger.log(`Loop: refused completion — ${bugFindings.length} bug finding(s) still open`)
       return false
     }
+    const trans = nextTransition(currentState, { type: 'audit-clear' })
+    if (trans.kind !== 'terminate') return false
     logger.log(`Loop: audit all-clear, terminating loop=${loopName} iteration=${currentState.iteration} audits=${currentState.auditCount ?? 0}`)
-    if (await enterPostActionPhase(loopName, currentState)) return true
-    await terminateLoop(loopName, currentState, { kind: 'completed' })
+    if (trans.reason.kind === 'completed' && await enterPostActionPhase(loopName, currentState)) {
+      // The post_action entry row is logged inside enterPostActionPhase (after
+      // the persisted phase commit, before the prompt send) so a prompt-send
+      // failure cannot insert a terminal row before the phase row.
+      return true
+    }
+    await terminateLoop(loopName, currentState, trans.reason)
     logger.log(`Loop completed: auditor all-clear at iteration ${currentState.iteration} (audits=${currentState.auditCount ?? 0})`)
     return true
+  }
+
+  /**
+   * Applies the iteration-cap transition; returns the next iteration or null if terminated.
+   * Single source of truth for the maxIterations check so every path routes through
+   * `nextTransition({ type: 'iteration-cap' })` instead of inline divergent checks.
+   *
+   * Callers that need to persist side-effects before terminating (e.g. the goal
+   * path persists audit metadata) pass an `onTerminate` wrapper; otherwise the
+   * default `terminateLoop` is used.
+   */
+  async function nextIterationOrTerminate(
+    loopName: string,
+    state: LoopState,
+    onTerminate?: (reason: TerminationReason) => Promise<void>,
+  ): Promise<number | null> {
+    const nextIter = (state.iteration ?? 0) + 1
+    if ((state.maxIterations ?? 0) > 0 && nextIter > state.maxIterations) {
+      logger.log(`Loop: max iterations reached (${nextIter}/${state.maxIterations}), terminating`)
+      const trans = nextTransition(state, { type: 'iteration-cap' })
+      if (trans.kind === 'terminate') {
+        if (onTerminate) await onTerminate(trans.reason)
+        else await terminateLoop(loopName, state, trans.reason)
+      }
+      return null
+    }
+    return nextIter
   }
 
   /**
@@ -390,6 +493,23 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     // pre-transition session still resolve to this loop after DB-level replacement.
     sessionToLoop.set(currentState.sessionId, loopName)
     loopService.replaceSession(loopName, { newSessionId: created.sessionId, phase: 'post_action' })
+
+    // Record the *entry* into post_action here — after the persisted phase commit
+    // AND before sending the post-action prompt. If the prompt send fails below,
+    // terminateLoop is invoked from inside this helper and would otherwise insert
+    // its terminal row before the entry row, reversing chronological id order.
+    // The source event type mirrors the audit-clear/final-audit-clean verdict
+    // that drove the redirect; both reduce to "phase" non-terminal rows.
+    const sourceEventType = currentState.phase === 'final_auditing' ? 'final-audit-clean' : 'audit-clear'
+    loopService.recordTransition(loopName, {
+      eventType: sourceEventType,
+      transitionKind: 'phase',
+      fromPhase: currentState.phase,
+      toPhase: 'post_action',
+      iteration: currentState.iteration ?? 0,
+      sectionIndex: currentState.totalSections > 0 ? (currentState.currentSectionIndex ?? 0) : null,
+    })
+
     void scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after post-action creation', phase: currentState.phase, state: currentState })
 
     const auditorModel = resolveLoopAuditorModel(getConfig(), loopService, loopName)
@@ -428,6 +548,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
   /**
    * Shared: rotate session and send continuation prompt with model fallback.
+   *
+   * When `transition` is supplied, the non-terminal transition row is recorded
+   * AFTER `replaceSession` (the persisted phase commit) and BEFORE the prompt
+   * send. This ordering is intentional: it leaves no phantom row if persistence
+   * somehow fails, and it guarantees the transition row's id precedes any
+   * terminate row produced by a downstream prompt-send failure (chronological
+   * id order).
    */
   async function rotateAndSendContinuation(
     loopName: string,
@@ -436,6 +563,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     continuationPrompt: string,
     assistantErrorDetected: boolean,
     errorContext: string,
+    transition?: TransitionLogEntry,
   ): Promise<void> {
     let activeSessionId = currentState.sessionId
     try {
@@ -456,6 +584,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       lastAuditResult: stateUpdates.lastAuditResult ?? null,
       ...(currentState.kind === 'goal' ? { executorSessionId: activeSessionId } : {}),
     })
+
+    if (transition) {
+      // Record using the pre-transition state's iteration/sectionIndex so the
+      // row reflects the "from" side of the phase change (consistent with
+      // logTransition, which always uses `state.iteration`/`state.sectionIndex`
+      // from the prior LoopState). The post-persist phase is captured by
+      // `transition.toPhase`.
+      recordTransitionEntry(loopName, currentState, transition)
+    }
 
     const nextIteration = stateUpdates.iteration ?? currentState.iteration
     logger.log(`Loop iteration ${nextIteration} for session ${activeSessionId}`)
@@ -486,7 +623,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
   }
 
-  async function rotateToCodingAfterAuditFailure(loopName: string, state: LoopState, reason: string): Promise<void> {
+  async function rotateToCodingAfterAuditFailure(loopName: string, state: LoopState, reason: string, eventType: string): Promise<void> {
     const newSessionId = await rotateSession(loopName, state)
 
     loopService.replaceSession(loopName, {
@@ -494,6 +631,16 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       phase: 'coding',
       resetError: false,
       ...(state.kind === 'goal' ? { executorSessionId: newSessionId } : {}),
+    })
+    // Record the recovery transition AFTER the persisted phase commit to coding
+    // so the abort/error → coding phase change is captured consistently.
+    loopService.recordTransition(loopName, {
+      eventType,
+      transitionKind: 'error-recovery',
+      fromPhase: state.phase,
+      toPhase: 'coding',
+      iteration: state.iteration ?? 0,
+      sectionIndex: state.totalSections > 0 ? (state.currentSectionIndex ?? 0) : null,
     })
     loopService.setLastAuditResult(loopName, state.lastAuditResult ?? '')
     const isModelError = /provider|auth|model|api\s*error/i.test(reason)
@@ -520,7 +667,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   function buildCodingPromptForCurrentState(state: LoopState): string {
-    if (pendingFinalAuditFix.has(state.loopName)) {
+    if (state.phase === 'final_audit_fix') {
       return loopService.buildFinalAuditFixPrompt(state, state.lastAuditResult || '')
     }
     if (state.totalSections > 0) {
@@ -640,6 +787,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       logger.debug(`Loop: terminateLoop called for already-terminated loop ${loopName}, skipping`)
       return
     }
+    // Adopt the authoritative under-lock state for every downstream side
+    // effect (usage capture, persistence, terminal transition, host teardown).
+    // The caller's snapshot can lag phase rotations (e.g. final_auditing ->
+    // final_audit_fix) that happened between the caller observing the state
+    // and terminateLoop acquiring the admission guard; using the stale
+    // snapshot would record the wrong fromPhase/iteration/section/session.
+    state = current
 
     const sessionId = state.sessionId
     watchdog.stop(loopName)
@@ -658,7 +812,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
     idleRetryAttempts.delete(loopName)
     codingLaunchRecoveryAttempts.delete(loopName)
-    pendingFinalAuditFix.delete(loopName)
     clearPromptPending(loopName, logger)
     clearPromptInFlight(loopName)
 
@@ -701,11 +854,28 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     })
 
     const now = Date.now()
+    const terminationStatus = terminationStatusFor(reason)
+    const terminationReasonText = terminationReasonToString(reason)
     loopService.terminate(loopName, {
-      status: terminationStatusFor(reason),
-      reason: terminationReasonToString(reason),
+      status: terminationStatus,
+      reason: terminationReasonText,
       completedAt: now,
       summary,
+    })
+
+    // Record the terminal transition. This sits inside the `terminatingLoops`
+    // admission guard above so concurrent terminate attempts produce at most one
+    // row. Captures every bypass path (cancel/stall/provider-limit/watchdog/
+    // missing-worktree) that never flows through `nextTransition`.
+    loopService.recordTransition(loopName, {
+      eventType: reason.kind,
+      transitionKind: 'terminate',
+      fromPhase: state.phase,
+      toPhase: null,
+      status: terminationStatus,
+      reason: terminationReasonText,
+      iteration: state.iteration ?? 0,
+      sectionIndex: state.totalSections > 0 ? (state.currentSectionIndex ?? 0) : null,
     })
 
     try {
@@ -754,18 +924,34 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       logger.error(`Loop: ${context} (attempt ${nextErrorCount}/${MAX_RETRIES}), will retry`, err)
       loopService.incrementError(loopName)
       if (retryFn) {
-        const retryTimeout = setTimeout(async () => {
-          const freshState = loopService.getActiveState(loopName)
-          if (!freshState?.active) {
-            logger.log(`Loop: loop cancelled, skipping retry`)
-            retryTimeouts.delete(loopName)
-            return
-          }
-          try {
-            await retryFn()
-          } catch (retryErr) {
-            await handlePromptError(loopName, freshState, context, retryErr, retryFn)
-          }
+        const retryTimeout = setTimeout(() => {
+          // Serialize the retry send and its failure/exhaustion handling with
+          // phase-rotation ticks (which also acquire the per-loop state
+          // lock). Without this guard, a delayed retry could fire its send
+          // and (on failure) its exhausted termination concurrently with a
+          // phase rotation, racing the terminal row's fromPhase against the
+          // rotation's persisted phase and corrupting transition ordering.
+          // Holding the lock for the duration of the retry attempt and the
+          // recursive handlePromptError (which may terminate) guarantees
+          // any concurrent tick queues behind us and observes the
+          // authoritative post-retry state when it eventually runs. Inside
+          // the lock body, handlePromptError's `terminateLoop` runs nested
+          // without re-acquiring the lock (terminateLoop never wraps itself
+          // in withStateLock — only its public callers do), so there is no
+          // nested-lock deadlock.
+          void withStateLock(loopName, async () => {
+            const freshState = loopService.getActiveState(loopName)
+            if (!freshState?.active) {
+              logger.log(`Loop: loop cancelled, skipping retry`)
+              retryTimeouts.delete(loopName)
+              return
+            }
+            try {
+              await retryFn()
+            } catch (retryErr) {
+              await handlePromptError(loopName, freshState, context, retryErr, retryFn)
+            }
+          })
         }, 2000)
         retryTimeouts.set(loopName, retryTimeout)
       }
@@ -864,15 +1050,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (!freshState?.active) return
 
       try {
-        if (freshState.phase === 'auditing') {
-          await runAuditingPhase(loopName, freshState)
-        } else if (freshState.phase === 'final_auditing') {
-          await runFinalAuditPhase(loopName, freshState)
-        } else if (freshState.phase === 'post_action') {
-          await runPostActionPhase(loopName, freshState)
-        } else {
-          await runCodingPhase(loopName, freshState)
-        }
+        await phaseRunners[freshState.phase](loopName, freshState)
       } catch (err) {
         await handlePromptError(loopName, freshState, `watchdog recovery in ${freshState.phase} phase (${context.reason})`, err)
       }
@@ -942,7 +1120,23 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     return false
   }
 
-  async function startFinalAuditTransition(loopName: string, currentState: LoopState): Promise<boolean> {
+  /**
+   * Persist the loop's transition into the final_auditing phase: provision an
+   * auditor session, replace the loop's active session, and send the final
+   * audit prompt. Returns false if the auditor session could not be created
+   * or the prompt could not be sent (caller leaves the loop in its prior phase).
+   *
+   * When `transition` is supplied, the non-terminal transition row is recorded
+   * AFTER `replaceSession` (the persisted phase commit) and BEFORE the prompt
+   * send. This leaves no phantom row when session creation fails (returns false
+   * before persistence), and guarantees the transition row's id precedes any
+   * terminate row produced by a downstream prompt-send failure.
+   */
+  async function startFinalAuditTransition(
+    loopName: string,
+    currentState: LoopState,
+    transition?: TransitionLogEntry,
+  ): Promise<boolean> {
     const finalAuditState = loopService.getActiveState(loopName) ?? { ...currentState, phase: 'final_auditing' }
     const finalAuditPrompt = loopService.buildFinalAuditPrompt(finalAuditState)
     const auditorModel = resolveLoopAuditorModel(getConfig(), loopService, loopName, logger)
@@ -977,6 +1171,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       phase: 'final_auditing',
     })
     sessionToLoop.set(created.auditSessionId, loopName)
+
+    // Record the transition row only after the phase commit above succeeded and
+    // before the prompt send below: a failed prompt may itself terminate the
+    // loop, and the row's id must precede that terminate row.
+    if (transition) {
+      recordTransitionEntry(loopName, currentState, transition)
+    }
 
     // The retired session is a code session (pre-final-audit)
     void scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after final audit creation', phase: 'coding', state: currentState })
@@ -1076,22 +1277,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     currentState = resetErrorCountIfNeeded(loopName, currentState, assistantErrorDetected, 'coding')
 
     // Parse coder decisions from the coding assistant's response and store for the audit prompt.
-    // This must happen before the pendingFinalAuditFix early return so that decisions emitted
-    // during a final-audit fix coding session reach the subsequent final audit prompt.
     loopService.setCoderDecisions(loopName, parseCoderDecisions(assistantInfo.text))
 
-    // If this coding pass was a final-audit fix, skip the per-section audit and
-    // transition straight back to final_auditing.
-    if (pendingFinalAuditFix.has(loopName)) {
-      pendingFinalAuditFix.delete(loopName)
-      logger.log(`Loop: final-audit fix coding complete for ${loopName}, transitioning back to final_auditing`)
-      const started = await startFinalAuditTransition(loopName, currentState)
-      if (!started) {
-        logger.error(`Loop: failed to restart final audit after fix for ${loopName}`)
-      }
-      return
-    }
-
+    // Phase-runner dispatch (see phaseRunners below) routes a final_audit_fix loop
+    // to runFinalAuditFixPhase, so runCodingPhase only handles the regular coding phase.
     const currentConfig = getConfig()
     const auditorModel = resolveLoopAuditorModel(currentConfig, loopService, loopName, logger)
     const auditPrompt = loopService.buildAuditPrompt(currentState)
@@ -1174,6 +1363,18 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       }
     }
 
+    // Consult the pure transition table for the coding→auditing rotation.
+    // Every phase change must flow through nextTransition so the table is the
+    // single source of truth (fixed finding runtime.ts:1369).
+    const idleTrans = nextTransition(currentState, { type: 'coding-idle-complete' })
+    if (idleTrans.kind === 'terminate') {
+      await terminateLoop(loopName, currentState, idleTrans.reason)
+      return
+    }
+    if (idleTrans.kind !== 'rotate') {
+      return
+    }
+
     // Retain the old session in the reverse index so delayed errors from the
     // pre-transition session still resolve to this loop after DB-level replacement.
     sessionToLoop.set(codeSessionId, loopName)
@@ -1182,6 +1383,10 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       phase: 'auditing',
     })
     sessionToLoop.set(created.auditSessionId, loopName)
+
+    // Record the coding→auditing rotation derived from the pure transition
+    // table.  logTransition (non-terminal-only wrapper) writes the row.
+    logTransition(loopName, currentState, { type: 'coding-idle-complete' }, idleTrans, 'auditing')
 
     // The retired session is a code session.
     void scheduleSessionDelete({ loopName, sessionId: codeSessionId, directory: currentState.worktreeDir, context: 'after audit creation', phase: 'coding', state: currentState })
@@ -1276,16 +1481,18 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const outstandingFindings = loopService.getOutstandingFindings(loopName)
     if (outstandingFindings.length === 0) {
       logger.log(`Loop: goal audit all-clear, terminating loop=${loopName} audits=${newAuditCount}`)
-      await persistAuditAndTerminate({ kind: 'completed' })
+      const clearTrans = nextTransition(currentState, { type: 'audit-clear' })
+      if (clearTrans.kind === 'terminate') {
+        await persistAuditAndTerminate(clearTrans.reason)
+      }
       return
     }
 
-    const nextIteration = (currentState.iteration ?? 0) + 1
-    if ((currentState.maxIterations ?? 0) > 0 && nextIteration > currentState.maxIterations) {
-      logger.log(`Loop: goal max iterations reached (${nextIteration}/${currentState.maxIterations}), terminating`)
-      await persistAuditAndTerminate({ kind: 'max_iterations' })
-      return
-    }
+    const nextIteration = await nextIterationOrTerminate(loopName, currentState, persistAuditAndTerminate)
+    if (nextIteration === null) return
+
+    const dirtyTrans = nextTransition(currentState, { type: 'audit-dirty' })
+    if (dirtyTrans.kind !== 'continue') return
 
     const outstandingBugs = loopService.getOutstandingFindings(loopName, 'bug')
     bumpDirtyAuditRecurrence(loopName, outstandingBugs)
@@ -1309,6 +1516,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       lastAuditResult: auditText || null,
       executorSessionId: newSessionId,
     })
+
+    // Record the audit-dirty → coding rotate AFTER the persisted phase commit
+    // above and BEFORE the prompt send below. A prompt-send failure that
+    // terminates the loop will then produce a terminate row whose id strictly
+    // follows this rotate row (chronological id order).
+    logTransition(loopName, currentState, { type: 'audit-dirty' }, dirtyTrans, 'coding')
 
     const updatedState = loopService.getActiveState(loopName) ?? { ...currentState, sessionId: newSessionId, iteration: nextIteration }
     const continuationPrompt = loopService.buildContinuationPrompt(updatedState, auditText || undefined, outstandingBugs)
@@ -1395,23 +1608,62 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           loopService.setLastAuditResult(loopName, auditText || '')
           loopService.completeSection(loopName, idx, sectionSummary)
 
+          // Pre-check: rewind fast-path — all sections completed even though we
+          // are not on the last one (possible after a rewind). This bypasses the
+          // transition event because `isLastSection` would be false here, but the
+          // correct destination is still final-audit. Synthesize the same
+          // section-clean / isLastSection=true transition the regular path would
+          // have produced and log it so the persisted phase change is recorded.
           if (idx < currentState.totalSections - 1) {
             const allCompleted = loopService.getCompletedSectionDigest(currentState).length === currentState.totalSections
             if (allCompleted) {
               logger.log(`Loop: all ${currentState.totalSections} sections completed after rewind, jumping straight to final audit`)
-              await startFinalAuditTransition(loopName, currentState)
+              // Same guard as the regular path: prevent skipping appended sections.
+              const rewindFresh = loopsRepo.get(projectId, currentState.loopName ?? '')
+              if (rewindFresh && rewindFresh.totalSections > currentState.totalSections) {
+                logger.log(`Loop: amendment appended sections after rewind jump; staying for re-audit`)
+                return
+              }
+              const rewindEvent: TransitionEvent = { type: 'section-clean', isLastSection: true }
+              const rewindTrans = nextTransition(currentState, rewindEvent)
+              if (rewindTrans.kind === 'start-final-audit') {
+                await startFinalAuditTransition(loopName, currentState, {
+                  eventType: rewindEvent.type,
+                  transitionKind: rewindTrans.kind,
+                  fromPhase: currentState.phase,
+                  toPhase: 'final_auditing',
+                })
+              }
               return
             }
           }
 
-          const nextIdx = idx + 1
-          if (nextIdx < currentState.totalSections) {
-            const nextIter = (currentState.iteration ?? 0) + 1
-            if ((currentState.maxIterations ?? 0) > 0 && nextIter > currentState.maxIterations) {
-              logger.log(`Loop: max iterations reached (${nextIter}/${currentState.maxIterations}), terminating`)
-              await terminateLoop(loopName, currentState, { kind: 'max_iterations' })
+          const isLastSection = idx >= currentState.totalSections - 1
+          const sectionEvent: TransitionEvent = { type: 'section-clean', isLastSection }
+          const sectionTrans = nextTransition(currentState, sectionEvent)
+          if (sectionTrans.kind === 'start-final-audit') {
+            // Guard: prevent premature final-audit transition when an amendment
+            // appended sections after the one we just finished. Without this check,
+            // newly appended work at the former final position could be skipped.
+            const freshRowForAudit = loopsRepo.get(projectId, currentState.loopName ?? '')
+            if (freshRowForAudit && freshRowForAudit.totalSections > currentState.totalSections) {
+              logger.log(`Loop: amendment appended sections at index ${idx + 1}; staying in section ${idx} for re-audit`)
               return
             }
+            logger.log(`Loop: all ${currentState.totalSections} sections completed, transitioning to final-audit`)
+            await startFinalAuditTransition(loopName, currentState, {
+              eventType: sectionEvent.type,
+              transitionKind: sectionTrans.kind,
+              fromPhase: currentState.phase,
+              toPhase: 'final_auditing',
+            })
+            return
+          }
+          if (sectionTrans.kind === 'advance-section') {
+            const nextIdx = idx + 1
+            const nextIter = await nextIterationOrTerminate(loopName, currentState)
+            if (nextIter === null) return
+
             logger.log(`Loop: advancing from section ${idx} to section ${nextIdx}`)
             loopService.setCurrentSectionIndex(loopName, nextIdx)
             loopService.startSection(loopName, nextIdx)
@@ -1437,23 +1689,25 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
               continuationPrompt,
               assistantErrorDetected,
               'section coding continuation',
+              {
+                eventType: sectionEvent.type,
+                transitionKind: sectionTrans.kind,
+                fromPhase: currentState.phase,
+                toPhase: 'coding',
+              },
             )
             return
-          } else {
-            logger.log(`Loop: all ${currentState.totalSections} sections completed, transitioning to final-audit`)
-            await startFinalAuditTransition(loopName, currentState)
-            return
           }
+          return
         }
+
+        const dirtyTrans = nextTransition(currentState, { type: 'section-dirty' })
+        if (dirtyTrans.kind !== 'rotate') return
 
         logger.log(`Loop: section ${idx} audit dirty, retrying same section`)
 
-        const nextIter = (currentState.iteration ?? 0) + 1
-        if ((currentState.maxIterations ?? 0) > 0 && nextIter > currentState.maxIterations) {
-          logger.log(`Loop: max iterations reached (${nextIter}/${currentState.maxIterations}), terminating`)
-          await terminateLoop(loopName, currentState, { kind: 'max_iterations' })
-          return
-        }
+        const nextIter = await nextIterationOrTerminate(loopName, currentState)
+        if (nextIter === null) return
 
         loopService.incrementSectionAttempts(loopName, idx)
 
@@ -1479,6 +1733,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           continuationPrompt,
           assistantErrorDetected,
           'section retry continuation',
+          {
+            eventType: 'section-dirty',
+            transitionKind: dirtyTrans.kind,
+            fromPhase: currentState.phase,
+            toPhase: 'coding',
+          },
         )
         return
       }
@@ -1486,11 +1746,11 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       const candidateState = { ...currentState, auditCount: newAuditCount }
       if (await checkAuditClearAndTerminate(loopName, candidateState)) return
 
-      const nextIteration = (currentState.iteration ?? 0) + 1
-      if ((currentState.maxIterations ?? 0) > 0 && nextIteration > (currentState.maxIterations ?? 0)) {
-        await terminateLoop(loopName, currentState, { kind: 'max_iterations' })
-        return
-      }
+      const dirtyTrans = nextTransition(candidateState, { type: 'audit-dirty' })
+      if (dirtyTrans.kind !== 'continue') return
+
+      const nextIteration = await nextIterationOrTerminate(loopName, currentState)
+      if (nextIteration === null) return
 
       const outstandingBugs = loopService.getOutstandingFindings(loopName, 'bug')
       bumpDirtyAuditRecurrence(loopName, outstandingBugs)
@@ -1513,14 +1773,25 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         continuationPrompt,
         assistantErrorDetected,
         'coding continuation',
+        {
+          eventType: 'audit-dirty',
+          transitionKind: dirtyTrans.kind,
+          fromPhase: candidateState.phase,
+          toPhase: 'coding',
+        },
       )
     } else {
       logger.log(`Loop: audit error detected, continuing without incrementing audit count`)
-      const nextIteration = (currentState.iteration ?? 0) + 1
+      const nextIteration = await nextIterationOrTerminate(loopName, currentState)
+      if (nextIteration === null) return
       const continuationPrompt = loopService.buildContinuationPrompt(
         { ...currentState, iteration: nextIteration },
         auditText || undefined,
       )
+      // Pass the recovery transition into the shared helper so the row is
+      // recorded after the rotate-to-coding phase commit but before the prompt
+      // send; a prompt failure that terminates the loop will then produce a
+      // terminate row whose id strictly follows this recovery row.
       await rotateAndSendContinuation(
         loopName,
         currentState,
@@ -1533,6 +1804,12 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         continuationPrompt,
         assistantErrorDetected,
         'coding continuation',
+        {
+          eventType: 'audit-error',
+          transitionKind: 'error-recovery',
+          fromPhase: 'auditing',
+          toPhase: 'coding',
+        },
       )
     }
   }
@@ -1546,6 +1823,17 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
     if (currentState.phase !== 'final_auditing') {
       logger.log(`Loop: runFinalAuditPhase invoked while phase=${currentState.phase} for ${loopName}, ignoring`)
+      return
+    }
+
+    // Guard: when an amendment appended sections while we're in final_auditing
+    // (e.g., the transition to this phase happened from a stale snapshot),
+    // revert back to auditing so the appended sections get executed.
+    const freshAuditRow = loopsRepo.get(projectId, loopName)
+    if (freshAuditRow && freshAuditRow.totalSections > (currentState.totalSections ?? 0)) {
+      logger.log(`Loop: amendment appended sections while in final_auditing; reverting to auditing at section ${currentState.currentSectionIndex}`)
+      loopService.setPhase(loopName, 'auditing')
+      loopService.incrementSectionAttempts(loopName, currentState.currentSectionIndex ?? 0)
       return
     }
 
@@ -1582,26 +1870,30 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (!assistantErrorDetected) {
       const hasOutstandingBugs = loopService.hasOutstandingFindings(loopName, 'bug')
 
-      const trans = nextTransition(currentState, { type: hasOutstandingBugs ? 'final-audit-dirty' : 'final-audit-clean' })
+      const finalAuditEvent: TransitionEvent = { type: hasOutstandingBugs ? 'final-audit-dirty' : 'final-audit-clean' }
+      const trans = nextTransition(currentState, finalAuditEvent)
       if (trans.kind === 'terminate') {
         logger.log(`Loop: final audit clean for ${loopName} (no outstanding bug findings), completing`)
         loopService.setFinalAuditDone(loopName, true)
-        if (trans.reason.kind === 'completed' && await enterPostActionPhase(loopName, currentState)) return
+        if (trans.reason.kind === 'completed' && await enterPostActionPhase(loopName, currentState)) {
+          // The post_action entry row is logged inside enterPostActionPhase
+          // (after the persisted phase commit, before the prompt send).
+          return
+        }
         await terminateLoop(loopName, currentState, trans.reason)
         return
       }
 
       // Dirty final audit: rotate to a coding session that fixes the findings,
       // then on coding idle return straight to final_auditing (no section rewind).
+      // The transition row is logged AFTER the iteration-cap check and the
+      // persisted phase change succeed so a cap-terminate or rotation failure
+      // never leaves a phantom final_audit_fix row behind.
       const outstandingBugs = loopService.getOutstandingFindings(loopName, 'bug')
       logger.log(`Loop: final audit dirty (${outstandingBugs.length} outstanding bug findings), rotating to coding for fix for ${loopName}`)
 
-      const nextIter = (currentState.iteration ?? 0) + 1
-      if ((currentState.maxIterations ?? 0) > 0 && nextIter > currentState.maxIterations) {
-        logger.log(`Loop: max iterations reached (${nextIter}/${currentState.maxIterations}), terminating`)
-        await terminateLoop(loopName, currentState, { kind: 'max_iterations' })
-        return
-      }
+      const nextIter = await nextIterationOrTerminate(loopName, currentState)
+      if (nextIter === null) return
 
       // Persist the audit text so recovery paths can rebuild the fix prompt if needed.
       if (auditText) loopService.setLastAuditResult(loopName, auditText)
@@ -1620,18 +1912,18 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         return
       }
 
-      // Mark this loop before phase/session transitions so any idle event observed
-      // mid-rotation is handled as a final-audit fix.
-      pendingFinalAuditFix.add(loopName)
-
-      loopService.setPhase(loopName, 'coding')
-
+      // Persist the new phase so the persisted state machine drives dispatch on the
+      // next idle event. replaceSession atomically swaps the session and the phase.
       loopService.replaceSession(loopName, {
         newSessionId: newCodeSessionId,
-        phase: 'coding',
+        phase: 'final_audit_fix',
         iteration: nextIter,
         resetError: currentState.errorCount > 0,
       })
+
+      // Record the final_auditing → final_audit_fix transition only after the
+      // persisted phase commit above succeeds.
+      logTransition(loopName, currentState, finalAuditEvent, trans, 'final_audit_fix')
 
       const { error: promptErr } = await sendPromptWithFallback({
         loopName,
@@ -1642,11 +1934,79 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       })
       if (promptErr) {
         logger.error(`Loop: failed to send final-audit fix prompt for ${loopName}`, promptErr)
-        pendingFinalAuditFix.delete(loopName)
+        // Roll back to the coding phase so subsequent idle/error handling treats the
+        // loop as a regular coding pass rather than re-attempting the fix dispatch.
+        loopService.setPhase(loopName, 'coding')
+        // Record the recovery to coding; the persisted phase just changed via setPhase.
+        loopService.recordTransition(loopName, {
+          eventType: 'final-audit-fix-prompt-error',
+          transitionKind: 'error-recovery',
+          fromPhase: 'final_audit_fix',
+          toPhase: 'coding',
+          iteration: nextIter,
+          sectionIndex: currentState.totalSections > 0 ? (currentState.currentSectionIndex ?? 0) : null,
+        })
         await handlePromptError(loopName, currentState, 'failed to send final-audit fix prompt', promptErr)
         return
       }
       watchdog.recordActivity(loopName, 'final-audit-fix-prompt-sent')
+    }
+  }
+
+  async function runFinalAuditFixPhase(loopName: string, _state: LoopState): Promise<void> {
+    let currentState = loopService.getActiveState(loopName)
+    if (!currentState?.active) {
+      logger.log(`Loop: loop ${loopName} no longer active, skipping final-audit-fix phase`)
+      return
+    }
+
+    if (currentState.phase !== 'final_audit_fix') {
+      logger.log(`Loop: runFinalAuditFixPhase invoked while phase=${currentState.phase} for ${loopName}, ignoring`)
+      return
+    }
+
+    if (!currentState.worktreeDir) {
+      logger.error(`Loop: loop ${loopName} missing worktreeDir in final-audit-fix phase, terminating`)
+      await terminateLoop(loopName, currentState, { kind: 'missing_worktree_dir' })
+      return
+    }
+
+    const assistantInfo = await getLastAssistantInfo(currentState.sessionId, currentState.worktreeDir)
+    const lastMessageRole = assistantInfo.lastMessageRole
+
+    // Classify persisted provider-limit errors before the no-assistant gate.
+    if (assistantInfo.errorSignal) {
+      const limitReason = classifyProviderLimit(assistantInfo.errorSignal)
+      if (limitReason) {
+        logger.error(`Loop: provider limit in persisted final-audit-fix error for ${loopName}: ${limitReason}, terminating`)
+        await terminateLoop(loopName, currentState, { kind: 'provider_limit', message: limitReason })
+        return
+      }
+    }
+
+    if (await handleIdleNoAssistantGate(loopName, currentState, lastMessageRole, { phaseLabel: 'final-audit-fix phase', exhaustedReason: { kind: 'coding_no_assistant' }, rerun: runFinalAuditFixPhase })) return
+
+    const errorResult = await detectAndHandleAssistantError(loopName, currentState, assistantInfo.error, 'coding', assistantInfo.errorSignal)
+    if (!errorResult) return
+    currentState = errorResult.currentState
+    currentState = resetErrorCountIfNeeded(loopName, currentState, errorResult.assistantErrorDetected, 'coding')
+
+    // Persist coder decisions emitted during the fix pass so the next final audit
+    // prompt can surface them alongside the audit findings.
+    loopService.setCoderDecisions(loopName, parseCoderDecisions(assistantInfo.text))
+
+    const trans = nextTransition(currentState, { type: 'coding-idle-complete' })
+    if (trans.kind === 'start-final-audit') {
+      logger.log(`Loop: final-audit fix coding complete for ${loopName}, transitioning back to final_auditing`)
+      const started = await startFinalAuditTransition(loopName, currentState, {
+        eventType: 'coding-idle-complete',
+        transitionKind: trans.kind,
+        fromPhase: currentState.phase,
+        toPhase: 'final_auditing',
+      })
+      if (!started) {
+        logger.error(`Loop: failed to restart final audit after fix for ${loopName}`)
+      }
     }
   }
 
@@ -1701,6 +2061,16 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     await onNoAssistant(loopName, state)
   }
 
+  // Single source of truth for idle/watchdog dispatch. Every persisted phase maps to
+  // exactly one phase runner; new phases must be added here to be reachable.
+  const phaseRunners: Record<LoopState['phase'], (loopName: string, state: LoopState) => Promise<void>> = {
+    coding: runCodingPhase,
+    auditing: runAuditingPhase,
+    final_auditing: runFinalAuditPhase,
+    final_audit_fix: runFinalAuditFixPhase,
+    post_action: runPostActionPhase,
+  }
+
   async function tick(event: LoopEvent): Promise<void> {
     if (event.type === 'worktree.failed') {
       const message = event.properties?.message as string
@@ -1710,8 +2080,22 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (directory) {
         const activeLoops = loopService.listActive()
         const affectedLoop = activeLoops.find((s) => s.worktreeDir === directory)
-        if (affectedLoop) {
-          await terminateLoop(affectedLoop.loopName!, affectedLoop, { kind: 'worktree_failed', message })
+        if (affectedLoop?.loopName) {
+          // Serialize with phase-rotation ticks (which also acquire the state
+          // lock). Without this guard, a tick could rotate the phase (and
+          // commit its row) between the time we read the affectedLoop snapshot
+          // and the time terminateLoop records the terminal row from that stale
+          // snapshot — yielding a phase-transition row AFTER the terminal row
+          // and a stale terminal fromPhase. Holding the lock for the duration
+          // of terminateLoop guarantees the authoritative under-lock state
+          // observed inside terminateLoop is the persisted phase at termination
+          // time, so the terminal row's fromPhase matches the persisted phase
+          // exactly and no rotation row lands after the terminal row.
+          await withStateLock(affectedLoop.loopName, async () => {
+            const state = loopService.getActiveState(affectedLoop.loopName!)
+            if (!state?.active) return
+            await terminateLoop(affectedLoop.loopName!, state, { kind: 'worktree_failed', message })
+          })
         }
       }
       return
@@ -1739,14 +2123,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           if (state.phase === 'auditing') {
             await resumeOrFallback(loopName, state, eventSessionId,
               async (ln, s) => { logger.log(`Loop: audit session ${eventSessionId} aborted after assistant response, processing audit result`); await runAuditingPhase(ln, s) },
-              async (ln, s) => { logger.log(`Loop: audit session ${eventSessionId} aborted, cleaning up and rolling back to coding`); await rotateToCodingAfterAuditFailure(ln, s, 'aborted') },
+              async (ln, s) => { logger.log(`Loop: audit session ${eventSessionId} aborted, cleaning up and rolling back to coding`); await rotateToCodingAfterAuditFailure(ln, s, 'aborted', 'audit-session-aborted') },
             )
             return
           }
           if (state.phase === 'final_auditing') {
             await resumeOrFallback(loopName, state, eventSessionId,
               async (ln, s) => { logger.log(`Loop: final audit session ${eventSessionId} aborted after assistant response, processing audit result`); await runFinalAuditPhase(ln, s) },
-              async (ln, s) => { logger.log(`Loop: final audit session ${eventSessionId} aborted, cleaning up and rolling back to coding`); await rotateToCodingAfterAuditFailure(ln, s, 'aborted') },
+              async (ln, s) => { logger.log(`Loop: final audit session ${eventSessionId} aborted, cleaning up and rolling back to coding`); await rotateToCodingAfterAuditFailure(ln, s, 'aborted', 'final-audit-session-aborted') },
             )
             return
           }
@@ -1757,6 +2141,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             )
             return
           }
+          // coding and final_audit_fix share the default abort handling: a coding-style
+          // session aborted by the user terminates the loop as user_aborted. Intentional
+          // fall-through — final_audit_fix is a coding pass driving the fix prompt.
           logger.log(`Loop: session ${eventSessionId} aborted, terminating loop`)
           await terminateLoop(loopName, state, { kind: 'user_aborted' })
         })
@@ -1788,7 +2175,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         if (state.phase === 'auditing') {
           const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
           logger.error(`Loop: audit session error for ${eventSessionId}: ${errorMessage}, cleaning up and rolling back to coding`)
-          await rotateToCodingAfterAuditFailure(loopName, state, errorMessage)
+          await rotateToCodingAfterAuditFailure(loopName, state, errorMessage, 'audit-session-error')
           return
         }
         const errorMessage = errorProps?.error?.data?.message ?? errorName ?? 'unknown error'
@@ -1800,7 +2187,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             return
           }
           logger.error(`Loop: final audit session error for ${eventSessionId}: ${errorMessage}, cleaning up and rolling back to coding`)
-          await rotateToCodingAfterAuditFailure(loopName, state, errorMessage)
+          await rotateToCodingAfterAuditFailure(loopName, state, errorMessage, 'final-audit-session-error')
           return
         }
         if (state.phase === 'post_action') {
@@ -1808,6 +2195,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           await terminateLoop(loopName, state, { kind: 'completed' })
           return
         }
+        // coding and final_audit_fix share the default error handling: surface the
+        // error, flag a model failure when applicable, and let the next idle/error
+        // event drive recovery. Intentional fall-through — no phase-specific branch.
         logger.error(`Loop: session error for ${eventSessionId}: ${errorMessage}`)
         const isModelError = /provider|auth|model|api\s*error/i.test(errorMessage)
         if (isModelError && !state.modelFailed) {
@@ -1885,16 +2275,8 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
 
       try {
         watchdog.start(loopName)
-        
-        if (state.phase === 'auditing') {
-          await runAuditingPhase(loopName, state)
-        } else if (state.phase === 'final_auditing') {
-          await runFinalAuditPhase(loopName, state)
-        } else if (state.phase === 'post_action') {
-          await runPostActionPhase(loopName, state)
-        } else {
-          await runCodingPhase(loopName, state)
-        }
+
+        await phaseRunners[state.phase](loopName, state)
       } catch (err) {
         const freshState = loopService.getActiveState(loopName)
         await handlePromptError(loopName, freshState ?? state, `unhandled error in ${(freshState ?? state).phase} phase`, err)
@@ -1903,7 +2285,136 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   async function terminateAll(): Promise<void> {
-    await loopService.terminateAll()
+    // Serialize each per-loop shutdown operation so an in-flight phase runner
+    // (idle tick, watchdog recovery, retry timer, etc.) holding the per-loop
+    // state lock cannot commit a phase transition row AFTER our shutdown row.
+    // Without this guard, a phase runner paused mid-rotation while shutdown
+    // fires would record its rotate row out-of-order (its id could exceed our
+    // shutdown row's id, and our shutdown row's fromPhase would reflect a
+    // pre-rotation phase rather than the persisted phase at shutdown time).
+    //
+    // Each sweep runs two passes per fresh snapshot:
+    //
+    // 1. Eager synchronous pass for uncontended loops (no entry in `stateLocks`
+    //    means no in-flight tick holds the lock for that loop): admit into
+    //    `terminatingLoops`, re-read authoritative state, record the shutdown
+    //    row, and persist the cancellation synchronously. This fires the
+    //    'terminate' notify inline so callers/tests that synchronously inspect
+    //    notify state see the result without awaiting (parity with the prior
+    //    bulk-cancel semantics). JS is single-threaded, so even if a tick
+    //    fires concurrently during this synchronous body, its lock acquisition
+    //    is microtask-scheduled and cannot interleave our synchronous work.
+    //
+    // 2. Deferred locked pass for contended loops (`stateLocks.has(name)` is
+    //    true, meaning an in-flight tick already holds/queued the lock): we
+    //    queue behind that lock with `withStateLock`. When the tick finishes
+    //    (potentially recording a rotate row), our queued body acquires the
+    //    lock, re-reads authoritative state, and records the shutdown row with
+    //    the correct post-rotation phase. Ids are guaranteed in chronological
+    //    order because the rotate row is recorded while the tick holds the
+    //    lock and our shutdown row is recorded only after the tick releases.
+    //
+    // Loops already admitted by a canonical `terminateLoop` call (present in
+    // `terminatingLoops`) have an in-flight canonical termination that will
+    // record its own terminal row under the same admission guard; we MUST NOT
+    // queue behind their lock (that would deadlock terminateAll waiting for
+    // the canonical path to finish host-side teardown). We fast-path skip them
+    // in both passes.
+    //
+    // Sweeps repeat until either no active loops remain OR every remaining
+    // active loop is already admitted by a canonical `terminateLoop` call
+    // (so they will record their own row and persist their own cancellation
+    // without our help). Re-sweeping catches snapshot-timing gaps: a loop
+    // activated (e.g. by a concurrent restart) while an earlier sweep was
+    // awaiting a contended lock is observed fresh in the next sweep and gets
+    // exactly one ordered shutdown row. The previous implementation fell back
+    // to a raw `loopService.terminateAll()` that wrote `cancelled` rows for
+    // such gap loops without recording any transition row; this loop replaces
+    // that fallback with the same locked, guarded record+terminate path. The
+    // sweep cap bounds a misbehaving caller that keeps starting loops during
+    // shutdown, but in practice shutdown produces 1-2 sweeps then quiesces.
+    const MAX_SWEEPS = 8
+    for (let sweep = 0; sweep < MAX_SWEEPS; sweep++) {
+      const active = loopService.listActive()
+      // Skip canonical-admitted loops fast; we have nothing to do for them.
+      if (active.every((s) => terminatingLoops.has(s.loopName))) break
+
+      const contended: typeof active = []
+      for (const state of active) {
+        // Fast-path skip already-admitted loops in both passes.
+        if (terminatingLoops.has(state.loopName)) {
+          logger.debug(`Loop: terminateAll skipping shutdown row for already-terminating loop ${state.loopName}`)
+          continue
+        }
+        // Contended: defer to the locked pass so we serialize behind the
+        // in-flight tick's phase-rotation work.
+        if (stateLocks.has(state.loopName)) {
+          contended.push(state)
+          continue
+        }
+        // Uncontended eager path: synchronously admit, record, and persist.
+        terminatingLoops.add(state.loopName)
+        const fresh = loopService.getActiveState(state.loopName)
+        if (!fresh?.active) {
+          logger.debug(`Loop: terminateAll skipping shutdown row for already-terminated loop ${state.loopName}`)
+          continue
+        }
+        recordShutdownTransitionAndPersist(state.loopName, fresh)
+        // Persist cancellation inside the eager admission so a tick queued behind
+        // (or fired concurrently with) this synchronous body observes the
+        // inactive state on its next microtask and short-circuits before
+        // rotating the phase (which would commit a phase row after our terminal
+        // row). loopService.terminate fires the 'terminate' notify synchronously
+        // here so group orchestration learns about the shutdown inline.
+      }
+      if (contended.length > 0) {
+        await Promise.all(contended.map((state) =>
+          withStateLock(state.loopName, async () => {
+            const fresh = loopService.getActiveState(state.loopName)
+            if (!fresh?.active) {
+              logger.debug(`Loop: terminateAll skipping shutdown row for already-terminated loop ${state.loopName}`)
+              return
+            }
+            // Re-check under the lock — a canonical terminateLoop may have been
+            // admitted between our outer snapshot and lock acquisition.
+            if (terminatingLoops.has(state.loopName)) {
+              logger.debug(`Loop: terminateAll skipping shutdown row for already-terminating loop ${state.loopName}`)
+              return
+            }
+            terminatingLoops.add(state.loopName)
+            recordShutdownTransitionAndPersist(state.loopName, fresh)
+          }),
+        ))
+      }
+    }
+  }
+
+  /**
+   * Record one terminal `shutdown` transition row for the loop and persist the
+   * cancellation in place. Used by `terminateAll` for every loop it admits
+   * (both eager and contended passes, plus each re-sweep). Centralizing the
+   * record+persist pair prevents drift between the snapshot passes and any
+   * snapshot-gap re-sweep.
+   */
+  function recordShutdownTransitionAndPersist(loopName: string, fresh: LoopState): void {
+    const shutdownReason: TerminationReason = { kind: 'shutdown' }
+    const shutdownStatus = terminationStatusFor(shutdownReason)
+    const shutdownReasonText = terminationReasonToString(shutdownReason)
+    loopService.recordTransition(loopName, {
+      eventType: shutdownReason.kind,
+      transitionKind: 'terminate',
+      fromPhase: fresh.phase,
+      toPhase: null,
+      status: shutdownStatus,
+      reason: shutdownReasonText,
+      iteration: fresh.iteration ?? 0,
+      sectionIndex: fresh.totalSections > 0 ? (fresh.currentSectionIndex ?? 0) : null,
+    })
+    loopService.terminate(loopName, {
+      status: shutdownStatus,
+      reason: shutdownReasonText,
+      completedAt: Date.now(),
+    })
   }
 
   function clearAllRetryTimeouts(): void {
@@ -1929,17 +2440,33 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   async function cancelBySessionId(sessionId: string): Promise<boolean> {
     const loopName = loopService.resolveLoopName(sessionId)
     if (!loopName) return false
-    const state = loopService.getActiveState(loopName)
-    if (!state?.active) return false
-    await terminateLoop(loopName, state, { kind: 'user_aborted' })
-    return true
+    // Hold the state lock for the duration of terminateLoop so a concurrent
+    // phase-rotation tick cannot commit a rotation between the time we observe
+    // the loop and the time the terminal row is recorded. The authoritative
+    // under-lock state inside terminateLoop then drives the terminal row's
+    // fromPhase. See `terminateLoopByName` for the same rationale.
+    return await withStateLock(loopName, async () => {
+      const state = loopService.getActiveState(loopName)
+      if (!state?.active) return false
+      await terminateLoop(loopName, state, { kind: 'user_aborted' })
+      return true
+    })
   }
 
   async function terminateLoopByName(loopName: string, reason: TerminationReason): Promise<boolean> {
-    const state = loopService.getActiveState(loopName)
-    if (!state?.active) return false
-    await terminateLoop(loopName, state, reason)
-    return true
+    // Serialize with phase-rotation ticks (which also acquire the state lock).
+    // Without this guard, a tick could rotate the phase (and commit its row)
+    // between cancel reading the caller's snapshot and terminateLoop recording
+    // the terminal row from that stale snapshot. Holding the lock for the
+    // duration of terminateLoop guarantees the authoritative under-lock state
+    // observed inside terminateLoop is the persisted phase at termination time,
+    // so the terminal row's fromPhase matches the persisted phase exactly.
+    return await withStateLock(loopName, async () => {
+      const state = loopService.getActiveState(loopName)
+      if (!state?.active) return false
+      await terminateLoop(loopName, state, reason)
+      return true
+    })
   }
 
   async function clearLoopTimers(loopName: string): Promise<void> {
@@ -1958,7 +2485,6 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
     idleRetryAttempts.delete(loopName)
     codingLaunchRecoveryAttempts.delete(loopName)
-    terminatingLoops.delete(loopName)
 
     const retained = loopRetainedSessions.get(loopName)
     if (retained) {
@@ -2048,21 +2574,52 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   function restart(name: string, params: { newState: LoopState; newSessionId: string }): void {
-    // Retain the old session in the reverse index before deleting state so that
+    // Retain the old session in the reverse index before restoring state so that
     // delayed errors from the pre-restart session still resolve to this loop.
     const oldState = loopService.getAnyState(name)
-    loopService.deleteState(name)
-    loopService.setState(name, params.newState)
+    const fromPhase = oldState?.phase ?? params.newState.phase
+    // In-place UPDATE preserves child rows (loop_transitions, section_plans)
+    // that would be cascade-deleted by the prior deleteState + setState pair.
+    // The loop row is restored in place (or inserted if concurrently deleted)
+    // so existing transition history survives restart.
+    loopService.restoreState(name, params.newState)
     loopService.registerLoopSession(params.newSessionId, name)
     sessionToLoop.set(params.newSessionId, name)
     if (oldState?.sessionId) {
       sessionToLoop.set(oldState.sessionId, name)
     }
     loopRegistry.add(name)
+    // Record exactly one phase-changing restart row. The previous destructive
+    // implementation recorded nothing while erasing prior history via cascade.
+    loopService.recordTransition(name, {
+      eventType: 'restart',
+      transitionKind: 'rotate',
+      fromPhase,
+      toPhase: params.newState.phase,
+      iteration: params.newState.iteration ?? 0,
+      sectionIndex: params.newState.totalSections > 0 ? (params.newState.currentSectionIndex ?? 0) : null,
+    })
   }
 
   function setPhase(name: string, phase: LoopState['phase']): void {
+    // Read the prior phase before persisting so we can record exactly one
+    // transition row when the phase actually changes (and none for a no-op).
+    // The public setPhase path does not flow through nextTransition, so it must
+    // emit its own row to satisfy the "every phase change produces exactly one
+    // loop_transitions row" invariant.
+    const priorState = loopService.getAnyState(name)
+    const fromPhase = priorState?.phase
     loopService.setPhase(name, phase)
+    if (priorState && fromPhase && fromPhase !== phase) {
+      loopService.recordTransition(name, {
+        eventType: 'set-phase',
+        transitionKind: 'phase',
+        fromPhase,
+        toPhase: phase,
+        iteration: priorState.iteration ?? 0,
+        sectionIndex: priorState.totalSections > 0 ? (priorState.currentSectionIndex ?? 0) : null,
+      })
+    }
   }
 
   /**

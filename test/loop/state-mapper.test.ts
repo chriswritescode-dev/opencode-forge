@@ -7,6 +7,7 @@ import {
   type AuditingState,
   type FinalAuditingState,
   type PostActionState,
+  type FinalAuditFixState,
 } from '../../src/loop/state'
 import type { LoopRow } from '../../src/storage/repos/loops-repo'
 
@@ -78,6 +79,14 @@ describe('loopRowToState', () => {
     expect(state.phase).toBe('post_action')
     const postAction = state as PostActionState
     expect(postAction.phase).toBe('post_action')
+  })
+
+  it('narrows final_audit_fix phase to FinalAuditFixState', () => {
+    const row = makeRow({ phase: 'final_audit_fix' })
+    const state = loopRowToState(row)
+    expect(state.phase).toBe('final_audit_fix')
+    const finalAuditFix = state as FinalAuditFixState
+    expect(finalAuditFix.phase).toBe('final_audit_fix')
   })
 
   it('converts boolean fields correctly', () => {
@@ -153,8 +162,8 @@ describe('loopRowToState', () => {
     expect(state.lastAuditResult).toBeUndefined()
   })
 
-  it('returns all four phases without runtime errors', () => {
-    for (const phase of ['coding', 'auditing', 'final_auditing', 'post_action'] as const) {
+  it('returns all five phases without runtime errors', () => {
+    for (const phase of ['coding', 'auditing', 'final_auditing', 'post_action', 'final_audit_fix'] as const) {
       const row = makeRow({ phase })
       const state = loopRowToState(row)
       expect(state.phase).toBe(phase)
@@ -260,12 +269,19 @@ describe('loopRowToState + loopStateToRow round-trip', () => {
   })
 
   it('preserves projectId through round-trip for each phase', () => {
-    for (const phase of ['coding', 'auditing', 'final_auditing', 'post_action'] as const) {
+    for (const phase of ['coding', 'auditing', 'final_auditing', 'post_action', 'final_audit_fix'] as const) {
       const row = makeRow({ phase, projectId: 'proj-round' })
       const state = loopRowToState(row)
       const result = loopStateToRow(state, 'proj-round')
       expect(result.projectId).toBe('proj-round')
     }
+  })
+
+  it('round-trips phase: final_audit_fix through loopRowToState and loopStateToRow', () => {
+    const row = makeRow({ phase: 'final_audit_fix' })
+    const state = loopRowToState(row)
+    const result = loopStateToRow(state, 'proj-1')
+    expect(result.phase).toBe('final_audit_fix')
   })
 })
 

@@ -7,6 +7,7 @@ export type Transition =
   | { kind: 'advance-section' }
   | { kind: 'rewind-section' }
   | { kind: 'fix-for-final-audit' }
+  | { kind: 'start-final-audit' }
   | { kind: 'terminate'; reason: TerminationReason }
   | { kind: 'noop' }
 
@@ -50,6 +51,9 @@ export function nextTransition(state: LoopState, event: TransitionEvent): Transi
 
     case 'post_action':
       return handlePostActionEvent(event)
+
+    case 'final_audit_fix':
+      return handleFinalAuditFixEvent(event)
   }
 }
 
@@ -84,7 +88,7 @@ function handleAuditingEvent(event: TransitionEvent): Transition {
   switch (event.type) {
     case 'section-clean':
       if (event.isLastSection) {
-        return { kind: 'rotate' }
+        return { kind: 'start-final-audit' }
       }
       return { kind: 'advance-section' }
     case 'section-dirty':
@@ -155,6 +159,33 @@ function handlePostActionEvent(event: TransitionEvent): Transition {
       return { kind: 'terminate', reason: { kind: 'stall_timeout' } }
     case 'missing-worktree-dir':
       return { kind: 'terminate', reason: { kind: 'missing_worktree_dir' } }
+    case 'worktree-failed':
+      return { kind: 'terminate', reason: { kind: 'worktree_failed', message: event.message } }
+    case 'error-max-retries':
+      return { kind: 'terminate', reason: { kind: 'error_max_retries', message: event.context ?? '' } }
+    default:
+      return { kind: 'noop' }
+  }
+}
+
+function handleFinalAuditFixEvent(event: TransitionEvent): Transition {
+  switch (event.type) {
+    case 'coding-idle-complete':
+      return { kind: 'start-final-audit' }
+    case 'missing-worktree-dir':
+      return { kind: 'terminate', reason: { kind: 'missing_worktree_dir' } }
+    case 'session-creation-failed':
+      return { kind: 'terminate', reason: { kind: 'session_creation_failed' } }
+    case 'coding-no-assistant':
+      return { kind: 'terminate', reason: { kind: 'coding_no_assistant' } }
+    case 'iteration-cap':
+      return { kind: 'terminate', reason: { kind: 'max_iterations' } }
+    case 'user-abort':
+      return { kind: 'terminate', reason: { kind: 'user_aborted' } }
+    case 'shutdown':
+      return { kind: 'terminate', reason: { kind: 'shutdown' } }
+    case 'stall-timeout':
+      return { kind: 'terminate', reason: { kind: 'stall_timeout' } }
     case 'worktree-failed':
       return { kind: 'terminate', reason: { kind: 'worktree_failed', message: event.message } }
     case 'error-max-retries':

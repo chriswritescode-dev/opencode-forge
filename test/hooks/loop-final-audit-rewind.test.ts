@@ -11,6 +11,7 @@ import { createSectionPlansRepo } from '../../src/storage/repos/section-plans-re
 import { createLoopService, MAX_RETRIES } from '../../src/loop/service'
 import { createLoopEventHandler } from '../../src/hooks/loop'
 import { openForgeDatabase } from '../../src/storage/database'
+import { createFakeForgeClient } from '../helpers/fake-client'
 import type { Logger, PluginConfig } from '../../src/types'
 
 const mockLogger: Logger = {
@@ -22,6 +23,10 @@ const mockLogger: Logger = {
 describe('Loop final audit rewind behavior', () => {
   let db: Database
   let loopService: ReturnType<typeof createLoopService>
+  let loopsRepo: ReturnType<typeof createLoopsRepo>
+  let plansRepo: ReturnType<typeof createPlansRepo>
+  let reviewFindingsRepo: ReturnType<typeof createReviewFindingsRepo>
+  let sectionPlansRepo: ReturnType<typeof createSectionPlansRepo>
   let tempDir: string
   const projectId = 'test-project'
 
@@ -30,10 +35,10 @@ describe('Loop final audit rewind behavior', () => {
     const dbPath = join(tempDir, 'loop-final-audit-rewind-test.db')
     db = openForgeDatabase(dbPath)
 
-    const loopsRepo = createLoopsRepo(db)
-    const plansRepo = createPlansRepo(db)
-    const reviewFindingsRepo = createReviewFindingsRepo(db)
-    const sectionPlansRepo = createSectionPlansRepo(db)
+    loopsRepo = createLoopsRepo(db)
+    plansRepo = createPlansRepo(db)
+    reviewFindingsRepo = createReviewFindingsRepo(db)
+    sectionPlansRepo = createSectionPlansRepo(db)
 
     loopService = createLoopService(
       loopsRepo, plansRepo, reviewFindingsRepo, projectId, mockLogger,
@@ -99,6 +104,104 @@ describe('Loop final audit rewind behavior', () => {
   }
 
 
+
+  describe('runtime phase persistence on dirty final audit', () => {
+    const mockConfig: PluginConfig = {
+      executionModel: 'test/model',
+      auditorModel: 'test/auditor',
+      loop: { enabled: true, defaultMaxIterations: 5 },
+    }
+
+    test('dirty final audit persists phase final_audit_fix; idle returns to final_auditing', async () => {
+      insertLoop({
+        loop_name: 'rewind-loop',
+        phase: 'final_auditing',
+        current_session_id: 'final-audit-session',
+        total_sections: 2,
+        current_section_index: 1,
+        iteration: 1,
+        audit_count: 1,
+        max_iterations: 5,
+      })
+
+      reviewFindingsRepo.write({
+        projectId,
+        loopName: 'rewind-loop',
+        file: 'src/test.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Outstanding bug found during final audit',
+      })
+
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async (p: { sessionID?: string }) => {
+            // The original final-audit session reports a dirty audit; rotated
+            // fix sessions report a successful fix with coder-decisions.
+            if (p?.sessionID === 'final-audit-session') {
+              return [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text' as const, text: 'Final audit found issues.' }] }]
+            }
+            return [{ info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text' as const, text: 'Fixed the bug.' }] }]
+          },
+        },
+      })
+
+      const handler = createLoopEventHandler(
+        loopsRepo,
+        plansRepo,
+        reviewFindingsRepo,
+        projectId,
+        client,
+        mockLogger,
+        () => mockConfig,
+        undefined,
+        tempDir,
+        undefined,
+        sectionPlansRepo,
+      )
+
+      // Step 1: idle on the final-audit session triggers the dirty final-audit path.
+      await handler.onEvent({
+        event: {
+          type: 'session.status',
+          properties: { sessionID: 'final-audit-session', status: { type: 'idle' } },
+        },
+      })
+
+      const stateAfterDirty = loopService.getActiveState('rewind-loop')
+      expect(stateAfterDirty).not.toBeNull()
+      expect(stateAfterDirty!.phase).toBe('final_audit_fix')
+      const fixSessionId = stateAfterDirty!.sessionId
+      expect(fixSessionId).not.toBe('final-audit-session')
+
+      // A final-audit fix prompt with agent 'code' must have been sent.
+      const fixPrompts = calls.filter(
+        (c) => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code',
+      )
+      expect(fixPrompts.length).toBeGreaterThan(0)
+      const fixPromptText = (fixPrompts[fixPrompts.length - 1].params as any)?.parts?.[0]?.text ?? ''
+      expect(fixPromptText).toContain('[Final-audit fix')
+
+      // Step 2: busy then idle on the fix session transitions the loop back to final_auditing.
+      await handler.onEvent({
+        event: {
+          type: 'session.status',
+          properties: { sessionID: fixSessionId, status: { type: 'busy' } },
+        },
+      })
+      await handler.onEvent({
+        event: {
+          type: 'session.status',
+          properties: { sessionID: fixSessionId, status: { type: 'idle' } },
+        },
+      })
+
+      const stateAfterFixIdle = loopService.getActiveState('rewind-loop')
+      expect(stateAfterFixIdle).not.toBeNull()
+      expect(stateAfterFixIdle!.phase).toBe('final_auditing')
+      expect(stateAfterFixIdle!.sessionId).not.toBe(fixSessionId)
+    })
+  })
 
   describe('buildFinalAuditPrompt', () => {
     test('includes section summaries when sections are completed', () => {
