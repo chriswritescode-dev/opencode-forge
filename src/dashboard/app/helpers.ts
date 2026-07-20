@@ -1,4 +1,5 @@
-import type { DashboardPayload, DashboardProject, DashboardLoop } from './types'
+import type { DashboardPayload, DashboardProject, DashboardLoop, DashboardLoopSummary } from './types'
+import type { LoopEventRow, LoopRunRow, SectionPlanRow } from '../../storage'
 import { formatDuration, computeElapsedSeconds } from '../../utils/duration'
 
 export function parseLoopHash(hash: string): { projectId: string | null; loopName: string | null } {
@@ -14,6 +15,25 @@ export function parseLoopHash(hash: string): { projectId: string | null; loopNam
   const lp = raw.slice(slash + 1)
   out.loopName = lp ? decodeURIComponent(lp) : null
   return out
+}
+
+export type DashboardRoute =
+  | { kind: 'metrics' }
+  | { kind: 'loop'; projectId: string; loopName: string | null }
+  | { kind: 'list' }
+
+/**
+ * Top-level dashboard route classifier. `#metrics` is reserved for the
+ * cross-run comparison view; everything else delegates to `parseLoopHash`,
+ * yielding a `loop` route with an optional loop name or a `list` route when
+ * the hash is empty.
+ */
+export function parseRoute(hash: string): DashboardRoute {
+  const raw = (hash || '').replace(/^#/, '')
+  if (raw === 'metrics') return { kind: 'metrics' }
+  const parsed = parseLoopHash(hash)
+  if (!parsed.projectId) return { kind: 'list' }
+  return { kind: 'loop', projectId: parsed.projectId, loopName: parsed.loopName }
 }
 
 export function buildLoopHash(projectId: string | null, loopName: string | null): string {
@@ -61,7 +81,7 @@ export function sectionStatusClass(s: string): string {
 }
 
 export function loopMatchesFilters(
-  loop: DashboardLoop['loop'],
+  loop: DashboardLoopSummary['loop'],
   project: DashboardProject,
   activeStatuses: Set<string>,
   searchText: string,
@@ -250,4 +270,132 @@ export function renderMarkdown(src: string): string {
     markdownCache.set(src, result)
   }
   return result
+}
+
+// ---------------------------------------------------------------------------
+// Loop metric chart helpers (pure, no DOM)
+// ---------------------------------------------------------------------------
+
+export interface IterationUsagePoint {
+  iteration: number
+  codeInput: number
+  codeOutput: number
+  auditInput: number
+  auditOutput: number
+  cost: number
+}
+
+/**
+ * Aggregates per-iteration token usage from loop events. Events without an
+ * iteration or of type `loop_terminated` are skipped; `coding_done` events
+ * feed the code buckets, `audit_done`/`final_audit_done` feed the audit
+ * buckets, and `cost` accumulates across both. Sorted ascending by iteration.
+ */
+export function iterationUsagePoints(events: LoopEventRow[]): IterationUsagePoint[] {
+  const byIter = new Map<number, IterationUsagePoint>()
+  for (const e of events) {
+    if (e.iteration === null) continue
+    if (
+      e.eventType !== 'coding_done' &&
+      e.eventType !== 'audit_done' &&
+      e.eventType !== 'final_audit_done'
+    ) {
+      continue
+    }
+    let p = byIter.get(e.iteration)
+    if (!p) {
+      p = {
+        iteration: e.iteration,
+        codeInput: 0,
+        codeOutput: 0,
+        auditInput: 0,
+        auditOutput: 0,
+        cost: 0,
+      }
+      byIter.set(e.iteration, p)
+    }
+    if (e.eventType === 'coding_done') {
+      p.codeInput += e.inputTokens
+      p.codeOutput += e.outputTokens
+    } else {
+      p.auditInput += e.inputTokens
+      p.auditOutput += e.outputTokens
+    }
+    p.cost += e.cost
+  }
+  return Array.from(byIter.values()).sort((a, b) => a.iteration - b.iteration)
+}
+
+export interface SectionRetryCount {
+  sectionIndex: number
+  title: string | null
+  retries: number
+}
+
+/**
+ * Counts `section_retry` outcomes per section index (from loop events), joined
+ * with section titles. Sections with zero retries are included so charts can
+ * render consistent rows. Returns sections in their plan order.
+ */
+export function sectionRetryCounts(
+  events: LoopEventRow[],
+  sections: SectionPlanRow[],
+): SectionRetryCount[] {
+  const counts = new Map<number, number>()
+  for (const e of events) {
+    if (e.outcome === 'section_retry' && e.sectionIndex !== null) {
+      counts.set(e.sectionIndex, (counts.get(e.sectionIndex) ?? 0) + 1)
+    }
+  }
+  return sections.map(s => ({
+    sectionIndex: s.sectionIndex,
+    title: s.title,
+    retries: counts.get(s.sectionIndex) ?? 0,
+  }))
+}
+
+export interface AuditOutcomePoint {
+  iteration: number | null
+  verdict: 'clean' | 'dirty' | null
+  outcome: string | null
+}
+
+/**
+ * Returns audit/final-audit event rows in id order (the order they arrive in
+ * from the events repo), preserving iteration, verdict, and outcome for chart
+ * plotting.
+ */
+export function auditOutcomePoints(events: LoopEventRow[]): AuditOutcomePoint[] {
+  const out: AuditOutcomePoint[] = []
+  for (const e of events) {
+    if (e.eventType !== 'audit_done' && e.eventType !== 'final_audit_done') continue
+    out.push({ iteration: e.iteration, verdict: e.verdict, outcome: e.outcome })
+  }
+  return out
+}
+
+export type RunComparisonRow = LoopRunRow & { tokensTotal: number; costPerIteration: number }
+
+/**
+ * Derives comparison fields for each run: `tokensTotal = inputTokens +
+ * outputTokens`, and `costPerIteration = cost / iterations` (cost unchanged
+ * when iterations is 0 to avoid division by zero). Sorted by `startedAt`
+ * descending so the most recent run appears first.
+ */
+export function runComparisonRows(runs: LoopRunRow[]): RunComparisonRow[] {
+  return [...runs]
+    .map(r => ({
+      ...r,
+      tokensTotal: r.inputTokens + r.outputTokens,
+      costPerIteration: r.iterations > 0 ? r.cost / r.iterations : r.cost,
+    }))
+    .sort((a, b) => b.startedAt - a.startedAt)
+}
+
+/**
+ * Returns the maximum of the supplied values with a floor of 1, so chart
+ * scale division never divides by zero. Empty input returns 1.
+ */
+export function chartMax(values: number[]): number {
+  return Math.max(1, ...values)
 }

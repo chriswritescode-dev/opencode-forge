@@ -11,6 +11,8 @@ import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../storage/repos/review-findings-repo'
 import type { SectionPlansRepo } from '../storage/repos/section-plans-repo'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
+import type { LoopEventsRepo } from '../storage/repos/loop-events-repo'
+import type { LoopRunsRepo } from '../storage/repos/loop-runs-repo'
 import type { PendingTeardownRegistry } from '../workspace/pending-teardown'
 
 export interface LoopEventHandler {
@@ -23,6 +25,11 @@ export interface LoopEventHandler {
   terminateLoopByName(loopName: string, reason: TerminationReason): Promise<boolean>
   runExclusive<T>(loopName: string, fn: () => Promise<T>): Promise<T>
   clearLoopTimers(loopName: string): Promise<void>
+  /**
+   * Capture the active loop's current run usage + termination metrics before a
+   * restart replaces started_at. See {@link Loop.finalizeRunForRestart}.
+   */
+  finalizeRunForRestart(loopName: string, reason: TerminationReason): Promise<void>
   recordActivity(loopName: string, source?: string): void
   loop: import('../loop/runtime').Loop
 }
@@ -48,6 +55,8 @@ export function createLoopEventHandler(
   notify?: LoopChangeNotifier,
   pendingTeardowns?: PendingTeardownRegistry,
   loopSessionUsageRepo?: LoopSessionUsageRepo,
+  loopEventsRepo?: LoopEventsRepo,
+  loopRunsRepo?: LoopRunsRepo,
 ): LoopEventHandler {
   const loop = createLoop({
     loopsRepo,
@@ -63,6 +72,8 @@ export function createLoopEventHandler(
     sectionPlansRepo,
     notify,
     loopSessionUsageRepo,
+    loopEventsRepo,
+    loopRunsRepo,
     onTerminated: async (state, reason) => {
       await performTerminationSideEffects(state, reason, state.sessionId, {
         client: forgeClient,
@@ -89,6 +100,7 @@ export function createLoopEventHandler(
     terminateLoopByName: (name, reason) => loop.terminate(name, reason),
     runExclusive: <T>(loopName: string, fn: () => Promise<T>) => loop.runExclusive(loopName, fn),
     clearLoopTimers: (name) => loop.clearLoopTimers(name),
+    finalizeRunForRestart: (name, reason) => loop.finalizeRunForRestart(name, reason),
     recordActivity: (name, source?) => loop.recordActivity(name, source),
     loop,
   }

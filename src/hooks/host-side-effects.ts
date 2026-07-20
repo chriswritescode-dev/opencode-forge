@@ -294,6 +294,8 @@ function resolveReasonLabel(reason: TerminationReason): string {
       return 'shutdown'
     case 'user_aborted':
       return 'aborted'
+    case 'restarted':
+      return 'restarted'
     case 'max_iterations':
       return 'max_iterations'
   }

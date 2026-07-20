@@ -60,6 +60,7 @@ function makePayload(over: Record<string, any> = {}): any {
   const loopOver = over.loop || {}
   const dashLoopOver = over.dashLoop || {}
   const totalsOver = over.totals || {}
+  const runs = over.runs ?? []
   return {
     generatedAt: Date.now(),
     projects: [
@@ -67,6 +68,7 @@ function makePayload(over: Record<string, any> = {}): any {
         projectId: 'p1',
         projectDir: '/proj/p1',
         loops: [makeLoop({ ...dashLoopOver, loop: loopOver })],
+        runs,
       },
     ],
     totals: {
@@ -101,7 +103,20 @@ beforeEach(() => {
     return 1 as unknown as ReturnType<typeof setInterval>
   }) as typeof setInterval)
   vi.stubGlobal('clearInterval', (() => {}) as typeof clearInterval)
-  ;(globalThis as any).fetch = vi.fn(async () => ({ json: async () => payload }))
+  ;(globalThis as any).fetch = vi.fn(async (input: string) => {
+    const url = String(input)
+    const body = url.startsWith('/api/loop-detail')
+      ? payload.projects[0]?.loops[0]
+      : url.startsWith('/api/runs')
+        ? {
+            runs: payload.projects.flatMap((project: any) => project.runs ?? []),
+            total: payload.projects.reduce((total: number, project: any) => total + (project.runs?.length ?? 0), 0),
+            offset: 0,
+            limit: 50,
+          }
+        : payload
+    return { ok: true, status: 200, json: async () => body }
+  })
   window.location.hash = '#p1/loop-a'
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -133,6 +148,15 @@ async function poll(next: any): Promise<void> {
 // ---------------------------------------------------------------------------
 
 describe('dashboard App loop list', () => {
+  test('list route requests only summary data', async () => {
+    window.location.hash = '#p1'
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const urls = vi.mocked(fetch).mock.calls.map(call => String(call[0]))
+    expect(urls).toEqual(['/api/data'])
+  })
+
   test('renders the project loop list as a table and opens a loop on row click', async () => {
     window.location.hash = '#p1'
     payload = makePayload()
@@ -151,6 +175,9 @@ describe('dashboard App loop list', () => {
     ;(container.querySelector('tr.lt-row') as HTMLElement).click()
     await flush()
     expect(container.querySelector('.loop-detail-header')).toBeTruthy()
+    const urls = vi.mocked(fetch).mock.calls.map(call => String(call[0]))
+    expect(urls.some(url => url.startsWith('/api/loop-detail?'))).toBe(true)
+    expect(urls.some(url => url.startsWith('/api/runs?'))).toBe(false)
   })
 })
 
@@ -412,5 +439,219 @@ describe('dashboard App fine-grained reactivity', () => {
 
     expect(container.querySelector('.totals')?.textContent).toContain('Running: 0')
     expect(container.querySelector('.totals')?.textContent).toContain('Completed: 1')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Loop metrics panel + #metrics runs view
+// ---------------------------------------------------------------------------
+
+function loopEvent(over: Record<string, any> = {}): any {
+  return {
+    projectId: 'p1',
+    loopName: 'loop-a',
+    runStartedAt: 1700000000000,
+    eventType: 'coding_done',
+    outcome: null,
+    verdict: null,
+    iteration: 1,
+    sectionIndex: null,
+    sessionId: null,
+    role: 'code',
+    model: null,
+    cost: 0.1,
+    inputTokens: 100,
+    outputTokens: 50,
+    reasoningTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    messageCount: 1,
+    findingsTotal: null,
+    findingsBugs: null,
+    detail: null,
+    createdAt: 1700000000000,
+    ...over,
+  }
+}
+
+describe('dashboard App loop metrics panel', () => {
+  test('opens a loop with metric events from the project loop list', async () => {
+    payload = makePayload({
+      dashLoop: {
+        events: [
+          loopEvent({ eventType: 'coding_done', inputTokens: 100, outputTokens: 50 }),
+          loopEvent({ eventType: 'audit_done', verdict: 'clean', inputTokens: 30, outputTokens: 10 }),
+        ],
+      },
+    })
+    window.location.hash = '#p1'
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    ;(container.querySelector('tr.lt-row') as HTMLElement).click()
+    await flush()
+
+    expect(container.querySelector('.loop-detail-header')).toBeTruthy()
+    expect(container.querySelector('.loop-metrics-panel .forge-chart-plot')).toBeTruthy()
+  })
+
+  test('loop detail with events renders the metrics panel charts with correct bar counts', async () => {
+    payload = makePayload({
+      loop: { totalSections: 1 },
+      dashLoop: {
+        events: [
+          loopEvent({ eventType: 'coding_done', iteration: 1, inputTokens: 100, outputTokens: 50, cost: 0.1 }),
+          loopEvent({ eventType: 'coding_done', iteration: 2, inputTokens: 200, outputTokens: 80, cost: 0.2 }),
+          loopEvent({ eventType: 'audit_done', iteration: 1, verdict: 'clean', inputTokens: 30, outputTokens: 10, cost: 0.05 }),
+          loopEvent({ eventType: 'audit_done', iteration: 2, verdict: 'dirty', inputTokens: 40, outputTokens: 12, cost: 0.07 }),
+          loopEvent({ eventType: 'final_audit_done', iteration: 2, verdict: 'clean', inputTokens: 5, outputTokens: 3, cost: 0.01 }),
+          loopEvent({ eventType: 'coding_done', iteration: 3, inputTokens: 220, outputTokens: 90, cost: 0.25 }),
+          loopEvent({ eventType: 'audit_done', iteration: 3, verdict: 'clean', inputTokens: 35, outputTokens: 11, cost: 0.06 }),
+          loopEvent({ eventType: 'loop_terminated', iteration: null, outcome: 'completed', inputTokens: 0, outputTokens: 0, cost: 0 }),
+        ],
+        sections: [
+          {
+            projectId: 'p1',
+            loopName: 'loop-a',
+            sectionIndex: 0,
+            title: 'Phase 1',
+            content: '',
+            status: 'completed',
+            attempts: 1,
+            startedAt: 1700000000000,
+            completedAt: 1700000500000,
+          },
+        ],
+      },
+    })
+    window.location.hash = '#p1/loop-a'
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const panel = container.querySelector('.loop-metrics-panel') as HTMLElement
+    expect(panel).toBeTruthy()
+
+    const charts = container.querySelectorAll('.forge-chart')
+    expect(charts.length).toBe(3)
+
+    const tokenColumns = charts[0].querySelectorAll('.forge-chart-column')
+    expect(tokenColumns.length).toBe(3)
+    expect(charts[0].querySelectorAll('.forge-chart-segment').length).toBe(12)
+    expect(tokenColumns[0].querySelector('.forge-chart-label')?.textContent).toBe('#1')
+    expect(tokenColumns[0].querySelector('.forge-chart-value')?.textContent).toBe('190')
+
+    expect(charts[1].querySelectorAll('.forge-chart-segment').length).toBe(3)
+
+    const auditSteps = container.querySelectorAll('.forge-audit-timeline .forge-audit-step')
+    expect(auditSteps.length).toBe(4)
+    expect(container.querySelectorAll('.forge-audit-timeline .forge-audit-clean').length).toBe(6)
+    expect(container.querySelectorAll('.forge-audit-timeline .forge-audit-dirty').length).toBe(2)
+    expect(auditSteps[0].textContent).toContain('Iteration 1Clean')
+
+    expect(charts[2].querySelector('.forge-chart-empty')?.textContent).toBe('No section retries.')
+  })
+
+  test('empty events renders the metrics empty-state note', async () => {
+    payload = makePayload({ dashLoop: { events: [] } })
+    window.location.hash = '#p1/loop-a'
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const panel = container.querySelector('.loop-metrics-panel') as HTMLElement
+    expect(panel).toBeTruthy()
+    expect(panel.querySelector('.metrics-empty')).toBeTruthy()
+    expect(container.querySelector('.forge-chart')).toBeFalsy()
+    expect(container.querySelector('.forge-audit-timeline')).toBeFalsy()
+  })
+
+  test('#metrics route renders the runs table with one row per run', async () => {
+    payload = makePayload({
+      totals: { running: 0, completed: 1 },
+      loop: { status: 'completed', completedAt: 1700000500000 },
+      runs: [
+        {
+          projectId: 'p1',
+          loopName: 'loop-a',
+          startedAt: 1700000000000,
+          completedAt: 1700000500000,
+          status: 'completed',
+          terminationReason: null,
+          loopKind: 'plan',
+          executionModel: 'claude-3',
+          auditorModel: 'gpt-4',
+          executionVariant: null,
+          auditorVariant: null,
+          iterations: 3,
+          auditCount: 2,
+          errorCount: 0,
+          totalSections: 1,
+          sectionRetries: 0,
+          cleanAudits: 2,
+          dirtyAudits: 0,
+          cost: 0.42,
+          inputTokens: 1000,
+          outputTokens: 600,
+          reasoningTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          messageCount: 8,
+          durationMs: 500000,
+          createdAt: 1700000000000,
+        },
+      ],
+    })
+    window.location.hash = '#metrics'
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    expect(container.querySelector('.runs-view')).toBeTruthy()
+    const rows = container.querySelectorAll('tr.runs-row')
+    expect(rows.length).toBe(1)
+    expect(rows[0].textContent).toContain('loop-a')
+    const costChart = container.querySelector('.runs-view .forge-chart-plot')
+    expect(costChart).toBeTruthy()
+    expect(container.querySelector('.runs-page-status')?.textContent).toContain('Showing 1-1 of 1 runs on this page')
+    const urls = vi.mocked(fetch).mock.calls.map(call => String(call[0]))
+    expect(urls.some(url => url.startsWith('/api/runs?'))).toBe(true)
+    expect(urls.some(url => url.startsWith('/api/loop-detail?'))).toBe(false)
+  })
+
+  describe('dashboard App metrics navigation regression', () => {
+    test('Metrics → Metrics → Back: re-clicking Metrics at #metrics does not suppress the next Back hashchange', async () => {
+      // Regression: the previous navigateMetrics() always set the hashchange
+      // suppression flag and assigned location.hash = 'metrics', even when the
+      // hash was already 'metrics'. Because no hashchange event fires when the
+      // hash does not actually change, the flag stayed set, so the next Back
+      // navigation was discarded — leaving the metrics view mounted with an empty
+      // hash. syncHash only arms the suppression flag when the hash changes.
+      payload = makePayload({
+        totals: { running: 1, completed: 0 },
+        dashLoop: { events: [] },
+      })
+      window.location.hash = '#metrics'
+      dispose = render(() => App() as unknown as Element, container)
+      await flush()
+
+      // Mounted on the metrics route.
+      const navLink = container.querySelector('.metrics-nav-link') as HTMLElement
+      expect(navLink).toBeTruthy()
+      expect(container.querySelector('.runs-view')).toBeTruthy()
+
+      // Re-click Metrics while already at #metrics: hash is unchanged so the
+      // browser fires no hashchange event. navigateMetrics must NOT arm the
+      // suppression flag (the bug left it set).
+      navLink.click()
+      await flush()
+      expect(container.querySelector('.runs-view')).toBeTruthy()
+
+      // Simulate Back: hash becomes empty and the browser fires a hashchange.
+      window.location.hash = ''
+      window.dispatchEvent(new Event('hashchange'))
+      await flush()
+
+      // The metrics view is unmounted; the standard dashboard layout is shown.
+      expect(container.querySelector('.runs-view')).toBeFalsy()
+      expect(container.querySelector('.dash-layout')).toBeTruthy()
+    })
   })
 })

@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { openForgeDatabase, closeDatabase } from '../../src/storage/database'
 import { createRequestHandler, type DashboardDeps } from '../../src/dashboard/server'
-import { createLoopsRepo, type LoopRow } from '../../src/storage'
+import { createLoopRunsRepo, createLoopsRepo, type LoopRow, type LoopRunRow } from '../../src/storage'
 
 function makeLoopRow(overrides?: Partial<LoopRow>): LoopRow {
   return {
@@ -43,6 +43,18 @@ function makeLoopRow(overrides?: Partial<LoopRow>): LoopRow {
 /** Build a deps object with the given forge DB. */
 function makeDeps(forgeDb: Database): DashboardDeps {
   return { forgeDb }
+}
+
+function makeRun(overrides: Partial<LoopRunRow> = {}): LoopRunRow {
+  return {
+    projectId: 'p1', loopName: 'run-a', startedAt: 1000, completedAt: 2000,
+    status: 'completed', terminationReason: null, loopKind: 'plan', executionModel: null,
+    auditorModel: null, executionVariant: null, auditorVariant: null, iterations: 1,
+    auditCount: 1, errorCount: 0, totalSections: 0, sectionRetries: 0, cleanAudits: 1,
+    dirtyAudits: 0, cost: 0.1, inputTokens: 10, outputTokens: 5, reasoningTokens: 0,
+    cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 2, durationMs: 1000,
+    createdAt: 2000, ...overrides,
+  }
 }
 
 describe('createRequestHandler', () => {
@@ -124,6 +136,34 @@ describe('createRequestHandler', () => {
     expect(bodyAfter.projects).toHaveLength(1)
     expect(bodyAfter.projects[0].projectId).toBe('p1')
     expect(bodyAfter.projects[0].loops[0].loop.loopName).toBe('newly-inserted')
+  })
+
+  test('GET /api/loop-detail validates parameters and returns full detail or 404', async () => {
+    const handler = createRequestHandler(makeDeps(db!))
+    expect(handler(new Request('http://localhost/api/loop-detail')).status).toBe(400)
+    createLoopsRepo(db!).insert(makeLoopRow({ projectId: 'p1', loopName: 'loop one' }), { lastAuditResult: 'clean' })
+
+    const found = handler(new Request('http://localhost/api/loop-detail?projectId=p1&loopName=loop%20one'))
+    expect(found.status).toBe(200)
+    expect(found.headers.get('cache-control')).toBe('no-store')
+    expect(await found.json()).toMatchObject({ lastAuditResult: 'clean', loop: { loopName: 'loop one' } })
+    expect(handler(new Request('http://localhost/api/loop-detail?projectId=p1&loopName=missing')).status).toBe(404)
+  })
+
+  test('GET /api/runs validates, clamps, filters, and paginates', async () => {
+    const runsRepo = createLoopRunsRepo(db!)
+    runsRepo.upsert(makeRun({ projectId: 'p1', loopName: 'new', startedAt: 300 }))
+    runsRepo.upsert(makeRun({ projectId: 'p1', loopName: 'old', startedAt: 100 }))
+    runsRepo.upsert(makeRun({ projectId: 'p2', loopName: 'other', startedAt: 400 }))
+    const handler = createRequestHandler(makeDeps(db!))
+
+    const response = handler(new Request('http://localhost/api/runs?projectId=p1&offset=1&limit=999'))
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(await response.json()).toMatchObject({ total: 2, offset: 1, limit: 200, runs: [{ loopName: 'old' }] })
+    expect(handler(new Request('http://localhost/api/runs?offset=-1')).status).toBe(400)
+    expect(handler(new Request('http://localhost/api/runs?limit=0')).status).toBe(400)
+    expect(handler(new Request('http://localhost/api/runs?projectId=')).status).toBe(400)
   })
 
   // ─── Cycle 4: unknown route returns 404 ──────────────────────────────

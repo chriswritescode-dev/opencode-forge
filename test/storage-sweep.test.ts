@@ -4,7 +4,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
 import { openForgeDatabase } from '../src/storage/database'
-import { sweepExpiredLoops } from '../src/storage/sweep'
+import { sweepExpiredLoops, sweepExpiredLoopMetrics } from '../src/storage/sweep'
 
 function createTempDb(): string {
   const dir = tmpdir()
@@ -139,6 +139,93 @@ test('sweepExpiredLoops does not delete plans from other projects with same loop
   // Project A's loop should be deleted
   const loops = db.prepare('SELECT COUNT(*) as count FROM loops WHERE project_id = ? AND loop_name = ?').get('projA', 'shared-loop-name') as { count: number }
   expect(loops.count).toBe(0)
+
+  db.close()
+})
+
+test('sweepExpiredLoops leaves loop_events and loop_runs rows intact (metrics retention)', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const now = Date.now()
+  const eightDaysAgo = now - (8 * 24 * 60 * 60 * 1000)
+
+  db.run(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, worktree_branch, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at, completed_at)
+    VALUES ('proj1', 'loop-to-delete', 'completed', 'sess1', 0, '/path', NULL, '/proj1', 10, 5, 2, 0, 'coding', ?, ?)
+  `, [now, eightDaysAgo])
+
+  db.run(`
+    INSERT INTO loop_events (project_id, loop_name, run_started_at, event_type, outcome, verdict, iteration, section_index, session_id, role, model, cost, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, message_count, findings_total, findings_bugs, detail, created_at)
+    VALUES ('proj1', 'loop-to-delete', ?, 'audit_done', 'clean', 'clean', 1, NULL, 'sess1', 'auditor', 'audit-model', 0.01, 100, 200, 0, 0, 0, 2, 0, 0, NULL, ?)
+  `, [now, eightDaysAgo])
+
+  db.run(`
+    INSERT INTO loop_runs (project_id, loop_name, started_at, completed_at, status, termination_reason, loop_kind, execution_model, auditor_model, execution_variant, auditor_variant, iterations, audit_count, error_count, total_sections, section_retries, clean_audits, dirty_audits, cost, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, message_count, duration_ms, created_at)
+    VALUES ('proj1', 'loop-to-delete', ?, ?, 'completed', NULL, 'plan', 'exec-model', 'audit-model', NULL, NULL, 5, 2, 0, 0, 0, 2, 0, 0.05, 1000, 2000, 0, 0, 0, 10, 1000, ?)
+  `, [now, eightDaysAgo, eightDaysAgo])
+
+  const ttlMs = 7 * 24 * 60 * 60 * 1000
+  sweepExpiredLoops(db, ttlMs)
+
+  const events = db.prepare('SELECT COUNT(*) as count FROM loop_events WHERE project_id = ?').get('proj1') as { count: number }
+  expect(events.count).toBe(1)
+
+  const runs = db.prepare('SELECT COUNT(*) as count FROM loop_runs WHERE project_id = ?').get('proj1') as { count: number }
+  expect(runs.count).toBe(1)
+
+  db.close()
+})
+
+test('sweepExpiredLoopMetrics deletes only metrics older than cutoff from both tables and returns total', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const now = Date.now()
+  const ttlMs = 1000
+  const oldEvent = now - 5000
+  const newEvent = now - 100
+
+  db.run(`
+    INSERT INTO loop_events (project_id, loop_name, run_started_at, event_type, outcome, verdict, iteration, section_index, session_id, role, model, cost, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, message_count, findings_total, findings_bugs, detail, created_at)
+    VALUES
+      ('proj1', 'loop-a', ?, 'audit_done', 'clean', 'clean', 1, NULL, 'sess1', 'auditor', 'm', 0, 0, 0, 0, 0, 0, 1, 0, 0, NULL, ?),
+      ('proj1', 'loop-b', ?, 'coding_done', NULL, NULL, 1, NULL, 'sess2', 'code', 'm', 0, 0, 0, 0, 0, 0, 1, 0, 0, NULL, ?)
+  `, [now, oldEvent, now, newEvent])
+
+  db.run(`
+    INSERT INTO loop_runs (project_id, loop_name, started_at, completed_at, status, termination_reason, loop_kind, execution_model, auditor_model, execution_variant, auditor_variant, iterations, audit_count, error_count, total_sections, section_retries, clean_audits, dirty_audits, cost, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, message_count, duration_ms, created_at)
+    VALUES
+      ('proj1', 'loop-a', ?, ?, 'completed', NULL, 'plan', 'm', 'm', NULL, NULL, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 100, ?),
+      ('proj1', 'loop-b', ?, ?, 'completed', NULL, 'plan', 'm', 'm', NULL, NULL, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 100, ?)
+  `, [now, now, oldEvent, now, now, newEvent])
+
+  const deletedCount = sweepExpiredLoopMetrics(db, ttlMs)
+  expect(deletedCount).toBe(2) // 1 event + 1 run
+
+  const events = db.prepare('SELECT COUNT(*) as count FROM loop_events').get() as { count: number }
+  expect(events.count).toBe(1)
+
+  const runs = db.prepare('SELECT COUNT(*) as count FROM loop_runs').get() as { count: number }
+  expect(runs.count).toBe(1)
+
+  db.close()
+})
+
+test('sweepExpiredLoopMetrics with future cutoff deletes nothing', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const now = Date.now()
+
+  db.run(`
+    INSERT INTO loop_events (project_id, loop_name, run_started_at, event_type, cost, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, message_count, created_at)
+    VALUES ('proj1', 'loop-a', ?, 'audit_done', 0, 0, 0, 0, 0, 0, 1, ?)
+  `, [now, now])
+
+  const future = now + 10000
+  const deleted = sweepExpiredLoopMetrics(db, future)
+  expect(deleted).toBe(0)
 
   db.close()
 })

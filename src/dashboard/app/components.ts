@@ -1,6 +1,8 @@
 import html from 'solid-js/html'
 import { createMemo, createSignal } from 'solid-js'
-import type { DashboardLoop, DashboardTotals, DashboardProject } from './types'
+import type { DashboardLoop, DashboardLoopSummary, DashboardTotals, DashboardProject } from './types'
+import type { LoopRunRow } from '../../storage'
+import { formatDuration } from '../../utils/duration'
 import {
   statusClass,
   sectionStatusClass,
@@ -17,8 +19,13 @@ import {
   formatUsageCost,
   tokenBreakdownSegments,
   modelUsageBars,
+  iterationUsagePoints,
+  auditOutcomePoints,
+  sectionRetryCounts,
+  runComparisonRows,
   renderMarkdown,
 } from './helpers'
+import { StackedBarChart, AuditTimeline } from './charts'
 
 type DashboardSection = NonNullable<DashboardLoop['sections']>[number]
 
@@ -35,7 +42,7 @@ export type { DashboardTotals }
 
 export interface MatchedEntry {
   proj: DashboardProject
-  loops: DashboardLoop[]
+  loops: DashboardLoopSummary[]
 }
 
 // ── TotalsBar ─────────────────────────────────────────────────────────────
@@ -118,19 +125,19 @@ function MiniMeter(props: { current: () => number; total: () => number }) {
   </span>`
 }
 
-export function LoopTable(props: { loops: DashboardLoop[]; onOpen: (name: string) => void }) {
+export function LoopTable(props: { loops: DashboardLoopSummary[]; onOpen: (name: string) => void }) {
   return html`<table class="loop-table">
     <thead><tr>
       <th>Status</th><th>Loop</th><th>Phase</th><th>Iter</th><th>Sections</th>
       <th>Findings</th><th>Cost</th><th>Duration</th><th>Updated</th>
     </tr></thead>
     <tbody>
-      ${props.loops.map((dl: DashboardLoop) => LoopTableRow({ dashLoop: dl, onOpen: props.onOpen }))}
+      ${props.loops.map((dl: DashboardLoopSummary) => LoopTableRow({ dashLoop: dl, onOpen: props.onOpen }))}
     </tbody>
   </table>`
 }
 
-function LoopTableRow(props: { dashLoop: DashboardLoop; onOpen: (name: string) => void }) {
+function LoopTableRow(props: { dashLoop: DashboardLoopSummary; onOpen: (name: string) => void }) {
   const lp = () => props.dashLoop.loop
   const dl = () => props.dashLoop
   const counts = createMemo(() => splitFindings(dl().findings))
@@ -354,6 +361,8 @@ export function LoopDetailHeader(props: {
 
     ${() => (hasUsage() ? LoopUsage({ usage: () => props.dashLoop.usage! }) : '')}
 
+    ${LoopMetricsPanel({ dashLoop: () => props.dashLoop })}
+
     ${() =>
       hasReason()
         ? html`<div class=${() => 'ldh-banner ldh-banner-' + lp().status}>${() => lp().terminationReason}</div>`
@@ -425,6 +434,213 @@ export function LoopUsage(props: { usage: () => NonNullable<DashboardLoop['usage
             </div>
           </div>`
         : ''}
+  </div>`
+}
+
+// ── LoopMetricsPanel ────────────────────────────────────────────────────
+
+// SVG charts and an audit-outcome dot strip driven by `loop_events`. Old loops
+// without metrics events render a single empty-state note instead of empty
+// axes. The section-retry chart only renders when the loop was actually
+// sectioned (`loop.totalSections > 0`). All reactive reads happen inside
+// thunks; `hasEvents` / `hasSections` are boolean memos so a metric block
+// appearing/disappearing does not tear down the surrounding loop header.
+const TOKEN_SEGMENT_COLORS = {
+  codeInput: '#1f6feb',
+  codeOutput: '#3fb950',
+  auditInput: '#d29922',
+  auditOutput: '#db61a2',
+} as const
+
+function auditOutcomeClass(verdict: 'clean' | 'dirty' | null): string {
+  if (verdict === 'clean') return 'forge-audit-clean'
+  if (verdict === 'dirty') return 'forge-audit-dirty'
+  return 'forge-audit-unknown'
+}
+
+function LoopMetricsPanel(props: { dashLoop: () => DashboardLoop }) {
+  const dl = () => props.dashLoop()
+  const events = createMemo(() => dl().events ?? [])
+  const hasEvents = createMemo(() => events().length > 0)
+  const hasSections = createMemo(() => dl().loop.totalSections > 0)
+
+  const iterationPts = createMemo(() =>
+    iterationUsagePoints(events()).map(p => ({
+      label: '#' + p.iteration,
+      segments: [
+        { value: p.codeInput, color: TOKEN_SEGMENT_COLORS.codeInput },
+        { value: p.codeOutput, color: TOKEN_SEGMENT_COLORS.codeOutput },
+        { value: p.auditInput, color: TOKEN_SEGMENT_COLORS.auditInput },
+        { value: p.auditOutput, color: TOKEN_SEGMENT_COLORS.auditOutput },
+      ],
+    })),
+  )
+  const costPts = createMemo(() =>
+    iterationUsagePoints(events()).map(p => ({
+      label: '#' + p.iteration,
+      segments: [{ value: p.cost, color: '#3fb950' }],
+    })),
+  )
+  const auditItems = createMemo(() =>
+    auditOutcomePoints(events()).map(a => ({
+      cls: auditOutcomeClass(a.verdict),
+      label: a.iteration !== null ? String(a.iteration) : '—',
+      verdict: a.verdict ? a.verdict[0].toUpperCase() + a.verdict.slice(1) : 'Unknown',
+      title:
+        (a.iteration !== null ? 'Iter ' + a.iteration + ': ' : '') +
+        (a.verdict ?? a.outcome ?? 'audit'),
+    })),
+  )
+  const retryPts = createMemo(() =>
+    sectionRetryCounts(events(), dl().sections ?? []).map(s => ({
+      label: '#' + s.sectionIndex,
+      segments: [{ value: s.retries, color: '#d29922' }],
+    })),
+  )
+
+  return html`<div class="loop-metrics-panel">
+    <h4>Loop Metrics</h4>
+    ${() =>
+      hasEvents()
+        ? html`<div class="metrics-blocks">
+            <div class="metrics-block metrics-block-wide">
+              <div class="metrics-block-title">Tokens per iteration</div>
+              <div class="metrics-block-legend metrics-token-legend">
+                <span class="metrics-legend-swatch" style=${'background:' + TOKEN_SEGMENT_COLORS.codeInput}></span> code input
+                <span class="metrics-legend-swatch" style=${'background:' + TOKEN_SEGMENT_COLORS.codeOutput}></span> code output
+                <span class="metrics-legend-swatch" style=${'background:' + TOKEN_SEGMENT_COLORS.auditInput}></span> audit input
+                <span class="metrics-legend-swatch" style=${'background:' + TOKEN_SEGMENT_COLORS.auditOutput}></span> audit output
+              </div>
+              ${() => StackedBarChart({
+                points: iterationPts,
+                valueFormatter: formatTokenCount,
+                emptyMessage: 'No token usage recorded.',
+                ariaLabel: 'Token usage by iteration',
+              })}
+            </div>
+            <div class="metrics-block">
+              <div class="metrics-block-title">Cost per iteration</div>
+              ${() => StackedBarChart({
+                points: costPts,
+                valueFormatter: formatUsageCost,
+                emptyMessage: 'No iteration cost recorded.',
+                ariaLabel: 'Cost by iteration',
+              })}
+            </div>
+            <div class="metrics-block">
+              <div class="metrics-block-title">Audit outcomes</div>
+              ${() => AuditTimeline({ items: auditItems })}
+            </div>
+            ${() =>
+              hasSections()
+                ? html`<div class="metrics-block metrics-block-wide">
+                    <div class="metrics-block-title">Section retries</div>
+                    ${() => StackedBarChart({
+                      points: retryPts,
+                      emptyMessage: 'No section retries.',
+                      ariaLabel: 'Retries by section',
+                    })}
+                  </div>`
+                : ''}
+          </div>`
+        : html`<div class="metrics-empty">No metrics events recorded for this loop.</div>`}
+  </div>`
+}
+
+// ── RunsView ──────────────────────────────────────────────────────────────
+
+// Cross-run comparison view mounted on the `#metrics` route. Renders a "Cost
+// per run" bar chart above a dense table (one row per run, sweeps included).
+// Costs chart uses one segment per run, colored by run status so the chart
+// visually separates completed/errored/cancelled runs.
+const RUN_STATUS_COLORS: Record<string, string> = {
+  running: '#1f6feb',
+  completed: '#3fb950',
+  cancelled: '#6e7681',
+  errored: '#da3633',
+  stalled: '#d29922',
+}
+
+function runStatusColor(status: string): string {
+  return RUN_STATUS_COLORS[status] ?? '#6e7681'
+}
+
+function RunTableRow(props: { row: () => ReturnType<typeof runComparisonRows>[number] }) {
+  const r = () => props.row()
+  const duration = createMemo(() => {
+    const ms = r().durationMs
+    return ms && ms > 0 ? formatDuration(Math.round(ms / 1000)) : ''
+  })
+  return html`<tr class="runs-row">
+    <td class="runs-loop">${() => r().loopName}</td>
+    <td>${() => r().loopKind}</td>
+    <td><span class=${() => statusClass(r().status)}>${() => r().status}</span></td>
+    <td class="runs-models">${() => [r().executionModel, r().auditorModel].filter(Boolean).join(' / ') || '—'}</td>
+    <td class="runs-num">${() => r().iterations}</td>
+    <td class="runs-num">${() => r().cleanAudits + '/' + r().dirtyAudits}</td>
+    <td class="runs-num">${() => r().sectionRetries}</td>
+    <td class="runs-num">${() => formatTokenCount(r().inputTokens)}</td>
+    <td class="runs-num">${() => formatTokenCount(r().outputTokens)}</td>
+    <td class="runs-cost">${() => formatUsageCost(r().cost)}</td>
+    <td class="runs-num">${() => formatUsageCost(r().costPerIteration)}</td>
+    <td class="runs-duration">${() => duration()}</td>
+    <td class="runs-updated">${() => fmtTime(r().startedAt)}</td>
+  </tr>`
+}
+
+export function RunsView(props: {
+  runs: () => LoopRunRow[]
+  offset: () => number
+  limit: () => number
+  total: () => number
+  onPrevious: () => void
+  onNext: () => void
+}) {
+  const rows = createMemo(() => runComparisonRows(props.runs()))
+  const hasRows = createMemo(() => rows().length > 0)
+  const costPts = createMemo(() =>
+    rows().map(r => ({
+      label: r.loopName,
+      segments: [{ value: r.cost, color: runStatusColor(r.status) }],
+    })),
+  )
+  return html`<div class="runs-view">
+    <div class="back-to-loops" onclick=${() => { location.hash = '' }}>&larr; Back to dashboard</div>
+    <h2>Run Metrics</h2>
+    <div class="runs-page-status">${() => {
+      const start = props.total() === 0 ? 0 : props.offset() + 1
+      const end = Math.min(props.offset() + props.runs().length, props.total())
+      return 'Showing ' + start + '-' + end + ' of ' + props.total() + ' runs on this page'
+    }}</div>
+    ${() =>
+      hasRows()
+        ? html`<div class="runs-view-content">
+            <div class="metrics-block">
+              <div class="metrics-block-title">Cost per run</div>
+              ${() => StackedBarChart({
+                points: costPts,
+                valueFormatter: formatUsageCost,
+                emptyMessage: 'No run cost recorded.',
+                ariaLabel: 'Cost by run',
+              })}
+            </div>
+            <table class="runs-table">
+              <thead><tr>
+                <th>Loop</th><th>Kind</th><th>Status</th><th>Models</th>
+                <th>Iter</th><th>Audits</th><th>Retries</th>
+                <th>Tokens in</th><th>Tokens out</th>
+                <th>Cost</th><th>Cost/iter</th><th>Duration</th><th>Started</th>
+              </tr></thead>
+              <tbody>
+                ${() => rows().map(r => RunTableRow({ row: () => r }))}
+              </tbody>
+            </table>
+            <div class="runs-pagination">
+              <button disabled=${() => props.offset() === 0} onclick=${props.onPrevious}>Previous</button>
+              <button disabled=${() => props.offset() + props.limit() >= props.total()} onclick=${props.onNext}>Next</button>
+            </div>
+          </div>`
+        : html`<div class="empty-state">No runs recorded yet.</div>`}
   </div>`
 }
 

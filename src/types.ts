@@ -238,6 +238,8 @@ export interface PluginConfig {
   remotes?: RemoteServerConfig[]
   /** TTL for completed/cancelled/errored/stalled loops before sweep. Default 7 days. */
   completedLoopTtlMs?: number
+  /** TTL for loop_events/loop_runs metrics rows before sweep. Default 90 days. */
+  metricsTtlMs?: number
   /** TUI display configuration. */
   tui?: TuiConfig
   /** Per-agent configuration overrides. */

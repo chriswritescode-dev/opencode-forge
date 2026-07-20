@@ -270,7 +270,135 @@ export function renderDashboardHtml(): string {
     font-family: inherit; flex-shrink: 0;
   }
   .copy-btn:hover { background: #30363d; color: #c9d1d9; }
-  .dashboard-summary { margin-bottom: 12px; }</style>
+  .dashboard-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+  .dashboard-summary .totals { margin: 0; }
+  .dashboard-summary .timestamp { margin: 0; }
+  .metrics-nav-link {
+    display: inline-block; padding: 4px 12px; border-radius: 12px;
+    font-size: 0.8rem; cursor: pointer; user-select: none;
+    background: #21262d; color: #58a6ff; border: 1px solid #30363d;
+    margin-left: auto;
+  }
+  .metrics-nav-link:hover { background: #30363d; }
+  .metrics-nav-link.selected { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+  .metrics-layout .project-detail { padding: 0; }
+  .loop-metrics-panel {
+    display: flex; flex-direction: column; gap: 10px;
+    margin-top: 12px; padding: 12px 14px;
+    border: 1px solid #30363d; border-radius: 8px; background: #161b22;
+  }
+  .loop-metrics-panel h4 {
+    color: #f0f6fc; margin: 0 0 4px; font-size: 0.95rem;
+  }
+  .metrics-blocks {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    border: 1px solid #21262d; border-radius: 7px; overflow: hidden; background: #0d1117;
+  }
+  .metrics-block {
+    min-width: 0; border: 1px solid #21262d; border-radius: 6px; padding: 12px 14px;
+    background: #0d1117;
+  }
+  .metrics-blocks > .metrics-block { border: 0; border-radius: 0; padding: 14px 16px; }
+  .metrics-blocks > .metrics-block:nth-child(even) { border-right: 1px solid #21262d; }
+  .metrics-blocks > .metrics-block:not(:last-child) { border-bottom: 1px solid #21262d; }
+  .metrics-block-wide { grid-column: 1 / -1; }
+  .metrics-block-title {
+    font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.05em;
+    color: #8b949e; margin-bottom: 8px; font-weight: 600;
+  }
+  .metrics-block-legend {
+    font-size: 0.72rem; color: #9da7b3; margin-bottom: 10px;
+    display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  }
+  .metrics-legend-swatch {
+    display: inline-block; width: 9px; height: 9px; border-radius: 2px;
+    flex: 0 0 9px; margin-left: 5px;
+  }
+  .metrics-token-legend .metrics-legend-swatch:first-child { margin-left: 0; }
+  .metrics-empty {
+    font-size: 0.82rem; color: #8b949e; font-style: italic; padding: 6px 0;
+  }
+  .forge-chart { width: 100%; min-width: 0; overflow-x: auto; }
+  .forge-chart-plot {
+    width: 100%; min-height: 154px; display: flex; align-items: stretch; gap: 10px;
+    padding: 4px 6px 0; border-bottom: 1px solid #30363d;
+    background: repeating-linear-gradient(to top, transparent 0, transparent 37px, rgba(48,54,61,0.46) 38px);
+  }
+  .forge-chart-column {
+    flex: 1 1 0; min-width: 38px; display: grid; grid-template-rows: 20px 108px 24px;
+    align-items: end; text-align: center;
+  }
+  .forge-chart-value {
+    align-self: start; color: #c9d1d9; font-size: 0.68rem; line-height: 1;
+    font-family: 'SF Mono','Fira Code',Menlo,Consolas,monospace; white-space: nowrap;
+  }
+  .forge-chart-bar-slot { height: 108px; display: flex; align-items: flex-end; justify-content: center; }
+  .forge-chart-bar {
+    width: clamp(12px, 62%, 54px); height: 100%; display: flex; flex-direction: column-reverse;
+    justify-content: flex-start; overflow: hidden; border-radius: 4px 4px 0 0;
+  }
+  .forge-chart-segment { width: 100%; flex: 0 0 auto; transition: height 180ms cubic-bezier(0.25, 1, 0.5, 1); }
+  .forge-chart-segment + .forge-chart-segment { box-shadow: inset 0 -1px rgba(13,17,23,0.55); }
+  .forge-chart-label {
+    align-self: center; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+    color: #8b949e; font-family: 'SF Mono','Fira Code',Menlo,Consolas,monospace;
+    font-size: 0.7rem; white-space: nowrap;
+  }
+  .forge-chart-empty {
+    min-height: 132px; display: grid; place-items: center; padding: 18px;
+    border: 1px dashed #30363d; border-radius: 5px;
+    font-size: 0.78rem; color: #8b949e; text-align: center;
+  }
+  .forge-audit-timeline {
+    display: grid; grid-auto-flow: column; grid-auto-columns: minmax(86px, 1fr);
+    overflow-x: auto; padding: 10px 2px 4px;
+  }
+  .forge-audit-step {
+    position: relative; min-width: 86px; display: flex; flex-direction: column;
+    align-items: flex-start; cursor: help;
+  }
+  .forge-audit-step:not(:last-child)::after {
+    content: ''; position: absolute; z-index: 0; top: 6px; left: 13px; right: 0;
+    height: 1px; background: #30363d;
+  }
+  .forge-audit-marker {
+    position: relative; z-index: 1; width: 13px; height: 13px; border-radius: 50%;
+    border: 3px solid #0d1117; box-shadow: 0 0 0 1px currentColor; background: currentColor;
+  }
+  .forge-audit-iteration {
+    margin-top: 10px; color: #8b949e; font-size: 0.68rem;
+    font-family: 'SF Mono','Fira Code',Menlo,Consolas,monospace; white-space: nowrap;
+  }
+  .forge-audit-verdict { margin-top: 2px; font-size: 0.76rem; font-weight: 600; }
+  .forge-audit-clean { color: #3fb950; }
+  .forge-audit-dirty { color: #f85149; }
+  .forge-audit-unknown { color: #8b949e; }
+  .runs-view {
+    border: 1px solid #30363d; border-radius: 8px; padding: 12px 16px;
+    background: #161b22; display: flex; flex-direction: column; gap: 12px;
+  }
+  .runs-view h2 { color: #f0f6fc; }
+  .runs-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+  .runs-table th {
+    text-align: left; font-size: 0.66rem; text-transform: uppercase;
+    letter-spacing: 0.05em; color: #8b949e; font-weight: 600;
+    padding: 6px 8px; border-bottom: 1px solid #30363d; white-space: nowrap;
+  }
+  .runs-table td { padding: 6px 8px; border-bottom: 1px solid #21262d; vertical-align: middle; }
+  .runs-row:hover { background: #161b22; }
+  .runs-loop { color: #58a6ff; font-weight: 600; }
+  .runs-models, .runs-num, .runs-duration, .runs-updated {
+    font-family: 'SF Mono','Fira Code',Menlo,Consolas,monospace; font-size: 0.74rem; color: #8b949e;
+  }
+  .runs-cost { color: #3fb950; font-family: 'SF Mono','Fira Code',Menlo,Consolas,monospace; font-size: 0.74rem; }
+  @media (max-width: 900px) {
+    .metrics-blocks { grid-template-columns: minmax(0, 1fr); }
+    .metrics-block-wide { grid-column: auto; }
+    .metrics-blocks > .metrics-block:nth-child(even) { border-right: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .forge-chart-segment { transition: none; }
+  }</style>
 </head>
 <body>
   <div id="forge-app-root"></div>

@@ -14,6 +14,13 @@ export interface LoopSessionUsageRow {
   cacheWriteTokens: number
   messageCount: number
   capturedAt: number
+  /**
+   * Ms-epoch of the loop's started_at at capture time. Unambiguous run
+   * identity: a restarted run gets a new started_at, so filtering by equality
+   * isolates one run's rows without the timestamp-boundary collisions that
+   * `captured_at >= runStartedAt` could not disambiguate.
+   */
+  runStartedAt: number
 }
 
 export interface LoopUsageAggregate {
@@ -39,6 +46,15 @@ export interface LoopUsageAggregate {
 export interface LoopSessionUsageRepo {
   upsertSessionUsage(rows: LoopSessionUsageRow | LoopSessionUsageRow[]): void
   getAggregate(projectId: string, loopName: string): LoopUsageAggregate | null
+  /**
+   * Aggregate usage for a single run: only rows whose run_started_at exactly
+   * matches runStartedAt. Rows persist across restarts keyed by session id, and
+   * each row stamps the loop's started_at at capture time, so equality
+   * filtering (rather than the older captured_at >= runStartedAt lower bound)
+   * unambiguously isolates the current run even when a prior run captured
+   * usage in the same millisecond as this run's startedAt.
+   */
+  getAggregateForRun(projectId: string, loopName: string, runStartedAt: number): LoopUsageAggregate | null
   listSessionUsage(projectId: string, loopName: string): LoopSessionUsageRow[]
   hasSession(projectId: string, loopName: string, sessionId: string): boolean
   deleteLoop(projectId: string, loopName: string): void
@@ -58,6 +74,7 @@ interface LoopSessionUsageRowRaw {
   cache_write_tokens: number
   message_count: number
   captured_at: number
+  run_started_at: number
 }
 
 function mapRow(row: LoopSessionUsageRowRaw): LoopSessionUsageRow {
@@ -75,6 +92,61 @@ function mapRow(row: LoopSessionUsageRowRaw): LoopSessionUsageRow {
     cacheWriteTokens: row.cache_write_tokens,
     messageCount: row.message_count,
     capturedAt: row.captured_at,
+    runStartedAt: row.run_started_at,
+  }
+}
+
+interface AggregateResultRaw {
+  loop_name: string
+  total_cost: number
+  total_input_tokens: number
+  total_output_tokens: number
+  total_reasoning_tokens: number
+  total_cache_read_tokens: number
+  total_cache_write_tokens: number
+  total_message_count: number
+}
+
+interface ByModelRowRaw {
+  model: string
+  cost: number
+  input_tokens: number
+  output_tokens: number
+  reasoning_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  message_count: number
+}
+
+function buildAggregate(
+  aggregate: AggregateResultRaw | null,
+  byModelRows: ByModelRowRaw[],
+): LoopUsageAggregate | null {
+  if (!aggregate) return null
+
+  const byModel: Record<string, LoopUsageAggregate['byModel'][string]> = {}
+  for (const row of byModelRows) {
+    byModel[row.model] = {
+      cost: row.cost,
+      inputTokens: row.input_tokens,
+      outputTokens: row.output_tokens,
+      reasoningTokens: row.reasoning_tokens,
+      cacheReadTokens: row.cache_read_tokens,
+      cacheWriteTokens: row.cache_write_tokens,
+      messageCount: row.message_count,
+    }
+  }
+
+  return {
+    loopName: aggregate.loop_name,
+    totalCost: aggregate.total_cost,
+    totalInputTokens: aggregate.total_input_tokens,
+    totalOutputTokens: aggregate.total_output_tokens,
+    totalReasoningTokens: aggregate.total_reasoning_tokens,
+    totalCacheReadTokens: aggregate.total_cache_read_tokens,
+    totalCacheWriteTokens: aggregate.total_cache_write_tokens,
+    totalMessageCount: aggregate.total_message_count,
+    byModel,
   }
 }
 
@@ -83,8 +155,8 @@ export function createLoopSessionUsageRepo(db: Database): LoopSessionUsageRepo {
     INSERT INTO loop_session_usage (
       project_id, loop_name, session_id, role, model,
       cost, input_tokens, output_tokens, reasoning_tokens,
-      cache_read_tokens, cache_write_tokens, message_count, captured_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      cache_read_tokens, cache_write_tokens, message_count, captured_at, run_started_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   const deleteSessionStmt = db.prepare(`
@@ -122,10 +194,40 @@ export function createLoopSessionUsageRepo(db: Database): LoopSessionUsageRepo {
     GROUP BY model
   `)
 
+  const getAggregateForRunStmt = db.prepare(`
+    SELECT
+      loop_name,
+      SUM(cost) as total_cost,
+      SUM(input_tokens) as total_input_tokens,
+      SUM(output_tokens) as total_output_tokens,
+      SUM(reasoning_tokens) as total_reasoning_tokens,
+      SUM(cache_read_tokens) as total_cache_read_tokens,
+      SUM(cache_write_tokens) as total_cache_write_tokens,
+      SUM(message_count) as total_message_count
+    FROM loop_session_usage
+    WHERE project_id = ? AND loop_name = ? AND run_started_at = ?
+    GROUP BY loop_name
+  `)
+
+  const getByModelForRunStmt = db.prepare(`
+    SELECT
+      model,
+      SUM(cost) as cost,
+      SUM(input_tokens) as input_tokens,
+      SUM(output_tokens) as output_tokens,
+      SUM(reasoning_tokens) as reasoning_tokens,
+      SUM(cache_read_tokens) as cache_read_tokens,
+      SUM(cache_write_tokens) as cache_write_tokens,
+      SUM(message_count) as message_count
+    FROM loop_session_usage
+    WHERE project_id = ? AND loop_name = ? AND run_started_at = ?
+    GROUP BY model
+  `)
+
   const listSessionUsageStmt = db.prepare(`
     SELECT project_id, loop_name, session_id, role, model,
            cost, input_tokens, output_tokens, reasoning_tokens,
-           cache_read_tokens, cache_write_tokens, message_count, captured_at
+           cache_read_tokens, cache_write_tokens, message_count, captured_at, run_started_at
     FROM loop_session_usage
     WHERE project_id = ? AND loop_name = ?
     ORDER BY session_id, model
@@ -165,6 +267,7 @@ export function createLoopSessionUsageRepo(db: Database): LoopSessionUsageRepo {
             row.cacheWriteTokens,
             row.messageCount,
             row.capturedAt,
+            row.runStartedAt,
           )
         }
       })
@@ -172,54 +275,15 @@ export function createLoopSessionUsageRepo(db: Database): LoopSessionUsageRepo {
     },
 
     getAggregate(projectId: string, loopName: string): LoopUsageAggregate | null {
-      const aggregate = getAggregateStmt.get(projectId, loopName) as {
-        loop_name: string
-        total_cost: number
-        total_input_tokens: number
-        total_output_tokens: number
-        total_reasoning_tokens: number
-        total_cache_read_tokens: number
-        total_cache_write_tokens: number
-        total_message_count: number
-      } | null
+      const aggregate = getAggregateStmt.get(projectId, loopName) as AggregateResultRaw | null
+      const byModelRows = getByModelStmt.all(projectId, loopName) as ByModelRowRaw[]
+      return buildAggregate(aggregate, byModelRows)
+    },
 
-      if (!aggregate) return null
-
-      const byModelRows = getByModelStmt.all(projectId, loopName) as Array<{
-        model: string
-        cost: number
-        input_tokens: number
-        output_tokens: number
-        reasoning_tokens: number
-        cache_read_tokens: number
-        cache_write_tokens: number
-        message_count: number
-      }>
-
-      const byModel: Record<string, LoopUsageAggregate['byModel'][string]> = {}
-      for (const row of byModelRows) {
-        byModel[row.model] = {
-          cost: row.cost,
-          inputTokens: row.input_tokens,
-          outputTokens: row.output_tokens,
-          reasoningTokens: row.reasoning_tokens,
-          cacheReadTokens: row.cache_read_tokens,
-          cacheWriteTokens: row.cache_write_tokens,
-          messageCount: row.message_count,
-        }
-      }
-
-      return {
-        loopName: aggregate.loop_name,
-        totalCost: aggregate.total_cost,
-        totalInputTokens: aggregate.total_input_tokens,
-        totalOutputTokens: aggregate.total_output_tokens,
-        totalReasoningTokens: aggregate.total_reasoning_tokens,
-        totalCacheReadTokens: aggregate.total_cache_read_tokens,
-        totalCacheWriteTokens: aggregate.total_cache_write_tokens,
-        totalMessageCount: aggregate.total_message_count,
-        byModel,
-      }
+    getAggregateForRun(projectId: string, loopName: string, runStartedAt: number): LoopUsageAggregate | null {
+      const aggregate = getAggregateForRunStmt.get(projectId, loopName, runStartedAt) as AggregateResultRaw | null
+      const byModelRows = getByModelForRunStmt.all(projectId, loopName, runStartedAt) as ByModelRowRaw[]
+      return buildAggregate(aggregate, byModelRows)
     },
 
     listSessionUsage(projectId: string, loopName: string): LoopSessionUsageRow[] {

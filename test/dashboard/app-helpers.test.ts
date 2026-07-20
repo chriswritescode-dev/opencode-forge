@@ -19,9 +19,14 @@ import {
   tokenBreakdownSegments,
   modelUsageBars,
   renderMarkdown,
+  iterationUsagePoints,
+  sectionRetryCounts,
+  auditOutcomePoints,
+  runComparisonRows,
+  chartMax,
 } from '../../src/dashboard/app/helpers'
 import type { DashboardPayload, DashboardProject, DashboardLoop } from '../../src/dashboard/app/types'
-import type { ReviewFindingRow } from '../../src/storage'
+import type { ReviewFindingRow, LoopEventRow, LoopRunRow, SectionPlanRow } from '../../src/storage'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -653,5 +658,240 @@ describe('renderMarkdown', () => {
     const parse = vi.fn((src: string) => '')
     ;(globalThis as { marked?: { parse: typeof parse } }).marked = { parse }
     expect(renderMarkdown('')).toBe('')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Loop metric chart helpers
+// ---------------------------------------------------------------------------
+
+function makeEventRow(overrides: Partial<LoopEventRow> = {}): LoopEventRow {
+  return {
+    projectId: 'p1',
+    loopName: 'l1',
+    runStartedAt: 1000,
+    eventType: 'coding_done',
+    outcome: 'section_done',
+    verdict: null,
+    iteration: 1,
+    sectionIndex: 0,
+    sessionId: 's1',
+    role: 'code',
+    model: 'claude',
+    cost: 0.01,
+    inputTokens: 100,
+    outputTokens: 50,
+    reasoningTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    messageCount: 5,
+    findingsTotal: null,
+    findingsBugs: null,
+    detail: null,
+    createdAt: 1001,
+    ...overrides,
+  }
+}
+
+function makeSectionRow(overrides: Partial<SectionPlanRow> = {}): SectionPlanRow {
+  return {
+    projectId: 'p1',
+    loopName: 'l1',
+    sectionIndex: 0,
+    title: 'Section 0',
+    content: '',
+    status: 'pending',
+    attempts: 0,
+    summaryDone: null,
+    summaryDeviations: null,
+    summaryFollowUps: null,
+    startedAt: null,
+    completedAt: null,
+    createdAt: 1000,
+    ...overrides,
+  }
+}
+
+function makeRunRow(overrides: Partial<LoopRunRow> = {}): LoopRunRow {
+  return {
+    projectId: 'p1',
+    loopName: 'l1',
+    startedAt: 1000,
+    completedAt: 2000,
+    status: 'completed',
+    terminationReason: null,
+    loopKind: 'plan',
+    executionModel: 'claude',
+    auditorModel: null,
+    executionVariant: null,
+    auditorVariant: null,
+    iterations: 5,
+    auditCount: 2,
+    errorCount: 0,
+    totalSections: 1,
+    sectionRetries: 0,
+    cleanAudits: 2,
+    dirtyAudits: 0,
+    cost: 0.5,
+    inputTokens: 300,
+    outputTokens: 120,
+    reasoningTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    messageCount: 13,
+    durationMs: 1000,
+    createdAt: 1000,
+    ...overrides,
+  }
+}
+
+describe('iterationUsagePoints', () => {
+  test('aggregates code and audit buckets per iteration, sorted ascending', () => {
+    const events: LoopEventRow[] = [
+      makeEventRow({ iteration: 2, eventType: 'coding_done', inputTokens: 100, outputTokens: 40, cost: 0.1 }),
+      makeEventRow({ iteration: 1, eventType: 'coding_done', inputTokens: 50, outputTokens: 20, cost: 0.05 }),
+      makeEventRow({ iteration: 1, eventType: 'audit_done', inputTokens: 30, outputTokens: 10, cost: 0.02 }),
+      makeEventRow({ iteration: 2, eventType: 'final_audit_done', inputTokens: 60, outputTokens: 25, cost: 0.03 }),
+    ]
+    const points = iterationUsagePoints(events)
+    expect(points.map(p => p.iteration)).toEqual([1, 2])
+    const p1 = points[0]
+    expect(p1).toEqual({ iteration: 1, codeInput: 50, codeOutput: 20, auditInput: 30, auditOutput: 10, cost: 0.07 })
+    const p2 = points[1]
+    expect(p2).toEqual({ iteration: 2, codeInput: 100, codeOutput: 40, auditInput: 60, auditOutput: 25, cost: 0.13 })
+  })
+
+  test('skips events with null iteration or loop_terminated type', () => {
+    const events: LoopEventRow[] = [
+      makeEventRow({ iteration: null, eventType: 'coding_done' }),
+      makeEventRow({ iteration: 1, eventType: 'loop_terminated', outcome: 'max_iterations' }),
+      makeEventRow({ iteration: 1, eventType: 'coding_done', inputTokens: 10, outputTokens: 5, cost: 0.01 }),
+    ]
+    const points = iterationUsagePoints(events)
+    expect(points).toHaveLength(1)
+    expect(points[0].iteration).toBe(1)
+    expect(points[0].codeInput).toBe(10)
+  })
+
+  test('empty input returns empty array', () => {
+    expect(iterationUsagePoints([])).toEqual([])
+  })
+})
+
+describe('sectionRetryCounts', () => {
+  test('counts section_retry outcomes per section with titles, including zero-retry sections', () => {
+    const events: LoopEventRow[] = [
+      makeEventRow({ eventType: 'audit_done', outcome: 'section_retry', sectionIndex: 1 }),
+      makeEventRow({ eventType: 'audit_done', outcome: 'section_retry', sectionIndex: 1 }),
+      makeEventRow({ eventType: 'audit_done', outcome: 'clean', sectionIndex: 0 }),
+    ]
+    const sections: SectionPlanRow[] = [
+      makeSectionRow({ sectionIndex: 0, title: 'Setup' }),
+      makeSectionRow({ sectionIndex: 1, title: 'Implementation' }),
+    ]
+    const counts = sectionRetryCounts(events, sections)
+    expect(counts).toEqual([
+      { sectionIndex: 0, title: 'Setup', retries: 0 },
+      { sectionIndex: 1, title: 'Implementation', retries: 2 },
+    ])
+  })
+
+  test('returns zero-retry rows for all sections when no retry events', () => {
+    const sections: SectionPlanRow[] = [
+      makeSectionRow({ sectionIndex: 0, title: 'A' }),
+      makeSectionRow({ sectionIndex: 1, title: 'B' }),
+    ]
+    const counts = sectionRetryCounts([], sections)
+    expect(counts).toEqual([
+      { sectionIndex: 0, title: 'A', retries: 0 },
+      { sectionIndex: 1, title: 'B', retries: 0 },
+    ])
+  })
+
+  test('preserves empty-string titles', () => {
+    const sections: SectionPlanRow[] = [makeSectionRow({ sectionIndex: 0, title: '' })]
+    const counts = sectionRetryCounts([], sections)
+    expect(counts[0].title).toBe('')
+    expect(counts[0].retries).toBe(0)
+  })
+})
+
+describe('auditOutcomePoints', () => {
+  test('returns audit_done and final_audit_done rows preserving order and verdicts', () => {
+    const events: LoopEventRow[] = [
+      makeEventRow({ id: 1, eventType: 'coding_done', iteration: 1, outcome: 'section_done', verdict: null }),
+      makeEventRow({ id: 2, eventType: 'audit_done', iteration: 1, outcome: 'dirty', verdict: 'dirty' }),
+      makeEventRow({ id: 3, eventType: 'final_audit_done', iteration: null, outcome: 'clean', verdict: 'clean' }),
+      makeEventRow({ id: 4, eventType: 'loop_terminated', iteration: null, outcome: 'max_iterations', verdict: null }),
+    ]
+    const points = auditOutcomePoints(events)
+    expect(points).toEqual([
+      { iteration: 1, verdict: 'dirty', outcome: 'dirty' },
+      { iteration: null, verdict: 'clean', outcome: 'clean' },
+    ])
+  })
+
+  test('skips non-audit event types', () => {
+    const events: LoopEventRow[] = [
+      makeEventRow({ eventType: 'coding_done' }),
+      makeEventRow({ eventType: 'post_action_done' }),
+      makeEventRow({ eventType: 'loop_terminated' }),
+    ]
+    expect(auditOutcomePoints(events)).toEqual([])
+  })
+
+  test('empty input returns empty array', () => {
+    expect(auditOutcomePoints([])).toEqual([])
+  })
+})
+
+describe('runComparisonRows', () => {
+  test('derives tokensTotal and costPerIteration and sorts by startedAt desc', () => {
+    const runs: LoopRunRow[] = [
+      makeRunRow({ startedAt: 1000, iterations: 5, cost: 0.5, inputTokens: 300, outputTokens: 120 }),
+      makeRunRow({ startedAt: 3000, iterations: 0, cost: 0.2, inputTokens: 10, outputTokens: 5 }),
+      makeRunRow({ startedAt: 2000, iterations: 4, cost: 0.4, inputTokens: 200, outputTokens: 80 }),
+    ]
+    const rows = runComparisonRows(runs)
+    expect(rows.map(r => r.startedAt)).toEqual([3000, 2000, 1000])
+    expect(rows[0]).toMatchObject({ tokensTotal: 15, costPerIteration: 0.2 })
+    expect(rows[1]).toMatchObject({ tokensTotal: 280, costPerIteration: 0.1 })
+    expect(rows[2]).toMatchObject({ tokensTotal: 420, costPerIteration: 0.1 })
+  })
+
+  test('costPerIteration equals total cost when iterations is 0', () => {
+    const runs: LoopRunRow[] = [makeRunRow({ iterations: 0, cost: 0.42 })]
+    expect(runComparisonRows(runs)[0].costPerIteration).toBe(0.42)
+  })
+
+  test('preserves all original LoopRunRow fields', () => {
+    const runs: LoopRunRow[] = [makeRunRow({ loopName: 'custom', iterations: 2 })]
+    const row = runComparisonRows(runs)[0]
+    expect(row.loopName).toBe('custom')
+    expect(row.iterations).toBe(2)
+    expect(row.projectId).toBe('p1')
+  })
+
+  test('empty input returns empty array', () => {
+    expect(runComparisonRows([])).toEqual([])
+  })
+})
+
+describe('chartMax', () => {
+  test('returns the max of supplied values', () => {
+    expect(chartMax([3, 7, 2, 9, 1])).toBe(9)
+  })
+
+  test('floors at 1 when all values are smaller', () => {
+    expect(chartMax([0, 0, 0])).toBe(1)
+    expect(chartMax([0.5])).toBe(1)
+  })
+
+  test('empty input returns 1', () => {
+    expect(chartMax([])).toBe(1)
+  })
+
+  test('handles negative values by flooring at 1', () => {
+    expect(chartMax([-5, -10])).toBe(1)
   })
 })

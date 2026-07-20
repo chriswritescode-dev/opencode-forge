@@ -1789,8 +1789,15 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
       if (stoppedState.phase === 'post_action' && !resolvePostActionConfig(deps.config).enabled) {
         deps.logger.log(`loop-restart: ${stoppedState.loopName} was in post_action but postAction is disabled; marking completed without restart`)
+        if (typeof deps.loopHandler!.finalizeRunForRestart === 'function') {
+          await deps.loopHandler!.finalizeRunForRestart(stoppedState.loopName, { kind: 'completed' })
+        }
         deps.loop.service.terminate(stoppedState.loopName, { status: 'completed', reason: 'completed', completedAt: Date.now() })
         return { ok: false, error: 'Loop implementation already completed; post-action is disabled — nothing to restart.' }
+      }
+
+      if (typeof deps.loopHandler!.finalizeRunForRestart === 'function') {
+        await deps.loopHandler!.finalizeRunForRestart(stoppedState.loopName, { kind: 'restarted' })
       }
 
       stoppedState.iteration = 1
@@ -1884,6 +1891,17 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
           ? 'post_action' as const
           : 'coding' as const
 
+      // Restarted run identity must be strictly later than the outgoing run's
+      // started_at millisecond. loop_runs PKs on (project_id, loop_name,
+      // started_at) and loop_session_usage/loop_events stamp run_started_at from
+      // state.startedAt; a same-millisecond restart would overwrite the prior
+      // run's summary and merge its token totals. Force at least +1 ms.
+      const priorStartedAtMs = Date.parse(previousState.startedAt)
+      const nowMs = Date.now()
+      const newStartedAtMs = Number.isFinite(priorStartedAtMs)
+        ? Math.max(nowMs, priorStartedAtMs + 1)
+        : nowMs
+
       const newState: import('../loop/state').LoopState = {
         active: true,
         sessionId: effectiveSessionId,
@@ -1893,7 +1911,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         worktreeBranch: stoppedState.worktreeBranch,
         iteration: stoppedState.iteration,
         maxIterations: stoppedState.maxIterations,
-        startedAt: new Date().toISOString(),
+        startedAt: new Date(newStartedAtMs).toISOString(),
         prompt: stoppedState.prompt,
         phase: restartPhase,
         errorCount: 0,

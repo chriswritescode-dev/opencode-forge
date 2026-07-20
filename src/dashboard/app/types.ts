@@ -1,3 +1,3 @@
-import type { DashboardPayload, DashboardProject, DashboardLoop, DashboardTotals } from '../data'
+import type { DashboardPayload, DashboardProject, DashboardLoop, DashboardLoopSummary, DashboardRunsPage, DashboardTotals } from '../data'
 
-export type { DashboardPayload, DashboardProject, DashboardLoop, DashboardTotals }
+export type { DashboardPayload, DashboardProject, DashboardLoop, DashboardLoopSummary, DashboardRunsPage, DashboardTotals }

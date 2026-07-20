@@ -9,6 +9,9 @@ import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo, ReviewFindingRow } from '../storage/repos/review-findings-repo'
 import type { SectionPlansRepo } from '../storage/repos/section-plans-repo'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
+import type { LoopEventsRepo } from '../storage/repos/loop-events-repo'
+import type { LoopRunsRepo } from '../storage/repos/loop-runs-repo'
+import { createLoopMetricsRecorder } from './metrics'
 import { createLoopWatchdog, type LoopWatchdogStallInfo, type LoopWatchdogRecoveryContext } from '../hooks/watchdog'
 import { resolveLoopModel, resolveLoopAuditorModel } from '../utils/loop-helpers'
 import { parseModelString } from '../utils/model-fallback'
@@ -65,6 +68,8 @@ export interface LoopRuntimeDeps {
   loopConfig?: LoopConfig
   sectionPlansRepo?: SectionPlansRepo
   loopSessionUsageRepo?: LoopSessionUsageRepo
+  loopEventsRepo?: LoopEventsRepo
+  loopRunsRepo?: LoopRunsRepo
   /** Optional injected LoopService (test seam). Defaults to a real one built from the repos. */
   loopService?: LoopService
   /** Optional parent-session lookup for ancestor-aware session→loop resolution (child/subagent support). */
@@ -94,6 +99,14 @@ export interface Loop {
   startWatchdog(name: string): void
   getStallInfo(name: string): LoopWatchdogStallInfo | null
   restart(name: string, params: { newState: LoopState; newSessionId: string }): void
+  /**
+   * Capture the outgoing active run's usage and record its termination metrics
+   * (loop_terminated event + loop_runs summary) before a restart replaces the
+   * loop row. Deliberately skips loopService.terminate and watchdog/timer
+   * teardown — the restart caller already cleared timers and will replace the
+   * loop row directly via loopsRepo.restart. Non-fatal: any failure is logged.
+   */
+  finalizeRunForRestart(name: string, reason: TerminationReason): Promise<void>
   generateUniqueLoopName(baseName: string): string
   /** Transition a running loop's phase. */
   setPhase(name: string, phase: LoopState['phase']): void
@@ -122,11 +135,13 @@ export interface Loop {
 export { isWorkspaceNotFoundError } from './runtime-workspace'
 
 export function createLoop(deps: LoopRuntimeDeps): Loop {
-  const { loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, logger, getConfig, onTerminated, notify, loopConfig, sectionPlansRepo, loopSessionUsageRepo } = deps
+  const { loopsRepo, plansRepo, reviewFindingsRepo, projectId, client, logger, getConfig, onTerminated, notify, loopConfig, sectionPlansRepo, loopSessionUsageRepo, loopEventsRepo, loopRunsRepo } = deps
   const loopService = deps.loopService ?? createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger, loopConfig, notify, sectionPlansRepo)
   let getParentSessionId = deps.getParentSessionId
 
-  const { getFallbackModelForSession, captureLoopSessionUsage } = createUsageCapture({ client, logger, getConfig, projectId, loopSessionUsageRepo })
+  const { getFallbackModelForSession, refreshSessionUsage, captureLoopSessionUsage } = createUsageCapture({ client, logger, getConfig, projectId, loopSessionUsageRepo })
+
+  const metrics = createLoopMetricsRecorder({ client, logger, projectId, loopEventsRepo, loopRunsRepo, loopSessionUsageRepo, refreshSessionUsage })
 
   const { sendPromptWithFallback, getLastAssistantInfo, getAssistantTranscript } = createPromptDispatch({ client, logger, getConfig, loopService })
 
@@ -149,8 +164,43 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     role: 'code' | 'auditor'
     fallbackModel: string | undefined
     directory: string
+    /**
+     * Ms-epoch of the loop's started_at at queue time. Replayed into the
+     * usage capture call so the persisted row stamps its run identity.
+     */
+    runStartedAt: number
   }
   const loopRetainedSessions = new Map<string, RetainedSessionMeta[]>()
+  /**
+   * In-flight usage-capture promises keyed by loop. scheduleSessionDelete
+   * trims sessions outside the (0-length) retention window via a fire-and-
+   * forget async path, so the trimmed session is removed from
+   * loopRetainedSessions before its capture finishes. terminateLoop reads the
+   * retain queue and would miss those mid-trim captures, recording the run
+   * summary before the usage row lands and permanently undercounting the run.
+   * Tracking the pending captures here lets terminateLoop await them before
+   * writing loop_runs, so the aggregate reflects every session in the run.
+   */
+  const loopPendingUsageCaptures = new Map<string, Set<Promise<unknown>>>()
+  function trackUsageCapture(loopName: string, promise: Promise<unknown>): void {
+    let set = loopPendingUsageCaptures.get(loopName)
+    if (!set) {
+      set = new Set()
+      loopPendingUsageCaptures.set(loopName, set)
+    }
+    set.add(promise)
+    void promise.finally(() => {
+      const current = loopPendingUsageCaptures.get(loopName)
+      if (!current) return
+      current.delete(promise)
+      if (current.size === 0) loopPendingUsageCaptures.delete(loopName)
+    })
+  }
+  async function awaitPendingUsageCaptures(loopName: string): Promise<void> {
+    const set = loopPendingUsageCaptures.get(loopName)
+    if (!set || set.size === 0) return
+    await Promise.all([...set])
+  }
   const SESSION_RETENTION = 0
   const sessionToLoop = new Map<string, string>()
   /** Per-loop admission guard: prevents concurrent terminateLoop calls from executing side effects twice. */
@@ -597,28 +647,85 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     // Determine role and fallback model at queue time
     const role: 'code' | 'auditor' = phase && (phase === 'auditing' || phase === 'final_auditing') ? 'auditor' : 'code'
     const fallbackModel = phase && state ? getFallbackModelForSession(state, phase) : undefined
+    // Stamp the loop's started_at as the run identity for the usage row
+    // captured later when this session is trimmed. Falls back to 0 only when
+    // no state was supplied (defensive; usage rows with run_started_at = 0 will
+    // never match a real run's aggregate, so they are simply not counted).
+    const runStartedAt = state ? new Date(state.startedAt).getTime() : 0
     
-    queue.push({ sessionId, role, fallbackModel, directory })
+    queue.push({ sessionId, role, fallbackModel, directory, runStartedAt })
     loopRetainedSessions.set(loopName, queue)
     logger.debug(`Loop: queued session ${sessionId} for retention (loop=${loopName}, context=${context}, queue=${queue.length})`)
 
     while (queue.length > SESSION_RETENTION) {
       const oldest = queue.shift()!
       logger.log(`Loop: trimming session ${oldest.sessionId} (loop=${loopName}, retention=${SESSION_RETENTION})`)
-      
-      // Capture usage before deletion using stored metadata
-      await captureLoopSessionUsage({
+
+      // Capture usage before deletion using stored metadata. Register the
+      // capture promise in the per-loop pending set BEFORE awaiting so a
+      // concurrent terminateLoop can await it and include this session's
+      // usage in the run summary even though it has already been shifted
+      // out of the retain queue.
+      const capturePromise = captureLoopSessionUsage({
         loopName,
         sessionId: oldest.sessionId,
         directory: oldest.directory,
         role: oldest.role,
         fallbackModel: oldest.fallbackModel,
+        runStartedAt: oldest.runStartedAt,
       })
-      
+      trackUsageCapture(loopName, capturePromise)
+      await capturePromise
+
       void client.session.delete({ sessionID: oldest.sessionId, directory: oldest.directory }).catch((err: unknown) => {
         logger.error(`Loop: failed to delete trimmed session ${oldest.sessionId} (loop=${loopName})`, err)
       })
     }
+  }
+
+  async function captureRetainedSessions(
+    loopName: string,
+    context: string,
+    options: { deleteSessions: boolean; skipSessionId?: string },
+  ): Promise<void> {
+    const retained = loopRetainedSessions.get(loopName)
+    if (!retained) return
+    for (const entry of retained) {
+      if (entry.sessionId === options.skipSessionId) continue
+      await captureLoopSessionUsage({
+        loopName,
+        sessionId: entry.sessionId,
+        directory: entry.directory,
+        role: entry.role,
+        fallbackModel: entry.fallbackModel,
+        runStartedAt: entry.runStartedAt,
+      }).catch((err: unknown) => {
+        logger.error(`Loop: failed to capture usage for retained session ${entry.sessionId} on ${context} (loop=${loopName})`, err)
+      })
+      if (options.deleteSessions) {
+        void client.session.delete({ sessionID: entry.sessionId, directory: entry.directory }).catch((err: unknown) => {
+          logger.error(`Loop: failed to delete retained session ${entry.sessionId} on ${context} (loop=${loopName})`, err)
+        })
+      }
+    }
+    loopRetainedSessions.delete(loopName)
+  }
+
+  function clearSessionReverseIndex(loopName: string): void {
+    for (const [sessionId, indexedLoopName] of sessionToLoop) {
+      if (indexedLoopName === loopName) sessionToLoop.delete(sessionId)
+    }
+  }
+
+  async function captureActiveSessionUsage(state: LoopState): Promise<void> {
+    await captureLoopSessionUsage({
+      loopName: state.loopName,
+      sessionId: state.sessionId,
+      directory: state.worktreeDir,
+      role: state.phase === 'auditing' || state.phase === 'final_auditing' ? 'auditor' : 'code',
+      fallbackModel: getFallbackModelForSession(state, state.phase),
+      runStartedAt: new Date(state.startedAt).getTime(),
+    })
   }
 
   async function terminateLoop(loopName: string, state: LoopState, reason: TerminationReason, summary?: string): Promise<void> {
@@ -662,43 +769,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     clearPromptPending(loopName, logger)
     clearPromptInFlight(loopName)
 
-    const retained = loopRetainedSessions.get(loopName)
-    if (retained) {
-      // Capture usage for retained sessions before deletion using stored metadata
-      for (const entry of retained) {
-        if (entry.sessionId === sessionId) continue
-        await captureLoopSessionUsage({
-          loopName,
-          sessionId: entry.sessionId,
-          directory: entry.directory,
-          role: entry.role,
-          fallbackModel: entry.fallbackModel,
-        }).catch((err: unknown) => {
-          logger.error(`Loop: failed to capture usage for retained session ${entry.sessionId} on terminate (loop=${loopName})`, err)
-        })
-        void client.session.delete({ sessionID: entry.sessionId, directory: entry.directory }).catch((err: unknown) => {
-          logger.error(`Loop: failed to delete retained session ${entry.sessionId} on terminate (loop=${loopName})`, err)
-        })
-      }
-      loopRetainedSessions.delete(loopName)
-    }
+    await captureRetainedSessions(loopName, 'terminate', { deleteSessions: true, skipSessionId: sessionId })
+    clearSessionReverseIndex(loopName)
+    await captureActiveSessionUsage(state)
 
-    // Clean up session→loop reverse index for this loop
-    for (const [sid, ln] of sessionToLoop) {
-      if (ln === loopName) sessionToLoop.delete(sid)
-    }
-    sessionToLoop.delete(sessionId)
-
-    // Capture usage for the final active session before termination
-    const fallbackModel = getFallbackModelForSession(state, state.phase)
-    const role: 'code' | 'auditor' = state.phase === 'auditing' || state.phase === 'final_auditing' ? 'auditor' : 'code'
-    await captureLoopSessionUsage({
-      loopName,
-      sessionId: state.sessionId,
-      directory: state.worktreeDir,
-      role,
-      fallbackModel,
-    })
+    // Wait for any usage captures still in flight from scheduleSessionDelete
+    // trims that have already shifted their session out of the retain queue.
+    // Without this, recordTermination could compute the run aggregate before
+    // the trimmed session's usage row lands, permanently undercounting the run.
+    await awaitPendingUsageCaptures(loopName)
 
     const now = Date.now()
     loopService.terminate(loopName, {
@@ -706,6 +785,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       reason: terminationReasonToString(reason),
       completedAt: now,
       summary,
+    })
+
+    // Record termination after usage capture + loopService.terminate so the run row
+    // reflects the final usage aggregate and the canonical status/reason. Non-fatal.
+    metrics.recordTermination(state, {
+      status: terminationStatusFor(reason),
+      reason: terminationReasonToString(reason),
+      completedAt: now,
     })
 
     try {
@@ -725,6 +812,46 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
     } finally {
       terminatingLoops.delete(loopName)
+    }
+  }
+
+  /**
+   * Mirror terminateLoop's usage-capture + recordTermination step for an active
+   * loop that is about to be restarted. The restart caller replaces the loop
+   * row directly (loopsRepo.restart) so this method deliberately skips
+   * loopService.terminate, onTerminated teardown, watchdog stop, and timer
+   * cleanup — the restart command already cleared timers and will swap the
+   * session/started_at. Only the metrics side-effects (loop_terminated event
+   * + loop_runs summary row) and any in-flight usage capture are performed so
+   * the previous run is not silently lost from loop_metrics. Non-fatal.
+   */
+  async function finalizeRunForRestart(loopName: string, reason: TerminationReason): Promise<void> {
+    const state = loopService.getActiveState(loopName)
+    if (!state?.active) {
+      return
+    }
+
+    try {
+      // Capture usage for retained sessions queued by scheduleSessionDelete. These
+      // belong to the outgoing run; without capture here they would never land
+      // in the run-scoped aggregate (their run identity was stamped at queue
+      // time, so capture uses the stored entry rather than fresh state).
+      await captureRetainedSessions(loopName, 'restart', { deleteSessions: false, skipSessionId: state.sessionId })
+      clearSessionReverseIndex(loopName)
+      await captureActiveSessionUsage(state)
+
+      // Ensure any in-flight capture from a concurrent scheduleSessionDelete
+      // trim lands before the run summary is computed.
+      await awaitPendingUsageCaptures(loopName)
+
+      const now = Date.now()
+      metrics.recordTermination(state, {
+        status: terminationStatusFor(reason),
+        reason: terminationReasonToString(reason),
+        completedAt: now,
+      })
+    } catch (err) {
+      logger.debug(`Loop: failed to finalize outgoing run metrics for restart of loop ${loopName}`, err)
     }
   }
 
@@ -978,8 +1105,13 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     })
     sessionToLoop.set(created.auditSessionId, loopName)
 
-    // The retired session is a code session (pre-final-audit)
-    void scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after final audit creation', phase: 'coding', state: currentState })
+    // Retire the pre-transition session. Derive the role/fallback attribution
+    // from currentState.phase rather than hardcoding 'coding': when this
+    // transition is reached from a section audit (runAuditingPhase), the
+    // retired session is an auditor session and must be captured with
+    // role='auditor' + auditor fallback model — misattributing it as coding
+    // would store auditor usage under the execution model.
+    void scheduleSessionDelete({ loopName, sessionId: currentState.sessionId, directory: currentState.worktreeDir, context: 'after final audit creation', phase: currentState.phase, state: currentState })
 
     const { error: finalAuditPromptErr } = await sendPromptWithFallback({
       loopName,
@@ -1085,6 +1217,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     if (pendingFinalAuditFix.has(loopName)) {
       pendingFinalAuditFix.delete(loopName)
       logger.log(`Loop: final-audit fix coding complete for ${loopName}, transitioning back to final_auditing`)
+      await metrics.recordPhaseEvent({
+        state: currentState,
+        eventType: 'coding_done',
+        outcome: 'final_audit_fix_done',
+        sessionId: currentState.sessionId,
+        directory: currentState.worktreeDir,
+        role: 'code',
+        fallbackModel: getFallbackModelForSession(currentState, 'coding'),
+      })
       const started = await startFinalAuditTransition(loopName, currentState)
       if (!started) {
         logger.error(`Loop: failed to restart final audit after fix for ${loopName}`)
@@ -1177,6 +1318,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     // Retain the old session in the reverse index so delayed errors from the
     // pre-transition session still resolve to this loop after DB-level replacement.
     sessionToLoop.set(codeSessionId, loopName)
+    await metrics.recordPhaseEvent({
+      state: currentState,
+      eventType: 'coding_done',
+      outcome: 'audit_started',
+      sessionId: codeSessionId,
+      directory: currentState.worktreeDir,
+      role: 'code',
+      fallbackModel: getFallbackModelForSession(currentState, 'coding'),
+    })
     loopService.replaceSession(loopName, {
       newSessionId: created.auditSessionId,
       phase: 'auditing',
@@ -1274,8 +1424,25 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     }
 
     const outstandingFindings = loopService.getOutstandingFindings(loopName)
+    const outstandingBugs = loopService.getOutstandingFindings(loopName, 'bug')
+
+    const recordGoalAuditDone = (verdict: 'clean' | 'dirty', outcome: string): Promise<void> =>
+      metrics.recordPhaseEvent({
+        state: { ...currentState, auditCount: newAuditCount },
+        eventType: 'audit_done',
+        outcome,
+        verdict,
+        sessionId: auditSessionId,
+        directory: currentState.worktreeDir,
+        role: 'auditor',
+        findingsTotal: outstandingFindings.length,
+        findingsBugs: outstandingBugs.length,
+        fallbackModel: getFallbackModelForSession(currentState, 'auditing'),
+      })
+
     if (outstandingFindings.length === 0) {
       logger.log(`Loop: goal audit all-clear, terminating loop=${loopName} audits=${newAuditCount}`)
+      await recordGoalAuditDone('clean', 'terminate')
       await persistAuditAndTerminate({ kind: 'completed' })
       return
     }
@@ -1283,12 +1450,16 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     const nextIteration = (currentState.iteration ?? 0) + 1
     if ((currentState.maxIterations ?? 0) > 0 && nextIteration > currentState.maxIterations) {
       logger.log(`Loop: goal max iterations reached (${nextIteration}/${currentState.maxIterations}), terminating`)
+      await recordGoalAuditDone('dirty', 'max_iterations')
       await persistAuditAndTerminate({ kind: 'max_iterations' })
       return
     }
 
-    const outstandingBugs = loopService.getOutstandingFindings(loopName, 'bug')
     bumpDirtyAuditRecurrence(loopName, outstandingBugs)
+
+    // Emit the dirty-continue audit event before rotating the session so messages
+    // for the auditor session are still fetchable for token attribution.
+    await recordGoalAuditDone('dirty', 'continue')
 
     // Create a fresh code session and re-bind both sessionId and executorSessionId to it.
     let newSessionId: string
@@ -1383,8 +1554,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (currentState.totalSections > 0) {
         const idx = currentState.currentSectionIndex
         const sectionSummary = loopService.parseSectionSummary(auditText || '')
+        // Section-scoped findings: bugs drive the clean/dirty verdict, while
+        // findingsTotal must reflect ALL severities (bug + warning) in this
+        // section so loop_events totals aren't confounded by other sections.
+        const sectionAllFindings = loopService.getOutstandingFindings(loopName).filter(f => f.sectionIndex === idx)
+        const sectionBugFindings = sectionAllFindings.filter(f => f.severity === 'bug')
+        // All-section bug findings feed the continuation prompt and recurrence bump
+        // (which re-filters by idx internally); kept separate from the metrics counts.
         const sectionAllBugFindings = loopService.getOutstandingFindings(loopName, 'bug')
-        const sectionBugFindings = sectionAllBugFindings.filter(f => f.sectionIndex === idx)
+        const auditedState = { ...currentState, auditCount: newAuditCount }
 
         if (sectionSummary && sectionBugFindings.length === 0) {
           logger.log(`Loop: section ${idx} audit clean, marking completed`)
@@ -1395,11 +1573,35 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           loopService.setLastAuditResult(loopName, auditText || '')
           loopService.completeSection(loopName, idx, sectionSummary)
 
+          // Emit exactly one audit_done event for this clean section audit. When
+          // the iteration cap is hit while advancing, fold the terminal outcome
+          // into the same event so loop_runs.cleanAudits does not double-count
+          // (a separate max_iterations event would inflate the clean audit tally).
+          const recordCleanSectionAudit = (outcome: 'section_clean' | 'max_iterations'): Promise<void> =>
+            metrics.recordPhaseEvent({
+              state: auditedState,
+              eventType: 'audit_done',
+              outcome,
+              verdict: 'clean',
+              sessionId: auditSessionId,
+              directory: currentState.worktreeDir,
+              role: 'auditor',
+              findingsTotal: sectionAllFindings.length,
+              findingsBugs: sectionBugFindings.length,
+              fallbackModel: getFallbackModelForSession(currentState, 'auditing'),
+            })
+
           if (idx < currentState.totalSections - 1) {
             const allCompleted = loopService.getCompletedSectionDigest(currentState).length === currentState.totalSections
             if (allCompleted) {
+              await recordCleanSectionAudit('section_clean')
+              loopService.replaceSession(loopName, {
+                newSessionId: currentState.sessionId,
+                phase: currentState.phase,
+                auditCount: newAuditCount,
+              })
               logger.log(`Loop: all ${currentState.totalSections} sections completed after rewind, jumping straight to final audit`)
-              await startFinalAuditTransition(loopName, currentState)
+              await startFinalAuditTransition(loopName, auditedState)
               return
             }
           }
@@ -1407,9 +1609,16 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
           const nextIdx = idx + 1
           if (nextIdx < currentState.totalSections) {
             const nextIter = (currentState.iteration ?? 0) + 1
-            if ((currentState.maxIterations ?? 0) > 0 && nextIter > currentState.maxIterations) {
+            const maxIterationsExceeded = (currentState.maxIterations ?? 0) > 0 && nextIter > currentState.maxIterations
+            await recordCleanSectionAudit(maxIterationsExceeded ? 'max_iterations' : 'section_clean')
+            if (maxIterationsExceeded) {
               logger.log(`Loop: max iterations reached (${nextIter}/${currentState.maxIterations}), terminating`)
-              await terminateLoop(loopName, currentState, { kind: 'max_iterations' })
+              loopService.replaceSession(loopName, {
+                newSessionId: currentState.sessionId,
+                phase: currentState.phase,
+                auditCount: newAuditCount,
+              })
+              await terminateLoop(loopName, auditedState, { kind: 'max_iterations' })
               return
             }
             logger.log(`Loop: advancing from section ${idx} to section ${nextIdx}`)
@@ -1440,8 +1649,14 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
             )
             return
           } else {
+            await recordCleanSectionAudit('section_clean')
+            loopService.replaceSession(loopName, {
+              newSessionId: currentState.sessionId,
+              phase: currentState.phase,
+              auditCount: newAuditCount,
+            })
             logger.log(`Loop: all ${currentState.totalSections} sections completed, transitioning to final-audit`)
-            await startFinalAuditTransition(loopName, currentState)
+            await startFinalAuditTransition(loopName, auditedState)
             return
           }
         }
@@ -1451,11 +1666,41 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         const nextIter = (currentState.iteration ?? 0) + 1
         if ((currentState.maxIterations ?? 0) > 0 && nextIter > currentState.maxIterations) {
           logger.log(`Loop: max iterations reached (${nextIter}/${currentState.maxIterations}), terminating`)
-          await terminateLoop(loopName, currentState, { kind: 'max_iterations' })
+          await metrics.recordPhaseEvent({
+            state: auditedState,
+            eventType: 'audit_done',
+            outcome: 'max_iterations',
+            verdict: 'dirty',
+            sessionId: auditSessionId,
+            directory: currentState.worktreeDir,
+            role: 'auditor',
+            findingsTotal: sectionAllFindings.length,
+            findingsBugs: sectionBugFindings.length,
+            fallbackModel: getFallbackModelForSession(currentState, 'auditing'),
+          })
+          loopService.replaceSession(loopName, {
+            newSessionId: currentState.sessionId,
+            phase: currentState.phase,
+            auditCount: newAuditCount,
+          })
+          await terminateLoop(loopName, auditedState, { kind: 'max_iterations' })
           return
         }
 
         loopService.incrementSectionAttempts(loopName, idx)
+
+        await metrics.recordPhaseEvent({
+          state: currentState,
+          eventType: 'audit_done',
+          outcome: 'section_retry',
+          verdict: 'dirty',
+          sessionId: auditSessionId,
+          directory: currentState.worktreeDir,
+          role: 'auditor',
+          findingsTotal: sectionAllFindings.length,
+          findingsBugs: sectionBugFindings.length,
+          fallbackModel: getFallbackModelForSession(currentState, 'auditing'),
+        })
 
         bumpDirtyAuditRecurrence(loopName, sectionAllBugFindings, idx)
 
@@ -1484,11 +1729,59 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       }
 
       const candidateState = { ...currentState, auditCount: newAuditCount }
+
+      // Capture outstanding findings before the auditor session is torn down by
+      // termination, then emit one audit_done event describing this audit pass.
+      const findingsBefore = loopService.getOutstandingFindings(currentState.loopName)
+      const findingsBugsBefore = loopService.getOutstandingFindings(currentState.loopName, 'bug')
+      const isClean = findingsBefore.length === 0
+      const nextIteration = (currentState.iteration ?? 0) + 1
+      const maxIterationsExceeded = (currentState.maxIterations ?? 0) > 0 && nextIteration > (currentState.maxIterations ?? 0)
+
+      // Derive the audit outcome AFTER evaluating the iteration cap so the
+      // single audit_done event reflects what actually happens next:
+      //   clean        → terminate (auditor all-clear)
+      //   dirty & cap   → max_iterations (loop will terminate, not continue)
+      //   dirty & ok    → continue (remediation rotation follows)
+      let auditOutcome: string
+      let auditVerdict: 'clean' | 'dirty'
+      if (isClean) {
+        auditOutcome = 'terminate'
+        auditVerdict = 'clean'
+      } else if (maxIterationsExceeded) {
+        auditOutcome = 'max_iterations'
+        auditVerdict = 'dirty'
+      } else {
+        auditOutcome = 'continue'
+        auditVerdict = 'dirty'
+      }
+
+      await metrics.recordPhaseEvent({
+        state: candidateState,
+        eventType: 'audit_done',
+        outcome: auditOutcome,
+        verdict: auditVerdict,
+        sessionId: auditSessionId,
+        directory: currentState.worktreeDir,
+        role: 'auditor',
+        findingsTotal: findingsBefore.length,
+        findingsBugs: findingsBugsBefore.length,
+        fallbackModel: getFallbackModelForSession(currentState, 'auditing'),
+      })
+
       if (await checkAuditClearAndTerminate(loopName, candidateState)) return
 
-      const nextIteration = (currentState.iteration ?? 0) + 1
-      if ((currentState.maxIterations ?? 0) > 0 && nextIteration > (currentState.maxIterations ?? 0)) {
-        await terminateLoop(loopName, currentState, { kind: 'max_iterations' })
+      if (maxIterationsExceeded) {
+        // Persist the bumped audit count before terminating so loop_runs.auditCount
+        // reflects this dirty audit pass. Without this, terminateLoop records the
+        // run with the pre-audit count (stale by one). Mirrors the sectioned
+        // max_iterations terminal path.
+        loopService.replaceSession(loopName, {
+          newSessionId: currentState.sessionId,
+          phase: currentState.phase,
+          auditCount: newAuditCount,
+        })
+        await terminateLoop(loopName, candidateState, { kind: 'max_iterations' })
         return
       }
 
@@ -1516,6 +1809,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       )
     } else {
       logger.log(`Loop: audit error detected, continuing without incrementing audit count`)
+      await metrics.recordPhaseEvent({
+        state: currentState,
+        eventType: 'audit_done',
+        outcome: 'audit_error',
+        sessionId: auditSessionId,
+        directory: currentState.worktreeDir,
+        role: 'auditor',
+        fallbackModel: getFallbackModelForSession(currentState, 'auditing'),
+      })
       const nextIteration = (currentState.iteration ?? 0) + 1
       const continuationPrompt = loopService.buildContinuationPrompt(
         { ...currentState, iteration: nextIteration },
@@ -1586,6 +1888,16 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (trans.kind === 'terminate') {
         logger.log(`Loop: final audit clean for ${loopName} (no outstanding bug findings), completing`)
         loopService.setFinalAuditDone(loopName, true)
+        await metrics.recordPhaseEvent({
+          state: currentState,
+          eventType: 'final_audit_done',
+          outcome: 'terminate',
+          verdict: 'clean',
+          sessionId: auditSessionId,
+          directory: currentState.worktreeDir,
+          role: 'auditor',
+          fallbackModel: getFallbackModelForSession(currentState, 'final_auditing'),
+        })
         if (trans.reason.kind === 'completed' && await enterPostActionPhase(loopName, currentState)) return
         await terminateLoop(loopName, currentState, trans.reason)
         return
@@ -1597,7 +1909,20 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       logger.log(`Loop: final audit dirty (${outstandingBugs.length} outstanding bug findings), rotating to coding for fix for ${loopName}`)
 
       const nextIter = (currentState.iteration ?? 0) + 1
-      if ((currentState.maxIterations ?? 0) > 0 && nextIter > currentState.maxIterations) {
+      const maxIterationsExceeded = (currentState.maxIterations ?? 0) > 0 && nextIter > currentState.maxIterations
+      await metrics.recordPhaseEvent({
+        state: currentState,
+        eventType: 'final_audit_done',
+        outcome: maxIterationsExceeded ? 'max_iterations' : 'fix_rotation',
+        verdict: 'dirty',
+        sessionId: auditSessionId,
+        directory: currentState.worktreeDir,
+        role: 'auditor',
+        findingsBugs: outstandingBugs.length,
+        fallbackModel: getFallbackModelForSession(currentState, 'final_auditing'),
+      })
+
+      if (maxIterationsExceeded) {
         logger.log(`Loop: max iterations reached (${nextIter}/${currentState.maxIterations}), terminating`)
         await terminateLoop(loopName, currentState, { kind: 'max_iterations' })
         return
@@ -1681,6 +2006,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
       if (report) {
         loopService.setPostActionReport(loopName, report)
       }
+      await metrics.recordPhaseEvent({
+        state: currentState,
+        eventType: 'post_action_done',
+        outcome: 'terminate',
+        sessionId: currentState.sessionId,
+        directory: currentState.worktreeDir,
+        role: 'code',
+        fallbackModel: getFallbackModelForSession(currentState, 'coding'),
+      })
       // Capture the raw post-action assistant message as the loop's completion summary so the
       // outcome (alternate review verdict, CI result, etc.) is visible in loop-status/dashboard.
       // The loop still terminates `completed` — the plan itself was already cleared by the audit.
@@ -1903,7 +2237,15 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
   }
 
   async function terminateAll(): Promise<void> {
-    await loopService.terminateAll()
+    // Route bulk shutdown through per-loop terminateLoop() so each loop records
+    // its final usage capture, a loop_terminated metrics event, and a loop_runs
+    // summary row. loopService.listActive() snapshots the active loops before
+    // any termination runs; terminateLoop's terminatingLoops guard prevents double
+    // execution if the loop is concurrently stopped by another path.
+    const active = loopService.listActive()
+    for (const state of active) {
+      await terminateLoop(state.loopName, state, { kind: 'shutdown' })
+    }
   }
 
   function clearAllRetryTimeouts(): void {
@@ -1960,23 +2302,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     codingLaunchRecoveryAttempts.delete(loopName)
     terminatingLoops.delete(loopName)
 
-    const retained = loopRetainedSessions.get(loopName)
-    if (retained) {
-      // Capture usage for retained sessions before deletion using stored metadata
-      for (const entry of retained) {
-        await captureLoopSessionUsage({
-          loopName,
-          sessionId: entry.sessionId,
-          directory: entry.directory,
-          role: entry.role,
-          fallbackModel: entry.fallbackModel,
-        }).catch((err: unknown) => {
-          logger.error(`Loop: failed to capture usage for retained session ${entry.sessionId} on clear (loop=${loopName})`, err)
-        })
-        void client.session.delete({ sessionID: entry.sessionId, directory: entry.directory }).catch(() => {})
-      }
-      loopRetainedSessions.delete(loopName)
-    }
+    await captureRetainedSessions(loopName, 'clear', { deleteSessions: true })
   }
 
   function runExclusive<T>(loopName: string, fn: () => Promise<T>): Promise<T> {
@@ -2098,6 +2424,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     startWatchdog,
     getStallInfo,
     restart,
+    finalizeRunForRestart,
     generateUniqueLoopName,
     setPhase,
     registerSessionReverseIndex,

@@ -123,7 +123,10 @@
   },
 
   // TTL in ms for completed/cancelled loops before cleanup. Default: 604800000 (7 days)
-  "completedLoopTtlMs": 604800000
+  "completedLoopTtlMs": 604800000,
+
+  // TTL in ms for historical loop metrics. Default: 7776000000 (90 days)
+  "metricsTtlMs": 7776000000
 
   // Remote opencode servers available as loop launch targets.
   // Each entry requires "name" (display name in the TUI picker) and "url" (base URL of the server).

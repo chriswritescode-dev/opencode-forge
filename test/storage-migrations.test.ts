@@ -638,6 +638,132 @@ test('migration 130 is idempotent on re-opened databases', () => {
   db2.close()
 })
 
+test('migration 139 adds run_started_at column and run index to loop_session_usage', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const cols = db.prepare('PRAGMA table_info(loop_session_usage)').all() as Array<{ name: string; notnull: number }>
+  expect(cols.some((c) => c.name === 'run_started_at')).toBe(true)
+  // NOT NULL so every persisted usage row must stamp a run identity.
+  const runStartedCol = cols.find((c) => c.name === 'run_started_at')
+  expect(runStartedCol?.notnull).toBe(1)
+
+  const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='loop_session_usage'").all() as Array<{ name: string }>
+  expect(indexes.some((i) => i.name === 'idx_loop_session_usage_run')).toBe(true)
+
+  db.close()
+})
+
+test('migration 139 is idempotent on re-opened databases', () => {
+  const dbPath = createTempDb()
+
+  const db1 = openForgeDatabase(dbPath)
+  db1.close()
+
+  const db2 = openForgeDatabase(dbPath)
+  const cols = db2.prepare('PRAGMA table_info(loop_session_usage)').all() as Array<{ name: string }>
+  expect(cols.filter((c) => c.name === 'run_started_at')).toHaveLength(1)
+
+  db2.close()
+})
+
+test('migration 139 backfills legacy usage rows from loops.started_at', () => {
+  // Regression for the auditor's active-loop upgrade finding. Pre-migration
+  // usage rows carried no run identity. Without backfill, an upgrade applied
+  // mid-active-loop left all prior usage with run_started_at = 0, so the loop's
+  // eventual loop_runs summary lost every row captured before the upgrade.
+  const dbPath = createTempDb()
+
+  // Step 1: fully migrate (this applies migration 139 including the backfill,
+  // but on a fresh DB there are no legacy rows to backfill).
+  const seed = openForgeDatabase(dbPath)
+
+  // Seed a loop whose started_at the backfill must source from, plus legacy
+  // usage rows for a DIFFERENT loop whose loops row has been swept (simulating
+  // an orphan). The active loop's rows must backfill; the orphan's must not.
+  const activeStartedAt = 1_700_000_000_000
+  seed.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-active', 'active-loop', 'running', 'sess-active', 0, '/tmp/wt', '/tmp/proj', 5, 1, 2, 0, 'coding', ?)
+  `).run(activeStartedAt)
+
+  // Insert legacy usage rows directly; immediately rewrite run_started_at to 0
+  // to simulate the pre-migration state on disk.
+  for (const model of ['model-a', 'model-b']) {
+    seed.prepare(`
+      INSERT INTO loop_session_usage (project_id, loop_name, session_id, role, model, cost, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, message_count, captured_at, run_started_at)
+      VALUES ('proj-active', 'active-loop', ?, 'code', ?, 0.01, 1000, 500, 50, 10, 20, 5, ?, 0)
+    `).run(`active-sess-${model}`, model, activeStartedAt + 10)
+  }
+
+  // Orphan: usage rows whose loops row is absent. Hard-delete the loops row so
+  // the backfill's EXISTS guard skips them, leaving run_started_at = 0.
+  seed.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-orphan', 'orphan-loop', 'running', 'sess-orphan', 0, '/tmp/wt', '/tmp/proj', 5, 1, 0, 0, 'coding', 9999)
+  `).run()
+  seed.prepare(`
+    INSERT INTO loop_session_usage (project_id, loop_name, session_id, role, model, cost, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, message_count, captured_at, run_started_at)
+    VALUES ('proj-orphan', 'orphan-loop', 'sess-orphan', 'code', 'model-a', 0.01, 7, 7, 0, 0, 0, 1, 9999, 0)
+  `).run()
+  seed.prepare('DELETE FROM loops WHERE project_id = ? AND loop_name = ?').run('proj-orphan', 'orphan-loop')
+  // FK is ON DELETE CASCADE, so the orphan usage row vanishes with the loop row.
+  // To exercise the EXISTS-guard path, re-insert the orphan usage directly
+  // (no parent loop row) by temporarily disabling FK enforcement.
+  seed.prepare('PRAGMA foreign_keys = OFF').run()
+  seed.prepare(`
+    INSERT INTO loop_session_usage (project_id, loop_name, session_id, role, model, cost, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, message_count, captured_at, run_started_at)
+    VALUES ('proj-orphan', 'orphan-loop', 'sess-orphan', 'code', 'model-a', 0.01, 7, 7, 0, 0, 0, 1, 9999, 0)
+  `).run()
+  seed.prepare('PRAGMA foreign_keys = ON').run()
+
+  // Simulate the pre-migration on-disk state: drop the run_started_at column
+  // and forget migration 139 ever ran. The next openForgeDatabase call will
+  // re-run 139, exercising the ALTER + UPDATE backfill + CREATE INDEX path.
+  // Drop the run index first — SQLite refuses to drop a column still
+  // referenced by an index.
+  seed.exec('DROP INDEX IF EXISTS idx_loop_session_usage_run')
+  seed.exec('ALTER TABLE loop_session_usage DROP COLUMN run_started_at')
+  seed.prepare('DELETE FROM migrations WHERE id = ?').run('139')
+  seed.close()
+
+  const migrated = openForgeDatabase(dbPath)
+
+  // Column restored, NOT NULL preserved.
+  const cols = migrated.prepare('PRAGMA table_info(loop_session_usage)').all() as Array<{ name: string; notnull: number }>
+  expect(cols.some((c) => c.name === 'run_started_at')).toBe(true)
+  expect(cols.find((c) => c.name === 'run_started_at')?.notnull).toBe(1)
+
+  // Active loop rows backfilled with the loop's started_at, so a future
+  // getAggregateForRun('proj-active', 'active-loop', activeStartedAt) sees
+  // every pre-upgrade row.
+  const activeRows = migrated.prepare(
+    'SELECT session_id, run_started_at FROM loop_session_usage WHERE project_id = ? AND loop_name = ? ORDER BY session_id',
+  ).all('proj-active', 'active-loop') as Array<{ session_id: string; run_started_at: number }>
+  expect(activeRows).toHaveLength(2)
+  for (const row of activeRows) {
+    expect(row.run_started_at).toBe(activeStartedAt)
+  }
+
+  // Orphan rows (no matching loops row) keep run_started_at = 0 — they cannot
+  // be attributed to any run, so they stay invisible to run aggregates.
+  const orphanRow = migrated.prepare(
+    'SELECT run_started_at FROM loop_session_usage WHERE project_id = ? AND loop_name = ?',
+  ).get('proj-orphan', 'orphan-loop') as { run_started_at: number }
+  expect(orphanRow.run_started_at).toBe(0)
+
+  // The active loop's run aggregate now matches the loop's started_at exactly,
+  // so the metrics recorder (and the eventual loop_runs summary) will include
+  // the pre-upgrade usage. The orphan row is not aggregated into any run.
+  const activeUsage = migrated.prepare(`
+    SELECT SUM(input_tokens) as total FROM loop_session_usage
+    WHERE project_id = ? AND loop_name = ? AND run_started_at = ?
+  `).get('proj-active', 'active-loop', activeStartedAt) as { total: number | null }
+  expect(activeUsage.total).toBe(2000)
+
+  migrated.close()
+})
+
 test('migration 131 adds execution_variant and auditor_variant columns to loops', () => {
   const dbPath = createTempDb()
   const db = openForgeDatabase(dbPath)

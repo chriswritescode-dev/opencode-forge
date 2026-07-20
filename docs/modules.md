@@ -146,6 +146,8 @@ The heart of Forge. Implements autonomous iterative development with phases: `co
 | `in-flight-guard.ts` | Single-flight guard for concurrent loop start attempts |
 | `restartability.ts` | `getRestartability()` — decides whether a non-completed loop can restart, blocked, or requires force |
 | `token-usage.ts` | Extract and normalize per-message usage from session output |
+| `runtime-usage.ts` | Fetch, cache, attribute, and persist session usage shared by phase events and run summaries |
+| `metrics.ts` | Record run-scoped phase events and terminal run summaries |
 | `name-uniqueness.ts` | Reserve a unique loop identity before any side effects |
 | `session-output.ts` | Fetch session output for loop display |
 
@@ -343,11 +345,13 @@ Each created via `createXxxRepo(db)` factory with project-scoped queries:
 | `ReviewFindingsRepo` | `review_findings` | `ReviewFindingRow` |
 | `SectionPlansRepo` | `section_plans` | `SectionPlanRow` — one row per **milestone** (decomposed plan section). See [Loop System](loop-system.md#milestones-aka-sections). |
 | `LoopSessionUsageRepo` | `loop_session_usage` | `LoopSessionUsageRow`, `LoopUsageAggregate` |
+| `LoopEventsRepo` | `loop_events` | `LoopEventRow` |
+| `LoopRunsRepo` | `loop_runs` | `LoopRunRow`, paginated run history |
 | `TuiPrefsRepo` | `tui_preferences` | N/A |
 
 ### Migrations
 
-Sequential numbered `.sql` files (100–131) tracked in a `migrations` table.
+Sequential migrations through 139 are registered explicitly in `src/storage/migrations/index.ts`; migrations 138–139 add retained run/event metrics and exact run identity for session usage.
 
 See [storage/migrations/README.md](../src/storage/migrations/README.md) for migration details.
 

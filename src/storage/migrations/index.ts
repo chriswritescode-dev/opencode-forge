@@ -369,5 +369,45 @@ export const migrations: Migration[] = [
       )
     },
   },
+  {
+    id: '138',
+    description: 'Create loop_events and loop_runs metrics tables',
+    apply: (db: Database) => {
+      db.run(loadSql('138_create_loop_metrics.sql'))
+    },
+  },
+  {
+    id: '139',
+    description: 'Add run_started_at column to loop_session_usage for unambiguous run identity',
+    apply: (db: Database) => {
+      // Guard against schemas where migration 130 is registered as applied
+      // but the loop_session_usage table is physically absent (legacy test
+      // fixtures); skip rather than ALTER a non-existent table. Fresh DBs
+      // always create the table first via migration 130, then this ALTERs it.
+      const tableRow = db.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='loop_session_usage'"
+      ).get() as { '1'?: number } | null
+      if (!tableRow) return
+      const cols = db.prepare('PRAGMA table_info(loop_session_usage)').all() as Array<{ name: string }>
+      if (!cols.some((c) => c.name === 'run_started_at')) {
+        db.run(loadSql('139_add_loop_session_usage_run_started_at.sql'))
+      }
+    },
+  },
+  {
+    id: '140',
+    description: 'Add pagination indexes to loop_runs',
+    apply: (db: Database) => {
+      // Guard against schemas where migration 138 is registered as applied
+      // but the loop_runs table is physically absent (legacy test fixtures);
+      // skip rather than index a non-existent table. Fresh DBs create the
+      // table via migration 138, then this adds the pagination indexes.
+      const tableRow = db.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='loop_runs'"
+      ).get() as { '1'?: number } | null
+      if (!tableRow) return
+      db.run(loadSql('140_loop_runs_pagination_indexes.sql'))
+    },
+  },
 
 ]
