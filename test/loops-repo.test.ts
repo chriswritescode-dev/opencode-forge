@@ -32,7 +32,7 @@ describe('LoopsRepo', () => {
         iteration            INTEGER NOT NULL DEFAULT 0,
         audit_count          INTEGER NOT NULL DEFAULT 0,
         error_count          INTEGER NOT NULL DEFAULT 0,
-        phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing','final_auditing','post_action')),
+        phase                TEXT NOT NULL CHECK(phase IN ('coding','auditing','final_auditing','post_action','final_audit_fix')),
         execution_model      TEXT,
         auditor_model        TEXT,
         model_failed         INTEGER NOT NULL DEFAULT 0,
@@ -552,6 +552,56 @@ describe('LoopsRepo', () => {
       expect(repoAsAny.setDecompositionStatus).toBeUndefined()
       expect(repoAsAny.setDecompositionMode).toBeUndefined()
       expect(repoAsAny.setDecompositionSessionId).toBeUndefined()
+    })
+  })
+
+  describe('restore preserves post_action_report across restart rollback', () => {
+    test('restore re-populates post_action_report after restart cleared it', () => {
+      // Insert a post_action-phase loop that carries a persisted post-action
+      // report. The `restart` flow clears the report before persisting the
+      // new phase, so a subsequent prompt-failure rollback MUST restore it via
+      // `restore` (which writes loop_large_fields via upsertLargeStmt).
+      repo.insert({ ...testRow, loopName: 'post-action-loop', phase: 'post_action' }, testLarge)
+      repo.setPostActionReport(testRow.projectId, 'post-action-loop', 'post-action report body')
+      expect(repo.getLarge(testRow.projectId, 'post-action-loop')!.postActionReport).toBe('post-action report body')
+
+      // Restart clears the report.
+      repo.restart(testRow.projectId, 'post-action-loop', {
+        sessionId: 'new-session',
+        phase: 'post_action',
+        iteration: 1,
+        auditCount: 0,
+        sandbox: false,
+        sandboxContainer: null,
+        workspaceId: null,
+        currentSectionIndex: 0,
+        totalSections: 0,
+        finalAuditDone: false,
+        startedAt: Date.now(),
+        executorSessionId: null,
+      })
+      expect(repo.getLarge(testRow.projectId, 'post-action-loop')!.postActionReport).toBeNull()
+
+      // Rollback: restore the previous loop row + the post-action report.
+      const restoredRow: LoopRow = {
+        ...testRow,
+        loopName: 'post-action-loop',
+        phase: 'post_action',
+        status: 'errored',
+        currentSessionId: 'session-old',
+        terminationReason: 'restart_prompt_failed',
+        completedAt: Date.now(),
+      }
+      repo.restore(restoredRow, {
+        lastAuditResult: null,
+        postActionReport: 'post-action report body',
+        goal: null,
+      })
+
+      const large = repo.getLarge(testRow.projectId, 'post-action-loop')!
+      // The previously-cleared post-action report is restored through the
+      // shared upsertLargeStmt path.
+      expect(large.postActionReport).toBe('post-action report body')
     })
   })
 })

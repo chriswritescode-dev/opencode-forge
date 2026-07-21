@@ -2468,7 +2468,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
         },
       })
 
-      // After the first tick, the loop should have transitioned to coding with a fix prompt
+      // After the first tick, the loop should have transitioned to final_audit_fix with a fix prompt.
       const fixCodePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
       expect(fixCodePrompts.length).toBeGreaterThan(0)
       const fixPromptText = (fixCodePrompts[fixCodePrompts.length - 1].params as any)?.parts?.[0]?.text ?? ''
@@ -2477,7 +2477,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       // Verify the loop state after first tick
       const stateAfterFirstTick = loopService.getActiveState(loopName)
       expect(stateAfterFirstTick).not.toBeNull()
-      expect(stateAfterFirstTick!.phase).toBe('coding')
+      expect(stateAfterFirstTick!.phase).toBe('final_audit_fix')
       const codeSessionId = stateAfterFirstTick!.sessionId
 
       // Step 2: Change messages for the coding assistant response WITH coder-decisions markers

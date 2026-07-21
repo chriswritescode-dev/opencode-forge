@@ -56,7 +56,11 @@ export interface PostActionState extends LoopStateBase {
   phase: 'post_action'
 }
 
-export type LoopState = CodingState | AuditingState | FinalAuditingState | PostActionState
+export interface FinalAuditFixState extends LoopStateBase {
+  phase: 'final_audit_fix'
+}
+
+export type LoopState = CodingState | AuditingState | FinalAuditingState | PostActionState | FinalAuditFixState
 
 export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): LoopState {
   const base = {
@@ -104,7 +108,18 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
       return { ...base, phase: 'final_auditing' } satisfies FinalAuditingState
     case 'post_action':
       return { ...base, phase: 'post_action' } satisfies PostActionState
+    case 'final_audit_fix':
+      return { ...base, phase: 'final_audit_fix' } satisfies FinalAuditFixState
   }
+}
+
+/**
+ * Section index recorded on a loop_transitions row: the current section for
+ * sectioned loops, null for goal/non-sectioned loops. Single source of truth
+ * for every transition-recording call site.
+ */
+export function transitionSectionIndex(state: Pick<LoopState, 'totalSections' | 'currentSectionIndex'>): number | null {
+  return state.totalSections > 0 ? (state.currentSectionIndex ?? 0) : null
 }
 
 export function loopStateToRow(state: LoopState, projectId: string): Omit<LoopRow, 'createdAt' | 'updatedAt'> {

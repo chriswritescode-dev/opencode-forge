@@ -7,6 +7,7 @@ export type Transition =
   | { kind: 'advance-section' }
   | { kind: 'rewind-section' }
   | { kind: 'fix-for-final-audit' }
+  | { kind: 'start-final-audit' }
   | { kind: 'terminate'; reason: TerminationReason }
   | { kind: 'noop' }
 
@@ -50,6 +51,9 @@ export function nextTransition(state: LoopState, event: TransitionEvent): Transi
 
     case 'post_action':
       return handlePostActionEvent(event)
+
+    case 'final_audit_fix':
+      return handleFinalAuditFixEvent(event)
   }
 }
 
@@ -84,7 +88,7 @@ function handleAuditingEvent(event: TransitionEvent): Transition {
   switch (event.type) {
     case 'section-clean':
       if (event.isLastSection) {
-        return { kind: 'rotate' }
+        return { kind: 'start-final-audit' }
       }
       return { kind: 'advance-section' }
     case 'section-dirty':
@@ -162,4 +166,13 @@ function handlePostActionEvent(event: TransitionEvent): Transition {
     default:
       return { kind: 'noop' }
   }
+}
+
+function handleFinalAuditFixEvent(event: TransitionEvent): Transition {
+  // The fix phase IS a coding pass; the only divergence is that a completed
+  // idle returns to the final audit instead of rotating to a section audit.
+  if (event.type === 'coding-idle-complete') {
+    return { kind: 'start-final-audit' }
+  }
+  return handleCodingEvent(event)
 }

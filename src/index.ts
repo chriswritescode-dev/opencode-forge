@@ -4,7 +4,7 @@ import type { ForgeClient, SessionGetParams } from './client/port'
 import { buildAgents } from './agents'
 import { createConfigHandler } from './config'
 import { createSessionHooks, createLoopEventHandler } from './hooks'
-import { initializeDatabase, resolveDataDir, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo } from './storage'
+import { initializeDatabase, resolveDataDir, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo } from './storage'
 import type { LoopChangeNotifier } from './loop'
 import { loadPluginConfig, resolveBundledContainerDir, resolvePromptsDir } from './setup'
 import { resolveLogPath } from './storage'
@@ -333,6 +333,8 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const sectionPlansRepo = createSectionPlansRepo(db)
     const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
     const featureGroupsRepo = createFeatureGroupsRepo(db)
+    const loopTransitionsRepo = createLoopTransitionsRepo(db)
+    const planAmendmentsRepo = createPlanAmendmentsRepo(db)
 
     // Mark any groups left in non-terminal status (extracting/planning/running) from a
     // prior process as interrupted. Do NOT auto-resume — user must restart via group-status.
@@ -370,7 +372,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       }
     }
 
-    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo)
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => config, sandboxManager || undefined, dataDir, config.loop, sectionPlansRepo, notifyLoopChange, pendingTeardowns, loopSessionUsageRepo, loopTransitionsRepo, planAmendmentsRepo)
 
     const promptsDir = resolvePromptsDir()
     const agents = buildAgents(promptsDir)

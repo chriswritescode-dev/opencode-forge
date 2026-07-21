@@ -4,6 +4,7 @@ import { createPlanTools } from './plan-kv'
 import { createLoopTools } from './loop'
 import { createGroupTools } from './group'
 import { createSectionReadTool } from './section-read'
+import { createPlanAdjustTool } from './plan-adjust'
 import type { ToolContext } from './types'
 
 export type { ToolContext } from './types'
@@ -21,5 +22,6 @@ export function createTools(ctx: ToolContext): Record<string, ReturnType<typeof 
     ...createLoopTools(ctx),
     ...createGroupTools(ctx),
     'section-read': createSectionReadTool(ctx),
+    'plan-adjust': createPlanAdjustTool(ctx),
   }
 }

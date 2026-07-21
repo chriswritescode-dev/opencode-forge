@@ -12,6 +12,7 @@ export type TerminationReason =
   | { kind: 'audit_retry_exhausted' }
   | { kind: 'final_audit_retry_exhausted' }
   | { kind: 'coding_no_assistant' }
+  | { kind: 'restart_prompt_failed' }
   | { kind: 'worktree_failed'; message: string }
   | { kind: 'error_max_retries'; message: string }
   | { kind: 'provider_limit'; message: string }
@@ -60,6 +61,7 @@ export function parseTerminationReasonString(str: string): TerminationReason {
     'max_iterations', 'stall_timeout', 'missing_worktree_dir',
     'session_creation_failed', 'audit_retry_exhausted',
     'final_audit_retry_exhausted', 'coding_no_assistant',
+    'restart_prompt_failed',
   ] as const
 
   if ((knownKinds as readonly string[]).includes(str)) {

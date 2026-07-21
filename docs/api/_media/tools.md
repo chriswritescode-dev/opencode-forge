@@ -10,6 +10,7 @@ See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](c
 |---|---|---|
 | `plan-read` | Read the current session or loop plan, or list/search recent project plans. | [`src/tools/plan-kv.ts`](../src/tools/plan-kv.ts) |
 | `section-read` | Read a section plan and status for the active loop session. | [`src/tools/section-read.ts`](../src/tools/section-read.ts) |
+| `plan-adjust` | Replace the remaining (not yet started) sections of the active loop plan; auditor-only, logged as a plan amendment. | [`src/tools/plan-adjust.ts`](../src/tools/plan-adjust.ts) |
 | `review-write` | Store a review finding. | [`src/tools/review.ts`](../src/tools/review.ts) |
 | `review-read` | Read review findings. | [`src/tools/review.ts`](../src/tools/review.ts) |
 | `review-delete` | Delete a review finding. | [`src/tools/review.ts`](../src/tools/review.ts) |
@@ -45,6 +46,17 @@ Arguments:
 | Argument | Description |
 |---|---|
 | `section_index` | Optional 0-based section index. If omitted, returns the lowest-index incomplete section. |
+
+### `plan-adjust`
+
+Only callable by the current auditor session of a sectioned plan loop during the `auditing` phase (rejected in goal loops and during the final audit). Replaces the pending section suffix (from the current section + 1 onward); the plan objective and verification are immutable. The resulting total may not exceed 24 sections. Every adjustment is recorded in the `plan_amendments` table with before/after snapshots.
+
+Arguments:
+
+| Argument | Description |
+|---|---|
+| `sections` | Replacement list of `{ title, content }` for the remaining sections. An empty list removes the entire pending suffix. |
+| `rationale` | Why the plan needs adjustment. |
 
 ## Review Tools
 

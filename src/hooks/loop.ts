@@ -11,6 +11,8 @@ import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { ReviewFindingsRepo } from '../storage/repos/review-findings-repo'
 import type { SectionPlansRepo } from '../storage/repos/section-plans-repo'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
+import type { LoopTransitionsRepo } from '../storage/repos/loop-transitions-repo'
+import type { PlanAmendmentsRepo } from '../storage/repos/plan-amendments-repo'
 import type { PendingTeardownRegistry } from '../workspace/pending-teardown'
 
 export interface LoopEventHandler {
@@ -48,6 +50,8 @@ export function createLoopEventHandler(
   notify?: LoopChangeNotifier,
   pendingTeardowns?: PendingTeardownRegistry,
   loopSessionUsageRepo?: LoopSessionUsageRepo,
+  loopTransitionsRepo?: LoopTransitionsRepo,
+  planAmendmentsRepo?: PlanAmendmentsRepo,
 ): LoopEventHandler {
   const loop = createLoop({
     loopsRepo,
@@ -63,6 +67,8 @@ export function createLoopEventHandler(
     sectionPlansRepo,
     notify,
     loopSessionUsageRepo,
+    loopTransitionsRepo,
+    planAmendmentsRepo,
     onTerminated: async (state, reason) => {
       await performTerminationSideEffects(state, reason, state.sessionId, {
         client: forgeClient,

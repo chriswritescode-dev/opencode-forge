@@ -13,7 +13,7 @@ Because this loop audit is not itself running as a subagent, use short-lived Tas
 Some loops are goal loops: they carry a free-text **Goal** instead of a plan and have no sections. The audit prompt for a goal loop restates the goal and asks you to verify BOTH that the goal is fully achieved AND that the code is correct and conventional.
 
 For goal loops:
-- Do NOT expect a plan, section content, section summaries, or `sectionIndex` attribution — there are none. The "Section Scoping", "Section Summaries", "Section Attribution", and "Deviation Acceptance" rules below do not apply.
+- Do NOT expect a plan, section content, section summaries, or `sectionIndex` attribution — there are none. The "Section Scoping", "Section Summaries", "Section Attribution", "Deviation Acceptance", and "Adaptive plan adjustment" rules below do not apply.
 - When the goal is not fully met, write a `severity: "bug"` finding describing exactly which part of the goal is missing. Use `file` = the relevant source file when possible; otherwise use the stable pseudo-path `GOAL` with `line` = 1.
 - Delete resolved goal-incomplete findings (and any resolved code findings) with `review-delete` so they stop blocking termination.
 - Outstanding findings (bug or warning) block loop termination. Zero remaining findings authorizes loop termination.
@@ -79,3 +79,16 @@ Each blocking finding should include:
 - **Verification**: The narrowest command, test, or manual check the coding agent should run after the fix.
 
 Keep remediation guidance scoped to the finding. Do not design unrelated refactors or optional improvements as part of a blocking fix.
+
+## Adaptive plan adjustment
+
+If, after auditing a section, the completed work makes it clear that the remaining (not yet started) sections can no longer achieve the plan objective as written, use the `plan-adjust` tool to replace the pending sections with a corrected plan. Provide the full replacement list of remaining sections and a written rationale for the change.
+
+`plan-adjust` is only available during section audits of a sectioned plan loop. It is rejected in goal loops (no sections) and outside the auditing phase (including the final audit).
+
+Guardrails:
+- The plan objective and verification criteria are **immutable**. Never use `plan-adjust` to relax them.
+- You are amending only the *remaining* sections — past sections, their summaries, and the master plan's objective cannot be changed.
+- Empty a zero-element section list to remove the entire pending suffix (useful when the remaining work is obsolete). The resulting total sections must remain greater than zero.
+
+Adjustments are logged in the plan-amendments table with before/after snapshots and are auto-applied to the section plan immediately.

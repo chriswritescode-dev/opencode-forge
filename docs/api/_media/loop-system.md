@@ -40,13 +40,15 @@ stateDiagram-v2
     Auditing --> Auditing: next section
     Auditing --> FinalAuditing: last section clean
     Auditing --> [*]: audit clear
-    FinalAuditing --> Coding: final audit dirty (fix mode)
-    Coding --> FinalAuditing: final-audit fix complete
+    FinalAuditing --> FinalAuditFix: final audit dirty
+    FinalAuditFix --> FinalAuditing: fix pass idle complete
+    FinalAuditing --> Auditing: plan amendment appended sections
     FinalAuditing --> PostAction: final audit clean
     note right of PostAction: Only when loop.postAction.enabled
     PostAction --> [*]: post-action complete
     Coding --> [*]: max iterations / retry limit / stall timeout / cancellation
     Auditing --> [*]: max iterations / retry limit / stall timeout / cancellation
+    FinalAuditFix --> [*]: max iterations / retry limit / stall timeout / cancellation
     FinalAuditing --> [*]: final audit clean (no post-action)
 ```
 
@@ -66,7 +68,7 @@ interface LoopState {
   maxIterations: number              // Maximum iterations (0 = unlimited)
   startedAt: string                  // ISO timestamp
   prompt?: string                    // Original task prompt
-  phase: 'coding' | 'auditing' | 'final_auditing' | 'post_action'
+  phase: 'coding' | 'auditing' | 'final_auditing' | 'final_audit_fix' | 'post_action'
   lastAuditResult?: string           // Last audit output
   errorCount: number                 // Consecutive error count
   auditCount: number                 // Number of audits completed
@@ -187,7 +189,7 @@ graph TD
     G --> H[Branch preserved]
 ```
 
-When a workspace carries a SHA pin (`extra.startRef`, set by remote loop launches), the new branch is created from that exact commit instead of the clone's current `HEAD`. If the commit is not present locally, the adapter fetches the sync ref (`extra.syncRef`, default `refs/forge/<loopName>`) from the configured git remote first, and fails with a descriptive error when the SHA still cannot be resolved. Existing branches always win — the pin is ignored when the loop branch already exists. On final teardown the sync ref is deleted from the shared git remote. See [Configuration → Remotes](configuration.md#remotes).
+When a workspace carries a SHA pin (`extra.startRef`, set by remote loop launches), the new branch is created from that exact commit instead of the clone's current `HEAD`. If the commit is not present locally, the adapter fetches the sync ref (`extra.syncRef`, default `refs/forge/<loopName>`) from the configured git remote first, and fails with a descriptive error when the SHA still cannot be resolved. If the loop branch already exists, its tip must match the pinned SHA — a leftover same-named branch at a different commit fails creation with an actionable error instead of silently running old code (unpinned workspaces still reuse existing branches). On final teardown the sync ref is deleted from the shared git remote. See [Configuration → Remotes](configuration.md#remotes).
 
 Benefits of worktree isolation:
 - Isolation from ongoing development
@@ -215,7 +217,15 @@ In user-facing language, a plan is decomposed into **milestones** — ordered un
 - `<!-- forge-section -->` markers in the architect plan output
 - `section-read` tool reads the current or specified milestone
 
-Decomposition is a one-shot preprocessing step at loop start (`services/deterministic-decomposer.ts`), not a runtime loop phase. Once milestones exist, the loop advances through them via `advance-section` transitions inside the `auditing` phase. When the `final_auditing` phase reports outstanding bug findings, the loop rotates to a coding session in "final-audit fix" mode — the code agent fixes the reported findings without rewinding to a specific section, and on idle the loop transitions straight back to `final_auditing` for re-verification.
+Decomposition is a one-shot preprocessing step at loop start (`services/deterministic-decomposer.ts`), not a runtime loop phase. Once milestones exist, the loop advances through them via `advance-section` transitions inside the `auditing` phase. When the `final_auditing` phase reports outstanding bug findings, the loop rotates to a coding session in the persisted `final_audit_fix` phase — the code agent fixes the reported findings without rewinding to a specific section, and on idle the loop transitions straight back to `final_auditing` for re-verification. A loop stopped mid-fix restarts as a coding pass that re-sends the final-audit fix prompt (rebuilt from the persisted `lastAuditResult`).
+
+### Plan Amendments
+
+After decomposition, the *remaining* (not yet started) milestones can still be amended mid-loop: during a section audit, the auditor may call the `plan-adjust` tool to replace the pending section suffix when completed work makes the remaining sections unable to achieve the plan objective as written. The objective and verification criteria are immutable, completed/current sections cannot be changed, goal loops are excluded, and the resulting total is capped at 24 sections. Every amendment is recorded in the `plan_amendments` table with before/after snapshots and a rationale. If an amendment appends sections while the loop is already in `final_auditing`, the loop reverts to `auditing` to execute them.
+
+### Transition Log
+
+Every persisted phase change appends exactly one row to the `loop_transitions` table (event type, transition kind, from/to phase, iteration, section index, and terminal status/reason for terminate rows). The dashboard renders this log as a live state-machine graph with per-edge traversal counts. Transition history survives loop restarts (loop rows are restored in place, never delete+reinserted) but is removed with the loop row by the terminal-loop sweep.
 
 ## Completion Conditions
 
@@ -224,7 +234,7 @@ A loop completes when the active phase emits a clean audit result (optionally fo
 - Non-sectioned loops complete on `audit-clear`.
 - Sectioned loops advance through clean section audits, then complete on `final-audit-clean`.
 - Dirty section audits rotate back to coding for the same section so findings can be addressed.
-- Dirty final audits rotate to coding in "final-audit fix" mode (no section rewind); when the fix coding pass goes idle, the loop returns straight to `final_auditing`.
+- Dirty final audits rotate to a coding session in the `final_audit_fix` phase (no section rewind); when the fix coding pass goes idle, the loop returns straight to `final_auditing`.
 - After a clean final audit, if `loop.postAction.enabled` is `true` and specifies a `skill` or `prompt`, the loop enters a `post_action` phase that runs inside the worktree before teardown. Completion occurs when the post-action session goes idle (`post-action-complete` event).
 
 ## Post-Completion Action Phase

@@ -14,7 +14,7 @@ export interface LoopRow {
   iteration: number
   auditCount: number
   errorCount: number
-  phase: 'coding' | 'auditing' | 'final_auditing' | 'post_action'
+  phase: 'coding' | 'auditing' | 'final_auditing' | 'post_action' | 'final_audit_fix'
   executionModel: string | null
   auditorModel: string | null
   modelFailed: boolean
@@ -46,6 +46,8 @@ export interface LoopLargeFields {
 
 export interface LoopsRepo {
   insert(row: LoopRow, large: LoopLargeFields): boolean
+  /** In-place row restore (UPDATE; falls back to INSERT when row is missing). Preserves child rows (loop_transitions, section_plans) that would be cascade-deleted by `deleteState` + `insert`. */
+  restore(row: LoopRow, large: LoopLargeFields): void
   get(projectId: string, loopName: string): LoopRow | null
   getLarge(projectId: string, loopName: string): LoopLargeFields | null
   getBySessionId(projectId: string, sessionId: string): LoopRow | null
@@ -201,10 +203,11 @@ export function createLoopsRepo(db: Database): LoopsRepo {
   `)
 
   const upsertLargeStmt = db.prepare(`
-    INSERT INTO loop_large_fields (project_id, loop_name, last_audit_result, goal)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO loop_large_fields (project_id, loop_name, last_audit_result, post_action_report, goal)
+    VALUES (?, ?, ?, ?, ?)
     ON CONFLICT (project_id, loop_name) DO UPDATE SET
       last_audit_result = excluded.last_audit_result,
+      post_action_report = COALESCE(excluded.post_action_report, loop_large_fields.post_action_report),
       goal = COALESCE(excluded.goal, loop_large_fields.goal)
   `)
 
@@ -350,6 +353,22 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     WHERE project_id = ? AND loop_name = ?
   `)
 
+  // In-place row restore: UPDATE all loop columns by primary key. Preserves
+  // child rows (loop_transitions, section_plans) by avoiding deleteState +
+  // insert, which would trigger FK ON DELETE CASCADE. Falls back to INSERT
+  // when no row matches (defensive against concurrent external deletes).
+  const restoreStmt = db.prepare(`
+    UPDATE loops SET
+      status = ?, current_session_id = ?, worktree = ?, worktree_dir = ?, worktree_branch = ?,
+      project_dir = ?, max_iterations = ?, iteration = ?, audit_count = ?, error_count = ?,
+      phase = ?, execution_model = ?, auditor_model = ?, model_failed = ?, sandbox = ?,
+      sandbox_container = ?, started_at = ?, completed_at = ?, termination_reason = ?,
+      completion_summary = ?, workspace_id = ?, host_session_id = ?, executor_session_id = ?,
+      current_section_index = ?, total_sections = ?, final_audit_done = ?,
+      execution_variant = ?, auditor_variant = ?, loop_kind = ?
+    WHERE project_id = ? AND loop_name = ?
+  `)
+
   const deleteStmt = db.prepare(`
     DELETE FROM loops WHERE project_id = ? AND loop_name = ?
   `)
@@ -358,49 +377,81 @@ export function createLoopsRepo(db: Database): LoopsRepo {
     DELETE FROM loop_large_fields WHERE project_id = ? AND loop_name = ?
   `)
 
+  /**
+   * Positional bind values shared by the INSERT and restore-UPDATE statements
+   * (every loops column except the project_id/loop_name key). Adding a loops
+   * column requires updating only this list plus the two SQL statements.
+   */
+  function loopRowValues(row: LoopRow): (string | number | null)[] {
+    return [
+      row.status,
+      row.currentSessionId,
+      row.worktree ? 1 : 0,
+      row.worktreeDir,
+      row.worktreeBranch,
+      row.projectDir,
+      row.maxIterations,
+      row.iteration,
+      row.auditCount,
+      row.errorCount,
+      row.phase,
+      row.executionModel,
+      row.auditorModel,
+      row.modelFailed ? 1 : 0,
+      row.sandbox ? 1 : 0,
+      row.sandboxContainer,
+      row.startedAt,
+      row.completedAt,
+      row.terminationReason,
+      row.completionSummary,
+      row.workspaceId,
+      row.hostSessionId,
+      row.executorSessionId ?? null,
+      row.currentSectionIndex ?? 0,
+      row.totalSections ?? 0,
+      row.finalAuditDone ?? 0,
+      row.executionVariant ?? null,
+      row.auditorVariant ?? null,
+      row.kind ?? 'plan',
+    ]
+  }
+
   return {
     insert(row: LoopRow, large: LoopLargeFields): boolean {
       const runInsert = db.transaction(() => {
         const result = insertStmt.run(
           row.projectId,
           row.loopName,
-          row.status,
-          row.currentSessionId,
-          row.worktree ? 1 : 0,
-          row.worktreeDir,
-          row.worktreeBranch,
-          row.projectDir,
-          row.maxIterations,
-          row.iteration,
-          row.auditCount,
-          row.errorCount,
-          row.phase,
-          row.executionModel,
-          row.auditorModel,
-          row.modelFailed ? 1 : 0,
-          row.sandbox ? 1 : 0,
-          row.sandboxContainer,
-          row.startedAt,
-          row.completedAt,
-          row.terminationReason,
-          row.completionSummary,
-          row.workspaceId,
-          row.hostSessionId,
-          row.executorSessionId ?? null,
-          row.currentSectionIndex ?? 0,
-          row.totalSections ?? 0,
-          row.finalAuditDone ?? 0,
-          row.executionVariant ?? null,
-          row.auditorVariant ?? null,
-          row.kind ?? 'plan',
+          ...loopRowValues(row),
         ) as unknown as { changes: number }
         if (result.changes === 0) {
           return false
         }
-        upsertLargeStmt.run(row.projectId, row.loopName, large.lastAuditResult, large.goal ?? null)
+        upsertLargeStmt.run(row.projectId, row.loopName, large.lastAuditResult, large.postActionReport ?? null, large.goal ?? null)
         return true
       })
       return runInsert()
+    },
+
+    restore(row: LoopRow, large: LoopLargeFields): void {
+      const runRestore = db.transaction(() => {
+        const result = restoreStmt.run(
+          ...loopRowValues(row),
+          row.projectId,
+          row.loopName,
+        ) as unknown as { changes: number }
+        if (result.changes === 0) {
+          // Row was concurrently deleted; fall back to INSERT so callers can
+          // restore a loop row even when an external delete raced the rollback.
+          insertStmt.run(
+            row.projectId,
+            row.loopName,
+            ...loopRowValues(row),
+          )
+        }
+        upsertLargeStmt.run(row.projectId, row.loopName, large.lastAuditResult, large.postActionReport ?? null, large.goal ?? null)
+      })
+      runRestore()
     },
 
     get(projectId: string, loopName: string): LoopRow | null {

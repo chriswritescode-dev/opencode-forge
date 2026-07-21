@@ -46,7 +46,15 @@ export function App() {
       const hash = dataHash(json)
       if (hash !== lastDataHashRef.current) {
         lastDataHashRef.current = hash
-        setState(reconcile(json, { key: 'projectId' }))
+        // Keyed reconcile by `id`: projects identify by `projectId`, loops
+        // identify by `loopName` (unique within a project's loop set). Both
+        // surfaces expose a top-level `id` field (see dashboard/data.ts), so a
+        // single key option covers both levels. Positional fallback would have
+        // mutated loop proxies in place on reorder — selecting loop A while a
+        // newer loop B sorts ahead after A completes would silently swap
+        // identities, tearing down the selected loop's SVG subtree. Keying by
+        // `id` preserves the proxy for each loop across reorders.
+        setState(reconcile(json, { key: 'id' }))
         setLoaded(true)
         setLoadError(null)
       }

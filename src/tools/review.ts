@@ -23,6 +23,15 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
     return loopName
   }
 
+  /**
+   * Phases where current-section scoping must be bypassed: the final audit
+   * reviews all sections, and the final-audit fix pass works on the
+   * cross-section findings that audit produced.
+   */
+  function isFinalAuditScope(phase: string): boolean {
+    return phase === 'final_auditing' || phase === 'final_audit_fix'
+  }
+
   return {
     'review-write': tool({
       description: 'Store a code review finding with file location, severity, and description. Automatically injects loopName and sectionIndex from the current loop section. Use crossSection: true to write a cross-section finding (sectionIndex null). Use sectionIndex to override the auto-injected value.',
@@ -108,7 +117,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
         // An explicit loopName targets another loop, so its sections are all returned
         if (loopName && !explicitLoop && !args.allSections) {
           const loopState = loop.service.getActiveState(loopName)
-          if (loopState && loopState.totalSections > 0 && loopState.phase !== 'final_auditing') {
+          if (loopState && loopState.totalSections > 0 && !isFinalAuditScope(loopState.phase)) {
             if (args.crossSection) {
               // crossSection: return only cross-section findings (sectionIndex === null)
               findings = findings.filter((f) => f.sectionIndex === null)
@@ -173,7 +182,7 @@ export function createReviewTools(ctx: ToolContext): Record<string, ReturnType<t
           sectionIndex = null
         } else if (sectionIndex === undefined && loopName) {
           const loopState = loop.service.getActiveState(loopName)
-          if (loopState && loopState.totalSections > 0 && loopState.phase !== 'final_auditing') {
+          if (loopState && loopState.totalSections > 0 && !isFinalAuditScope(loopState.phase)) {
             sectionIndex = loopState.currentSectionIndex
           }
         }

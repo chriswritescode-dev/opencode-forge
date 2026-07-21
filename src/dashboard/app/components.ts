@@ -18,7 +18,9 @@ import {
   tokenBreakdownSegments,
   modelUsageBars,
   renderMarkdown,
+  formatRelativeTime,
 } from './helpers'
+import { LoopMachineGraph } from './machine-graph'
 
 type DashboardSection = NonNullable<DashboardLoop['sections']>[number]
 
@@ -428,6 +430,78 @@ export function LoopUsage(props: { usage: () => NonNullable<DashboardLoop['usage
   </div>`
 }
 
+// ── Plan Amendments ───────────────────────────────────────────────────────
+
+function parseJsonSections(raw: string): Array<{ index: number; title: string }> {
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return []
+  }
+}
+
+function formatSectionTitle(sec: { index: number; title: string }): string {
+  return '#' + sec.index + ' ' + sec.title
+}
+
+// A single amendment row with an expand/collapse toggle. Expandable body shows
+// the parsed before/after section titles.
+function AmendmentRow(props: {
+  amendment: NonNullable<DashboardLoop['amendments']>[number]
+  expanded: () => boolean
+  onToggle: () => void
+}) {
+  const a = props.amendment
+  const before = createMemo(() => parseJsonSections(a.sectionsBefore))
+  const after = createMemo(() => parseJsonSections(a.sectionsAfter))
+
+  return html`<div class="amendment-row">
+    <div class="amendment-head" onclick=${props.onToggle}>
+      <span class="amendment-time">${() => formatRelativeTime(a.createdAt)}</span>
+      <span class="amendment-section">applied @ section ${() => a.appliedAtSection}</span>
+      <span class="amendment-source">${() => a.source}</span>
+      <span class="amendment-rationale">${() => a.rationale}</span>
+      <span class="amendment-caret">${() => (props.expanded() ? '▾' : '▸')}</span>
+    </div>
+    <div class="amendment-body" style=${() => props.expanded() ? 'display:block' : 'display:none'}>
+      <div class="amendment-diff">
+        ${() => (before().length > 0
+          ? html`<div class="amendment-diff-before">
+              <div class="amendment-diff-label">Before</div>
+              ${() => before().map(s => html`<div class="amendment-diff-item">${() => formatSectionTitle(s)}</div>`) }
+            </div>`
+          : '')}
+        ${() => (after().length > 0
+          ? html`<div class="amendment-diff-after">
+              <div class="amendment-diff-label">After</div>
+              ${() => after().map(s => html`<div class="amendment-diff-item">${() => formatSectionTitle(s)}</div>`) }
+            </div>`
+          : '')}
+      </div>
+    </div>
+  </div>`
+}
+
+// Renders an "Plan amendments" panel only when the loop has amendments (gate
+// via boolean memo so the block's identity persists across polls).
+export function AmendmentsPanel(props: {
+  amendments: () => NonNullable<DashboardLoop['amendments']>
+}) {
+  const list = () => props.amendments()
+  const [expandedId, setExpandedId] = createSignal<number | null>(null)
+
+  return html`<div class="amendments-panel">
+    <h4>Plan amendments</h4>
+    <div class="amendments-list">
+      ${() => list().map(a => AmendmentRow({
+        amendment: a,
+        expanded: () => expandedId() === a.id,
+        onToggle: () => setExpandedId(expandedId() === a.id ? null : a.id),
+      }))}
+    </div>
+  </div>`
+}
+
 // ── LoopDetail ────────────────────────────────────────────────────────────
 
 export function LoopDetail(props: { dashLoop: DashboardLoop; onBack: () => void }) {
@@ -444,6 +518,7 @@ export function LoopDetail(props: { dashLoop: DashboardLoop; onBack: () => void 
   const hasFindings = createMemo(() => !!dl().findings && dl().findings.length > 0)
   const hasBugs = createMemo(() => split().bugs.length > 0)
   const hasWarnings = createMemo(() => split().warnings.length > 0)
+  const hasAmendments = createMemo(() => !!dl().amendments && dl().amendments!.length > 0)
 
   return html`<div class="loop">
     <!-- Back to loops -->
@@ -451,8 +526,11 @@ export function LoopDetail(props: { dashLoop: DashboardLoop; onBack: () => void 
       ← Back to loops
     </div>
 
-    <!-- Header summary -->
+      <!-- Header summary -->
     ${LoopDetailHeader({ dashLoop: props.dashLoop, split })}
+
+    <!-- Live state-machine canvas -->
+    ${LoopMachineGraph({ loop: () => dl().loop, transitions: () => dl().transitions ?? [] })}
 
     <!-- Detail body -->
     <div class="loop-detail">
@@ -487,6 +565,7 @@ export function LoopDetail(props: { dashLoop: DashboardLoop; onBack: () => void 
 
       ${() => (hasAudit() ? MarkdownSection({ label: 'Last Audit Result', src: () => dl().lastAuditResult }) : '')}
       ${() => (hasPlan() ? MarkdownSection({ label: 'Plan', src: () => dl().plan }) : '')}
+      ${() => (hasAmendments() ? AmendmentsPanel({ amendments: () => dl().amendments! }) : '')}
     </div>
   </div>`
 }

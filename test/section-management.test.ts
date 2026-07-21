@@ -144,12 +144,13 @@ describe('LoopService section management', () => {
   })
 
   describe('setCurrentSectionIndex', () => {
-    test('updates current section index', () => {
-      insertLoop('test-loop')
+    test('updates current section index within bounds', () => {
+      insertLoop('test-loop-with-3')
+      loopsRepo.setTotalSections(projectId, 'test-loop-with-3', 3)
 
-      loopService.setCurrentSectionIndex('test-loop', 2)
+      loopService.setCurrentSectionIndex('test-loop-with-3', 2)
 
-      const state = loopService.getActiveState('test-loop')
+      const state = loopService.getActiveState('test-loop-with-3')
       expect(state).not.toBeNull()
       expect(state!.currentSectionIndex).toBe(2)
     })

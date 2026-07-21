@@ -34,6 +34,24 @@ export interface SectionPlansRepo {
   count(projectId: string, loopName: string): number
   deleteAll(projectId: string, loopName: string): number
   restoreAll(rows: SectionPlanRow[]): void
+  /**
+   * Run `fn` inside a single database transaction on the shared `db` that every
+   * repo in this composition root is constructed with, acquiring a write lock
+   * up front via `BEGIN IMMEDIATE`. Used to make cross-repo writes (section
+   * replacement, loop-row update, amendment insert) atomic when `fn` reads
+   * authoritative loop row state and writes against it, so a concurrent writer
+   * (e.g. a section advance bumping `current_section_index`) cannot commit
+   * between the read and the write inside `fn`. Nested `db.transaction` calls
+   * inside `fn` become savepoints that roll back with the outer transaction
+   * when `fn` throws.
+   */
+  immediateTransaction<T>(fn: () => T): T
+  replacePendingSections(args: {
+    projectId: string
+    loopName: string
+    fromIndex: number
+    sections: { title: string; content: string }[]
+  }): { ok: true; removed: number; inserted: number } | { ok: false; error: string }
 }
 
 export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionPlansRepo {
@@ -114,6 +132,22 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
   `)
 
   const stmtDeleteAll = db.prepare('DELETE FROM section_plans WHERE project_id = ? AND loop_name = ?')
+
+  const stmtListForReplace = db.prepare(`
+    SELECT section_index, status FROM section_plans
+    WHERE project_id = ? AND loop_name = ? AND section_index >= ?
+    ORDER BY section_index ASC
+  `)
+
+  const stmtDeletePendingFrom = db.prepare(`
+    DELETE FROM section_plans
+    WHERE project_id = ? AND loop_name = ? AND section_index >= ? AND status = 'pending'
+  `)
+
+  const stmtInsertReplacement = db.prepare(`
+    INSERT INTO section_plans (project_id, loop_name, section_index, title, content, status, attempts, created_at)
+    VALUES (?, ?, ?, ?, ?, 'pending', 0, ?)
+  `)
 
   function mapRow(row: Record<string, unknown>): SectionPlanRow {
     return {
@@ -227,6 +261,44 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
           row.summaryFollowUps, row.startedAt, row.completedAt, row.createdAt,
         )
       }
+    },
+
+    immediateTransaction<T>(fn: () => T): T {
+      // `db.transaction(fn)` returns a function plus `.immediate` / `.deferred`
+      // `.exclusive` variants; bun-types does not surface the property on the
+      // inferred call signature under this tsconfig, so cast explicitly.
+      const run = db.transaction(fn) as unknown as {
+        (): T
+        immediate: () => T
+        deferred: () => T
+        exclusive: () => T
+      }
+      return run.immediate()
+    },
+
+    replacePendingSections(args) {
+      const run = db.transaction(() => {
+        const existing = stmtListForReplace.all(args.projectId, args.loopName, args.fromIndex) as Array<{ section_index: number; status: string }>
+        // No existing rows at or beyond fromIndex is valid: it means the
+        // auditor is appending new work after the current final section.
+        // Only non-pending rows in the suffix block the operation.
+        for (const row of existing) {
+          if (row.status !== 'pending') {
+            return { ok: false as const, error: `section ${row.section_index} is not pending (status=${row.status})` }
+          }
+        }
+        const deleteResult = stmtDeletePendingFrom.run(args.projectId, args.loopName, args.fromIndex) as unknown as { changes: number }
+        const removed = deleteResult.changes
+        const now = Date.now()
+        let inserted = 0
+        for (let i = 0; i < args.sections.length; i++) {
+          const section = args.sections[i]
+          stmtInsertReplacement.run(args.projectId, args.loopName, args.fromIndex + i, section.title, section.content, now)
+          inserted++
+        }
+        return { ok: true as const, removed, inserted }
+      })
+      return run()
     },
   }
 }
