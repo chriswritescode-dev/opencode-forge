@@ -281,7 +281,9 @@ export function renderDashboardHtml(): string {
     transition: stroke 0.3s ease;
   }
   .mg-edge-label {
-    fill: #8b949e; font-size: 9px; font-family: 'SF Mono','Fira Code',Menlo,Consolas,monospace;
+    fill: #f5c518; font-size: 10px; font-weight: 700;
+    font-family: 'SF Mono','Fira Code',Menlo,Consolas,monospace;
+    paint-order: stroke; stroke: #161b22; stroke-width: 3px; stroke-linejoin: round;
     pointer-events: none;
   }
   .mg-node rect {
