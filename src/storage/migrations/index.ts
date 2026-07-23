@@ -399,5 +399,32 @@ export const migrations: Migration[] = [
       db.run(loadSql('143_create_plan_amendments.sql'))
     },
   },
+  {
+    id: '145',
+    description: 'Create loop_new_session_outcomes table for the single authoritative request-nonce-correlated launch signal used by the cross-process new-session resolver for both audited goal loops and the one-shot fallback',
+    apply: (db: Database) => {
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='loop_new_session_outcomes'").all()
+      if (tables.length > 0) return
+      db.run(loadSql('145_create_loop_new_session_outcomes.sql'))
+    },
+  },
+  {
+    id: '146',
+    description: 'Create loop_new_session_cancellations table for the authoritative cross-process new-session request cancellation marker consulted by handlePlanNewSession to refuse abandoned launches',
+    apply: (db: Database) => {
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='loop_new_session_cancellations'").all()
+      if (tables.length > 0) return
+      db.run(loadSql('146_create_loop_new_session_cancellations.sql'))
+    },
+  },
+  {
+    id: '147',
+    description: 'Create loop_new_session_requests table staging the full plan text for a cross-process new-session launch so the host LLM passes only the request nonce and the execute-plan tool reads the plan back by nonce',
+    apply: (db: Database) => {
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='loop_new_session_requests'").all()
+      if (tables.length > 0) return
+      db.run(loadSql('147_create_loop_new_session_requests.sql'))
+    },
+  },
 
 ]

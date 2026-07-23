@@ -81,6 +81,15 @@ function buildCoderDecisionsAuditorBlock(coderDecisions: string | null, includeS
 }
 
 /**
+ * Describes where the current loop runs. Worktree loops execute in an isolated
+ * git worktree; `worktree: false` goal loops (e.g. the audited "New session"
+ * plan mode) execute directly in the project directory with no isolation.
+ */
+function executionLocationNoun(state: LoopState): string {
+  return state.worktree ? 'worktree' : 'project directory'
+}
+
+/**
  * Goal-loop executor prompt used for both the initial/recovery coding pass and
  * continuation after an audit. Goal loops have no plan, sections, or
  * approval/planning flow — the agent implements and verifies the goal directly.
@@ -99,7 +108,7 @@ function buildGoalCodingPrompt(ctx: PromptContext, state: LoopState, auditFindin
 
   let prompt = `[${systemLine}]\n\n## Goal\n${goal}`
 
-  prompt += '\n\n---\nInstructions:\n- Implement the goal above directly in this worktree. Do not create a plan, decompose the goal into sections, or ask for approval — just do the work.\n- Write or update tests for the changes and run the project\'s verification (lint/typecheck/tests) before finishing.\n- Keep changes scoped to what the goal requires; reuse existing helpers and patterns rather than introducing speculative abstractions.'
+  prompt += `\n\n---\nInstructions:\n- Implement the goal above directly in this ${executionLocationNoun(state)}. Do not create a plan, decompose the goal into sections, or ask for approval — just do the work.\n- Write or update tests for the changes and run the project's verification (lint/typecheck/tests) before finishing.\n- Keep changes scoped to what the goal requires; reuse existing helpers and patterns rather than introducing speculative abstractions.`
 
   if (auditFindings) {
     prompt += `\n\n---\nThe code auditor reviewed your changes. You MUST address every bug and convention violation below — do not dismiss findings as unrelated to the goal. Fix them directly without creating a plan or asking for approval.\n\n${auditFindings}`
@@ -147,7 +156,7 @@ function buildGoalAuditPrompt(ctx: PromptContext, state: LoopState): string {
 
   parts.push(
     '',
-    'Review the code changes in this worktree against the goal above. Verify BOTH:',
+    `Review the code changes in this ${executionLocationNoun(state)} against the goal above. Verify BOTH:`,
     '1. Goal completion: every part of the goal is implemented and working.',
     '2. Code correctness: bugs, logic errors, missing error handling, and convention violations.',
     'If you find bugs in related code that affect the correctness of this task, report them — even if the buggy code was not directly modified.',

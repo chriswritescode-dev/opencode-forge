@@ -365,6 +365,57 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
 
     expect(result).not.toBeNull()
     const sesCreateArgs = mockApi.client.session.create.mock.calls[0][0]
-    expect(sesCreateArgs.title).toBe('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+    // Titles are normalized via slugify (goal-path loop-name normalization),
+    // which truncates to 50 characters.
+    expect(sesCreateArgs.title).toBe('a'.repeat(50))
+  })
+
+  test('threads the configured dataDir forge.db path into reserveTuiLoopName so active no-worktree loops under a custom dataDir are collision-checked', async () => {
+    /**
+     * Auditor bug 5: `launchTuiLoop` did not pass the configured DB path to
+     * `reserveTuiLoopName`, so an audited no-worktree goal loop registered
+     * against a custom `dataDir` was invisible to the worktree-loop reservation
+     * check — a separate `mode='loop'` launch could reuse that derived name.
+     * `launchTuiLoop` now forwards `dbPathOverride` into `reserveTuiLoopName`,
+     * which forwards it into `fetchLoopsList`. The collision check then sees
+     * the active no-worktree loop under the custom dataDir and suffixes.
+     */
+    const customDataDir = '/tmp/forge-custom-data-' + Math.random().toString(36).slice(2)
+    const expectedDbPath = customDataDir + '/forge.db'
+
+    // Simulate the custom-dataDir active no-worktree loop that BUG 5 wants the
+    // reservation check to see. fetchLoopsList is mocked (top of file), so we
+    // mirror the collision the production store would have returned.
+    vi.mocked(fetchLoopsList).mockImplementationOnce(((projectId: string, dbPathOverride?: string) => {
+      expect(projectId).toBe(PROJECT_ID)
+      expect(dbPathOverride).toBe(expectedDbPath)
+      return [{ name: 'shared-cool-name', active: true } as any]
+    }) as any)
+
+    // No pre-existing forge workspace with the same name, so the only collision
+    // source is the active no-worktree loop below.
+    mockApi.client.experimental.workspace.list.mockResolvedValueOnce({ data: [] })
+
+    const client = await connectForgeProject(mockApi, DIRECTORY, [], { dataDir: customDataDir })
+    expect(client).not.toBeNull()
+
+    const result = await client!.plan.execute(
+      SESSION_ID,
+      {
+        mode: 'loop',
+        title: 'Shared Cool Name',
+        plan: '# Plan\nReuse a custom-dataDir audited loop name.',
+      },
+    )
+
+    // Reservation suffixes because the active no-worktree loop in the custom
+    // dataDir's DB was visible to fetchLoopsList via the threaded dbPathOverride.
+    expect(result!.loopName).toBe('shared-cool-name-1')
+    const createArgs = mockApi.client.experimental.workspace.create.mock.calls[0][0]
+    expect(createArgs.extra.loopName).toBe('shared-cool-name-1')
+
+    // The fork library (mock of fetchLoopsList) received the configured DB path
+    // — the assertion inside the mock above already enforced the call contract.
+    expect(fetchLoopsList).toHaveBeenCalled()
   })
 })

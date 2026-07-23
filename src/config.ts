@@ -11,7 +11,7 @@ function buildPluginCommands(promptsDir?: string): Record<string, PluginCommand>
       template: loadPrompt(['commands','review.md'], promptsDir) },
     'review-plan': { description: 'Review a completed implementation against its original plan.', agent: 'auditor', subtask: true,
       template: loadPrompt(['commands','review-plan.md'], promptsDir) },
-    'execute-plan': { description: 'Execute a plan in an iterative development loop, or a fresh standalone session', agent: 'code', subtask: false,
+    'execute-plan': { description: 'Execute a plan via the iterative development loop (worktree), or `mode: new-session` to run it as an audited goal-style loop in the project directory', agent: 'code', subtask: false,
       template: loadPrompt(['commands','execute-plan.md'], promptsDir) },
     'execute-goal': { description: 'Execute a goal in a dedicated session inside an isolated Forge worktree loop', agent: 'code', subtask: false,
       template: loadPrompt(['commands','execute-goal.md'], promptsDir) },

@@ -729,4 +729,46 @@ describe('attachLoopToSession', () => {
     expect(row!.executionVariant).toBe('thinking-max')
     expect(row!.auditorVariant).toBe('audit-high')
   })
+
+  test('attachLoopToSession persists worktree=false when input.worktree is false', async () => {
+    const { deps, promptAsyncMock } = buildDeps()
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        sessionId: 'sess_goal',
+        workspaceId: undefined,
+        worktreeDir: '/tmp/wt/goal',
+        loopName: 'goal-loop',
+        displayName: 'Goal Loop',
+        executionName: 'goal-loop',
+        maxIterations: 30,
+        sandboxEnabled: false,
+        planText: '# Goal Plan\n\nDo the thing.',
+        kind: 'goal',
+        goal: 'Do the thing',
+        executorSessionId: 'sess_goal',
+        worktree: false,
+        selectSession: false,
+        selectSessionTiming: 'after-prompt',
+        startWatchdog: false,
+      },
+    )
+
+    expect(result.ok).toBe(true)
+
+    const state = (deps.loop.service as any).getActiveState('goal-loop')
+    expect(state).not.toBeNull()
+    expect(state!.worktree).toBe(false)
+    expect(state!.kind).toBe('goal')
+    expect(state!.workspaceId).toBeUndefined()
+
+    expect(promptAsyncMock).toHaveBeenCalledTimes(1)
+    const promptCallArgs = promptAsyncMock.mock.calls[0][0]
+    expect(promptCallArgs.agent).toBe('code')
+    expect(promptCallArgs).not.toHaveProperty('workspace')
+  })
 })

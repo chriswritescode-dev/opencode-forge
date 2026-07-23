@@ -1,7 +1,7 @@
 import type { ToolContext } from '../tools/types'
 import type { Hooks } from '@opencode-ai/plugin'
 import { parseModelString, retryWithModelFallback } from '../utils/model-fallback'
-import { extractPlanExecutionMetadata, PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
+import { extractPlanExecutionMetadata, matchPlanExecutionLabel, PLAN_EXECUTION_LABELS, type PlanExecutionLabel } from '../utils/plan-execution'
 import { createForgeExecutionService, type ForgeExecutionRequestContext } from '../services/execution'
 
 function publishPlanApprovalToast(
@@ -172,10 +172,7 @@ export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlock
     if (input.tool === 'question' && isPlanApprovalQuestionArgs(input.args)) {
           const metadata = output.metadata as { answers?: string[][] } | undefined
           const answer = metadata?.answers?.[0]?.[0]?.trim() ?? output.output.trim()
-          const answerLower = answer.toLowerCase()
-          const matchedLabel = PLAN_EXECUTION_LABELS.find((l) =>
-            answerLower === l.toLowerCase() || answerLower.startsWith(l.toLowerCase())
-          )
+          const matchedLabel = matchPlanExecutionLabel(answer)
 
           if (matchedLabel) {
             markApprovalHandled(output)
@@ -259,8 +256,9 @@ export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlock
             loopHandler: ctx.loopHandler,
             loop,
             sandboxManager: ctx.sandboxManager,
-            sectionPlansRepo: ctx.sectionPlansRepo,
-            workspaceStatusRegistry: ctx.workspaceStatusRegistry,
+        sectionPlansRepo: ctx.sectionPlansRepo,
+        reviewFindingsRepo: ctx.reviewFindingsRepo,
+        workspaceStatusRegistry: ctx.workspaceStatusRegistry,
             pendingTeardowns: ctx.pendingTeardowns,
           })
           
@@ -287,7 +285,10 @@ export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlock
                 publishPlanApprovalToast(ctx, input, 'error', `Failed to start new session: ${result.error.message}`)
                 return
               }
-              publishPlanApprovalToast(ctx, input, 'success', 'Started new plan execution session')
+              const toastMessage = result.data?.loopName
+                ? 'Started audited plan session'
+                : 'Started new plan execution session (one-shot fallback)'
+              publishPlanApprovalToast(ctx, input, 'success', toastMessage)
             }, logger)
 
             logger.log('Plan approval: "New session" — awaiting source session abort')

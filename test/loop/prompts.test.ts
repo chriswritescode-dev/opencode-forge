@@ -542,5 +542,23 @@ describe('prompt builders (src/loop/prompts)', () => {
       expect(result).not.toContain('[Final integration audit]')
       expect(result).not.toContain('Master Plan')
     })
+
+    test('worktree loop prompts describe execution in a worktree', () => {
+      const ctx = makeCtx()
+      const codingResult = buildContinuationPrompt(ctx, { ...goalState, worktree: true })
+      expect(codingResult).toContain('Implement the goal above directly in this worktree')
+      const auditResult = buildAuditPrompt(ctx, { ...goalState, worktree: true, phase: 'auditing' })
+      expect(auditResult).toContain('Review the code changes in this worktree against the goal above')
+    })
+
+    test('worktree:false goal loop prompts describe execution in the project directory without isolation', () => {
+      const ctx = makeCtx()
+      const codingResult = buildContinuationPrompt(ctx, { ...goalState, worktree: false })
+      expect(codingResult).toContain('Implement the goal above directly in this project directory')
+      expect(codingResult).not.toContain('in this worktree')
+      const auditResult = buildAuditPrompt(ctx, { ...goalState, worktree: false, phase: 'auditing' })
+      expect(auditResult).toContain('Review the code changes in this project directory against the goal above')
+      expect(auditResult).not.toContain('in this worktree')
+    })
   })
 })

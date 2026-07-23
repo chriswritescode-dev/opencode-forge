@@ -316,8 +316,17 @@ export function createLoopsRepo(db: Database): LoopsRepo {
       current_session_id = ?,
       phase = ?,
       iteration = COALESCE(?, iteration),
-      audit_count = COALESCE(?, audit_count),
-      executor_session_id = COALESCE(?, executor_session_id)
+      audit_count = COALESCE(?, audit_count)
+    WHERE project_id = ? AND loop_name = ?
+  `)
+
+  const clearExecutorStmt = db.prepare(`
+    UPDATE loops SET executor_session_id = NULL
+    WHERE project_id = ? AND loop_name = ?
+  `)
+
+  const setExecutorStmt = db.prepare(`
+    UPDATE loops SET executor_session_id = ?
     WHERE project_id = ? AND loop_name = ?
   `)
 
@@ -554,10 +563,14 @@ export function createLoopsRepo(db: Database): LoopsRepo {
           opts.phase,
           opts.iteration ?? null,
           opts.auditCount ?? null,
-          opts.executorSessionId ?? null,
           projectId,
           loopName
         )
+        if (opts.executorSessionId === null) {
+          clearExecutorStmt.run(projectId, loopName)
+        } else if (typeof opts.executorSessionId === 'string') {
+          setExecutorStmt.run(opts.executorSessionId, projectId, loopName)
+        }
         if (opts.lastAuditResult !== undefined && opts.lastAuditResult !== null && opts.lastAuditResult !== '') {
           setLastAuditResultStmt.run(opts.lastAuditResult, projectId, loopName)
         }

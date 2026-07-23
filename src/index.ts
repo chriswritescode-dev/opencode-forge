@@ -4,7 +4,7 @@ import type { ForgeClient, SessionGetParams } from './client/port'
 import { buildAgents } from './agents'
 import { createConfigHandler } from './config'
 import { createSessionHooks, createLoopEventHandler } from './hooks'
-import { initializeDatabase, resolveDataDir, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo } from './storage'
+import { initializeDatabase, resolveDataDir, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createLoopNewSessionOutcomesRepo, createLoopNewSessionCancellationsRepo, createLoopNewSessionRequestsRepo } from './storage'
 import type { LoopChangeNotifier } from './loop'
 import { loadPluginConfig, resolveBundledContainerDir, resolvePromptsDir } from './setup'
 import { resolveLogPath } from './storage'
@@ -39,6 +39,11 @@ import { parseFeatureList } from './utils/feature-list-parser'
 import { classifyArchitectOutput } from './utils/architect-auto-output'
 import { captureLatestPlanForSession } from './services/plan-capture'
 import { createForgeExecutionService, type ForgeExecutionRequestContext } from './services/execution'
+import {
+  forgeBridgeFromDispatch,
+  registerForgeExecutionBridge,
+  unregisterForgeExecutionBridge,
+} from './services/execution-bridge'
 
 export interface CreateParentSessionLookupOptions {
   client: ForgeClient
@@ -335,6 +340,9 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const featureGroupsRepo = createFeatureGroupsRepo(db)
     const loopTransitionsRepo = createLoopTransitionsRepo(db)
     const planAmendmentsRepo = createPlanAmendmentsRepo(db)
+    const newSessionOutcomesRepo = createLoopNewSessionOutcomesRepo(db)
+    const newSessionCancellationsRepo = createLoopNewSessionCancellationsRepo(db)
+    const newSessionRequestsRepo = createLoopNewSessionRequestsRepo(db)
 
     // Mark any groups left in non-terminal status (extracting/planning/running) from a
     // prior process as interrupted. Do NOT auto-resume — user must restart via group-status.
@@ -396,9 +404,11 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         process.removeListener('SIGTERM', handleSigterm)
 
         logger.log('Loop: active loops preserved during plugin cleanup')
-        
+
         loopHandler.clearAllRetryTimeouts()
-        
+
+        unregisterForgeExecutionBridge(directory, tuiExecutionBridge)
+
         closeDatabase(db)
         logger.log('Plugin cleanup complete')
       })()
@@ -527,9 +537,32 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       sectionPlansRepo,
       reviewFindingsRepo,
       loopSessionUsageRepo,
+      newSessionOutcomesRepo,
+      newSessionCancellationsRepo,
       workspaceStatusRegistry,
       pendingTeardowns,
     })
+
+    /**
+     * Publish the audited plan.execute.newSession flow into the in-process
+     * bridge registry so the TUI plugin (loaded alongside the server plugin
+     * in the same opencode process) can dispatch new-session executions
+     * through the same handler the execute-plan tool and plan-approval hook
+     * use, instead of duplicating goal-loop persistence/runtime logic on the
+     * TUI side. Unregistered on cleanup so stale bridges cannot outlive the
+     * plugin; the unregister is identity-checked so a reloaded plugin cannot
+     * remove a newer plugin's bridge.
+     */
+    const tuiExecutionBridge = forgeBridgeFromDispatch(
+      (input) => ({
+        surface: 'tui',
+        projectId,
+        directory,
+        ...(input.sourceSessionId ? { sourceSessionId: input.sourceSessionId } : {}),
+      }),
+      (ctx, command) => groupExecService.dispatch(ctx, command),
+    )
+    registerForgeExecutionBridge(directory, tuiExecutionBridge)
 
     // ── Real GroupEffects ─────────────────────────────────────────────────────
     const effects: GroupEffects = {
@@ -638,6 +671,9 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       loopsRepo,
       sectionPlansRepo,
       loopSessionUsageRepo,
+      newSessionOutcomesRepo,
+      newSessionCancellationsRepo,
+      newSessionRequestsRepo,
       workspaceStatusRegistry,
       pendingTeardowns,
       resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,

@@ -18,6 +18,31 @@ export const PLAN_EXECUTION_LABELS = [
 export type PlanExecutionLabel = typeof PLAN_EXECUTION_LABELS[number]
 
 /**
+ * Matches a user-visible execution-mode string (exact label or a
+ * label-prefixed variant, case-insensitive) against
+ * {@link PLAN_EXECUTION_LABELS}. Returns the canonical label or `null`.
+ */
+export function matchPlanExecutionLabel(mode: string): PlanExecutionLabel | null {
+  const normalized = mode.toLowerCase()
+  return PLAN_EXECUTION_LABELS.find(
+    (label) => normalized === label.toLowerCase() || normalized.startsWith(label.toLowerCase()),
+  ) ?? null
+}
+
+export function describePlanExecutionMode(label: string): string {
+  switch (label) {
+    case 'New session':
+      return 'Launch the plan as an audited goal-style loop in the project directory (falls back to a one-shot session when loops are unavailable)'
+    case 'Execute here':
+      return 'Execute the plan in the current session using the code agent'
+    case 'Loop':
+      return 'Execute using iterative development loop in an isolated git worktree (Docker sandbox used automatically when available)'
+    default:
+      return ''
+  }
+}
+
+/**
  * Structural plan headings that should not be used as titles.
  * These are plan scaffolding headings, not actual plan titles.
  */

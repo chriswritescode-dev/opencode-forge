@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite'
 import { mkdirSync, existsSync } from 'fs'
 import { openSqliteWithIntegrityGuard } from './sqlite-open'
 import { migrations } from './migrations'
-import { sweepExpiredLoops } from './sweep'
+import { sweepExpiredLoops, sweepExpiredNewSessionMarkers, DEFAULT_NEW_SESSION_MARKER_TTL_MS } from './sweep'
 
 // Path resolvers live in a sqlite-free module so lightweight consumers (e.g. permission
 // rulesets) can import them without pulling in the storage layer. Re-exported here to keep
@@ -80,6 +80,7 @@ export function openForgeDatabase(dbPath: string, options?: ForgeDatabaseOptions
 
   const ttlMs = options?.completedLoopTtlMs ?? DEFAULT_COMPLETED_LOOP_TTL_MS
   sweepExpiredLoops(db, ttlMs)
+  sweepExpiredNewSessionMarkers(db, DEFAULT_NEW_SESSION_MARKER_TTL_MS)
 
   return db
 }

@@ -371,10 +371,10 @@ Implements tools callable by AI agents during conversations.
 | `plan-read` | `plan-kv.ts` | Retrieve plans with pagination and pattern search |
 | `section-read` | `section-read.ts` | Retrieve a specific section of a plan |
 | `plan-adjust` | `plan-adjust.ts` | Auditor-only: replace the remaining sections of the active loop plan (logged as a plan amendment) |
-| `execute-plan` | `loop.ts` | Execute a plan using an iterative development loop, or `mode: new-session` for a fresh standalone session. Args: `title` required; `plan`, `loopName`, `hostSessionId`, `mode` optional. |
+| `execute-plan` | `loop.ts` | Execute a plan using an iterative development loop, or `mode: new-session` to run it as an audited goal-style loop in the project directory (no worktree, no sandbox; tracked by `loop-status`/`loop-cancel`; falls back to a standalone session when loops are disabled or the project has no commit). Args: `title` required; `plan`, `loopName`, `hostSessionId`, `mode`, `executionModel`, `auditorModel`, `executionVariant`, `auditorVariant` optional. |
 | `execute-goal` | `loop.ts` | Execute a non-empty goal in a dedicated session inside a managed worktree. Args: `goal` required; `title`, `loopName`, `maxIterations`, `hostSessionId` optional. |
 | `loop-status` | `loop.ts` | List active/recent loops, show cumulative usage for detailed status, or restart loops with `restart`/`force` arguments |
-| `loop-cancel` | `loop.ts` | Cancel an active loop by worktree name |
+| `loop-cancel` | `loop.ts` | Cancel an active loop by loop name |
 
 ### ToolContext
 

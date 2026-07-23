@@ -116,6 +116,8 @@ describe('handleLoopRestart from stall_timeout', () => {
     active: boolean
     worktree: boolean
     workspaceId: string | null
+    kind: 'plan' | 'goal'
+    goal: string
   }> = {}) {
     const defaults = {
       loopName: 'test-loop',
@@ -128,6 +130,8 @@ describe('handleLoopRestart from stall_timeout', () => {
       active: false,
       worktree: false,
       workspaceId: null as string | null,
+      kind: 'plan' as 'plan' | 'goal',
+      goal: '',
     }
     const opts = { ...defaults, ...overrides }
     loopsRepo.insert({
@@ -148,7 +152,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       auditorModel: null,
       executionVariant: null,
       auditorVariant: null,
-      kind: 'plan',
+      kind: opts.kind,
       modelFailed: false,
       sandbox: false,
       sandboxContainer: null,
@@ -161,7 +165,7 @@ describe('handleLoopRestart from stall_timeout', () => {
       currentSectionIndex: opts.currentSectionIndex,
       totalSections: opts.totalSections,
       finalAuditDone: 0,
-    }, { lastAuditResult: null })
+    }, { lastAuditResult: null, goal: opts.kind === 'goal' ? opts.goal : null })
   }
 
   test('restart from stall_timeout resumes at persisted section/iteration with coding phase', async () => {
@@ -288,6 +292,379 @@ describe('handleLoopRestart from stall_timeout', () => {
 
     expect(buildSectionInitialPromptSpy).toHaveBeenCalledTimes(1)
     expect(buildFinalAuditPromptSpy).not.toHaveBeenCalled()
+  })
+
+  test('restart of a worktree:false goal loop never starts a sandbox even when sandbox is globally enabled', async () => {
+    insertLoop({
+      loopName: 'goal-no-worktree-loop',
+      status: 'errored',
+      terminationReason: 'stall_timeout',
+      iteration: 1,
+      totalSections: 0,
+      phase: 'coding',
+      worktree: false,
+      kind: 'goal',
+      goal: 'Ship the no-worktree restart contract',
+    })
+
+    const noopFn = () => {}
+
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: noopFn,
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: noopFn,
+      buildContinuationPrompt: () => 'goal continuation prompt',
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      generateUniqueLoopName: () => 'goal-no-worktree-loop',
+    }
+
+    const mockSandboxManager = {
+      start: vi.fn().mockResolvedValue({ containerName: 'sandbox-should-not-start' }),
+      stop: vi.fn().mockResolvedValue(undefined),
+      getActive: vi.fn().mockReturnValue(null),
+      isActive: vi.fn().mockReturnValue(false),
+      isLive: vi.fn().mockResolvedValue(false),
+      isLiveByName: vi.fn().mockResolvedValue(false),
+      cleanupOrphans: vi.fn().mockResolvedValue(0),
+      restore: vi.fn().mockResolvedValue(undefined),
+      provisionDependencies: vi.fn().mockResolvedValue(undefined),
+    }
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-session-goal' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: { list: async () => [], remove: async () => {} },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+    })
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        sandbox: { mode: 'docker' as const },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+      sandboxManager: mockSandboxManager as any,
+      plansRepo,
+      loopsRepo,
+      loop: {
+        service: mockLoopService,
+        listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+        listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+        setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+        generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+        registerSessionReverseIndex: () => {},
+        unregisterSessionReverseIndex: () => {},
+      } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
+      pendingTeardowns: mockPendingTeardowns as any,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'goal-no-worktree-loop' },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(mockSandboxManager.start).not.toHaveBeenCalled()
+
+    expect(result.data.sandbox).toBe(false)
+    expect(result.data.worktree).toBe(false)
+
+    const newState = loopService.getActiveState('goal-no-worktree-loop')!
+    expect(newState).not.toBeNull()
+    expect(newState.worktree).toBe(false)
+    expect(newState.sandbox).toBe(false)
+    expect(newState.workspaceId).toBeUndefined()
+    expect(newState.kind).toBe('goal')
+    expect(newState.sessionId).toBe('new-session-goal')
+    expect(newState.executorSessionId).toBe('new-session-goal')
+
+    // Auditor bug 3: a worktree:false restart used to skip TUI selection
+    // entirely because `selectInitialWorktreeSession` early-returns when no
+    // bound workspace exists — leaving the TUI stranded on the retired session
+    // while the restarted loop ran against `new-session-goal`. The restart now
+    // selects the replacement session directly (no workspace readiness wait)
+    // so the TUI navigates to the new session exactly once.
+    const selectCalls = (client.tui.selectSession as any).mock.calls
+    expect(selectCalls.length).toBe(1)
+    expect(selectCalls[0][0].sessionID).toBe('new-session-goal')
+    expect(selectCalls[0][0].workspace).toBeUndefined()
+  })
+
+  test('failed no-worktree restart aborts and deletes the replacement session without selecting it (no orphan strand)', async () => {
+    // Auditor bug #5: a worktree:false restart used to select the replacement
+    // session BEFORE sending the restart prompt. When the prompt then failed
+    // for a non-provider reason, the rollback restored the previous loop row
+    // but left the freshly created (and now-selected) replacement session
+    // alive and tracked by nothing — the user stayed on an untracked orphan.
+    // The restart now defers no-worktree replacement selection until prompt
+    // success AND aborts+deletes the replacement on non-provider, non-
+    // concurrent prompt failure, so no orphan session survives the rollback.
+    insertLoop({
+      loopName: 'goal-no-worktree-failed-restart-loop',
+      status: 'errored',
+      terminationReason: 'stall_timeout',
+      iteration: 1,
+      totalSections: 0,
+      phase: 'coding',
+      worktree: false,
+      kind: 'goal',
+      goal: 'Failed no-worktree restart must not strand the TUI',
+    })
+
+    const noopFn = () => {}
+
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: noopFn,
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: noopFn,
+      buildContinuationPrompt: () => 'goal continuation prompt',
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      generateUniqueLoopName: () => 'goal-no-worktree-failed-restart-loop',
+    }
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'replacement-session-failed' }),
+        get: async () => ({}),
+        // Non-provider, non-concurrent restart prompt failure.
+        promptAsync: async () => { throw new Error('prompt delivery failed') },
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: { list: async () => [], remove: async () => {} },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+    })
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+      plansRepo,
+      loopsRepo,
+      loop: {
+        service: mockLoopService,
+        listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+        listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+        setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+        generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+        registerSessionReverseIndex: () => {},
+        unregisterSessionReverseIndex: () => {},
+      } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
+      pendingTeardowns: mockPendingTeardowns as any,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'goal-no-worktree-failed-restart-loop' },
+      },
+    )
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.message).toContain('could not send prompt to new session')
+
+    // The replacement session was aborted and deleted exactly once each so no
+    // orphan session outlives the rolled-back loop row.
+    const abortCalls = (client.session.abort as any).mock.calls
+    const deleteCalls = (client.session.delete as any).mock.calls
+    expect(abortCalls).toHaveLength(1)
+    expect(abortCalls[0][0].sessionID).toBe('replacement-session-failed')
+    expect(deleteCalls).toHaveLength(1)
+    expect(deleteCalls[0][0].sessionID).toBe('replacement-session-failed')
+
+    // The TUI was never navigated to the replacement — selection is deferred
+    // until prompt success, which never happened.
+    const selectCalls = (client.tui.selectSession as any).mock.calls
+    expect(selectCalls.length).toBe(0)
+
+    // Loop state rolled back to the prior inactive row — preserved through
+    // the in-place restore (status/terminationReason unchanged). Nothing
+    // resolves the failed replacement session to this loop.
+    expect(loopService.getActiveState('goal-no-worktree-failed-restart-loop')).toBeNull()
+    const restoredState = loopService.getAnyState('goal-no-worktree-failed-restart-loop')!
+    expect(restoredState.active).toBe(false)
+    expect(restoredState.status).toBe('errored')
+    expect(restoredState.terminationReason).toBe('stall_timeout')
+    expect(restoredState.sessionId).toBe('session-old')
+    expect(loopService.resolveLoopName('replacement-session-failed')).toBeNull()
+  })
+
+  test('restart sends the persisted execution variant even when no explicit model is configured (default model)', async () => {
+    // Launch with an execution variant + default model (executionModel absent),
+    // stop, restart. The persisted variant must reach the restarted session
+    // independent of whether an explicit model is attached — default-model
+    // loops must not lose their variant on restart.
+    insertLoop({
+      loopName: 'variant-default-model-loop',
+      status: 'errored',
+      terminationReason: 'stall_timeout',
+      iteration: 1,
+      totalSections: 0,
+      phase: 'coding',
+      worktree: false,
+      kind: 'goal',
+      goal: 'Restart with default model and a variant',
+    })
+    // Persist the variant in place — the generic fixture does not pass through
+    // execution_variant, so set it directly on the row before restart picks it
+    // up as the persisted execution variant for the new session.
+    db.prepare(
+      'UPDATE loops SET execution_variant = ? WHERE project_id = ? AND loop_name = ?',
+    ).run('high', PROJECT_ID, 'variant-default-model-loop')
+
+    const noopFn = () => {}
+
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: noopFn,
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: noopFn,
+      buildContinuationPrompt: () => 'goal continuation prompt',
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      generateUniqueLoopName: () => 'variant-default-model-loop',
+    }
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-session-variant' }),
+        get: async () => ({}),
+        promptAsync: vi.fn().mockResolvedValue(undefined),
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: { list: async () => [], remove: async () => {} },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+    })
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        // No executionModel / auditorModel configured — restart resolves the
+        // loop model to the default (undefined), exercising the no-model path.
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+      plansRepo,
+      loopsRepo,
+      loop: {
+        service: mockLoopService,
+        listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+        listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+        setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+        generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+        registerSessionReverseIndex: () => {},
+        unregisterSessionReverseIndex: () => {},
+      } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
+      pendingTeardowns: mockPendingTeardowns as any,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'variant-default-model-loop' },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    // The restart prompt reached the new session: variant present, no model.
+    const promptAsyncMock = (client.session.promptAsync as ReturnType<typeof vi.fn>)
+    expect(promptAsyncMock).toHaveBeenCalled()
+    const promptArgs = promptAsyncMock.mock.calls[0][0] as any
+    expect(promptArgs.variant).toBe('high')
+    expect(promptArgs.model).toBeUndefined()
   })
 
   test('restart from stall_timeout resets iteration budget to 1', async () => {

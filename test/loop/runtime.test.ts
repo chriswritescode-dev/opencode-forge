@@ -372,6 +372,79 @@ describe('Loop Runtime', () => {
       expect(deleteCalls.length).toBeGreaterThan(0)
     })
 
+    test('dirty goal audit that fails to rotate the code session persists the completed audit before terminating with session_creation_failed', async () => {
+      // The auditor reports a bug, so the audit is dirty and the runtime
+      // attempts a fresh code-session rotation. session.create is made to
+      // throw -> rotateSession rejects -> the catch path must persist the
+      // completed audit (count + result) BEFORE terminating, otherwise the
+      // terminal row would carry stale pre-audit auditCount/lastAuditResult.
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Goal endpoint missing error handling.' }] },
+          ],
+          create: async () => {
+            throw new Error('Failed to create new session.')
+          },
+        },
+      })
+      const { loop, logs } = createRuntime({ client })
+
+      const goalText = 'Add a /health endpoint with tests and error handling.'
+      const auditorSessionId = 'goal-auditor-rotation-fail'
+      const loopName = 'test-goal-rotation-fail'
+      const state = makeState({
+        loopName,
+        sessionId: auditorSessionId,
+        hostSessionId: 'goal-host-rotation-fail',
+        executorSessionId: 'goal-executor-rotation-fail',
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+        kind: 'goal',
+        goal: goalText,
+      })
+      loopService.setState(state.loopName, state)
+
+      // One outstanding bug finding => the audit is dirty.
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/health.ts',
+        line: 12,
+        severity: 'bug',
+        description: 'Missing error handling in /health endpoint',
+      })
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: auditorSessionId },
+      })
+
+      const afterState = loopService.getAnyState(state.loopName)
+      expect(afterState).not.toBeNull()
+      expect(afterState!.active).toBe(false)
+      expect(afterState!.terminationReason).toBe('session_creation_failed')
+
+      // The completed audit must survive the rotation failure: auditCount
+      // reflects the audit that finished, and lastAuditResult carries the
+      // auditor's text — not the stale pre-audit values (auditCount=0 / empty).
+      expect(afterState!.auditCount).toBe(1)
+      expect(afterState!.lastAuditResult).toContain('error handling')
+
+      // The rotation-failure termination was logged exactly once.
+      expect(logs.filter((l) => l.level === 'error' && l.message.includes('session rotation failed during goal dirty audit')).length).toBe(1)
+
+      // Exactly one session.create attempt was made (the failed rotation);
+      // the auditor session was never replaced.
+      const createCalls = calls.filter((c) => c.method === 'session.create')
+      expect(createCalls.length).toBe(1)
+      const codePrompts = calls.filter((c) => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+      expect(codePrompts.length).toBe(0)
+    })
+
     test('clean goal audit terminates without final-audit or post-action sessions', async () => {
       const { client, calls } = createFakeForgeClient({
         session: {
@@ -478,6 +551,152 @@ describe('Loop Runtime', () => {
       expect(afterState).not.toBeNull()
       expect(afterState!.active).toBe(false)
       expect(afterState!.terminationReason).toBe('max_iterations')
+    })
+
+    test('goal loop with worktree:false cycles coding→auditing→coding→completed without workspace operations', async () => {
+      const projectDir = '/tmp/test-no-worktree-project'
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Goal work done.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client })
+
+      const goalText = 'Add a /health endpoint returning {"status":"ok"} with a test.'
+      const loopName = 'test-goal-no-worktree-cycle'
+      const state = makeState({
+        loopName,
+        sessionId: 'no-wt-exec',
+        worktreeDir: projectDir,
+        projectDir,
+        worktreeBranch: undefined,
+        worktree: false,
+        workspaceId: undefined,
+        phase: 'coding',
+        totalSections: 0,
+        auditCount: 0,
+        iteration: 1,
+        maxIterations: 5,
+        kind: 'goal',
+        goal: goalText,
+        executorSessionId: 'no-wt-exec',
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+      })
+
+      let current = loopService.getActiveState(state.loopName)
+      expect(current).not.toBeNull()
+      expect(current!.phase).toBe('auditing')
+      const firstAuditorSessionId = current!.sessionId
+      expect(current!.executorSessionId).toBeUndefined()
+
+      const persistedAuditingRow = loopsRepo.get(PROJECT_ID, loopName)
+      expect(persistedAuditingRow?.executorSessionId ?? null).toBeNull()
+
+      const firstAuditPrompts = calls.filter(
+        (c) => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop' && (c.params as any)?.sessionID === firstAuditorSessionId,
+      )
+      expect(firstAuditPrompts.length).toBeGreaterThan(0)
+      expect((firstAuditPrompts[0].params as any).workspace).toBeUndefined()
+
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName,
+        file: 'src/health.ts',
+        line: 12,
+        severity: 'bug',
+        description: 'Missing error handling in /health endpoint',
+      })
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'busy' }, sessionID: firstAuditorSessionId },
+      })
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: firstAuditorSessionId },
+      })
+
+      current = loopService.getActiveState(state.loopName)
+      expect(current).not.toBeNull()
+      expect(current!.phase).toBe('coding')
+      expect(current!.iteration).toBe(2)
+      expect(current!.auditCount).toBe(1)
+      const rotatedCodeSessionId = current!.sessionId
+      expect(rotatedCodeSessionId).not.toBe(firstAuditorSessionId)
+      expect(current!.executorSessionId).toBe(rotatedCodeSessionId)
+
+      const continuationPrompts = calls.filter(
+        (c) => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code' && (c.params as any)?.sessionID === rotatedCodeSessionId,
+      )
+      expect(continuationPrompts.length).toBeGreaterThan(0)
+      const continuationText = (continuationPrompts[continuationPrompts.length - 1].params as any).parts?.[0]?.text ?? ''
+      expect(continuationText).toContain('Goal')
+      expect(continuationText).toContain(goalText)
+      expect((continuationPrompts[continuationPrompts.length - 1].params as any).workspace).toBeUndefined()
+
+      reviewFindingsRepo.deleteByLoopName(PROJECT_ID, loopName)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'busy' }, sessionID: rotatedCodeSessionId },
+      })
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: rotatedCodeSessionId },
+      })
+
+      current = loopService.getActiveState(state.loopName)
+      expect(current).not.toBeNull()
+      expect(current!.phase).toBe('auditing')
+      const secondAuditorSessionId = current!.sessionId
+      expect(secondAuditorSessionId).not.toBe(rotatedCodeSessionId)
+
+      const secondAuditPrompts = calls.filter(
+        (c) => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop' && (c.params as any)?.sessionID === secondAuditorSessionId,
+      )
+      expect(secondAuditPrompts.length).toBeGreaterThan(0)
+      expect((secondAuditPrompts[0].params as any).workspace).toBeUndefined()
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'busy' }, sessionID: secondAuditorSessionId },
+      })
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: secondAuditorSessionId },
+      })
+
+      const finalState = loopService.getAnyState(state.loopName)
+      expect(finalState).not.toBeNull()
+      expect(finalState!.active).toBe(false)
+      expect(finalState!.terminationReason).toBe('completed')
+      expect(finalState!.worktree).toBe(false)
+      expect(finalState!.workspaceId).toBeUndefined()
+      expect(finalState!.executorSessionId).toBeUndefined()
+
+      const persistedFinalRow = loopsRepo.get(PROJECT_ID, loopName)
+      expect(persistedFinalRow?.executorSessionId ?? null).toBeNull()
+
+      const workspaceCreateCalls = calls.filter((c) => c.method === 'workspace.create')
+      const workspaceWarpCalls = calls.filter((c) => c.method === 'workspace.warp')
+      expect(workspaceCreateCalls.length).toBe(0)
+      expect(workspaceWarpCalls.length).toBe(0)
+
+      const allPrompts = calls.filter((c) => c.method === 'session.promptAsync')
+      expect(allPrompts.length).toBeGreaterThan(0)
+      for (const c of allPrompts) {
+        expect((c.params as any).workspace).toBeUndefined()
+      }
     })
 
     test('dirty goal audit after restart creates a fresh code session rather than re-prompting the previous executor', async () => {
@@ -2357,7 +2576,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       }
     })
 
-    test('model fallback omits variant when model is undefined', async () => {
+    test('model fallback retains variant when model is undefined', async () => {
       let failCount = 2
       const { client, calls } = createFakeForgeClient({
         session: {
@@ -2419,9 +2638,87 @@ describe('stall handling terminates with stall timeout when configured cap is re
       // Model-based attempts should have been made (and failed)
       const codePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
       expect(codePrompts.length).toBeGreaterThan(0)
-      // After model fails, fallback without model should NOT send variant
-      const fallbackPrompts = codePrompts.filter(c => !(c.params as any)?.variant)
+      // Variants are spread independently of model: even the fallback attempt
+      // (which uses the default/session model) must retain the configured variant.
+      const fallbackPrompts = codePrompts.filter(c => !(c.params as any)?.model)
       expect(fallbackPrompts.length).toBeGreaterThan(0)
+      for (const call of fallbackPrompts) {
+        expect((call.params as any)?.variant).toBe('thinking-max')
+      }
+    })
+
+    test('variant-only coding rotation retains variant with no explicit model', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client, loopConfig: { executionModel: undefined } })
+
+      const state = makeState({
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 1,
+        executionModel: undefined,
+        executionVariant: 'thinking-max',
+      })
+      loopService.setState(state.loopName, state)
+
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/test.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Test bug',
+      })
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+      })
+
+      const codePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+      expect(codePrompts.length).toBeGreaterThan(0)
+      for (const call of codePrompts) {
+        expect((call.params as any)?.variant).toBe('thinking-max')
+        expect((call.params as any)?.model).toBeUndefined()
+      }
+    })
+
+    test('variant-only auditor rotation retains variant with no explicit model', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client, loopConfig: { executionModel: undefined } })
+
+      const state = makeState({
+        phase: 'coding',
+        totalSections: 0,
+        auditCount: 0,
+        executionModel: undefined,
+        auditorModel: undefined,
+        auditorVariant: 'audit-high',
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: { status: { type: 'idle' }, sessionID: state.sessionId },
+      })
+
+      const auditorPrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorPrompts.length).toBeGreaterThan(0)
+      for (const call of auditorPrompts) {
+        expect((call.params as any)?.variant).toBe('audit-high')
+        expect((call.params as any)?.model).toBeUndefined()
+      }
     })
   })
 
