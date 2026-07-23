@@ -4,7 +4,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
 import { openForgeDatabase } from '../src/storage/database'
-import { sweepExpiredLoops } from '../src/storage/sweep'
+import { sweepExpiredLoops, sweepExpiredNewSessionMarkers } from '../src/storage/sweep'
 
 function createTempDb(): string {
   const dir = tmpdir()
@@ -101,6 +101,48 @@ test('sweepExpiredLoops leaves review_findings untouched', () => {
 
   const findings = db.prepare('SELECT COUNT(*) as count FROM review_findings WHERE project_id = ?').get('proj1') as { count: number }
   expect(findings.count).toBe(1)
+
+  db.close()
+})
+
+test('sweepExpiredNewSessionMarkers deletes only marker rows older than ttl across all three tables', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const now = Date.now()
+  const eightDaysAgo = now - (8 * 24 * 60 * 60 * 1000)
+
+  db.run(`
+    INSERT INTO loop_new_session_outcomes (project_id, request_nonce, host_session_id, outcome_session_id, loop_name, kind, created_at)
+    VALUES
+      ('proj1', 'nonce-old', 'host1', 'sess-old', 'loop-old', 'audited', ?),
+      ('proj1', 'nonce-recent', 'host1', 'sess-recent', NULL, 'one-shot', ?)
+  `, [eightDaysAgo, now])
+
+  db.run(`
+    INSERT INTO loop_new_session_cancellations (project_id, request_nonce, host_session_id, cancelled_at)
+    VALUES
+      ('proj1', 'nonce-old', 'host1', ?),
+      ('proj1', 'nonce-recent', 'host1', ?)
+  `, [eightDaysAgo, now])
+
+  db.run(`
+    INSERT INTO loop_new_session_requests (project_id, request_nonce, plan_text, created_at)
+    VALUES
+      ('proj1', 'nonce-old', '# old plan', ?),
+      ('proj1', 'nonce-recent', '# recent plan', ?)
+  `, [eightDaysAgo, now])
+
+  const ttlMs = 7 * 24 * 60 * 60 * 1000
+  sweepExpiredNewSessionMarkers(db, ttlMs)
+
+  const outcomes = db.prepare('SELECT request_nonce FROM loop_new_session_outcomes').all() as Array<{ request_nonce: string }>
+  const cancellations = db.prepare('SELECT request_nonce FROM loop_new_session_cancellations').all() as Array<{ request_nonce: string }>
+  const requests = db.prepare('SELECT request_nonce FROM loop_new_session_requests').all() as Array<{ request_nonce: string }>
+
+  expect(outcomes.map((r) => r.request_nonce)).toEqual(['nonce-recent'])
+  expect(cancellations.map((r) => r.request_nonce)).toEqual(['nonce-recent'])
+  expect(requests.map((r) => r.request_nonce)).toEqual(['nonce-recent'])
 
   db.close()
 })

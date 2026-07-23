@@ -21,11 +21,12 @@ import {
 import { buildLoopPermissionRuleset } from '../constants/loop'
 import { getForgeWorkspaceLoopName, removeExistingForgeLoopWorkspaces, getWorktreeProjectPreconditionError } from '../workspace/forge-worktree'
 import { classifyWorkspaceCreateThrow } from '../workspace/workspace-create-error'
-import { fetchLoopsList, fetchNewSessionOutcomeByNonce, cancelNewSessionRequestExclusive, type CrossProcessCancellationResult } from './tui-loop-store'
+import { fetchLoopsList, fetchNewSessionOutcomeByNonce, cancelNewSessionRequestExclusive, openNewSessionOutcomeReader, stageNewSessionPlan, type CrossProcessCancellationResult } from './tui-loop-store'
 import type { LoopNewSessionOutcomeRow } from '../storage/repos/loop-new-session-outcomes-repo'
 import { decomposeDeterministically } from '../services/deterministic-decomposer'
 import { buildSectionInitialPromptText } from '../loop/prompts'
-import { extractPlanExecutionMetadata, sanitizeLoopName } from './plan-execution'
+import { extractPlanExecutionMetadata } from './plan-execution'
+import { slugify } from './logger'
 import { createForgeClient } from '../client/sdk-adapter'
 import type { ForgeClient } from '../client/port'
 import { fetchLatestPlanForSession } from './plan-from-messages'
@@ -221,11 +222,15 @@ export async function awaitWorkspaceConnected(
   }
 }
 
-function getWorkspacePluginSettleMs(): number {
-  const raw = process.env.FORGE_TUI_WORKSPACE_SETTLE_MS
-  if (!raw) return 750
+function envNonNegativeMs(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (!raw) return fallback
   const parsed = Number(raw)
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 750
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
+}
+
+function getWorkspacePluginSettleMs(): number {
+  return envNonNegativeMs('FORGE_TUI_WORKSPACE_SETTLE_MS', 750)
 }
 
 async function waitForWorkspacePluginSettle(workspaceId: string): Promise<void> {
@@ -243,15 +248,17 @@ async function waitForWorkspacePluginSettle(workspaceId: string): Promise<void> 
  * `plan.execute.newSession` server-side, creating the audited `worktree:false`
  * goal loop and navigating the TUI to the new session over the bus.
  *
- * The plan text is forwarded inline as the `plan` argument so pasted plans
- * unavailable from the session plan store still reach the server-side handler
- * (`handlePlanNewSession` resolves an `inline` source from the argument).
+ * The plan text is NOT embedded: the panel stages it in the shared Forge
+ * database keyed by `requestNonce` before dispatching this instruction, and
+ * the server-side `execute-plan` tool resolves the staged plan by nonce. The
+ * host LLM therefore forwards only the nonce instead of re-emitting a
+ * potentially huge plan verbatim (which doubled token cost and could blow the
+ * resolver's deadline on large plans).
  */
 function buildExecutePlanToolInvocationPrompt(req: ExecutePlanRequest, requestNonce: string): string {
   const argLines: string[] = [
     `mode: "new-session"`,
     `title: ${JSON.stringify(req.title)}`,
-    `plan: ${JSON.stringify(req.plan)}`,
     `requestNonce: ${JSON.stringify(requestNonce)}`,
     `crossProcess: true`,
   ]
@@ -262,7 +269,8 @@ function buildExecutePlanToolInvocationPrompt(req: ExecutePlanRequest, requestNo
   if (req.auditorVariant) argLines.push(`auditorVariant: ${JSON.stringify(req.auditorVariant)}`)
   return [
     'Launch the plan in this session by calling the `execute-plan` tool with `mode="new-session"` and the arguments below.',
-    'Pass the `plan` argument verbatim (the inline text below), pass `requestNonce` verbatim unchanged, and pass `crossProcess: true` verbatim — the launching panel correlates confirmation on the nonce and the server rejects a cross-process launch missing either.',
+    'Pass `requestNonce` verbatim unchanged and pass `crossProcess: true` verbatim — the launching panel correlates confirmation on the nonce and the server rejects a cross-process launch missing either.',
+    'OMIT the `plan` argument entirely: the full plan text is already staged server-side keyed by this `requestNonce`, and the `execute-plan` tool resolves it from that staged record. Do not attempt to reconstruct or paraphrase the plan.',
     argLines.map((l) => `- ${l}`).join('\n'),
     'After the tool returns, report its output to the user verbatim. The tool output itself distinguishes an audited goal-loop launch from a one-shot fallback launch, so do not pre-classify the result or describe it yourself — just relay what the tool returned.',
     'Do not edit files or attempt the plan yourself in this session.',
@@ -270,17 +278,11 @@ function buildExecutePlanToolInvocationPrompt(req: ExecutePlanRequest, requestNo
 }
 
 function getNewSessionPollIntervalMs(): number {
-  const raw = process.env.FORGE_TUI_NEW_SESSION_POLL_MS
-  if (!raw) return 400
-  const parsed = Number(raw)
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 400
+  return envNonNegativeMs('FORGE_TUI_NEW_SESSION_POLL_MS', 400)
 }
 
 function getNewSessionTimeoutMs(): number {
-  const raw = process.env.FORGE_TUI_NEW_SESSION_TIMEOUT_MS
-  if (!raw) return 30_000
-  const parsed = Number(raw)
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 30_000
+  return envNonNegativeMs('FORGE_TUI_NEW_SESSION_TIMEOUT_MS', 30_000)
 }
 
 /**
@@ -360,6 +362,58 @@ export type CrossProcessNewSessionResolver = (
   options: HostSessionNewLoopOptions,
 ) => Promise<HostSessionNewLoopResult | null>
 
+function mapOutcomeToLaunchResult(outcome: LoopNewSessionOutcomeRow): HostSessionNewLoopResult {
+  return {
+    sessionId: outcome.outcomeSessionId,
+    ...(outcome.loopName ? { loopName: outcome.loopName } : {}),
+  }
+}
+
+/**
+ * Verdict of the shared post-cancellation arbitration branch used by BOTH the
+ * resolver timeout path and the promptAsync-rejection path:
+ *
+ * - `'launched'`: the launch outcome won arbitration (`'committed'`) and the
+ *   re-read row matches our host session — report the launch as successful.
+ * - `'cancelled'`: the cancellation marker committed — a clean terminal
+ *   failure is safe; a delayed host invocation carrying this nonce will be
+ *   refused at handlePlanNewSession entry.
+ * - `'outcome-unreadable'`: the outcome won arbitration but vanished (or
+ *   belongs to a foreign host session) by the re-read — the caller must throw
+ *   an explicit uncertain-failure instead of manufacturing a success.
+ * - `'uncommitted'`: the cancellation could not be confirmed
+ *   (`'unavailable'` / `'write-failed'`) — the caller must throw an explicit
+ *   uncertain-failure rather than claim a clean terminal failure; `cause`
+ *   carries the write failure when present.
+ */
+type CrossProcessArbitrationVerdict =
+  | { kind: 'launched'; result: HostSessionNewLoopResult }
+  | { kind: 'cancelled' }
+  | { kind: 'outcome-unreadable' }
+  | { kind: 'uncommitted'; cause?: unknown }
+
+function classifyCancellationArbitration(
+  arbitration: CrossProcessCancellationResult,
+  refetchOutcome: () => LoopNewSessionOutcomeRow | null,
+  hostSessionId: string,
+  onRefetchError?: (err: unknown) => void,
+): CrossProcessArbitrationVerdict {
+  if (arbitration.kind === 'cancelled') return { kind: 'cancelled' }
+  if (arbitration.kind === 'committed') {
+    let outcome: LoopNewSessionOutcomeRow | null = null
+    try {
+      outcome = refetchOutcome()
+    } catch (err) {
+      onRefetchError?.(err)
+    }
+    if (outcome && outcome.hostSessionId === hostSessionId) {
+      return { kind: 'launched', result: mapOutcomeToLaunchResult(outcome) }
+    }
+    return { kind: 'outcome-unreadable' }
+  }
+  return { kind: 'uncommitted', cause: arbitration.kind === 'write-failed' ? arbitration.error : undefined }
+}
+
 /**
  * Default cross-process resolver. Polls the shared Forge
  * `loop_new_session_outcomes` store for the single row keyed by this launch's
@@ -382,90 +436,81 @@ async function defaultCrossProcessNewSessionResolver(
   const { projectId, hostSessionId, requestNonce } = input
   const pollIntervalMs = options.pollIntervalMs ?? getNewSessionPollIntervalMs()
   const timeoutMs = options.timeoutMs ?? getNewSessionTimeoutMs()
-  const fetchOutcome = options.fetchOutcome ?? ((pid: string, nonce: string) => fetchNewSessionOutcomeByNonce(pid, nonce))
+  // When no fetchOutcome is injected, hold ONE readonly connection open for
+  // the poll duration instead of reopening the database (and re-preparing
+  // every repo statement) on each synchronous tick of the TUI event loop.
+  const ownReader = options.fetchOutcome ? null : openNewSessionOutcomeReader()
+  const fetchOutcome = options.fetchOutcome ?? ((pid: string, nonce: string) => ownReader!.fetch(pid, nonce))
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
   const debug = options.debug ?? tuiDebug
   const deadline = Date.now() + timeoutMs
 
   debug(`cross-process resolver: host=${hostSessionId} nonce=${requestNonce} pollMs=${pollIntervalMs} timeoutMs=${timeoutMs}`)
-  while (Date.now() < deadline) {
-    try {
-      const outcome = projectId ? fetchOutcome(projectId, requestNonce) : null
-      if (outcome && outcome.hostSessionId === hostSessionId) {
-        debug(`cross-process resolver: observed outcome kind=${outcome.kind} loop=${outcome.loopName ?? 'none'} session=${outcome.outcomeSessionId}`)
-        return {
-          sessionId: outcome.outcomeSessionId,
-          ...(outcome.loopName ? { loopName: outcome.loopName } : {}),
-        }
-      }
-    } catch (err) {
-      debug(`cross-process resolver: fetchOutcome failed error=${err instanceof Error ? err.message : String(err)}`)
-    }
-
-    if (pollIntervalMs <= 0) break
-    await sleep(pollIntervalMs)
-  }
-  debug(`cross-process resolver: timed out host=${hostSessionId} nonce=${requestNonce}`)
-  // Atomic arbitration: the panel and the host invoke separate processes that
-  // cannot share memory, so this timeout point is the only place a stale race
-  // (the server-side handler committing the launch outcome just before the
-  // deadline) would otherwise be misclassified. Calling markCancelled now
-  // either commits the cancellation atomically (`'cancelled'` — the delayed
-  // host invocation carrying this nonce will be refused at
-  // handlePlanNewSession entry; the panel reports a clean terminal failure)
-  // or observes that the outcome already committed (`'committed'` — the host
-  // invoked the tool just before the deadline; do NOT report a stale timeout
-  // failure, re-read the outcome and report the launch as successful). When
-  // arbitration cannot confirm cancellation (`'unavailable'` / `'write-failed'`),
-  // the panel must not claim terminal failure — throw an explicit
-  // uncertain-failure error so the launch verdict is surfaced honestly.
-  if (projectId) {
-    let result: CrossProcessCancellationResult | undefined
-    try {
-      result = options.markCancelled ? options.markCancelled(projectId, requestNonce, hostSessionId) : undefined
-    } catch (err) {
-      debug(`cross-process resolver: markCancelled threw error=${err instanceof Error ? err.message : String(err)}`)
-      throw new Error('Cross-process launch verdict unconfirmed: cancellation write failed before arbitration.', { cause: err })
-    }
-    if (!result) {
-      // No arbitration hook supplied (or it returned a falsy value) — fall
-      // back to the legacy clean-timeout failure so call sites without a
-      // shared store keep their old behavior.
-      return null
-    }
-    if (result.kind === 'cancelled') {
-      return null
-    }
-    if (result.kind === 'committed') {
-      // The host won the race just before deadline; re-read the authoritative
-      // outcome and report success. If the row is gone (e.g. rolled back by
-      // outcome-persistence failure on the server side after we observed
-      // 'committed' but before our re-read), treat the launch as failed rather
-      // than reporting a misleading success.
-      let outcome: LoopNewSessionOutcomeRow | null | undefined
+  try {
+    while (Date.now() < deadline) {
       try {
-        outcome = fetchOutcome(projectId, requestNonce)
-      } catch (err) {
-        debug(`cross-process resolver: post-commit refetch failed error=${err instanceof Error ? err.message : String(err)}`)
-      }
-      if (outcome && outcome.hostSessionId === hostSessionId) {
-        debug(`cross-process resolver: arbitration observed committed race outcome session=${outcome.outcomeSessionId}`)
-        return {
-          sessionId: outcome.outcomeSessionId,
-          ...(outcome.loopName ? { loopName: outcome.loopName } : {}),
+        const outcome = projectId ? fetchOutcome(projectId, requestNonce) : null
+        if (outcome && outcome.hostSessionId === hostSessionId) {
+          debug(`cross-process resolver: observed outcome kind=${outcome.kind} loop=${outcome.loopName ?? 'none'} session=${outcome.outcomeSessionId}`)
+          return mapOutcomeToLaunchResult(outcome)
         }
+      } catch (err) {
+        debug(`cross-process resolver: fetchOutcome failed error=${err instanceof Error ? err.message : String(err)}`)
       }
-      // Outcome vanished between win and refetch — surface an explicit
-      // uncertain-failure so the panel never reports success off a row that
-      // no longer exists.
-      throw new Error('Cross-process launch verdict unconfirmed: outcome won arbitration but is no longer readable.')
+
+      if (pollIntervalMs <= 0) break
+      await sleep(pollIntervalMs)
     }
-    // 'unavailable' or 'write-failed' — cancellation could not be confirmed.
-    // Attach the original failure as the cause when present so diagnostics
-    // can trace why the write did not commit.
-    throw new Error('Cross-process launch verdict unconfirmed: cancellation write did not commit.', { cause: result.kind === 'write-failed' ? result.error : undefined })
+    debug(`cross-process resolver: timed out host=${hostSessionId} nonce=${requestNonce}`)
+    // Atomic arbitration: the panel and the host invoke separate processes that
+    // cannot share memory, so this timeout point is the only place a stale race
+    // (the server-side handler committing the launch outcome just before the
+    // deadline) would otherwise be misclassified. Calling markCancelled now
+    // either commits the cancellation atomically (`'cancelled'` — the delayed
+    // host invocation carrying this nonce will be refused at
+    // handlePlanNewSession entry; the panel reports a clean terminal failure)
+    // or observes that the outcome already committed (`'committed'` — the host
+    // invoked the tool just before the deadline; do NOT report a stale timeout
+    // failure, re-read the outcome and report the launch as successful). When
+    // arbitration cannot confirm cancellation (`'unavailable'` / `'write-failed'`),
+    // the panel must not claim terminal failure — throw an explicit
+    // uncertain-failure error so the launch verdict is surfaced honestly.
+    if (projectId) {
+      let result: CrossProcessCancellationResult | undefined
+      try {
+        result = options.markCancelled ? options.markCancelled(projectId, requestNonce, hostSessionId) : undefined
+      } catch (err) {
+        debug(`cross-process resolver: markCancelled threw error=${err instanceof Error ? err.message : String(err)}`)
+        throw new Error('Cross-process launch verdict unconfirmed: cancellation write failed before arbitration.', { cause: err })
+      }
+      if (!result) {
+        // No arbitration hook supplied (or it returned a falsy value) — fall
+        // back to the legacy clean-timeout failure so call sites without a
+        // shared store keep their old behavior.
+        return null
+      }
+      const verdict = classifyCancellationArbitration(
+        result,
+        () => fetchOutcome(projectId, requestNonce),
+        hostSessionId,
+        (err) => debug(`cross-process resolver: post-commit refetch failed error=${err instanceof Error ? err.message : String(err)}`),
+      )
+      if (verdict.kind === 'cancelled') {
+        return null
+      }
+      if (verdict.kind === 'launched') {
+        debug(`cross-process resolver: arbitration observed committed race outcome session=${verdict.result.sessionId}`)
+        return verdict.result
+      }
+      if (verdict.kind === 'outcome-unreadable') {
+        throw new Error('Cross-process launch verdict unconfirmed: outcome won arbitration but is no longer readable.')
+      }
+      throw new Error('Cross-process launch verdict unconfirmed: cancellation write did not commit.', { cause: verdict.cause })
+    }
+    return null
+  } finally {
+    ownReader?.close()
   }
-  return null
 }
 
 let crossProcessNewSessionResolver: CrossProcessNewSessionResolver = defaultCrossProcessNewSessionResolver
@@ -901,6 +946,16 @@ export async function connectForgeProject(
           tuiDebug('cross-process new-session: refusing to dispatch — no explicit Forge dataDir and the connected opencode server is not loopback; the default Forge database cannot be guaranteed shared between TUI and server')
           return { error: 'Cross-process launch cannot be confirmed: no Forge dataDir is configured and the connected opencode server is not on this host, so the default Forge database may not be shared between this TUI process and the server (e.g. across separate machines/containers). Configure forge.dataDir to a path both processes can read, or run via the in-process bridge deployment.' }
         }
+        // Stage the full plan text in the shared Forge database keyed by this
+        // launch's nonce BEFORE dispatching the host instruction. The host
+        // agent forwards only the nonce; the server-side execute-plan tool
+        // resolves the staged plan by (projectId, requestNonce). Staging
+        // failure means the server could never resolve the plan, so refuse
+        // dispatch here — no instruction queued, no nonce burned.
+        if (!stageNewSessionPlan(projectId, requestNonce, req.plan, sharedDbPathOverride)) {
+          tuiDebug(`cross-process new-session: refusing to dispatch — staging the plan into the shared Forge database failed nonce=${requestNonce}`)
+          return { error: 'Cross-process launch cannot be dispatched: staging the plan into the shared Forge database failed, so the server-side execute-plan tool could not resolve it by requestNonce. Verify the Forge database is writable from this TUI process, or run via the in-process bridge deployment.' }
+        }
         const instruction = buildExecutePlanToolInvocationPrompt(req, requestNonce)
         const modelVariant = buildPromptModelSelection(parsedModel, req.executionVariant)
 
@@ -940,21 +995,24 @@ export async function connectForgeProject(
           //                      confirmed; surface an explicit uncertain
           //                      failure so the panel never masks the race.
           tuiDebug(`execute-plan cross-process: promptAsync threw, arbitrating nonce=${requestNonce} err=${promptError instanceof Error ? promptError.message : String(promptError)}`)
-          const arbitration = cancelNewSessionRequestExclusive(projectId, requestNonce, targetSessionId || '', sharedDbPathOverride)
-          if (arbitration.kind === 'committed') {
-            const outcome = fetchNewSessionOutcomeByNonce(projectId, requestNonce, sharedDbPathOverride)
-            if (outcome && outcome.hostSessionId === targetSessionId) {
-              tuiDebug(`execute-plan cross-process: promptAsync threw but outcome already committed session=${outcome.outcomeSessionId}`)
-              return { sessionId: outcome.outcomeSessionId, ...(outcome.loopName ? { loopName: outcome.loopName } : {}) }
-            }
+          const verdict = classifyCancellationArbitration(
+            cancelNewSessionRequestExclusive(projectId, requestNonce, targetSessionId || '', sharedDbPathOverride),
+            () => fetchNewSessionOutcomeByNonce(projectId, requestNonce, sharedDbPathOverride),
+            targetSessionId,
+          )
+          if (verdict.kind === 'launched') {
+            tuiDebug(`execute-plan cross-process: promptAsync threw but outcome already committed session=${verdict.result.sessionId}`)
+            return verdict.result
+          }
+          if (verdict.kind === 'outcome-unreadable') {
             throw new Error('Cross-process launch verdict unconfirmed: promptAsync failed, outcome won arbitration but is no longer readable.', { cause: promptError })
           }
-          if (arbitration.kind === 'cancelled') {
+          if (verdict.kind === 'cancelled') {
             tuiDebug(`execute-plan cross-process: promptAsync failed, cancellation committed; reporting terminal failure`)
             return null
           }
           throw new Error('Cross-process launch verdict unconfirmed: promptAsync failed and cancellation write did not commit.', {
-            cause: arbitration.kind === 'write-failed' ? arbitration.error : promptError,
+            cause: verdict.cause ?? promptError,
           })
         }
         /**
@@ -978,27 +1036,35 @@ export async function connectForgeProject(
          * ignored tool invocation, one-shot fallback, and the slow-failure
          * race — can be exercised without a real server plugin in flight.
          */
-        const result = await crossProcessNewSessionResolver(
-          {
-            projectId,
-            hostSessionId: targetSessionId || '',
-            requestNonce,
-          },
-          {
-            pollIntervalMs: getNewSessionPollIntervalMs(),
-            timeoutMs: getNewSessionTimeoutMs(),
-            debug: tuiDebug,
-            // Read the shared outcome store via the configured/shared DB path
-            // (honors PluginConfig.dataDir) so a non-default data dir still
-            // resolves cross-process launches. On timeout, write the
-            // authoritative cancellation marker into the same store so a
-            // delayed host invocation carrying this nonce is refused by
-            // handlePlanNewSession at entry — preventing a duplicate launch
-            // after the user has already seen a failure and retried.
-            fetchOutcome: (pid, nonce) => fetchNewSessionOutcomeByNonce(pid, nonce, sharedDbPathOverride),
-            markCancelled: (pid, nonce, host) => cancelNewSessionRequestExclusive(pid, nonce, host, sharedDbPathOverride),
-          },
-        )
+        // Read the shared outcome store via the configured/shared DB path
+        // (honors PluginConfig.dataDir) so a non-default data dir still
+        // resolves cross-process launches. The reader holds one readonly
+        // connection for the resolver's whole poll duration instead of
+        // reopening the database per tick. On timeout, write the
+        // authoritative cancellation marker into the same store so a
+        // delayed host invocation carrying this nonce is refused by
+        // handlePlanNewSession at entry — preventing a duplicate launch
+        // after the user has already seen a failure and retried.
+        const outcomeReader = openNewSessionOutcomeReader(sharedDbPathOverride)
+        let result: HostSessionNewLoopResult | null
+        try {
+          result = await crossProcessNewSessionResolver(
+            {
+              projectId,
+              hostSessionId: targetSessionId || '',
+              requestNonce,
+            },
+            {
+              pollIntervalMs: getNewSessionPollIntervalMs(),
+              timeoutMs: getNewSessionTimeoutMs(),
+              debug: tuiDebug,
+              fetchOutcome: (pid, nonce) => outcomeReader.fetch(pid, nonce),
+              markCancelled: (pid, nonce, host) => cancelNewSessionRequestExclusive(pid, nonce, host, sharedDbPathOverride),
+            },
+          )
+        } finally {
+          outcomeReader.close()
+        }
         if (result) {
           tuiDebug(`execute-plan cross-process: loop=${result.loopName ?? 'none'} session=${result.sessionId}`)
           return { sessionId: result.sessionId, ...(result.loopName ? { loopName: result.loopName } : {}) }
@@ -1012,7 +1078,7 @@ export async function connectForgeProject(
           client,
           directory,
           projectId,
-          requestedLoopName: req.loopName ?? (req.title ? sanitizeLoopName(req.title) : extractPlanExecutionMetadata(req.plan).executionName),
+          requestedLoopName: req.loopName ?? (req.title ? slugify(req.title) : extractPlanExecutionMetadata(req.plan).executionName),
           title: req.title,
           plan: req.plan,
           executionModel: req.executionModel,

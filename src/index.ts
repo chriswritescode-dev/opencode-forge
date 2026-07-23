@@ -4,7 +4,7 @@ import type { ForgeClient, SessionGetParams } from './client/port'
 import { buildAgents } from './agents'
 import { createConfigHandler } from './config'
 import { createSessionHooks, createLoopEventHandler } from './hooks'
-import { initializeDatabase, resolveDataDir, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createLoopNewSessionOutcomesRepo, createLoopNewSessionCancellationsRepo } from './storage'
+import { initializeDatabase, resolveDataDir, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createLoopNewSessionOutcomesRepo, createLoopNewSessionCancellationsRepo, createLoopNewSessionRequestsRepo } from './storage'
 import type { LoopChangeNotifier } from './loop'
 import { loadPluginConfig, resolveBundledContainerDir, resolvePromptsDir } from './setup'
 import { resolveLogPath } from './storage'
@@ -342,6 +342,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const planAmendmentsRepo = createPlanAmendmentsRepo(db)
     const newSessionOutcomesRepo = createLoopNewSessionOutcomesRepo(db)
     const newSessionCancellationsRepo = createLoopNewSessionCancellationsRepo(db)
+    const newSessionRequestsRepo = createLoopNewSessionRequestsRepo(db)
 
     // Mark any groups left in non-terminal status (extracting/planning/running) from a
     // prior process as interrupted. Do NOT auto-resume — user must restart via group-status.
@@ -672,6 +673,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       loopSessionUsageRepo,
       newSessionOutcomesRepo,
       newSessionCancellationsRepo,
+      newSessionRequestsRepo,
       workspaceStatusRegistry,
       pendingTeardowns,
       resolveActiveLoopForSession: sessionLoopResolver.resolveActiveLoopForSession,

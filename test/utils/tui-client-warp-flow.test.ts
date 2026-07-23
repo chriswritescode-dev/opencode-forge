@@ -365,7 +365,9 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
 
     expect(result).not.toBeNull()
     const sesCreateArgs = mockApi.client.session.create.mock.calls[0][0]
-    expect(sesCreateArgs.title).toBe('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+    // Titles are normalized via slugify (goal-path loop-name normalization),
+    // which truncates to 50 characters.
+    expect(sesCreateArgs.title).toBe('a'.repeat(50))
   })
 
   test('threads the configured dataDir forge.db path into reserveTuiLoopName so active no-worktree loops under a custom dataDir are collision-checked', async () => {

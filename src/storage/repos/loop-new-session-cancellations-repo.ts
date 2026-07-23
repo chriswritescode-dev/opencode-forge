@@ -1,4 +1,5 @@
 import type { Database } from 'bun:sqlite'
+import { runImmediateTransaction } from '../immediate-transaction'
 import type { NewSessionResolution } from './loop-new-session-outcomes-repo'
 
 /**
@@ -15,9 +16,8 @@ import type { NewSessionResolution } from './loop-new-session-outcomes-repo'
  * nonce.
  *
  * The row is keyed by `(project_id, request_nonce)` so per-launch nonces
- * never collide, and the host_session_id index bounds diagnostics. The repo
- * is intentionally decoupled from loop lifecycle so a rolled-back launch
- * cannot orphan its cancellation marker mid-check.
+ * never collide. The repo is intentionally decoupled from loop lifecycle so
+ * a rolled-back launch cannot orphan its cancellation marker mid-check.
  */
 export interface LoopNewSessionCancellationRow {
   projectId: string
@@ -27,15 +27,6 @@ export interface LoopNewSessionCancellationRow {
 }
 
 export interface LoopNewSessionCancellationsRepo {
-  /** Record (idempotently on the primary key) that this nonce's launch is
-   *  abandoned. Re-marking the same nonce simply overwrites `cancelled_at`,
-   *  so re-issuing the cancellation after a transient write failure is safe.
-   *
-   *  Does NOT consult the outcomes table. Production resolver paths should
-   *  prefer {@link cancelExclusive}, which refuses to write when an outcome
-   *  row has already won arbitration for this nonce. `cancel` remains for
-   *  diagnostic seeding and tests that bypass arbitration. */
-  cancel(row: Omit<LoopNewSessionCancellationRow, 'cancelledAt'>): void
   /** Atomically commit the panel cancellation OR observe that a launch outcome
    *  already won arbitration for this nonce. Runs inside a `BEGIN IMMEDIATE`
    *  transaction so a concurrent `recordExclusive` cannot insert its row
@@ -81,34 +72,18 @@ export function createLoopNewSessionCancellationsRepo(db: Database): LoopNewSess
     WHERE project_id = ? AND request_nonce = ?
   `)
 
-  // Mutable holders so `cancelExclusive` can stage args before invoking the
-  // precompiled transaction closure (the closure cannot capture call-scoped
-  // args directly because `db.transaction(fn)` returns a reusable function).
-  let projectIdOf = ''
-  let requestNonceOf = ''
-  let hostSessionIdOf = ''
-
-  // `db.transaction(fn).immediate()` issues `BEGIN IMMEDIATE` so the cross-table
-  // outcome check and the cancellation insert run under a single reserved write
-  // lock — a concurrent `recordExclusive` cannot slip its row in between the
-  // check and the insert. See `loop-new-session-outcomes-repo.ts` for the same
-  // cast pattern (bun-types hides the `.immediate` property).
-  const runExclusive = db.transaction((): NewSessionResolution => {
-    const committed = stmtCheckOutcome.get(projectIdOf, requestNonceOf)
-    if (committed) return 'committed'
-    stmtInsert.run(projectIdOf, requestNonceOf, hostSessionIdOf, Date.now())
-    return 'cancelled'
-  }) as unknown as { (): NewSessionResolution; immediate: () => NewSessionResolution }
-
   return {
-    cancel(row) {
-      stmtInsert.run(row.projectId, row.requestNonce, row.hostSessionId, Date.now())
-    },
     cancelExclusive(row) {
-      projectIdOf = row.projectId
-      requestNonceOf = row.requestNonce
-      hostSessionIdOf = row.hostSessionId
-      return runExclusive.immediate()
+      // `runImmediateTransaction` issues `BEGIN IMMEDIATE` so the cross-table
+      // outcome check and the cancellation insert run under a single reserved
+      // write lock — a concurrent `recordExclusive` cannot slip its row in
+      // between the check and the insert.
+      return runImmediateTransaction(db, (): NewSessionResolution => {
+        const committed = stmtCheckOutcome.get(row.projectId, row.requestNonce)
+        if (committed) return 'committed'
+        stmtInsert.run(row.projectId, row.requestNonce, row.hostSessionId, Date.now())
+        return 'cancelled'
+      })
     },
     isCancelled(projectId, requestNonce) {
       const row = stmtFind.get(projectId, requestNonce) as LoopNewSessionCancellationRowRaw | undefined

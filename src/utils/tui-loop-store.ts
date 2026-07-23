@@ -11,9 +11,9 @@ import { join } from 'path'
 import { resolveDataDir } from '../storage'
 import { createLoopsRepo } from '../storage/repos/loops-repo'
 import { createSectionPlansRepo } from '../storage/repos/section-plans-repo'
-import { createLoopNewSessionOutcomesRepo, type LoopNewSessionOutcomeRow } from '../storage/repos/loop-new-session-outcomes-repo'
-import { createLoopNewSessionCancellationsRepo, type LoopNewSessionCancellationsRepo } from '../storage/repos/loop-new-session-cancellations-repo'
-import type { NewSessionResolution } from '../storage/repos/loop-new-session-outcomes-repo'
+import { createLoopNewSessionOutcomesRepo, type LoopNewSessionOutcomeRow, type LoopNewSessionOutcomesRepo } from '../storage/repos/loop-new-session-outcomes-repo'
+import { createLoopNewSessionCancellationsRepo } from '../storage/repos/loop-new-session-cancellations-repo'
+import { createLoopNewSessionRequestsRepo } from '../storage/repos/loop-new-session-requests-repo'
 import type { LoopInfo } from './tui-models'
 
 /**
@@ -36,17 +36,44 @@ export type CrossProcessCancellationResult =
 
 /**
  * Resolves the absolute path of the shared Forge SQLite database the server
- * plugin writes to. Honors an explicit override (threaded in by the TUI plugin
- * from {@link PluginConfig.dataDir} via {@link connectForgeProject}); when no
- * override is supplied, falls back to the default Forge data directory.
- * Cross-process polling reads the SAME database the server records outcomes
- * and cancellations into, so a deployment that configures a non-default
- * `dataDir` still resolves launches correctly rather than silently timing out
- * against the default path.
+ * plugin writes to, under the default Forge data directory. Callers on a
+ * deployment with a non-default {@link PluginConfig.dataDir} bypass this by
+ * passing a full `dbPathOverride` (threaded in by the TUI plugin via
+ * {@link connectForgeProject}), so cross-process polling reads the SAME
+ * database the server records outcomes and cancellations into rather than
+ * silently timing out against the default path.
  */
-function getDbPath(override?: string): string {
-  const dir = override && override.trim().length > 0 ? override : resolveDataDir()
-  return join(dir, 'forge.db')
+function getDbPath(): string {
+  return join(resolveDataDir(), 'forge.db')
+}
+
+function openForgeDb(dbPath: string, options: { readonly?: boolean }): Database {
+  const db = new Database(dbPath, options.readonly ? { readonly: true } : undefined)
+  db.run('PRAGMA busy_timeout=5000')
+  return db
+}
+
+type ForgeDbResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; reason: 'missing' | 'error'; error?: unknown }
+
+/**
+ * Opens the shared Forge database for a single scoped operation: existence
+ * guard, busy-timeout pragma, `fn`, and a guaranteed close. Returns a
+ * discriminated result instead of throwing so each accessor can map a missing
+ * database and a failed operation to its own degraded value.
+ */
+function withForgeDb<T>(dbPath: string, options: { readonly?: boolean }, fn: (db: Database) => T): ForgeDbResult<T> {
+  if (!existsSync(dbPath)) return { ok: false, reason: 'missing' }
+  let db: Database | null = null
+  try {
+    db = openForgeDb(dbPath, options)
+    return { ok: true, value: fn(db) }
+  } catch (err) {
+    return { ok: false, reason: 'error', error: err }
+  } finally {
+    try { db?.close() } catch {}
+  }
 }
 
 const cap200 = (s: string | null | undefined): string | null =>
@@ -99,13 +126,7 @@ function rowToLoopInfo(row: import('../storage/repos/loops-repo').LoopRow, secti
  * Returns the same shape as the former `rpc('loops.list')`.
  */
 export function fetchLoopsList(projectId: string, dbPathOverride?: string): LoopInfo[] {
-  const dbPath = dbPathOverride || getDbPath(undefined)
-  if (!existsSync(dbPath)) return []
-
-  let db: Database | null = null
-  try {
-    db = new Database(dbPath, { readonly: true })
-    db.run('PRAGMA busy_timeout=5000')
+  const result = withForgeDb(dbPathOverride || getDbPath(), { readonly: true }, (db) => {
     const loopsRepo = createLoopsRepo(db)
     const sectionPlansRepo = createSectionPlansRepo(db)
 
@@ -114,11 +135,8 @@ export function fetchLoopsList(projectId: string, dbPathOverride?: string): Loop
       const plans = sectionPlansRepo.list(projectId, row.loopName)
       return rowToLoopInfo(row, plans.length > 0 ? plans : undefined)
     })
-  } catch {
-    return []
-  } finally {
-    try { db?.close() } catch {}
-  }
+  })
+  return result.ok ? result.value : []
 }
 
 /**
@@ -137,18 +155,69 @@ export function fetchLoopsList(projectId: string, dbPathOverride?: string): Loop
  */
 export function fetchNewSessionOutcomeByNonce(projectId: string, requestNonce: string, dbPathOverride?: string): LoopNewSessionOutcomeRow | null {
   if (!projectId || !requestNonce) return null
-  const dbPath = dbPathOverride || getDbPath(undefined)
-  if (!existsSync(dbPath)) return null
+  const result = withForgeDb(dbPathOverride || getDbPath(), { readonly: true }, (db) =>
+    createLoopNewSessionOutcomesRepo(db).findByRequestNonce(projectId, requestNonce))
+  return result.ok ? result.value : null
+}
+
+/**
+ * Poll-duration variant of {@link fetchNewSessionOutcomeByNonce} for the
+ * cross-process resolver: opens ONE readonly connection lazily (retrying while
+ * the database file does not exist yet) and reuses its prepared nonce lookup
+ * across ticks, instead of reopening the database and re-preparing every repo
+ * statement on each poll of the synchronous TUI event loop. A transient read
+ * failure closes the connection so the next tick reopens cleanly; `close` is
+ * idempotent and must be called when the resolver settles.
+ */
+export interface NewSessionOutcomeReader {
+  fetch(projectId: string, requestNonce: string): LoopNewSessionOutcomeRow | null
+  close(): void
+}
+
+export function openNewSessionOutcomeReader(dbPathOverride?: string): NewSessionOutcomeReader {
+  const dbPath = dbPathOverride || getDbPath()
   let db: Database | null = null
-  try {
-    db = new Database(dbPath, { readonly: true })
-    db.run('PRAGMA busy_timeout=5000')
-    return createLoopNewSessionOutcomesRepo(db).findByRequestNonce(projectId, requestNonce)
-  } catch {
-    return null
-  } finally {
+  let findByRequestNonce: LoopNewSessionOutcomesRepo['findByRequestNonce'] | null = null
+  const dispose = (): void => {
     try { db?.close() } catch {}
+    db = null
+    findByRequestNonce = null
   }
+  return {
+    fetch(projectId, requestNonce) {
+      if (!projectId || !requestNonce) return null
+      try {
+        if (!findByRequestNonce) {
+          if (!existsSync(dbPath)) return null
+          db = openForgeDb(dbPath, { readonly: true })
+          findByRequestNonce = createLoopNewSessionOutcomesRepo(db).findByRequestNonce
+        }
+        return findByRequestNonce(projectId, requestNonce)
+      } catch {
+        dispose()
+        return null
+      }
+    },
+    close: dispose,
+  }
+}
+
+/**
+ * Stages the full plan text for a cross-process new-session launch into the
+ * shared Forge database, keyed by (projectId, requestNonce) — the same nonce
+ * the outcome/cancellation stores correlate on. The TUI writes this row
+ * BEFORE dispatching the host-agent instruction so the host LLM passes only
+ * the nonce (never re-emitting the plan verbatim) and the server-side
+ * `execute-plan` tool resolves the plan back by nonce. Idempotent: re-staging
+ * the same nonce overwrites the prior text. Returns `false` when the shared
+ * database is missing or the write fails, so the caller can refuse dispatch
+ * instead of queuing an instruction whose plan the server could never resolve.
+ */
+export function stageNewSessionPlan(projectId: string, requestNonce: string, planText: string, dbPathOverride?: string): boolean {
+  if (!projectId || !requestNonce) return false
+  const result = withForgeDb(dbPathOverride || getDbPath(), {}, (db) =>
+    createLoopNewSessionRequestsRepo(db).stagePlan({ projectId, requestNonce, planText }))
+  return result.ok
 }
 
 /**
@@ -175,47 +244,10 @@ export function cancelNewSessionRequestExclusive(
   dbPathOverride?: string,
 ): CrossProcessCancellationResult {
   if (!projectId || !requestNonce) return { kind: 'unavailable' }
-  const dbPath = dbPathOverride || getDbPath(undefined)
-  if (!existsSync(dbPath)) return { kind: 'unavailable' }
-  let db: Database | null = null
-  try {
-    db = new Database(dbPath)
-    db.run('PRAGMA busy_timeout=5000')
-    const repo: LoopNewSessionCancellationsRepo = createLoopNewSessionCancellationsRepo(db)
-    const resolution: NewSessionResolution = repo.cancelExclusive({ projectId, requestNonce, hostSessionId })
-    return resolution === 'cancelled' ? { kind: 'cancelled' } : { kind: 'committed' }
-  } catch (err) {
-    return { kind: 'write-failed', error: err }
-  } finally {
-    try { db?.close() } catch {}
+  const result = withForgeDb(dbPathOverride || getDbPath(), {}, (db) =>
+    createLoopNewSessionCancellationsRepo(db).cancelExclusive({ projectId, requestNonce, hostSessionId }))
+  if (!result.ok) {
+    return result.reason === 'missing' ? { kind: 'unavailable' } : { kind: 'write-failed', error: result.error }
   }
-}
-
-/**
- * Non-arbitrated diagnostic writer: unconditionally inserts a cancellation
- * row for the nonce (idempotent on the primary key). Production resolver
- * paths use {@link cancelNewSessionRequestExclusive} so they can distinguish a
- * win from a lost race; tests and diagnostic seeding use this simpler form
- * because they intentionally bypass arbitration.
- */
-export function cancelNewSessionRequest(
-  projectId: string,
-  requestNonce: string,
-  hostSessionId: string,
-  dbPathOverride?: string,
-): void {
-  if (!projectId || !requestNonce) return
-  const dbPath = dbPathOverride || getDbPath(undefined)
-  if (!existsSync(dbPath)) return
-  let db: Database | null = null
-  try {
-    db = new Database(dbPath)
-    db.run('PRAGMA busy_timeout=5000')
-    createLoopNewSessionCancellationsRepo(db).cancel({ projectId, requestNonce, hostSessionId })
-  } catch {
-    // Best-effort: callers route through cancelNewSessionRequestExclusive when
-    // the result matters; this diagnostic path never throws.
-  } finally {
-    try { db?.close() } catch {}
-  }
+  return result.value === 'cancelled' ? { kind: 'cancelled' } : { kind: 'committed' }
 }

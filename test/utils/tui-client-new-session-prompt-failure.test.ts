@@ -157,7 +157,7 @@ describe('cross-process new-session promptAsync rejection routes through cancell
       // Simulate the server committing an audited-loop outcome just before the
       // promptAsync response is lost (the race the fix must preserve).
       const db = new Database(sharedDbPath)
-      createLoopNewSessionOutcomesRepo(db).record({
+      createLoopNewSessionOutcomesRepo(db).recordExclusive({
         projectId: PROJECT_ID,
         requestNonce: nonce!,
         hostSessionId: 'sess-host',

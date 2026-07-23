@@ -9,6 +9,7 @@ import type { SectionPlansRepo } from '../storage/repos/section-plans-repo'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
 import type { LoopNewSessionOutcomesRepo } from '../storage/repos/loop-new-session-outcomes-repo'
 import type { LoopNewSessionCancellationsRepo } from '../storage/repos/loop-new-session-cancellations-repo'
+import type { LoopNewSessionRequestsRepo } from '../storage/repos/loop-new-session-requests-repo'
 import type { FeatureGroupsRepo } from '../storage/repos/feature-groups-repo'
 import type { GroupOrchestrator } from '../services/group-orchestrator'
 import type { Loop } from '../loop'
@@ -62,6 +63,12 @@ export interface ToolContext {
    * elapses so a delayed host invocation is refused rather than launching a
    * duplicate. */
   newSessionCancellationsRepo?: LoopNewSessionCancellationsRepo
+  /**
+   * Staged plan text for cross-process new-session launches; written by the
+   * TUI panel (keyed by the per-launch request nonce) BEFORE dispatching the
+   * host-agent instruction, so the `execute-plan` tool resolves the plan by
+   * nonce instead of requiring the host LLM to re-emit it verbatim. */
+  newSessionRequestsRepo?: LoopNewSessionRequestsRepo
   /** Feature groups repo for group-launch feature tracking. */
   featureGroupsRepo: FeatureGroupsRepo
   /** Group orchestrator for managing feature groups. */

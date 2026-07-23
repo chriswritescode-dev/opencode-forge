@@ -32,6 +32,17 @@ vi.mock('bun:sqlite', () => ({
   Database: vi.fn(),
 }))
 
+/**
+ * `bun:sqlite` is mocked above, so the REAL `stageNewSessionPlan` (which opens
+ * the shared Forge DB to stage the plan pre-dispatch) cannot work in this
+ * file. Stub it as succeeding — the staging write itself is covered by
+ * tui-loop-store-paths.test.ts against a real database.
+ */
+vi.mock('../../src/utils/tui-loop-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/utils/tui-loop-store')>()),
+  stageNewSessionPlan: vi.fn(() => true),
+}))
+
 const PROJECT_ID = 'proj_panel_new_session'
 const DIRECTORY = '/tmp/forge-panel-new-session-' + Date.now()
 

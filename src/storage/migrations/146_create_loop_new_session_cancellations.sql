@@ -17,6 +17,3 @@ CREATE TABLE IF NOT EXISTS loop_new_session_cancellations (
   cancelled_at     INTEGER NOT NULL,
   PRIMARY KEY (project_id, request_nonce)
 );
-
-CREATE INDEX IF NOT EXISTS idx_new_session_cancellations_host
-  ON loop_new_session_cancellations (host_session_id, cancelled_at);

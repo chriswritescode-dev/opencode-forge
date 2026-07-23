@@ -8,7 +8,7 @@
  */
 
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
-import { PLAN_EXECUTION_LABELS, extractPlanExecutionMetadata } from '../utils/plan-execution'
+import { extractPlanExecutionMetadata, matchPlanExecutionLabel } from '../utils/plan-execution'
 import { isModeAllowedForTarget } from '../utils/remote-config'
 import { executeRemoteLoop } from '../utils/tui-remote-launch'
 import type { ApiExecutionMode, ForgeProjectClient } from '../utils/tui-client'
@@ -26,10 +26,7 @@ export type { ApiExecutionMode }
  * match any known mode.
  */
 export function resolveApiExecutionMode(mode: string): ApiExecutionMode | null {
-  const normalizedMode = mode.toLowerCase()
-  const matchedLabel = PLAN_EXECUTION_LABELS.find(
-    (label) => normalizedMode === label.toLowerCase() || normalizedMode.startsWith(label.toLowerCase()),
-  ) ?? null
+  const matchedLabel = matchPlanExecutionLabel(mode)
   if (!matchedLabel) return null
   if (matchedLabel === 'Execute here') return 'execute-here'
   if (matchedLabel === 'Loop') return 'loop'
@@ -86,9 +83,7 @@ async function completeLaunch(
 export async function runPlanLaunch(deps: PlanLaunchDeps, args: PlanLaunchArgs): Promise<void> {
   const planText = deps.planContent
   const { title } = extractPlanExecutionMetadata(planText)
-  const matchedLabel = PLAN_EXECUTION_LABELS.find(
-    (label) => args.mode.toLowerCase() === label.toLowerCase() || args.mode.toLowerCase().startsWith(label.toLowerCase()),
-  ) ?? null
+  const matchedLabel = matchPlanExecutionLabel(args.mode)
 
   if (args.target !== 'local') {
     if (!isModeAllowedForTarget(args.target, matchedLabel ?? '')) {

@@ -17,6 +17,18 @@ export const PLAN_EXECUTION_LABELS = [
 
 export type PlanExecutionLabel = typeof PLAN_EXECUTION_LABELS[number]
 
+/**
+ * Matches a user-visible execution-mode string (exact label or a
+ * label-prefixed variant, case-insensitive) against
+ * {@link PLAN_EXECUTION_LABELS}. Returns the canonical label or `null`.
+ */
+export function matchPlanExecutionLabel(mode: string): PlanExecutionLabel | null {
+  const normalized = mode.toLowerCase()
+  return PLAN_EXECUTION_LABELS.find(
+    (label) => normalized === label.toLowerCase() || normalized.startsWith(label.toLowerCase()),
+  ) ?? null
+}
+
 export function describePlanExecutionMode(label: string): string {
   switch (label) {
     case 'New session':

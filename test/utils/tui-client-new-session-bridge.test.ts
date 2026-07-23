@@ -31,6 +31,19 @@ vi.mock('bun:sqlite', () => ({
   Database: vi.fn(),
 }))
 
+/**
+ * `bun:sqlite` is mocked above, so the REAL `stageNewSessionPlan` (which opens
+ * the shared Forge DB) cannot work in this file. Stub it — the staging write
+ * itself is covered by tui-loop-store-paths.test.ts against a real database;
+ * here we assert the dispatch protocol around it (staged before promptAsync,
+ * nonce-only instruction, refusal on staging failure).
+ */
+const stageNewSessionPlanMock = vi.hoisted(() => vi.fn((..._args: unknown[]) => true))
+vi.mock('../../src/utils/tui-loop-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/utils/tui-loop-store')>()),
+  stageNewSessionPlan: stageNewSessionPlanMock,
+}))
+
 const PROJECT_ID = 'proj_tui_bridge'
 const DIRECTORY = '/tmp/forge-tui-bridge-test-' + Date.now()
 
@@ -43,6 +56,8 @@ describe('TUI plan.execute(mode=new-session) routes through the audited bridge',
     dbPath = join(tmpdir(), `forge-bridge-${randomUUID()}.db`)
     db = new Database(dbPath)
     setupLoopsTestDb(db as unknown as Parameters<typeof setupLoopsTestDb>[0])
+    stageNewSessionPlanMock.mockClear()
+    stageNewSessionPlanMock.mockReturnValue(true)
     vi.resetModules()
   })
 
@@ -407,6 +422,49 @@ describe('TUI plan.execute(mode=new-session) routes through the audited bridge',
     expect(promptText).toContain('"test/auditor"')
     expect(promptText).toContain('"cross-exec-variant"')
     expect(promptText).toContain('"cross-audit-variant"')
+    // Staged-plan protocol: the instruction carries the nonce (which the panel
+    // staged the plan under) but NEVER the plan body itself — the host LLM
+    // must not re-emit the plan verbatim.
+    const stagedNonce = stageNewSessionPlanMock.mock.calls[0]?.[1] as string
+    expect(stagedNonce).toBeTruthy()
+    expect(promptText).toContain(stagedNonce)
+    expect(promptText).not.toContain('Do the thing cross-process')
+    expect(promptText).toMatch(/omit the `plan` argument/i)
+  })
+
+  test('cross-process: the plan is staged in the shared DB (keyed by the instruction nonce) BEFORE the host instruction is dispatched', async () => {
+    const { mockApi } = await exerciseCrossProcess(async () => ({ sessionId: 'staged-session', loopName: 'staged-loop' }))
+
+    expect(stageNewSessionPlanMock).toHaveBeenCalledTimes(1)
+    const [pid, nonce, planText] = stageNewSessionPlanMock.mock.calls[0] as [string, string, string]
+    expect(pid).toBe(PROJECT_ID)
+    expect(planText).toBe('# Plan\nDo the thing cross-process')
+
+    // Staging committed before the host instruction was queued.
+    expect(mockApi.client.session.promptAsync).toHaveBeenCalledTimes(1)
+    expect(stageNewSessionPlanMock.mock.invocationCallOrder[0])
+      .toBeLessThan(mockApi.client.session.promptAsync.mock.invocationCallOrder[0])
+
+    // The instruction correlates on the SAME nonce the plan was staged under.
+    const promptText = (mockApi.client.session.promptAsync.mock.calls[0][0] as any).parts?.[0]?.text ?? ''
+    expect(promptText).toContain(`requestNonce: ${JSON.stringify(nonce)}`)
+  })
+
+  test('cross-process: staging failure refuses to dispatch (no host instruction, no burned nonce)', async () => {
+    stageNewSessionPlanMock.mockReturnValue(false)
+    const { result, mockApi } = await exerciseCrossProcess(async () => ({ sessionId: 'never-reached' }))
+
+    expect(result).not.toBeNull()
+    expect(result).toHaveProperty('error')
+    if (result && 'error' in result) {
+      expect(result.error).toContain('staging the plan')
+    }
+
+    // ZERO dispatches: the host instruction, the downstream session.create, and
+    // workspace.create were never queued — the panel rejected before dispatch.
+    expect(mockApi.client.session.promptAsync).not.toHaveBeenCalled()
+    expect(mockApi.client.session.create).not.toHaveBeenCalled()
+    expect(mockApi.client.experimental.workspace.create).not.toHaveBeenCalled()
   })
 
   test('cross-process: ignored tool invocation surfaces a failure (resolver observes no loop row)', async () => {

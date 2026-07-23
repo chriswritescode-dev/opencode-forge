@@ -7,8 +7,8 @@
 -- launch by the TUI panel and threaded through the execute-plan tool arg /
 -- in-process bridge into ForgeExecutionRequestContext.requestId, so concurrent
 -- launches in sibling host sessions — even with an identical predicted session
--- title — never collide. The host_session_id index scopes diagnostics; the
--- resolver gates acceptance on a host match as well.
+-- title — never collide. All lookups go through the primary key; the resolver
+-- gates acceptance on a host match as well.
 --
 -- No foreign key to loops(): one-shot fallback rows have no loop row, and the
 -- table is intentionally decoupled from loop lifecycle so a rolled-back loop
@@ -24,6 +24,3 @@ CREATE TABLE IF NOT EXISTS loop_new_session_outcomes (
   created_at         INTEGER NOT NULL,
   PRIMARY KEY (project_id, request_nonce)
 );
-
-CREATE INDEX IF NOT EXISTS idx_new_session_outcomes_host
-  ON loop_new_session_outcomes (host_session_id, created_at);

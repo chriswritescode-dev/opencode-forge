@@ -1,4 +1,5 @@
 import type { Database } from 'bun:sqlite'
+import { runImmediateTransaction } from '../immediate-transaction'
 import type { Logger } from '../../types'
 import type { ParsedSection } from '../../utils/section-capture'
 
@@ -264,16 +265,7 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
     },
 
     immediateTransaction<T>(fn: () => T): T {
-      // `db.transaction(fn)` returns a function plus `.immediate` / `.deferred`
-      // `.exclusive` variants; bun-types does not surface the property on the
-      // inferred call signature under this tsconfig, so cast explicitly.
-      const run = db.transaction(fn) as unknown as {
-        (): T
-        immediate: () => T
-        deferred: () => T
-        exclusive: () => T
-      }
-      return run.immediate()
+      return runImmediateTransaction(db, fn)
     },
 
     replacePendingSections(args) {

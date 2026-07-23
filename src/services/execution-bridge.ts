@@ -90,7 +90,7 @@ function getRegistry(): ForgeExecutionBridgeRegistry {
 }
 
 /** Stable registry key. Uses the absolute directory path resolved by the caller; trailing slashes are normalised so bare-directory vs trailing-slash lookups hit the same entry. */
-export function forgeBridgeKey(directory: string): string {
+function forgeBridgeKey(directory: string): string {
   return directory.replace(/\/+$/, '')
 }
 

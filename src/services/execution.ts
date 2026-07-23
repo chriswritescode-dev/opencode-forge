@@ -15,7 +15,7 @@ import type { LoopNewSessionOutcomesRepo, NewSessionResolution } from '../storag
 import type { LoopNewSessionCancellationsRepo } from '../storage/repos/loop-new-session-cancellations-repo'
 import type { createLoopEventHandler } from '../hooks'
 import type { SandboxManager } from '../sandbox/manager'
-import { extractPlanExecutionMetadata, sanitizeLoopName } from '../utils/plan-execution'
+import { extractPlanExecutionMetadata } from '../utils/plan-execution'
 import { parseModelString } from '../utils/model-fallback'
 import { classifyProviderLimit, extractErrorSignal } from '../loop/provider-limit'
 
@@ -624,6 +624,52 @@ export async function selectInitialWorktreeSession(
   }
 }
 
+/**
+ * Derives the base loop name for goal-style launches (new-session plans and
+ * goal loops) from the requested loop name or title. slugify can collapse
+ * punctuation/emoji-only input to an empty string, which would propagate an
+ * empty loop name and misreport the launch; guarantee a non-empty base so
+ * generateUniqueLoopName always receives a usable name.
+ */
+function deriveGoalLoopBaseName(requestedLoopName: string | undefined, title: string): string {
+  const base = requestedLoopName?.trim() ? slugify(requestedLoopName) : slugify(title)
+  return base || 'loop'
+}
+
+/**
+ * Applies the success lifecycle effects shared by every new-session launch
+ * path: best-effort TUI navigation onto the launched session and best-effort
+ * abort of the source session. Callers gate WHETHER each effect applies
+ * (timing, deferral, lifecycle flags); this helper only owns HOW they run so
+ * the deferred post-commit paths cannot fork the implementation.
+ */
+function applyNewSessionSuccessEffects(
+  deps: Pick<ForgeExecutionServiceDeps, 'client' | 'directory' | 'logger'>,
+  opts: {
+    sessionId: string
+    workspaceId?: string
+    selectSession?: boolean
+    abortSourceSessionId?: string
+    logPrefix: string
+    logSuffix?: string
+  },
+): void {
+  const suffix = opts.logSuffix ?? ''
+  if (opts.selectSession) {
+    const selection = opts.workspaceId
+      ? { workspace: opts.workspaceId, sessionID: opts.sessionId }
+      : { sessionID: opts.sessionId }
+    selectSessionBestEffort(deps.client, deps.directory, deps.logger, selection).catch((err: unknown) => {
+      deps.logger.error(`${opts.logPrefix}: failed to navigate TUI${suffix}`, err as Error)
+    })
+  }
+  if (opts.abortSourceSessionId) {
+    deps.client.session.abort({ sessionID: opts.abortSourceSessionId }).catch((err: unknown) => {
+      deps.logger.error(`${opts.logPrefix}: failed to abort source session${suffix}`, err as Error)
+    })
+  }
+}
+
 // ============================================================================
 // attachLoopToSession
 // ============================================================================
@@ -799,12 +845,12 @@ export async function attachLoopToSession(
 
     // Navigate TUI if requested with early timing
     if (selectSession && selectSessionTiming === 'after-create' && !deferLifecycleEffects) {
-      const selection = workspaceId
-        ? { workspace: workspaceId, sessionID: sessionId }
-        : { sessionID: sessionId }
-
-      selectSessionBestEffort(deps.client, deps.directory, deps.logger, selection).catch((err: unknown) => {
-        deps.logger.error('attachLoopToSession: failed to navigate TUI (early)', err as Error)
+      applyNewSessionSuccessEffects(deps, {
+        sessionId,
+        workspaceId,
+        selectSession: true,
+        logPrefix: 'attachLoopToSession',
+        logSuffix: ' (early)',
       })
     }
 
@@ -865,23 +911,14 @@ export async function attachLoopToSession(
       deps.loopHandler.startWatchdog(loopName)
     }
 
-    // Navigate TUI if requested with default/post-prompt timing
-    if (selectSession && selectSessionTiming !== 'after-create' && !deferLifecycleEffects) {
-      const selection = workspaceId
-        ? { workspace: workspaceId, sessionID: sessionId }
-        : { sessionID: sessionId }
-
-      selectSessionBestEffort(deps.client, deps.directory, deps.logger, selection).catch((err: unknown) => {
-        deps.logger.error('attachLoopToSession: failed to navigate TUI', err as Error)
-      })
-    }
-
-    // Abort source session if requested
-    if (abortSourceSessionOnSuccess && ctx.sourceSessionId && !deferLifecycleEffects) {
-      deps.client.session.abort({ sessionID: ctx.sourceSessionId }).catch((err: unknown) => {
-        deps.logger.error('attachLoopToSession: failed to abort source session', err as Error)
-      })
-    }
+    // Navigate TUI (default/post-prompt timing) and abort source session if requested
+    applyNewSessionSuccessEffects(deps, {
+      sessionId,
+      workspaceId,
+      selectSession: selectSession && selectSessionTiming !== 'after-create' && !deferLifecycleEffects,
+      abortSourceSessionId: abortSourceSessionOnSuccess && !deferLifecycleEffects ? ctx.sourceSessionId : undefined,
+      logPrefix: 'attachLoopToSession',
+    })
 
     return { ok: true, loopName }
   } catch (err) {
@@ -912,6 +949,77 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     let h = 5381
     for (let i = 0; i < text.length; i += 1) h = ((h << 5) + h) ^ text.charCodeAt(i)
     return (h >>> 0).toString(36)
+  }
+
+  /**
+   * Shared rollback for failed/lost new-session launches: optionally abort the
+   * launched session, tear down audited loop state (timers, reverse index,
+   * loop state) when a loopName is provided, delete the session, and return
+   * the TUI to the source session. Every step is best-effort; callers gate
+   * each step via the options so all rollback sites share one implementation.
+   */
+  async function rollbackNewSessionLaunch(opts: {
+    sessionId: string
+    directory: string
+    abortSession?: boolean
+    deleteSession?: boolean
+    loopName?: string
+    returnToSourceSessionId?: string
+  }): Promise<void> {
+    if (opts.abortSession) {
+      await deps.client.session.abort({ sessionID: opts.sessionId }).catch((abortErr: unknown) => {
+        deps.logger.error('handlePlanNewSession: failed to abort rolled-back session', abortErr as Error)
+      })
+    }
+    if (opts.loopName) {
+      if (deps.loopHandler) {
+        await deps.loopHandler.clearLoopTimers(opts.loopName).catch((timerErr: unknown) => {
+          deps.logger.error('handlePlanNewSession: failed to clear loop timers during rollback', timerErr as Error)
+        })
+      }
+      await deps.loop.unregisterSessionReverseIndex(opts.sessionId)
+      deps.loop.service.deleteState(opts.loopName)
+    }
+    if (opts.deleteSession) {
+      await deps.client.session.delete({ sessionID: opts.sessionId, directory: opts.directory }).catch((delErr: unknown) => {
+        deps.logger.error('handlePlanNewSession: failed to delete rolled-back session', delErr as Error)
+      })
+    }
+    if (opts.returnToSourceSessionId) {
+      selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: opts.returnToSourceSessionId }).catch((navErr: unknown) => {
+        deps.logger.error('handlePlanNewSession: failed to return to source session', navErr as Error)
+      })
+    }
+  }
+
+  /**
+   * A superseded launch lost the same-nonce arbitration to a concurrent launch
+   * that already committed the authoritative outcome. Re-read that outcome and
+   * report success against it (acts like the pre-entry replay path) so both
+   * callers see the same session id; the outcome vanishing mid-arbitration is
+   * an internal error.
+   */
+  function reportSupersededOutcome(input: {
+    projectId: string
+    requestNonce: string
+    modelUsed: string | null
+    title: string
+    includeLoop?: { maxIterations: number }
+  }): ForgeExecutionResponse<PlanExecutionStartedResult> {
+    const existing = deps.newSessionOutcomesRepo?.findByRequestNonce(input.projectId, input.requestNonce) ?? null
+    if (!existing) {
+      return fail('internal_error', 500, 'Existing outcome vanished during superseded arbitration')
+    }
+    return ok({
+      operation: 'plan.execute.newSession' as const,
+      mode: 'new-session' as const,
+      sessionId: existing.outcomeSessionId,
+      modelUsed: input.modelUsed,
+      title: input.title,
+      ...(input.includeLoop
+        ? { loopName: existing.loopName ?? undefined, maxIterations: input.includeLoop.maxIterations }
+        : {}),
+    })
   }
 
   /**
@@ -953,8 +1061,11 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const selectSessionRequested = command.lifecycle?.selectSession
     const selectSessionTiming = command.lifecycle?.selectSessionTiming
     if (selectSessionRequested && selectSessionTiming === 'after-create') {
-      selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: sessionId }).catch((err: unknown) => {
-        deps.logger.error('handlePlanNewSession: failed to navigate TUI (early)', err as Error)
+      applyNewSessionSuccessEffects(deps, {
+        sessionId,
+        selectSession: true,
+        logPrefix: 'handlePlanNewSession',
+        logSuffix: ' (early)',
       })
     }
 
@@ -976,17 +1087,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     if (promptError) {
       deps.logger.error('handlePlanNewSession: failed to prompt session', promptError)
 
-      if (command.lifecycle?.deleteSessionOnPromptFailure) {
-        await deps.client.session.delete({ sessionID: sessionId, directory: ctx.directory }).catch((err: unknown) => {
-          deps.logger.error('handlePlanNewSession: failed to delete failed session', err as Error)
-        })
-      }
-
-      if (command.lifecycle?.returnToSourceOnPromptFailure && ctx.sourceSessionId) {
-        selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: ctx.sourceSessionId }).catch((err: unknown) => {
-          deps.logger.error('handlePlanNewSession: failed to return to source session', err as Error)
-        })
-      }
+      await rollbackNewSessionLaunch({
+        sessionId,
+        directory: ctx.directory,
+        deleteSession: command.lifecycle?.deleteSessionOnPromptFailure,
+        returnToSourceSessionId: command.lifecycle?.returnToSourceOnPromptFailure ? ctx.sourceSessionId : undefined,
+      })
 
       return fail('prompt_failed', 502, 'Session created but failed to send plan')
     }
@@ -1023,34 +1129,25 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         } else if (resolution === 'superseded') {
           deps.logger.log(`handlePlanNewSession: one-shot launch lost arbitration to an existing committed outcome (concurrent same-nonce race); rolling back nonce=${requestNonce}`)
         }
-        await deps.client.session.abort({ sessionID: sessionId }).catch((abortErr: unknown) => {
-          deps.logger.error('handlePlanNewSession: failed to abort rolled-back one-shot session', abortErr as Error)
-        })
-        await deps.client.session.delete({ sessionID: sessionId, directory: ctx.directory }).catch((delErr: unknown) => {
-          deps.logger.error('handlePlanNewSession: failed to delete rolled-back one-shot session', delErr as Error)
+        await rollbackNewSessionLaunch({
+          sessionId,
+          directory: ctx.directory,
+          abortSession: true,
+          deleteSession: true,
+          returnToSourceSessionId: resolution !== 'superseded' && command.lifecycle?.returnToSourceOnPromptFailure
+            ? ctx.sourceSessionId
+            : undefined,
         })
 
         if (resolution === 'superseded') {
-          // Re-report the authoritative prior outcome (acts like the pre-entry
-          // replay path) so both callers see the same session id.
-          const existing = deps.newSessionOutcomesRepo.findByRequestNonce(ctx.projectId, requestNonce)
-          if (existing) {
-            return ok({
-              operation: 'plan.execute.newSession',
-              mode: 'new-session',
-              sessionId: existing.outcomeSessionId,
-              modelUsed,
-              title: sessionTitle,
-            })
-          }
-          return fail('internal_error', 500, 'Existing outcome vanished during superseded arbitration')
-        }
-
-        if (command.lifecycle?.returnToSourceOnPromptFailure && ctx.sourceSessionId) {
-          selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: ctx.sourceSessionId }).catch((navErr: unknown) => {
-            deps.logger.error('handlePlanNewSession: failed to return to source session', navErr as Error)
+          return reportSupersededOutcome({
+            projectId: ctx.projectId,
+            requestNonce,
+            modelUsed,
+            title: sessionTitle,
           })
         }
+
         return resolution === 'cancelled'
           ? fail('abandoned', 410, 'The launch request was abandoned before the host invoked the tool')
           : fail('internal_error', 500, 'Failed to record new-session outcome')
@@ -1061,17 +1158,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     // post-prompt selection is gated on `selectSessionTiming !== 'after-create'`
     // so an after-create launch (which already navigated before the prompt)
     // does not get a duplicate selection here.
-    if (selectSessionRequested && selectSessionTiming !== 'after-create') {
-      selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: sessionId }).catch((err: unknown) => {
-        deps.logger.error('handlePlanNewSession: failed to navigate TUI', err as Error)
-      })
-    }
-
-    if (command.lifecycle?.abortSourceSession && ctx.sourceSessionId) {
-      deps.client.session.abort({ sessionID: ctx.sourceSessionId }).catch((err: unknown) => {
-        deps.logger.error('handlePlanNewSession: failed to abort source session', err as Error)
-      })
-    }
+    applyNewSessionSuccessEffects(deps, {
+      sessionId,
+      selectSession: selectSessionRequested && selectSessionTiming !== 'after-create',
+      abortSourceSessionId: command.lifecycle?.abortSourceSession ? ctx.sourceSessionId : undefined,
+      logPrefix: 'handlePlanNewSession',
+    })
 
     return ok({
       operation: 'plan.execute.newSession',
@@ -1139,7 +1231,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     }
 
     const sessionTitle = formatLoopSessionTitle(title, { iteration: 1, currentSectionIndex: 0, totalSections: 0 })
-    const uniqueLoopName = deps.loop.generateUniqueLoopName(command.loopName ? sanitizeLoopName(command.loopName) : sanitizeLoopName(title))
+    const uniqueLoopName = deps.loop.generateUniqueLoopName(deriveGoalLoopBaseName(command.loopName, title))
     const maxIterations = deps.config.loop?.defaultMaxIterations ?? 0
     const resolvedExecutionModel = command.executionModel ?? deps.config.executionModel
     const resolvedAuditorModel = command.auditorModel ?? deps.config.auditorModel
@@ -1230,16 +1322,12 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       const shouldDeleteSession =
         attachResult.code !== 'provider_limit' &&
         (!isPromptFailure || command.lifecycle?.deleteSessionOnPromptFailure)
-      if (shouldDeleteSession) {
-        await deps.client.session.delete({ sessionID: sessionId, directory: ctx.directory }).catch((err: unknown) => {
-          deps.logger.error('handlePlanNewSession: failed to delete failed session', err as Error)
-        })
-      }
-      if (command.lifecycle?.returnToSourceOnPromptFailure && ctx.sourceSessionId) {
-        selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: ctx.sourceSessionId }).catch((err: unknown) => {
-          deps.logger.error('handlePlanNewSession: failed to return to source session', err as Error)
-        })
-      }
+      await rollbackNewSessionLaunch({
+        sessionId,
+        directory: ctx.directory,
+        deleteSession: shouldDeleteSession,
+        returnToSourceSessionId: command.lifecycle?.returnToSourceOnPromptFailure ? ctx.sourceSessionId : undefined,
+      })
       return fail(attachResult.code as ForgeExecutionError['code'], 503, attachResult.message)
     }
 
@@ -1253,26 +1341,14 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
       // with a fresh nonce is the only launch that survives. A thrown write is
       // handled identically except it reports an internal_error so the user
       // sees the actual storage failure rather than a phantom abandonment.
-      const rollbackAuditedLaunch = async (): Promise<void> => {
-        await deps.client.session.abort({ sessionID: sessionId }).catch((abortErr: unknown) => {
-          deps.logger.error('handlePlanNewSession: failed to abort rolled-back executor session', abortErr as Error)
-        })
-        if (deps.loopHandler) {
-          await deps.loopHandler.clearLoopTimers(uniqueLoopName).catch((timerErr: unknown) => {
-            deps.logger.error('handlePlanNewSession: failed to clear loop timers during rollback', timerErr as Error)
-          })
-        }
-        await deps.loop.unregisterSessionReverseIndex(sessionId)
-        deps.loop.service.deleteState(uniqueLoopName)
-        await deps.client.session.delete({ sessionID: sessionId, directory: ctx.directory }).catch((delErr: unknown) => {
-          deps.logger.error('handlePlanNewSession: failed to delete rolled-back session', delErr as Error)
-        })
-        if (command.lifecycle?.returnToSourceOnPromptFailure && ctx.sourceSessionId) {
-          selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: ctx.sourceSessionId }).catch((navErr: unknown) => {
-            deps.logger.error('handlePlanNewSession: failed to return to source session', navErr as Error)
-          })
-        }
-      }
+      const rollbackAuditedLaunch = (): Promise<void> => rollbackNewSessionLaunch({
+        sessionId,
+        directory: ctx.directory,
+        abortSession: true,
+        deleteSession: true,
+        loopName: uniqueLoopName,
+        returnToSourceSessionId: command.lifecycle?.returnToSourceOnPromptFailure ? ctx.sourceSessionId : undefined,
+      })
 
       let resolution: NewSessionResolution
       try {
@@ -1303,22 +1379,16 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
         // then report success pointing at the authoritative outcome.
         deps.logger.log(`handlePlanNewSession: audited launch lost arbitration to an existing committed outcome (concurrent same-nonce race); rolling back nonce=${requestNonce}`)
         await rollbackAuditedLaunch()
-        const existing = deps.newSessionOutcomesRepo.findByRequestNonce(ctx.projectId, requestNonce)
-        if (existing) {
-          const parsedSupersededModel = parseModelString(resolvedExecutionModel)
-          return ok({
-            operation: 'plan.execute.newSession' as const,
-            mode: 'new-session' as const,
-            sessionId: existing.outcomeSessionId,
-            modelUsed: parsedSupersededModel
-              ? `${parsedSupersededModel.providerID}/${parsedSupersededModel.modelID}`
-              : null,
-            title: sessionTitle,
-            loopName: existing.loopName ?? undefined,
-            maxIterations,
-          })
-        }
-        return fail('internal_error', 500, 'Existing outcome vanished during superseded arbitration')
+        const parsedSupersededModel = parseModelString(resolvedExecutionModel)
+        return reportSupersededOutcome({
+          projectId: ctx.projectId,
+          requestNonce,
+          modelUsed: parsedSupersededModel
+            ? `${parsedSupersededModel.providerID}/${parsedSupersededModel.modelID}`
+            : null,
+          title: sessionTitle,
+          includeLoop: { maxIterations },
+        })
       }
     }
 
@@ -1328,16 +1398,13 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     // skipped). Failed/abandoned launches return early above and never reach
     // here, so the TUI is never navigated onto a deleted executor session.
     if (needsArbitration) {
-      if (command.lifecycle?.selectSession) {
-        selectSessionBestEffort(deps.client, deps.directory, deps.logger, { sessionID: sessionId }).catch((err: unknown) => {
-          deps.logger.error('handlePlanNewSession: failed to navigate TUI after commit', err as Error)
-        })
-      }
-      if (command.lifecycle?.abortSourceSession && ctx.sourceSessionId) {
-        deps.client.session.abort({ sessionID: ctx.sourceSessionId }).catch((err: unknown) => {
-          deps.logger.error('handlePlanNewSession: failed to abort source session after commit', err as Error)
-        })
-      }
+      applyNewSessionSuccessEffects(deps, {
+        sessionId,
+        selectSession: command.lifecycle?.selectSession,
+        abortSourceSessionId: command.lifecycle?.abortSourceSession ? ctx.sourceSessionId : undefined,
+        logPrefix: 'handlePlanNewSession',
+        logSuffix: ' after commit',
+      })
     }
 
     const parsedModel = parseModelString(resolvedExecutionModel)
@@ -1736,8 +1803,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
 
     const title = command.title?.trim() || deriveTitleFromGoal(goal)
     const sessionTitle = formatLoopSessionTitle(title, { iteration: 1, currentSectionIndex: 0, totalSections: 0 })
-    const baseName = command.loopName?.trim() ? slugify(command.loopName) : slugify(title)
-    const uniqueLoopName = deps.loop.generateUniqueLoopName(baseName)
+    const uniqueLoopName = deps.loop.generateUniqueLoopName(deriveGoalLoopBaseName(command.loopName, title))
 
     const maxIterations = command.maxIterations ?? deps.config.loop?.defaultMaxIterations ?? 0
     const resolvedExecutionModel = deps.config.executionModel

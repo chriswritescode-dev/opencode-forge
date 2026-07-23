@@ -13,6 +13,33 @@ import { loopBranchExists } from '../workspace/forge-naming'
 
 const z = tool.schema
 
+/**
+ * Builds the shared "Goal loop activated!" launch success message. The
+ * new-session audited path and the execute-goal path differ only in where the
+ * session runs (location lines) and how the launch is described (body lines).
+ */
+function buildGoalLoopActivatedLines(opts: {
+  sessionId: string
+  loopName: string
+  maxIterations?: number
+  locationLines: string[]
+  bodyLines: string[]
+}): string[] {
+  const maxInfo = (opts.maxIterations ?? 0) > 0 ? String(opts.maxIterations) : 'unlimited'
+  return [
+    'Goal loop activated!',
+    '',
+    `Session: ${opts.sessionId} (new dedicated session)`,
+    `Loop name: ${opts.loopName}`,
+    ...opts.locationLines,
+    `Max iterations: ${maxInfo}`,
+    '',
+    ...opts.bodyLines,
+    'Your job is done — just confirm to the user that the goal loop has been launched.',
+    'The user can run loop-status or loop-cancel later if needed.',
+  ]
+}
+
 export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
   const { loopHandler, config, logger } = ctx
 
@@ -79,7 +106,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
     'execute-plan': tool({
       description: "Execute a plan using an iterative development loop in an isolated git worktree (sandboxed). Set mode='new-session' to instead launch the plan as an audited goal-style loop in a fresh session in the project directory (no worktree, no sandbox): the auditor validates each coding pass and the loop continues until the audit is clear.",
       args: {
-        plan: z.string().optional().describe('The full implementation plan. If omitted, reads from the session plan store.'),
+        plan: z.string().optional().describe('The full implementation plan. If omitted, reads from the session plan store — except for cross-process new-session launches (crossProcess=true), which OMIT it and resolve the plan the TUI panel staged in the shared Forge database keyed by requestNonce.'),
         title: z.string().describe('Short title for the session (shown in session list)'),
         loopName: z.string().optional().describe('Name for the loop (max 25 chars, auto-incremented if collision exists)'),
         hostSessionId: z.string().optional().describe('Host session ID for post-completion redirect. Applies only to loop mode, where the TUI redirects back to this session after worktree teardown. Ignored in new-session mode: the audited session always attributes its host metadata to the invoking session and never redirects.'),
@@ -90,7 +117,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         executionVariant: z.string().optional().describe('Override the code agent variant. Defaults to plugin config executionVariant.'),
         auditorVariant: z.string().optional().describe('Override the auditor variant. Defaults to plugin config auditorVariant.'),
         requestNonce: z.string().optional().describe('Per-launch correlation id minted by the TUI execute-plan panel and forwarded verbatim into `ForgeExecutionRequestContext.requestId` so the panel can confirm and cancel the launch across processes. REQUIRED when `crossProcess=true`; direct `/execute-plan` invocations omit it.'),
-        crossProcess: z.boolean().optional().default(false).describe('Set to true ONLY by the TUI execute-plan panel when launching New session cross-process via host-agent `promptAsync`. Direct `/execute-plan` invocations omit it. When true, `requestNonce` becomes mandatory so a malformed cross-process request where the host agent dropped the nonce is rejected before any session/loop is provisioned.'),
+        crossProcess: z.boolean().optional().default(false).describe('Set to true ONLY by the TUI execute-plan panel when launching New session cross-process via host-agent `promptAsync`. Direct `/execute-plan` invocations omit it. When true, `requestNonce` becomes mandatory so a malformed cross-process request where the host agent dropped the nonce is rejected before any session/loop is provisioned, and the `plan` argument is omitted: the panel stages the plan text in the shared Forge database before dispatch and this tool resolves it by requestNonce.'),
       },
       execute: async (args, context) => {
         logger.log(`loop: creating loop for plan="${args.title}"`)
@@ -115,7 +142,23 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         }
 
         let source: PlanSource
-        if (!args.plan) {
+        if (args.mode === 'new-session' && args.crossProcess && !args.plan) {
+          // Cross-process staged-plan protocol: the TUI panel stages the full
+          // plan text in the shared Forge database keyed by this launch's
+          // nonce BEFORE dispatching the host instruction, so the host LLM
+          // forwards only the nonce instead of re-emitting the plan verbatim.
+          // A missing staged plan means the launch cannot be trusted — the
+          // panel staged it pre-dispatch, so absence implies the row was
+          // pruned/expired or this server reads a different database. Never
+          // fall back to the session plan store here: it belongs to the host
+          // session and could execute the wrong plan.
+          const stagedPlan = ctx.newSessionRequestsRepo?.findPlan(ctx.projectId, args.requestNonce!) ?? null
+          if (stagedPlan === null) {
+            logger.error(`loop: rejected cross-process new-session launch — no staged plan for requestNonce=${args.requestNonce}`)
+            return 'Failed to start new session: no staged plan was found for this cross-process launch (requestNonce not present in the shared Forge database). The launching panel stages the plan before dispatch, so a missing record means it expired/was pruned or the server reads a different database; the launch cannot be trusted. Relaunch from the TUI panel instead of retrying this invocation.'
+          }
+          source = { kind: 'inline', planText: stagedPlan }
+        } else if (!args.plan) {
           const capture = await captureLatestPlanForSession(
             {
               client: ctx.client,
@@ -169,23 +212,21 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           }
 
           if (result.data.loopName) {
-            const maxInfo = (result.data.maxIterations ?? 0) > 0 ? result.data.maxIterations!.toString() : 'unlimited'
             const modelInfo = result.data.modelUsed ?? 'default'
-            const lines: string[] = [
-              'Goal loop activated!',
-              '',
-              `Session: ${result.data.sessionId} (new dedicated session)`,
-              `Loop name: ${result.data.loopName}`,
-              `Directory: project directory (no worktree)`,
-              `Model: ${modelInfo}`,
-              `Max iterations: ${maxInfo}`,
-              '',
-              'A new code session has been created in the project directory to implement the plan.',
-              'The plan runs as an audited loop: the auditor reviews each coding pass and the loop continues until the audit is clear.',
-              'That session implements the plan — NOT this one. Do not edit files or attempt the plan here.',
-              'Your job is done — just confirm to the user that the goal loop has been launched.',
-              'The user can run loop-status or loop-cancel later if needed.',
-            ]
+            const lines = buildGoalLoopActivatedLines({
+              sessionId: result.data.sessionId,
+              loopName: result.data.loopName,
+              maxIterations: result.data.maxIterations,
+              locationLines: [
+                'Directory: project directory (no worktree)',
+                `Model: ${modelInfo}`,
+              ],
+              bodyLines: [
+                'A new code session has been created in the project directory to implement the plan.',
+                'The plan runs as an audited loop: the auditor reviews each coding pass and the loop continues until the audit is clear.',
+                'That session implements the plan — NOT this one. Do not edit files or attempt the plan here.',
+              ],
+            })
 
             const scopeWarning = await projectScopeWarning(result.data.sessionId)
             if (scopeWarning) lines.push(scopeWarning)
@@ -294,21 +335,19 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           return `Failed to start goal loop: ${result.error.message}`
         }
 
-        const maxInfo = result.data.maxIterations > 0 ? result.data.maxIterations.toString() : 'unlimited'
-        const lines: string[] = [
-          'Goal loop activated!',
-          '',
-          `Session: ${result.data.sessionId} (new dedicated session)`,
-          `Loop name: ${result.data.loopName}`,
-          `Worktree: ${result.data.worktreeDir}`,
-          `Branch: ${result.data.worktreeBranch ?? 'unknown'}`,
-          `Max iterations: ${maxInfo}`,
-          '',
-          'A new code session has been created in the worktree with the goal as the initial prompt.',
-          'That session implements the goal — NOT this one. Do not edit files or attempt the goal here.',
-          'Your job is done — just confirm to the user that the goal loop has been launched.',
-          'The user can run loop-status or loop-cancel later if needed.',
-        ]
+        const lines = buildGoalLoopActivatedLines({
+          sessionId: result.data.sessionId,
+          loopName: result.data.loopName,
+          maxIterations: result.data.maxIterations,
+          locationLines: [
+            `Worktree: ${result.data.worktreeDir}`,
+            `Branch: ${result.data.worktreeBranch ?? 'unknown'}`,
+          ],
+          bodyLines: [
+            'A new code session has been created in the worktree with the goal as the initial prompt.',
+            'That session implements the goal — NOT this one. Do not edit files or attempt the goal here.',
+          ],
+        })
 
         const scopeWarning = await projectScopeWarning(result.data.sessionId)
         if (scopeWarning) lines.push(scopeWarning)

@@ -406,10 +406,6 @@ export const migrations: Migration[] = [
       const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='loop_new_session_outcomes'").all()
       if (tables.length > 0) return
       db.run(loadSql('145_create_loop_new_session_outcomes.sql'))
-      // The legacy loop_attach_signals table (migration 144) is superseded by
-      // loop_new_session_outcomes. Drop it when present so stale signals never
-      // outlive the consolidation; fresh databases never create it.
-      db.run('DROP TABLE IF EXISTS loop_attach_signals')
     },
   },
   {
@@ -419,6 +415,15 @@ export const migrations: Migration[] = [
       const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='loop_new_session_cancellations'").all()
       if (tables.length > 0) return
       db.run(loadSql('146_create_loop_new_session_cancellations.sql'))
+    },
+  },
+  {
+    id: '147',
+    description: 'Create loop_new_session_requests table staging the full plan text for a cross-process new-session launch so the host LLM passes only the request nonce and the execute-plan tool reads the plan back by nonce',
+    apply: (db: Database) => {
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='loop_new_session_requests'").all()
+      if (tables.length > 0) return
+      db.run(loadSql('147_create_loop_new_session_requests.sql'))
     },
   },
 

@@ -7,7 +7,8 @@ import Database from 'better-sqlite3'
 
 import { createLoopNewSessionOutcomesRepo } from '../../src/storage/repos/loop-new-session-outcomes-repo'
 import { createLoopNewSessionCancellationsRepo } from '../../src/storage/repos/loop-new-session-cancellations-repo'
-import { fetchNewSessionOutcomeByNonce, cancelNewSessionRequest } from '../../src/utils/tui-loop-store'
+import { createLoopNewSessionRequestsRepo } from '../../src/storage/repos/loop-new-session-requests-repo'
+import { fetchNewSessionOutcomeByNonce, cancelNewSessionRequestExclusive, stageNewSessionPlan } from '../../src/utils/tui-loop-store'
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
 import { connectForgeProject, __setCrossProcessNewSessionResolver } from '../../src/utils/tui-client'
 
@@ -34,8 +35,8 @@ describe('tui-loop-store honors the configured shared database path', () => {
   beforeEach(() => {
     tmpRoot = join(tmpdir(), `forge-tui-loop-store-${randomUUID()}`)
     mkdirSync(tmpRoot, { recursive: true })
-    // `getDbPath(override)` joins the override with `forge.db`, so the
-    // configured data dir is `tmpRoot` and the resolved DB path is
+    // `connectForgeProject` joins the configured data dir with `forge.db`,
+    // so the configured data dir is `tmpRoot` and the resolved DB path is
     // `tmpRoot/forge.db`. `other.db` simulates an unrelated shared path.
     configuredDbPath = join(tmpRoot, 'forge.db')
     otherDbPath = join(tmpRoot, 'other.db')
@@ -52,7 +53,7 @@ describe('tui-loop-store honors the configured shared database path', () => {
 
   test('fetchNewSessionOutcomeByNonce reads only the configured path — records at a different path are invisible', () => {
     const db = new Database(configuredDbPath)
-    createLoopNewSessionOutcomesRepo(db).record({
+    createLoopNewSessionOutcomesRepo(db).recordExclusive({
       projectId: PROJECT_ID,
       requestNonce: 'nonce-A',
       hostSessionId: 'host-A',
@@ -74,8 +75,9 @@ describe('tui-loop-store honors the configured shared database path', () => {
     expect(unresolved).toBeNull()
   })
 
-  test('cancelNewSessionRequest writes the authoritative marker to the configured path and is visible to the server-side repo', () => {
-    cancelNewSessionRequest(PROJECT_ID, 'abandoned-nonce', 'host-A', configuredDbPath)
+  test('cancelNewSessionRequestExclusive writes the authoritative marker to the configured path and is visible to the server-side repo', () => {
+    const result = cancelNewSessionRequestExclusive(PROJECT_ID, 'abandoned-nonce', 'host-A', configuredDbPath)
+    expect(result).toEqual({ kind: 'cancelled' })
 
     const db = new Database(configuredDbPath)
     const cancellationsRepo = createLoopNewSessionCancellationsRepo(db)
@@ -88,6 +90,25 @@ describe('tui-loop-store honors the configured shared database path', () => {
     const dbB = new Database(otherDbPath)
     expect(createLoopNewSessionCancellationsRepo(dbB).isCancelled(PROJECT_ID, 'abandoned-nonce')).toBe(false)
     dbB.close()
+  })
+
+  test('stageNewSessionPlan writes the staged plan to the configured path, visible to the server-side repo; a missing DB returns false', () => {
+    const staged = stageNewSessionPlan(PROJECT_ID, 'staged-nonce', '# Plan\nStaged body', configuredDbPath)
+    expect(staged).toBe(true)
+
+    const db = new Database(configuredDbPath)
+    expect(createLoopNewSessionRequestsRepo(db).findPlan(PROJECT_ID, 'staged-nonce')).toBe('# Plan\nStaged body')
+    db.close()
+
+    // An unrelated path sees nothing — the write landed ONLY at the configured
+    // override path.
+    const dbB = new Database(otherDbPath)
+    expect(createLoopNewSessionRequestsRepo(dbB).findPlan(PROJECT_ID, 'staged-nonce')).toBeNull()
+    dbB.close()
+
+    // A missing database file cannot be staged into — the caller must refuse
+    // dispatch rather than queue an instruction the server cannot resolve.
+    expect(stageNewSessionPlan(PROJECT_ID, 'staged-nonce', '# Plan\nStaged body', join(tmpRoot, 'missing', 'forge.db'))).toBe(false)
   })
 
   test('connectForgeProject threads PluginConfig.dataDir into the cross-process resolver closures', async () => {
@@ -103,7 +124,7 @@ describe('tui-loop-store honors the configured shared database path', () => {
      */
     const seededNonce = 'nonce-configured'
     const db = new Database(configuredDbPath)
-    createLoopNewSessionOutcomesRepo(db).record({
+    createLoopNewSessionOutcomesRepo(db).recordExclusive({
       projectId: PROJECT_ID,
       requestNonce: seededNonce,
       hostSessionId: 'sess-host',

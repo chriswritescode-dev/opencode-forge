@@ -10,6 +10,7 @@ import { createLoopNewSessionOutcomesRepo } from '../src/storage/repos/loop-new-
 import type { LoopNewSessionOutcomesRepo } from '../src/storage/repos/loop-new-session-outcomes-repo'
 import { createLoopNewSessionCancellationsRepo } from '../src/storage/repos/loop-new-session-cancellations-repo'
 import type { LoopNewSessionCancellationsRepo } from '../src/storage/repos/loop-new-session-cancellations-repo'
+import { createLoopNewSessionRequestsRepo } from '../src/storage/repos/loop-new-session-requests-repo'
 import { createForgeExecutionService } from '../src/services/execution'
 import { slugify } from '../src/utils/logger'
 import { tmpdir } from 'os'
@@ -62,6 +63,7 @@ describe('loop tool mode=new-session', () => {
 
     const newSessionOutcomesRepo = outcomesOverride ?? createLoopNewSessionOutcomesRepo(db)
     const newSessionCancellationsRepo = cancellationsOverride ?? createLoopNewSessionCancellationsRepo(db)
+    const newSessionRequestsRepo = createLoopNewSessionRequestsRepo(db)
 
     const workspaceStatusRegistry = createNoWaitWorkspaceStatusRegistry()
     const pendingTeardowns = createPendingTeardownRegistry()
@@ -107,9 +109,10 @@ describe('loop tool mode=new-session', () => {
       loop: loopHandler.loop,
       newSessionOutcomesRepo,
       newSessionCancellationsRepo,
+      newSessionRequestsRepo,
     } as any)
 
-    return { tools, forgeClient, loopService, newSessionOutcomesRepo, newSessionCancellationsRepo, loopHandler, service, calls }
+    return { tools, forgeClient, loopService, newSessionOutcomesRepo, newSessionCancellationsRepo, newSessionRequestsRepo, loopHandler, service, calls }
   }
 
   function buildResultString(result: unknown): string {
@@ -219,9 +222,9 @@ describe('loop tool mode=new-session', () => {
      * Auditor regression: a title or loopName containing only punctuation /
      * non-ASCII (e.g. `🚀`) used to slugify to an empty string. The handler
      * then returned an empty `loopName`, and truthiness-based result handling
-     * misreported the audited launch as the one-shot fallback. sanitizeLoopName
-     * guarantees a non-empty name (`'loop'`) so every audited launch reports a
-     * non-empty loopName and is reported as audited.
+     * misreported the audited launch as the one-shot fallback. The shared base
+     * name derivation guarantees a non-empty name (`'loop'`) so every audited
+     * launch reports a non-empty loopName and is reported as audited.
      */
     const { tools, loopService } = setupTools(undefined, { loop: { defaultMaxIterations: 5 } })
 
@@ -259,7 +262,6 @@ describe('loop tool mode=new-session', () => {
      */
     const throwingRepo: LoopNewSessionOutcomesRepo = {
       ...createLoopNewSessionOutcomesRepo(db),
-      record: () => { throw new Error('outcome signal write failed') },
       recordExclusive: () => { throw new Error('outcome signal write failed') },
     }
     const { tools, forgeClient, loopService, loopHandler } = setupTools(undefined, { loop: { defaultMaxIterations: 5 } }, throwingRepo)
@@ -303,7 +305,6 @@ describe('loop tool mode=new-session', () => {
      */
     const throwingRepo: LoopNewSessionOutcomesRepo = {
       ...createLoopNewSessionOutcomesRepo(db),
-      record: () => { throw new Error('outcome signal write failed') },
       recordExclusive: () => { throw new Error('outcome signal write failed') },
     }
     const { tools, forgeClient, loopService } = setupTools(undefined, {
@@ -348,10 +349,9 @@ describe('loop tool mode=new-session', () => {
      */
     const raceRepo: LoopNewSessionOutcomesRepo = {
       ...createLoopNewSessionOutcomesRepo(db),
-      record: (row) => { throw new Error('record() is not the arbitration path; recordExclusive must win') },
       recordExclusive: (row) => {
         // Concurrent panel cancellation arrives just before the outcome commit.
-        createLoopNewSessionCancellationsRepo(db).cancel({ projectId: row.projectId, requestNonce: row.requestNonce, hostSessionId: row.hostSessionId })
+        createLoopNewSessionCancellationsRepo(db).cancelExclusive({ projectId: row.projectId, requestNonce: row.requestNonce, hostSessionId: row.hostSessionId })
         return createLoopNewSessionOutcomesRepo(db).recordExclusive(row)
       },
     }
@@ -407,7 +407,7 @@ describe('loop tool mode=new-session', () => {
     const { tools, forgeClient, loopService, newSessionCancellationsRepo } = setupTools(undefined, { loop: { defaultMaxIterations: 5 } })
 
     const cancelledNonce = 'nonce-cancelled-1'
-    newSessionCancellationsRepo.cancel({ projectId, requestNonce: cancelledNonce, hostSessionId: 'src-session' })
+    newSessionCancellationsRepo.cancelExclusive({ projectId, requestNonce: cancelledNonce, hostSessionId: 'src-session' })
 
     const result = await tools['execute-plan'].execute(
       { title: 'Should be refused', plan: '# Plan\nDo the thing', mode: 'new-session', requestNonce: cancelledNonce },
@@ -470,7 +470,6 @@ describe('loop tool mode=new-session', () => {
      */
     const throwingRepo: LoopNewSessionOutcomesRepo = {
       ...createLoopNewSessionOutcomesRepo(db),
-      record: () => { throw new Error('outcome signal write failed') },
       recordExclusive: () => { throw new Error('outcome signal write failed') },
     }
     const { tools, forgeClient } = setupTools(undefined, { loop: { defaultMaxIterations: 5 } }, throwingRepo)
@@ -506,10 +505,9 @@ describe('loop tool mode=new-session', () => {
      */
     const raceRepo: LoopNewSessionOutcomesRepo = {
       ...createLoopNewSessionOutcomesRepo(db),
-      record: (row) => { throw new Error('record() is not the arbitration path; recordExclusive must win') },
       recordExclusive: (row) => {
         // Concurrent panel cancellation arrives just before the outcome commit.
-        createLoopNewSessionCancellationsRepo(db).cancel({ projectId: row.projectId, requestNonce: row.requestNonce, hostSessionId: row.hostSessionId })
+        createLoopNewSessionCancellationsRepo(db).cancelExclusive({ projectId: row.projectId, requestNonce: row.requestNonce, hostSessionId: row.hostSessionId })
         return createLoopNewSessionOutcomesRepo(db).recordExclusive(row)
       },
     }
@@ -560,13 +558,12 @@ describe('loop tool mode=new-session', () => {
     const priorLoopName = 'prior-commit-loop'
     const raceRepo: LoopNewSessionOutcomesRepo = {
       ...createLoopNewSessionOutcomesRepo(db),
-      record: () => { throw new Error('record() is not the arbitration path; recordExclusive must win') },
       recordExclusive: (row) => {
         // Seed the authoritative outcome row as if a concurrent same-nonce
         // launch had committed it just before THIS launch's arbitration point
         // (after the attach step already provisioned this launch's session).
         const underlying = createLoopNewSessionOutcomesRepo(db)
-        underlying.record({
+        underlying.recordExclusive({
           projectId: row.projectId,
           requestNonce: row.requestNonce,
           hostSessionId: row.hostSessionId,
@@ -627,10 +624,9 @@ describe('loop tool mode=new-session', () => {
     const priorSessionId = 'prior-one-shot-session'
     const raceRepo: LoopNewSessionOutcomesRepo = {
       ...createLoopNewSessionOutcomesRepo(db),
-      record: () => { throw new Error('record() is not the arbitration path; recordExclusive must win') },
       recordExclusive: (row) => {
         const underlying = createLoopNewSessionOutcomesRepo(db)
-        underlying.record({
+        underlying.recordExclusive({
           projectId: row.projectId,
           requestNonce: row.requestNonce,
           hostSessionId: row.hostSessionId,
@@ -1170,6 +1166,59 @@ describe('loop tool mode=new-session', () => {
 
     // No session, no prompt, no loop was provisioned — the rejection happened
     // before any resource creation.
+    expect((forgeClient.session.create as any).mock.calls.length).toBe(0)
+    expect((forgeClient.session.promptAsync as any).mock.calls.length).toBe(0)
+    expect((forgeClient.workspace.create as any).mock.calls.length).toBe(0)
+    expect(loopService.listActive().length).toBe(0)
+  })
+
+  test('a cross-process launch without a plan argument resolves the staged plan by requestNonce and launches the audited loop', async () => {
+    /**
+     * Staged-plan protocol: the TUI panel writes the full plan text into
+     * `loop_new_session_requests` keyed by the launch nonce BEFORE dispatching
+     * the host instruction, and the host agent passes only the nonce. The
+     * execute-plan tool must resolve the staged plan as the inline source —
+     * never the host session's plan store — and launch normally.
+     */
+    const { tools, loopService, newSessionRequestsRepo } = setupTools(undefined, { loop: { defaultMaxIterations: 5 } })
+
+    const nonce = 'nonce-staged-plan-1'
+    const stagedPlanText = '# Plan\nDo the staged thing'
+    newSessionRequestsRepo.stagePlan({ projectId, requestNonce: nonce, planText: stagedPlanText })
+
+    const result = await tools['execute-plan'].execute(
+      { title: 'Staged plan launch', mode: 'new-session', crossProcess: true, requestNonce: nonce } as any,
+      { sessionID: 'src-session' } as any,
+    )
+
+    const resultStr = buildResultString(result)
+    expect(resultStr).toContain('Goal loop activated')
+
+    const active = loopService.listActive()
+    expect(active.length).toBe(1)
+    expect(active[0].kind).toBe('goal')
+    expect(active[0].goal).toContain('Do the staged thing')
+  })
+
+  test('a cross-process launch whose staged plan is missing is rejected before any session or loop is provisioned', async () => {
+    /**
+     * The panel stages the plan pre-dispatch, so a missing staged row implies
+     * it was pruned/expired or the server reads a different database. The tool
+     * must fail clearly and must NOT fall back to the session plan store (that
+     * could execute the wrong plan) or provision anything.
+     */
+    const { tools, forgeClient, loopService } = setupTools(undefined, { loop: { defaultMaxIterations: 5 } })
+
+    const result = await tools['execute-plan'].execute(
+      { title: 'Missing staged plan', mode: 'new-session', crossProcess: true, requestNonce: 'nonce-never-staged' } as any,
+      { sessionID: 'src-session' } as any,
+    )
+
+    const resultStr = buildResultString(result)
+    expect(resultStr).toContain('Failed to start new session')
+    expect(resultStr).toContain('staged plan')
+
+    // Nothing was provisioned — the rejection happened before any resource creation.
     expect((forgeClient.session.create as any).mock.calls.length).toBe(0)
     expect((forgeClient.session.promptAsync as any).mock.calls.length).toBe(0)
     expect((forgeClient.workspace.create as any).mock.calls.length).toBe(0)
