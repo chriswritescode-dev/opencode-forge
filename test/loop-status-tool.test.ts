@@ -1948,4 +1948,136 @@ describe('loop-status restartability display', () => {
     
     expect(result).toContain('Restart: available with force=true')
   })
+
+  test('inactive no-worktree loop labels location as Directory not Worktree', async () => {
+    const { client: forgeClient } = createFakeForgeClient()
+    const logger = createLogger({ enabled: false, file: '' })
+
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+
+    const projectDir = TEST_DIR
+    mkdirSync(projectDir, { recursive: true })
+
+    loopService.setState(loopName, {
+      active: false,
+      status: 'completed',
+      sessionId: 'session-new-session-done',
+      loopName,
+      worktreeDir: projectDir,
+      projectDir,
+      worktreeBranch: undefined,
+      iteration: 2,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt',
+      phase: 'coding',
+      errorCount: 0,
+      auditCount: 1,
+      worktree: false,
+      sandbox: false,
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      workspaceId: undefined,
+      hostSessionId: 'host-456',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+      kind: 'goal',
+      terminationReason: 'completed',
+      completedAt: new Date().toISOString(),
+    } as any)
+
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
+    const tools = createLoopTools({
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+    } as any)
+
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+    }, { sessionID: 'test-session' } as any)
+
+    expect(result).toContain(`Directory: ${projectDir}`)
+    expect(result).not.toContain('Worktree:')
+    expect(result).not.toContain('Branch:')
+  })
+
+  test('active no-worktree loop labels location as Directory not Worktree', async () => {
+    const { client: forgeClient } = createFakeForgeClient()
+    const logger = createLogger({ enabled: false, file: '' })
+
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+
+    const projectDir = TEST_DIR
+    mkdirSync(projectDir, { recursive: true })
+
+    loopService.setState(loopName, {
+      active: true,
+      status: 'running',
+      sessionId: 'session-new-session-running',
+      loopName,
+      worktreeDir: projectDir,
+      projectDir,
+      worktreeBranch: undefined,
+      iteration: 1,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt',
+      phase: 'coding',
+      errorCount: 0,
+      auditCount: 0,
+      worktree: false,
+      sandbox: false,
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      workspaceId: undefined,
+      hostSessionId: 'host-456',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+      kind: 'goal',
+    } as any)
+
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath)
+    const tools = createLoopTools({
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+    } as any)
+
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+    }, { sessionID: 'test-session' } as any)
+
+    expect(result).toContain(`Directory: ${projectDir}`)
+    expect(result).not.toContain('Worktree:')
+    expect(result).not.toContain('Branch:')
+  })
 })

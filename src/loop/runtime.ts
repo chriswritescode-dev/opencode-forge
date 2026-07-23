@@ -1374,6 +1374,7 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
     loopService.replaceSession(loopName, {
       newSessionId: created.auditSessionId,
       phase: 'auditing',
+      ...(currentState.kind === 'goal' ? { executorSessionId: null } : {}),
     })
     sessionToLoop.set(created.auditSessionId, loopName)
 
@@ -1497,8 +1498,9 @@ export function createLoop(deps: LoopRuntimeDeps): Loop {
         iteration: nextIteration,
       })
     } catch (err) {
-      logger.error(`Loop: session rotation failed during goal dirty audit, continuing with existing session`, err)
-      newSessionId = currentState.sessionId
+      logger.error('Loop: session rotation failed during goal dirty audit; terminating loop', err)
+      await persistAuditAndTerminate({ kind: 'session_creation_failed' })
+      return
     }
 
     loopService.replaceSession(loopName, {

@@ -12,16 +12,18 @@ The loop system provides autonomous iterative development with automatic code au
 
 ### Restartability
 
-- **Any non-completed loop is restartable** via explicit restart when the worktree is available.
+- **Any non-completed loop is restartable** via explicit restart.
 - Restartable statuses: `running`, `cancelled`, `errored`, `stalled`.
 - **Completed loops are history-only** and cannot be restarted.
-- **Missing worktree blocks restart** — the worktree directory must exist for restart to proceed.
+- **Worktree-backed loops** (`worktree: true`, e.g. `/execute-plan` `mode: loop`, `/execute-goal`): restart refuses only when the worktree directory is gone AND its `forge/<loop-name>` branch is also gone. The scratch branch is never deleted by Forge, so a missing worktree does not normally block restart — `handleLoopRestart` recreates the worktree from the surviving branch (`git worktree add`). Only when both are gone is the work unrecoverable.
+- **Project-directory goal loops** (`worktree: false`, e.g. `/execute-plan` `mode='new-session'`): there is no worktree to require — restart runs in the project directory directly and is not blocked by any missing worktree path.
 
 ### Restart Semantics
 
-- Restart preserves loop identity, plan, worktree path, section progress, and review findings.
+- Restart preserves loop identity, plan (or goal text), section progress, and review findings.
+- Worktree-backed loops also preserve the worktree path and `forge/<loop-name>` branch; project-directory goal loops have neither and resume in the project directory.
 - Restart resets iteration count and error budget.
-- Restart creates a fresh session and resumes from the persisted phase and section index.
+- Restart creates a fresh session and resumes from the persisted section index. The persisted phase is preserved for `final_auditing` and `post_action`; `coding` and `auditing` restart as a fresh `coding` pass, and `final_audit_fix` also restarts as `coding` (a fix pass is a coding pass, not an auditor phase), with the final-audit findings re-prompted from the persisted `lastAuditResult`.
 
 ### Stale Workspace Sweep
 
@@ -61,8 +63,8 @@ interface LoopState {
   active: boolean                    // Whether loop is currently running
   sessionId: string                  // Current OpenCode session ID
   loopName: string                   // Unique loop identifier
-  worktreeDir: string                // Worktree path
-  projectDir?: string                // Project directory path
+  worktreeDir: string                // Worktree path for worktree-backed loops; for project-directory goal loops (`worktree:false`, e.g. `execute-plan` `mode='new-session'`) this is the project directory, not a worktree
+  projectDir?: string                // Project directory path (set on both worktree and project-directory loops; on worktree loops it is the host project, on project-directory goal loops it mirrors `worktreeDir`)
   worktreeBranch?: string            // Branch name if using worktree
   iteration: number                  // Current iteration count
   maxIterations: number              // Maximum iterations (0 = unlimited)
@@ -82,7 +84,7 @@ interface LoopState {
   executionModel?: string            // Model used for execution
   auditorModel?: string              // Model used for auditing
   workspaceId?: string               // OpenCode workspace ID
-  hostSessionId?: string             // Host session ID for post-completion redirect
+  hostSessionId?: string             // Host session ID; redirect target for worktree loops (worktree:true), correlation/source metadata only for worktree:false goal loops
   currentSectionIndex: number
   totalSections: number
   finalAuditDone: boolean
@@ -168,15 +170,18 @@ At the start of each audit:
 2. Resolved findings are deleted via `review-delete`
 3. Unresolved findings are carried forward
 
-Outstanding `severity: 'bug'` findings block loop completion — the loop terminates only when the auditor has run at least once and zero bug-severity findings remain.
+Completion rules depend on the loop kind:
+
+- **Plan loops** (`execute-plan` `mode: loop`, `launch-group`): outstanding `severity: 'bug'` findings block completion. The loop terminates only when the auditor has run at least once and zero bug-severity findings remain; warnings may persist without blocking.
+- **Goal loops** (`execute-goal`, `execute-plan` `mode: 'new-session'`): a completed auditor pass must leave zero outstanding review findings of any severity — both bugs and warnings block completion. See [Goal Loops](#goal-loops).
 
 ## Worktree Isolation
 
-Loops always run in an isolated git worktree. Sandbox is optional: when Docker is available and `sandbox.mode = 'docker'` is configured, a sandbox container is provisioned automatically; otherwise the loop runs in worktree-only mode.
+Worktree loops run in an isolated git worktree. Sandbox is optional: when Docker is available and `sandbox.mode = 'docker'` is configured, a sandbox container is provisioned automatically; otherwise the loop runs in worktree-only mode.
 
 Worktree loops require a repository with at least one commit. If OpenCode started before the initial commit, it resolves the project as `global`; create the commit, restart OpenCode, and retry. Forge rejects `execute-plan` loop mode, `execute-goal`, local or remote TUI loop launch, and feature-group launch/restart before creating workspaces, sessions, or group state when this precondition is not met.
 
-> Note: this applies to the `execute-plan` tool's default `mode: loop`. The same tool also accepts `mode: new-session`, which bypasses the loop entirely and runs the plan in a fresh standalone session with no worktree or sandbox (see [Tools Reference](tools.md#execute-plan)).
+> Note: this applies to the `execute-plan` tool's default `mode: loop`. The same tool also accepts `mode: new-session`, which runs the plan as an audited goal-style loop in a fresh session in the project directory (no worktree, no sandbox); the auditor validates each coding pass and the loop continues until the audit is clear. It is tracked by `loop-status` and `loop-cancel`, and falls back to a plain standalone one-shot session when loops are disabled or the project has no commit (see [Tools Reference](tools.md#execute-plan)).
 
 ```mermaid
 graph TD
@@ -294,14 +299,32 @@ Cancellation:
 
 ## Goal Loops
 
-A **goal loop** (`kind: 'goal'`) is a lightweight alternative to a plan loop for work that does not need a structured plan. It is started by the `/execute-goal <prompt>` slash command (or the `execute-goal` tool) with free-text goal text.
+A **goal loop** (`kind: 'goal'`) is a lightweight alternative to a plan loop: it skips decomposition, sections, `final_auditing`, and `post_action`. Inputs range from a free-text goal (`/execute-goal`) to a structured plan (`execute-plan` `mode: 'new-session'`); the loop itself never decomposes the input and treats whatever it receives as the single goal text. The structured-plan entry path is approved upstream **only** when launched through the architect's plan-approval flow or the TUI panel — a direct `execute-plan` tool call skips approval and treats the supplied plan as authoritative scope. See [Entry paths and execution location](#entry-paths-and-execution-location) below for how the two entry paths differ in input, approval, working directory, and completion behavior.
+
+### Entry paths and execution location
+
+Goal loops originate from two entry paths that share the same runtime, auditor, and completion rule but execute in different locations:
+
+- **`/execute-goal <prompt>`** slash command (or the `execute-goal` tool). Runs in an isolated git **worktree**, like plan loops. Requires a committed repository; rejects with the precondition error otherwise.
+- **`/execute-plan` with `mode='new-session'`** (the execute-plan tool, the plan-approval **New session** button, and the TUI panel's New session launch). Runs **in the project directory** with `worktree:false` — no worktree, no sandbox, no workspace — as an audited goal-style loop. Completion does **not** unwarp the TUI to a host session: teardown returns early for `worktree:false` loops, so the TUI stays on the executor session. `hostSessionId` is recorded only as correlation metadata (and as the one-shot fallback attribution source), not as a redirect target. Falls back to a plain standalone one-shot session only when loops are disabled or the project has no commit (see [Tools Reference](tools.md#execute-plan)).
+
+Both entry paths persist `kind: 'goal'` and use the same auditor; only the persisted `worktree` flag (and therefore the executor session's working directory) differs.
+
+### Input and approval (entry-path-specific)
+
+The two entry paths share the goal-loop runtime below but differ in how input is produced, approved, and stored:
+
+- **`/execute-goal <prompt>`** — free-text goal supplied directly via the slash command or `execute-goal` tool arg. There is **no plan, no decomposition, and no approval** — the goal text is the authoritative scope. It is persisted in `loop_large_fields.goal` and is never written to the `plans` table.
+- **`/execute-plan` with `mode='new-session'`** — a structured plan supplied as the loop's goal. The plan enters through one of three launch paths: (1) the plan-approval `question` flow (the architect's **New session** button), where the plan was reviewed and approved upstream; (2) the TUI panel's New session launch, which drives the same approved plan into the audited path; or (3) a direct `execute-plan` tool call, where the caller supplies the plan inline via the `plan` argument or references a stored plan — **no approval check is performed for direct calls**, and the supplied text is treated as authoritative scope. The plan text is captured from the session plan store into the `plans` table with the `<!-- forge-plan:start -->` / `<!-- forge-plan:end -->` markers **stripped** (the capture parser keeps only the content between the markers); inline `plan` arguments are persisted verbatim. Whatever plan text becomes the loop's goal (persisted in `loop_large_fields.goal`) is run as a **goal-style loop** — no section decomposition, no `final_auditing`, no `post_action` — regardless of how it entered.
 
 ### Lifecycle differences from plan loops
 
-- **No plan, no decomposition, no approval.** The goal text is persisted in `loop_large_fields.goal` (never in the `plans` table) and is the auditor's authoritative scope. There are no sections, no `final_auditing` phase, and no `post_action` phase.
-- **Dedicated rotating sessions.** Forge creates a code session in the isolated worktree, sends the goal as its initial prompt, and leaves the invoking session unchanged as the post-completion host redirect target. As with plan loops, each completed code or audit pass is retired before the next session takes over.
-- **Idle-driven audits.** When the executor goes idle, the loop runner starts a fresh `auditor-loop` session against the worktree (same as plan loops). The auditor verifies both goal completion and code correctness, and may block termination with `severity: "bug"` findings (using the stable pseudo-path `GOAL` with `line: 1` when no source location applies for an unmet part of the goal).
-- **Dirty audits create a fresh code session.** When findings remain, Forge creates and selects a new code session in the worktree and sends a continuation prompt containing the goal and outstanding findings. That session goes idle to trigger the next audit.
+The runtime behavior below is shared by both entry paths; only the input/approval flow above differs.
+
+- **No decomposition, no sections, no final audit, no post-action.** The goal text (free-text or structured plan) is persisted in `loop_large_fields.goal` and is the auditor's authoritative scope. There are no sections, no `final_auditing` phase, and no `post_action` phase. (An `execute-plan` `mode='new-session'` plan may also be stored in the `plans` table because it was captured there pre-launch — with Forge markers stripped — but the goal loop never reads it back for decomposition.)
+- **Dedicated rotating sessions.** Forge creates a code session — in the isolated **worktree** for `execute-goal`, or in the **project directory** for `execute-plan` `mode='new-session'` (`worktree:false`) — sends the goal as its initial prompt, and leaves the invoking session unchanged. On completion, `execute-goal` (worktree) teardown unwraps the TUI back to the invoking host session; `execute-plan` `mode='new-session'` (`worktree:false`) teardown does **not** unwarp, so the TUI stays on the executor session. As with plan loops, each completed code or audit pass is retired before the next session takes over.
+- **Idle-driven audits.** When the executor goes idle, the loop runner starts a fresh `auditor-loop` session against the executor's working directory (worktree for `execute-goal`, project directory for `worktree:false` goal loops). The auditor verifies both goal completion and code correctness, and may block termination with `severity: "bug"` findings (using the stable pseudo-path `GOAL` with `line: 1` when no source location applies for an unmet part of the goal).
+- **Dirty audits create a fresh code session.** When findings remain, Forge creates and selects a new code session in the executor's working directory and sends a continuation prompt containing the goal and outstanding findings. That session goes idle to trigger the next audit.
 - **Clean audits terminate immediately.** When a completed auditor pass leaves zero outstanding review findings (any severity), the loop terminates with `completed` — no final audit, no post-completion action.
 
 ### Completion rule
@@ -320,14 +343,18 @@ Goal loops are fully visible to `loop-status`, cancellable with `loop-cancel`, a
 
 ### Differences from `execute-plan` and `launch-group`
 
-| Aspect | `execute-plan` (loop) | `execute-goal` | `launch-group` |
-|---|---|---|---|
-| Input | Structured plan (persisted in `plans`) | Free-text goal | PRD / pre-split feature list |
-| Sections / milestones | Yes (decomposed) | No | Per feature (each feature is its own loop) |
-| Executor session | Fresh session per iteration | Fresh dedicated session per coding pass | Fresh session per feature loop |
-| Final audit | Yes (after all sections) | No | Per feature loop |
-| Post-completion action | Yes (when configured) | Never | Per feature loop |
-| Slash command | `/execute-plan` | `/execute-goal` | None (agent-invoked) |
+| Aspect | `execute-plan` (loop) | `execute-goal` | `execute-plan` `mode='new-session'` | `launch-group` |
+|---|---|---|---|---|
+| Input | Structured plan (persisted in `plans`) | Free-text goal | Structured plan (run as a goal-style loop) | PRD / pre-split feature list |
+| Approval | Architect plan-approval flow | None | Architect plan-approval flow (or direct TUI panel / tool launch) | Per feature (architect plan-approval) |
+| Goal/plan storage | `plans` table | `loop_large_fields.goal` (never `plans`) | `loop_large_fields.goal` (and `plans` when captured pre-launch) | `plans` table per feature |
+| Loop kind | Plan | Goal | Goal | Per feature (plan loops) |
+| Execution location | Isolated worktree | Isolated worktree | Project directory (`worktree:false`) | Isolated worktree per feature loop |
+| Sections / milestones | Yes (decomposed) | No | No | Per feature (each feature is its own loop) |
+| Executor session | Fresh session per iteration | Fresh dedicated session per coding pass | Fresh dedicated session per coding pass | Fresh session per feature loop |
+| Final audit | Yes (after all sections) | No | No | Per feature loop |
+| Post-completion action | Yes (when configured) | Never | Never | Per feature loop |
+| Slash command | `/execute-plan` | `/execute-goal` | `/execute-plan` `mode=new-session` (or plan-approval "New session" / TUI panel) | None (agent-invoked) |
 
 ## Tool Restrictions
 

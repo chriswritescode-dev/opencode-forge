@@ -1,15 +1,15 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
-import { PLAN_EXECUTION_LABELS } from '../utils/plan-execution'
+import { PLAN_EXECUTION_LABELS, describePlanExecutionMode } from '../utils/plan-execution'
 import { extractPlanExecutionMetadata } from '../utils/plan-execution'
 import { buildDialogSelectOptions, getModelDisplayLabel, getAvailableModelVariants, getVariantDisplayLabel, normalizeVariantForModel, type ModelInfo } from '../utils/tui-models'
 import { resolveExecutionDialogDefaults } from '../utils/tui-execution-preferences'
 import { type ForgeProjectClient } from '../utils/tui-client'
 import { buildExecutionContextSnapshot, type ExecutionContextCache, type ExecutionContextSnapshot } from '../utils/tui-execution-context-cache'
 import { withBusyGuard } from '../utils/busy-guard'
-import { listRemoteNames, isModeAllowedForTarget } from '../utils/remote-config'
-import { executeRemoteLoop } from '../utils/tui-remote-launch'
+import { listRemoteNames } from '../utils/remote-config'
+import { runPlanLaunch } from './execute-plan-launch'
 import { createLogger } from '../utils/logger'
 import { resolveLogPath } from '../storage'
 import type { PluginConfig } from '../types'
@@ -289,128 +289,35 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
     ))
   }
 
-  function getModeDescription(label: string): string {
-    switch (label) {
-      case 'New session':
-        return 'Create a new session and send the plan to the code agent'
-      case 'Execute here':
-        return 'Execute the plan in the current session using the code agent'
-      case 'Loop':
-        return 'Execute using iterative development loop in an isolated git worktree (Docker sandbox used automatically when available)'
-      default:
-        return ''
-    }
-  }
-
   /**
-   * Shared tail for local and remote launches: surface errors, record recent
-   * models, toast success, and notify the host. Returns false on error so
-   * callers can stop.
+   * Delegates the actual launch (remote + local) to the extracted, testable
+   * `runPlanLaunch` orchestration. The panel only contributes its current
+   * signal values and props; all label→mode routing, bridge dispatch, and
+   * result handling live in one place.
    */
-  async function completeLaunch(
-    outcome: { error: string } | { message: string },
-    execModel?: string,
-    auditModel?: string,
-  ): Promise<boolean> {
-    if ('error' in outcome) {
-      props.api.ui.toast({ message: outcome.error, variant: 'error', duration: 10000 })
-      return false
-    }
-    cache?.recordRecent(execModel || '')
-    cache?.recordRecent(auditModel || '')
-    props.api.ui.toast({ message: outcome.message, variant: 'success', duration: 5000 })
-    await props.onExecuted?.()
-    return true
-  }
-
   async function runExecuteMode(mode: string, execModel?: string, auditModel?: string, execVariant?: string, auditVariant?: string): Promise<void> {
-    const planText = props.planContent
-    const { title } = extractPlanExecutionMetadata(planText)
-
-    const normalizedMode = mode.toLowerCase()
-    const matchedLabel = PLAN_EXECUTION_LABELS.find(
-      label => normalizedMode === label.toLowerCase() || normalizedMode.startsWith(label.toLowerCase())
-    ) ?? null
-
-    // Remote target: only Loop is allowed
-    if (target() !== 'local') {
-      if (!isModeAllowedForTarget(target(), matchedLabel ?? '')) {
-        props.api.ui.toast({ message: 'Remote target supports Loop only', variant: 'error', duration: 5000 })
-        return
-      }
-
-      props.api.ui.dialog.clear()
-      props.api.ui.toast({ message: 'Launching remote loop...', variant: 'info', duration: 5000 })
-      const result = await executeRemoteLoop({
-        remoteName: target(),
-        localDirectory: props.projectDirectory ?? '',
-        localProjectId: props.client.projectId,
-        title,
+    await runPlanLaunch(
+      {
+        api: props.api,
+        client: props.client,
+        cache,
+        pluginConfig,
+        logger,
+        sessionId: props.sessionId,
+        projectDirectory: props.projectDirectory,
+        planContent: props.planContent,
         loopName: loopName(),
-        plan: planText,
-        executionModel: execModel,
-        auditorModel: auditModel,
-        executionVariant: execVariant,
-        auditorVariant: auditVariant,
-      }, {
-        config: pluginConfig,
-        onWarning: (m) => props.api.ui.toast({ message: m, variant: 'info', duration: 5000 }),
-        debug: (m) => logger.log(m),
-      })
-      if ('error' in result) {
-        logger.error(`remote-launch: failed on "${target()}": ${result.error}`)
-      }
-
-      await completeLaunch(
-        'error' in result
-          ? result
-          : { message: `Remote loop started: ${result.loopName} on ${result.remoteName}` },
+        onExecuted: props.onExecuted,
+      },
+      {
+        mode,
+        target: target(),
         execModel,
         auditModel,
-      )
-      return
-    }
-
-    // Local target: existing behavior
-    const apiMode: import('../utils/tui-client').ApiExecutionMode = matchedLabel === 'Execute here'
-      ? 'execute-here'
-      : matchedLabel === 'Loop'
-        ? 'loop'
-        : 'new-session'
-
-    props.api.ui.dialog.clear()
-    props.api.ui.toast({ message: 'Executing plan...', variant: 'info', duration: 3000 })
-    const result = await props.client.plan.execute(props.sessionId, {
-      mode: apiMode,
-      title,
-      loopName: loopName(),
-      plan: planText,
-      executionModel: execModel,
-      auditorModel: auditModel,
-      executionVariant: execVariant,
-      auditorVariant: auditVariant,
-      targetSessionId: props.sessionId,
-    })
-
-    if (!result) {
-      props.api.ui.toast({ message: 'Failed to execute plan', variant: 'error', duration: 3000 })
-      return
-    }
-
-    if ('error' in result) {
-      await completeLaunch(result)
-      return
-    }
-
-    await completeLaunch(
-      { message: result.loopName ? `Loop started: ${result.loopName}` : 'Plan execution started' },
-      execModel,
-      auditModel,
+        execVariant,
+        auditVariant,
+      },
     )
-    props.client.workspaces.list().catch(() => {})
-    if (result.sessionId && (apiMode === 'new-session' || apiMode === 'loop')) {
-      await props.client.selectSession(result.sessionId, result.workspaceId)
-    }
   }
 
   // eslint-disable-next-line solid/reactivity
@@ -461,7 +368,7 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
           }] : []),
           ...PLAN_EXECUTION_LABELS.map(label => ({
             name: label,
-            description: getModeDescription(label),
+            description: describePlanExecutionMode(label),
             value: `mode:${label}`,
           })),
         ]}

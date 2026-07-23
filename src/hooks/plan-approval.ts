@@ -259,8 +259,9 @@ export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlock
             loopHandler: ctx.loopHandler,
             loop,
             sandboxManager: ctx.sandboxManager,
-            sectionPlansRepo: ctx.sectionPlansRepo,
-            workspaceStatusRegistry: ctx.workspaceStatusRegistry,
+        sectionPlansRepo: ctx.sectionPlansRepo,
+        reviewFindingsRepo: ctx.reviewFindingsRepo,
+        workspaceStatusRegistry: ctx.workspaceStatusRegistry,
             pendingTeardowns: ctx.pendingTeardowns,
           })
           
@@ -287,7 +288,10 @@ export function createToolExecuteAfterHook(ctx: ToolContext, deps: LoopToolBlock
                 publishPlanApprovalToast(ctx, input, 'error', `Failed to start new session: ${result.error.message}`)
                 return
               }
-              publishPlanApprovalToast(ctx, input, 'success', 'Started new plan execution session')
+              const toastMessage = result.data?.loopName
+                ? 'Started audited plan session'
+                : 'Started new plan execution session (one-shot fallback)'
+              publishPlanApprovalToast(ctx, input, 'success', toastMessage)
             }, logger)
 
             logger.log('Plan approval: "New session" — awaiting source session abort')

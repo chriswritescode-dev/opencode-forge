@@ -374,7 +374,7 @@ const tui: TuiPlugin = async (api) => {
     if (connectPromise) return connectPromise
 
     setConnectionStatus('connecting')
-    connectPromise = connectForgeProject(api, directory, resolveLoopAllowedDirectories(pluginConfig)).then((connected) => untrack(() => {
+    connectPromise = connectForgeProject(api, directory, resolveLoopAllowedDirectories(pluginConfig), pluginConfig).then((connected) => untrack(() => {
       connectPromise = null
       if (disposed) return connected
 

@@ -6,6 +6,7 @@ import {
   extractLoopNames,
   sanitizeLoopName,
   PLAN_EXECUTION_LABELS,
+  describePlanExecutionMode,
 } from '../src/utils/plan-execution'
 
 describe('Plan Execution Utilities', () => {
@@ -22,6 +23,41 @@ describe('Plan Execution Utilities', () => {
       expect(PLAN_EXECUTION_LABELS[0]).toBe('New session')
       expect(PLAN_EXECUTION_LABELS[1]).toBe('Execute here')
       expect(PLAN_EXECUTION_LABELS[2]).toBe('Loop')
+    })
+  })
+
+  describe('describePlanExecutionMode', () => {
+    test('New session describes an audited goal-style loop in the project directory', () => {
+      const description = describePlanExecutionMode('New session')
+      expect(description.toLowerCase()).toContain('audited')
+      expect(description.toLowerCase()).toContain('goal-style loop')
+      expect(description.toLowerCase()).toContain('project directory')
+    })
+
+    test('New session description never implies an isolated worktree or a direct code-agent handoff', () => {
+      const description = describePlanExecutionMode('New session').toLowerCase()
+      expect(description).not.toContain('worktree')
+      expect(description).not.toContain('send the plan to the code agent')
+      expect(description).not.toContain('send the plan')
+    })
+
+    test('New session description notes the one-shot fallback', () => {
+      expect(describePlanExecutionMode('New session').toLowerCase()).toContain('one-shot session')
+    })
+
+    test('Loop mode still describes an isolated worktree (unaffected by Phase 4)', () => {
+      const description = describePlanExecutionMode('Loop').toLowerCase()
+      expect(description).toContain('isolated git worktree')
+    })
+
+    test('Execute here still describes a code-agent handoff in the current session', () => {
+      const description = describePlanExecutionMode('Execute here')
+      expect(description.toLowerCase()).toContain('current session')
+      expect(description.toLowerCase()).toContain('code agent')
+    })
+
+    test('Unknown label returns empty string', () => {
+      expect(describePlanExecutionMode('something else')).toBe('')
     })
   })
 

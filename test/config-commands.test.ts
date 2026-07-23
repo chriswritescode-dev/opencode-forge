@@ -57,11 +57,28 @@ describe('createConfigHandler commands', () => {
     expect(loopStatus).toBeDefined()
     expect(loopStatus.template).toContain('Check the status')
     expect(loopStatus.agent).toBe('code')
+    // Completed-work guidance is conditional on loop type (auditor issue #6):
+    // worktree-backed loops preserve the `forge/<loop-name>` branch; no-worktree
+    // goal loops have neither worktree nor preserved branch, so the prompt must
+    // distinguish them rather than implying every completed loop had a worktree.
+    expect(loopStatus.template).toContain('Worktree loops')
+    expect(loopStatus.template).toContain('Project-directory goal loops')
+    expect(loopStatus.template).toContain('forge/<loop-name>')
+    expect(loopStatus.template).toContain('no worktree')
+    // The unconditional "completed loop's worktree is cleaned up" phrasing
+    // applying to ALL loops is gone.
+    expect(loopStatus.template).not.toMatch(/^A completed loop's worktree is cleaned up, so the worktree directory no longer exists\.$/m)
 
     const loopCancel = commands['loop-cancel']
     expect(loopCancel).toBeDefined()
     expect(loopCancel.template).toContain('Identify the Loop')
+    expect(loopCancel.template).toContain('loop name')
     expect(loopCancel.agent).toBe('code')
+    // Auditor issue #7: the identifier is the loop name, not the worktree
+    // name, and worktree cleanup guidance is conditional on worktree-backed
+    // loops so cancelling a no-worktree loop never implies a worktree exists.
+    expect(loopCancel.template).not.toContain('worktree name of the loop')
+    expect(loopCancel.template).toContain('no worktree')
   })
 
   test('user command template overrides via promptsDir', async () => {

@@ -1893,7 +1893,10 @@ describe('Fire-and-forget dispatch behavior', () => {
       config: mockConfig,
       logger: mockLogger,
       db,
-      loop: { service: loopService },
+      loop: {
+        service: loopService,
+        generateUniqueLoopName: vi.fn((name: string) => name),
+      },
       plansRepo,
       loopsRepo,
       reviewFindingsRepo,

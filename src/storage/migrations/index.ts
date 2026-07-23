@@ -399,5 +399,27 @@ export const migrations: Migration[] = [
       db.run(loadSql('143_create_plan_amendments.sql'))
     },
   },
+  {
+    id: '145',
+    description: 'Create loop_new_session_outcomes table for the single authoritative request-nonce-correlated launch signal used by the cross-process new-session resolver for both audited goal loops and the one-shot fallback',
+    apply: (db: Database) => {
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='loop_new_session_outcomes'").all()
+      if (tables.length > 0) return
+      db.run(loadSql('145_create_loop_new_session_outcomes.sql'))
+      // The legacy loop_attach_signals table (migration 144) is superseded by
+      // loop_new_session_outcomes. Drop it when present so stale signals never
+      // outlive the consolidation; fresh databases never create it.
+      db.run('DROP TABLE IF EXISTS loop_attach_signals')
+    },
+  },
+  {
+    id: '146',
+    description: 'Create loop_new_session_cancellations table for the authoritative cross-process new-session request cancellation marker consulted by handlePlanNewSession to refuse abandoned launches',
+    apply: (db: Database) => {
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='loop_new_session_cancellations'").all()
+      if (tables.length > 0) return
+      db.run(loadSql('146_create_loop_new_session_cancellations.sql'))
+    },
+  },
 
 ]

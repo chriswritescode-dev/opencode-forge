@@ -53,7 +53,8 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
             worktreeDir: freshState.worktreeDir,
             workspaceId: freshState.workspaceId,
             prompt: promptText,
-            ...(model ? { auditorModel: model, ...(input.variant ? { auditorVariant: input.variant } : {}) } : {}),
+            ...(model ? { auditorModel: model } : {}),
+            ...(input.variant ? { auditorVariant: input.variant } : {}),
           })
           return r.ok ? {} : { error: r.error }
         },
@@ -71,14 +72,15 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
         if (!freshState?.active) throw new Error('loop_cancelled')
         markPromptSent(loopName, sessionId, logger)
         try {
-          await client.session.promptAsync({
-            sessionID: sessionId,
-            directory: freshState.worktreeDir,
-            ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
-            agent: 'code',
-            parts: [{ type: 'text' as const, text: promptText }],
-            ...(model ? { model, ...(input.variant ? { variant: input.variant } : {}) } : {}),
-          })
+            await client.session.promptAsync({
+              sessionID: sessionId,
+              directory: freshState.worktreeDir,
+              ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
+              agent: 'code',
+              parts: [{ type: 'text' as const, text: promptText }],
+              ...(model ? { model } : {}),
+              ...(input.variant ? { variant: input.variant } : {}),
+            })
           return {}
         } catch (err) {
           return { error: err }

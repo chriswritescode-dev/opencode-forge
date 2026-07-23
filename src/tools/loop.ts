@@ -63,7 +63,10 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
       loop: ctx.loop,
       sandboxManager: ctx.sandboxManager,
       sectionPlansRepo: ctx.sectionPlansRepo,
+      reviewFindingsRepo: ctx.reviewFindingsRepo,
       loopSessionUsageRepo: ctx.loopSessionUsageRepo,
+      newSessionOutcomesRepo: ctx.newSessionOutcomesRepo,
+      newSessionCancellationsRepo: ctx.newSessionCancellationsRepo,
       workspaceStatusRegistry: ctx.workspaceStatusRegistry,
       pendingTeardowns: ctx.pendingTeardowns,
     })
@@ -74,17 +77,42 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
   return {
     'execute-plan': tool({
-      description: "Execute a plan using an iterative development loop in an isolated git worktree (sandboxed). Set mode='new-session' to instead launch the plan in a fresh standalone session running the code agent (no worktree, no loop).",
+      description: "Execute a plan using an iterative development loop in an isolated git worktree (sandboxed). Set mode='new-session' to instead launch the plan as an audited goal-style loop in a fresh session in the project directory (no worktree, no sandbox): the auditor validates each coding pass and the loop continues until the audit is clear.",
       args: {
         plan: z.string().optional().describe('The full implementation plan. If omitted, reads from the session plan store.'),
         title: z.string().describe('Short title for the session (shown in session list)'),
         loopName: z.string().optional().describe('Name for the loop (max 25 chars, auto-incremented if collision exists)'),
-        hostSessionId: z.string().optional().describe('Host session ID for post-completion redirect'),
+        hostSessionId: z.string().optional().describe('Host session ID for post-completion redirect. Applies only to loop mode, where the TUI redirects back to this session after worktree teardown. Ignored in new-session mode: the audited session always attributes its host metadata to the invoking session and never redirects.'),
         mode: z.enum(['loop', 'new-session']).optional().default('loop')
-          .describe("Execution mode. 'loop' (default) runs an iterative loop in an isolated git worktree. 'new-session' launches the plan in a fresh standalone session running the code agent (no worktree, no loop)."),
+          .describe("Execution mode. 'loop' (default) runs an iterative loop in an isolated git worktree. 'new-session' runs an audited goal-style loop in a fresh session in the project directory (no worktree, no sandbox); tracked by loop-status and loop-cancel. Falls back to a plain standalone session when loops are disabled or the project has no commit."),
+        executionModel: z.string().optional().describe('Override the code agent model (provider/model). Defaults to plugin config executionModel.'),
+        auditorModel: z.string().optional().describe('Override the auditor model (provider/model). Defaults to plugin config auditorModel.'),
+        executionVariant: z.string().optional().describe('Override the code agent variant. Defaults to plugin config executionVariant.'),
+        auditorVariant: z.string().optional().describe('Override the auditor variant. Defaults to plugin config auditorVariant.'),
+        requestNonce: z.string().optional().describe('Per-launch correlation id minted by the TUI execute-plan panel and forwarded verbatim into `ForgeExecutionRequestContext.requestId` so the panel can confirm and cancel the launch across processes. REQUIRED when `crossProcess=true`; direct `/execute-plan` invocations omit it.'),
+        crossProcess: z.boolean().optional().default(false).describe('Set to true ONLY by the TUI execute-plan panel when launching New session cross-process via host-agent `promptAsync`. Direct `/execute-plan` invocations omit it. When true, `requestNonce` becomes mandatory so a malformed cross-process request where the host agent dropped the nonce is rejected before any session/loop is provisioned.'),
       },
       execute: async (args, context) => {
         logger.log(`loop: creating loop for plan="${args.title}"`)
+
+        if (args.mode === 'new-session' && args.crossProcess && !args.requestNonce) {
+          // Cross-process correlation: a TUI panel New session launch flows
+          // through `promptAsync` into this tool and MUST carry the panel-minted
+          // nonce so the panel can confirm and cancel the launch against the
+          // shared `loop_new_session_outcomes` store. Without one, a panel
+          // timeout + user retry could provision an uncorrelated session the
+          // panel can neither confirm nor cancel. Direct `/execute-plan`
+          // invocations never set `crossProcess` and launch in-process, where
+          // the tool result itself (not a polled outcome) confirms the launch,
+          // so they need no nonce. The schema makes both fields optional only
+          // because ZodRawShape field schemas cannot express a cross-field
+          // requirement; enforce the cross-process pair here, BEFORE any
+          // session/loop is provisioned. The plan-approval hook and in-process
+          // bridge dispatch `plan.execute.newSession` directly via
+          // `service.dispatch`, bypassing this tool, so they remain safe.
+          logger.error('loop: rejected cross-process new-session launch without requestNonce')
+          return 'Failed to start new session: a requestNonce correlation id is required for cross-process new-session launches (crossProcess=true). The launching panel must forward one verbatim; direct `/execute-plan` invocations should omit crossProcess instead.'
+        }
 
         let source: PlanSource
         if (!args.plan) {
@@ -114,13 +142,20 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
         const executionModel = config.executionModel
         const { service, execCtx } = makeService(context.sessionID)
+        if (args.requestNonce) {
+          execCtx.requestId = args.requestNonce
+        }
 
         if (args.mode === 'new-session') {
           const result = await service.dispatch(execCtx, {
             type: 'plan.execute.newSession',
             source,
             title: args.title,
-            executionModel,
+            loopName: args.loopName,
+            executionModel: args.executionModel ?? executionModel,
+            auditorModel: args.auditorModel,
+            executionVariant: args.executionVariant,
+            auditorVariant: args.auditorVariant,
             lifecycle: {
               selectSession: true,
               selectSessionTiming: 'after-prompt',
@@ -133,16 +168,41 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             return `Failed to start new session: ${result.error.message}`
           }
 
+          if (result.data.loopName) {
+            const maxInfo = (result.data.maxIterations ?? 0) > 0 ? result.data.maxIterations!.toString() : 'unlimited'
+            const modelInfo = result.data.modelUsed ?? 'default'
+            const lines: string[] = [
+              'Goal loop activated!',
+              '',
+              `Session: ${result.data.sessionId} (new dedicated session)`,
+              `Loop name: ${result.data.loopName}`,
+              `Directory: project directory (no worktree)`,
+              `Model: ${modelInfo}`,
+              `Max iterations: ${maxInfo}`,
+              '',
+              'A new code session has been created in the project directory to implement the plan.',
+              'The plan runs as an audited loop: the auditor reviews each coding pass and the loop continues until the audit is clear.',
+              'That session implements the plan — NOT this one. Do not edit files or attempt the plan here.',
+              'Your job is done — just confirm to the user that the goal loop has been launched.',
+              'The user can run loop-status or loop-cancel later if needed.',
+            ]
+
+            const scopeWarning = await projectScopeWarning(result.data.sessionId)
+            if (scopeWarning) lines.push(scopeWarning)
+
+            return lines.join('\n')
+          }
+
           const modelInfo = result.data.modelUsed ?? 'default'
           return [
-            'New session started!',
+            'New session started (one-shot fallback)',
             '',
             `Session: ${result.data.sessionId}`,
             `Title: ${result.data.title}`,
             `Model: ${modelInfo}`,
             '',
-            'The plan was sent to the code agent in a fresh session (no worktree, no loop).',
-            'It is a standalone session and is not tracked by loop-status or loop-cancel.',
+            'Loop tracking was unavailable (loops disabled or the project has no commit), so the plan runs as a standalone one-shot session in the project directory without an auditor.',
+            'This session is not tracked by loop-status or loop-cancel.',
             'Your job is done — just confirm to the user that the new session has been launched.',
           ].join('\n')
         }
@@ -260,7 +320,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
     'loop-cancel': tool({
       description: 'Cancels the only active loop when called with no arguments. Pass a name to cancel a specific loop.',
       args: {
-        name: z.string().optional().describe('Worktree name of the loop to cancel'),
+        name: z.string().optional().describe('Loop name to cancel'),
       },
       execute: async (args) => {
         const { service, execCtx } = makeService()
@@ -280,9 +340,9 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
     }),
 
     'loop-status': tool({
-      description: 'Lists all active loops when called with no arguments. Pass a worktree name for detailed status of a specific loop. Use restart to explicitly resume a non-completed loop. Running loops require force. Completed loops cannot restart.',
+      description: 'Lists all active loops when called with no arguments. Pass a loop name for detailed status of a specific loop. Use restart to explicitly resume a non-completed loop. Running loops require force. Completed loops cannot restart.',
       args: {
-        name: z.string().optional().describe('Worktree name to check for detailed status'),
+        name: z.string().optional().describe('Loop name to check for detailed status'),
         restart: z.boolean().optional().default(false).describe('Restart a non-completed loop by name. Running loops require force.'),
         force: z.boolean().optional().default(false).describe('Force restart an active/stuck loop'),
       },
@@ -430,7 +490,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             '',
             `Name: ${state.loopName}`,
             `Session: ${state.sessionId}`,
-            `Worktree: ${state.worktreeDir}`,
+            `${state.worktree === false ? 'Directory' : 'Worktree'}: ${state.worktreeDir}`,
           ]
           statusLines.push(
             `Iteration: ${maxInfo}`,
@@ -551,7 +611,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           '',
           `Name: ${state.loopName}`,
           `Session: ${state.sessionId}`,
-          `Worktree: ${state.worktreeDir}`,
+          `${state.worktree === false ? 'Directory' : 'Worktree'}: ${state.worktreeDir}`,
         ]
         statusLines.push(
           `Status: ${sessionStatus}`,

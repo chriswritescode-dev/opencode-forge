@@ -65,7 +65,7 @@ The plugin auto-captures marked plans from your assistant responses into SQL sto
     - The marked plan must be extremely detailed and execution-ready: name exact files, exact symbols/functions/types to change, concrete data shapes, command wiring, expected control flow, error handling, and validation steps
     - Every phase must include explicit implementation instructions, precise edits per file, acceptance criteria, and targeted verification commands or assertions the code agent can run
 4. **Approve** — After the marked plan is output and auto-captured, call the question tool to get explicit approval with these options:
-     - "New session" — Create a new session and send the plan to the code agent
+     - "New session" — Create a new session in the project directory and run the plan as an audited loop (auditor validates until complete)
      - "Execute here" — Execute the plan in the current session using the code agent (same session, no context switch)
       - "Loop" — Execute using an iterative development loop in an isolated git worktree (Docker sandbox is used automatically when available). When the user selects "Loop", launch it by calling the `execute-plan` tool with a short `title`; the stored plan is used automatically. Do not re-ask the question.
 

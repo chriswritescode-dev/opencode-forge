@@ -7,6 +7,8 @@ import type { ReviewFindingsRepo } from '../storage/repos/review-findings-repo'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { SectionPlansRepo } from '../storage/repos/section-plans-repo'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
+import type { LoopNewSessionOutcomesRepo } from '../storage/repos/loop-new-session-outcomes-repo'
+import type { LoopNewSessionCancellationsRepo } from '../storage/repos/loop-new-session-cancellations-repo'
 import type { FeatureGroupsRepo } from '../storage/repos/feature-groups-repo'
 import type { GroupOrchestrator } from '../services/group-orchestrator'
 import type { Loop } from '../loop'
@@ -48,6 +50,18 @@ export interface ToolContext {
   sectionPlansRepo: SectionPlansRepo
   /** Loop session usage repo for usage tracking. */
   loopSessionUsageRepo?: LoopSessionUsageRepo
+  /**
+   * Authoritative correlated launch signal repo for the cross-process
+   * `plan.execute.newSession` resolver; recorded by `handlePlanNewSession`
+   * only after a launch committed (audited attach ok / one-shot session
+   * created and prompted), keyed by the per-launch request nonce. */
+  newSessionOutcomesRepo?: LoopNewSessionOutcomesRepo
+  /**
+   * Authoritative cancellation marker consulted by `handlePlanNewSession` at
+   * entry; written by the TUI cross-process resolver when its deadline
+   * elapses so a delayed host invocation is refused rather than launching a
+   * duplicate. */
+  newSessionCancellationsRepo?: LoopNewSessionCancellationsRepo
   /** Feature groups repo for group-launch feature tracking. */
   featureGroupsRepo: FeatureGroupsRepo
   /** Group orchestrator for managing feature groups. */
