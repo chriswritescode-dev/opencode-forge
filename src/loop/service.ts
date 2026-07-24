@@ -114,7 +114,8 @@ export interface LoopService {
     eventType?: string
   }): void
   adjustRemainingSections(name: string, args: {
-    sections: { title: string; content: string }[]
+    sections?: { title: string; content: string }[]
+    currentSection?: { title: string; content: string }
     rationale: string
     auditorSessionId?: string
   }): Promise<{ ok: true; totalSections: number } | { ok: false; error: string }>
@@ -631,7 +632,8 @@ export function createLoopService(
   }
 
     async function adjustRemainingSections(name: string, args: {
-    sections: { title: string; content: string }[]
+    sections?: { title: string; content: string }[]
+    currentSection?: { title: string; content: string }
     rationale: string
     auditorSessionId?: string
   }): Promise<{ ok: true; totalSections: number } | { ok: false; error: string }> {
@@ -644,8 +646,14 @@ export function createLoopService(
     if (!args.rationale || args.rationale.trim().length === 0) {
       return { ok: false, error: 'rationale must not be empty' }
     }
-    // Empty `sections` is permitted: it removes the entire pending suffix
-    // (Phase 8 auditors may delete remaining work, not just replace it).
+    if (args.sections === undefined && args.currentSection === undefined) {
+      return { ok: false, error: 'no changes specified: provide sections and/or currentSection' }
+    }
+    // `sections` scopes the pending suffix (from current index + 1): omit it to
+    // leave future sections untouched, or pass an empty array to remove the
+    // entire suffix. `currentSection` edits the in-progress section being
+    // audited in place, preserving its status/attempts. Completed sections
+    // (index < current) are never touched — the repo only replaces pending rows.
 
     // Serialization with the runtime's `tick()` promise chain prevents a
     // stale in-memory decision from the auditing runner from racing against
@@ -688,34 +696,64 @@ export function createLoopService(
             return { ok: false as const, error: `session mismatch: only the current auditor session may adjust the plan for loop ${name}` }
           }
 
-          const fromIndex = row.currentSectionIndex + 1
-          const newTotal = fromIndex + args.sections.length
-          if (newTotal > MAX_TOTAL_SECTIONS) {
-            return { ok: false as const, error: `resulting total sections (${newTotal}) would exceed cap ${MAX_TOTAL_SECTIONS}` }
-          }
-          if (newTotal === 0) {
-            return { ok: false as const, error: 'resulting total sections would be zero' }
+          const currentIndex = row.currentSectionIndex
+          const fromIndex = currentIndex + 1
+
+          // Validate the in-place current-section edit target before mutating.
+          // During auditing the current section is 'in_progress'; a 'completed'
+          // status here would be an out-of-band state we refuse to overwrite.
+          if (args.currentSection) {
+            const currentRow = sectionPlansRepo!.get(projectId, name, currentIndex)
+            if (!currentRow) {
+              return { ok: false as const, error: `current section ${currentIndex} does not exist` }
+            }
+            if (currentRow.status === 'completed') {
+              return { ok: false as const, error: `cannot edit already-completed section ${currentIndex}` }
+            }
           }
 
+          const replacementSections = args.sections
+          const newTotal = replacementSections !== undefined ? fromIndex + replacementSections.length : row.totalSections
+          if (replacementSections !== undefined) {
+            if (newTotal > MAX_TOTAL_SECTIONS) {
+              return { ok: false as const, error: `resulting total sections (${newTotal}) would exceed cap ${MAX_TOTAL_SECTIONS}` }
+            }
+            if (newTotal === 0) {
+              return { ok: false as const, error: 'resulting total sections would be zero' }
+            }
+          }
+
+          // Snapshot from the earliest changed index: the current section when
+          // it is being edited, otherwise the pending suffix start.
+          const snapshotFrom = args.currentSection ? currentIndex : fromIndex
           const beforeRows = sectionPlansRepo!.list(projectId, name)
-            .filter((r) => r.sectionIndex >= fromIndex)
+            .filter((r) => r.sectionIndex >= snapshotFrom)
             .map((r) => ({ index: r.sectionIndex, title: r.title, content: r.content }))
           const sectionsBefore = JSON.stringify(beforeRows)
 
-          const replaceResult = sectionPlansRepo!.replacePendingSections({
-            projectId,
-            loopName: name,
-            fromIndex,
-            sections: args.sections,
-          })
-          if (!replaceResult.ok) {
-            return replaceResult
+          if (args.currentSection) {
+            sectionPlansRepo!.updateContent(projectId, name, [{
+              index: currentIndex,
+              title: args.currentSection.title,
+              content: args.currentSection.content,
+            }])
           }
 
-          loopsRepo.setTotalSections(projectId, name, newTotal)
+          if (replacementSections !== undefined) {
+            const replaceResult = sectionPlansRepo!.replacePendingSections({
+              projectId,
+              loopName: name,
+              fromIndex,
+              sections: replacementSections,
+            })
+            if (!replaceResult.ok) {
+              return replaceResult
+            }
+            loopsRepo.setTotalSections(projectId, name, newTotal)
+          }
 
           const afterRows = sectionPlansRepo!.list(projectId, name)
-            .filter((r) => r.sectionIndex >= fromIndex)
+            .filter((r) => r.sectionIndex >= snapshotFrom)
             .map((r) => ({ index: r.sectionIndex, title: r.title, content: r.content }))
           const sectionsAfter = JSON.stringify(afterRows)
 
@@ -724,7 +762,7 @@ export function createLoopService(
             loopName: name,
             source: 'auditor',
             rationale: args.rationale,
-            appliedAtSection: row.currentSectionIndex,
+            appliedAtSection: currentIndex,
             sectionsBefore,
             sectionsAfter,
           })

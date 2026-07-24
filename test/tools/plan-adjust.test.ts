@@ -207,12 +207,24 @@ describe('plan-adjust tool', () => {
   }
 
   async function executePlanAdjust(
-    args: { sections: Array<{ title: string; content: string }>; rationale: string },
+    args: {
+      sections?: Array<{ title: string; content: string }>
+      currentSection?: { title: string; content: string }
+      rationale: string
+    },
     sessionID?: string,
   ): Promise<string> {
     const tool = createPlanAdjustTool({ loop: { service: loopService } } as any)
     const result = await tool.execute(args, makeToolContext(sessionID ?? ''))
     return typeof result === 'string' ? result : JSON.stringify(result.output)
+  }
+
+  function seedSections(loopName: string, sections: Array<{ title: string; content: string }>) {
+    sectionPlansRepo.bulkInsert({
+      projectId,
+      loopName,
+      sections: sections.map((s, index) => ({ index, title: s.title, content: s.content })),
+    })
   }
 
   function parseJson(result: string) {
@@ -330,6 +342,30 @@ describe('plan-adjust tool', () => {
       ))
       expect(result.error).toContain('Not in a loop session')
     })
+
+    test('returns error when neither sections nor currentSection is provided', async () => {
+      insertLoop('test-loop', { currentSessionId: 'test-loop-session', totalSections: 3, currentSectionIndex: 1 })
+      const result = parseJson(await executePlanAdjust(
+        { rationale: 'nothing to change' },
+        'test-loop-session',
+      ))
+      expect(result.error).toContain('no changes specified')
+    })
+
+    test('rejects editing an already-completed current section', async () => {
+      insertLoop('test-loop', { currentSessionId: 'test-loop-session', totalSections: 3, currentSectionIndex: 1 })
+      seedSections('test-loop', [
+        { title: 'S0', content: 'c0' },
+        { title: 'S1', content: 'c1' },
+        { title: 'S2', content: 'c2' },
+      ])
+      loopService.completeSection('test-loop', 1, { done: 'x', deviations: null, followUps: null })
+      const result = parseJson(await executePlanAdjust(
+        { currentSection: { title: 'S1-new', content: 'c1-new' }, rationale: 'edit completed section' },
+        'test-loop-session',
+      ))
+      expect(result.error).toContain('completed')
+    })
   })
 
   describe('success cases', () => {
@@ -367,6 +403,94 @@ describe('plan-adjust tool', () => {
       const result = parseJson(resultStr)
       expect(result.ok).toBe(true)
       expect(result).toHaveProperty('total_sections')
+    })
+
+    test('edits the current section in place, preserving its progress and total', async () => {
+      insertLoop('test-loop', { currentSessionId: 'test-loop-session', totalSections: 3, currentSectionIndex: 1 })
+      seedSections('test-loop', [
+        { title: 'S0', content: 'c0' },
+        { title: 'S1', content: 'c1-old' },
+        { title: 'S2', content: 'c2' },
+      ])
+      loopService.startSection('test-loop', 1)
+      loopService.incrementSectionAttempts('test-loop', 1)
+
+      const result = parseJson(await executePlanAdjust(
+        { currentSection: { title: 'S1-new', content: 'c1-new' }, rationale: 'unforeseen outcome: current section must be rescoped' },
+        'test-loop-session',
+      ))
+      expect(result.ok).toBe(true)
+      expect(result.total_sections).toBe(3)
+
+      const cur = sectionPlansRepo.get(projectId, 'test-loop', 1)!
+      expect(cur.title).toBe('S1-new')
+      expect(cur.content).toBe('c1-new')
+      expect(cur.status).toBe('in_progress')
+      expect(cur.attempts).toBe(1)
+
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 0)!.content).toBe('c0')
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 2)!.content).toBe('c2')
+    })
+
+    test('omitting sections leaves future sections unchanged while editing current', async () => {
+      insertLoop('test-loop', { currentSessionId: 'test-loop-session', totalSections: 3, currentSectionIndex: 1 })
+      seedSections('test-loop', [
+        { title: 'S0', content: 'c0' },
+        { title: 'S1', content: 'c1-old' },
+        { title: 'S2', content: 'c2' },
+      ])
+      loopService.startSection('test-loop', 1)
+
+      const result = parseJson(await executePlanAdjust(
+        { currentSection: { title: 'S1-new', content: 'c1-new' }, rationale: 'edit current only' },
+        'test-loop-session',
+      ))
+      expect(result.ok).toBe(true)
+      expect(result.total_sections).toBe(3)
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 2)!.title).toBe('S2')
+    })
+
+    test('edits current section and replaces the pending suffix together', async () => {
+      insertLoop('test-loop', { currentSessionId: 'test-loop-session', totalSections: 3, currentSectionIndex: 1 })
+      seedSections('test-loop', [
+        { title: 'S0', content: 'c0' },
+        { title: 'S1', content: 'c1-old' },
+        { title: 'S2', content: 'c2' },
+      ])
+      loopService.startSection('test-loop', 1)
+
+      const result = parseJson(await executePlanAdjust(
+        {
+          currentSection: { title: 'S1-new', content: 'c1-new' },
+          sections: [{ title: 'S2-new', content: 'c2-new' }],
+          rationale: 'rescope current and remaining',
+        },
+        'test-loop-session',
+      ))
+      expect(result.ok).toBe(true)
+      expect(result.total_sections).toBe(3)
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 1)!.content).toBe('c1-new')
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 2)!.title).toBe('S2-new')
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 2)!.status).toBe('pending')
+    })
+
+    test('editing current section with empty sections removes the pending suffix', async () => {
+      insertLoop('test-loop', { currentSessionId: 'test-loop-session', totalSections: 3, currentSectionIndex: 1 })
+      seedSections('test-loop', [
+        { title: 'S0', content: 'c0' },
+        { title: 'S1', content: 'c1-old' },
+        { title: 'S2', content: 'c2' },
+      ])
+      loopService.startSection('test-loop', 1)
+
+      const result = parseJson(await executePlanAdjust(
+        { currentSection: { title: 'S1-new', content: 'c1-new' }, sections: [], rationale: 'drop remaining, rescope current' },
+        'test-loop-session',
+      ))
+      expect(result.ok).toBe(true)
+      expect(result.total_sections).toBe(2)
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 1)!.content).toBe('c1-new')
+      expect(sectionPlansRepo.get(projectId, 'test-loop', 2)).toBeNull()
     })
   })
 })

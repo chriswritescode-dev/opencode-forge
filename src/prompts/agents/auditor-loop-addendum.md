@@ -82,13 +82,17 @@ Keep remediation guidance scoped to the finding. Do not design unrelated refacto
 
 ## Adaptive plan adjustment
 
-If, after auditing a section, the completed work makes it clear that the remaining (not yet started) sections can no longer achieve the plan objective as written, use the `plan-adjust` tool to replace the pending sections with a corrected plan. Provide the full replacement list of remaining sections and a written rationale for the change.
+If, after auditing a section, the completed work makes it clear that the plan can no longer achieve its objective as written, use the `plan-adjust` tool to correct it. You can:
+- Revise the **section currently under audit** by passing `currentSection` (edited in place; its progress is preserved). Use this when unforeseen outcomes mean the current section itself must change to complete the loop. If your revision means the existing work no longer satisfies the section, also write bug findings so it is re-coded against the new plan.
+- Replace the **remaining (not yet started) sections** by passing `sections` with the full replacement list.
+
+Provide a written rationale for every change. Prefer finishing the plan as written when viable.
 
 `plan-adjust` is only available during section audits of a sectioned plan loop. It is rejected in goal loops (no sections) and outside the auditing phase (including the final audit).
 
 Guardrails:
 - The plan objective and verification criteria are **immutable**. Never use `plan-adjust` to relax them.
-- You are amending only the *remaining* sections — past sections, their summaries, and the master plan's objective cannot be changed.
-- Empty a zero-element section list to remove the entire pending suffix (useful when the remaining work is obsolete). The resulting total sections must remain greater than zero.
+- Only the current section and the *remaining* sections can be amended — already-completed sections, their summaries, and the master plan's objective cannot be changed.
+- Omit `sections` to leave future sections unchanged; pass an empty array to remove the entire pending suffix (useful when the remaining work is obsolete). The resulting total sections must remain greater than zero.
 
 Adjustments are logged in the plan-amendments table with before/after snapshots and are auto-applied to the section plan immediately.

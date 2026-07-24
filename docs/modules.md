@@ -370,7 +370,7 @@ Implements tools callable by AI agents during conversations.
 | `review-delete` | `review.ts` | Delete a review finding by file and line |
 | `plan-read` | `plan-kv.ts` | Retrieve plans with pagination and pattern search |
 | `section-read` | `section-read.ts` | Retrieve a specific section of a plan |
-| `plan-adjust` | `plan-adjust.ts` | Auditor-only: replace the remaining sections of the active loop plan (logged as a plan amendment) |
+| `plan-adjust` | `plan-adjust.ts` | Auditor-only: revise the section under audit and/or replace the remaining sections of the active loop plan (logged as a plan amendment) |
 | `execute-plan` | `loop.ts` | Execute a plan using an iterative development loop, or `mode: new-session` for a fresh standalone session. Args: `title` required; `plan`, `loopName`, `hostSessionId`, `mode` optional. |
 | `execute-goal` | `loop.ts` | Execute a non-empty goal in a dedicated session inside a managed worktree. Args: `goal` required; `title`, `loopName`, `maxIterations`, `hostSessionId` optional. |
 | `loop-status` | `loop.ts` | List active/recent loops, show cumulative usage for detailed status, or restart loops with `restart`/`force` arguments |
