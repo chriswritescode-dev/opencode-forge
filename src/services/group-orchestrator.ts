@@ -551,10 +551,11 @@ export function createGroupOrchestrator(deps: {
       return [{ group, features }]
     }
 
-    const groups = repo.listGroups(projectId)
-    return groups.map(group => ({
+    // One query for every group's features instead of one per group.
+    const byGroup = repo.listFeaturesByGroup(projectId)
+    return repo.listGroups(projectId).map(group => ({
       group,
-      features: repo.listFeatures(projectId, group.groupId),
+      features: byGroup.get(group.groupId) ?? [],
     }))
   }
 

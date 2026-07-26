@@ -18,6 +18,27 @@ function getDbPath(): string {
   return join(resolveDataDir(), 'forge.db')
 }
 
+/**
+ * Opens the forge database read-only, runs `read`, and always closes the
+ * handle. Returns `fallback` when the file is missing or any step throws: the
+ * TUI renders whatever it can rather than surfacing a database error.
+ */
+function withReadOnlyForgeDb<T>(dbPathOverride: string | undefined, fallback: T, read: (db: Database) => T): T {
+  const dbPath = dbPathOverride || getDbPath()
+  if (!existsSync(dbPath)) return fallback
+
+  let db: Database | null = null
+  try {
+    db = new Database(dbPath, { readonly: true })
+    db.run('PRAGMA busy_timeout=5000')
+    return read(db)
+  } catch {
+    return fallback
+  } finally {
+    try { db?.close() } catch {}
+  }
+}
+
 const cap200 = (s: string | null | undefined): string | null =>
   s ? (s.length > 200 ? s.slice(0, 200) : s) : null
 
@@ -68,26 +89,15 @@ function rowToLoopInfo(row: import('../storage/repos/loops-repo').LoopRow, secti
  * Returns the same shape as the former `rpc('loops.list')`.
  */
 export function fetchLoopsList(projectId: string, dbPathOverride?: string): LoopInfo[] {
-  const dbPath = dbPathOverride || getDbPath()
-  if (!existsSync(dbPath)) return []
-
-  let db: Database | null = null
-  try {
-    db = new Database(dbPath, { readonly: true })
-    db.run('PRAGMA busy_timeout=5000')
+  return withReadOnlyForgeDb(dbPathOverride, [], (db) => {
     const loopsRepo = createLoopsRepo(db)
     const sectionPlansRepo = createSectionPlansRepo(db)
 
-    const rows = loopsRepo.listAll(projectId)
-    return rows.map((row) => {
+    return loopsRepo.listAll(projectId).map((row) => {
       const plans = sectionPlansRepo.list(projectId, row.loopName)
       return rowToLoopInfo(row, plans.length > 0 ? plans : undefined)
     })
-  } catch {
-    return []
-  } finally {
-    try { db?.close() } catch {}
-  }
+  })
 }
 
 /**
@@ -95,18 +105,7 @@ export function fetchLoopsList(projectId: string, dbPathOverride?: string): Loop
  * Returns null when the database, row, or content is absent.
  */
 export function fetchStoredSessionPlan(projectId: string, sessionId: string, dbPathOverride?: string): string | null {
-  const dbPath = dbPathOverride || getDbPath()
-  if (!existsSync(dbPath)) return null
-
-  let db: Database | null = null
-  try {
-    db = new Database(dbPath, { readonly: true })
-    db.run('PRAGMA busy_timeout=5000')
-    const plansRepo = createPlansRepo(db)
-    return plansRepo.getForSession(projectId, sessionId)?.content ?? null
-  } catch {
-    return null
-  } finally {
-    try { db?.close() } catch {}
-  }
+  return withReadOnlyForgeDb(dbPathOverride, null, (db) =>
+    createPlansRepo(db).getForSession(projectId, sessionId)?.content ?? null
+  )
 }

@@ -25,8 +25,6 @@ import { generateUniqueName } from './name-uniqueness'
 import { bumpRecurrence, findingRecurrenceKey } from './finding-recurrence'
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 
-export { MAX_TOTAL_SECTIONS }
-
 export const MAX_RETRIES = 3
 const STALL_TIMEOUT_MS = 60_000
 const MAX_CONSECUTIVE_STALLS = 5

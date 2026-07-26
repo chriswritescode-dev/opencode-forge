@@ -51,9 +51,6 @@ function writeAndReport(ctx: ToolContext, sessionID: string, planText: string, p
     sessionID,
     planText,
   )
-  if (result.status !== 'captured' && result.status !== 'already-current') {
-    return `plan-write failed: unexpected write status ${result.status}.`
-  }
   return `${prefix ?? ''}${formatPlanStructureSummary(summarizePlanStructure(result.planText))}`
 }
 
@@ -125,7 +122,8 @@ export function createPlanAuthoringTools(ctx: ToolContext): Record<string, Retur
           return 'plan-edit failed: oldString and newString are identical.'
         }
 
-        const occurrences = existing.content.split(args.oldString).length - 1
+        const parts = existing.content.split(args.oldString)
+        const occurrences = parts.length - 1
         if (occurrences === 0) {
           return (
             'plan-edit failed: oldString not found in the stored plan. ' +
@@ -140,15 +138,8 @@ export function createPlanAuthoringTools(ctx: ToolContext): Record<string, Retur
         }
 
         const next = args.replaceAll
-          ? existing.content.split(args.oldString).join(args.newString)
-          : (() => {
-              const at = existing.content.indexOf(args.oldString)
-              return (
-                existing.content.slice(0, at) +
-                args.newString +
-                existing.content.slice(at + args.oldString.length)
-              )
-            })()
+          ? parts.join(args.newString)
+          : parts[0] + args.newString + parts.slice(1).join(args.oldString)
 
         if (next.trim() === '') {
           return (

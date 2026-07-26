@@ -6,7 +6,7 @@ import { formatSessionOutput, formatAuditResult, formatCompletionSummary, format
 import { fetchSessionOutput, type LoopSessionOutput, MAX_RETRIES } from '../loop'
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
-import { captureLatestPlanForSession } from '../services/plan-capture'
+import { resolveSessionPlanOfRecord } from '../services/plan-capture'
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
 import { getRestartability } from '../loop/restartability'
 import { loopBranchExists } from '../workspace/forge-naming'
@@ -88,32 +88,20 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
         let source: PlanSource
         if (!args.plan) {
-          // Storage is the plan of record: prefer an existing session-scoped
-          // row and skip legacy message capture so an older marked assistant
-          // response can never overwrite a newer `plan-write` row. Fall back to
-          // latest-message capture only when no row exists yet (back-compat for
-          // sessions whose marked plan was never captured).
-          const planRow = ctx.plansRepo.getForSession(ctx.projectId, context.sessionID)
-          if (planRow) {
-            source = { kind: 'stored', sessionId: context.sessionID }
-          } else {
-            const capture = await captureLatestPlanForSession(
-              {
-                client: ctx.client,
-                plansRepo: ctx.plansRepo,
-                projectId: ctx.projectId,
-                directory: ctx.directory,
-                logger: ctx.logger,
-              },
-              context.sessionID
-            )
-
-            if (capture.status === 'captured' || capture.status === 'already-current') {
-              source = { kind: 'stored', sessionId: context.sessionID }
-            } else {
-              return 'No plan found. Ensure the final plan is wrapped with <!-- forge-plan:start --> and <!-- forge-plan:end --> markers, or pass it directly as the plan argument.'
-            }
+          const resolved = await resolveSessionPlanOfRecord(
+            {
+              client: ctx.client,
+              plansRepo: ctx.plansRepo,
+              projectId: ctx.projectId,
+              directory: ctx.directory,
+              logger: ctx.logger,
+            },
+            context.sessionID
+          )
+          if (!resolved) {
+            return 'No plan found. Author it with the plan-write tool, wrap the final plan in <!-- forge-plan:start --> and <!-- forge-plan:end --> markers, or pass it directly as the plan argument.'
           }
+          source = { kind: 'stored', sessionId: context.sessionID }
         } else {
           source = { kind: 'inline', planText: args.plan }
         }

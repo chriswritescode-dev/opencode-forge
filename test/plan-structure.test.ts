@@ -1,10 +1,9 @@
 import { describe, test, expect } from 'vitest'
 import {
-  countSectionMarkers,
   summarizePlanStructure,
   formatPlanStructureSummary,
 } from '../src/utils/plan-structure'
-import { MAX_TOTAL_SECTIONS } from '../src/loop/service'
+import { MAX_TOTAL_SECTIONS } from '../src/constants/loop'
 
 function planWithMarkers(count: number, body = 'body'): string {
   const parts: string[] = []
@@ -14,24 +13,22 @@ function planWithMarkers(count: number, body = 'body'): string {
   return parts.join('\n')
 }
 
-describe('countSectionMarkers', () => {
+describe('summarizePlanStructure', () => {
   test('counts unfenced <!-- forge-section --> marker lines', () => {
-    expect(countSectionMarkers('<!-- forge-section -->\n## Phase 1\nbody')).toBe(1)
-    expect(countSectionMarkers(planWithMarkers(3))).toBe(3)
+    expect(summarizePlanStructure('<!-- forge-section -->\n## Phase 1\nbody').sectionMarkers).toBe(1)
+    expect(summarizePlanStructure(planWithMarkers(3)).sectionMarkers).toBe(3)
   })
 
-  test('returns 0 when no markers are present', () => {
-    expect(countSectionMarkers('## Phase 1\nbody')).toBe(0)
-    expect(countSectionMarkers('')).toBe(0)
+  test('reports 0 markers when none are present', () => {
+    expect(summarizePlanStructure('## Phase 1\nbody').sectionMarkers).toBe(0)
+    expect(summarizePlanStructure('').sectionMarkers).toBe(0)
   })
 
   test('ignores markers inside ``` fences', () => {
     const plan = ['<!-- forge-section -->', '## Phase 1', '```ts', '<!-- forge-section -->', 'const x = 1', '```', 'body'].join('\n')
-    expect(countSectionMarkers(plan)).toBe(1)
+    expect(summarizePlanStructure(plan).sectionMarkers).toBe(1)
   })
-})
 
-describe('summarizePlanStructure', () => {
   test('basic summary with 3 markers and 3 non-empty bodies', () => {
     const summary = summarizePlanStructure(planWithMarkers(3))
     expect(summary.sectionMarkers).toBe(3)

@@ -6,11 +6,14 @@
  * across the plan pipeline.
  */
 export function computeFenceMask(lines: string[]): boolean[] {
-  const mask: boolean[] = []
+  const mask = new Array<boolean>(lines.length)
   let fence = false
-  for (const line of lines) {
-    if (/^```/.test(line.trim())) fence = !fence
-    mask.push(fence)
+  for (let i = 0; i < lines.length; i++) {
+    // Anchored leading-whitespace match rather than `line.trim()`: equivalent
+    // for a `^```" test, and avoids one throwaway string per line on what is
+    // the hot loop of the whole plan pipeline.
+    if (/^\s*```/.test(lines[i])) fence = !fence
+    mask[i] = fence
   }
   return mask
 }

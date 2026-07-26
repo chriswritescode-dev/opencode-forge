@@ -104,7 +104,7 @@ Execution flow dialog with mode and model selection:
 
 ## Features
 
-- **Plans** — architect produces marked plans that are auto-captured to SQL storage
+- **Plans** — architect authors plans directly into SQL storage with `plan-write`/`plan-edit`; marked plans emitted in chat are still auto-captured
 - **Execution** — approved-plan launch paths plus direct `/execute-goal` loops in dedicated worktree sessions; plan loops can also target a configured remote opencode server (see [Configuration](_media/configuration.md#remotes))
 - **Loops** — iterative coding/auditing with isolated git worktree and optional Docker sandbox
 - **Review Findings** — persistent, loop-scoped review findings across loop sessions
@@ -126,7 +126,7 @@ The auditor agent is a read-only subagent that cannot edit source files or execu
 
 **Tool restrictions:** The auditor cannot use file-editing tools, planning tools, or loop-management tools. See [Auditor restrictions](_media/agents-and-commands.md#auditor-restrictions).
 
-The architect agent operates as a read-only planner with message-level reinforcement via the `experimental.chat.messages.transform` hook. Final plans are rendered once in the assistant response between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers, then auto-captured into SQL before execution approval. After user approval via the question tool, execution is dispatched programmatically — no additional LLM calls are needed. The user can view and edit the cached plan from the sidebar or command palette before or during execution. 
+The architect agent operates as a read-only planner with message-level reinforcement via the `experimental.chat.messages.transform` hook. Final plans are authored straight into SQL storage with the `plan-write` and `plan-edit` tools, which return a structure report the architect uses to fix warnings before asking for approval. A plan emitted in the assistant response between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers is still auto-captured into the same row, so marker-only architect prompts keep working. After user approval via the question tool, execution is dispatched programmatically — no additional LLM calls are needed. The user can view and edit the stored plan from the sidebar or command palette before or during execution. 
 
 ## Tools
 
@@ -134,7 +134,7 @@ See [Tools reference](_media/tools.md) for full arguments, section-scoping behav
 
 Forge provides these tool groups:
 
-- **Plan tools** — `plan-read`, `section-read`
+- **Plan tools** — `plan-write`, `plan-edit`, `plan-read`, `section-read`, `plan-adjust`
 - **Review tools** — `review-write`, `review-read`, `review-delete`
 - **Loop tools** — `execute-plan`, `execute-goal`, `loop-cancel`, `loop-status`
 - **Sandbox shell** — `sh` when a sandbox manager is available
@@ -223,7 +223,7 @@ The sidebar shows Forge's connection status and version. Captured plans live on 
 
 ### Execution Dialog
 
-Open the dialog from the command palette as `Execute plan` (default keybind `<leader>f`). The plan is sourced from the most recent architect message in the current session — the marked `<!-- forge-plan:start --> ... <!-- forge-plan:end -->` block is parsed out of the assistant's reply. If no marked plan exists in the session, the dialog will not open and you'll see a toast asking the architect to produce one first.
+Open the dialog from the command palette as `Execute plan` (default keybind `<leader>f`). The plan is sourced from the stored plan for the current session, so the dialog shows exactly what `execute-plan` would run. When no stored row exists, the most recent architect message is scanned for a marked `<!-- forge-plan:start --> ... <!-- forge-plan:end -->` block as a fallback. If neither is present, the dialog will not open and you'll see a toast asking the architect to produce a plan first.
 
 The dialog provides full control over execution parameters:
 
@@ -325,9 +325,9 @@ Plan with a smart model, execute with a fast model. The architect agent research
 
 ### How Plans Work
 
-The architect is read-only and must output exactly one final plan between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers. Forge auto-captures that marked plan into SQL storage for the current session.
+The architect is read-only and authors the plan into SQL storage for the current session with `plan-write`, appending further phases with `plan-write { append: true }` and revising with `plan-edit`. Every write returns a structure report — line/character counts, the detected `Loop Name:`, the sections the decomposer would emit, and warnings — so structural problems surface before approval. If those tools are unavailable, a plan emitted once between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers is auto-captured into the same row.
 
-The captured plan is the source of truth for execution. The architect's own message in the chat history is the human-readable view; programmatic access is via the `plan-read` tool.
+The stored plan is the source of truth for execution: `execute-plan`, the approval hook, and the TUI dialog all read it, and a marker-free assistant message can never replay an older chat plan over a newer tool-authored one. Programmatic access is via the `plan-read` tool.
 
 ### Execution
 
@@ -377,7 +377,7 @@ Model and variant selection follows this priority order:
 
 ### Troubleshooting
 
-- **No plan found** — Ensure the architect output included the `<!-- forge-plan:start -->` / `<!-- forge-plan:end -->` markers; the capture hook only stores plans wrapped in those markers.
+- **No plan found** — Ensure the architect called `plan-write`, or that its response wrapped the plan in `<!-- forge-plan:start -->` / `<!-- forge-plan:end -->` markers; a plan emitted in chat without those markers is not captured.
 - **TUI shows no plan** — Plans are session-scoped on the server; switch to the session where the architect produced the plan.
 - **Need logs** — Set `logging.enabled` to `true`, and optionally `logging.debug` for verbose output.
 

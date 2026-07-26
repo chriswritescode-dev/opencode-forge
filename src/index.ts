@@ -14,7 +14,7 @@ import { defaultGitService } from './utils/git-service'
 import { resolveSandboxContextForLoop, isSandboxConfigEnabled } from './sandbox/context'
 import { resolveForgeTempDir } from './utils/opencode-paths'
 import { isForgeWorktreeDir } from './workspace/forge-naming'
-import { resolveLoopAllowedDirectories } from './constants/loop'
+import { MAX_TOTAL_SECTIONS, resolveLoopAllowedDirectories } from './constants/loop'
 import { mkdirSync } from 'fs'
 import { createSandboxManager } from './sandbox/manager'
 import type { PluginConfig, CompactionConfig } from './types'
@@ -37,7 +37,7 @@ import { createGroupOrchestrator, mapLoopStateToOutcome, type GroupOrchestrator,
 import { parseModelString } from './utils/model-fallback'
 import { parseFeatureList } from './utils/feature-list-parser'
 import { classifyArchitectOutput } from './utils/architect-auto-output'
-import { captureLatestPlanForSession } from './services/plan-capture'
+import { resolveSessionPlanOfRecord } from './services/plan-capture'
 import { createForgeExecutionService, type ForgeExecutionRequestContext } from './services/execution'
 
 export interface CreateParentSessionLookupOptions {
@@ -548,21 +548,14 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       },
 
       async capturePlan(sessionId) {
-        const result = await captureLatestPlanForSession({
+        const captured = await resolveSessionPlanOfRecord({
           client: forgeClient,
           plansRepo,
           projectId,
           directory,
           logger,
         }, sessionId)
-        if (result.status === 'captured' || result.status === 'already-current') return { captured: true }
-        // Tool-authored plans never appear as marked text in chat; the stored row is
-        // the plan of record, so treat its presence as a successful capture.
-        if (plansRepo.getForSession(projectId, sessionId)) {
-          logger.log(`capturePlan: using stored plan for session ${sessionId} (no marked plan in chat)`)
-          return { captured: true }
-        }
-        return { captured: false }
+        return { captured }
       },
 
       async classifyArchitectFailure(sessionId) {
@@ -778,9 +771,9 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 READ-ONLY mode: no file edits, no destructive commands. Search and analyze only. Ask clarifying questions during research on scope, intent, or tradeoffs. Writing the plan with plan-write/plan-edit is expected and is not a file edit.
 
 When producing the final plan:
-- Author it into storage with \`plan-write\`; append further phases with \`plan-write { append: true }\`; revise with \`plan-edit\`. Do not emit the full plan in chat.
+- Author it into storage with \`plan-write\`; append further phases with \`plan-write { append: true }\`; revise with \`plan-edit\`. Prefer this over emitting the full plan in chat. If \`plan-write\` is unavailable, emit the plan once in chat wrapped in \`<!-- forge-plan:start -->\` / \`<!-- forge-plan:end -->\` markers; that is captured into the same stored plan.
 - Include one plain machine-readable \`Loop Name: short-slug\` line near the top, immediately after the objective. Not a heading or bullet.
-- Use exactly one \`<!-- forge-section -->\` marker per executable phase, immediately before that phase's \`## Phase\` heading, and at most 24 phases.
+- Use exactly one \`<!-- forge-section -->\` marker per executable phase, immediately before that phase's \`## Phase\` heading, and at most ${MAX_TOTAL_SECTIONS} phases.
 - Do not insert \`<!-- forge-section -->\` before \`### Files\`, \`### Edits\`, \`### Acceptance Criteria\`, or \`### Verification\`.
 - Shared \`## Decisions\` / \`## Conventions\` / \`## Key Context\` blocks go after all sections (no preceding marker).
 - Read the structure report returned by every plan write and fix warnings before asking for approval.

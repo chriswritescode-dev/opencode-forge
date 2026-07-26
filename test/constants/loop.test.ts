@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories, MAX_TOTAL_SECTIONS } from '../../src/constants/loop'
-import { MAX_TOTAL_SECTIONS as MAX_TOTAL_SECTIONS_FROM_SERVICE } from '../../src/loop/service'
+import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories, MAX_TOTAL_SECTIONS, PLAN_AUTHORING_TOOL_NAMES } from '../../src/constants/loop'
 import { resolveOpencodeToolOutputDir, DEFAULT_FORGE_TMP_DIR } from '../../src/utils/opencode-paths'
 
 const TOOL_OUTPUT_DIR = resolveOpencodeToolOutputDir()
@@ -10,9 +9,14 @@ const TOOL_OUTPUT_ALLOW_RULES = [
 ]
 
 describe('MAX_TOTAL_SECTIONS', () => {
-  it('is the single canonical section cap re-exported by loop/service', () => {
+  it('is the single canonical section cap', () => {
     expect(MAX_TOTAL_SECTIONS).toBe(24)
-    expect(MAX_TOTAL_SECTIONS_FROM_SERVICE).toBe(MAX_TOTAL_SECTIONS)
+  })
+})
+
+describe('PLAN_AUTHORING_TOOL_NAMES', () => {
+  it('is the single list of plan-authoring tools every deny path derives from', () => {
+    expect(PLAN_AUTHORING_TOOL_NAMES).toEqual(['plan-write', 'plan-edit'])
   })
 })
 

@@ -1,5 +1,4 @@
-import { computeFenceMask } from './markdown-fences'
-import { SECTION_MARKER_REGEX, decomposeDeterministically } from '../services/deterministic-decomposer'
+import { decomposePlanSections } from '../services/deterministic-decomposer'
 import { findExplicitLoopName } from './plan-execution'
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 
@@ -22,32 +21,22 @@ export interface PlanStructureSummary {
 const NON_REPO_RELATIVE_PATH_REGEX = /(?:^|\s|`|\()((?:~\/|\/Users\/|\/home\/|\/private\/)[^\s`]+)/
 
 /**
- * Counts unfenced `<!-- forge-section -->` marker lines in a plan, reusing the
- * shared fence mask and the decomposer's canonical marker regex so the count
- * matches what the decomposer would actually split on.
- */
-export function countSectionMarkers(planText: string): number {
-  const lines = planText.split('\n')
-  const mask = computeFenceMask(lines)
-  let count = 0
-  for (let i = 0; i < lines.length; i++) {
-    if (mask[i]) continue
-    if (SECTION_MARKER_REGEX.test(lines[i].trim())) count++
-  }
-  return count
-}
-
-/**
  * Produces a structural summary of a plan: line/char counts, section marker
  * count, the sections the decomposer would actually emit (after cap and
  * empty-body skipping), the explicit loop name (if any), and a list of
  * authoring warnings in a stable order.
  */
 export function summarizePlanStructure(planText: string): PlanStructureSummary {
-  const lines = planText.split('\n')
-  const sectionMarkers = countSectionMarkers(planText)
-  const decomposed = decomposeDeterministically(planText, { maxSections: MAX_TOTAL_SECTIONS })
-  const sections: PlanSectionOutline[] = decomposed.map((s) => ({ index: s.index, title: s.title }))
+  // One uncapped decomposition answers everything. The capped run is exactly
+  // this list's prefix: the decomposer skips empty bodies without consuming cap
+  // budget and numbers sections by output position, so slicing yields identical
+  // indices and titles.
+  const { sections: allSections, markerCount: sectionMarkers } = decomposePlanSections(planText, {
+    maxSections: Number.MAX_SAFE_INTEGER,
+  })
+  const sections: PlanSectionOutline[] = allSections
+    .slice(0, MAX_TOTAL_SECTIONS)
+    .map((s) => ({ index: s.index, title: s.title }))
   const loopName = findExplicitLoopName(planText)
 
   const warnings: string[] = []
@@ -62,14 +51,13 @@ export function summarizePlanStructure(planText: string): PlanStructureSummary {
     )
   }
 
-  // Compute empty-body loss independently from cap truncation. Decomposing
-  // without a cap yields every marker with a non-empty body; the difference
-  // from `sectionMarkers` is exactly the markers the decomposer skips for
-  // being empty. Counting it via the uncapped decompose (rather than the
-  // capped `sections.length`) keeps the two warnings from suppressing each
-  // other when a plan both overflows the cap and has empty phases.
-  const uncappedSections = decomposeDeterministically(planText, { maxSections: Number.MAX_SAFE_INTEGER })
-  const emptyBodyLoss = Math.max(0, sectionMarkers - uncappedSections.length)
+  // Compute empty-body loss independently from cap truncation. `allSections`
+  // holds every marker with a non-empty body, so the difference from
+  // `sectionMarkers` is exactly the markers the decomposer skips for being
+  // empty. Measuring it against the uncapped list (rather than the capped
+  // `sections.length`) keeps the two warnings from suppressing each other when
+  // a plan both overflows the cap and has empty phases.
+  const emptyBodyLoss = Math.max(0, sectionMarkers - allSections.length)
   if (emptyBodyLoss > 0) {
     warnings.push(`${emptyBodyLoss} section marker(s) have empty bodies and will be skipped.`)
   }
@@ -84,7 +72,7 @@ export function summarizePlanStructure(planText: string): PlanStructureSummary {
   }
 
   return {
-    lines: lines.length,
+    lines: planText.split('\n').length,
     characters: planText.length,
     sectionMarkers,
     sections,

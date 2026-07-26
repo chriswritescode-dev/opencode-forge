@@ -1,8 +1,13 @@
 import type { ForgeClient } from '../client/port'
 import type { PlansRepo } from '../storage/repos/plans-repo'
 import type { Logger } from '../types'
-import type { PlanCaptureMessage } from '../utils/marked-plan-parser'
-import { extractMarkedPlan, inspectLatestMarkedPlan, sanitizePlanPaths } from '../utils/marked-plan-parser'
+import type { LatestMarkedPlanInspection, PlanCaptureMessage } from '../utils/marked-plan-parser'
+import {
+  PLAN_CAPTURE_MESSAGE_LIMIT,
+  extractMarkedPlan,
+  inspectLatestMarkedPlan,
+  sanitizePlanPaths,
+} from '../utils/marked-plan-parser'
 
 export interface CaptureLatestPlanDeps {
   client: ForgeClient
@@ -18,6 +23,9 @@ type CaptureLatestPlanResult =
   | { status: 'not-found' }
   | { status: 'invalid'; reason: string }
   | { status: 'read-failed'; error: unknown }
+
+/** The only two outcomes a direct write can produce. */
+type WriteSessionPlanResult = Extract<CaptureLatestPlanResult, { status: 'captured' | 'already-current' }>
 
 type ReadRecentMessagesResult =
   | { status: 'found'; messages: PlanCaptureMessage[] }
@@ -43,7 +51,7 @@ export function writeSessionPlanContent(
   sessionID: string,
   planText: string,
   messageId?: string
-): CaptureLatestPlanResult {
+): WriteSessionPlanResult {
   const sanitized = sanitizePlanPaths(planText, deps.directory)
   if (sanitized !== planText) {
     deps.logger.log(`plan-capture: stripped project-dir prefix from plan for session ${sessionID}`)
@@ -78,6 +86,29 @@ export function captureMarkedPlanTextForSession(
   return writeSessionPlanContent(deps, sessionID, extraction.planText, messageId)
 }
 
+/**
+ * Maps an `inspectLatestMarkedPlan` outcome onto a capture result, persisting
+ * the plan when one was found. Shared by both message-scanning capture paths so
+ * their logging and status mapping cannot diverge.
+ */
+function resultForInspection(
+  deps: CaptureMarkedPlanTextDeps,
+  sessionID: string,
+  inspection: LatestMarkedPlanInspection
+): CaptureLatestPlanResult {
+  if (inspection.status === 'found') {
+    return writeSessionPlanContent(deps, sessionID, inspection.planText, inspection.messageId)
+  }
+
+  if (inspection.status === 'invalid') {
+    deps.logger.log(`plan-capture: invalid marked plan in session ${sessionID}: ${inspection.reason}`)
+    return { status: 'invalid', reason: inspection.reason }
+  }
+
+  deps.logger.log(`plan-capture: no valid marked plan found in session ${sessionID}`)
+  return { status: 'not-found' }
+}
+
 async function readRecentMessages(
   deps: Pick<CaptureLatestPlanDeps, 'client' | 'directory' | 'logger'>,
   sessionID: string
@@ -86,7 +117,7 @@ async function readRecentMessages(
     const messages = await deps.client.session.messages({
       sessionID,
       directory: deps.directory,
-      limit: 20,
+      limit: PLAN_CAPTURE_MESSAGE_LIMIT,
     })
 
     if (messages && messages.length > 0) {
@@ -154,17 +185,7 @@ export async function capturePlanForCompletedMessage(
     return { status: 'not-found' }
   }
 
-  if (inspection.status === 'found') {
-    return writeSessionPlanContent(deps, sessionID, inspection.planText, inspection.messageId)
-  }
-
-  if (inspection.status === 'invalid') {
-    deps.logger.log(`plan-capture: invalid marked plan in session ${sessionID}: ${inspection.reason}`)
-    return { status: 'invalid', reason: inspection.reason }
-  }
-
-  deps.logger.log(`plan-capture: no valid marked plan found in session ${sessionID}`)
-  return { status: 'not-found' }
+  return resultForInspection(deps, sessionID, inspection)
 }
 
 /**
@@ -201,17 +222,33 @@ export async function captureLatestPlanForSession(
     return { status: 'already-current', planText: existing.content }
   }
 
-  const inspection = inspectLatestMarkedPlan(read.messages)
+  return resultForInspection(deps, sessionID, inspectLatestMarkedPlan(read.messages))
+}
 
-  if (inspection.status === 'found') {
-    return writeSessionPlanContent(deps, sessionID, inspection.planText, inspection.messageId)
+/**
+ * Resolves the plan of record for a session: the stored `plans` row when one
+ * exists, else a legacy marked-message capture. The single implementation of
+ * "storage wins, chat is the fallback" for every server-side consumer, so the
+ * precedence rule and its post-await race handling live in one place.
+ *
+ * Checking the row before reading messages also skips the `session.messages`
+ * round trip entirely in the common `plan-write` case. The second check covers
+ * a read failure, where `captureLatestPlanForSession` returns before its own
+ * revalidation.
+ */
+export async function resolveSessionPlanOfRecord(
+  deps: CaptureLatestPlanDeps,
+  sessionID: string
+): Promise<boolean> {
+  if (deps.plansRepo.getForSession(deps.projectId, sessionID)) return true
+
+  const capture = await captureLatestPlanForSession(deps, sessionID)
+  if (capture.status === 'captured' || capture.status === 'already-current') return true
+
+  if (deps.plansRepo.getForSession(deps.projectId, sessionID)) {
+    deps.logger.log(`plan-capture: using stored plan for session ${sessionID} (no marked plan in chat)`)
+    return true
   }
 
-  if (inspection.status === 'invalid') {
-    deps.logger.log(`plan-capture: invalid marked plan in session ${sessionID}: ${inspection.reason}`)
-    return { status: 'invalid', reason: inspection.reason }
-  }
-
-  deps.logger.log(`plan-capture: no valid marked plan found in session ${sessionID}`)
-  return { status: 'not-found' }
+  return false
 }

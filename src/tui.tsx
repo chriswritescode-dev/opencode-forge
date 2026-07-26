@@ -254,6 +254,10 @@ const tui: TuiPlugin = async (api) => {
   const pluginConfig = loadPluginConfig()
   const tuiConfig = pluginConfig.tui
   const directory = api.state.path.directory
+  // Every TUI reader of the forge database resolves it here so a configured
+  // `dataDir` cannot leave the dashboard and the execute-plan dialog pointed at
+  // different databases. `undefined` keeps each consumer's own default.
+  const forgeDbPath = pluginConfig.dataDir ? join(pluginConfig.dataDir, 'forge.db') : undefined
   const opts: TuiOptions = {
     sidebar: tuiConfig?.sidebar ?? true,
     showVersion: tuiConfig?.showVersion ?? true,
@@ -272,7 +276,7 @@ const tui: TuiPlugin = async (api) => {
   const runOpenDashboard = () => {
     if (!dashboardServer) {
       try {
-        dashboardServer = startDashboardServer()
+        dashboardServer = startDashboardServer({ dbPath: forgeDbPath })
       } catch (err) {
         api.ui.toast({
           message: err instanceof Error ? err.message : 'Failed to start dashboard',
@@ -375,7 +379,7 @@ const tui: TuiPlugin = async (api) => {
     if (connectPromise) return connectPromise
 
     setConnectionStatus('connecting')
-    connectPromise = connectForgeProject(api, directory, resolveLoopAllowedDirectories(pluginConfig), pluginConfig.dataDir ? join(pluginConfig.dataDir, 'forge.db') : undefined).then((connected) => untrack(() => {
+    connectPromise = connectForgeProject(api, directory, resolveLoopAllowedDirectories(pluginConfig), forgeDbPath).then((connected) => untrack(() => {
       connectPromise = null
       if (disposed) return connected
 

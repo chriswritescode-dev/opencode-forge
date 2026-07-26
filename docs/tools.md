@@ -43,7 +43,7 @@ Arguments:
 
 Creates, overwrites, or appends the plan stored for the current session — the plan of record read by `plan-read`, the approval hook, `execute-plan`, and the TUI plan dialog. Author long plans incrementally with `append` instead of emitting the whole plan in chat. Outer `<!-- forge-plan:start -->` / `<!-- forge-plan:end -->` markers are optional and stripped. Available to architect and architect-auto sessions; denied in code, auditor, auditor-loop, and feature-splitter sessions, and inside loop/audit sessions.
 
-Denied when the session owns a running loop: a running loop's plan is amended only with `plan-adjust` during a section audit. On success the tool persists the plan through the shared session-scoped write path and returns a structure report (section/objective/phase counts plus ordered warnings).
+Denied when the session owns a running loop: a running loop's plan is amended only with `plan-adjust` during a section audit. On success the tool persists the plan through the shared session-scoped write path and returns a structure report: a `Plan stored: N lines, M chars.` line, the detected `Loop Name:` when present, the numbered `Sections (N):` the decomposer would emit, and a `Warnings:` block when any apply.
 
 Arguments:
 
