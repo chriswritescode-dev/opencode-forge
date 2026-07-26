@@ -171,6 +171,14 @@ export function sectionStatusClass(s: string): string {
   return 'section-status section-' + s
 }
 
+// Group features have their own stage vocabulary (pending/planning/planned/
+// launching/running/completed/failed/cancelled) that only partly overlaps the
+// section-status vocabulary, so it gets its own class family rather than
+// borrowing `section-*` and rendering unstyled for the non-overlapping stages.
+export function featureStageClass(stage: string): string {
+  return 'feature-stage feature-stage-' + stage
+}
+
 export type SortMode = 'recent' | 'cost' | 'duration' | 'findings'
 
 export function loopMatchesFilters(
@@ -190,18 +198,6 @@ export function loopMatchesFilters(
   return hay.indexOf(q) !== -1
 }
 
-function parseDurationSeconds(s: string): number {
-  if (!s) return 0
-  let total = 0
-  const h = s.match(/(\d+)\s*h/i)
-  if (h) total += parseInt(h[1], 10) * 3600
-  const m = s.match(/(\d+)\s*m(?!s)/i)
-  if (m) total += parseInt(m[1], 10) * 60
-  const sec = s.match(/(\d+)\s*s/i)
-  if (sec) total += parseInt(sec[1], 10)
-  return total
-}
-
 export function sortLoops(loops: DashboardLoop[], mode: SortMode): DashboardLoop[] {
   if (mode === 'recent') return [...loops]
   const sorted = [...loops]
@@ -216,8 +212,8 @@ export function sortLoops(loops: DashboardLoop[], mode: SortMode): DashboardLoop
     })
   } else if (mode === 'duration') {
     sorted.sort((a, b) => {
-      const ad = a.duration ? parseDurationSeconds(a.duration) : 0
-      const bd = b.duration ? parseDurationSeconds(b.duration) : 0
+      const ad = computeElapsedSeconds(a.loop.startedAt, a.loop.completedAt ?? undefined)
+      const bd = computeElapsedSeconds(b.loop.startedAt, b.loop.completedAt ?? undefined)
       return bd - ad
     })
   } else if (mode === 'findings') {
@@ -226,11 +222,14 @@ export function sortLoops(loops: DashboardLoop[], mode: SortMode): DashboardLoop
   return sorted
 }
 
+/**
+ * Change key for a poll response, used to skip reconciliation when nothing
+ * moved. `generatedAt` is excluded because it changes on every poll; serializing
+ * only `projects` also keeps this on V8's fast stringify path (a replacer
+ * function would be invoked once per key/value pair of a multi-MB payload).
+ */
 export function dataHash(data: DashboardPayload): string {
-  return JSON.stringify(data, (_k: string, v: unknown) => {
-    if (_k === 'generatedAt') return undefined
-    return v
-  })
+  return JSON.stringify(data.projects)
 }
 
 export function buildRepoLabels(paths: string[]): Map<string, string> {
@@ -406,28 +405,31 @@ interface ModelUsageBar {
 }
 
 interface RoleUsageBar {
-  role: 'execution' | 'auditor'
+  role: 'execution' | 'auditor' | 'other'
   cost: number
   messageCount: number
   pct: number
 }
 
+/**
+ * Cost/message split by loop role. The persisted vocabulary is
+ * `code | auditor | unknown` (loop_session_usage.role); `code` is surfaced as
+ * "execution" to match the `executionModel` label used elsewhere in the UI, and
+ * anything else lands in "other" so the bars always reconcile with totalCost.
+ */
 export function roleUsageBars(u: NonNullable<DashboardLoop['usage']>): RoleUsageBar[] {
   const exec: RoleUsageBar = { role: 'execution', cost: 0, messageCount: 0, pct: 0 }
   const audit: RoleUsageBar = { role: 'auditor', cost: 0, messageCount: 0, pct: 0 }
+  const other: RoleUsageBar = { role: 'other', cost: 0, messageCount: 0, pct: 0 }
   for (const [role, agg] of Object.entries(u.byRole ?? {})) {
-    if (role === 'auditor') {
-      audit.cost += agg.cost
-      audit.messageCount += agg.messageCount
-    } else if (role === 'code') {
-      exec.cost += agg.cost
-      exec.messageCount += agg.messageCount
-    }
+    const bar = role === 'auditor' ? audit : role === 'code' ? exec : other
+    bar.cost += agg.cost
+    bar.messageCount += agg.messageCount
   }
-  const max = Math.max(exec.cost, audit.cost)
-  exec.pct = max > 0 ? (exec.cost / max) * 100 : 0
-  audit.pct = max > 0 ? (audit.cost / max) * 100 : 0
-  return [exec, audit]
+  const bars = other.cost > 0 || other.messageCount > 0 ? [exec, audit, other] : [exec, audit]
+  const max = bars.reduce((m, b) => Math.max(m, b.cost), 0)
+  for (const bar of bars) bar.pct = max > 0 ? (bar.cost / max) * 100 : 0
+  return bars
 }
 
 export function modelUsageBars(u: NonNullable<DashboardLoop['usage']>): ModelUsageBar[] {
@@ -473,25 +475,64 @@ export function formatRelativeTime(ts: number | null | undefined): string {
   return fmtTime(ts)
 }
 
-export function renderMarkdown(src: string): string {
-  if (!src) return ''
-  const cached = markdownCache.get(src)
+export interface MarkdownHeading { depth: number; id: string; text: string }
+export interface MarkdownResult { html: string; outline: MarkdownHeading[] }
+
+// Default marked output is `<hN>...</hN>` with no id; code-block content is
+// HTML-escaped, so a literal `<h1>` inside a code block becomes `&lt;h1&gt;`
+// and is not matched here.
+const HEADING_RE = /<h([1-6])>([\s\S]*?)<\/h\1>/g
+
+function stripHtml(html: string): string {
+  return html.replace(/<[^>]+>/g, '').replace(/&[a-z#0-9]+;/gi, '').trim()
+}
+
+function slugifyHeading(htmlText: string): string {
+  const text = stripHtml(htmlText)
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, '')
+    .replace(/[\s_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return text || 'heading'
+}
+
+function injectHeadingIds(html: string): { html: string; outline: MarkdownHeading[] } {
+  if (!/<h[1-6]>/.test(html)) return { html, outline: [] }
+  const outline: MarkdownHeading[] = []
+  const out = html.replace(HEADING_RE, (_full, levelStr: string, inner: string) => {
+    const depth = Number(levelStr)
+    const id = slugifyHeading(inner)
+    outline.push({ depth, id, text: stripHtml(inner) })
+    return `<h${depth} id="${id}">${inner}</h${depth}>`
+  })
+  return { html: out, outline }
+}
+
+function computeMarkdown(src: string): MarkdownResult {
+  if (!src) return { html: '', outline: [] }
+  const cached = markdownResultCache.get(src)
   if (cached !== undefined) return cached
   const m = (globalThis as { marked?: { parse(s: string): string } }).marked
-  if (!m) return ''
-  const result = m.parse(src)
-  if (result) {
-    // Evict oldest entry if at capacity (insertion-order eviction)
-    if (markdownCache.size >= MD_CACHE_MAX) {
-      const firstKey = markdownCache.keys().next().value
-      if (firstKey !== undefined) markdownCache.delete(firstKey)
-    }
-    markdownCache.set(src, result)
+  if (!m) return { html: '', outline: [] }
+  const { html, outline } = injectHeadingIds(m.parse(src))
+  const result: MarkdownResult = { html, outline }
+  if (markdownResultCache.size >= MD_CACHE_MAX) {
+    const firstKey = markdownResultCache.keys().next().value
+    if (firstKey !== undefined) markdownResultCache.delete(firstKey)
   }
+  markdownResultCache.set(src, result)
   return result
 }
 
-const markdownCache = new Map<string, string>()
+export function renderMarkdown(src: string): string {
+  return computeMarkdown(src).html
+}
+
+export function renderMarkdownWithOutline(src: string): MarkdownResult {
+  return computeMarkdown(src)
+}
+
+const markdownResultCache = new Map<string, MarkdownResult>()
 const MD_CACHE_MAX = 200
 
 export function tabsForLoop(loop: DashboardLoop): LoopTab[] {

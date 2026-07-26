@@ -10,7 +10,7 @@ See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](c
 |---|---|---|
 | `plan-read` | Read the current session or loop plan, or list/search recent project plans. | [`src/tools/plan-kv.ts`](../src/tools/plan-kv.ts) |
 | `section-read` | Read a section plan and status for the active loop session. | [`src/tools/section-read.ts`](../src/tools/section-read.ts) |
-| `plan-adjust` | Replace the remaining (not yet started) sections of the active loop plan; auditor-only, logged as a plan amendment. | [`src/tools/plan-adjust.ts`](../src/tools/plan-adjust.ts) |
+| `plan-adjust` | Revise the section under audit and/or replace the remaining (not yet started) sections of the active loop plan; auditor-only, logged as a plan amendment. | [`src/tools/plan-adjust.ts`](../src/tools/plan-adjust.ts) |
 | `review-write` | Store a review finding. | [`src/tools/review.ts`](../src/tools/review.ts) |
 | `review-read` | Read review findings. | [`src/tools/review.ts`](../src/tools/review.ts) |
 | `review-delete` | Delete a review finding. | [`src/tools/review.ts`](../src/tools/review.ts) |
@@ -49,13 +49,14 @@ Arguments:
 
 ### `plan-adjust`
 
-Only callable by the current auditor session of a sectioned plan loop during the `auditing` phase (rejected in goal loops and during the final audit). Replaces the pending section suffix (from the current section + 1 onward); the plan objective and verification are immutable. The resulting total may not exceed 24 sections. Every adjustment is recorded in the `plan_amendments` table with before/after snapshots.
+Only callable by the current auditor session of a sectioned plan loop during the `auditing` phase (rejected in goal loops and during the final audit). Can revise the section currently under audit (`currentSection`, edited in place with its progress preserved) and/or replace the pending section suffix from the current section + 1 onward (`sections`). Already-completed sections, the plan objective, and verification are immutable. The resulting total may not exceed 24 sections. Every adjustment is recorded in the `plan_amendments` table with before/after snapshots.
 
 Arguments:
 
 | Argument | Description |
 |---|---|
-| `sections` | Replacement list of `{ title, content }` for the remaining sections. An empty list removes the entire pending suffix. |
+| `sections` | Optional replacement list of `{ title, content }` for the not-yet-started sections after the current one. Omit to leave future sections unchanged; an empty list removes the entire pending suffix. |
+| `currentSection` | Optional `{ title, content }` revision of the section currently under audit, edited in place. If the revision means the existing work no longer satisfies the section, also write bug findings so it is re-coded. |
 | `rationale` | Why the plan needs adjustment. |
 
 ## Review Tools

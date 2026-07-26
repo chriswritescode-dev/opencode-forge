@@ -221,7 +221,7 @@ Decomposition is a one-shot preprocessing step at loop start (`services/determin
 
 ### Plan Amendments
 
-After decomposition, the *remaining* (not yet started) milestones can still be amended mid-loop: during a section audit, the auditor may call the `plan-adjust` tool to replace the pending section suffix when completed work makes the remaining sections unable to achieve the plan objective as written. The objective and verification criteria are immutable, completed/current sections cannot be changed, goal loops are excluded, and the resulting total is capped at 24 sections. Every amendment is recorded in the `plan_amendments` table with before/after snapshots and a rationale. If an amendment appends sections while the loop is already in `final_auditing`, the loop reverts to `auditing` to execute them.
+After decomposition, the plan can still be amended mid-loop: during a section audit, the auditor may call the `plan-adjust` tool to revise the section currently under audit (`currentSection`, edited in place with its progress preserved) and/or replace the pending section suffix (`sections`) when completed work makes the plan unable to achieve its objective as written. The objective and verification criteria are immutable, already-completed sections cannot be changed, goal loops are excluded, and the resulting total is capped at 24 sections. Every amendment is recorded in the `plan_amendments` table with before/after snapshots and a rationale. If an amendment appends sections while the loop is already in `final_auditing`, the loop reverts to `auditing` to execute them.
 
 ### Transition Log
 

@@ -110,7 +110,13 @@ beforeEach(() => {
   payload = makePayload()
   intervalFn = null
   dispose = null
-  ;(globalThis as any).marked = { parse: (s: string) => `<p>${s}</p>` }
+  ;(globalThis as any).marked = {
+    parse: (s: string) => s.split('\n').map(line => {
+      const m = /^(#{1,6})\s+(.*)$/.exec(line)
+      if (m) { const lvl = m[1].length; return `<h${lvl}>${m[2]}</h${lvl}>` }
+      return `<p>${line}</p>`
+    }).join('\n'),
+  }
   vi.stubGlobal('setInterval', ((fn: () => void) => {
     intervalFn = fn
     return 1 as unknown as ReturnType<typeof setInterval>
@@ -246,6 +252,76 @@ describe('dashboard App fine-grained reactivity', () => {
     await flush()
     expect(body.style.display).toBe('block')
     expect(container.querySelector('.markdown-content')?.innerHTML).toContain('PLAN TWO')
+  })
+
+  test('renders a floating table of contents when the plan has multiple headings', async () => {
+    payload = makePayload({
+      dashLoop: { plan: '# Goal\n\nIntro paragraph.\n\n## Step One\n\nDo thing.\n\n## Step Two\n\nDo more.' },
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const toc = container.querySelector('.markdown-toc') as HTMLElement
+    expect(toc).toBeTruthy()
+    const items = toc.querySelectorAll('.markdown-toc-item')
+    expect(items.length).toBe(3)
+    expect(Array.from(items).map(i => i.className)).toEqual([
+      'markdown-toc-item markdown-toc-depth-1',
+      'markdown-toc-item markdown-toc-depth-2',
+      'markdown-toc-item markdown-toc-depth-2',
+    ])
+    const links = Array.from(toc.querySelectorAll('a')).map(a => (a as HTMLAnchorElement).getAttribute('href'))
+    expect(links).toEqual(['#goal', '#step-one', '#step-two'])
+
+    const content = container.querySelector('.markdown-content') as HTMLElement
+    expect(content.querySelector('#goal')).toBeTruthy()
+    expect(content.querySelector('#step-one')).toBeTruthy()
+    expect(content.querySelector('#step-two')).toBeTruthy()
+    // h4 inside markdown-content uses the accent color.
+    const tocItem = toc.querySelector('.markdown-toc-item a') as HTMLElement
+    expect(tocItem.textContent).toBe('Goal')
+  })
+
+  // Heading ids are slugs, so two markdown sections sharing a heading produce
+  // the same id twice in the document — and hidden tabs stay mounted. A toc
+  // jump must resolve inside its own section, not the first document match.
+  test('a toc jump resolves the heading in its own markdown section', async () => {
+    const shared = '# Shared\n\ntext\n\n## Verification\n\ntext'
+    window.location.hash = '#p1/loop/loop-a/plan'
+    payload = makePayload({
+      dashLoop: { plan: shared, lastAuditResult: shared, postActionReport: shared },
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const bodies = Array.from(container.querySelectorAll('.markdown-body')) as HTMLElement[]
+    expect(bodies.length).toBeGreaterThan(1)
+    // Every section injected the same ids, so getElementById would be ambiguous.
+    expect(container.querySelectorAll('#verification').length).toBe(bodies.length)
+
+    const planBody = bodies[bodies.length - 1]
+    const target = planBody.querySelector('#verification') as HTMLElement
+    let scrolled: HTMLElement | null = null
+    for (const el of Array.from(container.querySelectorAll('#verification')) as HTMLElement[]) {
+      el.scrollIntoView = () => { scrolled = el }
+    }
+
+    const link = Array.from(planBody.querySelectorAll('.markdown-toc-item a')).find(
+      a => a.getAttribute('href') === '#verification',
+    ) as HTMLElement
+    link.click()
+    await flush()
+
+    expect(scrolled).toBe(target)
+  })
+
+  test('does not render a table of contents when the plan has fewer than two h1-h3 headings', async () => {
+    payload = makePayload({ dashLoop: { plan: 'PLAN ONE' } })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    expect(container.querySelector('.markdown-toc')).toBeFalsy()
+    expect(container.querySelector('.markdown-body')).toBeTruthy()
   })
 
 
@@ -1994,7 +2070,7 @@ describe('dashboard App overview tab content', () => {
     const overviewBody = container.querySelector('.tab-body[data-tab="overview"]') as HTMLElement
     expect(overviewBody.style.display).not.toBe('none')
 
-    const meta = overviewBody.querySelector('.overview-meta') as HTMLElement
+    const meta = overviewBody.querySelector('.ldh-stats') as HTMLElement
     expect(meta).toBeTruthy()
     const text = meta.textContent ?? ''
     expect(text).toContain('exec-m')
@@ -2008,7 +2084,9 @@ describe('dashboard App overview tab content', () => {
     expect(text).toContain('2')
   })
 
-  test('overview renders findings summary chips with bug and warning counts', async () => {
+  // The overview summarises findings exactly once, through the styled
+  // .ldh-findings badge in LoopDetailHeader.
+  test('overview summarises findings once with bug and warning counts', async () => {
     window.location.hash = '#p1/loop/loop-a'
     payload = makePayload({
       dashLoop: {
@@ -2023,28 +2101,27 @@ describe('dashboard App overview tab content', () => {
     await flush()
 
     const overviewBody = container.querySelector('.tab-body[data-tab="overview"]') as HTMLElement
-    const chips = Array.from(overviewBody.querySelectorAll('.overview-chip')) as HTMLElement[]
-    const bugChip = chips.find(c => c.classList.contains('overview-chip-bug'))!
-    const warnChip = chips.find(c => c.classList.contains('overview-chip-warning'))!
-    expect(bugChip).toBeTruthy()
-    expect(bugChip.textContent).toContain('2 bugs')
-    expect(warnChip).toBeTruthy()
-    expect(warnChip.textContent).toContain('1 warning')
+    const badges = Array.from(overviewBody.querySelectorAll('.ldh-findings')) as HTMLElement[]
+    expect(badges).toHaveLength(1)
+    expect(badges[0].classList.contains('ldh-findings-bug')).toBe(true)
+    expect(badges[0].textContent).toContain('2 bugs')
+    expect(badges[0].textContent).toContain('1 warning')
   })
 
-  test('overview with no findings renders a clean chip', async () => {
+  test('overview with no findings renders a clean findings badge', async () => {
     window.location.hash = '#p1/loop/loop-a'
     payload = makePayload({ findings: [] })
     dispose = render(() => App() as unknown as Element, container)
     await flush()
 
     const overviewBody = container.querySelector('.tab-body[data-tab="overview"]') as HTMLElement
-    const chip = overviewBody.querySelector('.overview-chip-clean') as HTMLElement
-    expect(chip).toBeTruthy()
-    expect(chip.textContent).toContain('No findings')
+    const badges = Array.from(overviewBody.querySelectorAll('.ldh-findings')) as HTMLElement[]
+    expect(badges).toHaveLength(1)
+    expect(badges[0].classList.contains('ldh-findings-clean')).toBe(true)
+    expect(badges[0].textContent).toContain('No findings')
   })
 
-  test('overview with warnings only renders the warning chip and no bug chip', async () => {
+  test('overview with warnings only renders the warning count and no bug count', async () => {
     window.location.hash = '#p1/loop/loop-a'
     payload = makePayload({
       dashLoop: {
@@ -2057,12 +2134,9 @@ describe('dashboard App overview tab content', () => {
     await flush()
 
     const overviewBody = container.querySelector('.tab-body[data-tab="overview"]') as HTMLElement
-    const chips = Array.from(overviewBody.querySelectorAll('.overview-chip')) as HTMLElement[]
-    const bugChip = chips.find(c => c.classList.contains('overview-chip-bug'))
-    const warnChip = chips.find(c => c.classList.contains('overview-chip-warning'))!
-    expect(bugChip).toBeUndefined()
-    expect(warnChip).toBeTruthy()
-    expect(warnChip.textContent).toContain('1 warning')
+    const badge = overviewBody.querySelector('.ldh-findings') as HTMLElement
+    expect(badge.classList.contains('ldh-findings-warn')).toBe(true)
+    expect(badge.textContent).toContain('1 warning')
     expect(overviewBody.textContent).not.toContain('0 bug')
   })
 
@@ -2812,7 +2886,7 @@ describe('dashboard App groups section', () => {
 
     const rows = Array.from(container.querySelectorAll('.group-row')) as HTMLElement[]
     expect(rows.length).toBe(2)
-    expect(rows.every(r => r.querySelector('.group-row-meter'))).toBe(true)
+    expect(rows.every(r => r.querySelector('.lt-meter-cell'))).toBe(true)
     // Loop table is hidden on the groups section.
     expect(container.querySelector('table.loop-table')).toBeFalsy()
   })
@@ -2864,9 +2938,9 @@ describe('dashboard App groups section', () => {
     expect(linked.querySelector('.feature-loop-link')!.textContent).toBe('loop-linked')
     // The anchor targets the canonical project-aware loop hash, not the index.
     expect(linked.querySelector('.feature-loop-link')!.getAttribute('href')).toBe('#p1/loop/loop-linked')
-    // Pending feature has no loop link, but renders its stage as a status badge.
+    // Pending feature has no loop link, but renders its stage as a stage badge.
     expect(pending.querySelector('.feature-loop-link')).toBeFalsy()
-    expect(pending.querySelector('.section-status')!.textContent).toBe('pending')
+    expect(pending.querySelector('.feature-stage')!.textContent).toBe('pending')
   })
 
   test('a feature loop link encodes its loop name and primary clicks still navigate', async () => {
@@ -3443,7 +3517,7 @@ describe('dashboard App findings and plans sections', () => {
     expect(location.hash).not.toContain('q=')
   })
 
-  test('role split excludes unknown role from the execution and auditor bars', async () => {
+  test('role split surfaces unknown role cost in an other bar', async () => {
     window.location.hash = '#p1/loop/loop-a/usage'
     payload = makePayload({
       dashLoop: {
@@ -3476,12 +3550,11 @@ describe('dashboard App findings and plans sections', () => {
     const roleBlock = Array.from(usageBody.querySelectorAll('.usage-block')).find(b =>
       b.querySelector('.usage-block-title')?.textContent === 'Role split')! as HTMLElement
     const rows = Array.from(roleBlock.querySelectorAll('.usage-model-row')) as HTMLElement[]
-    expect(rows.length).toBe(2)
+    expect(rows.length).toBe(3)
     const names = rows.map(r => r.querySelector('.usage-model-name')?.textContent)
-    expect(names).not.toContain('unknown')
-    const execRow = rows.find(r => r.querySelector('.usage-model-name')?.textContent === 'execution')!
-    const auditRow = rows.find(r => r.querySelector('.usage-model-name')?.textContent === 'auditor')!
-    expect(execRow.querySelector('.usage-model-cost')?.textContent).toBe('$2.00')
-    expect(auditRow.querySelector('.usage-model-cost')?.textContent).toBe('$1.00')
+    expect(names).toEqual(['execution', 'auditor', 'other'])
+    const costs = rows.map(r => r.querySelector('.usage-model-cost')?.textContent)
+    // The three bars reconcile with totalCost ($3.50) — no role's spend is dropped.
+    expect(costs).toEqual(['$2.00', '$1.00', '$0.5000'])
   })
 })

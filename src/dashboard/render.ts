@@ -213,6 +213,9 @@ export function renderDashboardHtml(): string {
   .status-cancelled { background: var(--neutral); color: #fff; }
   .status-errored { background: var(--errored-bg); color: #fff; }
   .status-stalled { background: var(--running); color: #fff; }
+  .status-extracting { background: var(--link); color: #fff; }
+  .status-planning { background: var(--link); color: #fff; }
+  .status-interrupted { background: var(--running); color: #fff; }
   .loop-detail { padding: 8px 12px 12px; border-top: 1px solid var(--divider); font-size: 0.85rem; }
   .loop-detail h4 { color: var(--fg-bright); margin: 8px 0 4px; font-size: 0.95rem; }
   .loop-detail h4:first-child { margin-top: 0; }
@@ -321,10 +324,10 @@ export function renderDashboardHtml(): string {
     background: var(--bg-0); padding: 8px; margin-top: 4px;
   }
   .markdown-content { font-size: 0.85rem; line-height: 1.6; color: var(--fg-0); }
-  .markdown-content h1 { font-size: 1.3rem; margin: 16px 0 8px; color: var(--fg-bright); border-bottom: 1px solid var(--divider); padding-bottom: 4px; }
-  .markdown-content h2 { font-size: 1.15rem; margin: 14px 0 6px; color: var(--fg-bright); border-bottom: 1px solid var(--surface); padding-bottom: 3px; }
-  .markdown-content h3 { font-size: 1.05rem; margin: 12px 0 5px; color: var(--fg-bright); }
-  .markdown-content h4 { font-size: 0.95rem; margin: 10px 0 4px; color: var(--fg-bright); }
+  .markdown-content h1 { font-size: 1.3rem; margin: 16px 0 8px; color: var(--accent); border-bottom: 1px solid var(--divider); padding-bottom: 4px; }
+  .markdown-content h2 { font-size: 1.15rem; margin: 14px 0 6px; color: var(--accent); border-bottom: 1px solid var(--surface); padding-bottom: 3px; }
+  .markdown-content h3 { font-size: 1.05rem; margin: 12px 0 5px; color: var(--accent); }
+  .markdown-content h4 { font-size: 0.95rem; margin: 10px 0 4px; color: var(--accent); }
   .markdown-content p { margin: 6px 0; }
   .markdown-content ul, .markdown-content ol { margin: 4px 0; padding-left: 20px; }
   .markdown-content li { margin: 2px 0; }
@@ -414,6 +417,25 @@ export function renderDashboardHtml(): string {
   .ldh-findings-warn { background: rgba(210,153,34,0.12); border-color: rgba(210,153,34,0.4); color: var(--running); }
   .ldh-findings-clean { background: rgba(63,185,80,0.10); border-color: rgba(63,185,80,0.3); color: var(--ok); }
   .markdown-body { padding: 2px 0 4px; }
+  .markdown-toc {
+    float: right; clear: right;
+    margin: 4px 0 8px 12px; padding: 8px 10px;
+    max-width: 220px;
+    background: var(--panel); border: 1px solid var(--divider); border-radius: 6px;
+    font-size: 0.8rem;
+  }
+  .markdown-toc-title {
+    color: var(--fg-1); font-size: 0.72rem;
+    text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px;
+  }
+  .markdown-toc ul { list-style: none; padding: 0; margin: 0; }
+  .markdown-toc-item a {
+    display: block; color: var(--fg-0); text-decoration: none; padding: 2px 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .markdown-toc-item a:hover { color: var(--accent); }
+  .markdown-toc-depth-2 { padding-left: 8px; }
+  .markdown-toc-depth-3 { padding-left: 16px; }
   .markdown-toggle {
     display: flex; align-items: center; gap: 8px; min-width: 0;
     cursor: pointer; user-select: none;
@@ -610,10 +632,10 @@ export function renderDashboardHtml(): string {
   }
   .group-row-title { color: var(--fg-bright); font-weight: 600; min-width: 0;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .group-row-meter { display: inline-flex; align-items: center; gap: 6px; }
   .group-row-meta { color: var(--fg-dim); font-family: var(--mono); font-size: 0.74rem; }
   .group-row-time { color: var(--fg-dim); font-family: var(--mono); font-size: 0.72rem; }
-  .group-detail { display: flex; flex-direction: column; gap: 12px; }
+  .group-detail,
+  .group-detail-body { display: flex; flex-direction: column; gap: 12px; }
   .back-to-groups {
     display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
     color: var(--link); font-size: 0.85rem; user-select: none;
@@ -651,6 +673,18 @@ export function renderDashboardHtml(): string {
     background: var(--bg-0); font-size: 0.82rem;
   }
   .feature-index { color: var(--cancelled); font-weight: 600; }
+  .feature-stage {
+    font-size: 0.66rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.04em; flex-shrink: 0;
+  }
+  .feature-stage-pending { color: var(--cancelled); }
+  .feature-stage-planning,
+  .feature-stage-planned { color: var(--link); }
+  .feature-stage-launching,
+  .feature-stage-running { color: var(--ph-coding); }
+  .feature-stage-completed { color: var(--ok); }
+  .feature-stage-failed { color: var(--errored); }
+  .feature-stage-cancelled { color: var(--neutral); }
   .feature-title { color: var(--fg-0); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .feature-attempts { color: var(--fg-dim); font-family: var(--mono); font-size: 0.74rem; }
   .feature-loop-link { color: var(--link); text-decoration: none; font-family: var(--mono); font-size: 0.74rem; }

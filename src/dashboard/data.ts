@@ -53,20 +53,9 @@ export interface DashboardProject {
   groups: DashboardGroup[]
 }
 
-export interface DashboardTotals {
-  projects: number
-  loops: number
-  running: number
-  completed: number
-  cancelled: number
-  errored: number
-  stalled: number
-}
-
 export interface DashboardPayload {
   generatedAt: number
   projects: DashboardProject[]
-  totals: DashboardTotals
 }
 
 /** Check whether *tbl* exists on this database. */
@@ -149,15 +138,6 @@ export function collectDashboardData(db: Database): DashboardPayload {
     new Set([...loopProjectIds.map(r => r.project_id), ...groupProjectIds.map(r => r.project_id)])
   ).sort()
   const projects: DashboardProject[] = []
-  const totals: DashboardTotals = {
-    projects: 0,
-    loops: 0,
-    running: 0,
-    completed: 0,
-    cancelled: 0,
-    errored: 0,
-    stalled: 0,
-  }
 
   for (const projectId of projectIds) {
     const loopRows = loopsRepo.listAll(projectId)
@@ -198,30 +178,25 @@ export function collectDashboardData(db: Database): DashboardPayload {
       return { id: loopName, loop, lastAuditResult, postActionReport, goal, plan, sections, findings, usage, duration, transitions, amendments }
     })
 
-    const groups: DashboardGroup[] = featureGroupsRepo
-      ? featureGroupsRepo.listGroups(projectId).map(g => {
-          const { prdText, ...rest } = g
-          return {
-            id: g.groupId,
-            group: { ...rest, prdPreview: prdText ? prdText.slice(0, PRD_PREVIEW_MAX) : null },
-            features: featureGroupsRepo.listFeatures(projectId, g.groupId),
-          }
-        })
-      : []
+    let groups: DashboardGroup[] = []
+    if (featureGroupsRepo) {
+      // One features query per project, not one per group.
+      const featuresByGroup = featureGroupsRepo.listFeaturesByGroup(projectId)
+      groups = featureGroupsRepo.listGroups(projectId).map(g => {
+        const { prdText, ...rest } = g
+        return {
+          id: g.groupId,
+          group: { ...rest, prdPreview: prdText ? prdText.slice(0, PRD_PREVIEW_MAX) : null },
+          features: featuresByGroup.get(g.groupId) ?? [],
+        }
+      })
+    }
 
     projects.push({ id: projectId, projectId, projectDir, loops: dashboardLoops, groups })
-
-    // Accumulate totals
-    totals.projects = projectIds.length
-    totals.loops += sortedLoops.length
-    for (const loop of sortedLoops) {
-      totals[loop.status]++
-    }
   }
 
   return {
     generatedAt: Date.now(),
     projects,
-    totals,
   }
 }

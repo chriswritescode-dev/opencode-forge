@@ -541,7 +541,6 @@ describe('dataHash', () => {
   const emptyPayload: DashboardPayload = {
     generatedAt: 100,
     projects: [],
-    totals: { projects: 0, loops: 0, running: 0, completed: 0, cancelled: 0, errored: 0, stalled: 0 },
   }
 
   test('identical payloads differing only in generatedAt produce equal hashes', () => {
@@ -975,7 +974,7 @@ describe('roleUsageBars', () => {
     expect(audit.pct).toBeCloseTo(50)
   })
 
-  test('unknown roles are excluded from the execution and auditor comparison', () => {
+  test('unknown roles land in an other bar so the split reconciles with total cost', () => {
     const extra: NonNullable<DashboardLoop['usage']> = {
       ...usage,
       byRole: {
@@ -986,12 +985,19 @@ describe('roleUsageBars', () => {
     const bars = roleUsageBars(extra)
     const exec = bars.find(b => b.role === 'execution')!
     const audit = bars.find(b => b.role === 'auditor')!
+    const other = bars.find(b => b.role === 'other')!
     expect(exec.cost).toBeCloseTo(2)
     expect(audit.cost).toBeCloseTo(1)
     expect(exec.messageCount).toBe(6)
     expect(audit.messageCount).toBe(2)
-    expect(bars).toHaveLength(2)
-    expect(bars.some(b => (b as { role: string }).role === 'unknown')).toBe(false)
+    expect(other.cost).toBeCloseTo(0.5)
+    expect(other.messageCount).toBe(1)
+    expect(bars).toHaveLength(3)
+    expect(bars.reduce((sum, b) => sum + b.cost, 0)).toBeCloseTo(3.5)
+  })
+
+  test('an other bar is omitted when every role is known', () => {
+    expect(roleUsageBars(usage).map(b => b.role)).toEqual(['execution', 'auditor'])
   })
 
   test('zero-cost usage yields zero-width bars', () => {

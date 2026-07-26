@@ -1,5 +1,48 @@
 import { describe, test, expect } from 'vitest'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { renderDashboardHtml } from '../../src/dashboard/render'
+
+const APP_DIR = join(__dirname, '../../src/dashboard/app')
+
+/**
+ * Static `class="…"` tokens emitted by the browser app. Templates that build a
+ * class name by concatenation (`'status-' + status`) are not visible here, so
+ * this is a lower bound, not a complete inventory.
+ */
+function staticAppClassNames(): string[] {
+  const tokens = new Set<string>()
+  for (const file of readdirSync(APP_DIR)) {
+    if (!file.endsWith('.ts')) continue
+    const source = readFileSync(join(APP_DIR, file), 'utf8')
+    for (const match of source.matchAll(/class="([^"$]+)"/g)) {
+      for (const token of match[1].trim().split(/\s+/)) {
+        if (token) tokens.add(token)
+      }
+    }
+  }
+  return [...tokens].sort()
+}
+
+/**
+ * Layout wrappers, semantic hooks, and test selectors that deliberately carry
+ * no rule of their own. Everything else must be styled: render.ts holds the
+ * only stylesheet, so a class it does not define ships as unstyled markup.
+ */
+const UNSTYLED_BY_DESIGN = new Set([
+  'forge-app',
+  'group-row-completed',
+  'group-row-created',
+  'loop-picker-input',
+  'lt-findings',
+  'markdown-section',
+  'overview-tab',
+  'plan-tab',
+  'repo-loop-pane',
+  'tab-bodies',
+  'timeline-tab',
+  'usage-tab',
+])
 
 describe('renderDashboardHtml', () => {
   test('contains DOCTYPE html, title, and a single forge-app-root mount node', () => {
@@ -30,35 +73,20 @@ describe('renderDashboardHtml', () => {
     expect(html).toContain('forge-app-root')
   })
 
-  test('retains CSS class definitions for dashboard components', () => {
-    const html = renderDashboardHtml()
+  test('every static class the app emits has a rule in the stylesheet', () => {
+    const style = renderDashboardHtml().slice(0, renderDashboardHtml().indexOf('</style>'))
+    const unstyled = staticAppClassNames().filter(
+      cls => !UNSTYLED_BY_DESIGN.has(cls) && !style.includes('.' + cls),
+    )
 
-    const cssClasses = [
-      'repo-menu',
-      'repo-menu-item',
-      'breadcrumb',
-      'breadcrumb-path',
-      'section-nav',
-      'section-nav-item',
-      'search-input',
-      'empty-state',
-      'resizable-block',
-      'resize: vertical',
-      'loop-table',
-      'lt-meter',
-      'lt-row',
-      'ldh-findings',
-      'sections-panel',
-      'section-list-row',
-      'back-to-sections',
-      'badge-filter',
-      'badge-active',
-      'markdown-body',
-      'markdown-toggle',
-    ]
-    for (const cls of cssClasses) {
-      expect(html).toContain(cls)
-    }
+    expect(unstyled).toEqual([])
+  })
+
+  test('the unstyled-by-design allowlist has no stale entries', () => {
+    const emitted = new Set(staticAppClassNames())
+    const stale = [...UNSTYLED_BY_DESIGN].filter(cls => !emitted.has(cls))
+
+    expect(stale).toEqual([])
   })
 
   test('the markdown body renders at full height instead of scrolling internally', () => {
@@ -70,6 +98,18 @@ describe('renderDashboardHtml', () => {
     expect(start).toBeGreaterThan(0)
     expect(rule).not.toContain('max-height')
     expect(rule).not.toContain('overflow')
+  })
+
+  test('markdown headings use the accent color to stand out from body text', () => {
+    const html = renderDashboardHtml()
+    const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+    for (const level of ['h1', 'h2', 'h3', 'h4']) {
+      const start = style.indexOf(`.markdown-content ${level} `)
+      expect(start).toBeGreaterThan(0)
+      const rule = style.slice(start, style.indexOf('}', start))
+      expect(rule).toContain('var(--accent)')
+      expect(rule).not.toContain('var(--fg-bright)')
+    }
   })
 
   test('no longer contains inline script or old static dashboard nodes', () => {

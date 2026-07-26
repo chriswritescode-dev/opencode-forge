@@ -70,7 +70,19 @@ Forge includes a read-only observability Dashboard — a standalone Bun HTTP ser
 
 ### Views
 
-The dashboard shows a **Loops view** by default — groups loops by project with filterable project/loop lists, loop detail (plan, sections, findings, usage, audit results, completion summary), and live polled state (5 s interval). Supports `#<projectId>/<loopName>` deep linking.
+The dashboard is a **repo shell**: pick a repository, then move between its **Loops**, **Groups**, **Findings**, and **Plans** sections. Loop detail opens as tabs (overview, timeline, sections, findings, plan, usage), with live polled state on a 5 s interval.
+
+Deep links use the hash:
+
+| Hash | Opens |
+| --- | --- |
+| `#<projectId>` | The repo's Loops section |
+| `#<projectId>/loops` \| `/groups` \| `/findings` \| `/plans` | That repo section |
+| `#<projectId>/groups/<groupId>` | A feature group's detail view |
+| `#<projectId>/loop/<loopName>[/<tab>]` | A loop, optionally on a given tab |
+| `?status=running,errored&q=<text>` | Appended to any of the above to preserve filters |
+
+`loops`, `groups`, `findings`, and `plans` are reserved as the second segment, so a loop with one of those names must be addressed as `#<projectId>/loop/<loopName>`.
 
 ### API Endpoints
 

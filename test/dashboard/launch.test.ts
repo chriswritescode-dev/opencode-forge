@@ -75,6 +75,6 @@ describe('startDashboardServer', () => {
     expect(res.headers.get('content-type')).toMatch(/application\/json/)
     const body = await res.json()
     expect(body).toHaveProperty('projects')
-    expect(body).toHaveProperty('totals')
+    expect(body).toHaveProperty('generatedAt')
   })
 })

@@ -68,6 +68,11 @@ export interface FeatureGroupsRepo {
   getGroupBySplitterSession(projectId: string, sessionId: string): FeatureGroupRow | null
   insertFeatures(projectId: string, groupId: string, features: ParsedFeature[]): void
   listFeatures(projectId: string, groupId: string): GroupFeatureRow[]
+  /**
+   * Every feature of a project, bucketed by group id. Lets a caller that needs
+   * all of a project's groups avoid one `listFeatures` query per group.
+   */
+  listFeaturesByGroup(projectId: string): Map<string, GroupFeatureRow[]>
   getFeatureByArchitectSession(projectId: string, sessionId: string): GroupFeatureRow | null
   getFeatureByLoopName(projectId: string, loopName: string): GroupFeatureRow | null
   claimFeatureStage(projectId: string, groupId: string, featureIndex: number, fromStage: string, toStage: string): boolean
@@ -226,6 +231,14 @@ export function createFeatureGroupsRepo(db: Database): FeatureGroupsRepo {
     ORDER BY feature_index ASC
   `)
 
+  const listAllFeaturesStmt = db.prepare(`
+    SELECT project_id, group_id, feature_index, title, description, stage,
+           architect_session_id, loop_name, error, attempts, created_at, updated_at
+    FROM group_features
+    WHERE project_id = ?
+    ORDER BY group_id ASC, feature_index ASC
+  `)
+
   const getFeatureByArchitectSessionStmt = db.prepare(`
     SELECT project_id, group_id, feature_index, title, description, stage,
            architect_session_id, loop_name, error, attempts, created_at, updated_at
@@ -348,6 +361,17 @@ export function createFeatureGroupsRepo(db: Database): FeatureGroupsRepo {
 
     listFeatures(projectId: string, groupId: string): GroupFeatureRow[] {
       return (listFeaturesStmt.all(projectId, groupId) as GroupFeatureRowRaw[]).map(mapFeatureRow)
+    },
+
+    listFeaturesByGroup(projectId: string): Map<string, GroupFeatureRow[]> {
+      const byGroup = new Map<string, GroupFeatureRow[]>()
+      for (const raw of listAllFeaturesStmt.all(projectId) as GroupFeatureRowRaw[]) {
+        const row = mapFeatureRow(raw)
+        const bucket = byGroup.get(row.groupId)
+        if (bucket) bucket.push(row)
+        else byGroup.set(row.groupId, [row])
+      }
+      return byGroup
     },
 
     getFeatureByArchitectSession(projectId: string, sessionId: string): GroupFeatureRow | null {

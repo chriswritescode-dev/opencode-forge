@@ -83,7 +83,7 @@ describe('createRequestHandler', () => {
     })
   })
 
-  // ─── Cycle 2: /api/data returns JSON with projects and totals ────────
+  // ─── Cycle 2: /api/data returns JSON with projects ───────────────────
 
   test('GET /api/data returns 200 with application/json and no-store cache', async () => {
     const handler = createRequestHandler(makeDeps(db!))
@@ -94,10 +94,9 @@ describe('createRequestHandler', () => {
 
     const body = await res.json()
     expect(body).toHaveProperty('projects')
-    expect(body).toHaveProperty('totals')
+    expect(body).toHaveProperty('generatedAt')
     expect(Array.isArray(body.projects)).toBe(true)
-    expect(body.totals.projects).toBe(0)
-    expect(body.totals.loops).toBe(0)
+    expect(body.projects).toHaveLength(0)
   })
 
   // ─── Cycle 3: live re-query — inserting a loop changes /api/data ─────
@@ -108,7 +107,7 @@ describe('createRequestHandler', () => {
     // Verify empty before insertion
     const resBefore = await handler(new Request('http://localhost/api/data'))
     const bodyBefore = await resBefore.json()
-    expect(bodyBefore.totals.loops).toBe(0)
+    expect(bodyBefore.projects).toHaveLength(0)
 
     // Insert a loop via the same db reference
     const loopsRepo = createLoopsRepo(db!)
@@ -120,8 +119,8 @@ describe('createRequestHandler', () => {
     // Verify data now includes the new loop
     const resAfter = await handler(new Request('http://localhost/api/data'))
     const bodyAfter = await resAfter.json()
-    expect(bodyAfter.totals.loops).toBe(1)
     expect(bodyAfter.projects).toHaveLength(1)
+    expect(bodyAfter.projects[0].loops).toHaveLength(1)
     expect(bodyAfter.projects[0].projectId).toBe('p1')
     expect(bodyAfter.projects[0].loops[0].loop.loopName).toBe('newly-inserted')
   })

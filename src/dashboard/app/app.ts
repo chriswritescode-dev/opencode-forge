@@ -30,7 +30,6 @@ export function App() {
   const [state, setState] = createStore<DashboardPayload>({
     generatedAt: 0,
     projects: [],
-    totals: { projects: 0, loops: 0, running: 0, completed: 0, cancelled: 0, errored: 0, stalled: 0 },
   })
   const [loaded, setLoaded] = createSignal(false)
   const [route, setRoute] = createSignal<DashboardRoute>(parseDashboardHash(''))

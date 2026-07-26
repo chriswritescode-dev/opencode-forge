@@ -72,17 +72,10 @@ describe('collectDashboardData', () => {
 
   // ─── Cycle 1: empty DB ──────────────────────────────────────────────
 
-  test('empty DB returns empty projects and zero totals', () => {
+  test('empty DB returns empty projects', () => {
     const payload = collectDashboardData(db!)
 
     expect(payload.projects).toEqual([])
-    expect(payload.totals.projects).toBe(0)
-    expect(payload.totals.loops).toBe(0)
-    expect(payload.totals.running).toBe(0)
-    expect(payload.totals.completed).toBe(0)
-    expect(payload.totals.cancelled).toBe(0)
-    expect(payload.totals.errored).toBe(0)
-    expect(payload.totals.stalled).toBe(0)
     expect(payload.generatedAt).toBeGreaterThan(0)
   })
 
@@ -167,9 +160,9 @@ describe('collectDashboardData', () => {
     expect(dashLoop.usage!.byRole.code).toEqual({ cost: 0.005, messageCount: 10 })
     expect(dashLoop.usage!.byRole.auditor).toBeUndefined()
 
-    expect(payload.totals.projects).toBe(1)
-    expect(payload.totals.loops).toBe(1)
-    expect(payload.totals.running).toBe(1)
+    expect(payload.projects).toHaveLength(1)
+    expect(payload.projects[0].loops).toHaveLength(1)
+    expect(payload.projects[0].loops[0].loop.status).toBe('running')
   })
 
   test('computes a human-readable duration from started/completed timestamps', () => {
@@ -315,7 +308,7 @@ describe('collectDashboardData', () => {
 
   // ─── Cycle 4: multiple projects with mixed statuses ─────────────────
 
-  test('aggregates totals across multiple projects with mixed statuses', () => {
+  test('groups loops under their project across multiple projects with mixed statuses', () => {
     const loopsRepo = createLoopsRepo(db!)
 
     // Project A: 1 running, 1 completed
@@ -379,13 +372,12 @@ describe('collectDashboardData', () => {
     const payload = collectDashboardData(db!)
 
     expect(payload.projects).toHaveLength(2)
-    expect(payload.totals.projects).toBe(2)
-    expect(payload.totals.loops).toBe(5)
-    expect(payload.totals.running).toBe(1)
-    expect(payload.totals.completed).toBe(1)
-    expect(payload.totals.cancelled).toBe(1)
-    expect(payload.totals.errored).toBe(1)
-    expect(payload.totals.stalled).toBe(1)
+    expect(payload.projects.map(p => p.projectId)).toEqual(['project-a', 'project-b'])
+    const statusesByProject = payload.projects.map(p => p.loops.map(dl => dl.loop.status).sort())
+    expect(statusesByProject).toEqual([
+      ['completed', 'running'],
+      ['cancelled', 'errored', 'stalled'],
+    ])
   })
 
   // ─── Cycle 5: feature groups ──────────────────────────────────────────
