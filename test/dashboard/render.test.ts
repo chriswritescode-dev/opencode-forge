@@ -34,19 +34,16 @@ describe('renderDashboardHtml', () => {
     const html = renderDashboardHtml()
 
     const cssClasses = [
-      'badge-filter',
-      'badge-active',
-      '#fe7d37',
+      'repo-menu',
+      'repo-menu-item',
+      'breadcrumb',
+      'breadcrumb-path',
+      'section-nav',
+      'section-nav-item',
       'search-input',
-      'dash-layout',
-      'project-sidebar',
-      'project-detail',
-      'project-nav-item',
-      'project-nav-count',
       'empty-state',
       'resizable-block',
       'resize: vertical',
-      'back-to-loops',
       'loop-table',
       'lt-meter',
       'lt-row',
@@ -54,6 +51,8 @@ describe('renderDashboardHtml', () => {
       'sections-panel',
       'section-list-row',
       'back-to-sections',
+      'badge-filter',
+      'badge-active',
     ]
     for (const cls of cssClasses) {
       expect(html).toContain(cls)
@@ -71,5 +70,15 @@ describe('renderDashboardHtml', () => {
     // may appear as string literals in the inlined bundle, but there is
     // no static <div id="totals-bar"> in the shell)
     expect(html).not.toContain('<div id="totals-bar"')
+  })
+
+  test('defines design tokens and contains no literal hex outside :root', () => {
+    const html = renderDashboardHtml()
+    const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+    expect(style).toContain('--bg-0:')
+    expect(style).toContain('--accent:')
+    expect(style).toContain('--ph-coding:')
+    const afterRoot = style.slice(style.indexOf('}', style.indexOf(':root')))
+    expect(afterRoot).not.toMatch(/#[0-9a-fA-F]{6}\b/)
   })
 })

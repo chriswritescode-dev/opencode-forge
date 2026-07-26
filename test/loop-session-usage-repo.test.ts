@@ -265,6 +265,21 @@ describe('LoopSessionUsageRepo', () => {
       expect(agg?.totalCost).toBe(0.03)
       expect(agg?.totalMessageCount).toBe(15)
     })
+
+    test('aggregates by role across sessions using the same model', () => {
+      const row1 = createUsageRow({ sessionId: 'session-1', model: 'shared-model', role: 'code', cost: 2, messageCount: 6 })
+      const row2 = createUsageRow({ sessionId: 'session-2', model: 'shared-model', role: 'auditor', cost: 1, messageCount: 2 })
+      const row3 = createUsageRow({ sessionId: 'session-3', model: 'shared-model', role: 'unknown', cost: 0.5, messageCount: 1 })
+
+      repo.upsertSessionUsage(row1)
+      repo.upsertSessionUsage(row2)
+      repo.upsertSessionUsage(row3)
+
+      const agg = repo.getAggregate(projectId, loopName)
+      expect(agg?.byRole.code).toEqual({ cost: 2, messageCount: 6 })
+      expect(agg?.byRole.auditor).toEqual({ cost: 1, messageCount: 2 })
+      expect(agg?.byRole.unknown).toEqual({ cost: 0.5, messageCount: 1 })
+    })
   })
 
   describe('listSessionUsage', () => {

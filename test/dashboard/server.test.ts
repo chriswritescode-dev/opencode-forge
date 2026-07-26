@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { openForgeDatabase, closeDatabase } from '../../src/storage/database'
 import { createRequestHandler, type DashboardDeps } from '../../src/dashboard/server'
-import { createLoopsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, type LoopRow, type LoopTransitionRow, type PlanAmendmentRow } from '../../src/storage'
+import { createLoopsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createFeatureGroupsRepo, type LoopRow, type LoopTransitionRow, type PlanAmendmentRow } from '../../src/storage'
 
 function makeLoopRow(overrides?: Partial<LoopRow>): LoopRow {
   return {
@@ -310,5 +310,46 @@ describe('createRequestHandler', () => {
     const loopData = body.projects[0].loops[0]
     expect(Array.isArray(loopData.amendments)).toBe(true)
     expect(loopData.amendments).toHaveLength(0)
+  })
+
+  // ─── Cycle 8: feature groups surface under the right project ──────────
+
+  test('GET /api/data against a live database containing a group returns it under the right project', async () => {
+    const handler = createRequestHandler(makeDeps(db!))
+
+    const loopsRepo = createLoopsRepo(db!)
+    const groupsRepo = createFeatureGroupsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'host-loop' }),
+      { lastAuditResult: null },
+    )
+    groupsRepo.createGroup({
+      projectId: 'p1',
+      groupId: 'g-1',
+      title: 'Group One',
+      status: 'running',
+      maxConcurrent: 3,
+      prdText: 'PRD'.repeat(200),
+    })
+    groupsRepo.insertFeatures('p1', 'g-1', [
+      { title: 'Feature A', description: 'a' },
+      { title: 'Feature B', description: 'b' },
+    ])
+
+    const res = await handler(new Request('http://localhost/api/data'))
+    const body = await res.json()
+    expect(body.projects).toHaveLength(1)
+    const proj = body.projects[0]
+    expect(proj.projectId).toBe('p1')
+    expect(Array.isArray(proj.groups)).toBe(true)
+    expect(proj.groups).toHaveLength(1)
+    const g = proj.groups[0]
+    expect(g.id).toBe('g-1')
+    expect(g.group.groupId).toBe('g-1')
+    expect(g.group.title).toBe('Group One')
+    expect(g.group.prdPreview).toHaveLength(400)
+    expect(g.group).not.toHaveProperty('prdText')
+    expect(g.features).toHaveLength(2)
+    expect(g.features.map((f: { featureIndex: number }) => f.featureIndex)).toEqual([0, 1])
   })
 })

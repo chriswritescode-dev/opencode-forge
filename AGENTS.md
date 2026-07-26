@@ -4,8 +4,8 @@
 
 - Install with `pnpm install --frozen-lockfile`; `pnpm-lock.yaml` is canonical. Bun is still required because build, setup, and dashboard scripts run through it—do not substitute `bun install`.
 - Full source verification: `pnpm typecheck && pnpm lint && pnpm test && pnpm build`.
-- Focus a Node test with `pnpm test -- --project node test/path.test.ts`; add `-t "test name"` for one case.
-- Run dashboard DOM tests with `pnpm test -- --project dom test/dashboard/app-dom.test.ts`. The `dom` project is the only happy-dom/browser-conditions suite; all other tests use the `node` project and a `bun:sqlite` shim.
+- Focus a Node test with `pnpm test --project node test/path.test.ts`; add `-t "test name"` for one case.
+- Run dashboard DOM tests with `pnpm test --project dom test/dashboard/app-dom.test.ts`. The `dom` project is the only happy-dom/browser-conditions suite; all other tests use the `node` project and a `bun:sqlite` shim.
 - `pnpm typecheck` covers `src/`, not tests or scripts. ESLint also ignores tests and generated dashboard files, so run the relevant Vitest project after changing them.
 
 ## Runtime boundaries

@@ -34,6 +34,10 @@ export interface LoopUsageAggregate {
     cacheWriteTokens: number
     messageCount: number
   }>
+  byRole: Partial<Record<LoopSessionUsageRow['role'], {
+    cost: number
+    messageCount: number
+  }>>
 }
 
 export interface LoopSessionUsageRepo {
@@ -120,6 +124,16 @@ export function createLoopSessionUsageRepo(db: Database): LoopSessionUsageRepo {
     FROM loop_session_usage
     WHERE project_id = ? AND loop_name = ?
     GROUP BY model
+  `)
+
+  const getByRoleStmt = db.prepare(`
+    SELECT
+      role,
+      SUM(cost) as cost,
+      SUM(message_count) as message_count
+    FROM loop_session_usage
+    WHERE project_id = ? AND loop_name = ?
+    GROUP BY role
   `)
 
   const listSessionUsageStmt = db.prepare(`
@@ -209,6 +223,19 @@ export function createLoopSessionUsageRepo(db: Database): LoopSessionUsageRepo {
         }
       }
 
+      const byRoleRows = getByRoleStmt.all(projectId, loopName) as Array<{
+        role: string
+        cost: number
+        message_count: number
+      }>
+      const byRole: LoopUsageAggregate['byRole'] = {}
+      for (const row of byRoleRows) {
+        byRole[row.role as LoopSessionUsageRow['role']] = {
+          cost: row.cost,
+          messageCount: row.message_count,
+        }
+      }
+
       return {
         loopName: aggregate.loop_name,
         totalCost: aggregate.total_cost,
@@ -219,6 +246,7 @@ export function createLoopSessionUsageRepo(db: Database): LoopSessionUsageRepo {
         totalCacheWriteTokens: aggregate.total_cache_write_tokens,
         totalMessageCount: aggregate.total_message_count,
         byModel,
+        byRole,
       }
     },
 

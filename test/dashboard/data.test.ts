@@ -7,6 +7,7 @@ import { createPlansRepo } from '../../src/storage'
 import { createReviewFindingsRepo } from '../../src/storage'
 import { createSectionPlansRepo } from '../../src/storage'
 import { createLoopSessionUsageRepo, type LoopSessionUsageRow } from '../../src/storage'
+import { createFeatureGroupsRepo } from '../../src/storage'
 
 function makeLoopRow(overrides?: Partial<LoopRow>): LoopRow {
   return {
@@ -163,6 +164,8 @@ describe('collectDashboardData', () => {
     expect(dashLoop.findings).toHaveLength(1)
     expect(dashLoop.usage).not.toBeNull()
     expect(dashLoop.usage!.totalCost).toBe(0.005)
+    expect(dashLoop.usage!.byRole.code).toEqual({ cost: 0.005, messageCount: 10 })
+    expect(dashLoop.usage!.byRole.auditor).toBeUndefined()
 
     expect(payload.totals.projects).toBe(1)
     expect(payload.totals.loops).toBe(1)
@@ -187,6 +190,26 @@ describe('collectDashboardData', () => {
     const payload = collectDashboardData(db!)
 
     expect(payload.projects[0].loops[0].duration).toBe('2m 5s')
+  })
+
+  test('a loop with goal in loop_large_fields exposes goal on the dashboard loop', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'goal-loop', kind: 'goal' }),
+      { lastAuditResult: null, goal: 'Ship the tabs refactor' },
+    )
+    const payload = collectDashboardData(db!)
+    expect(payload.projects[0].loops[0].goal).toBe('Ship the tabs refactor')
+  })
+
+  test('a loop with no large-fields goal exposes goal as null', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'no-goal' }),
+      { lastAuditResult: null, goal: null },
+    )
+    const payload = collectDashboardData(db!)
+    expect(payload.projects[0].loops[0].goal).toBeNull()
   })
 
   // ─── Cycle 3: running-first ordering ────────────────────────────────
@@ -363,5 +386,145 @@ describe('collectDashboardData', () => {
     expect(payload.totals.cancelled).toBe(1)
     expect(payload.totals.errored).toBe(1)
     expect(payload.totals.stalled).toBe(1)
+  })
+
+  // ─── Cycle 5: feature groups ──────────────────────────────────────────
+
+  test('a project with no groups exposes groups: []', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'l1' }),
+      { lastAuditResult: null },
+    )
+    const payload = collectDashboardData(db!)
+    expect(payload.projects).toHaveLength(1)
+    expect(payload.projects[0].groups).toEqual([])
+  })
+
+  test('a group with three features exposes them ordered by featureIndex', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    const groupsRepo = createFeatureGroupsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'l1' }),
+      { lastAuditResult: null },
+    )
+    groupsRepo.createGroup({
+      projectId: 'p1',
+      groupId: 'g-1',
+      title: 'Group One',
+      status: 'running',
+      maxConcurrent: 2,
+    })
+    // Insert features with explicit feature_index values whose physical INSERT
+    // (rowid) order differs from feature_index order. A regression that drops
+    // ORDER BY feature_index ASC would return rows in rowid order instead.
+    const ts = Date.now()
+    const insertFeature = db!.prepare(`
+      INSERT INTO group_features (
+        project_id, group_id, feature_index, title, description, stage,
+        architect_session_id, loop_name, error, attempts, created_at, updated_at
+      ) VALUES ('p1', 'g-1', ?, ?, ?, 'pending', NULL, NULL, NULL, 0, ?, ?)
+    `)
+    insertFeature.run(2, 'Feature C', 'c', ts, ts)
+    insertFeature.run(0, 'Feature A', 'a', ts, ts)
+    insertFeature.run(1, 'Feature B', 'b', ts, ts)
+
+    const payload = collectDashboardData(db!)
+    expect(payload.projects[0].groups).toHaveLength(1)
+    const g = payload.projects[0].groups[0]
+    expect(g.id).toBe('g-1')
+    expect(g.group.groupId).toBe('g-1')
+    expect(g.group.title).toBe('Group One')
+    expect(g.group.maxConcurrent).toBe(2)
+    expect(g.features.map(f => f.featureIndex)).toEqual([0, 1, 2])
+    expect(g.features.map(f => f.title)).toEqual(['Feature A', 'Feature B', 'Feature C'])
+  })
+
+  test('prdText longer than 400 chars is exposed as a 400-char prdPreview and raw prdText is absent', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    const groupsRepo = createFeatureGroupsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'l1' }),
+      { lastAuditResult: null },
+    )
+    const longPrd = 'P'.repeat(1000)
+    groupsRepo.createGroup({
+      projectId: 'p1',
+      groupId: 'g-1',
+      title: 'Group One',
+      status: 'running',
+      prdText: longPrd,
+    })
+
+    const payload = collectDashboardData(db!)
+    const g = payload.projects[0].groups[0]
+    expect((g.group as Record<string, unknown>).prdText).toBeUndefined()
+    expect(g.group.prdPreview).toHaveLength(400)
+    expect(g.group.prdPreview).toBe('P'.repeat(400))
+  })
+
+  test('a database without the feature_groups table returns groups: [] and does not throw', () => {
+    // Build a database with only the loops + minimum tables by dropping
+    // feature_groups; relies on hasTable() gating the repo construction.
+    const loopsRepo = createLoopsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'l1' }),
+      { lastAuditResult: null },
+    )
+    db!.exec('DROP TABLE group_features')
+    db!.exec('DROP TABLE feature_groups')
+
+    expect(() => collectDashboardData(db!)).not.toThrow()
+    const payload = collectDashboardData(db!)
+    expect(payload.projects[0].groups).toEqual([])
+  })
+
+  test('a project containing only a feature group appears with loops: [] and populated groups', () => {
+    const groupsRepo = createFeatureGroupsRepo(db!)
+    groupsRepo.createGroup({
+      projectId: 'p1',
+      groupId: 'g-1',
+      title: 'Group One',
+      status: 'extracting',
+      maxConcurrent: 2,
+    })
+    groupsRepo.insertFeatures('p1', 'g-1', [
+      { title: 'Feature A', description: 'a' },
+    ])
+
+    const payload = collectDashboardData(db!)
+    expect(payload.projects).toHaveLength(1)
+    const proj = payload.projects[0]
+    expect(proj.projectId).toBe('p1')
+    expect(proj.loops).toEqual([])
+    expect(proj.groups).toHaveLength(1)
+    expect(proj.groups[0].group.groupId).toBe('g-1')
+    expect(proj.groups[0].features).toHaveLength(1)
+  })
+
+  test('groups from another project_id do not leak into this project', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    const groupsRepo = createFeatureGroupsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'l1' }),
+      { lastAuditResult: null },
+    )
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p2', loopName: 'l2' }),
+      { lastAuditResult: null },
+    )
+    groupsRepo.createGroup({
+      projectId: 'p2',
+      groupId: 'g-other',
+      title: 'Other Project Group',
+      status: 'running',
+    })
+
+    const payload = collectDashboardData(db!)
+    const p1 = payload.projects.find(p => p.projectId === 'p1')!
+    const p2 = payload.projects.find(p => p.projectId === 'p2')!
+    expect(p1.groups).toEqual([])
+    expect(p2.groups).toHaveLength(1)
+    expect(p2.groups[0].group.groupId).toBe('g-other')
   })
 })
