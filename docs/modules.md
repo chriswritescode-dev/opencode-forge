@@ -100,7 +100,7 @@ Translates OpenCode host events into loop actions and manages lifecycle side-eff
 | `host-side-effects.ts` | Termination side-effects (teardown, toast, log) |
 | `watchdog.ts` | Stall detection and recovery |
 | `plan-approval.ts` | Plan approval dedup/event gating + tool execute before/after hooks |
-| `plan-capture.ts` | Plan capture from streaming assistant messages |
+| `plan-capture.ts` | Marked-plan capture from streaming assistant message parts and on message completion |
 | `forge-session-attach.ts` | Auto-attach loops on `session.created` and `chat.message` events |
 | `loop-permission.ts` | Patches subagent permission rulesets on `session.created` for active-loop sessions |
 | `sandbox-tools.ts` | Sandbox tool before/after redirection hooks |
@@ -242,7 +242,7 @@ Higher-level orchestration services coordinating between hooks, loop runtime, an
 | `execution.ts` | Unified command bus for plan execution (`createForgeExecutionService()`) |
 | `session-loop-resolver.ts` | Resolve which loop owns a given session |
 | `deterministic-decomposer.ts` | Slice a plan into milestones (`section_plans` rows) deterministically — called once at loop start by `execution.ts`, not a runtime loop phase |
-| `plan-capture.ts` | Extract plan text from messages |
+| `plan-capture.ts` | The single write path into a session-scoped `plans` row (`writeSessionPlanContent`), marked-plan capture from messages, and `resolveSessionPlanOfRecord` — the one implementation of "stored plan wins, chat capture is the fallback" |
 | `worktree-log.ts` | Log worktree completions |
 
 ### Key Interfaces
@@ -368,6 +368,8 @@ Implements tools callable by AI agents during conversations.
 | `review-write` | `review.ts` | Store a code review finding (file, line, severity, description) |
 | `review-read` | `review.ts` | Retrieve review findings, filter by file or regex pattern |
 | `review-delete` | `review.ts` | Delete a review finding by file and line |
+| `plan-write` | `plan-authoring.ts` | Architect-only: create, overwrite, or append the stored session plan; returns a structure report. Denied while the session owns a running loop. |
+| `plan-edit` | `plan-authoring.ts` | Architect-only: edit the stored session plan by exact string replacement (`oldString`/`newString`/`replaceAll`); returns a structure report. |
 | `plan-read` | `plan-kv.ts` | Retrieve plans with pagination and pattern search |
 | `section-read` | `section-read.ts` | Retrieve a specific section of a plan |
 | `plan-adjust` | `plan-adjust.ts` | Auditor-only: revise the section under audit and/or replace the remaining sections of the active loop plan (logged as a plan amendment) |

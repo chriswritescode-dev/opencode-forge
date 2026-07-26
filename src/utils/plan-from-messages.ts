@@ -13,6 +13,7 @@
 
 import type { ForgeClient } from '../client/port'
 import {
+  PLAN_CAPTURE_MESSAGE_LIMIT,
   inspectLatestMarkedPlan,
   type PlanCaptureMessage,
 } from './marked-plan-parser'
@@ -21,14 +22,12 @@ export interface FetchLatestPlanForSessionDeps {
   /** Optional logger; receives a single descriptive string per call. */
   debug?: (message: string) => void
   /**
-   * Maximum number of recent messages to inspect. The server's
-   * `captureLatestPlanForSession` uses 20; keep this in sync so the TUI's
-   * view matches the server's capture window.
+   * Maximum number of recent messages to inspect. Defaults to the shared
+   * `PLAN_CAPTURE_MESSAGE_LIMIT` so the TUI's view matches the server's
+   * capture window.
    */
   limit?: number
 }
-
-const DEFAULT_LIMIT = 20
 
 export async function fetchLatestPlanForSession(
   client: ForgeClient,
@@ -36,7 +35,7 @@ export async function fetchLatestPlanForSession(
   directory: string | undefined,
   deps: FetchLatestPlanForSessionDeps = {},
 ): Promise<string | null> {
-  const limit = deps.limit ?? DEFAULT_LIMIT
+  const limit = deps.limit ?? PLAN_CAPTURE_MESSAGE_LIMIT
   const debug = deps.debug ?? (() => {})
 
   let messages: PlanCaptureMessage[]

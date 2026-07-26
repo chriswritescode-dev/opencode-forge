@@ -6,7 +6,7 @@ import { formatSessionOutput, formatAuditResult, formatCompletionSummary, format
 import { fetchSessionOutput, type LoopSessionOutput, MAX_RETRIES } from '../loop'
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
-import { captureLatestPlanForSession } from '../services/plan-capture'
+import { resolveSessionPlanOfRecord } from '../services/plan-capture'
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
 import { getRestartability } from '../loop/restartability'
 import { loopBranchExists } from '../workspace/forge-naming'
@@ -88,7 +88,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
 
         let source: PlanSource
         if (!args.plan) {
-          const capture = await captureLatestPlanForSession(
+          const resolved = await resolveSessionPlanOfRecord(
             {
               client: ctx.client,
               plansRepo: ctx.plansRepo,
@@ -98,16 +98,10 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             },
             context.sessionID
           )
-          
-          if (capture.status === 'captured' || capture.status === 'already-current') {
-            source = { kind: 'stored', sessionId: context.sessionID }
-          } else {
-            const planRow = ctx.plansRepo.getForSession(ctx.projectId, context.sessionID)
-            if (!planRow) {
-              return 'No plan found. Ensure the final plan is wrapped with <!-- forge-plan:start --> and <!-- forge-plan:end --> markers, or pass it directly as the plan argument.'
-            }
-            source = { kind: 'stored', sessionId: context.sessionID }
+          if (!resolved) {
+            return 'No plan found. Author it with the plan-write tool, wrap the final plan in <!-- forge-plan:start --> and <!-- forge-plan:end --> markers, or pass it directly as the plan argument.'
           }
+          source = { kind: 'stored', sessionId: context.sessionID }
         } else {
           source = { kind: 'inline', planText: args.plan }
         }

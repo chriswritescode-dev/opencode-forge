@@ -1,6 +1,7 @@
 import type { AgentDefinition } from './types'
 import { loadPrompt } from '../prompts/loader'
 import { hasSectionSummaryMarkers } from '../utils/section-summary'
+import { PLAN_AUTHORING_TOOL_NAMES } from '../constants/loop'
 
 const AUDITOR_TOOL_EXCLUDES = [
   'apply_patch',
@@ -16,6 +17,7 @@ const AUDITOR_TOOL_EXCLUDES = [
   'launch-group',
   'group-status',
   'group-cancel',
+  ...PLAN_AUTHORING_TOOL_NAMES,
 ]
 
 function buildBasePrompt(promptsDir?: string): string {

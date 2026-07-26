@@ -23,12 +23,11 @@ import { parseSectionSummary as _parseSectionSummary } from './section-summary'
 import { terminationStatusFor, terminationReasonToString, type TerminationReason } from './termination'
 import { generateUniqueName } from './name-uniqueness'
 import { bumpRecurrence, findingRecurrenceKey } from './finding-recurrence'
+import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 
 export const MAX_RETRIES = 3
 const STALL_TIMEOUT_MS = 60_000
 const MAX_CONSECUTIVE_STALLS = 5
-/** Hard cap on the total number of sections a loop may have after amendment. */
-export const MAX_TOTAL_SECTIONS = 24
 
 export type LoopChangeReason =
   | 'insert' | 'delete' | 'terminate'

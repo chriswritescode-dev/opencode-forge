@@ -69,6 +69,8 @@ describe('Agent definitions', () => {
       expect(codeAgent.tools?.exclude).toContain('plan')
       expect(codeAgent.tools?.exclude).toContain('plan_enter')
       expect(codeAgent.tools?.exclude).toContain('plan_exit')
+      expect(codeAgent.tools?.exclude).toContain('plan-write')
+      expect(codeAgent.tools?.exclude).toContain('plan-edit')
       expect(codeAgent.tools?.exclude).not.toContain('execute-plan')
       expect(codeAgent.tools?.exclude).not.toContain('loop-cancel')
       expect(codeAgent.tools?.exclude).not.toContain('loop-status')
@@ -160,6 +162,15 @@ describe('Agent definitions', () => {
       expect(featureSplitterAgent.tools?.exclude).toContain('write')
       expect(featureSplitterAgent.tools?.exclude).toContain('edit')
       expect(featureSplitterAgent.tools?.exclude).toContain('patch')
+      expect(featureSplitterAgent.tools?.exclude).toContain('plan-write')
+      expect(featureSplitterAgent.tools?.exclude).toContain('plan-edit')
+    })
+
+    test('architect agents retain plan-authoring tools', () => {
+      expect(architectAgent.tools?.exclude).not.toContain('plan-write')
+      expect(architectAgent.tools?.exclude).not.toContain('plan-edit')
+      expect(architectAutoAgent.tools?.exclude).not.toContain('plan-write')
+      expect(architectAutoAgent.tools?.exclude).not.toContain('plan-edit')
     })
 
     test('hidden group agents preserve overlap-aware planning guidance', () => {
