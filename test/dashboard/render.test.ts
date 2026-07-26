@@ -53,10 +53,23 @@ describe('renderDashboardHtml', () => {
       'back-to-sections',
       'badge-filter',
       'badge-active',
+      'markdown-body',
+      'markdown-toggle',
     ]
     for (const cls of cssClasses) {
       expect(html).toContain(cls)
     }
+  })
+
+  test('the markdown body renders at full height instead of scrolling internally', () => {
+    const html = renderDashboardHtml()
+    const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+    const start = style.indexOf('.markdown-body')
+    const rule = style.slice(start, style.indexOf('}', start))
+
+    expect(start).toBeGreaterThan(0)
+    expect(rule).not.toContain('max-height')
+    expect(rule).not.toContain('overflow')
   })
 
   test('no longer contains inline script or old static dashboard nodes', () => {

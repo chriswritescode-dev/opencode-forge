@@ -413,11 +413,19 @@ export function renderDashboardHtml(): string {
   .ldh-findings-bug { background: rgba(248,81,73,0.12); border-color: rgba(248,81,73,0.4); color: var(--errored); }
   .ldh-findings-warn { background: rgba(210,153,34,0.12); border-color: rgba(210,153,34,0.4); color: var(--running); }
   .ldh-findings-clean { background: rgba(63,185,80,0.10); border-color: rgba(63,185,80,0.3); color: var(--ok); }
-  .markdown-scrollable {
-    max-height: 320px; overflow-y: auto;
-    border: 1px solid var(--divider); border-radius: 6px;
-    padding: 8px 12px; margin-top: 4px;
+  .markdown-body { padding: 2px 0 4px; }
+  .markdown-toggle {
+    display: flex; align-items: center; gap: 8px; min-width: 0;
+    cursor: pointer; user-select: none;
   }
+  .markdown-toggle:focus-visible {
+    outline: 1px solid var(--ph-coding); outline-offset: 2px; border-radius: var(--r-1);
+  }
+  .markdown-caret {
+    flex-shrink: 0; width: 16px; text-align: center;
+    color: var(--fg-1); font-size: 0.95rem; line-height: 1;
+  }
+  .markdown-toggle:hover .markdown-caret { color: var(--fg-bright); }
   .loop-detail .section-label { color: var(--running); }
   .markdown-heading-row {
     display: flex; align-items: center; gap: 8px; margin: 8px 0 4px;

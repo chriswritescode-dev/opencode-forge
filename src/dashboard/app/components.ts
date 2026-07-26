@@ -492,14 +492,32 @@ function LoopTableRow(props: { dashLoop: DashboardLoop; now: () => number; onOpe
 // ── MarkdownSection ───────────────────────────────────────────────────────
 
 // Always renders its block; callers gate presence with a boolean memo so the
-// scroll box persists across polls and only innerHTML updates in place. The
-// single root element is required — a template that is only `${...}` generates
-// invalid code in solid-js/html.
+// body node persists across polls and only innerHTML updates in place, which is
+// what keeps the collapsed/expanded state stable. The body is not scrollable —
+// it lays out at full height and the page scrolls instead. The single root
+// element is required — a template that is only `${...}` generates invalid code
+// in solid-js/html.
 function MarkdownSection(props: { label: string | (() => string); src: () => string | null | undefined }) {
   const label = () => (typeof props.label === 'function' ? props.label() : props.label)
+  const [collapsed, setCollapsed] = createSignal(false)
+  const toggle = () => setCollapsed(c => !c)
   return html`<div class="markdown-section">
     <div class="markdown-heading-row">
-      <h4 class="section-label">${() => label()}</h4>
+      <div
+        class="markdown-toggle"
+        role="button"
+        tabindex="0"
+        aria-expanded=${() => (collapsed() ? 'false' : 'true')}
+        onclick=${toggle}
+        onkeydown=${(e: KeyboardEvent) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return
+          e.preventDefault()
+          toggle()
+        }}
+      >
+        <span class="markdown-caret">${() => (collapsed() ? '▸' : '▾')}</span>
+        <h4 class="section-label">${() => label()}</h4>
+      </div>
       <button
         class="copy-btn"
         aria-label=${() => 'Copy ' + label() + ' as markdown'}
@@ -516,7 +534,7 @@ function MarkdownSection(props: { label: string | (() => string); src: () => str
         }}
       >Copy</button>
     </div>
-    <div class="markdown-scrollable">
+    <div class="markdown-body" style=${() => (collapsed() ? 'display:none' : 'display:block')}>
       <div class="markdown-content" innerHTML=${() => renderMarkdown(props.src() || '')}></div>
     </div>
   </div>`
@@ -578,7 +596,7 @@ function SectionListRow(props: { sec: DashboardSection; onOpen: () => void }) {
 // Owns a selectedIndex signal; selecting shows a back link + the section title +
 // reused SectionBody; deselected shows the list. Persistence: current() returns
 // the same store proxy across polls, so the selected branch's thunk does not
-// re-run and SectionBody (its .markdown-scrollable) is not rebuilt.
+// re-run and SectionBody (its .markdown-body) is not rebuilt.
 function SectionsPanel(props: { sections: () => DashboardSection[] }) {
   const [selected, setSelected] = createSignal<number | null>(null)
   const current = createMemo(() => {
@@ -972,6 +990,7 @@ function TimelineTabBody(props: { dashLoop: DashboardLoop; now: () => number }) 
   const hiddenCount = createMemo(() => (showAll() ? 0 : Math.max(0, eventsNewestFirst().length - 20)))
 
   return html`<div class="timeline-tab timeline-graph">
+    ${LoopMachineGraph({ loop: () => lp(), transitions })}
     ${() => PhaseBar({ spans, variant: 'lg', now: props.now })}
     ${() => (truncated()
       ? html`<div class="phase-truncated">Earlier history was truncated by the 100-row fetch window.</div>`
@@ -997,11 +1016,6 @@ function TimelineTabBody(props: { dashLoop: DashboardLoop; now: () => number }) 
         ? html`<div class="tl-event-expand" onclick=${() => setShowAll(true)}>[ ${() => hiddenCount()} earlier events ]</div>`
         : '')}
     </div>
-
-    <details>
-      <summary>State machine graph</summary>
-      ${LoopMachineGraph({ loop: () => lp(), transitions })}
-    </details>
   </div>`
 }
 

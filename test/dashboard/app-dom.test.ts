@@ -174,8 +174,8 @@ describe('dashboard App fine-grained reactivity', () => {
     dispose = render(() => App() as unknown as Element, container)
     await flush()
 
-    const scrollable = container.querySelector('.markdown-scrollable')
-    expect(scrollable).toBeTruthy()
+    const body = container.querySelector('.markdown-body')
+    expect(body).toBeTruthy()
     expect(container.querySelector('.markdown-content')?.innerHTML).toContain('PLAN ONE')
   })
 
@@ -183,18 +183,16 @@ describe('dashboard App fine-grained reactivity', () => {
     dispose = render(() => App() as unknown as Element, container)
     await flush()
 
-    const scroll1 = container.querySelector('.markdown-scrollable') as HTMLElement
-    expect(scroll1).toBeTruthy()
-    scroll1.scrollTop = 123
-    ;(scroll1 as any).__id = 'orig'
+    const body1 = container.querySelector('.markdown-body') as HTMLElement
+    expect(body1).toBeTruthy()
+    ;(body1 as any).__id = 'orig'
 
     await poll(makePayload({ dashLoop: { plan: 'PLAN TWO' } }))
 
-    const scroll2 = container.querySelector('.markdown-scrollable') as HTMLElement
-    // Same DOM node => scroll position / resize state preserved
-    expect(scroll2).toBe(scroll1)
-    expect((scroll2 as any).__id).toBe('orig')
-    expect(scroll2.scrollTop).toBe(123)
+    const body2 = container.querySelector('.markdown-body') as HTMLElement
+    // Same DOM node => collapse state and page scroll anchor preserved
+    expect(body2).toBe(body1)
+    expect((body2 as any).__id).toBe('orig')
     // ...and the content reflects the new plan
     expect(container.querySelector('.markdown-content')?.innerHTML).toContain('PLAN TWO')
   })
@@ -203,9 +201,8 @@ describe('dashboard App fine-grained reactivity', () => {
     dispose = render(() => App() as unknown as Element, container)
     await flush()
 
-    const scroll1 = container.querySelector('.markdown-scrollable') as HTMLElement
-    scroll1.scrollTop = 77
-    ;(scroll1 as any).__id = 'orig'
+    const body1 = container.querySelector('.markdown-body') as HTMLElement
+    ;(body1 as any).__id = 'orig'
     expect(container.querySelector('.loop-detail-header .status-badge')?.textContent).toBe('running')
 
     await poll(
@@ -215,12 +212,42 @@ describe('dashboard App fine-grained reactivity', () => {
       }),
     )
 
-    const scroll2 = container.querySelector('.markdown-scrollable') as HTMLElement
-    expect(scroll2).toBe(scroll1)
-    expect((scroll2 as any).__id).toBe('orig')
-    expect(scroll2.scrollTop).toBe(77)
+    const body2 = container.querySelector('.markdown-body') as HTMLElement
+    expect(body2).toBe(body1)
+    expect((body2 as any).__id).toBe('orig')
     expect(container.querySelector('.loop-detail-header .status-badge')?.textContent).toBe('completed')
   })
+
+  test('a markdown section collapses and expands, keeps Copy available, and survives a poll', async () => {
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const section = container.querySelector('.markdown-section') as HTMLElement
+    const toggle = section.querySelector('.markdown-toggle') as HTMLElement
+    const body = section.querySelector('.markdown-body') as HTMLElement
+    expect(body.style.display).toBe('block')
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(section.querySelector('.markdown-caret')!.textContent).toBe('▾')
+
+    toggle.click()
+    await flush()
+    expect(body.style.display).toBe('none')
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(section.querySelector('.markdown-caret')!.textContent).toBe('▸')
+    // Copy stays reachable while collapsed.
+    expect(section.querySelector('.copy-btn')).toBeTruthy()
+
+    // A poll must not silently re-expand the section.
+    await poll(makePayload({ dashLoop: { plan: 'PLAN TWO' } }))
+    expect(container.querySelector('.markdown-body')).toBe(body)
+    expect(body.style.display).toBe('none')
+
+    toggle.click()
+    await flush()
+    expect(body.style.display).toBe('block')
+    expect(container.querySelector('.markdown-content')?.innerHTML).toContain('PLAN TWO')
+  })
+
 
   test('section drill-in: click a row to open details, back returns to list', async () => {
     payload = makePayload({
@@ -266,13 +293,12 @@ describe('dashboard App fine-grained reactivity', () => {
     // Summary labels: only Done and Follow-ups (Deviations is null)
     const labels = Array.from(container.querySelectorAll('.section-summary-label')).map(l => l.textContent)
     expect(labels).toEqual(['Done', 'Follow-ups'])
-    expect(container.querySelector('.markdown-scrollable .markdown-content')!.innerHTML).toContain('SECTION PLAN BODY')
+    expect(container.querySelector('.markdown-body .markdown-content')!.innerHTML).toContain('SECTION PLAN BODY')
 
-    // Scroll position preserved across a data poll that mutates section title
-    const scroll1 = container.querySelector('.markdown-scrollable') as HTMLElement
-    expect(scroll1).toBeTruthy()
-    scroll1.scrollTop = 42
-    ;(scroll1 as any).__id = 'drill'
+    // Node identity preserved across a data poll that mutates section title
+    const body1 = container.querySelector('.markdown-body') as HTMLElement
+    expect(body1).toBeTruthy()
+    ;(body1 as any).__id = 'drill'
 
     await poll(makePayload({
       dashLoop: {
@@ -296,10 +322,9 @@ describe('dashboard App fine-grained reactivity', () => {
       },
     }))
 
-    const scroll2 = container.querySelector('.markdown-scrollable') as HTMLElement
-    expect(scroll2).toBe(scroll1)
-    expect((scroll2 as any).__id).toBe('drill')
-    expect(scroll2.scrollTop).toBe(42)
+    const body2 = container.querySelector('.markdown-body') as HTMLElement
+    expect(body2).toBe(body1)
+    expect((body2 as any).__id).toBe('drill')
     // Title reflects the edit
     expect(container.querySelector('.section-drill-title .section-title')!.textContent).toContain('(edited)')
 
@@ -1660,26 +1685,29 @@ describe('dashboard App loop detail tabs', () => {
     expect((container.querySelector('.tab-body[data-tab="overview"]') as HTMLElement).style.display).toBe('none')
   })
 
-  test('tab identity is preserved across tab switch: scrollTop survives Plan tab hide/show', async () => {
+  test('tab identity is preserved across tab switch: Plan collapse state survives hide/show', async () => {
     window.location.hash = '#p1/loop/loop-a'
     payload = planLoopFixture()
     dispose = render(() => App() as unknown as Element, container)
     await flush()
 
-    const planScroll = container.querySelector('.tab-body[data-tab="plan"] .markdown-scrollable') as HTMLElement
-    expect(planScroll).toBeTruthy()
-    planScroll.scrollTop = 200
-    ;(planScroll as any).__id = 'plan-orig'
+    const planTab = () => container.querySelector('.tab-body[data-tab="plan"]') as HTMLElement
+    const planMd = planTab().querySelector('.markdown-body') as HTMLElement
+    expect(planMd).toBeTruthy()
+    ;(planMd as any).__id = 'plan-orig'
+    ;(planTab().querySelector('.markdown-toggle') as HTMLElement).click()
+    await flush()
+    expect(planMd.style.display).toBe('none')
 
     await clickTab('usage')
-    const planBodyAfterHide = container.querySelector('.tab-body[data-tab="plan"]') as HTMLElement
-    expect(planBodyAfterHide.style.display).toBe('none')
+    expect(planTab().style.display).toBe('none')
 
     await clickTab('plan')
-    const planScroll2 = container.querySelector('.tab-body[data-tab="plan"] .markdown-scrollable') as HTMLElement
-    expect(planScroll2).toBe(planScroll)
-    expect((planScroll2 as any).__id).toBe('plan-orig')
-    expect(planScroll2.scrollTop).toBe(200)
+    const planMd2 = planTab().querySelector('.markdown-body') as HTMLElement
+    expect(planMd2).toBe(planMd)
+    expect((planMd2 as any).__id).toBe('plan-orig')
+    // Still collapsed: the node was hidden, not rebuilt.
+    expect(planMd2.style.display).toBe('none')
   })
 
   test('a poll changing loop status while on the Usage tab leaves the active tab unchanged', async () => {
@@ -2388,21 +2416,25 @@ describe('dashboard App timeline tab', () => {
     expect(body.querySelector('.tl-event-expand')).toBeNull()
   })
 
-  test('the machine graph lives inside a collapsed <details> on the Timeline tab and keeps five phase nodes', async () => {
+  test('the machine graph renders unhidden at the top of the Timeline tab with five phase nodes', async () => {
     window.location.hash = '#p1/loop/loop-a/timeline'
     payload = makePayload()
     dispose = render(() => App() as unknown as Element, container)
     await flush()
 
     const body = container.querySelector('.tab-body[data-tab="timeline"]') as HTMLElement
-    const details = body.querySelector('details') as HTMLDetailsElement
-    expect(details).toBeTruthy()
-    // Collapsed by default.
-    expect(details.open).toBe(false)
-    const summary = details.querySelector('summary') as HTMLElement
-    expect(summary?.textContent).toContain('State machine graph')
-    // Machine graph still renders five phase nodes inside the details block.
-    expect(details.querySelectorAll('g.mg-node').length).toBe(5)
+    // No disclosure wrapper: the graph is always visible.
+    expect(body.querySelector('details')).toBeNull()
+
+    const graph = body.querySelector('.mg-graph') as HTMLElement
+    expect(graph).toBeTruthy()
+    expect(graph.querySelectorAll('g.mg-node').length).toBe(5)
+
+    // It is the first child of the timeline tab, above the phase bar.
+    const timeline = body.querySelector('.timeline-tab') as HTMLElement
+    expect(timeline.firstElementChild).toBe(graph)
+    const phaseBar = timeline.querySelector('.phase-bar, .phase-totals') as HTMLElement
+    expect(graph.compareDocumentPosition(phaseBar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   test('the SVG root survives a poll that changes the active phase', async () => {
