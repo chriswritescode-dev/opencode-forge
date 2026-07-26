@@ -25,6 +25,7 @@ import {
   computePhaseSpans,
   summarizePhaseTotals,
   computeTimelineEvents,
+  capList,
 } from '../../src/dashboard/app/helpers'
 import type { LoopTab } from '../../src/dashboard/app/helpers'
 import type { DashboardPayload, DashboardProject, DashboardLoop, LoopTransitionRow } from '../../src/dashboard/app/types'
@@ -84,7 +85,9 @@ function mockDashLoop(overrides: Partial<DashboardLoop> = {}): DashboardLoop {
     loop: mockLoopRow(),
     lastAuditResult: null,
     plan: null,
+    hasPlan: false,
     sections: [],
+    sectionCount: 0,
     findings: [],
     usage: null,
     duration: null,
@@ -363,25 +366,21 @@ describe('buildRepoLabels', () => {
 describe('tabsForLoop', () => {
   test('plan loop with sections and a plan returns all six tabs in order', () => {
     const loop = mockDashLoop({
-      plan: '# Plan',
-      sections: [
-        { projectId: 'p1', loopName: 'l', sectionIndex: 0, title: 'S', content: '', status: 'pending', attempts: 0, summaryDone: null, summaryDeviations: null, summaryFollowUps: null, startedAt: null, completedAt: null, createdAt: 0 },
-      ],
+      hasPlan: true,
+      sectionCount: 1,
     })
     expect(tabsForLoop(loop)).toEqual<LoopTab[]>(['overview', 'timeline', 'sections', 'findings', 'plan', 'usage'])
   })
 
   test('goal loop with zero sections omits the sections tab', () => {
-    const loop = mockDashLoop({ plan: null, sections: [] })
+    const loop = mockDashLoop({ hasPlan: false, sectionCount: 0 })
     expect(tabsForLoop(loop)).toEqual<LoopTab[]>(['overview', 'timeline', 'findings', 'usage'])
   })
 
-  test('loop with plan: null omits the plan tab', () => {
+  test('loop with hasPlan: false omits the plan tab', () => {
     const loop = mockDashLoop({
-      plan: null,
-      sections: [
-        { projectId: 'p1', loopName: 'l', sectionIndex: 0, title: 'S', content: '', status: 'pending', attempts: 0, summaryDone: null, summaryDeviations: null, summaryFollowUps: null, startedAt: null, completedAt: null, createdAt: 0 },
-      ],
+      hasPlan: false,
+      sectionCount: 1,
     })
     const tabs = tabsForLoop(loop)
     expect(tabs).not.toContain<LoopTab>('plan')
@@ -389,7 +388,7 @@ describe('tabsForLoop', () => {
   })
 
   test('tabsForLoop never returns an empty array', () => {
-    const loop = mockDashLoop({ plan: null, sections: [] })
+    const loop = mockDashLoop({ hasPlan: false, sectionCount: 0 })
     const tabs = tabsForLoop(loop)
     expect(tabs.length).toBeGreaterThan(0)
     expect(tabs[0]).toBe<LoopTab>('overview')
@@ -1039,6 +1038,36 @@ describe('roleUsageBars', () => {
     expect(audit.messageCount).toBe(2)
     expect(exec.pct).toBeCloseTo(100)
     expect(audit.pct).toBeCloseTo(50)
+  })
+
+  test('role bars sum input, output and reasoning tokens per role', () => {
+    const withTokens: NonNullable<DashboardLoop['usage']> = {
+      ...usage,
+      byRole: {
+        code: { cost: 2, inputTokens: 4000, outputTokens: 2000, reasoningTokens: 400, cacheReadTokens: 80, cacheWriteTokens: 160, messageCount: 6 },
+        auditor: { cost: 1, inputTokens: 1000, outputTokens: 500, reasoningTokens: 100, cacheReadTokens: 20, cacheWriteTokens: 40, messageCount: 2 },
+      },
+    }
+    const bars = roleUsageBars(withTokens)
+    const exec = bars.find(b => b.role === 'execution')!
+    const audit = bars.find(b => b.role === 'auditor')!
+    // tokens field sums input + output + reasoning only.
+    expect(exec.tokens).toBe(4000 + 2000 + 400)
+    expect(audit.tokens).toBe(1000 + 500 + 100)
+  })
+
+  test('role bars report zero tokens for an aggregate whose byRole lacks token fields', () => {
+    // Aggregate persisted before token fields were tracked — only cost and
+    // messageCount present on byRole entries.
+    const legacy: NonNullable<DashboardLoop['usage']> = {
+      ...usage,
+      byRole: {
+        code: { cost: 2, messageCount: 6 } as any,
+        auditor: { cost: 1, messageCount: 2 } as any,
+      },
+    }
+    const bars = roleUsageBars(legacy)
+    expect(bars.every(b => b.tokens === 0)).toBe(true)
   })
 })
 
@@ -1706,5 +1735,43 @@ describe('computeTimelineEvents', () => {
 
   test('empty transitions yield an empty event list', () => {
     expect(computeTimelineEvents([], 1700000000000, false)).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// capList
+// ---------------------------------------------------------------------------
+
+describe('capList', () => {
+  test('returns the input array by reference when under the cap', () => {
+    const items = [1, 2, 3]
+    const out = capList(items, 10, false)
+    expect(out.rows).toBe(items)
+    expect(out.total).toBe(3)
+    expect(out.capped).toBe(false)
+  })
+
+  test('slices to the cap and reports the true total when over', () => {
+    const items = Array.from({ length: 25 }, (_, i) => i)
+    const out = capList(items, 10, false)
+    expect(out.rows).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+    expect(out.total).toBe(25)
+    expect(out.capped).toBe(true)
+  })
+
+  test('showAll bypasses the cap and reports capped false', () => {
+    const items = Array.from({ length: 25 }, (_, i) => i)
+    const out = capList(items, 10, true)
+    expect(out.rows).toBe(items)
+    expect(out.total).toBe(25)
+    expect(out.capped).toBe(false)
+  })
+
+  test('an exactly-at-cap list is not reported as capped', () => {
+    const items = Array.from({ length: 10 }, (_, i) => i)
+    const out = capList(items, 10, false)
+    expect(out.rows).toBe(items)
+    expect(out.total).toBe(10)
+    expect(out.capped).toBe(false)
   })
 })

@@ -91,7 +91,9 @@ All endpoints are read-only (non-GET requests return 404):
 | Endpoint | Description |
 |----------|-------------|
 | `GET /` | HTML page (inlined SolidJS app) |
-| `GET /api/data` | JSON snapshot of Forge loop/project state |
+| `GET /api/data` | JSON snapshot of Forge loop/project state. Accepts optional `project` and `loop` query parameters (`/api/data?project=<projectId>&loop=<loopName>`) to scope the payload: per-loop text (`plan`, `goal`, `lastAuditResult`, `postActionReport`, `sections`, `amendments`) is materialised only for the scoped loop, and `transitions` only for the scoped project; `findings`, `usage`, and `duration` remain populated for every loop. `hasPlan` and `sectionCount` are always populated so the tab set and section counts render correctly while detail is in flight. |
+
+In the browser, the loop table, repo findings list, plans list, and loop picker cap their rendered rows behind a "Showing N of M" affordance (a "Show all" toggle expands the loop table, findings, and plans lists).
 
 ## Screenshots
 

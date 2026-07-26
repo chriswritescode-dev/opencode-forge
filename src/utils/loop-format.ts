@@ -1,11 +1,11 @@
 import { formatTokens, truncate } from './format'
 import type { LoopSessionOutput } from '../loop'
-import type { LoopUsageSummary, TokenBreakdown } from '../loop/token-usage'
+import type { LoopUsageSummary, RoleUsage, TokenBreakdown } from '../loop/token-usage'
+import { USAGE_ROLE_ORDER, mergeUsageSummaries } from '../loop/token-usage'
 import type { LoopUsageAggregate, LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
-import { mergeUsageSummaries } from '../loop/token-usage'
 
 export { formatTokens } from './format'
-export type { LoopUsageSummary } from '../loop/token-usage'
+export type { LoopUsageSummary, RoleUsage } from '../loop/token-usage'
 
 /**
  * Build cumulative usage for a loop by merging persisted aggregate with live session output.
@@ -49,6 +49,22 @@ export function buildCumulativeUsage(
   return persistedSummary ?? liveSummary
 }
 
+/**
+ * The single render path for a loop's cumulative usage block. Returns [] when
+ * there is nothing to report so callers can spread unconditionally.
+ */
+export function formatCumulativeUsage(
+  loopSessionUsageRepo: LoopSessionUsageRepo | undefined,
+  projectId: string,
+  loopName: string,
+  currentSessionId: string,
+  sessionOutput: LoopSessionOutput | null,
+): string[] {
+  const summary = buildCumulativeUsage(loopSessionUsageRepo, projectId, loopName, currentSessionId, sessionOutput)
+  if (!summary) return []
+  return ['', 'Cumulative Usage:', ...formatUsageSummary(summary).map(l => `  ${l}`)]
+}
+
 /** Convert LoopUsageAggregate from database to LoopUsageSummary */
 export function aggregateToUsageSummary(aggregate: LoopUsageAggregate): LoopUsageSummary {
   const totalTokens: TokenBreakdown = {
@@ -72,10 +88,29 @@ export function aggregateToUsageSummary(aggregate: LoopUsageAggregate): LoopUsag
     messageCount: data.messageCount,
   })).sort((a, b) => a.model.localeCompare(b.model))
 
+  const perRole: RoleUsage[] = USAGE_ROLE_ORDER
+    .filter(role => aggregate.byRole[role] !== undefined)
+    .map(role => {
+      const data = aggregate.byRole[role]!
+      return {
+        role,
+        cost: data.cost,
+        tokens: {
+          input: data.inputTokens,
+          output: data.outputTokens,
+          reasoning: data.reasoningTokens,
+          cacheRead: data.cacheReadTokens,
+          cacheWrite: data.cacheWriteTokens,
+        },
+        messageCount: data.messageCount,
+      }
+    })
+
   return {
     totalCost: aggregate.totalCost,
     totalTokens,
     perModel,
+    perRole,
   }
 }
 
@@ -95,6 +130,17 @@ export function formatUsageSummary(summary: LoopUsageSummary): string[] {
       const mt = modelUsage.tokens
       const modelTokensStr = `${formatTokens(mt.input)} in / ${formatTokens(mt.output)} out / ${formatTokens(mt.reasoning)} reasoning / ${formatTokens(mt.cacheRead)} cache read / ${formatTokens(mt.cacheWrite)} cache write`
       lines.push(`  ${modelUsage.model}: ${modelCost} | ${modelTokensStr}`)
+    }
+  }
+
+  const perRole = summary.perRole ?? []
+  if (perRole.length > 0) {
+    lines.push('Per-role usage:')
+    for (const roleUsage of perRole) {
+      const roleCost = `$${roleUsage.cost.toFixed(4)}`
+      const rt = roleUsage.tokens
+      const roleTokensStr = `${formatTokens(rt.input)} in / ${formatTokens(rt.output)} out / ${formatTokens(rt.reasoning)} reasoning / ${formatTokens(rt.cacheRead)} cache read / ${formatTokens(rt.cacheWrite)} cache write`
+      lines.push(`  ${roleUsage.role}: ${roleCost} | ${roleTokensStr}`)
     }
   }
 

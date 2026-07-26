@@ -2,7 +2,7 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render } from 'solid-js/web'
 import { App } from '../../src/dashboard/app/app'
-import { fmtTime } from '../../src/dashboard/app/helpers'
+import { fmtTime, MAX_RENDERED_LOOP_ROWS, MAX_RENDERED_FINDING_ROWS, MAX_RENDERED_PICKER_OPTIONS } from '../../src/dashboard/app/helpers'
 
 // ---------------------------------------------------------------------------
 // Payload builders (minimal runtime shape; tests are not typechecked by tsc)
@@ -17,7 +17,7 @@ function makeLoop(over: Record<string, any> = {}): any {
   // preserves the proxy for each loop across polls. Defaults to the default
   // loopName unless overridden.
   const loopName = loopOver.loopName ?? 'loop-a'
-  return {
+  const dashLoop = {
     id: loopName,
     loop: {
       projectId: 'p1',
@@ -59,6 +59,11 @@ function makeLoop(over: Record<string, any> = {}): any {
     usage: null,
     duration: null,
     ...over,
+  }
+  return {
+    ...dashLoop,
+    hasPlan: over.hasPlan ?? !!dashLoop.plan,
+    sectionCount: over.sectionCount ?? dashLoop.sections.length,
   }
 }
 
@@ -177,6 +182,7 @@ describe('dashboard App loop list', () => {
 
 describe('dashboard App fine-grained reactivity', () => {
   test('renders the loop detail with markdown after initial load', async () => {
+    window.location.hash = '#p1/loop/loop-a/plan'
     dispose = render(() => App() as unknown as Element, container)
     await flush()
 
@@ -186,6 +192,7 @@ describe('dashboard App fine-grained reactivity', () => {
   })
 
   test('markdown content updates in place when plan changes on a poll', async () => {
+    window.location.hash = '#p1/loop/loop-a/plan'
     dispose = render(() => App() as unknown as Element, container)
     await flush()
 
@@ -204,7 +211,13 @@ describe('dashboard App fine-grained reactivity', () => {
   })
 
   test('status change keeps the markdown node (no full subtree rebuild) and updates the badge', async () => {
+    // The status badge lives in the Overview tab body (LoopDetailHeader);
+    // the markdown body lives in the Plan tab body. Activate Plan after
+    // mounting so both lazy bodies coexist in the DOM.
+    window.location.hash = '#p1/loop/loop-a'
     dispose = render(() => App() as unknown as Element, container)
+    await flush()
+    ;(container.querySelector('.tab-item[data-tab="plan"]') as HTMLElement).click()
     await flush()
 
     const body1 = container.querySelector('.markdown-body') as HTMLElement
@@ -225,6 +238,7 @@ describe('dashboard App fine-grained reactivity', () => {
   })
 
   test('a markdown section collapses and expands, keeps Copy available, and survives a poll', async () => {
+    window.location.hash = '#p1/loop/loop-a/plan'
     dispose = render(() => App() as unknown as Element, container)
     await flush()
 
@@ -255,6 +269,7 @@ describe('dashboard App fine-grained reactivity', () => {
   })
 
   test('renders a floating table of contents when the plan has multiple headings', async () => {
+    window.location.hash = '#p1/loop/loop-a/plan'
     payload = makePayload({
       dashLoop: { plan: '# Goal\n\nIntro paragraph.\n\n## Step One\n\nDo thing.\n\n## Step Two\n\nDo more.' },
     })
@@ -283,8 +298,9 @@ describe('dashboard App fine-grained reactivity', () => {
   })
 
   // Heading ids are slugs, so two markdown sections sharing a heading produce
-  // the same id twice in the document — and hidden tabs stay mounted. A toc
-  // jump must resolve inside its own section, not the first document match.
+  // the same id twice in the document — and hidden tab bodies keep their DOM
+  // once activated. A toc jump must resolve inside its own section, not the
+  // first document match.
   test('a toc jump resolves the heading in its own markdown section', async () => {
     const shared = '# Shared\n\ntext\n\n## Verification\n\ntext'
     window.location.hash = '#p1/loop/loop-a/plan'
@@ -293,6 +309,16 @@ describe('dashboard App fine-grained reactivity', () => {
     })
     dispose = render(() => App() as unknown as Element, container)
     await flush()
+
+    // Plan is the active tab on mount, so its body is built lazily. Activate
+    // Overview to mount its report/audit markdown bodies too, then return to
+    // Plan. Both bodies now coexist in the DOM with colliding heading ids.
+    const activateTab = async (tab: string) => {
+      ;(container.querySelector(`.tab-item[data-tab="${tab}"]`) as HTMLElement).click()
+      await flush()
+    }
+    await activateTab('overview')
+    await activateTab('plan')
 
     const bodies = Array.from(container.querySelectorAll('.markdown-body')) as HTMLElement[]
     expect(bodies.length).toBeGreaterThan(1)
@@ -316,6 +342,7 @@ describe('dashboard App fine-grained reactivity', () => {
   })
 
   test('does not render a table of contents when the plan has fewer than two h1-h3 headings', async () => {
+    window.location.hash = '#p1/loop/loop-a/plan'
     payload = makePayload({ dashLoop: { plan: 'PLAN ONE' } })
     dispose = render(() => App() as unknown as Element, container)
     await flush()
@@ -326,6 +353,7 @@ describe('dashboard App fine-grained reactivity', () => {
 
 
   test('section drill-in: click a row to open details, back returns to list', async () => {
+    window.location.hash = '#p1/loop/loop-a/sections'
     payload = makePayload({
       dashLoop: {
         sections: [
@@ -412,6 +440,7 @@ describe('dashboard App fine-grained reactivity', () => {
   })
 
   test('renders usage graphs (stacked token bar + per-model cost bars)', async () => {
+    window.location.hash = '#p1/loop/loop-a/usage'
     payload = makePayload({
       dashLoop: {
         usage: {
@@ -498,7 +527,11 @@ describe('dashboard App fine-grained reactivity', () => {
     expect(stats.textContent).not.toContain('$')
 
     // Usage graphs (token composition + cost by model) live inside the Usage
-    // tab body, mounted at first paint even when the active tab is Overview.
+    // tab body, which on first paint is built only when the user activates
+    // the tab.
+    const usageTab = container.querySelector('.tab-item[data-tab="usage"]') as HTMLElement
+    usageTab.click()
+    await flush()
     const usage = container.querySelector('.tab-body[data-tab="usage"] .usage-group')!
     expect(usage).toBeTruthy()
     expect(usage.querySelector('.usage-stack')).toBeTruthy()
@@ -536,6 +569,13 @@ describe('dashboard App fine-grained reactivity', () => {
 })
 
 describe('dashboard App machine graph', () => {
+  beforeEach(() => {
+    // The machine graph lives in the Timeline tab body, which is built lazily
+    // on first activation. Deep-link to the Timeline tab so each test mounts
+    // the graph on first paint.
+    window.location.hash = '#p1/loop/loop-a/timeline'
+  })
+
   function phaseNodeByText(phase: string): HTMLElement | null {
     const nodes = container.querySelectorAll('g.mg-node')
     for (const n of nodes) {
@@ -884,6 +924,10 @@ describe('dashboard App machine graph', () => {
   test('poll reordering of multiple loops preserves the selected loop SVG root identity', async () => {
     // Initial: loop-a running (sorts first), loop-b completed newer.
     // URL hash selects p1/loop-a so the detail view + machine graph render.
+    // Mount on Overview (so the LoopDetailHeader in the Overview body is
+    // built) and then activate the Timeline tab to build the machine graph
+    // body lazily; both bodies stay mounted for the lifetime of loop-a.
+    window.location.hash = '#p1/loop/loop-a'
     payload = makePayload({
       loops: [
         makeLoop({
@@ -907,6 +951,8 @@ describe('dashboard App machine graph', () => {
       totals: { loops: 2, running: 1, completed: 1 },
     })
     dispose = render(() => App() as unknown as Element, container)
+    await flush()
+    ;(container.querySelector('.tab-item[data-tab="timeline"]') as HTMLElement).click()
     await flush()
 
     // Machine graph is mounted for loop-a; coding node is active.
@@ -969,6 +1015,13 @@ describe('dashboard App machine graph', () => {
 })
 
 describe('dashboard App plan amendments panel', () => {
+  beforeEach(() => {
+    // Amendments are rendered inside the Plan tab body, which is built lazily
+    // on first activation. Deep-link to the Plan tab so each test mounts it
+    // on first paint.
+    window.location.hash = '#p1/loop/loop-a/plan'
+  })
+
   function amendRow(overrides: Record<string, any> = {}): any {
     return {
       id: 1,
@@ -1671,7 +1724,7 @@ describe('dashboard App loop detail tabs', () => {
     })
   }
 
-  test('opening a plan loop renders six tab-item elements with Overview active', async () => {
+  test('opening a plan loop builds only the active tab body and builds Usage on first activation', async () => {
     window.location.hash = '#p1/loop/loop-a'
     payload = planLoopFixture()
     dispose = render(() => App() as unknown as Element, container)
@@ -1680,11 +1733,67 @@ describe('dashboard App loop detail tabs', () => {
     const items = Array.from(container.querySelectorAll('.tab-item')) as HTMLElement[]
     expect(items.length).toBe(6)
     expect(items.map(i => i.dataset.tab)).toEqual(['overview', 'timeline', 'sections', 'findings', 'plan', 'usage'])
-    const active = container.querySelector('.tab-item.tab-active') as HTMLElement
-    expect(active).toBeTruthy()
-    expect(active.dataset.tab).toBe('overview')
-    expect((container.querySelector('.tab-body[data-tab="overview"]') as HTMLElement).style.display).not.toBe('none')
-    expect((container.querySelector('.tab-body[data-tab="usage"]') as HTMLElement).style.display).toBe('none')
+
+    // Every tab-body host exists on first paint with the active tab visible
+    // and the rest hidden. Only the active (Overview) host has been populated;
+    // the Usage host is empty until the user opens it.
+    const usageHost = container.querySelector('.tab-body[data-tab="usage"]') as HTMLElement
+    expect(usageHost).toBeTruthy()
+    expect(usageHost.style.display).toBe('none')
+    expect(usageHost.querySelector('.usage-tab')).toBeNull()
+    expect((container.querySelector('.tab-body[data-tab="overview"]') as HTMLElement).querySelector('.overview-tab, .markdown-section')).toBeTruthy()
+
+    await clickTab('usage')
+    expect(usageHost.querySelector('.usage-tab')).toBeTruthy()
+    expect(usageHost.style.display).toBe('block')
+  })
+
+  test('the timeline machine graph is not built until the Timeline tab is activated', async () => {
+    window.location.hash = '#p1/loop/loop-a'
+    payload = planLoopFixture()
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    // The machine graph (~70-node SVG) lives inside the Timeline tab body. On
+    // first paint with Overview active it must not be built.
+    expect(container.querySelector('.mg-graph')).toBeNull()
+
+    await clickTab('timeline')
+    const graph = container.querySelector('.mg-graph') as HTMLElement
+    expect(graph).toBeTruthy()
+    expect(graph.querySelectorAll('g.mg-node').length).toBe(5)
+  })
+
+  test('a lazily built tab body keeps its node identity across a hide/show cycle and a poll', async () => {
+    window.location.hash = '#p1/loop/loop-a'
+    payload = planLoopFixture()
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    // Plan is not the active tab on mount; activate it to build its body.
+    await clickTab('plan')
+    const planBody = container.querySelector('.tab-body[data-tab="plan"]') as HTMLElement
+    const planMd = planBody.querySelector('.markdown-content') as HTMLElement
+    expect(planMd).toBeTruthy()
+    ;(planMd as any).__id = 'plan-orig'
+
+    // Switch to Overview (Plan body is hidden but kept) and back; the node
+    // identity must be preserved on the lazy path, just as it is on the eager
+    // path tested above.
+    await clickTab('overview')
+    expect(planBody.style.display).toBe('none')
+    await clickTab('plan')
+
+    const planMd2 = planBody.querySelector('.markdown-content') as HTMLElement
+    expect(planMd2).toBe(planMd)
+    expect((planMd2 as any).__id).toBe('plan-orig')
+
+    // A poll that mutates the plan content must update the same DOM node in
+    // place, not rebuild it.
+    await poll(makePayload({ dashLoop: { plan: 'PLAN TWO' } }))
+    const planMd3 = planBody.querySelector('.markdown-content') as HTMLElement
+    expect(planMd3).toBe(planMd)
+    expect(planMd3.innerHTML).toContain('PLAN TWO')
   })
 
   test('opening a goal loop renders no Sections tab and its Overview contains the goal text', async () => {
@@ -1762,7 +1871,7 @@ describe('dashboard App loop detail tabs', () => {
   })
 
   test('tab identity is preserved across tab switch: Plan collapse state survives hide/show', async () => {
-    window.location.hash = '#p1/loop/loop-a'
+    window.location.hash = '#p1/loop/loop-a/plan'
     payload = planLoopFixture()
     dispose = render(() => App() as unknown as Element, container)
     await flush()
@@ -1931,6 +2040,299 @@ describe('dashboard App loop detail tabs', () => {
     expect(location.hash).toBe('#p1/loop/loop-b')
     const active = container.querySelector('.tab-item.tab-active') as HTMLElement
     expect(active?.dataset.tab).toBe('overview')
+  })
+})
+
+describe('dashboard App scoped poll', () => {
+  async function clickTab(tab: string): Promise<void> {
+    const item = container.querySelector(`.tab-item[data-tab="${tab}"]`) as HTMLElement
+    expect(item).toBeTruthy()
+    item.click()
+    await flush()
+  }
+
+  function fetchCalls(): string[] {
+    return (globalThis.fetch as any).mock.calls.map((c: any[]) => c[0] as string)
+  }
+
+  test('the initial poll requests /api/data scoped to the deep-linked project and loop', async () => {
+    window.location.hash = '#p1/loop/loop-a'
+    payload = makePayload()
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    expect(fetchCalls()[0]).toBe('/api/data?project=p1&loop=loop-a')
+  })
+
+  test('the repo index polls /api/data with no scope', async () => {
+    window.location.hash = ''
+    payload = makePayload()
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    expect(fetchCalls()[0]).toBe('/api/data')
+  })
+
+  test('mounting a deep-linked loop issues exactly one fetch (scope effect defers on first run)', async () => {
+    window.location.hash = '#p1/loop/loop-a'
+    payload = makePayload()
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    expect(fetchCalls().length).toBe(1)
+    expect(fetchCalls()[0]).toBe('/api/data?project=p1&loop=loop-a')
+  })
+
+  test('mounting at the repo index issues exactly one fetch', async () => {
+    window.location.hash = ''
+    payload = makePayload()
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    expect(fetchCalls().length).toBe(1)
+    expect(fetchCalls()[0]).toBe('/api/data')
+  })
+
+  test('an out-of-order scoped response cannot clobber a newer scoped response', async () => {
+    // Two loops exist; mount on loop-a. An in-flight interval poll for loop-a
+    // (request gen N) is superseded by a scoped navigation to loop-b (request
+    // gen N+1). Resolving the newer response first, then the older one, must
+    // not let the stale loop-a payload overwrite the loop-b detail.
+    window.location.hash = '#p1/loop/loop-a'
+    payload = makePayload({
+      loops: [
+        makeLoop({ loop: { loopName: 'loop-a', status: 'running', startedAt: 1700000000000 } }),
+        makeLoop({ loop: { loopName: 'loop-b', status: 'running', startedAt: 1700000100000 } }),
+      ],
+      totals: { loops: 2, running: 2 },
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    // Fresh payload (newer): server scoped to loop-b; still contains both
+    // loops so the route canonicalization effect does not bounce off loop-b.
+    const freshPayload = makePayload({
+      loops: [
+        makeLoop({ loop: { loopName: 'loop-a', status: 'running', startedAt: 1700000000000 } }),
+        makeLoop({ loop: { loopName: 'loop-b', status: 'running', startedAt: 1700000100000 }, plan: 'FRESH' }),
+      ],
+      totals: { loops: 2, running: 2 },
+    })
+    // Stale payload (older): server scoped to loop-a; carries only loop-a.
+    // If applied after the fresh payload, reconcile drops loop-b from the
+    // project and the route canonicalizes away from loop-b's detail.
+    const stalePayload = makePayload({
+      loops: [
+        makeLoop({ loop: { loopName: 'loop-a', status: 'running', startedAt: 1700000000000 } }),
+      ],
+      totals: { loops: 1, running: 1 },
+    })
+
+    const fetchMock = globalThis.fetch as any
+    let resolveStale!: () => void
+    let resolveFresh!: () => void
+    const stalePromise = new Promise<void>((r) => { resolveStale = r })
+    const freshPromise = new Promise<void>((r) => { resolveFresh = r })
+    fetchMock.mockImplementationOnce(async () => ({
+      json: async () => { await stalePromise; return stalePayload },
+    }))
+    fetchMock.mockImplementationOnce(async () => ({
+      json: async () => { await freshPromise; return freshPayload },
+    }))
+
+    // Trigger the older in-flight poll, then navigate to loop-b which fires
+    // the newest scoped request.
+    void intervalFn!()
+    window.location.hash = '#p1/loop/loop-b'
+    window.dispatchEvent(new Event('hashchange'))
+    await flush()
+
+    // Resolve the newer request first; loop-b detail is rendered.
+    resolveFresh()
+    await flush()
+    expect(container.querySelector('.ldh-name')?.textContent).toBe('loop-b')
+
+    // Resolve the older stale request; loop-b detail must remain (the stale
+    // loop-a response was discarded by request generation).
+    resolveStale()
+    await flush()
+    expect(container.querySelector('.ldh-name')?.textContent).toBe('loop-b')
+    // The Plan tab body is built lazily; activate it to mount its markdown so
+    // the FRESH plan content carried by the loop-b payload is observable.
+    ;(container.querySelector('.tab-item[data-tab="plan"]') as HTMLElement).click()
+    await flush()
+    expect(container.querySelector('.tab-body[data-tab="plan"] .markdown-content')?.textContent).toContain('FRESH')
+  })
+
+  test('a slow same-scope poll survives interval ticks and still renders', async () => {
+    // Mount on loop-a; the initial load resolves with the default payload.
+    // Then an interval tick fires a slow same-scope poll whose response takes
+    // longer than one interval. A subsequent interval tick must NOT supersede
+    // it (no generation bump, no second fetch issued); the slow response must
+    // still be accepted and update the UI when it resolves.
+    window.location.hash = '#p1/loop/loop-a'
+    payload = makePayload()
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const slowPayload = makePayload({ dashLoop: { plan: 'PLAN TWO' } })
+    const fetchMock = globalThis.fetch as any
+    let resolveSlow!: () => void
+    const slowPromise = new Promise<void>((r) => { resolveSlow = r })
+    fetchMock.mockImplementationOnce(async () => ({
+      json: async () => { await slowPromise; return slowPayload },
+    }))
+
+    // Start the slow same-scope poll.
+    void intervalFn!()
+    await flush()
+    const callsAfterStart = fetchCalls()
+
+    // While it is pending, another interval tick must coalesce rather than
+    // issue a competing fetch (no new fetch URL recorded).
+    void intervalFn!()
+    await flush()
+    expect(fetchCalls()).toEqual(callsAfterStart)
+
+    // Resolving the slow response updates the UI even though an interval tick
+    // occurred while it was in flight.
+    resolveSlow()
+    await flush()
+    ;(container.querySelector('.tab-item[data-tab="plan"]') as HTMLElement).click()
+    await flush()
+    expect(container.querySelector('.tab-body[data-tab="plan"] .markdown-content')?.textContent).toContain('PLAN TWO')
+  })
+
+  test('selecting a loop from the table triggers an immediate scoped refetch', async () => {
+    window.location.hash = '#p1'
+    payload = makePayload()
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const before = fetchCalls().length
+    ;(container.querySelector('tr.lt-row') as HTMLElement).click()
+    await flush()
+
+    const calls = fetchCalls()
+    expect(calls.length).toBe(before + 1)
+    expect(calls[calls.length - 1]).toBe('/api/data?project=p1&loop=loop-a')
+  })
+
+  test('switching tabs does not trigger a refetch', async () => {
+    window.location.hash = '#p1/loop/loop-a'
+    payload = makePayload({
+      dashLoop: {
+        usage: {
+          loopName: 'loop-a',
+          totalCost: 0.4,
+          totalInputTokens: 100,
+          totalOutputTokens: 50,
+          totalReasoningTokens: 0,
+          totalCacheReadTokens: 0,
+          totalCacheWriteTokens: 0,
+          totalMessageCount: 1,
+          byModel: {
+            'model-a': { cost: 0.4, inputTokens: 100, outputTokens: 50, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 1 },
+          },
+        },
+      },
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const before = fetchCalls().length
+    await clickTab('usage')
+    expect(fetchCalls().length).toBe(before)
+  })
+
+  test('a loop whose plan content has not arrived still offers the Plan tab', async () => {
+    window.location.hash = '#p1/loop/loop-a/plan'
+    payload = makePayload({ dashLoop: { hasPlan: true, plan: null } })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    expect(container.querySelector('.tab-item[data-tab="plan"]')).toBeTruthy()
+    const planBody = container.querySelector('.tab-body[data-tab="plan"]') as HTMLElement
+    expect(planBody).toBeTruthy()
+    expect(planBody.textContent).not.toContain('No plan recorded for this loop.')
+  })
+
+  test('opening a loop directly from the repo index issues a single scoped fetch', async () => {
+    // Mount at the global repo index (projectId=null), then click a running
+    // loop card. The click navigates projectId and loopName together; without
+    // batching the scopeKey effect would fire twice — once for the project
+    // scope and once for the project+loop scope.
+    window.location.hash = ''
+    payload = makePayload({
+      loops: [
+        makeLoop({ loop: { loopName: 'loop-a', status: 'running', startedAt: 1700000000000 } }),
+      ],
+      totals: { loops: 1, running: 1 },
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    expect(fetchCalls()).toEqual(['/api/data'])
+
+    const card = container.querySelector('.repo-running-card') as HTMLElement
+    expect(card).toBeTruthy()
+    card.click()
+    await flush()
+
+    expect(fetchCalls()).toEqual(['/api/data', '/api/data?project=p1&loop=loop-a'])
+  })
+
+  test('a multi-field external hash navigation issues a single scoped fetch', async () => {
+    // Preload both projects so the route-canonicalisation effect does not
+    // bounce the new project out before its fetch resolves. Mount on a loop in
+    // p1, then an external hashchange lands on a loop in p2. Both projectId and
+    // loopName change in one applyRoute call; without batching the scopeKey
+    // effect would fire for the intermediate state (project=p2, loop=loop-a)
+    // and issue a stale /api/data?project=p2&loop=loop-a before the final
+    // project+loop request.
+    function twoProjectPayload(): any {
+      const p2 = makePayload({
+        loops: [
+          makeLoop({ loop: { loopName: 'loop-b', status: 'running', startedAt: 1700000000000 } }),
+        ],
+        totals: { loops: 1, running: 1 },
+      })
+      p2.projects[0].id = 'p2'
+      p2.projects[0].projectId = 'p2'
+      p2.projects[0].projectDir = '/proj/p2'
+      p2.projects[0].loops[0].id = 'loop-b'
+      p2.projects[0].loops[0].loop.projectId = 'p2'
+
+      const base = makePayload({
+        loops: [
+          makeLoop({ loop: { loopName: 'loop-a', status: 'running', startedAt: 1700000000000 } }),
+        ],
+        totals: { loops: 1, running: 1 },
+      })
+      base.projects.push(p2.projects[0])
+      base.totals.projects = 2
+      base.totals.loops = 2
+      base.totals.running = 2
+      return base
+    }
+    window.location.hash = '#p1/loop/loop-a'
+    payload = twoProjectPayload()
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    expect(fetchCalls()).toEqual(['/api/data?project=p1&loop=loop-a'])
+
+    // External hash navigation moves both projectId and loopName together.
+    const beforeCount = fetchCalls().length
+    window.location.hash = '#p2/loop/loop-b'
+    window.dispatchEvent(new Event('hashchange'))
+    await flush()
+
+    // Exactly one new fetch, scoped to the final route — not an intermediate
+    // /api/data?project=p2&loop=loop-a.
+    expect(fetchCalls().length).toBe(beforeCount + 1)
+    expect(fetchCalls()[fetchCalls().length - 1]).toBe('/api/data?project=p2&loop=loop-b')
+    expect(fetchCalls()).not.toContain('/api/data?project=p2&loop=loop-a')
   })
 })
 
@@ -3536,9 +3938,9 @@ describe('dashboard App findings and plans sections', () => {
             'unknown-m': { cost: 0.5, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 1 },
           },
           byRole: {
-            code: { cost: 2, messageCount: 6 },
-            auditor: { cost: 1, messageCount: 2 },
-            unknown: { cost: 0.5, messageCount: 1 },
+            code: { cost: 2, inputTokens: 4000, outputTokens: 2000, reasoningTokens: 400, cacheReadTokens: 80, cacheWriteTokens: 160, messageCount: 6 },
+            auditor: { cost: 1, inputTokens: 1000, outputTokens: 500, reasoningTokens: 100, cacheReadTokens: 20, cacheWriteTokens: 40, messageCount: 2 },
+            unknown: { cost: 0.5, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 1 },
           },
         },
       },
@@ -3556,5 +3958,300 @@ describe('dashboard App findings and plans sections', () => {
     const costs = rows.map(r => r.querySelector('.usage-model-cost')?.textContent)
     // The three bars reconcile with totalCost ($3.50) — no role's spend is dropped.
     expect(costs).toEqual(['$2.00', '$1.00', '$0.5000'])
+    // The execution meta reports both the message count and a token count.
+    const execRow = rows.find(r => r.querySelector('.usage-model-name')?.textContent === 'execution')!
+    const execMeta = execRow.querySelector('.usage-model-meta')?.textContent ?? ''
+    expect(execMeta).toContain('6 msg')
+    expect(execMeta).toContain('tok')
+    // 4000 + 2000 + 400 = 6400 → "6.4k" via formatTokenCount.
+    expect(execMeta).toContain('6.4k tok')
+  })
+})
+
+describe('dashboard App render-stable node identity', () => {
+  function twoRunningLoopsPayload(): any {
+    return makePayload({
+      loops: [
+        makeLoop({ loop: { loopName: 'loop-a', status: 'running', startedAt: 1700000000000 } }),
+        makeLoop({ loop: { loopName: 'loop-b', status: 'running', startedAt: 1700000100000 } }),
+      ],
+      totals: { loops: 2, running: 2, completed: 0, cancelled: 0, errored: 0, stalled: 0 },
+    })
+  }
+
+  async function clickChip(status: string): Promise<void> {
+    const chips = Array.from(container.querySelectorAll('.filter-bar .badge-filter')) as HTMLElement[]
+    const chip = chips.find(c => c.textContent?.toLowerCase().startsWith(status))
+    expect(chip).toBeTruthy()
+    chip!.click()
+    await flush()
+  }
+
+  async function clickTab(tab: string): Promise<void> {
+    const item = container.querySelector(`.tab-item[data-tab="${tab}"]`) as HTMLElement
+    expect(item).toBeTruthy()
+    item.click()
+    await flush()
+  }
+
+  test('toggling a status filter off and back on preserves loop-table row node identity', async () => {
+    window.location.hash = '#p1'
+    payload = twoRunningLoopsPayload()
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const rowBefore = container.querySelectorAll('.lt-row')[0] as HTMLElement
+    expect(rowBefore).toBeTruthy()
+
+    // Both loops are running, so filtering by `running` keeps the same visible
+    // set — only the filter value changed. With `sameList` on the visible-loops
+    // memo the array reference is stable and LoopTable does not rebuild rows.
+    await clickChip('running')
+    await clickChip('running')
+
+    const rowAfter = container.querySelectorAll('.lt-row')[0] as HTMLElement
+    expect(rowAfter).toBe(rowBefore)
+  })
+
+  test('a poll that changes nothing preserves loop-table row node identity', async () => {
+    window.location.hash = '#p1'
+    payload = twoRunningLoopsPayload()
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const rowBefore = container.querySelectorAll('.lt-row')[0] as HTMLElement
+    expect(rowBefore).toBeTruthy()
+
+    await poll(twoRunningLoopsPayload())
+
+    const rowAfter = container.querySelectorAll('.lt-row')[0] as HTMLElement
+    expect(rowAfter).toBe(rowBefore)
+  })
+
+  test('switching a loop tab preserves the breadcrumb loop-picker input node', async () => {
+    window.location.hash = '#p1/loop/alpha-loop'
+    payload = makePayload({
+      loops: [
+        makeLoop({ loop: { loopName: 'alpha-loop', status: 'completed', startedAt: 1700000000000, completedAt: 1700000600000 } }),
+        makeLoop({ loop: { loopName: 'beta-loop', status: 'running', startedAt: 1700009000000, completedAt: null } }),
+        makeLoop({ loop: { loopName: 'gamma-run', status: 'completed', startedAt: 1700003000000, completedAt: 1700004000000 } }),
+      ],
+      totals: { loops: 3, running: 1, completed: 2 },
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const inputBefore = container.querySelector('.loop-picker-input') as HTMLInputElement
+    expect(inputBefore).toBeTruthy()
+
+    await clickTab('usage')
+
+    const inputAfter = container.querySelector('.loop-picker-input') as HTMLInputElement
+    expect(inputAfter).toBe(inputBefore)
+  })
+
+  test('a poll that reorders neighbours keeps loop-nav buttons but targets the current neighbours', async () => {
+    // Order (most-recent-first): beta, alpha, gamma. Active loop alpha is at
+    // index 1 with total 3; prev targets beta, next targets gamma.
+    const initial = makePayload({
+      loops: [
+        makeLoop({ loop: { loopName: 'beta', status: 'running', startedAt: 1700009000000, completedAt: null } }),
+        makeLoop({ loop: { loopName: 'alpha', status: 'running', startedAt: 1700005000000, completedAt: null } }),
+        makeLoop({ loop: { loopName: 'gamma', status: 'running', startedAt: 1700001000000, completedAt: null } }),
+      ],
+      totals: { loops: 3, running: 3 },
+    })
+    window.location.hash = '#p1/loop/alpha'
+    payload = initial
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const prevBefore = container.querySelector('.loopnav-prev') as HTMLElement
+    const nextBefore = container.querySelector('.loopnav-next') as HTMLElement
+    expect(prevBefore).toBeTruthy()
+    expect(nextBefore).toBeTruthy()
+
+    // Poll swaps beta and gamma positions; alpha is still at index 1, total 3,
+    // so the loopNav memo's equality option preserves the same nav buttons.
+    // Their retained callbacks must read the current option set, not the stale
+    // one captured when the memo last ran.
+    await poll(makePayload({
+      loops: [
+        makeLoop({ loop: { loopName: 'gamma', status: 'running', startedAt: 1700009500000, completedAt: null } }),
+        makeLoop({ loop: { loopName: 'alpha', status: 'running', startedAt: 1700005000000, completedAt: null } }),
+        makeLoop({ loop: { loopName: 'beta', status: 'running', startedAt: 1700000500000, completedAt: null } }),
+      ],
+      totals: { loops: 3, running: 3 },
+    }))
+
+    expect(container.querySelector('.loopnav-prev')).toBe(prevBefore)
+    expect(container.querySelector('.loopnav-next')).toBe(nextBefore)
+
+    // Current index 2 is now beta (was gamma). A stale closure would open
+    // gamma, which is no longer the adjacent loop.
+    nextBefore!.click()
+    await flush()
+    expect(container.querySelector('.ldh-name')?.textContent).toBe('beta')
+
+    // Return to alpha via external hash navigation, then click prev. Current
+    // index 0 is now gamma (was beta). A stale closure would open beta.
+    window.location.hash = '#p1/loop/alpha'
+    window.dispatchEvent(new Event('hashchange'))
+    await flush()
+    const prevAgain = container.querySelector('.loopnav-prev') as HTMLElement
+    expect(prevAgain).toBeTruthy()
+    prevAgain!.click()
+    await flush()
+    expect(container.querySelector('.ldh-name')?.textContent).toBe('gamma')
+  })
+})
+
+describe('dashboard App bounded list caps', () => {
+  function makeCappedLoopsPayload(): any {
+    const loops: any[] = []
+    for (let i = 0; i < MAX_RENDERED_LOOP_ROWS + 5; i++) {
+      loops.push(makeLoop({
+        loop: {
+          loopName: 'loop-' + i,
+          status: 'running',
+          startedAt: 1700000000000 + i * 1000,
+          completedAt: null,
+        },
+      }))
+    }
+    return makePayload({
+      loops,
+      totals: { loops: MAX_RENDERED_LOOP_ROWS + 5, running: MAX_RENDERED_LOOP_ROWS + 5 },
+    })
+  }
+
+  test('a project with more loops than the cap renders exactly the cap and a notice with the true total', async () => {
+    window.location.hash = '#p1'
+    payload = makeCappedLoopsPayload()
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const rows = container.querySelectorAll('tr.lt-row')
+    expect(rows.length).toBe(MAX_RENDERED_LOOP_ROWS)
+    const notice = container.querySelector('.list-cap-notice') as HTMLElement
+    expect(notice).toBeTruthy()
+    const text = notice.querySelector('.list-cap-text')?.textContent ?? ''
+    expect(text).toContain(String(MAX_RENDERED_LOOP_ROWS))
+    expect(text).toContain(String(MAX_RENDERED_LOOP_ROWS + 5))
+    expect(notice.querySelector('.list-cap-show-all')).toBeTruthy()
+  })
+
+  test('clicking Show all renders every loop row and removes the notice', async () => {
+    window.location.hash = '#p1'
+    payload = makeCappedLoopsPayload()
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    expect(container.querySelectorAll('tr.lt-row').length).toBe(MAX_RENDERED_LOOP_ROWS)
+
+    const showAll = container.querySelector('.list-cap-show-all') as HTMLButtonElement
+    expect(showAll).toBeTruthy()
+    showAll.click()
+    await flush()
+
+    expect(container.querySelectorAll('tr.lt-row').length).toBe(MAX_RENDERED_LOOP_ROWS + 5)
+    expect(container.querySelector('.list-cap-notice')).toBeNull()
+  })
+
+  test('the findings panel caps total finding rows across loops and reports the true total', async () => {
+    window.location.hash = '#p1/findings'
+    const loops: any[] = []
+    // Two loops, with enough findings together to exceed the cap.
+    const perLoop = Math.ceil((MAX_RENDERED_FINDING_ROWS + 10) / 2)
+    const total = perLoop * 2
+    for (let i = 0; i < 2; i++) {
+      const findings: any[] = []
+      for (let j = 0; j < perLoop; j++) {
+        findings.push({
+          projectId: 'p1',
+          file: 'a.ts',
+          line: 1,
+          severity: 'bug',
+          description: 'desc',
+          scenario: null,
+          loopName: 'loop-' + i,
+          sectionIndex: 0,
+          createdAt: 1700000000000 + j * 1000,
+        })
+      }
+      loops.push(makeLoop({ loop: { loopName: 'loop-' + i, status: 'completed' }, findings }))
+    }
+    payload = makePayload({ loops })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    expect(container.querySelectorAll('.finding').length).toBe(MAX_RENDERED_FINDING_ROWS)
+    expect(container.querySelector('.findings-panel-count')?.textContent).toBe(String(total))
+    const notice = container.querySelector('.findings-panel .list-cap-notice') as HTMLElement
+    expect(notice).toBeTruthy()
+    expect(notice.querySelector('.list-cap-text')?.textContent ?? '').toContain(String(total))
+  })
+
+  test('the loop picker caps rendered options and ArrowUp from the first option wraps to the last rendered one', async () => {
+    window.location.hash = '#p1/loop/loop-0'
+    const loops: any[] = []
+    // loop with the largest startedAt sorts first; give loop-0 the largest so
+    // it lands at index 0 of the capped view (initial active = 0).
+    for (let i = 0; i < MAX_RENDERED_PICKER_OPTIONS + 20; i++) {
+      loops.push(makeLoop({
+        loop: {
+          loopName: 'loop-' + i,
+          // Earlier i gets a later startedAt so 'loop-0' is most recent.
+          startedAt: 1700000000000 + (MAX_RENDERED_PICKER_OPTIONS + 20 - i) * 1000,
+          completedAt: null,
+          status: 'running',
+        },
+      }))
+    }
+    payload = makePayload({
+      loops,
+      totals: { loops: MAX_RENDERED_PICKER_OPTIONS + 20, running: MAX_RENDERED_PICKER_OPTIONS + 20 },
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const input = container.querySelector('.breadcrumb-loop') as HTMLInputElement
+    expect(input.value).toBe('loop-0')
+    input.focus()
+    await flush()
+
+    const menu = container.querySelector('.loop-picker-menu') as HTMLElement
+    const options = Array.from(menu.querySelectorAll('.loop-picker-option')) as HTMLElement[]
+    expect(options.length).toBe(MAX_RENDERED_PICKER_OPTIONS)
+    expect(menu.querySelector('.loop-picker-cap')).toBeTruthy()
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+    await flush()
+
+    const active = menu.querySelector('.loop-picker-option-active') as HTMLElement
+    expect(active).toBeTruthy()
+    // Wrap landed on the last rendered option.
+    expect(active).toBe(options[options.length - 1])
+  })
+
+  test('picker option times render from the precomputed label', async () => {
+    window.location.hash = '#p1/loop/loop-0'
+    const ts = 1700001234000
+    payload = makePayload({
+      loops: [
+        makeLoop({ loop: { loopName: 'loop-0', status: 'running', startedAt: ts, completedAt: null } }),
+      ],
+      totals: { loops: 1, running: 1 },
+    })
+    dispose = render(() => App() as unknown as Element, container)
+    await flush()
+
+    const input = container.querySelector('.breadcrumb-loop') as HTMLInputElement
+    input.focus()
+    await flush()
+
+    const when = container.querySelector('.loop-picker-option-when') as HTMLElement
+    expect(when).toBeTruthy()
+    expect(when.textContent).toBe(fmtTime(ts))
   })
 })

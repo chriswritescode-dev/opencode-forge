@@ -36,6 +36,11 @@ export interface LoopUsageAggregate {
   }>
   byRole: Partial<Record<LoopSessionUsageRow['role'], {
     cost: number
+    inputTokens: number
+    outputTokens: number
+    reasoningTokens: number
+    cacheReadTokens: number
+    cacheWriteTokens: number
     messageCount: number
   }>>
 }
@@ -219,8 +224,21 @@ export function createLoopSessionUsageRepo(db: Database): LoopSessionUsageRepo {
         model.messageCount += row.message_count
 
         const roleKey = row.role as LoopSessionUsageRow['role']
-        const role = (aggregate.byRole[roleKey] ??= { cost: 0, messageCount: 0 })
+        const role = (aggregate.byRole[roleKey] ??= {
+          cost: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          reasoningTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          messageCount: 0,
+        })
         role.cost += row.cost
+        role.inputTokens += row.input_tokens
+        role.outputTokens += row.output_tokens
+        role.reasoningTokens += row.reasoning_tokens
+        role.cacheReadTokens += row.cache_read_tokens
+        role.cacheWriteTokens += row.cache_write_tokens
         role.messageCount += row.message_count
       }
 

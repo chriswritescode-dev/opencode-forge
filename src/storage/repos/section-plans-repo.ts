@@ -32,6 +32,8 @@ export interface SectionPlansRepo {
   setCompletedAt(projectId: string, loopName: string, index: number, ms: number): void
   updateContent(projectId: string, loopName: string, sections: ParsedSection[]): { updated: number }
   count(projectId: string, loopName: string): number
+  /** Section-plan row count per loop for this project, in one scan. */
+  countsByLoop(projectId: string): Map<string, number>
   deleteAll(projectId: string, loopName: string): number
   restoreAll(rows: SectionPlanRow[]): void
   /**
@@ -129,6 +131,13 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
 
   const stmtCount = db.prepare(`
     SELECT COUNT(*) as count FROM section_plans WHERE project_id = ? AND loop_name = ?
+  `)
+
+  const stmtCountsByLoop = db.prepare(`
+    SELECT loop_name, COUNT(*) AS cnt
+    FROM section_plans
+    WHERE project_id = ?
+    GROUP BY loop_name
   `)
 
   const stmtDeleteAll = db.prepare('DELETE FROM section_plans WHERE project_id = ? AND loop_name = ?')
@@ -241,6 +250,11 @@ export function createSectionPlansRepo(db: Database, _logger?: Logger): SectionP
     count(projectId, loopName) {
       const result = stmtCount.get(projectId, loopName) as { count: number }
       return result.count
+    },
+
+    countsByLoop(projectId) {
+      const rows = stmtCountsByLoop.all(projectId) as { loop_name: string; cnt: number }[]
+      return new Map(rows.map(r => [r.loop_name, r.cnt]))
     },
 
     deleteAll(projectId, loopName) {

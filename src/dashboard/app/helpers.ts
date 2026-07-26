@@ -4,6 +4,32 @@ import { formatDuration, computeElapsedSeconds } from '../../utils/duration'
 export type LoopTab = 'overview' | 'timeline' | 'sections' | 'findings' | 'plan' | 'usage'
 export type RepoSection = 'loops' | 'groups' | 'findings' | 'plans'
 
+export const MAX_RENDERED_LOOP_ROWS = 200
+export const MAX_RENDERED_FINDING_ROWS = 300
+export const MAX_RENDERED_PICKER_OPTIONS = 100
+
+export interface CappedList<T> {
+  rows: T[]
+  total: number
+  capped: boolean
+}
+
+/**
+ * Single capping path for every unbounded list render. `showAll` bypasses the
+ * cap so a user can always reach the full set; filtering and search remain the
+ * intended narrowing tools. The input array is returned by reference when
+ * uncapped, preserving Phase 3's `sameList` identity behaviour.
+ */
+export function capList<T>(items: T[], max: number, showAll: boolean): CappedList<T> {
+  if (showAll || items.length <= max) return { rows: items, total: items.length, capped: false }
+  return { rows: items.slice(0, max), total: items.length, capped: true }
+}
+
+/** Element-wise equality for signal/memo `equals` options over small arrays. */
+export function sameList<T>(a: readonly T[], b: readonly T[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i])
+}
+
 export interface DashboardRoute {
   projectId: string | null
   section: RepoSection
@@ -408,6 +434,7 @@ interface RoleUsageBar {
   role: 'execution' | 'auditor' | 'other'
   cost: number
   messageCount: number
+  tokens: number
   pct: number
 }
 
@@ -418,13 +445,16 @@ interface RoleUsageBar {
  * anything else lands in "other" so the bars always reconcile with totalCost.
  */
 export function roleUsageBars(u: NonNullable<DashboardLoop['usage']>): RoleUsageBar[] {
-  const exec: RoleUsageBar = { role: 'execution', cost: 0, messageCount: 0, pct: 0 }
-  const audit: RoleUsageBar = { role: 'auditor', cost: 0, messageCount: 0, pct: 0 }
-  const other: RoleUsageBar = { role: 'other', cost: 0, messageCount: 0, pct: 0 }
+  const exec: RoleUsageBar = { role: 'execution', cost: 0, messageCount: 0, tokens: 0, pct: 0 }
+  const audit: RoleUsageBar = { role: 'auditor', cost: 0, messageCount: 0, tokens: 0, pct: 0 }
+  const other: RoleUsageBar = { role: 'other', cost: 0, messageCount: 0, tokens: 0, pct: 0 }
   for (const [role, agg] of Object.entries(u.byRole ?? {})) {
     const bar = role === 'auditor' ? audit : role === 'code' ? exec : other
     bar.cost += agg.cost
     bar.messageCount += agg.messageCount
+    // Token fields may be absent on aggregates persisted before this field was
+    // tracked, or on hand-built fixtures; guard so the meta never renders NaN.
+    bar.tokens += (agg.inputTokens ?? 0) + (agg.outputTokens ?? 0) + (agg.reasoningTokens ?? 0)
   }
   const bars = other.cost > 0 || other.messageCount > 0 ? [exec, audit, other] : [exec, audit]
   const max = bars.reduce((m, b) => Math.max(m, b.cost), 0)
@@ -537,9 +567,9 @@ const MD_CACHE_MAX = 200
 
 export function tabsForLoop(loop: DashboardLoop): LoopTab[] {
   const tabs: LoopTab[] = ['overview', 'timeline']
-  if (loop.sections.length > 0) tabs.push('sections')
+  if (loop.sectionCount > 0) tabs.push('sections')
   tabs.push('findings')
-  if (loop.plan) tabs.push('plan')
+  if (loop.hasPlan) tabs.push('plan')
   tabs.push('usage')
   return tabs
 }

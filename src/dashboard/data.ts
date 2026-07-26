@@ -36,7 +36,11 @@ export interface DashboardLoop {
   postActionReport: string | null
   goal: string | null
   plan: string | null
+  /** Whether a plan row exists. Always populated; `plan` content ships only for the scoped loop. */
+  hasPlan: boolean
   sections: SectionPlanRow[]
+  /** Number of section-plan rows. Always populated; `sections` rows ship only for the scoped loop. */
+  sectionCount: number
   findings: ReviewFindingRow[]
   usage: LoopUsageAggregate | null
   duration: string | null
@@ -57,6 +61,19 @@ export interface DashboardPayload {
   generatedAt: number
   projects: DashboardProject[]
 }
+
+/**
+ * The client's current view. Large per-loop text is only materialised for the
+ * scoped loop, and per-loop transitions only for the scoped project, because
+ * nothing else renders them. Both fields null means the repo-index view, which
+ * reads none of the scoped fields.
+ */
+export interface DashboardScope {
+  projectId: string | null
+  loopName: string | null
+}
+
+const UNSCOPED: DashboardScope = { projectId: null, loopName: null }
 
 /** Check whether *tbl* exists on this database. */
 function hasTable(database: Database, tbl: string): boolean {
@@ -118,7 +135,7 @@ function projectAmendmentSections(json: string): string {
   }
 }
 
-export function collectDashboardData(db: Database): DashboardPayload {
+export function collectDashboardData(db: Database, scope: DashboardScope = UNSCOPED): DashboardPayload {
   const { loopsRepo, plansRepo, reviewFindingsRepo, sectionPlansRepo, loopSessionUsageRepo, loopTransitionsRepo, amendmentsRepo, featureGroupsRepo } = reposFor(db)
 
   const loopProjectIds = db.prepare(
@@ -154,28 +171,52 @@ export function collectDashboardData(db: Database): DashboardPayload {
       return b.startedAt - a.startedAt
     })
 
+    const inScopedProject = scope.projectId !== null && projectId === scope.projectId
+    const planLoopNames = new Set(plansRepo.listLoopNames(projectId))
+    const sectionCounts = sectionPlansRepo.countsByLoop(projectId)
+
     const dashboardLoops: DashboardLoop[] = sortedLoops.map(loop => {
       const loopName = loop.loopName
-      const large = loopsRepo.getLarge(projectId, loopName)
+      const isScopedLoop = inScopedProject && loopName === scope.loopName
+
+      const large = isScopedLoop ? loopsRepo.getLarge(projectId, loopName) : null
       const lastAuditResult = large?.lastAuditResult ?? null
       const postActionReport = large?.postActionReport ?? null
       const goal = large?.goal ?? null
-      const plan = plansRepo.getForLoop(projectId, loopName)?.content ?? null
-      const sections = sectionPlansRepo.list(projectId, loopName)
+
+      const hasPlan = planLoopNames.has(loopName)
+      const plan = isScopedLoop ? (plansRepo.getForLoop(projectId, loopName)?.content ?? null) : null
+
+      const sectionCount = sectionCounts.get(loopName) ?? 0
+      const sections = isScopedLoop ? sectionPlansRepo.list(projectId, loopName) : []
+
       const findings = reviewFindingsRepo.listByLoopName(projectId, loopName)
       const usage = loopSessionUsageRepo.getAggregate(projectId, loopName)
-      const transitions = loopTransitionsRepo ? loopTransitionsRepo.listForLoop(projectId, loopName, 100) : []
-      const amendments = amendmentsRepo
+
+      const transitions = inScopedProject && loopTransitionsRepo
+        ? loopTransitionsRepo.listForLoop(projectId, loopName, 100)
+        : []
+
+      const amendments = isScopedLoop && amendmentsRepo
         ? amendmentsRepo.listForLoop(projectId, loopName).map((a) => ({
             ...a,
             sectionsBefore: projectAmendmentSections(a.sectionsBefore),
             sectionsAfter: projectAmendmentSections(a.sectionsAfter),
           }))
         : []
+
       const elapsedSeconds = computeElapsedSeconds(loop.startedAt, loop.completedAt ?? undefined)
       const duration = elapsedSeconds > 0 ? formatDuration(elapsedSeconds) : null
 
-      return { id: loopName, loop, lastAuditResult, postActionReport, goal, plan, sections, findings, usage, duration, transitions, amendments }
+      const loopRow: LoopRow = isScopedLoop
+        ? loop
+        : { ...loop, completionSummary: null }
+
+      return {
+        id: loopName, loop: loopRow, lastAuditResult, postActionReport, goal,
+        plan, hasPlan, sections, sectionCount,
+        findings, usage, duration, transitions, amendments,
+      }
     })
 
     let groups: DashboardGroup[] = []

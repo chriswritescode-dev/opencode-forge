@@ -31,7 +31,10 @@ export function createRequestHandler(deps: DashboardDeps): (req: Request) => Res
     }
 
     if (pathname === '/api/data') {
-      const data = collectDashboardData(deps.forgeDb)
+      const data = collectDashboardData(deps.forgeDb, {
+        projectId: url.searchParams.get('project'),
+        loopName: url.searchParams.get('loop'),
+      })
       return new Response(JSON.stringify(data), {
         headers: {
           'content-type': 'application/json; charset=utf-8',

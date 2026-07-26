@@ -20,17 +20,36 @@ export interface ModelUsage {
   messageCount: number
 }
 
+/** Loop-session role vocabulary persisted in `loop_session_usage.role`. */
+export type UsageRole = 'code' | 'auditor' | 'unknown'
+
+/**
+ * Deterministic render order for role splits: execution first, then audit, then
+ * unattributed.
+ */
+export const USAGE_ROLE_ORDER: readonly UsageRole[] = ['code', 'auditor', 'unknown']
+
+/** Usage aggregated per loop role, mirroring `ModelUsage`'s shape. */
+export interface RoleUsage {
+  role: UsageRole
+  cost: number
+  tokens: TokenBreakdown
+  messageCount: number
+}
+
 /** Summary of loop usage, optionally attributed to a role */
 export interface LoopUsageSummary {
   totalCost: number
   totalTokens: TokenBreakdown
   perModel: ModelUsage[]
+  /** Per-role split. Optional so hand-built summaries in existing tests stay valid; producers always populate it. */
+  perRole?: RoleUsage[]
   attribution?: UsageAttribution
 }
 
 /** Attribution metadata for usage */
 export interface UsageAttribution {
-  role: 'code' | 'auditor' | 'unknown'
+  role: UsageRole
   fallbackModel?: string
 }
 
@@ -82,6 +101,33 @@ export function addTokens(a: TokenBreakdown, b: TokenBreakdown): TokenBreakdown 
     cacheRead: a.cacheRead + b.cacheRead,
     cacheWrite: a.cacheWrite + b.cacheWrite,
   }
+}
+
+/**
+ * Merge per-role usage groups, summing cost/tokens/messageCount per role and
+ * returning entries in `USAGE_ROLE_ORDER`, omitting absent roles. Tolerates
+ * `undefined` inputs so callers can spread `summary.perRole` unconditionally.
+ */
+export function mergeRoleUsage(...groups: (RoleUsage[] | undefined)[]): RoleUsage[] {
+  const map = new Map<UsageRole, RoleUsage>()
+  for (const group of groups) {
+    for (const entry of group ?? []) {
+      const existing = map.get(entry.role)
+      if (existing) {
+        existing.cost += entry.cost
+        existing.tokens = addTokens(existing.tokens, entry.tokens)
+        existing.messageCount += entry.messageCount
+      } else {
+        map.set(entry.role, {
+          role: entry.role,
+          cost: entry.cost,
+          tokens: { ...entry.tokens },
+          messageCount: entry.messageCount,
+        })
+      }
+    }
+  }
+  return USAGE_ROLE_ORDER.filter(r => map.has(r)).map(r => map.get(r)!)
 }
 
 /** Default model label when no metadata or fallback is available */
@@ -209,6 +255,14 @@ export function summarizeAssistantUsage(
     totalCost,
     totalTokens,
     perModel,
+    perRole: attribution
+      ? [{
+          role: attribution.role,
+          cost: totalCost,
+          tokens: { ...totalTokens },
+          messageCount: assistantMessages.length,
+        }]
+      : [],
     attribution,
   }
 }
@@ -223,6 +277,7 @@ export function mergeUsageSummaries(...summaries: LoopUsageSummary[]): LoopUsage
       totalCost: 0,
       totalTokens: emptyTokenBreakdown(),
       perModel: [],
+      perRole: [],
     }
   }
 
@@ -260,6 +315,7 @@ export function mergeUsageSummaries(...summaries: LoopUsageSummary[]): LoopUsage
     totalCost,
     totalTokens,
     perModel,
+    perRole: mergeRoleUsage(...summaries.map(s => s.perRole)),
     attribution,
   }
 }
