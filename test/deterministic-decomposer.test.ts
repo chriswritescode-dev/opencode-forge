@@ -1,5 +1,6 @@
 import { describe, test, expect } from 'vitest'
 import { decomposeDeterministically } from '../src/services/deterministic-decomposer'
+import { MAX_TOTAL_SECTIONS } from '../src/constants/loop'
 
 describe('decomposeDeterministically', () => {
   test('returns empty array when no section markers found', () => {
@@ -37,10 +38,12 @@ describe('decomposeDeterministically', () => {
     expect(r).toEqual([])
   })
 
-  test('respects maxSections cap (default 12)', () => {
-    const plan = Array.from({ length: 15 }, () => '<!-- forge-section -->\nbody').join('\n')
-    expect(decomposeDeterministically(plan)).toHaveLength(12)
-    expect(decomposeDeterministically(plan, { maxSections: 3 })).toHaveLength(3)
+  test(`respects maxSections cap (default ${MAX_TOTAL_SECTIONS})`, () => {
+    const plan20 = Array.from({ length: 20 }, () => '<!-- forge-section -->\nbody').join('\n')
+    expect(decomposeDeterministically(plan20)).toHaveLength(20)
+    const plan30 = Array.from({ length: 30 }, () => '<!-- forge-section -->\nbody').join('\n')
+    expect(decomposeDeterministically(plan30)).toHaveLength(MAX_TOTAL_SECTIONS)
+    expect(decomposeDeterministically(plan30, { maxSections: 3 })).toHaveLength(3)
   })
 
   test('strips outer <!-- forge-plan:start/end --> markers', () => {

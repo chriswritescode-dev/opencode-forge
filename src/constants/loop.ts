@@ -3,6 +3,11 @@ import type { PluginConfig } from '../types'
 
 export type PermissionRule = { permission: string; pattern: string; action: 'allow' | 'deny' }
 
+/** Maximum number of plan sections a loop may execute. Shared by the
+ *  deterministic decomposer, section bootstrap, the TUI inline-plan preview,
+ *  and the plan-adjust cap so all four agree. */
+export const MAX_TOTAL_SECTIONS = 24
+
 /**
  * Resolves the full set of external directories loop/audit sessions may access: the shared temp
  * directory (always, default `/tmp/oc-forge`) plus any user-configured `loop.allowExternalDirectories`.
@@ -83,6 +88,8 @@ export function buildLoopPermissionRuleset(options: LoopPermissionRulesetOptions
     { permission: 'plan',          pattern: '*', action: 'deny' },
     { permission: 'plan_enter',    pattern: '*', action: 'deny' },
     { permission: 'plan_exit',     pattern: '*', action: 'deny' },
+    { permission: 'plan-write',    pattern: '*', action: 'deny' },
+    { permission: 'plan-edit',     pattern: '*', action: 'deny' },
     { permission: 'execute-plan',  pattern: '*', action: 'deny' },
     { permission: 'execute-goal',  pattern: '*', action: 'deny' },
     { permission: 'question',      pattern: '*', action: 'deny' },
@@ -128,6 +135,8 @@ export function buildAuditSessionPermissionRuleset(options: LoopPermissionRulese
     { permission: 'plan',          pattern: '*', action: 'deny' },
     { permission: 'plan_enter',    pattern: '*', action: 'deny' },
     { permission: 'plan_exit',     pattern: '*', action: 'deny' },
+    { permission: 'plan-write',    pattern: '*', action: 'deny' },
+    { permission: 'plan-edit',     pattern: '*', action: 'deny' },
     { permission: 'execute-plan',  pattern: '*', action: 'deny' },
     { permission: 'execute-goal',  pattern: '*', action: 'deny' },
     { permission: 'question',      pattern: '*', action: 'deny' },

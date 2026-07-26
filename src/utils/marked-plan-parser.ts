@@ -1,3 +1,5 @@
+import { computeFenceMask } from './markdown-fences'
+
 export const PLAN_START_MARKER = '<!-- forge-plan:start -->'
 export const PLAN_END_MARKER = '<!-- forge-plan:end -->'
 
@@ -20,69 +22,81 @@ export type PastedPlanNormalization =
   | { ok: false; reason: 'empty' | 'multiple' | 'unterminated' }
 
 function countPlanMarkers(text: string): { startCount: number; endCount: number } {
+  const lines = text.split('\n')
+  const mask = computeFenceMask(lines)
   let startCount = 0
   let endCount = 0
-
-  for (const rawLine of text.split('\n')) {
-    const line = rawLine.trim()
+  for (let i = 0; i < lines.length; i++) {
+    if (mask[i]) continue
+    const line = lines[i].trim()
     if (line === PLAN_START_MARKER) startCount++
     if (line === PLAN_END_MARKER) endCount++
   }
-
   return { startCount, endCount }
 }
 
 export function extractMarkedPlan(text: string): MarkedPlanExtraction {
   const lines = text.split('\n')
-  
-  let startIndex = -1
-  let endIndex = -1
-  let startCount = 0
-  let endCount = 0
-  
+  const mask = computeFenceMask(lines)
+
+  const unmaskedStarts: number[] = []
+  const unmaskedEnds: number[] = []
   for (let i = 0; i < lines.length; i++) {
+    if (mask[i]) continue
     const line = lines[i].trim()
-    if (line === PLAN_START_MARKER) {
-      startIndex = i
-      startCount++
-    }
-    if (line === PLAN_END_MARKER) {
-      endIndex = i
-      endCount++
-    }
+    if (line === PLAN_START_MARKER) unmaskedStarts.push(i)
+    if (line === PLAN_END_MARKER) unmaskedEnds.push(i)
   }
-  
-  if (startCount === 0 && endCount === 0) {
+
+  if (unmaskedStarts.length === 0 && unmaskedEnds.length === 0) {
     return { ok: false, reason: 'missing' }
   }
-  
-  if (startCount > 1 || endCount > 1) {
+
+  if (unmaskedStarts.length > 1 || unmaskedEnds.length > 1) {
     return { ok: false, reason: 'multiple' }
   }
-  
-  if (startCount === 1 && endCount === 0) {
+
+  if (unmaskedStarts.length === 1 && unmaskedEnds.length === 0) {
+    // Fallback (deliberate asymmetry): an unbalanced fence inside the plan
+    // body must not be able to swallow plan termination, and the split-message
+    // repair path in inspectLatestPlanCompletedByLaterEndMarker depends on it.
+    // Search for the first line after startIndex whose trimmed form equals the
+    // end marker, ignoring the fence mask.
+    const startIndex = unmaskedStarts[0]
+    let endIndex = -1
+    for (let j = startIndex + 1; j < lines.length; j++) {
+      if (lines[j].trim() === PLAN_END_MARKER) {
+        endIndex = j
+        break
+      }
+    }
+    if (endIndex === -1) {
+      return { ok: false, reason: 'unterminated' }
+    }
+    const planText = lines.slice(startIndex + 1, endIndex).join('\n').trim()
+    if (planText.length === 0) {
+      return { ok: false, reason: 'empty' }
+    }
+    return { ok: true, planText }
+  }
+
+  if (unmaskedStarts.length === 0 && unmaskedEnds.length === 1) {
     return { ok: false, reason: 'unterminated' }
   }
-  
-  if (startCount === 0 && endCount === 1) {
-    return { ok: false, reason: 'unterminated' }
-  }
-  
-  if (startIndex === -1 || endIndex === -1) {
-    return { ok: false, reason: 'unterminated' }
-  }
-  
+
+  const startIndex = unmaskedStarts[0]
+  const endIndex = unmaskedEnds[0]
+
   if (endIndex <= startIndex) {
     return { ok: false, reason: 'unterminated' }
   }
-  
-  const planLines = lines.slice(startIndex + 1, endIndex)
-  const planText = planLines.join('\n').trim()
-  
+
+  const planText = lines.slice(startIndex + 1, endIndex).join('\n').trim()
+
   if (planText.length === 0) {
     return { ok: false, reason: 'empty' }
   }
-  
+
   return { ok: true, planText }
 }
 

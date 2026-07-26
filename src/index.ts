@@ -555,7 +555,14 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           directory,
           logger,
         }, sessionId)
-        return { captured: result.status === 'captured' || result.status === 'already-current' }
+        if (result.status === 'captured' || result.status === 'already-current') return { captured: true }
+        // Tool-authored plans never appear as marked text in chat; the stored row is
+        // the plan of record, so treat its presence as a successful capture.
+        if (plansRepo.getForSession(projectId, sessionId)) {
+          logger.log(`capturePlan: using stored plan for session ${sessionId} (no marked plan in chat)`)
+          return { captured: true }
+        }
+        return { captured: false }
       },
 
       async classifyArchitectFailure(sessionId) {
@@ -768,16 +775,17 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         userMessage.parts.push({
           type: 'text',
           text: `<system-reminder>
-READ-ONLY mode: no file edits, no destructive commands. Search and analyze only. Ask clarifying questions during research on scope, intent, or tradeoffs.
+READ-ONLY mode: no file edits, no destructive commands. Search and analyze only. Ask clarifying questions during research on scope, intent, or tradeoffs. Writing the plan with plan-write/plan-edit is expected and is not a file edit.
 
-When emitting the final plan:
-- Wrap the plan in \`<!-- forge-plan:start -->\` and \`<!-- forge-plan:end -->\` (each on its own line)
-- Include one plain machine-readable \`Loop Name: short-slug\` line near the top of the marked plan, immediately after the objective. Do not emit loop name as a markdown heading or bullet.
-- Use exactly one \`<!-- forge-section -->\` marker per executable phase; place it immediately before that phase's \`## Phase\` heading
-- Do not insert \`<!-- forge-section -->\` before \`### Files\`, \`### Edits\`, \`### Acceptance Criteria\`, or \`### Verification\`
-- Shared \`## Decisions\` / \`## Conventions\` / \`## Key Context\` blocks go after all sections (no preceding marker)
-- After the plan, call the \`question\` tool with options: "New session", "Execute here", "Loop"
-- If the user selects "Loop", launch it by calling the \`loop\` tool (the stored plan is used automatically); do not re-run the question tool.
+When producing the final plan:
+- Author it into storage with \`plan-write\`; append further phases with \`plan-write { append: true }\`; revise with \`plan-edit\`. Do not emit the full plan in chat.
+- Include one plain machine-readable \`Loop Name: short-slug\` line near the top, immediately after the objective. Not a heading or bullet.
+- Use exactly one \`<!-- forge-section -->\` marker per executable phase, immediately before that phase's \`## Phase\` heading, and at most 24 phases.
+- Do not insert \`<!-- forge-section -->\` before \`### Files\`, \`### Edits\`, \`### Acceptance Criteria\`, or \`### Verification\`.
+- Shared \`## Decisions\` / \`## Conventions\` / \`## Key Context\` blocks go after all sections (no preceding marker).
+- Read the structure report returned by every plan write and fix warnings before asking for approval.
+- Then call the \`question\` tool with options: "New session", "Execute here", "Loop".
+- If the user selects "Loop", launch it with the \`execute-plan\` tool (the stored plan is used automatically); do not re-run the question tool.
 </system-reminder>`,
           synthetic: true,
         })

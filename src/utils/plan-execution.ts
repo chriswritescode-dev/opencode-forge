@@ -131,7 +131,7 @@ function extractLoopNameFromHeading(planContent: string): string | null {
   return null
 }
 
-function extractExplicitLoopName(planContent: string): string | null {
+export function findExplicitLoopName(planContent: string): string | null {
   const loopNameMatch = planContent.match(/^(?:\s*(?:-\s*)?)?(?:\*\*)?Loop Name(?:\*\*)?:\s*(.+)$/m)
   if (loopNameMatch?.[1]) {
     return truncateName(loopNameMatch[1].trim())
@@ -165,7 +165,7 @@ function truncateName(name: string, ellipsis = false): string {
  * The result is truncated to 60 characters.
  */
 export function extractLoopName(planContent: string): string {
-  return extractExplicitLoopName(planContent) ?? extractFallbackPlanTitle(planContent)
+  return findExplicitLoopName(planContent) ?? extractFallbackPlanTitle(planContent)
 }
 
 /**

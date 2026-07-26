@@ -21,6 +21,7 @@
 - The build does not clean `dist/`; remove stale output when deleting or renaming source modules before validating package contents.
 - Bundled prompts live in `src/prompts/`; bundled skills live in `skills/`. They sync on every plugin load, preserving user edits and never deleting files. The standalone installer handles conflicts and orphan pruning.
 - Keep the section-summary markers in `src/prompts/agents/auditor-loop-addendum.md` synchronized with the constants in `src/utils/section-summary.ts`.
+- `MAX_TOTAL_SECTIONS` in `src/constants/loop.ts` is the single section cap; the decomposer, section bootstrap, TUI inline plan preview and `plan-adjust` all read it.
 
 ## Dashboard and storage gotchas
 

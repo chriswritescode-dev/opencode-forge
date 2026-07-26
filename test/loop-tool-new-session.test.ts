@@ -117,6 +117,82 @@ describe('loop tool mode=new-session', () => {
     const hasLoopMessage = typeof result === 'string' && result.includes('Memory loop activated')
     expect(workspaceCreated || hasLoopMessage).toBe(true)
   })
+
+  test('execute-plan with no inline plan uses the stored row and skips legacy message capture', async () => {
+    const { tools, forgeClient } = setupTools()
+    const plansRepo = createPlansRepo(db)
+    plansRepo.writeForSession(projectId, 'src-session', '# Stored Plan\n\n## Verification\n- pnpm test')
+
+    const result = await tools['execute-plan'].execute(
+      { title: 'Stored plan run' },
+      { sessionID: 'src-session' } as any,
+    )
+
+    // Storage is the plan of record: legacy latest-message capture must not run.
+    expect((forgeClient.session.messages as any).mock.calls.length).toBe(0)
+
+    const workspaceCreated = (forgeClient.workspace.create as any).mock.calls.length > 0
+    const hasLoopMessage = typeof result === 'string' && result.includes('Memory loop activated')
+    expect(workspaceCreated || hasLoopMessage).toBe(true)
+  })
+
+  test('execute-plan with no inline plan falls back to legacy capture only when no stored row exists', async () => {
+    const { tools, forgeClient } = setupTools()
+    const plansRepo = createPlansRepo(db)
+    expect(plansRepo.getForSession(projectId, 'src-session')).toBeNull()
+
+    const marked = {
+      info: { role: 'assistant', id: 'msg-1' },
+      parts: [{ type: 'text', text: `<!-- forge-plan:start -->\n# Captured Plan\n<!-- forge-plan:end -->` }],
+    }
+    ;(forgeClient.session.messages as any).mockImplementation(async () => [marked])
+
+    const result = await tools['execute-plan'].execute(
+      { title: 'Legacy capture run' },
+      { sessionID: 'src-session' } as any,
+    )
+
+    expect((forgeClient.session.messages as any).mock.calls.length).toBe(1)
+    expect(plansRepo.getForSession(projectId, 'src-session')?.content).toBe('# Captured Plan')
+
+    const workspaceCreated = (forgeClient.workspace.create as any).mock.calls.length > 0
+    const hasLoopMessage = typeof result === 'string' && result.includes('Memory loop activated')
+    expect(workspaceCreated || hasLoopMessage).toBe(true)
+  })
+
+  test('execute-plan with no inline plan and nothing to capture returns the no-plan message', async () => {
+    const { tools } = setupTools()
+    const plansRepo = createPlansRepo(db)
+    expect(plansRepo.getForSession(projectId, 'src-session')).toBeNull()
+
+    const result = await tools['execute-plan'].execute(
+      { title: 'Nothing to run' },
+      { sessionID: 'src-session' } as any,
+    )
+
+    expect(result).toContain('No plan found')
+  })
+
+  test('execute-plan with no inline plan does not recapture an older marked message over a newer stored row', async () => {
+    const { tools, forgeClient } = setupTools()
+    const plansRepo = createPlansRepo(db)
+    plansRepo.writeForSession(projectId, 'src-session', '# plan-write revision')
+
+    const stale = {
+      info: { role: 'assistant', id: 'msg-stale' },
+      parts: [{ type: 'text', text: `<!-- forge-plan:start -->\n# Stale Plan\n<!-- forge-plan:end -->` }],
+    }
+    ;(forgeClient.session.messages as any).mockImplementation(async () => [stale])
+
+    await tools['execute-plan'].execute(
+      { title: 'Stored wins' },
+      { sessionID: 'src-session' } as any,
+    )
+
+    // The stored revision must remain untouched — no messages call at all.
+    expect((forgeClient.session.messages as any).mock.calls.length).toBe(0)
+    expect(plansRepo.getForSession(projectId, 'src-session')?.content).toBe('# plan-write revision')
+  })
 })
 
 describe('execute-goal tool', () => {

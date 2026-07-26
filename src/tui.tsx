@@ -13,6 +13,7 @@ import { ExecutePlanPanel, type ExecutePlanPanelProps } from './tui/execute-plan
 import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/session-follow'
 import { openInBrowser, startDashboardServer, type DashboardServerHandle } from './dashboard/launch'
 import { normalizePastedPlanText } from './utils/marked-plan-parser'
+import { join } from 'path'
 
 type TuiKeybinds = {
   executePlan: string
@@ -374,7 +375,7 @@ const tui: TuiPlugin = async (api) => {
     if (connectPromise) return connectPromise
 
     setConnectionStatus('connecting')
-    connectPromise = connectForgeProject(api, directory, resolveLoopAllowedDirectories(pluginConfig)).then((connected) => untrack(() => {
+    connectPromise = connectForgeProject(api, directory, resolveLoopAllowedDirectories(pluginConfig), pluginConfig.dataDir ? join(pluginConfig.dataDir, 'forge.db') : undefined).then((connected) => untrack(() => {
       connectPromise = null
       if (disposed) return connected
 

@@ -9,7 +9,7 @@ export function buildFeatureSplitterAgent(promptsDir?: string): AgentDefinition 
     mode: 'primary',
     hidden: true,
     tools: {
-      exclude: ['plan', 'plan_enter', 'plan_exit', 'question', 'write', 'edit', 'patch'],
+      exclude: ['plan', 'plan_enter', 'plan_exit', 'question', 'write', 'edit', 'patch', 'plan-write', 'plan-edit'],
     },
     systemPrompt: loadPrompt(['agents', 'feature-splitter.md'], promptsDir),
   }

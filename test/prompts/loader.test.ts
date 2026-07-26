@@ -9,6 +9,14 @@ describe('loadPrompt', () => {
   test('loads architect prompt from bundled markdown', () => {
     const prompt = loadPrompt(['agents', 'architect.md'])
     expect(prompt).toContain('You are a planning agent')
+    expect(prompt).toContain('plan-write')
+    expect(prompt).toContain('plan-edit')
+  })
+
+  test('architect-auto prompt retains forge-plan:none token', () => {
+    const prompt = loadPrompt(['agents', 'architect-auto.md'])
+    expect(prompt).toContain('<!-- forge-plan:none -->')
+    expect(prompt).toContain('plan-write')
   })
 
   test('loads code prompt from bundled markdown', () => {

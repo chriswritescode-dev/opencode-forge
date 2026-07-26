@@ -10,6 +10,7 @@ import { existsSync } from 'fs'
 import { join } from 'path'
 import { resolveDataDir } from '../storage'
 import { createLoopsRepo } from '../storage/repos/loops-repo'
+import { createPlansRepo } from '../storage/repos/plans-repo'
 import { createSectionPlansRepo } from '../storage/repos/section-plans-repo'
 import type { LoopInfo } from './tui-models'
 
@@ -84,6 +85,27 @@ export function fetchLoopsList(projectId: string, dbPathOverride?: string): Loop
     })
   } catch {
     return []
+  } finally {
+    try { db?.close() } catch {}
+  }
+}
+
+/**
+ * Reads the session-scoped stored plan for the TUI execute-plan dialog.
+ * Returns null when the database, row, or content is absent.
+ */
+export function fetchStoredSessionPlan(projectId: string, sessionId: string, dbPathOverride?: string): string | null {
+  const dbPath = dbPathOverride || getDbPath()
+  if (!existsSync(dbPath)) return null
+
+  let db: Database | null = null
+  try {
+    db = new Database(dbPath, { readonly: true })
+    db.run('PRAGMA busy_timeout=5000')
+    const plansRepo = createPlansRepo(db)
+    return plansRepo.getForSession(projectId, sessionId)?.content ?? null
+  } catch {
+    return null
   } finally {
     try { db?.close() } catch {}
   }

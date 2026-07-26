@@ -1,4 +1,5 @@
 import { decomposeDeterministically } from './deterministic-decomposer'
+import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { SectionPlansRepo } from '../storage/repos/section-plans-repo'
 
@@ -15,7 +16,7 @@ export interface ApplyPlanDecompositionArgs {
  *  loop start (attachLoopToSession) and loop restart (handleLoopRestart). */
 export function applyPlanDecomposition(args: ApplyPlanDecompositionArgs): { totalSections: number } {
   const { projectId, loopName, planText, loopsRepo, sectionPlansRepo } = args
-  const maxSections = args.maxSections ?? 12
+  const maxSections = args.maxSections ?? MAX_TOTAL_SECTIONS
   const sections = decomposeDeterministically(planText, { maxSections })
   if (sections.length > 0 && sectionPlansRepo) {
     sectionPlansRepo.bulkInsert({ projectId, loopName, sections })

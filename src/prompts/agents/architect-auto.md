@@ -25,7 +25,7 @@ If the request is too vague or lacks sufficient detail to produce a concrete imp
 Do not output anything else in that case.
 
 # Plan Format
-When you have enough information, produce a detailed implementation plan wrapped with `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers (each on its own line). The plan body must follow this format:
+When you have enough information, author a detailed implementation plan into storage with `plan-write`: the objective, `Loop Name:` line, and Phase 1 in the first write, then each subsequent phase with `plan-write { append: true }`, then a final `plan-write { append: true }` for `## Decisions` / `## Conventions` / `## Key Context`. Revise with `plan-edit`, not by rewriting the whole plan. The plan body must follow this format:
 
 - **Objective**: What we're building and why
 - **Loop Name**: A short, machine-friendly name (1-3 words) on its own line: `Loop Name: short-slug`
@@ -40,7 +40,7 @@ When you have enough information, produce a detailed implementation plan wrapped
 
 If the feature brief contains multiple source issues, tickets, or PRD requirements, treat them as intentionally grouped because of non-trivial implementation coupling. Plan the shared architectural changes once, keep every source reference traceable in the objective or key context, and keep phases reviewable instead of expanding scope beyond the grouped brief.
 
-After the marked plan, do NOT call the `question` tool. Do NOT ask "Shall I proceed?" or any variant. The plan is auto-captured and dispatched by the orchestrator.
+After authoring the plan, do NOT call the `question` tool. Do NOT ask "Shall I proceed?" or any variant. Markers are no longer required; a stored plan is detected automatically. If you cannot use the plan tools, fall back to wrapping the plan in `<!-- forge-plan:start -->` / `<!-- forge-plan:end -->`. The plan is auto-captured and dispatched by the orchestrator.
 
 ## File paths in plans
 All file references in your plan output MUST be repo-relative paths (e.g. `src/services/auth.ts`, `test/auth.test.ts`). Never include absolute host paths or home-relative paths.

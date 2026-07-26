@@ -1,5 +1,5 @@
 import type { ToolContext } from '../tools/types'
-import { captureLatestPlanForSession, captureMarkedPlanTextForSession } from '../services/plan-capture'
+import { captureMarkedPlanTextForSession, capturePlanForCompletedMessage } from '../services/plan-capture'
 import { PLAN_END_MARKER, PLAN_START_MARKER } from '../utils/marked-plan-parser'
 
 const MESSAGE_PART_UPDATED_EVENT = 'message.part.updated'
@@ -62,9 +62,10 @@ export function createPlanCaptureEventHook(ctx: ToolContext) {
     const info = event.properties?.info
 
     if (!sessionID || info?.role !== 'assistant' || typeof info?.time?.completed !== 'number') return
+    if (!info.id) return
 
     try {
-      const result = await captureLatestPlanForSession(
+      const result = await capturePlanForCompletedMessage(
         {
           client,
           plansRepo,
@@ -72,7 +73,8 @@ export function createPlanCaptureEventHook(ctx: ToolContext) {
           directory,
           logger,
         },
-        sessionID
+        sessionID,
+        info.id
       )
 
       if (result.status === 'captured') {

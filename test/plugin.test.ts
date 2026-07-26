@@ -94,8 +94,8 @@ describe('createForgePlugin', () => {
     expect(hooks.tool?.['memory-health']).toBeUndefined()
     // Plan/review tools should be registered
     expect(hooks.tool?.['plan-read']).toBeDefined()
-    expect(hooks.tool?.['plan-edit']).toBeUndefined()
-    expect(hooks.tool?.['plan-write']).toBeUndefined()
+    expect(hooks.tool?.['plan-edit']).toBeDefined()
+    expect(hooks.tool?.['plan-write']).toBeDefined()
     expect(hooks.tool?.['review-read']).toBeDefined()
     expect(hooks.tool?.['review-write']).toBeDefined()
     // Ast-grep tools should NOT be registered

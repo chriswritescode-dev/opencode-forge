@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories } from '../../src/constants/loop'
+import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories, MAX_TOTAL_SECTIONS } from '../../src/constants/loop'
+import { MAX_TOTAL_SECTIONS as MAX_TOTAL_SECTIONS_FROM_SERVICE } from '../../src/loop/service'
 import { resolveOpencodeToolOutputDir, DEFAULT_FORGE_TMP_DIR } from '../../src/utils/opencode-paths'
 
 const TOOL_OUTPUT_DIR = resolveOpencodeToolOutputDir()
@@ -7,6 +8,13 @@ const TOOL_OUTPUT_ALLOW_RULES = [
   { permission: 'external_directory', pattern: TOOL_OUTPUT_DIR, action: 'allow' as const },
   { permission: 'external_directory', pattern: `${TOOL_OUTPUT_DIR}/**`, action: 'allow' as const },
 ]
+
+describe('MAX_TOTAL_SECTIONS', () => {
+  it('is the single canonical section cap re-exported by loop/service', () => {
+    expect(MAX_TOTAL_SECTIONS).toBe(24)
+    expect(MAX_TOTAL_SECTIONS_FROM_SERVICE).toBe(MAX_TOTAL_SECTIONS)
+  })
+})
 
 describe('buildLoopPermissionRuleset', () => {
   it('emits the full loop ruleset in order (no shell-specific rules)', () => {
@@ -20,6 +28,8 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'plan', pattern: '*', action: 'deny' },
       { permission: 'plan_enter', pattern: '*', action: 'deny' },
       { permission: 'plan_exit', pattern: '*', action: 'deny' },
+      { permission: 'plan-write', pattern: '*', action: 'deny' },
+      { permission: 'plan-edit', pattern: '*', action: 'deny' },
       { permission: 'execute-plan', pattern: '*', action: 'deny' },
       { permission: 'execute-goal', pattern: '*', action: 'deny' },
       { permission: 'question', pattern: '*', action: 'deny' },
