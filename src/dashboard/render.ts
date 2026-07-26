@@ -38,6 +38,8 @@ export function renderDashboardHtml(): string {
     padding: 16px;
   }
   h1 { font-size: 1.3rem; margin-bottom: 8px; color: var(--fg-bright); }
+  h1 .forge-home { color: inherit; text-decoration: none; }
+  h1 .forge-home:hover { color: var(--link-hover); }
   h2 { font-size: 1.2rem; margin-bottom: 6px; color: var(--fg-bright); }
   .filter-bar {
     display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
@@ -79,7 +81,7 @@ export function renderDashboardHtml(): string {
   }
   .repo-running-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
   .repo-running-card {
-    display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;
+    display: flex; flex-direction: column; gap: 3px; min-width: 0; cursor: pointer; user-select: none;
     padding: 8px 12px; border: 1px solid var(--divider); border-radius: 6px;
     background: var(--panel); font-size: 0.82rem;
   }
@@ -88,10 +90,14 @@ export function renderDashboardHtml(): string {
     width: 8px; height: 8px; border-radius: 50%; background: var(--warning);
     flex: 0 0 8px; box-shadow: 0 0 6px var(--warning);
   }
-  .repo-running-label { color: var(--link); font-weight: 600; }
+  .repo-running-label {
+    display: flex; align-items: center; gap: 6px; min-width: 0;
+    color: var(--link); font-weight: 600;
+  }
+  .repo-running-name, .repo-running-phase { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .repo-running-name { color: var(--fg-bright); }
   .repo-running-phase {
-    margin-left: auto; color: var(--fg-2); font-family: var(--mono);
+    color: var(--fg-2); font-family: var(--mono);
     font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em;
   }
   .repo-recent-list { display: flex; flex-direction: column; gap: 2px; }

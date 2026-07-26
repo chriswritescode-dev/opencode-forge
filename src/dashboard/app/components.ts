@@ -203,8 +203,7 @@ export function RepoIndexPane(props: {
           <h3 class="repo-index-section-title">Running</h3>
           <div class="repo-running-cards">
             ${runningCards().map(c => html`<div class="repo-running-card" onclick=${() => props.onOpenLoop(c.projectId, c.loopName)}>
-              <span class="repo-running-dot"></span>
-              <span class="repo-running-label">${c.label}</span>
+              <span class="repo-running-label"><span class="repo-running-dot"></span>${c.label}</span>
               <span class="repo-running-name">${c.loopName}</span>
               <span class="repo-running-phase">${c.phase}</span>
             </div>`)}

@@ -442,7 +442,7 @@ export function App() {
   // solid-js/html template are not wired as reactive inserts, so wrap the whole
   // UI in one container to keep the ${() => ...} regions reactive.
   return html`<div class="forge-app">
-    <h1>Forge Dashboard</h1>
+    <h1><a class="forge-home" href="#">Forge Dashboard</a></h1>
 
     ${() => {
       const err = loadError()
