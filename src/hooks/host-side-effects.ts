@@ -172,26 +172,27 @@ function getToastMessage(state: LoopState, reason: TerminationReason): string {
  * session. Once `workspace.remove` fires, that view becomes orphaned. We reuse
  * the same navigation path as warp-in (`selectSessionBestEffort`): the
  * `tui.selectSession` command first, falling back to a `tui.session.select`
- * publish. Selecting through the current workspace context reaches a TUI that
- * is still scoped to the soon-to-be-removed workspace; selecting without a
- * workspace reaches local project views. Best-effort: failures are logged but
- * never block teardown.
+ * publish. Best-effort: failures are logged but never block teardown.
+ *
+ * The `workspace` tag decides which TUI reacts, and the two variants are
+ * mutually exclusive: OpenCode's TUI drops a `tui.session.select` whose
+ * `workspace` does not strictly equal its own current workspace. A warped TUI
+ * has that workspace set (it is derived from `session.workspaceID` on every
+ * navigation), so the tagged select is the one that reaches it. An untagged
+ * select instead reaches every *non*-warped TUI on the server — the TUI event
+ * stream is process-wide and unfiltered by directory — which hijacks unrelated
+ * projects' TUIs. `teardownWorktree` only calls this with a workspace set, so
+ * the tag is always available.
  */
 async function unwarpToHostSession(
   state: LoopState,
   ctx: TerminationSideEffectsContext,
 ): Promise<void> {
-  if (!state.hostSessionId || !state.projectDir) return
-
-  if (state.workspaceId) {
-    await selectSessionBestEffort(ctx.client, state.projectDir, ctx.logger, {
-      sessionID: state.hostSessionId,
-      workspace: state.workspaceId,
-    })
-  }
+  if (!state.hostSessionId || !state.projectDir || !state.workspaceId) return
 
   await selectSessionBestEffort(ctx.client, state.projectDir, ctx.logger, {
     sessionID: state.hostSessionId,
+    workspace: state.workspaceId,
   })
 
   const settleMs = resolveUnwarpSettleMs()

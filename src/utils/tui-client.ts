@@ -310,7 +310,7 @@ export async function launchTuiLoop(
     pendingAttachStartedAt: createdAt,
     ...opts.forgeLoopOverrides,
   }
-  await removeExistingForgeLoopWorkspaces(opts.client, loopName, {
+  await removeExistingForgeLoopWorkspaces(opts.client, loopName, opts.directory, {
     log: (message) => debug(`launchTuiLoop: ${message}`),
     error: (message, err) => debug(`launchTuiLoop: ${message} ${err instanceof Error ? err.message : String(err)}`),
   })

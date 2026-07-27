@@ -61,16 +61,22 @@ export function getForgeWorkspaceLoopName(entry: Pick<ForgeWorkspaceEntry, 'extr
 }
 
 /**
- * Look up existing forge workspaces by loop name.
+ * Look up existing forge workspaces by loop name within a single project.
+ *
+ * `workspace.list()` is server-wide, and loop names are only unique per
+ * project, so sibling worktrees of the same repo routinely hold live
+ * workspaces under the same name. Scoping by `extra.projectDirectory` keeps a
+ * launch in one worktree from matching (and deleting) another's.
  */
 async function findExistingForgeWorkspaces(
   client: ForgeClient,
   loopName: string,
+  projectDirectory: string | undefined,
   logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void },
 ): Promise<ForgeWorkspaceEntry[]> {
   try {
     const entries = (await client.workspace.list() ?? []) as ForgeWorkspaceEntry[]
-    const matches = entries.filter((entry) => entry.id && workspaceMatchesLoop(entry, loopName))
+    const matches = entries.filter((entry) => entry.id && workspaceMatchesLoop(entry, loopName, projectDirectory))
     if (matches.length > 0) {
       (logger ?? console).log?.(`findExistingForgeWorkspaces: found ${matches.length} existing workspace(s) for loop ${loopName}`)
     }
@@ -81,8 +87,17 @@ async function findExistingForgeWorkspaces(
   }
 }
 
-function workspaceMatchesLoop(entry: ForgeWorkspaceEntry, loopName: string): boolean {
+/**
+ * A workspace is excluded only when both sides positively declare a project
+ * directory and they differ. Workspaces created before `extra.projectDirectory`
+ * was stamped carry no marker, and the caller's directory can itself be
+ * unknown; in either case fall back to name-only matching so stale cleanup
+ * keeps working.
+ */
+function workspaceMatchesLoop(entry: ForgeWorkspaceEntry, loopName: string, projectDirectory: string | undefined): boolean {
   if (entry.type !== 'forge') return false
+  const entryProjectDir = entry.extra?.projectDirectory
+  if (projectDirectory && typeof entryProjectDir === 'string' && entryProjectDir !== projectDirectory) return false
   if (entry.name === loopName) return true
   return getForgeWorkspaceLoopName(entry) === loopName
 }
@@ -90,9 +105,10 @@ function workspaceMatchesLoop(entry: ForgeWorkspaceEntry, loopName: string): boo
 export async function removeExistingForgeLoopWorkspaces(
   client: ForgeClient,
   loopName: string,
+  projectDirectory: string | undefined,
   logger?: { log: (msg: string, ...args: unknown[]) => void; error: (msg: string, ...args: unknown[]) => void },
 ): Promise<void> {
-  const matches = await findExistingForgeWorkspaces(client, loopName, logger)
+  const matches = await findExistingForgeWorkspaces(client, loopName, projectDirectory, logger)
   for (const match of matches) {
     try {
       await client.workspace.remove({ id: match.id })

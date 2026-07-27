@@ -16,7 +16,6 @@ Run `execute-plan` with:
 - plan: Optional full implementation plan. If omitted, Forge reads the captured plan for the current session.
 - title: Required short descriptive title.
 - loopName: Optional loop name. Forge slugifies it and auto-increments on collision.
-- hostSessionId: Optional host session ID for post-completion redirect.
 - mode: The mode selected in Step 2 — `loop` or `new-session`.
 
 In `loop` mode, execution always runs in an isolated git worktree. Docker sandboxing is used automatically when configured and available. In `new-session` mode, the plan runs in a normal session with no worktree or sandbox.

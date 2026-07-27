@@ -75,7 +75,7 @@ const completed: TerminationReason = { kind: 'completed' }
 const maxIterations: TerminationReason = { kind: 'max_iterations' }
 
 describe('performTerminationSideEffects unwarp', () => {
-  test('selects host session (no workspace = unwarp to local) before workspace.remove', async () => {
+  test('selects host session scoped to the loop workspace before workspace.remove', async () => {
     const callOrder: string[] = []
     const tuiSelectSession = vi.fn().mockImplementation(async () => {
       callOrder.push('select')
@@ -87,9 +87,31 @@ describe('performTerminationSideEffects unwarp', () => {
 
     await performTerminationSideEffects(buildState(), completed, 'sess_worktree', ctx)
 
-    expect(tuiSelectSession).toHaveBeenCalledWith({ directory: '/tmp/project', sessionID: 'sess_host' })
+    expect(tuiSelectSession).toHaveBeenCalledWith({
+      directory: '/tmp/project',
+      sessionID: 'sess_host',
+      workspace: 'ws_abc',
+    })
     expect(callOrder.indexOf('select')).toBeLessThan(callOrder.indexOf('remove'))
   })
+
+  test('never emits a workspace-less select while a workspace is set (would hijack other projects TUIs)', async () => {
+    const { ctx, tuiSelectSession, tuiPublish } = buildCtx()
+
+    await performTerminationSideEffects(buildState(), completed, 'sess_worktree', ctx)
+
+    expect(tuiSelectSession).toHaveBeenCalledTimes(1)
+    expect(tuiSelectSession).not.toHaveBeenCalledWith(
+      expect.not.objectContaining({ workspace: expect.anything() }),
+    )
+    const untaggedPublish = tuiPublish.mock.calls.find((c) => {
+      const arg = c[0] as { body: { type: string }; workspace?: string }
+      return arg.body.type === 'tui.session.select' && arg.workspace === undefined
+    })
+    expect(untaggedPublish).toBeUndefined()
+  })
+
+
 
   test('skips unwarp when hostSessionId missing', async () => {
     const { ctx, tuiSelectSession, tuiPublish, workspaceRemove } = buildCtx()
@@ -131,6 +153,7 @@ describe('performTerminationSideEffects unwarp', () => {
 
     expect(tuiPublish).toHaveBeenCalledWith({
       directory: '/tmp/project',
+      workspace: 'ws_abc',
       body: {
         type: 'tui.session.select',
         properties: { sessionID: 'sess_host' },
@@ -146,7 +169,11 @@ describe('performTerminationSideEffects unwarp', () => {
     await performTerminationSideEffects(state, maxIterations, 'sess_worktree', ctx)
 
     expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_abc' })
-    expect(tuiSelectSession).toHaveBeenCalledWith({ directory: '/tmp/project', sessionID: 'sess_host' })
+    expect(tuiSelectSession).toHaveBeenCalledWith({
+      directory: '/tmp/project',
+      sessionID: 'sess_host',
+      workspace: 'ws_abc',
+    })
   })
 
   test('sweep removes sibling completed forge workspace during teardown', async () => {

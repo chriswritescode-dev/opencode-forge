@@ -79,7 +79,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         plan: z.string().optional().describe('The full implementation plan. If omitted, reads from the session plan store.'),
         title: z.string().describe('Short title for the session (shown in session list)'),
         loopName: z.string().optional().describe('Name for the loop (max 25 chars, auto-incremented if collision exists)'),
-        hostSessionId: z.string().optional().describe('Host session ID for post-completion redirect'),
         mode: z.enum(['loop', 'new-session']).optional().default('loop')
           .describe("Execution mode. 'loop' (default) runs an iterative loop in an isolated git worktree. 'new-session' launches the plan in a fresh standalone session running the code agent (no worktree, no loop)."),
       },
@@ -152,7 +151,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           maxIterations: config.loop?.defaultMaxIterations ?? 0,
           executionModel,
           auditorModel,
-          hostSessionId: args.hostSessionId,
           lifecycle: {
             selectSession: true,
             startWatchdog: true,
@@ -202,7 +200,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         title: z.string().optional().describe('Short title for the loop (derived from the goal when omitted)'),
         loopName: z.string().optional().describe('Name for the loop (max 25 chars, auto-incremented if collision exists; derived from the title when omitted)'),
         maxIterations: z.number().optional().describe('Maximum loop iterations (defaults to plugin config loop.defaultMaxIterations)'),
-        hostSessionId: z.string().optional().describe('Host session ID for post-completion redirect'),
       },
       execute: async (args, context) => {
         const goalText = (args.goal ?? '').trim()
@@ -219,7 +216,6 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           title: args.title,
           loopName: args.loopName,
           maxIterations: args.maxIterations,
-          hostSessionId: args.hostSessionId,
           executorSessionId: context.sessionID,
         })
 
