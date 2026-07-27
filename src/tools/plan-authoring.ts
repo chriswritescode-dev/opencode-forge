@@ -7,15 +7,16 @@ import { formatPlanStructureSummary, summarizePlanStructure } from '../utils/pla
 const z = tool.schema
 
 /**
- * Returns an error message when the session owns a running loop, else null.
- * The stored plan for a running loop is amended only via `plan-adjust` during
- * a section audit, so direct authoring from inside such a session is blocked.
+ * Returns an error message when the session is currently driving a running
+ * loop, else null. The stored plan for a running loop is amended only via
+ * `plan-adjust` during a section audit, so direct authoring from inside such a
+ * session is blocked. Sessions whose loop has already terminated stay writable.
  */
 function assertWritableSession(ctx: ToolContext, sessionID: string): string | null {
-  const loopName = ctx.loop.service.resolveLoopName(sessionID)
-  if (loopName) {
+  const state = ctx.loop.service.resolveActiveLoopForSession(sessionID)
+  if (state) {
     return (
-      `Cannot modify the plan from an active loop session (loop: ${loopName}). ` +
+      `Cannot modify the plan from an active loop session (loop: ${state.loopName}). ` +
       `The stored plan for a running loop is amended with plan-adjust during a section audit.`
     )
   }

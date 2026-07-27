@@ -24,7 +24,7 @@ import { findPartialMatch } from '../utils/partial-match'
 import { isSandboxEnabled } from '../sandbox/context'
 import { createLoopSessionWithWorkspace, publishWorkspaceDetachedToast } from '../utils/loop-session'
 import { aggregateToUsageSummary } from '../utils/loop-format'
-import { join } from 'path'
+import { resolveForgeDbPath } from '../utils/opencode-paths'
 import { existsSync } from 'fs'
 import { applyPlanDecomposition } from './section-bootstrap'
 import { sendLoopPrompt } from '../loop/send-loop-prompt'
@@ -721,7 +721,7 @@ export async function attachLoopToSession(
 
     // Wait for sandbox readiness in worktree+sandbox mode (after persistence)
     if (sandboxEnabled && deps.sandboxManager && deps.dataDir) {
-      const dbPath = join(deps.dataDir, 'forge.db')
+      const dbPath = resolveForgeDbPath(deps.dataDir)
       if (existsSync(dbPath)) {
         const { waitForSandboxReady } = await import('../utils/sandbox-ready')
         const waitResult = await waitForSandboxReady({

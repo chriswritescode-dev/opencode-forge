@@ -3,7 +3,7 @@ import { createStore, reconcile } from 'solid-js/store'
 import html from 'solid-js/html'
 import type { DashboardPayload, DashboardProject, DashboardLoop, DashboardGroup } from './types'
 import type { DashboardRoute, SortMode, RepoSection, LoopTab } from './helpers'
-import { parseDashboardHash, buildDashboardHash, syncHash, dataHash, loopMatchesFilters, buildRepoLabels, sortLoops, tabsForLoop, sameList, fmtTime } from './helpers'
+import { parseDashboardHash, buildDashboardHash, syncHash, dataHash, loopMatchesFilters, buildRepoLabels, repoRawPath, repoLabel, loopActivityAt, sortLoops, tabsForLoop, sameList, fmtTime } from './helpers'
 import {
   FilterBar,
   Timestamp,
@@ -184,9 +184,7 @@ export function App() {
 
   const activeStatusSet = createMemo(() => new Set(statuses()))
 
-  const repoLabels = createMemo(() =>
-    buildRepoLabels(state.projects.map(p => p.projectDir || p.projectId || '')),
-  )
+  const repoLabels = createMemo(() => buildRepoLabels(state.projects.map(repoRawPath)))
 
   const matchedByProject = createMemo<MatchedEntry[]>(() => {
     if (!loaded() || state.projects.length === 0) return []
@@ -197,8 +195,7 @@ export function App() {
     const q = search.trim().toLowerCase()
     for (const proj of state.projects) {
       const matched: DashboardLoop[] = []
-      const rawPath = proj.projectDir || proj.projectId || ''
-      const label = labels.get(rawPath) ?? rawPath
+      const label = repoLabel(labels, proj)
       for (const dashLoop of proj.loops) {
         if (loopMatchesFilters(dashLoop.loop, statuses, search, label)) {
           matched.push(dashLoop)
@@ -261,7 +258,7 @@ export function App() {
     if (!proj) return []
     return proj.loops
       .map(dl => {
-        const when = dl.loop.completedAt || dl.loop.startedAt || 0
+        const when = loopActivityAt(dl.loop)
         return { name: dl.loop.loopName, when, whenLabel: fmtTime(when) }
       })
       .sort((a, b) => (b.when - a.when) || a.name.localeCompare(b.name))
@@ -327,8 +324,8 @@ export function App() {
     if (!projectId()) return ''
     const proj = selectedRepoProject()
     if (!proj) return ''
-    const rawPath = proj.projectDir || proj.projectId || ''
-    const label = repoLabels().get(rawPath) ?? rawPath
+    const rawPath = repoRawPath(proj)
+    const label = repoLabel(repoLabels(), proj)
     return untrack(() => Breadcrumb({
       repoLabel: label,
       projectDir: rawPath,

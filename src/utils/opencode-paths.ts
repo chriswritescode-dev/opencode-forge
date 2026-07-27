@@ -32,6 +32,17 @@ export function resolveLogPath(): string {
 }
 
 /**
+ * The single builder for the forge database path. `configuredDataDir` is
+ * `PluginConfig.dataDir`; every entry point (plugin, TUI, dashboard, loop
+ * execution) resolves through here so a configured `dataDir` cannot be honoured
+ * by some readers and ignored by others.
+ */
+export function resolveForgeDbPath(configuredDataDir?: string): string {
+  const trimmed = configuredDataDir?.trim()
+  return join(trimmed && trimmed.length > 0 ? trimmed : resolveDataDir(), 'forge.db')
+}
+
+/**
  * Default absolute path for the shared loop scratch/temp directory. Used identically on the host
  * (worktree-only loops) and inside the sandbox container (bind-mounted at the same path), so
  * absolute temp paths resolve unchanged in both modes. Overridable via `loop.tmpDir`.

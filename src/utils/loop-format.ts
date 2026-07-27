@@ -5,7 +5,7 @@ import { USAGE_ROLE_ORDER, mergeUsageSummaries } from '../loop/token-usage'
 import type { LoopUsageAggregate, LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
 
 export { formatTokens } from './format'
-export type { LoopUsageSummary, RoleUsage } from '../loop/token-usage'
+export type { LoopUsageSummary } from '../loop/token-usage'
 
 /**
  * Build cumulative usage for a loop by merging persisted aggregate with live session output.
@@ -17,7 +17,7 @@ export type { LoopUsageSummary, RoleUsage } from '../loop/token-usage'
  * @param currentSessionId - Current session ID to check for persistence
  * @param sessionOutput - Live session output (may be null if worktree unavailable)
  */
-export function buildCumulativeUsage(
+function buildCumulativeUsage(
   loopSessionUsageRepo: LoopSessionUsageRepo | undefined,
   projectId: string,
   loopName: string,
@@ -65,6 +65,17 @@ export function formatCumulativeUsage(
   return ['', 'Cumulative Usage:', ...formatUsageSummary(summary).map(l => `  ${l}`)]
 }
 
+/** Project a persisted per-model or per-role usage bucket onto a TokenBreakdown. */
+function tokensFromAggregate(data: LoopUsageAggregate['byModel'][string]): TokenBreakdown {
+  return {
+    input: data.inputTokens,
+    output: data.outputTokens,
+    reasoning: data.reasoningTokens,
+    cacheRead: data.cacheReadTokens,
+    cacheWrite: data.cacheWriteTokens,
+  }
+}
+
 /** Convert LoopUsageAggregate from database to LoopUsageSummary */
 export function aggregateToUsageSummary(aggregate: LoopUsageAggregate): LoopUsageSummary {
   const totalTokens: TokenBreakdown = {
@@ -78,13 +89,7 @@ export function aggregateToUsageSummary(aggregate: LoopUsageAggregate): LoopUsag
   const perModel = Object.entries(aggregate.byModel).map(([model, data]) => ({
     model,
     cost: data.cost,
-    tokens: {
-      input: data.inputTokens,
-      output: data.outputTokens,
-      reasoning: data.reasoningTokens,
-      cacheRead: data.cacheReadTokens,
-      cacheWrite: data.cacheWriteTokens,
-    },
+    tokens: tokensFromAggregate(data),
     messageCount: data.messageCount,
   })).sort((a, b) => a.model.localeCompare(b.model))
 
@@ -95,13 +100,7 @@ export function aggregateToUsageSummary(aggregate: LoopUsageAggregate): LoopUsag
       return {
         role,
         cost: data.cost,
-        tokens: {
-          input: data.inputTokens,
-          output: data.outputTokens,
-          reasoning: data.reasoningTokens,
-          cacheRead: data.cacheReadTokens,
-          cacheWrite: data.cacheWriteTokens,
-        },
+        tokens: tokensFromAggregate(data),
         messageCount: data.messageCount,
       }
     })
@@ -114,22 +113,26 @@ export function aggregateToUsageSummary(aggregate: LoopUsageAggregate): LoopUsag
   }
 }
 
+/** The single token-line rendering: `<in> in / <out> out / ... cache write`. */
+function formatTokenBreakdown(tokens: TokenBreakdown): string {
+  return `${formatTokens(tokens.input)} in / ${formatTokens(tokens.output)} out / ${formatTokens(tokens.reasoning)} reasoning / ${formatTokens(tokens.cacheRead)} cache read / ${formatTokens(tokens.cacheWrite)} cache write`
+}
+
+/** The single cost rendering: fixed 4-decimal dollars. */
+function formatCost(cost: number): string {
+  return `$${cost.toFixed(4)}`
+}
+
 /** Format a LoopUsageSummary into deterministic total and per-model output */
 export function formatUsageSummary(summary: LoopUsageSummary): string[] {
   const lines: string[] = []
 
-  const costStr = `$${summary.totalCost.toFixed(4)}`
-  const t = summary.totalTokens
-  const tokensStr = `${formatTokens(t.input)} in / ${formatTokens(t.output)} out / ${formatTokens(t.reasoning)} reasoning / ${formatTokens(t.cacheRead)} cache read / ${formatTokens(t.cacheWrite)} cache write`
-  lines.push(`Total Cost: ${costStr} | Tokens: ${tokensStr}`)
+  lines.push(`Total Cost: ${formatCost(summary.totalCost)} | Tokens: ${formatTokenBreakdown(summary.totalTokens)}`)
 
   if (summary.perModel.length > 0) {
     lines.push('Per-model usage:')
     for (const modelUsage of summary.perModel) {
-      const modelCost = `$${modelUsage.cost.toFixed(4)}`
-      const mt = modelUsage.tokens
-      const modelTokensStr = `${formatTokens(mt.input)} in / ${formatTokens(mt.output)} out / ${formatTokens(mt.reasoning)} reasoning / ${formatTokens(mt.cacheRead)} cache read / ${formatTokens(mt.cacheWrite)} cache write`
-      lines.push(`  ${modelUsage.model}: ${modelCost} | ${modelTokensStr}`)
+      lines.push(`  ${modelUsage.model}: ${formatCost(modelUsage.cost)} | ${formatTokenBreakdown(modelUsage.tokens)}`)
     }
   }
 
@@ -137,10 +140,7 @@ export function formatUsageSummary(summary: LoopUsageSummary): string[] {
   if (perRole.length > 0) {
     lines.push('Per-role usage:')
     for (const roleUsage of perRole) {
-      const roleCost = `$${roleUsage.cost.toFixed(4)}`
-      const rt = roleUsage.tokens
-      const roleTokensStr = `${formatTokens(rt.input)} in / ${formatTokens(rt.output)} out / ${formatTokens(rt.reasoning)} reasoning / ${formatTokens(rt.cacheRead)} cache read / ${formatTokens(rt.cacheWrite)} cache write`
-      lines.push(`  ${roleUsage.role}: ${roleCost} | ${roleTokensStr}`)
+      lines.push(`  ${roleUsage.role}: ${formatCost(roleUsage.cost)} | ${formatTokenBreakdown(roleUsage.tokens)}`)
     }
   }
 
@@ -169,10 +169,7 @@ export function formatSessionOutput(
     }
   } else {
     // Fallback to inline formatting for backward compatibility
-    const costStr = `$${sessionOutput.totalCost.toFixed(4)}`
-    const t = sessionOutput.totalTokens
-    const tokensStr = `${formatTokens(t.input)} in / ${formatTokens(t.output)} out / ${formatTokens(t.reasoning)} reasoning / ${formatTokens(t.cacheRead)} cache read / ${formatTokens(t.cacheWrite)} cache write`
-    lines.push(`  Cost: ${costStr} | Tokens: ${tokensStr}`)
+    lines.push(`  Cost: ${formatCost(sessionOutput.totalCost)} | Tokens: ${formatTokenBreakdown(sessionOutput.totalTokens)}`)
   }
 
   if (sessionOutput.fileChanges) {

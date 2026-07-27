@@ -91,7 +91,7 @@ All endpoints are read-only (non-GET requests return 404):
 | Endpoint | Description |
 |----------|-------------|
 | `GET /` | HTML page (inlined SolidJS app) |
-| `GET /api/data` | JSON snapshot of Forge loop/project state. Accepts optional `project` and `loop` query parameters (`/api/data?project=<projectId>&loop=<loopName>`) to scope the payload: per-loop text (`plan`, `goal`, `lastAuditResult`, `postActionReport`, `sections`, `amendments`) is materialised only for the scoped loop, and `transitions` only for the scoped project; `findings`, `usage`, and `duration` remain populated for every loop. `hasPlan` and `sectionCount` are always populated so the tab set and section counts render correctly while detail is in flight. |
+| `GET /api/data` | JSON snapshot of Forge loop/project state. Accepts optional `project` and `loop` query parameters (`/api/data?project=<projectId>&loop=<loopName>`) to scope the payload: per-loop text (`plan`, `goal`, `lastAuditResult`, `postActionReport`, `sections`, `amendments`) is materialised only for the scoped loop, and `findings` rows, `usage`, and `transitions` only for the scoped project. `duration`, `hasPlan`, `sectionCount`, and `bugCount` are always populated so the repo index, tab set, and section/bug counts render correctly while detail is in flight. |
 
 In the browser, the loop table, repo findings list, plans list, and loop picker cap their rendered rows behind a "Showing N of M" affordance (a "Show all" toggle expands the loop table, findings, and plans lists).
 
@@ -405,7 +405,7 @@ Audit findings survive session rotation via the **review store**. The auditor st
 
 ### Usage Tracking
 
-Loop sessions rotate between code and auditor work, so Forge persists per-session usage rows in `loop_session_usage` and merges them for `loop-status`. Detailed status includes cumulative cost, input/output/reasoning/cache token totals, per-model breakdowns, and live active-session output when available.
+Loop sessions rotate between code and auditor work, so Forge persists per-session usage rows in `loop_session_usage` and merges them for `loop-status`. Detailed status includes cumulative cost, input/output/reasoning/cache token totals, per-model breakdowns, a per-role (`code`/`auditor`/`unknown`) breakdown, and live active-session output when available.
 
 ### Worktree Isolation
 

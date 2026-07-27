@@ -16,6 +16,7 @@ vi.mock('../../src/utils/workspace-listing', () => ({
 vi.mock('../../src/storage', () => ({
   resolveLogPath: vi.fn().mockReturnValue('/tmp/forge-test.log'),
   resolveDataDir: vi.fn().mockReturnValue('/tmp/forge-test-data-dir'),
+  resolveForgeDbPath: vi.fn((dataDir?: string) => `${dataDir ?? '/tmp/forge-test-data-dir'}/forge.db`),
 }))
 
 vi.mock('../../src/services/execution', () => ({

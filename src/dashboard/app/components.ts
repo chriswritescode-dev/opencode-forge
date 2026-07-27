@@ -30,6 +30,10 @@ import {
   computeTimelineEvents,
   buildDashboardHash,
   capList,
+  repoRawPath,
+  repoLabel,
+  loopActivityAt,
+  ALL_TABS,
   MAX_RENDERED_LOOP_ROWS,
   MAX_RENDERED_FINDING_ROWS,
   MAX_RENDERED_PICKER_OPTIONS,
@@ -140,8 +144,8 @@ export function RepoMenu(props: {
   const items = createMemo(() =>
     props.entries().map((entry: MatchedEntry) => {
       const hasRunning = entry.loops.some(dl => dl.loop.status === 'running')
-      const rawPath = entry.proj.projectDir || entry.proj.projectId || ''
-      const label = props.labels().get(rawPath) ?? rawPath
+      const rawPath = repoRawPath(entry.proj)
+      const label = repoLabel(props.labels(), entry.proj)
       return html`<div class="repo-menu-item" onclick=${() => props.onSelect(entry.proj.projectId)}>
         ${hasRunning ? html`<span class="repo-menu-running"></span>` : ''}
         <span class="repo-menu-name" title=${rawPath}>${label}</span>
@@ -168,13 +172,12 @@ function deriveRepoIndex(entries: MatchedEntry[], labels: Map<string, string>): 
   const runningCards: RunningCard[] = []
   const recent: RecentRow[] = []
   for (const entry of entries) {
-    const rawPath = entry.proj.projectDir || entry.proj.projectId || ''
-    const label = labels.get(rawPath) ?? rawPath
+    const label = repoLabel(labels, entry.proj)
     for (const dl of entry.loops) {
       loopCount++
-      for (const f of dl.findings) if (f.severity === 'bug') bugCount++
+      bugCount += dl.bugCount
       const status = dl.loop.status
-      const when = dl.loop.completedAt || dl.loop.startedAt || 0
+      const when = loopActivityAt(dl.loop)
       if (status === 'running') {
         runningCount++
         runningCards.push({ projectId: entry.proj.projectId, label, loopName: dl.loop.loopName, phase: dl.loop.phase || '' })
@@ -254,11 +257,8 @@ function LoopPicker(props: {
   const openMenu = () => {
     if (open()) return
     setQuery('')
-    const all = props.loops()
-    const idx = all.findIndex(o => o.name === props.loopName)
-    const capped = all.slice(0, MAX_RENDERED_PICKER_OPTIONS)
-    const cappedIdx = idx >= 0 && idx < capped.length ? idx : -1
-    setActive(cappedIdx < 0 ? 0 : cappedIdx)
+    const idx = view().rows.findIndex(o => o.name === props.loopName)
+    setActive(idx < 0 ? 0 : idx)
     setOpen(true)
   }
   const close = () => {
@@ -523,7 +523,7 @@ function LoopTableRow(props: { dashLoop: DashboardLoop; now: () => number; onOpe
     }}</td>
     <td class="lt-cost">${() => (dl().usage ? formatUsageCost(dl().usage!.totalCost) : html`<span class="dim">—</span>`)}</td>
     <td class="lt-duration">${() => dl().duration || ''}</td>
-    <td class="lt-updated">${() => fmtTime(lp().completedAt || lp().startedAt)}</td>
+    <td class="lt-updated">${() => fmtTime(loopActivityAt(lp()))}</td>
   </tr>`
 }
 // ── MarkdownSection ───────────────────────────────────────────────────────
@@ -949,8 +949,6 @@ function AmendmentsPanel(props: {
   </div>`
 }
 
-const ALL_TABS: LoopTab[] = ['overview', 'timeline', 'sections', 'findings', 'plan', 'usage']
-
 const TAB_LABELS: Record<LoopTab, string> = {
   overview: 'Overview',
   timeline: 'Timeline',
@@ -1270,9 +1268,9 @@ function groupFeaturesMeter(features: GroupFeatureRow[]): { completed: number; t
   return { completed, total }
 }
 
-function groupRowClass(status: string): string {
+function groupStatusClass(base: 'group-row' | 'group-header', status: string): string {
   const terminal = TERMINAL_GROUP_STATUSES.has(status)
-  return 'group-row' + (terminal ? ' group-row-terminal' : ' group-row-active')
+  return base + (terminal ? ` ${base}-terminal` : ` ${base}-active`)
 }
 
 export function GroupsPanel(props: {
@@ -1288,7 +1286,7 @@ export function GroupsPanel(props: {
         ${groups.map(g => {
           const gr = g.group
           const meter = createMemo(() => groupFeaturesMeter(g.features))
-          return html`<div class=${() => groupRowClass(gr.status)} data-group-status=${() => gr.status} onclick=${() => props.onOpen(gr.groupId)}>
+          return html`<div class=${() => groupStatusClass('group-row', gr.status)} data-group-status=${() => gr.status} onclick=${() => props.onOpen(gr.groupId)}>
             <span class=${() => statusClass(gr.status)}>${() => gr.status}</span>
             <span class="group-row-title">${() => gr.title}</span>
             ${MiniMeter({ current: () => meter().completed, total: () => meter().total })}
@@ -1302,11 +1300,6 @@ export function GroupsPanel(props: {
       </div>`
     }}
   </div>`
-}
-
-function groupHeaderClass(status: string): string {
-  const terminal = TERMINAL_GROUP_STATUSES.has(status)
-  return 'group-header' + (terminal ? ' group-header-terminal' : ' group-header-active')
 }
 
 export function GroupDetail(props: {
@@ -1326,7 +1319,7 @@ export function GroupDetail(props: {
       // Single root element: solid-js/html generates invalid code for a
       // template whose top level is a fragment of sibling roots.
       return html`<div class="group-detail-body">
-        <div class=${() => groupHeaderClass(gr.status)} data-group-status=${() => gr.status}>
+        <div class=${() => groupStatusClass('group-header', gr.status)} data-group-status=${() => gr.status}>
           <div class="group-header-top">
             <span class=${() => statusClass(gr.status)}>${() => gr.status}</span>
             <h3 class="group-header-title">${() => gr.title}</h3>

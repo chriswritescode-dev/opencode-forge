@@ -745,49 +745,56 @@ describe('collectDashboardData', () => {
     expect(scoped.projects.find(p => p.projectId === 'p2')!.loops[0].transitions).toEqual([])
   })
 
-  test('findings and usage are populated regardless of scope', () => {
+  test('bugCount is always populated while findings rows and usage ship only for the scoped project', () => {
     const loopsRepo = createLoopsRepo(db!)
     const findingsRepo = createReviewFindingsRepo(db!)
     const usageRepo = createLoopSessionUsageRepo(db!)
-    loopsRepo.insert(
-      makeLoopRow({ projectId: 'p1', loopName: 'loop-a' }),
-      { lastAuditResult: null },
-    )
-    findingsRepo.write({
-      projectId: 'p1',
-      loopName: 'loop-a',
-      file: 'src/main.ts',
-      line: 10,
-      severity: 'warning',
-      description: 'w',
-    })
-    usageRepo.upsertSessionUsage({
-      projectId: 'p1',
-      loopName: 'loop-a',
-      sessionId: 'session-1',
-      role: 'code',
-      model: 'claude-sonnet-4-20250514',
-      cost: 0.01,
-      inputTokens: 100,
-      outputTokens: 50,
-      reasoningTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      messageCount: 3,
-      capturedAt: Date.now(),
-    })
+    const loops = [['p1', 'loop-a'], ['p1', 'loop-c'], ['p2', 'loop-b']] as const
+    for (const [pid, ln] of loops) {
+      loopsRepo.insert(
+        makeLoopRow({ projectId: pid, loopName: ln, currentSessionId: `session-${ln}` }),
+        { lastAuditResult: null },
+      )
+      findingsRepo.write({ projectId: pid, loopName: ln, file: 'src/main.ts', line: 10, severity: 'bug', description: 'b' })
+      findingsRepo.write({ projectId: pid, loopName: ln, file: 'src/main.ts', line: 20, severity: 'warning', description: 'w' })
+      usageRepo.upsertSessionUsage({
+        projectId: pid,
+        loopName: ln,
+        sessionId: `session-${ln}`,
+        role: 'code',
+        model: 'claude-sonnet-4-20250514',
+        cost: 0.01,
+        inputTokens: 100,
+        outputTokens: 50,
+        reasoningTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        messageCount: 3,
+        capturedAt: Date.now(),
+      })
+    }
 
     const unscoped = collectDashboardData(db!)
-    const unscopedDl = unscoped.projects[0].loops[0]
-    expect(unscopedDl.findings).toHaveLength(1)
-    expect(unscopedDl.usage).not.toBeNull()
-    expect(unscopedDl.usage!.totalCost).toBe(0.01)
+    for (const project of unscoped.projects) {
+      for (const dl of project.loops) {
+        expect(dl.findings).toEqual([])
+        expect(dl.usage).toBeNull()
+        expect(dl.bugCount).toBe(1)
+      }
+    }
 
     const scoped = collectDashboardData(db!, { projectId: 'p1', loopName: 'loop-a' })
-    const scopedDl = scoped.projects[0].loops[0]
-    expect(scopedDl.findings).toHaveLength(1)
-    expect(scopedDl.usage).not.toBeNull()
-    expect(scopedDl.usage!.totalCost).toBe(0.01)
+    // Every loop of the scoped project ships rows, not just the scoped loop.
+    for (const dl of scoped.projects.find(p => p.projectId === 'p1')!.loops) {
+      expect(dl.findings).toHaveLength(2)
+      expect(dl.bugCount).toBe(1)
+      expect(dl.usage!.totalCost).toBe(0.01)
+    }
+
+    const outOfScope = scoped.projects.find(p => p.projectId === 'p2')!.loops[0]
+    expect(outOfScope.findings).toEqual([])
+    expect(outOfScope.usage).toBeNull()
+    expect(outOfScope.bugCount).toBe(1)
   })
 
   test('a scope naming a project that does not exist behaves like no scope', () => {
@@ -809,6 +816,8 @@ describe('collectDashboardData', () => {
     expect(dl.lastAuditResult).toBeNull()
     expect(dl.postActionReport).toBeNull()
     expect(dl.sections).toEqual([])
+    expect(dl.findings).toEqual([])
+    expect(dl.usage).toBeNull()
     expect(dl.transitions).toEqual([])
     expect(dl.amendments).toEqual([])
   })

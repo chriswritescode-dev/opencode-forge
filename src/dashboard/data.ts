@@ -41,7 +41,11 @@ export interface DashboardLoop {
   sections: SectionPlanRow[]
   /** Number of section-plan rows. Always populated; `sections` rows ship only for the scoped loop. */
   sectionCount: number
+  /** Full findings rows; ship only for the scoped project. */
   findings: ReviewFindingRow[]
+  /** Number of bug-severity findings. Always populated; `findings` rows ship only for the scoped project. */
+  bugCount: number
+  /** Token/cost aggregate; ships only for the scoped project. */
   usage: LoopUsageAggregate | null
   duration: string | null
   transitions: LoopTransitionRow[]
@@ -174,6 +178,10 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
     const inScopedProject = scope.projectId !== null && projectId === scope.projectId
     const planLoopNames = new Set(plansRepo.listLoopNames(projectId))
     const sectionCounts = sectionPlansRepo.countsByLoop(projectId)
+    const bugCounts = reviewFindingsRepo.bugCountsByLoop(projectId)
+    const transitionsByLoop = inScopedProject && loopTransitionsRepo
+      ? loopTransitionsRepo.listForProject(projectId, 100)
+      : null
 
     const dashboardLoops: DashboardLoop[] = sortedLoops.map(loop => {
       const loopName = loop.loopName
@@ -190,12 +198,11 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
       const sectionCount = sectionCounts.get(loopName) ?? 0
       const sections = isScopedLoop ? sectionPlansRepo.list(projectId, loopName) : []
 
-      const findings = reviewFindingsRepo.listByLoopName(projectId, loopName)
-      const usage = loopSessionUsageRepo.getAggregate(projectId, loopName)
+      const bugCount = bugCounts.get(loopName) ?? 0
+      const findings = inScopedProject ? reviewFindingsRepo.listByLoopName(projectId, loopName) : []
+      const usage = inScopedProject ? loopSessionUsageRepo.getAggregate(projectId, loopName) : null
 
-      const transitions = inScopedProject && loopTransitionsRepo
-        ? loopTransitionsRepo.listForLoop(projectId, loopName, 100)
-        : []
+      const transitions = transitionsByLoop?.get(loopName) ?? []
 
       const amendments = isScopedLoop && amendmentsRepo
         ? amendmentsRepo.listForLoop(projectId, loopName).map((a) => ({
@@ -215,7 +222,7 @@ export function collectDashboardData(db: Database, scope: DashboardScope = UNSCO
       return {
         id: loopName, loop: loopRow, lastAuditResult, postActionReport, goal,
         plan, hasPlan, sections, sectionCount,
-        findings, usage, duration, transitions, amendments,
+        findings, bugCount, usage, duration, transitions, amendments,
       }
     })
 

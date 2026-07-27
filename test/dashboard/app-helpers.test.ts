@@ -949,8 +949,8 @@ describe('roleUsageBars', () => {
       'audit-model': { cost: 1, inputTokens: 50, outputTokens: 10, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 2 },
     },
     byRole: {
-      code: { cost: 2, messageCount: 6 },
-      auditor: { cost: 1, messageCount: 2 },
+      code: { cost: 2, inputTokens: 100, outputTokens: 20, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 6 },
+      auditor: { cost: 1, inputTokens: 50, outputTokens: 10, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 2 },
     },
   }
 
@@ -978,7 +978,7 @@ describe('roleUsageBars', () => {
       ...usage,
       byRole: {
         ...usage.byRole,
-        unknown: { cost: 0.5, messageCount: 1 },
+        unknown: { cost: 0.5, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 1 },
       },
     }
     const bars = roleUsageBars(extra)
@@ -1003,8 +1003,8 @@ describe('roleUsageBars', () => {
     const zero: NonNullable<DashboardLoop['usage']> = {
       ...usage,
       byRole: {
-        code: { cost: 0, messageCount: 0 },
-        auditor: { cost: 0, messageCount: 0 },
+        code: { cost: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 0 },
+        auditor: { cost: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 0 },
       },
     }
     const bars = roleUsageBars(zero)
@@ -1025,8 +1025,8 @@ describe('roleUsageBars', () => {
         'shared-model': { cost: 3, inputTokens: 150, outputTokens: 30, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 8 },
       },
       byRole: {
-        code: { cost: 2, messageCount: 6 },
-        auditor: { cost: 1, messageCount: 2 },
+        code: { cost: 2, inputTokens: 100, outputTokens: 20, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 6 },
+        auditor: { cost: 1, inputTokens: 50, outputTokens: 10, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 2 },
       },
     }
     const bars = roleUsageBars(sameModel)
@@ -1054,20 +1054,6 @@ describe('roleUsageBars', () => {
     // tokens field sums input + output + reasoning only.
     expect(exec.tokens).toBe(4000 + 2000 + 400)
     expect(audit.tokens).toBe(1000 + 500 + 100)
-  })
-
-  test('role bars report zero tokens for an aggregate whose byRole lacks token fields', () => {
-    // Aggregate persisted before token fields were tracked — only cost and
-    // messageCount present on byRole entries.
-    const legacy: NonNullable<DashboardLoop['usage']> = {
-      ...usage,
-      byRole: {
-        code: { cost: 2, messageCount: 6 } as any,
-        auditor: { cost: 1, messageCount: 2 } as any,
-      },
-    }
-    const bars = roleUsageBars(legacy)
-    expect(bars.every(b => b.tokens === 0)).toBe(true)
   })
 })
 

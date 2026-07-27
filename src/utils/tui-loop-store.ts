@@ -7,16 +7,11 @@
 
 import { Database } from 'bun:sqlite'
 import { existsSync } from 'fs'
-import { join } from 'path'
-import { resolveDataDir } from '../storage'
+import { resolveForgeDbPath } from '../storage'
 import { createLoopsRepo } from '../storage/repos/loops-repo'
 import { createPlansRepo } from '../storage/repos/plans-repo'
 import { createSectionPlansRepo } from '../storage/repos/section-plans-repo'
 import type { LoopInfo } from './tui-models'
-
-function getDbPath(): string {
-  return join(resolveDataDir(), 'forge.db')
-}
 
 /**
  * Opens the forge database read-only, runs `read`, and always closes the
@@ -24,7 +19,7 @@ function getDbPath(): string {
  * TUI renders whatever it can rather than surfacing a database error.
  */
 function withReadOnlyForgeDb<T>(dbPathOverride: string | undefined, fallback: T, read: (db: Database) => T): T {
-  const dbPath = dbPathOverride || getDbPath()
+  const dbPath = dbPathOverride || resolveForgeDbPath()
   if (!existsSync(dbPath)) return fallback
 
   let db: Database | null = null

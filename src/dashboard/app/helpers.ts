@@ -1,8 +1,14 @@
-import type { DashboardPayload, DashboardLoop, LoopTransitionRow } from './types'
+import type { DashboardPayload, DashboardProject, DashboardLoop, LoopTransitionRow } from './types'
 import { formatDuration, computeElapsedSeconds } from '../../utils/duration'
+import { slugifyText } from '../../utils/format'
+import { USAGE_ROLE_ORDER } from '../../loop/token-usage'
+import type { UsageRole } from '../../loop/token-usage'
 
 export type LoopTab = 'overview' | 'timeline' | 'sections' | 'findings' | 'plan' | 'usage'
 export type RepoSection = 'loops' | 'groups' | 'findings' | 'plans'
+
+/** Every loop tab, in render order. Also the set `parseDashboardHash` accepts. */
+export const ALL_TABS: readonly LoopTab[] = ['overview', 'timeline', 'sections', 'findings', 'plan', 'usage']
 
 export const MAX_RENDERED_LOOP_ROWS = 200
 export const MAX_RENDERED_FINDING_ROWS = 300
@@ -41,7 +47,7 @@ export interface DashboardRoute {
 }
 
 const SECTION_KEYWORDS: ReadonlySet<string> = new Set<RepoSection>(['loops', 'groups', 'findings', 'plans'])
-const LOOP_TABS: ReadonlySet<string> = new Set<LoopTab>(['overview', 'timeline', 'sections', 'findings', 'plan', 'usage'])
+const LOOP_TABS: ReadonlySet<string> = new Set<string>(ALL_TABS)
 
 function safeDecode(s: string): string {
   try {
@@ -258,6 +264,22 @@ export function dataHash(data: DashboardPayload): string {
   return JSON.stringify(data.projects)
 }
 
+/** The path a project is keyed by in the label map built by `buildRepoLabels`. */
+export function repoRawPath(proj: DashboardProject): string {
+  return proj.projectDir || proj.projectId || ''
+}
+
+/** Lookup contract for `buildRepoLabels`: the raw path is the fallback label. */
+export function repoLabel(labels: Map<string, string>, proj: DashboardProject): string {
+  const rawPath = repoRawPath(proj)
+  return labels.get(rawPath) ?? rawPath
+}
+
+/** Timestamp a loop last moved: completion when finished, otherwise its start. */
+export function loopActivityAt(loop: DashboardLoop['loop']): number {
+  return loop.completedAt || loop.startedAt || 0
+}
+
 export function buildRepoLabels(paths: string[]): Map<string, string> {
   const segsByPath = new Map<string, string[]>()
   for (const p of paths) {
@@ -439,24 +461,32 @@ interface RoleUsageBar {
 }
 
 /**
- * Cost/message split by loop role. The persisted vocabulary is
- * `code | auditor | unknown` (loop_session_usage.role); `code` is surfaced as
- * "execution" to match the `executionModel` label used elsewhere in the UI, and
- * anything else lands in "other" so the bars always reconcile with totalCost.
+ * Display label per persisted role. `code` is surfaced as "execution" to match
+ * the `executionModel` label used elsewhere in the UI, and `unknown` as "other".
+ */
+const ROLE_BAR_LABELS: Record<UsageRole, RoleUsageBar['role']> = {
+  code: 'execution',
+  auditor: 'auditor',
+  unknown: 'other',
+}
+
+/**
+ * Cost/message split by loop role, in `USAGE_ROLE_ORDER`. Attributed roles
+ * always get a bar so the split is comparable across loops; the unattributed
+ * "other" bar appears only when usage landed there, and then the bars still
+ * reconcile with totalCost.
  */
 export function roleUsageBars(u: NonNullable<DashboardLoop['usage']>): RoleUsageBar[] {
-  const exec: RoleUsageBar = { role: 'execution', cost: 0, messageCount: 0, tokens: 0, pct: 0 }
-  const audit: RoleUsageBar = { role: 'auditor', cost: 0, messageCount: 0, tokens: 0, pct: 0 }
-  const other: RoleUsageBar = { role: 'other', cost: 0, messageCount: 0, tokens: 0, pct: 0 }
-  for (const [role, agg] of Object.entries(u.byRole ?? {})) {
-    const bar = role === 'auditor' ? audit : role === 'code' ? exec : other
-    bar.cost += agg.cost
-    bar.messageCount += agg.messageCount
-    // Token fields may be absent on aggregates persisted before this field was
-    // tracked, or on hand-built fixtures; guard so the meta never renders NaN.
-    bar.tokens += (agg.inputTokens ?? 0) + (agg.outputTokens ?? 0) + (agg.reasoningTokens ?? 0)
-  }
-  const bars = other.cost > 0 || other.messageCount > 0 ? [exec, audit, other] : [exec, audit]
+  const all = USAGE_ROLE_ORDER.map(role => {
+    const bar: RoleUsageBar = { role: ROLE_BAR_LABELS[role], cost: 0, messageCount: 0, tokens: 0, pct: 0 }
+    const agg = u.byRole[role]
+    if (!agg) return bar
+    bar.cost = agg.cost
+    bar.messageCount = agg.messageCount
+    bar.tokens = agg.inputTokens + agg.outputTokens + agg.reasoningTokens
+    return bar
+  })
+  const bars = all.filter(b => b.role !== 'other' || b.cost > 0 || b.messageCount > 0)
   const max = bars.reduce((m, b) => Math.max(m, b.cost), 0)
   for (const bar of bars) bar.pct = max > 0 ? (bar.cost / max) * 100 : 0
   return bars
@@ -518,10 +548,8 @@ function stripHtml(html: string): string {
 }
 
 function slugifyHeading(htmlText: string): string {
-  const text = stripHtml(htmlText)
-    .toLowerCase()
-    .replace(/[^\w\s-]/g, '')
-    .replace(/[\s_-]+/g, '-')
+  const text = slugifyText(stripHtml(htmlText))
+    .replace(/[_-]+/g, '-')
     .replace(/^-+|-+$/g, '')
   return text || 'heading'
 }

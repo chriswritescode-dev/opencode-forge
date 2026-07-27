@@ -87,10 +87,7 @@ async function resolveBlockedLoopToolState(
 ): Promise<{ active?: boolean; loopName?: string; phase?: string } | null> {
   if (deps.resolveActiveLoopForSession) return deps.resolveActiveLoopForSession(sessionID)
 
-  const loopName = loop.service.resolveLoopName(sessionID)
-  const state = loopName ? loop.service.getActiveState(loopName) : null
-  if (state?.active && state.sessionId === sessionID) return state
-  return null
+  return loop.service.resolveActiveLoopForSession(sessionID)
 }
 
 function hashApprovalPlan(planText: string): string {

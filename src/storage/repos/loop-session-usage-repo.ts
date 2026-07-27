@@ -69,6 +69,47 @@ interface LoopSessionUsageRowRaw {
   captured_at: number
 }
 
+type UsageBucket = LoopUsageAggregate['byModel'][string]
+
+interface AggregateGroupRow {
+  role: string
+  model: string
+  cost: number
+  input_tokens: number
+  output_tokens: number
+  reasoning_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  message_count: number
+}
+
+function emptyUsageBucket(): UsageBucket {
+  return {
+    cost: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    messageCount: 0,
+  }
+}
+
+function accumulateUsageBucket<K extends string>(
+  buckets: Partial<Record<K, UsageBucket>>,
+  key: K,
+  row: AggregateGroupRow,
+): void {
+  const bucket = (buckets[key] ??= emptyUsageBucket())
+  bucket.cost += row.cost
+  bucket.inputTokens += row.input_tokens
+  bucket.outputTokens += row.output_tokens
+  bucket.reasoningTokens += row.reasoning_tokens
+  bucket.cacheReadTokens += row.cache_read_tokens
+  bucket.cacheWriteTokens += row.cache_write_tokens
+  bucket.messageCount += row.message_count
+}
+
 function mapRow(row: LoopSessionUsageRowRaw): LoopSessionUsageRow {
   return {
     projectId: row.project_id,
@@ -170,17 +211,7 @@ export function createLoopSessionUsageRepo(db: Database): LoopSessionUsageRepo {
     },
 
     getAggregate(projectId: string, loopName: string): LoopUsageAggregate | null {
-      const rows = getAggregateStmt.all(projectId, loopName) as Array<{
-        role: string
-        model: string
-        cost: number
-        input_tokens: number
-        output_tokens: number
-        reasoning_tokens: number
-        cache_read_tokens: number
-        cache_write_tokens: number
-        message_count: number
-      }>
+      const rows = getAggregateStmt.all(projectId, loopName) as AggregateGroupRow[]
 
       if (rows.length === 0) return null
 
@@ -206,40 +237,8 @@ export function createLoopSessionUsageRepo(db: Database): LoopSessionUsageRepo {
         aggregate.totalCacheWriteTokens += row.cache_write_tokens
         aggregate.totalMessageCount += row.message_count
 
-        const model = (aggregate.byModel[row.model] ??= {
-          cost: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          reasoningTokens: 0,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 0,
-          messageCount: 0,
-        })
-        model.cost += row.cost
-        model.inputTokens += row.input_tokens
-        model.outputTokens += row.output_tokens
-        model.reasoningTokens += row.reasoning_tokens
-        model.cacheReadTokens += row.cache_read_tokens
-        model.cacheWriteTokens += row.cache_write_tokens
-        model.messageCount += row.message_count
-
-        const roleKey = row.role as LoopSessionUsageRow['role']
-        const role = (aggregate.byRole[roleKey] ??= {
-          cost: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          reasoningTokens: 0,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 0,
-          messageCount: 0,
-        })
-        role.cost += row.cost
-        role.inputTokens += row.input_tokens
-        role.outputTokens += row.output_tokens
-        role.reasoningTokens += row.reasoning_tokens
-        role.cacheReadTokens += row.cache_read_tokens
-        role.cacheWriteTokens += row.cache_write_tokens
-        role.messageCount += row.message_count
+        accumulateUsageBucket(aggregate.byModel, row.model, row)
+        accumulateUsageBucket(aggregate.byRole, row.role as LoopSessionUsageRow['role'], row)
       }
 
       return aggregate

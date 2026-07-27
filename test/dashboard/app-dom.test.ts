@@ -64,13 +64,13 @@ function makeLoop(over: Record<string, any> = {}): any {
     ...dashLoop,
     hasPlan: over.hasPlan ?? !!dashLoop.plan,
     sectionCount: over.sectionCount ?? dashLoop.sections.length,
+    bugCount: over.bugCount ?? dashLoop.findings.filter((f: any) => f.severity === 'bug').length,
   }
 }
 
 function makePayload(over: Record<string, any> = {}): any {
   const loopOver = over.loop || {}
   const dashLoopOver = over.dashLoop || {}
-  const totalsOver = over.totals || {}
   // `loops` lets tests supply an explicit array (multi-loop scenarios);
   // otherwise the single-loop default applies. The project carries `id`
   // for keyed reconcile.
@@ -89,16 +89,6 @@ function makePayload(over: Record<string, any> = {}): any {
         groups,
       },
     ],
-    totals: {
-      projects: 1,
-      loops: 1,
-      running: 1,
-      completed: 0,
-      cancelled: 0,
-      errored: 0,
-      stalled: 0,
-      ...totalsOver,
-    },
   }
 }
 
@@ -227,7 +217,6 @@ describe('dashboard App fine-grained reactivity', () => {
     await poll(
       makePayload({
         loop: { status: 'completed', completedAt: 1700000500000 },
-        totals: { running: 0, completed: 1 },
       }),
     )
 
@@ -456,6 +445,9 @@ describe('dashboard App fine-grained reactivity', () => {
             'model-a': { cost: 1.0, inputTokens: 40, outputTokens: 20, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 3 },
             'model-b': { cost: 0.5, inputTokens: 10, outputTokens: 10, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 1 },
           },
+          byRole: {
+            code: { cost: 1.5, inputTokens: 50, outputTokens: 30, reasoningTokens: 10, cacheReadTokens: 8, cacheWriteTokens: 2, messageCount: 4 },
+          },
         },
       },
     })
@@ -505,6 +497,9 @@ describe('dashboard App fine-grained reactivity', () => {
           byModel: {
             'gpt-4': { cost: 0.3, inputTokens: 3000, outputTokens: 2000, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 4 },
             'gpt-3.5': { cost: 0.12, inputTokens: 2000, outputTokens: 1000, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 3 },
+          },
+          byRole: {
+            code: { cost: 0.42, inputTokens: 5000, outputTokens: 3000, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 7 },
           },
         },
       },
@@ -561,7 +556,7 @@ describe('dashboard App fine-grained reactivity', () => {
 
     expect(container.querySelector('.filter-bar')?.textContent).toContain('Running: 1')
 
-    await poll(makePayload({ loop: { status: 'completed' }, totals: { running: 0, completed: 1 } }))
+    await poll(makePayload({ loop: { status: 'completed' } }))
 
     expect(container.querySelector('.filter-bar')?.textContent).toContain('Running: 0')
     expect(container.querySelector('.filter-bar')?.textContent).toContain('Completed: 1')
@@ -948,7 +943,6 @@ describe('dashboard App machine graph', () => {
           },
         }),
       ],
-      totals: { loops: 2, running: 1, completed: 1 },
     })
     dispose = render(() => App() as unknown as Element, container)
     await flush()
@@ -988,7 +982,6 @@ describe('dashboard App machine graph', () => {
             },
           }),
         ],
-        totals: { loops: 2, running: 0, completed: 2 },
       }),
     )
 
@@ -1223,7 +1216,6 @@ describe('dashboard App three-level shell', () => {
     await poll(
       makePayload({
         loop: { status: 'completed', completedAt: 1700000500000 },
-        totals: { running: 0, completed: 1 },
       }),
     )
 
@@ -1269,15 +1261,6 @@ describe('dashboard App three-level shell', () => {
           ],
         },
       ],
-      totals: {
-        projects: 2,
-        loops: 2,
-        running: 1,
-        completed: 1,
-        cancelled: 0,
-        errored: 0,
-        stalled: 0,
-      },
     }
     window.location.hash = ''
     dispose = render(() => App() as unknown as Element, container)
@@ -1318,7 +1301,6 @@ describe('dashboard App three-level shell', () => {
           },
         }),
       ],
-      totals: { loops: 2, running: 1, completed: 1 },
     })
     window.location.hash = ''
     dispose = render(() => App() as unknown as Element, container)
@@ -1359,7 +1341,6 @@ describe('dashboard App three-level shell', () => {
             },
           }),
         ],
-        totals: { loops: 2, running: 0, completed: 2 },
       }),
     )
 
@@ -1396,7 +1377,6 @@ describe('dashboard App status filters and search', () => {
           ],
         },
       ],
-      totals: { projects: 1, loops: 2, running: 1, completed: 0, cancelled: 0, errored: 1, stalled: 0 },
     }
   }
 
@@ -1577,7 +1557,6 @@ describe('dashboard App status filters and search', () => {
           makeLoop({ loop: { loopName: 'loop-errored', status: 'errored', startedAt: 1700000100000 } }),
           makeLoop({ loop: { loopName: 'loop-completed', status: 'completed', startedAt: 1700000200000 } }),
         ],
-        totals: { projects: 1, loops: 3, running: 1, completed: 1, errored: 1 },
       }),
     )
 
@@ -1826,6 +1805,9 @@ describe('dashboard App loop detail tabs', () => {
           byModel: {
             'model-a': { cost: 1.0, inputTokens: 40, outputTokens: 20, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 3 },
           },
+          byRole: {
+            code: { cost: 1.5, inputTokens: 50, outputTokens: 30, reasoningTokens: 10, cacheReadTokens: 8, cacheWriteTokens: 2, messageCount: 4 },
+          },
         },
       },
     })
@@ -1857,6 +1839,9 @@ describe('dashboard App loop detail tabs', () => {
           totalMessageCount: 1,
           byModel: {
             'model-a': { cost: 0.4, inputTokens: 100, outputTokens: 50, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 1 },
+          },
+          byRole: {
+            code: { cost: 0.4, inputTokens: 100, outputTokens: 50, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 1 },
           },
         },
       },
@@ -1911,6 +1896,9 @@ describe('dashboard App loop detail tabs', () => {
           byModel: {
             'model-a': { cost: 0.4, inputTokens: 100, outputTokens: 50, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 1 },
           },
+          byRole: {
+            code: { cost: 0.4, inputTokens: 100, outputTokens: 50, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 1 },
+          },
         },
       },
     })
@@ -1922,7 +1910,6 @@ describe('dashboard App loop detail tabs', () => {
 
     await poll(makePayload({
       loop: { status: 'completed', completedAt: 1700000500000 },
-      totals: { running: 0, completed: 1 },
     }))
 
     expect(location.hash).toBe('#p1/loop/loop-a/usage')
@@ -1983,7 +1970,6 @@ describe('dashboard App loop detail tabs', () => {
           plan: 'PLAN B',
         }),
       ],
-      totals: { loops: 2, running: 2 },
     })
     dispose = render(() => App() as unknown as Element, container)
     await flush()
@@ -2023,7 +2009,6 @@ describe('dashboard App loop detail tabs', () => {
           plan: 'PLAN B',
         }),
       ],
-      totals: { loops: 2, running: 2 },
     })
     dispose = render(() => App() as unknown as Element, container)
     await flush()
@@ -2104,7 +2089,6 @@ describe('dashboard App scoped poll', () => {
         makeLoop({ loop: { loopName: 'loop-a', status: 'running', startedAt: 1700000000000 } }),
         makeLoop({ loop: { loopName: 'loop-b', status: 'running', startedAt: 1700000100000 } }),
       ],
-      totals: { loops: 2, running: 2 },
     })
     dispose = render(() => App() as unknown as Element, container)
     await flush()
@@ -2116,7 +2100,6 @@ describe('dashboard App scoped poll', () => {
         makeLoop({ loop: { loopName: 'loop-a', status: 'running', startedAt: 1700000000000 } }),
         makeLoop({ loop: { loopName: 'loop-b', status: 'running', startedAt: 1700000100000 }, plan: 'FRESH' }),
       ],
-      totals: { loops: 2, running: 2 },
     })
     // Stale payload (older): server scoped to loop-a; carries only loop-a.
     // If applied after the fresh payload, reconcile drops loop-b from the
@@ -2125,7 +2108,6 @@ describe('dashboard App scoped poll', () => {
       loops: [
         makeLoop({ loop: { loopName: 'loop-a', status: 'running', startedAt: 1700000000000 } }),
       ],
-      totals: { loops: 1, running: 1 },
     })
 
     const fetchMock = globalThis.fetch as any
@@ -2234,6 +2216,9 @@ describe('dashboard App scoped poll', () => {
           byModel: {
             'model-a': { cost: 0.4, inputTokens: 100, outputTokens: 50, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 1 },
           },
+          byRole: {
+            code: { cost: 0.4, inputTokens: 100, outputTokens: 50, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 1 },
+          },
         },
       },
     })
@@ -2267,7 +2252,6 @@ describe('dashboard App scoped poll', () => {
       loops: [
         makeLoop({ loop: { loopName: 'loop-a', status: 'running', startedAt: 1700000000000 } }),
       ],
-      totals: { loops: 1, running: 1 },
     })
     dispose = render(() => App() as unknown as Element, container)
     await flush()
@@ -2295,7 +2279,6 @@ describe('dashboard App scoped poll', () => {
         loops: [
           makeLoop({ loop: { loopName: 'loop-b', status: 'running', startedAt: 1700000000000 } }),
         ],
-        totals: { loops: 1, running: 1 },
       })
       p2.projects[0].id = 'p2'
       p2.projects[0].projectId = 'p2'
@@ -2307,12 +2290,8 @@ describe('dashboard App scoped poll', () => {
         loops: [
           makeLoop({ loop: { loopName: 'loop-a', status: 'running', startedAt: 1700000000000 } }),
         ],
-        totals: { loops: 1, running: 1 },
       })
       base.projects.push(p2.projects[0])
-      base.totals.projects = 2
-      base.totals.loops = 2
-      base.totals.running = 2
       return base
     }
     window.location.hash = '#p1/loop/loop-a'
@@ -2346,7 +2325,6 @@ describe('dashboard App breadcrumb loop picker', () => {
         makeLoop({ loop: { loopName: 'beta-loop', status: 'running', startedAt: 1700009000000, completedAt: null } }),
         makeLoop({ loop: { loopName: 'gamma-run', status: 'completed', startedAt: 1700003000000, completedAt: 1700004000000 } }),
       ],
-      totals: { loops: 3, running: 1, completed: 2 },
     })
   }
 
@@ -2652,8 +2630,8 @@ describe('dashboard App overview tab content', () => {
             'audit-m': { cost: 1, inputTokens: 20, outputTokens: 5, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 2 },
           },
           byRole: {
-            code: { cost: 2, messageCount: 6 },
-            auditor: { cost: 1, messageCount: 2 },
+            code: { cost: 2, inputTokens: 80, outputTokens: 15, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 6 },
+            auditor: { cost: 1, inputTokens: 20, outputTokens: 5, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 2 },
           },
         },
       },
@@ -2702,8 +2680,8 @@ describe('dashboard App overview tab content', () => {
             'shared-m': { cost: 3, inputTokens: 100, outputTokens: 20, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 8 },
           },
           byRole: {
-            code: { cost: 2, messageCount: 6 },
-            auditor: { cost: 1, messageCount: 2 },
+            code: { cost: 2, inputTokens: 80, outputTokens: 15, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 6 },
+            auditor: { cost: 1, inputTokens: 20, outputTokens: 5, reasoningTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, messageCount: 2 },
           },
         },
       },
@@ -3975,7 +3953,6 @@ describe('dashboard App render-stable node identity', () => {
         makeLoop({ loop: { loopName: 'loop-a', status: 'running', startedAt: 1700000000000 } }),
         makeLoop({ loop: { loopName: 'loop-b', status: 'running', startedAt: 1700000100000 } }),
       ],
-      totals: { loops: 2, running: 2, completed: 0, cancelled: 0, errored: 0, stalled: 0 },
     })
   }
 
@@ -4036,7 +4013,6 @@ describe('dashboard App render-stable node identity', () => {
         makeLoop({ loop: { loopName: 'beta-loop', status: 'running', startedAt: 1700009000000, completedAt: null } }),
         makeLoop({ loop: { loopName: 'gamma-run', status: 'completed', startedAt: 1700003000000, completedAt: 1700004000000 } }),
       ],
-      totals: { loops: 3, running: 1, completed: 2 },
     })
     dispose = render(() => App() as unknown as Element, container)
     await flush()
@@ -4059,7 +4035,6 @@ describe('dashboard App render-stable node identity', () => {
         makeLoop({ loop: { loopName: 'alpha', status: 'running', startedAt: 1700005000000, completedAt: null } }),
         makeLoop({ loop: { loopName: 'gamma', status: 'running', startedAt: 1700001000000, completedAt: null } }),
       ],
-      totals: { loops: 3, running: 3 },
     })
     window.location.hash = '#p1/loop/alpha'
     payload = initial
@@ -4081,7 +4056,6 @@ describe('dashboard App render-stable node identity', () => {
         makeLoop({ loop: { loopName: 'alpha', status: 'running', startedAt: 1700005000000, completedAt: null } }),
         makeLoop({ loop: { loopName: 'beta', status: 'running', startedAt: 1700000500000, completedAt: null } }),
       ],
-      totals: { loops: 3, running: 3 },
     }))
 
     expect(container.querySelector('.loopnav-prev')).toBe(prevBefore)
@@ -4121,7 +4095,6 @@ describe('dashboard App bounded list caps', () => {
     }
     return makePayload({
       loops,
-      totals: { loops: MAX_RENDERED_LOOP_ROWS + 5, running: MAX_RENDERED_LOOP_ROWS + 5 },
     })
   }
 
@@ -4210,7 +4183,6 @@ describe('dashboard App bounded list caps', () => {
     }
     payload = makePayload({
       loops,
-      totals: { loops: MAX_RENDERED_PICKER_OPTIONS + 20, running: MAX_RENDERED_PICKER_OPTIONS + 20 },
     })
     dispose = render(() => App() as unknown as Element, container)
     await flush()
@@ -4241,7 +4213,6 @@ describe('dashboard App bounded list caps', () => {
       loops: [
         makeLoop({ loop: { loopName: 'loop-0', status: 'running', startedAt: ts, completedAt: null } }),
       ],
-      totals: { loops: 1, running: 1 },
     })
     dispose = render(() => App() as unknown as Element, container)
     await flush()

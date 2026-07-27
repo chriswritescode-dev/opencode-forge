@@ -212,6 +212,19 @@ ${body}
     expect(row!.content).toBe('pre-existing content')
   })
 
+  test('from a session whose loop already completed writes normally', async () => {
+    insertRunningLoop(loopsRepo, 'done-loop', 'sess-1')
+    loopsRepo.setStatus('test-project', 'done-loop', 'completed')
+
+    const result = await tools['plan-write'].execute(
+      { content: '# after the loop\n' },
+      { sessionID: 'sess-1', directory: TEST_DIR } as any,
+    )
+
+    expect(result).not.toContain('Cannot modify the plan')
+    expect(plansRepo.getForSession('test-project', 'sess-1')!.content).toBe('# after the loop')
+  })
+
   test('unbalanced plan marker performs no write and returns failure message', async () => {
     const content = `<!-- forge-plan:start -->
 # Plan

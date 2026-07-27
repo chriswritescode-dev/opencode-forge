@@ -1,8 +1,7 @@
 import { Database } from 'bun:sqlite'
 import { existsSync } from 'fs'
-import { join } from 'path'
 import { platform } from 'os'
-import { resolveDataDir } from '../storage/database'
+import { resolveForgeDbPath } from '../storage/database'
 import { createRequestHandler } from './server'
 
 export interface DashboardServerHandle {
@@ -14,16 +13,18 @@ export interface DashboardServerHandle {
 export interface StartDashboardOptions {
   port?: number
   dbPath?: string
+  /** `PluginConfig.dataDir`, used when no explicit `dbPath`/`FORGE_DB` is given. */
+  dataDir?: string
   maxAttempts?: number
 }
 
 const DEFAULT_PORT = 4747
 const DEFAULT_MAX_ATTEMPTS = 10
 
-export function resolveDashboardDbPath(explicit?: string): string {
+export function resolveDashboardDbPath(explicit?: string, configuredDataDir?: string): string {
   if (explicit) return explicit
   if (process.env.FORGE_DB) return process.env.FORGE_DB
-  return join(resolveDataDir(), 'forge.db')
+  return resolveForgeDbPath(configuredDataDir)
 }
 
 function isAddrInUse(err: unknown): boolean {
@@ -39,7 +40,7 @@ function isAddrInUse(err: unknown): boolean {
  * `stop` releases both.
  */
 export function startDashboardServer(options: StartDashboardOptions = {}): DashboardServerHandle {
-  const dbPath = resolveDashboardDbPath(options.dbPath)
+  const dbPath = resolveDashboardDbPath(options.dbPath, options.dataDir)
   if (!existsSync(dbPath)) {
     throw new Error(
       `Forge database not found at ${dbPath}. Run a loop first or pass a database path.`
