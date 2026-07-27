@@ -54,7 +54,7 @@ Arguments:
 
 ### `plan-edit`
 
-Edits the stored session plan by exact string replacement, the same way the Edit tool edits a file. Use `plan-read` to inspect the current text first; do not include `plan-read`'s `N: ` line-number prefixes in `oldString`. Subject to the same availability and running-loop guard as `plan-write`. On success the tool rewrites the plan through the shared session-scoped write path and returns a `Replaced N occurrence(s).` line followed by a structure report.
+Edits the stored session plan by exact string replacement, the same way the Edit tool edits a file. Use `plan-read` to inspect the current text first; do not include `plan-read`'s `N:` line-number prefixes (with trailing space) in `oldString`. Subject to the same availability and running-loop guard as `plan-write`. On success the tool rewrites the plan through the shared session-scoped write path and returns a `Replaced N occurrence(s).` line followed by a structure report.
 
 Arguments:
 

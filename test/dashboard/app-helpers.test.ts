@@ -464,13 +464,21 @@ describe('loopMatchesFilters', () => {
 describe('sortLoops', () => {
   function makeDash(over: Partial<DashboardLoop> = {}): DashboardLoop {
     return {
+      id: 'test-id',
       loop: mockLoopRow(),
       lastAuditResult: null,
+      postActionReport: null,
+      goal: null,
       plan: null,
+      hasPlan: false,
       sections: [],
+      sectionCount: 0,
       findings: [],
+      bugCount: 0,
       usage: null,
       duration: null,
+      transitions: [],
+      amendments: [],
       ...over,
     }
   }

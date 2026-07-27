@@ -27,6 +27,8 @@ Excluded tools:
 - `multiedit`
 - `plan`
 - `plan_exit`
+- `plan-write`
+- `plan-edit`
 - `execute-plan`
 - `execute-goal`
 - `loop-cancel`

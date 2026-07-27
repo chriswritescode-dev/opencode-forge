@@ -36,9 +36,11 @@ const UNSTYLED_BY_DESIGN = new Set([
   'loop-picker-input',
   'lt-findings',
   'markdown-section',
+  'mg-edge', // SVG group wrapper for edge path + label
   'overview-tab',
   'plan-tab',
   'repo-loop-pane',
+  'section-drill', // container for section drill-down view
   'tab-bodies',
   'timeline-tab',
   'usage-tab',
@@ -74,9 +76,10 @@ describe('renderDashboardHtml', () => {
   })
 
   test('every static class the app emits has a rule in the stylesheet', () => {
-    const style = renderDashboardHtml().slice(0, renderDashboardHtml().indexOf('</style>'))
+    const html = renderDashboardHtml()
+    const style = html.slice(0, html.indexOf('</style>'))
     const unstyled = staticAppClassNames().filter(
-      cls => !UNSTYLED_BY_DESIGN.has(cls) && !style.includes('.' + cls),
+      cls => !UNSTYLED_BY_DESIGN.has(cls) && !style.match(new RegExp(`\\.${cls}(?![\\w-])`)),
     )
 
     expect(unstyled).toEqual([])
