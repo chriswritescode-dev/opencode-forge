@@ -86,6 +86,8 @@ describe('createConfigHandler', () => {
 
       expect(Object.keys(codePermission).sort()).toEqual([
         'plan',
+        'plan-edit',
+        'plan-write',
         'plan_enter',
         'plan_exit',
         'question',
@@ -136,7 +138,7 @@ describe('createConfigHandler', () => {
       const permission = code.permission as Record<string, string>
 
       expect(permission).toBeDefined()
-      for (const tool of ['review-write', 'review-delete', 'plan', 'plan_enter', 'plan_exit']) {
+      for (const tool of ['review-write', 'review-delete', 'plan', 'plan_enter', 'plan_exit', 'plan-write', 'plan-edit']) {
         expect(permission[tool]).toBe('deny')
       }
       expect(permission.loop).toBeUndefined()
@@ -235,7 +237,7 @@ describe('createConfigHandler', () => {
       expect(permission.bash).toBe('ask')
       expect(wildcardIndex).toBeGreaterThanOrEqual(0)
 
-      for (const tool of ['review-write', 'review-delete', 'plan', 'plan_enter', 'plan_exit']) {
+      for (const tool of ['review-write', 'review-delete', 'plan', 'plan_enter', 'plan_exit', 'plan-write', 'plan-edit']) {
         expect(permission[tool]).toBe('deny')
         expect(keys.indexOf(tool)).toBeGreaterThan(wildcardIndex)
       }

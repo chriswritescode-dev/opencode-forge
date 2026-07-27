@@ -132,7 +132,7 @@ Loop usage is captured across rotated code and auditor sessions so `loop-status`
 - `loop-status <name>` merges persisted rows with the currently live session output while avoiding double-counting the active session.
 - When no loops are active, `loop-status` can still show cumulative usage for completed loops that have persisted usage data.
 
-Tracked token buckets are input, output, reasoning, cache read, and cache write, plus cost and assistant message count.
+Tracked token buckets are input, output, reasoning, cache read, and cache write, plus cost and assistant message count. Totals are reported three ways: overall, per model, and per role (`code`, `auditor`, `unknown`) derived from the `role` column, so execution and audit spend can be compared for the same loop.
 
 ## Stall Detection
 
@@ -217,11 +217,11 @@ In user-facing language, a plan is decomposed into **milestones** — ordered un
 - `<!-- forge-section -->` markers in the architect plan output
 - `section-read` tool reads the current or specified milestone
 
-Decomposition is a one-shot preprocessing step at loop start (`services/deterministic-decomposer.ts`), not a runtime loop phase. Once milestones exist, the loop advances through them via `advance-section` transitions inside the `auditing` phase. When the `final_auditing` phase reports outstanding bug findings, the loop rotates to a coding session in the persisted `final_audit_fix` phase — the code agent fixes the reported findings without rewinding to a specific section, and on idle the loop transitions straight back to `final_auditing` for re-verification. A loop stopped mid-fix restarts as a coding pass that re-sends the final-audit fix prompt (rebuilt from the persisted `lastAuditResult`).
+Decomposition is a one-shot preprocessing step at loop start (`services/deterministic-decomposer.ts`), not a runtime loop phase. A plan is capped at `MAX_TOTAL_SECTIONS` (24) executed milestones; markers past the cap are dropped rather than merged, so the tail of an over-long plan is not executed. The same constant caps `plan-adjust` amendments, so a plan can never grow past it mid-loop. Once milestones exist, the loop advances through them via `advance-section` transitions inside the `auditing` phase. When the `final_auditing` phase reports outstanding bug findings, the loop rotates to a coding session in the persisted `final_audit_fix` phase — the code agent fixes the reported findings without rewinding to a specific section, and on idle the loop transitions straight back to `final_auditing` for re-verification. A loop stopped mid-fix restarts as a coding pass that re-sends the final-audit fix prompt (rebuilt from the persisted `lastAuditResult`).
 
 ### Plan Amendments
 
-After decomposition, the *remaining* (not yet started) milestones can still be amended mid-loop: during a section audit, the auditor may call the `plan-adjust` tool to replace the pending section suffix when completed work makes the remaining sections unable to achieve the plan objective as written. The objective and verification criteria are immutable, completed/current sections cannot be changed, goal loops are excluded, and the resulting total is capped at 24 sections. Every amendment is recorded in the `plan_amendments` table with before/after snapshots and a rationale. If an amendment appends sections while the loop is already in `final_auditing`, the loop reverts to `auditing` to execute them.
+After decomposition, the plan can still be amended mid-loop: during a section audit, the auditor may call the `plan-adjust` tool to revise the section currently under audit (`currentSection`, edited in place with its progress preserved) and/or replace the pending section suffix (`sections`) when completed work makes the plan unable to achieve its objective as written. The objective and verification criteria are immutable, already-completed sections cannot be changed, goal loops are excluded, and the resulting total is capped at 24 sections. Every amendment is recorded in the `plan_amendments` table with before/after snapshots and a rationale. If an amendment appends sections while the loop is already in `final_auditing`, the loop reverts to `auditing` to execute them.
 
 ### Transition Log
 

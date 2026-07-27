@@ -84,6 +84,7 @@ function buildToolContext(opts: {
       service: {
         resolveLoopName: () => null,
         getActiveState: () => null,
+        resolveActiveLoopForSession: () => null,
       },
       generateUniqueLoopName: (name: string) => `${name}-unique`,
     },

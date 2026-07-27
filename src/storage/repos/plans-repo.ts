@@ -23,6 +23,8 @@ export interface PlansRepo {
   deleteForLoop(projectId: string, loopName: string): void
   listRecent(projectId: string, opts?: ListRecentPlansOptions): PlanRow[]
   searchRecent(projectId: string, pattern: RegExp, opts?: ListRecentPlansOptions): PlanRow[]
+  /** Loop names in this project that have a persisted plan row. Session-scoped plans (loop_name IS NULL) are excluded. */
+  listLoopNames(projectId: string): string[]
 }
 
 export function createPlansRepo(db: Database): PlansRepo {
@@ -82,6 +84,12 @@ export function createPlansRepo(db: Database): PlansRepo {
     WHERE project_id = ?
     ORDER BY updated_at DESC
     LIMIT ?
+  `)
+
+  const stmtListLoopNames = db.prepare(`
+    SELECT loop_name
+    FROM plans
+    WHERE project_id = ? AND loop_name IS NOT NULL
   `)
 
   function writeForSession(projectId: string, sessionId: string, content: string): void {
@@ -146,6 +154,10 @@ export function createPlansRepo(db: Database): PlansRepo {
     return results
   }
 
+  function listLoopNames(projectId: string): string[] {
+    return (stmtListLoopNames.all(projectId) as { loop_name: string }[]).map(r => r.loop_name)
+  }
+
   return {
     writeForSession,
     writeForLoop,
@@ -157,5 +169,6 @@ export function createPlansRepo(db: Database): PlansRepo {
     deleteForLoop,
     listRecent,
     searchRecent,
+    listLoopNames,
   }
 }

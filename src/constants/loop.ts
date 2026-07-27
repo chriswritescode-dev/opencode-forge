@@ -3,6 +3,18 @@ import type { PluginConfig } from '../types'
 
 export type PermissionRule = { permission: string; pattern: string; action: 'allow' | 'deny' }
 
+/** Maximum number of plan sections a loop may execute. Shared by the
+ *  deterministic decomposer, section bootstrap, the TUI inline-plan preview,
+ *  and the plan-adjust cap so all four agree. */
+export const MAX_TOTAL_SECTIONS = 24
+
+/**
+ * Tools that author the session-scoped plan of record. Only the architect may
+ * call them, so every agent tool-exclude list and permission ruleset denies
+ * this one list rather than repeating the names.
+ */
+export const PLAN_AUTHORING_TOOL_NAMES = ['plan-write', 'plan-edit'] as const
+
 /**
  * Resolves the full set of external directories loop/audit sessions may access: the shared temp
  * directory (always, default `/tmp/oc-forge`) plus any user-configured `loop.allowExternalDirectories`.
@@ -35,6 +47,11 @@ export interface LoopPermissionRulesetOptions {
  * layered on top. Both are added AFTER the blanket `external_directory` deny so last-match-wins
  * resolution grants access to these paths while all others stay denied.
  */
+/** Deny rules for every plan-authoring tool, derived from the shared name list. */
+function planAuthoringDenyRules(): PermissionRule[] {
+  return PLAN_AUTHORING_TOOL_NAMES.map((permission) => ({ permission, pattern: '*', action: 'deny' as const }))
+}
+
 function buildExternalDirectoryAllowRules(allowDirectories: string[] = []): PermissionRule[] {
   const rules: PermissionRule[] = []
   const dirs = [resolveOpencodeToolOutputDir(), ...allowDirectories]
@@ -83,6 +100,7 @@ export function buildLoopPermissionRuleset(options: LoopPermissionRulesetOptions
     { permission: 'plan',          pattern: '*', action: 'deny' },
     { permission: 'plan_enter',    pattern: '*', action: 'deny' },
     { permission: 'plan_exit',     pattern: '*', action: 'deny' },
+    ...planAuthoringDenyRules(),
     { permission: 'execute-plan',  pattern: '*', action: 'deny' },
     { permission: 'execute-goal',  pattern: '*', action: 'deny' },
     { permission: 'question',      pattern: '*', action: 'deny' },
@@ -128,6 +146,7 @@ export function buildAuditSessionPermissionRuleset(options: LoopPermissionRulese
     { permission: 'plan',          pattern: '*', action: 'deny' },
     { permission: 'plan_enter',    pattern: '*', action: 'deny' },
     { permission: 'plan_exit',     pattern: '*', action: 'deny' },
+    ...planAuthoringDenyRules(),
     { permission: 'execute-plan',  pattern: '*', action: 'deny' },
     { permission: 'execute-goal',  pattern: '*', action: 'deny' },
     { permission: 'question',      pattern: '*', action: 'deny' },

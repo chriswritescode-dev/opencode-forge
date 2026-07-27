@@ -320,6 +320,7 @@ describe('Plan Approval Tool Interception', () => {
         service: {
           resolveLoopName: () => 'test-loop',
           getActiveState: () => null,
+          resolveActiveLoopForSession: () => null,
         },
       },
       logger: createMockLogger(),
@@ -401,6 +402,7 @@ describe('Plan Approval Tool Interception', () => {
         service: {
           resolveLoopName: () => 'test-loop',
           getActiveState: () => null,
+          resolveActiveLoopForSession: () => null,
         },
       },
       logger: createMockLogger(),
@@ -482,6 +484,7 @@ describe('Plan Approval Tool Interception', () => {
         service: {
           resolveLoopName: () => 'test-loop',
           getActiveState: () => null,
+          resolveActiveLoopForSession: () => null,
         },
       },
       logger: createMockLogger(),
@@ -562,6 +565,7 @@ describe('Plan Approval Tool Interception', () => {
         service: {
           resolveLoopName: () => 'test-loop',
           getActiveState: () => null,
+          resolveActiveLoopForSession: () => null,
         },
       },
       logger: createMockLogger(),
@@ -644,6 +648,7 @@ describe('Plan Approval Tool Interception', () => {
         service: {
           resolveLoopName: () => 'test-loop',
           getActiveState: () => null,
+          resolveActiveLoopForSession: () => null,
         },
       },
       logger: createMockLogger(),
@@ -725,6 +730,7 @@ describe('Plan Approval Tool Interception', () => {
         service: {
           resolveLoopName: () => 'test-loop',
           getActiveState: () => null,
+          resolveActiveLoopForSession: () => null,
         },
       },
       logger: createMockLogger(),
@@ -989,6 +995,8 @@ describe('Tool blocking hook', () => {
         service: {
           resolveLoopName: () => state ? loopName : null,
           getActiveState: () => state,
+          resolveActiveLoopForSession: (sid: string) =>
+            state?.active && state.sessionId === sid ? { ...state, loopName } : null,
         },
       },
       logger: createMockLogger(),
@@ -2359,6 +2367,7 @@ describe('Fire-and-forget dispatch behavior', () => {
         service: {
           resolveLoopName: () => 'test-loop',
           getActiveState: () => null,
+          resolveActiveLoopForSession: () => null,
         },
       },
       logger: createMockLogger(),
@@ -2444,6 +2453,7 @@ describe('Fire-and-forget dispatch behavior', () => {
         service: {
           resolveLoopName: () => 'test-loop',
           getActiveState: () => null,
+          resolveActiveLoopForSession: () => null,
         },
       },
       logger: {

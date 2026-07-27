@@ -300,6 +300,23 @@ describe('ReviewFindingsRepo', () => {
     expect(repo.listAll(projectId)).toHaveLength(2)
   })
 
+  test('bugCountsByLoop counts only bugs, per loop, scoped to the project', () => {
+    repo.write({ projectId, file: 'src/a.ts', line: 1, severity: 'bug', description: 'b1', loopName: 'alpha' })
+    repo.write({ projectId, file: 'src/a.ts', line: 2, severity: 'bug', description: 'b2', loopName: 'alpha' })
+    repo.write({ projectId, file: 'src/a.ts', line: 3, severity: 'warning', description: 'w1', loopName: 'alpha' })
+    repo.write({ projectId, file: 'src/b.ts', line: 1, severity: 'warning', description: 'w2', loopName: 'beta' })
+    repo.write({ projectId, file: 'src/c.ts', line: 1, severity: 'bug', description: 'b3', loopName: null })
+    repo.write({ projectId: 'other-project', file: 'src/a.ts', line: 1, severity: 'bug', description: 'b4', loopName: 'alpha' })
+
+    const counts = repo.bugCountsByLoop(projectId)
+    expect(counts.get('alpha')).toBe(2)
+    // A warning-only loop has no entry, and a loopless finding keys on ''.
+    expect(counts.has('beta')).toBe(false)
+    expect(counts.get('')).toBe(1)
+    expect(repo.bugCountsByLoop('other-project').get('alpha')).toBe(1)
+    expect(repo.bugCountsByLoop('nope').size).toBe(0)
+  })
+
   test('delete with null sectionIndex removes sentinel rows', () => {
     repo.write({
       projectId,

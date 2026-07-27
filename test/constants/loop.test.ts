@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories } from '../../src/constants/loop'
+import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories, MAX_TOTAL_SECTIONS, PLAN_AUTHORING_TOOL_NAMES } from '../../src/constants/loop'
 import { resolveOpencodeToolOutputDir, DEFAULT_FORGE_TMP_DIR } from '../../src/utils/opencode-paths'
 
 const TOOL_OUTPUT_DIR = resolveOpencodeToolOutputDir()
@@ -7,6 +7,18 @@ const TOOL_OUTPUT_ALLOW_RULES = [
   { permission: 'external_directory', pattern: TOOL_OUTPUT_DIR, action: 'allow' as const },
   { permission: 'external_directory', pattern: `${TOOL_OUTPUT_DIR}/**`, action: 'allow' as const },
 ]
+
+describe('MAX_TOTAL_SECTIONS', () => {
+  it('is the single canonical section cap', () => {
+    expect(MAX_TOTAL_SECTIONS).toBe(24)
+  })
+})
+
+describe('PLAN_AUTHORING_TOOL_NAMES', () => {
+  it('is the single list of plan-authoring tools every deny path derives from', () => {
+    expect(PLAN_AUTHORING_TOOL_NAMES).toEqual(['plan-write', 'plan-edit'])
+  })
+})
 
 describe('buildLoopPermissionRuleset', () => {
   it('emits the full loop ruleset in order (no shell-specific rules)', () => {
@@ -20,6 +32,8 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'plan', pattern: '*', action: 'deny' },
       { permission: 'plan_enter', pattern: '*', action: 'deny' },
       { permission: 'plan_exit', pattern: '*', action: 'deny' },
+      { permission: 'plan-write', pattern: '*', action: 'deny' },
+      { permission: 'plan-edit', pattern: '*', action: 'deny' },
       { permission: 'execute-plan', pattern: '*', action: 'deny' },
       { permission: 'execute-goal', pattern: '*', action: 'deny' },
       { permission: 'question', pattern: '*', action: 'deny' },

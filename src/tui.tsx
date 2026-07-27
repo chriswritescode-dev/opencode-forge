@@ -3,6 +3,7 @@ import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from '@opencode-ai/plug
 import { createEffect, createMemo, createSignal, Show, untrack } from 'solid-js'
 import { VERSION } from './version'
 import { loadPluginConfig, resolveBundledContainerDir } from './setup'
+import { resolveForgeDbPath } from './storage'
 import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
 import { createExecutionContextCache } from './utils/tui-execution-context-cache'
 import type { PluginConfig } from './types'
@@ -253,6 +254,10 @@ const tui: TuiPlugin = async (api) => {
   const pluginConfig = loadPluginConfig()
   const tuiConfig = pluginConfig.tui
   const directory = api.state.path.directory
+  // Every TUI reader of the forge database resolves it here so a configured
+  // `dataDir` cannot leave the dashboard and the execute-plan dialog pointed at
+  // different databases.
+  const forgeDbPath = resolveForgeDbPath(pluginConfig.dataDir)
   const opts: TuiOptions = {
     sidebar: tuiConfig?.sidebar ?? true,
     showVersion: tuiConfig?.showVersion ?? true,
@@ -271,7 +276,7 @@ const tui: TuiPlugin = async (api) => {
   const runOpenDashboard = () => {
     if (!dashboardServer) {
       try {
-        dashboardServer = startDashboardServer()
+        dashboardServer = startDashboardServer({ dbPath: forgeDbPath })
       } catch (err) {
         api.ui.toast({
           message: err instanceof Error ? err.message : 'Failed to start dashboard',
@@ -374,7 +379,7 @@ const tui: TuiPlugin = async (api) => {
     if (connectPromise) return connectPromise
 
     setConnectionStatus('connecting')
-    connectPromise = connectForgeProject(api, directory, resolveLoopAllowedDirectories(pluginConfig)).then((connected) => untrack(() => {
+    connectPromise = connectForgeProject(api, directory, resolveLoopAllowedDirectories(pluginConfig), forgeDbPath).then((connected) => untrack(() => {
       connectPromise = null
       if (disposed) return connected
 

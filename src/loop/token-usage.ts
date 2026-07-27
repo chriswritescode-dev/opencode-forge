@@ -20,17 +20,36 @@ export interface ModelUsage {
   messageCount: number
 }
 
+/** Loop-session role vocabulary persisted in `loop_session_usage.role`. */
+export type UsageRole = 'code' | 'auditor' | 'unknown'
+
+/**
+ * Deterministic render order for role splits: execution first, then audit, then
+ * unattributed.
+ */
+export const USAGE_ROLE_ORDER: readonly UsageRole[] = ['code', 'auditor', 'unknown']
+
+/** Usage aggregated per loop role, mirroring `ModelUsage`'s shape. */
+export interface RoleUsage {
+  role: UsageRole
+  cost: number
+  tokens: TokenBreakdown
+  messageCount: number
+}
+
 /** Summary of loop usage, optionally attributed to a role */
 export interface LoopUsageSummary {
   totalCost: number
   totalTokens: TokenBreakdown
   perModel: ModelUsage[]
+  /** Per-role split. Optional so hand-built summaries in existing tests stay valid; producers always populate it. */
+  perRole?: RoleUsage[]
   attribution?: UsageAttribution
 }
 
 /** Attribution metadata for usage */
 export interface UsageAttribution {
-  role: 'code' | 'auditor' | 'unknown'
+  role: UsageRole
   fallbackModel?: string
 }
 
@@ -82,6 +101,47 @@ export function addTokens(a: TokenBreakdown, b: TokenBreakdown): TokenBreakdown 
     cacheRead: a.cacheRead + b.cacheRead,
     cacheWrite: a.cacheWrite + b.cacheWrite,
   }
+}
+
+/** The cost/tokens/messageCount triple shared by per-model and per-role groups. */
+interface UsageTotals {
+  cost: number
+  tokens: TokenBreakdown
+  messageCount: number
+}
+
+/** Sum a usage entry into a keyed group, copying tokens on first insert. */
+function accumulateUsage<K>(map: Map<K, UsageTotals>, key: K, entry: UsageTotals): void {
+  const existing = map.get(key)
+  if (existing) {
+    existing.cost += entry.cost
+    existing.tokens = addTokens(existing.tokens, entry.tokens)
+    existing.messageCount += entry.messageCount
+  } else {
+    map.set(key, { cost: entry.cost, tokens: { ...entry.tokens }, messageCount: entry.messageCount })
+  }
+}
+
+/** Convert a model-keyed group to a model-sorted array for deterministic output. */
+function sortedModelUsage(map: Map<string, UsageTotals>): ModelUsage[] {
+  return Array.from(map.entries())
+    .map(([model, data]) => ({ model, cost: data.cost, tokens: data.tokens, messageCount: data.messageCount }))
+    .sort((a, b) => a.model.localeCompare(b.model))
+}
+
+/**
+ * Merge per-role usage groups, summing cost/tokens/messageCount per role and
+ * returning entries in `USAGE_ROLE_ORDER`, omitting absent roles. Tolerates
+ * `undefined` inputs so callers can spread `summary.perRole` unconditionally.
+ */
+export function mergeRoleUsage(...groups: (RoleUsage[] | undefined)[]): RoleUsage[] {
+  const map = new Map<UsageRole, UsageTotals>()
+  for (const group of groups) {
+    for (const entry of group ?? []) {
+      accumulateUsage(map, entry.role, entry)
+    }
+  }
+  return USAGE_ROLE_ORDER.filter(r => map.has(r)).map(r => ({ role: r, ...map.get(r)! }))
 }
 
 /** Default model label when no metadata or fallback is available */
@@ -176,7 +236,7 @@ export function summarizeAssistantUsage(
   }[],
   attribution?: UsageAttribution,
 ): LoopUsageSummary {
-  const modelMap = new Map<string, { cost: number; tokens: TokenBreakdown; messageCount: number }>()
+  const modelMap = new Map<string, UsageTotals>()
   let totalCost = 0
   let totalTokens = emptyTokenBreakdown()
 
@@ -190,25 +250,21 @@ export function summarizeAssistantUsage(
     totalCost += cost
     totalTokens = addTokens(totalTokens, tokens)
 
-    const existing = modelMap.get(model)
-    if (existing) {
-      existing.cost += cost
-      existing.tokens = addTokens(existing.tokens, tokens)
-      existing.messageCount += 1
-    } else {
-      modelMap.set(model, { cost, tokens: { ...tokens }, messageCount: 1 })
-    }
+    accumulateUsage(modelMap, model, { cost, tokens, messageCount: 1 })
   }
-
-  // Convert map to sorted array for deterministic output
-  const perModel: ModelUsage[] = Array.from(modelMap.entries())
-    .map(([model, data]) => ({ model, cost: data.cost, tokens: data.tokens, messageCount: data.messageCount }))
-    .sort((a, b) => a.model.localeCompare(b.model))
 
   return {
     totalCost,
     totalTokens,
-    perModel,
+    perModel: sortedModelUsage(modelMap),
+    perRole: attribution
+      ? [{
+          role: attribution.role,
+          cost: totalCost,
+          tokens: { ...totalTokens },
+          messageCount: assistantMessages.length,
+        }]
+      : [],
     attribution,
   }
 }
@@ -223,10 +279,11 @@ export function mergeUsageSummaries(...summaries: LoopUsageSummary[]): LoopUsage
       totalCost: 0,
       totalTokens: emptyTokenBreakdown(),
       perModel: [],
+      perRole: [],
     }
   }
 
-  const modelMap = new Map<string, { cost: number; tokens: TokenBreakdown; messageCount: number }>()
+  const modelMap = new Map<string, UsageTotals>()
   let totalCost = 0
   let totalTokens = emptyTokenBreakdown()
   let attribution: UsageAttribution | undefined
@@ -240,26 +297,15 @@ export function mergeUsageSummaries(...summaries: LoopUsageSummary[]): LoopUsage
     }
 
     for (const modelUsage of summary.perModel) {
-      const existing = modelMap.get(modelUsage.model)
-      if (existing) {
-        existing.cost += modelUsage.cost
-        existing.tokens = addTokens(existing.tokens, modelUsage.tokens)
-        existing.messageCount += modelUsage.messageCount
-      } else {
-        modelMap.set(modelUsage.model, { cost: modelUsage.cost, tokens: { ...modelUsage.tokens }, messageCount: modelUsage.messageCount })
-      }
+      accumulateUsage(modelMap, modelUsage.model, modelUsage)
     }
   }
-
-  // Convert map to sorted array for deterministic output
-  const perModel: ModelUsage[] = Array.from(modelMap.entries())
-    .map(([model, data]) => ({ model, cost: data.cost, tokens: data.tokens, messageCount: data.messageCount }))
-    .sort((a, b) => a.model.localeCompare(b.model))
 
   return {
     totalCost,
     totalTokens,
-    perModel,
+    perModel: sortedModelUsage(modelMap),
+    perRole: mergeRoleUsage(...summaries.map(s => s.perRole)),
     attribution,
   }
 }

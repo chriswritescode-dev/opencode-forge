@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { startDashboardServer } from '../src/dashboard/launch'
+import { loadPluginConfig } from '../src/setup'
 
 interface Args {
   port?: number
@@ -29,7 +30,11 @@ function main(): void {
   const args = parseArgs(process.argv)
 
   try {
-    const handle = startDashboardServer({ port: args.port, dbPath: args.dbPath })
+    const handle = startDashboardServer({
+      port: args.port,
+      dbPath: args.dbPath,
+      dataDir: loadPluginConfig().dataDir,
+    })
     console.log(`Forge dashboard running: ${handle.url}`)
     const shutdown = () => {
       handle.stop()

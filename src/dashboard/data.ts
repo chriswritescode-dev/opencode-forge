@@ -7,6 +7,7 @@ import {
   createLoopSessionUsageRepo,
   createLoopTransitionsRepo,
   createPlanAmendmentsRepo,
+  createFeatureGroupsRepo,
 } from '../storage'
 import type { LoopRow } from '../storage'
 import type { SectionPlanRow } from '../storage'
@@ -14,9 +15,18 @@ import type { ReviewFindingRow } from '../storage'
 import type { LoopUsageAggregate } from '../storage'
 import type { LoopTransitionRow } from '../storage'
 import type { PlanAmendmentRow } from '../storage'
+import type { FeatureGroupRow, GroupFeatureRow } from '../storage'
 import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
 
 export type { LoopRow, LoopTransitionRow }
+
+const PRD_PREVIEW_MAX = 400
+
+export interface DashboardGroup {
+  id: string
+  group: Omit<FeatureGroupRow, 'prdText'> & { prdPreview: string | null }
+  features: GroupFeatureRow[]
+}
 
 export interface DashboardLoop {
   /** Stable identity for keyed store reconciliation (unique within a project's loop set). */
@@ -24,9 +34,18 @@ export interface DashboardLoop {
   loop: LoopRow
   lastAuditResult: string | null
   postActionReport: string | null
+  goal: string | null
   plan: string | null
+  /** Whether a plan row exists. Always populated; `plan` content ships only for the scoped loop. */
+  hasPlan: boolean
   sections: SectionPlanRow[]
+  /** Number of section-plan rows. Always populated; `sections` rows ship only for the scoped loop. */
+  sectionCount: number
+  /** Full findings rows; ship only for the scoped project. */
   findings: ReviewFindingRow[]
+  /** Number of bug-severity findings. Always populated; `findings` rows ship only for the scoped project. */
+  bugCount: number
+  /** Token/cost aggregate; ships only for the scoped project. */
   usage: LoopUsageAggregate | null
   duration: string | null
   transitions: LoopTransitionRow[]
@@ -39,23 +58,26 @@ export interface DashboardProject {
   projectId: string
   projectDir: string | null
   loops: DashboardLoop[]
-}
-
-export interface DashboardTotals {
-  projects: number
-  loops: number
-  running: number
-  completed: number
-  cancelled: number
-  errored: number
-  stalled: number
+  groups: DashboardGroup[]
 }
 
 export interface DashboardPayload {
   generatedAt: number
   projects: DashboardProject[]
-  totals: DashboardTotals
 }
+
+/**
+ * The client's current view. Large per-loop text is only materialised for the
+ * scoped loop, and per-loop transitions only for the scoped project, because
+ * nothing else renders them. Both fields null means the repo-index view, which
+ * reads none of the scoped fields.
+ */
+export interface DashboardScope {
+  projectId: string | null
+  loopName: string | null
+}
+
+const UNSCOPED: DashboardScope = { projectId: null, loopName: null }
 
 /** Check whether *tbl* exists on this database. */
 function hasTable(database: Database, tbl: string): boolean {
@@ -75,6 +97,7 @@ interface DashboardRepos {
   loopSessionUsageRepo: ReturnType<typeof createLoopSessionUsageRepo>
   loopTransitionsRepo: ReturnType<typeof createLoopTransitionsRepo> | null
   amendmentsRepo: ReturnType<typeof createPlanAmendmentsRepo> | null
+  featureGroupsRepo: ReturnType<typeof createFeatureGroupsRepo> | null
 }
 
 // The dashboard poll handler calls collectDashboardData every 5s per open tab;
@@ -95,6 +118,7 @@ function reposFor(db: Database): DashboardRepos {
       // Detect availability so the dashboard serves 200 with empty collections instead of failing.
       loopTransitionsRepo: hasTable(db, 'loop_transitions') ? createLoopTransitionsRepo(db) : null,
       amendmentsRepo: hasTable(db, 'plan_amendments') ? createPlanAmendmentsRepo(db) : null,
+      featureGroupsRepo: hasTable(db, 'feature_groups') ? createFeatureGroupsRepo(db) : null,
     }
     repoCache.set(db, repos)
   }
@@ -115,24 +139,26 @@ function projectAmendmentSections(json: string): string {
   }
 }
 
-export function collectDashboardData(db: Database): DashboardPayload {
-  const { loopsRepo, plansRepo, reviewFindingsRepo, sectionPlansRepo, loopSessionUsageRepo, loopTransitionsRepo, amendmentsRepo } = reposFor(db)
+export function collectDashboardData(db: Database, scope: DashboardScope = UNSCOPED): DashboardPayload {
+  const { loopsRepo, plansRepo, reviewFindingsRepo, sectionPlansRepo, loopSessionUsageRepo, loopTransitionsRepo, amendmentsRepo, featureGroupsRepo } = reposFor(db)
 
-  const projectIdRows = db.prepare(
+  const loopProjectIds = db.prepare(
     'SELECT DISTINCT project_id FROM loops ORDER BY project_id'
   ).all() as { project_id: string }[]
 
-  const projectIds = projectIdRows.map(r => r.project_id)
+  // A project may have a feature group persisted before any feature loop launches
+  // (group is in `extracting` or `planning`). Discover projects from the union of
+  // loop projects and feature-group projects so group-only projects still appear.
+  const groupProjectIds = featureGroupsRepo
+    ? (db.prepare(
+        'SELECT DISTINCT project_id FROM feature_groups ORDER BY project_id'
+      ).all() as { project_id: string }[])
+    : []
+
+  const projectIds = Array.from(
+    new Set([...loopProjectIds.map(r => r.project_id), ...groupProjectIds.map(r => r.project_id)])
+  ).sort()
   const projects: DashboardProject[] = []
-  const totals: DashboardTotals = {
-    projects: 0,
-    loops: 0,
-    running: 0,
-    completed: 0,
-    cancelled: 0,
-    errored: 0,
-    stalled: 0,
-  }
 
   for (const projectId of projectIds) {
     const loopRows = loopsRepo.listAll(projectId)
@@ -149,42 +175,76 @@ export function collectDashboardData(db: Database): DashboardPayload {
       return b.startedAt - a.startedAt
     })
 
+    const inScopedProject = scope.projectId !== null && projectId === scope.projectId
+    const planLoopNames = new Set(plansRepo.listLoopNames(projectId))
+    const sectionCounts = sectionPlansRepo.countsByLoop(projectId)
+    const bugCounts = reviewFindingsRepo.bugCountsByLoop(projectId)
+    const transitionsByLoop = inScopedProject && loopTransitionsRepo
+      ? loopTransitionsRepo.listForProject(projectId, 100)
+      : null
+
     const dashboardLoops: DashboardLoop[] = sortedLoops.map(loop => {
       const loopName = loop.loopName
-      const large = loopsRepo.getLarge(projectId, loopName)
+      const isScopedLoop = inScopedProject && loopName === scope.loopName
+
+      const large = isScopedLoop ? loopsRepo.getLarge(projectId, loopName) : null
       const lastAuditResult = large?.lastAuditResult ?? null
       const postActionReport = large?.postActionReport ?? null
-      const plan = plansRepo.getForLoop(projectId, loopName)?.content ?? null
-      const sections = sectionPlansRepo.list(projectId, loopName)
-      const findings = reviewFindingsRepo.listByLoopName(projectId, loopName)
-      const usage = loopSessionUsageRepo.getAggregate(projectId, loopName)
-      const transitions = loopTransitionsRepo ? loopTransitionsRepo.listForLoop(projectId, loopName, 100) : []
-      const amendments = amendmentsRepo
+      const goal = large?.goal ?? null
+
+      const hasPlan = planLoopNames.has(loopName)
+      const plan = isScopedLoop ? (plansRepo.getForLoop(projectId, loopName)?.content ?? null) : null
+
+      const sectionCount = sectionCounts.get(loopName) ?? 0
+      const sections = isScopedLoop ? sectionPlansRepo.list(projectId, loopName) : []
+
+      const bugCount = bugCounts.get(loopName) ?? 0
+      const findings = inScopedProject ? reviewFindingsRepo.listByLoopName(projectId, loopName) : []
+      const usage = inScopedProject ? loopSessionUsageRepo.getAggregate(projectId, loopName) : null
+
+      const transitions = transitionsByLoop?.get(loopName) ?? []
+
+      const amendments = isScopedLoop && amendmentsRepo
         ? amendmentsRepo.listForLoop(projectId, loopName).map((a) => ({
             ...a,
             sectionsBefore: projectAmendmentSections(a.sectionsBefore),
             sectionsAfter: projectAmendmentSections(a.sectionsAfter),
           }))
         : []
+
       const elapsedSeconds = computeElapsedSeconds(loop.startedAt, loop.completedAt ?? undefined)
       const duration = elapsedSeconds > 0 ? formatDuration(elapsedSeconds) : null
 
-      return { id: loopName, loop, lastAuditResult, postActionReport, plan, sections, findings, usage, duration, transitions, amendments }
+      const loopRow: LoopRow = isScopedLoop
+        ? loop
+        : { ...loop, completionSummary: null }
+
+      return {
+        id: loopName, loop: loopRow, lastAuditResult, postActionReport, goal,
+        plan, hasPlan, sections, sectionCount,
+        findings, bugCount, usage, duration, transitions, amendments,
+      }
     })
 
-    projects.push({ id: projectId, projectId, projectDir, loops: dashboardLoops })
-
-    // Accumulate totals
-    totals.projects = projectIds.length
-    totals.loops += sortedLoops.length
-    for (const loop of sortedLoops) {
-      totals[loop.status]++
+    let groups: DashboardGroup[] = []
+    if (featureGroupsRepo) {
+      // One features query per project, not one per group.
+      const featuresByGroup = featureGroupsRepo.listFeaturesByGroup(projectId)
+      groups = featureGroupsRepo.listGroups(projectId).map(g => {
+        const { prdText, ...rest } = g
+        return {
+          id: g.groupId,
+          group: { ...rest, prdPreview: prdText ? prdText.slice(0, PRD_PREVIEW_MAX) : null },
+          features: featuresByGroup.get(g.groupId) ?? [],
+        }
+      })
     }
+
+    projects.push({ id: projectId, projectId, projectDir, loops: dashboardLoops, groups })
   }
 
   return {
     generatedAt: Date.now(),
     projects,
-    totals,
   }
 }

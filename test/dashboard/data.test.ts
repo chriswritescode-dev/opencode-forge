@@ -1,12 +1,15 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { openForgeDatabase, closeDatabase } from '../../src/storage/database'
-import { collectDashboardData, type DashboardPayload } from '../../src/dashboard/data'
+import { collectDashboardData, type DashboardPayload, type DashboardScope } from '../../src/dashboard/data'
 import { createLoopsRepo, type LoopRow } from '../../src/storage'
 import { createPlansRepo } from '../../src/storage'
 import { createReviewFindingsRepo } from '../../src/storage'
 import { createSectionPlansRepo } from '../../src/storage'
 import { createLoopSessionUsageRepo, type LoopSessionUsageRow } from '../../src/storage'
+import { createLoopTransitionsRepo } from '../../src/storage'
+import { createPlanAmendmentsRepo } from '../../src/storage'
+import { createFeatureGroupsRepo } from '../../src/storage'
 
 function makeLoopRow(overrides?: Partial<LoopRow>): LoopRow {
   return {
@@ -71,17 +74,10 @@ describe('collectDashboardData', () => {
 
   // ─── Cycle 1: empty DB ──────────────────────────────────────────────
 
-  test('empty DB returns empty projects and zero totals', () => {
+  test('empty DB returns empty projects', () => {
     const payload = collectDashboardData(db!)
 
     expect(payload.projects).toEqual([])
-    expect(payload.totals.projects).toBe(0)
-    expect(payload.totals.loops).toBe(0)
-    expect(payload.totals.running).toBe(0)
-    expect(payload.totals.completed).toBe(0)
-    expect(payload.totals.cancelled).toBe(0)
-    expect(payload.totals.errored).toBe(0)
-    expect(payload.totals.stalled).toBe(0)
     expect(payload.generatedAt).toBeGreaterThan(0)
   })
 
@@ -147,7 +143,7 @@ describe('collectDashboardData', () => {
       capturedAt: Date.now(),
     })
 
-    const payload = collectDashboardData(db!)
+    const payload = collectDashboardData(db!, { projectId, loopName })
 
     expect(payload.projects).toHaveLength(1)
     expect(payload.projects[0].projectId).toBe(projectId)
@@ -163,10 +159,20 @@ describe('collectDashboardData', () => {
     expect(dashLoop.findings).toHaveLength(1)
     expect(dashLoop.usage).not.toBeNull()
     expect(dashLoop.usage!.totalCost).toBe(0.005)
+    expect(dashLoop.usage!.byRole.code).toEqual({
+      cost: 0.005,
+      inputTokens: 2000,
+      outputTokens: 1000,
+      reasoningTokens: 200,
+      cacheReadTokens: 300,
+      cacheWriteTokens: 400,
+      messageCount: 10,
+    })
+    expect(dashLoop.usage!.byRole.auditor).toBeUndefined()
 
-    expect(payload.totals.projects).toBe(1)
-    expect(payload.totals.loops).toBe(1)
-    expect(payload.totals.running).toBe(1)
+    expect(payload.projects).toHaveLength(1)
+    expect(payload.projects[0].loops).toHaveLength(1)
+    expect(payload.projects[0].loops[0].loop.status).toBe('running')
   })
 
   test('computes a human-readable duration from started/completed timestamps', () => {
@@ -187,6 +193,26 @@ describe('collectDashboardData', () => {
     const payload = collectDashboardData(db!)
 
     expect(payload.projects[0].loops[0].duration).toBe('2m 5s')
+  })
+
+  test('a loop with goal in loop_large_fields exposes goal on the dashboard loop', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'goal-loop', kind: 'goal' }),
+      { lastAuditResult: null, goal: 'Ship the tabs refactor' },
+    )
+    const payload = collectDashboardData(db!, { projectId: 'p1', loopName: 'goal-loop' })
+    expect(payload.projects[0].loops[0].goal).toBe('Ship the tabs refactor')
+  })
+
+  test('a loop with no large-fields goal exposes goal as null', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'no-goal' }),
+      { lastAuditResult: null, goal: null },
+    )
+    const payload = collectDashboardData(db!, { projectId: 'p1', loopName: 'no-goal' })
+    expect(payload.projects[0].loops[0].goal).toBeNull()
   })
 
   // ─── Cycle 3: running-first ordering ────────────────────────────────
@@ -292,7 +318,7 @@ describe('collectDashboardData', () => {
 
   // ─── Cycle 4: multiple projects with mixed statuses ─────────────────
 
-  test('aggregates totals across multiple projects with mixed statuses', () => {
+  test('groups loops under their project across multiple projects with mixed statuses', () => {
     const loopsRepo = createLoopsRepo(db!)
 
     // Project A: 1 running, 1 completed
@@ -356,12 +382,443 @@ describe('collectDashboardData', () => {
     const payload = collectDashboardData(db!)
 
     expect(payload.projects).toHaveLength(2)
-    expect(payload.totals.projects).toBe(2)
-    expect(payload.totals.loops).toBe(5)
-    expect(payload.totals.running).toBe(1)
-    expect(payload.totals.completed).toBe(1)
-    expect(payload.totals.cancelled).toBe(1)
-    expect(payload.totals.errored).toBe(1)
-    expect(payload.totals.stalled).toBe(1)
+    expect(payload.projects.map(p => p.projectId)).toEqual(['project-a', 'project-b'])
+    const statusesByProject = payload.projects.map(p => p.loops.map(dl => dl.loop.status).sort())
+    expect(statusesByProject).toEqual([
+      ['completed', 'running'],
+      ['cancelled', 'errored', 'stalled'],
+    ])
+  })
+
+  // ─── Cycle 5: feature groups ──────────────────────────────────────────
+
+  test('a project with no groups exposes groups: []', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'l1' }),
+      { lastAuditResult: null },
+    )
+    const payload = collectDashboardData(db!)
+    expect(payload.projects).toHaveLength(1)
+    expect(payload.projects[0].groups).toEqual([])
+  })
+
+  test('a group with three features exposes them ordered by featureIndex', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    const groupsRepo = createFeatureGroupsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'l1' }),
+      { lastAuditResult: null },
+    )
+    groupsRepo.createGroup({
+      projectId: 'p1',
+      groupId: 'g-1',
+      title: 'Group One',
+      status: 'running',
+      maxConcurrent: 2,
+    })
+    // Insert features with explicit feature_index values whose physical INSERT
+    // (rowid) order differs from feature_index order. A regression that drops
+    // ORDER BY feature_index ASC would return rows in rowid order instead.
+    const ts = Date.now()
+    const insertFeature = db!.prepare(`
+      INSERT INTO group_features (
+        project_id, group_id, feature_index, title, description, stage,
+        architect_session_id, loop_name, error, attempts, created_at, updated_at
+      ) VALUES ('p1', 'g-1', ?, ?, ?, 'pending', NULL, NULL, NULL, 0, ?, ?)
+    `)
+    insertFeature.run(2, 'Feature C', 'c', ts, ts)
+    insertFeature.run(0, 'Feature A', 'a', ts, ts)
+    insertFeature.run(1, 'Feature B', 'b', ts, ts)
+
+    const payload = collectDashboardData(db!)
+    expect(payload.projects[0].groups).toHaveLength(1)
+    const g = payload.projects[0].groups[0]
+    expect(g.id).toBe('g-1')
+    expect(g.group.groupId).toBe('g-1')
+    expect(g.group.title).toBe('Group One')
+    expect(g.group.maxConcurrent).toBe(2)
+    expect(g.features.map(f => f.featureIndex)).toEqual([0, 1, 2])
+    expect(g.features.map(f => f.title)).toEqual(['Feature A', 'Feature B', 'Feature C'])
+  })
+
+  test('prdText longer than 400 chars is exposed as a 400-char prdPreview and raw prdText is absent', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    const groupsRepo = createFeatureGroupsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'l1' }),
+      { lastAuditResult: null },
+    )
+    const longPrd = 'P'.repeat(1000)
+    groupsRepo.createGroup({
+      projectId: 'p1',
+      groupId: 'g-1',
+      title: 'Group One',
+      status: 'running',
+      prdText: longPrd,
+    })
+
+    const payload = collectDashboardData(db!)
+    const g = payload.projects[0].groups[0]
+    expect((g.group as Record<string, unknown>).prdText).toBeUndefined()
+    expect(g.group.prdPreview).toHaveLength(400)
+    expect(g.group.prdPreview).toBe('P'.repeat(400))
+  })
+
+  test('a database without the feature_groups table returns groups: [] and does not throw', () => {
+    // Build a database with only the loops + minimum tables by dropping
+    // feature_groups; relies on hasTable() gating the repo construction.
+    const loopsRepo = createLoopsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'l1' }),
+      { lastAuditResult: null },
+    )
+    db!.exec('DROP TABLE group_features')
+    db!.exec('DROP TABLE feature_groups')
+
+    expect(() => collectDashboardData(db!)).not.toThrow()
+    const payload = collectDashboardData(db!)
+    expect(payload.projects[0].groups).toEqual([])
+  })
+
+  test('a project containing only a feature group appears with loops: [] and populated groups', () => {
+    const groupsRepo = createFeatureGroupsRepo(db!)
+    groupsRepo.createGroup({
+      projectId: 'p1',
+      groupId: 'g-1',
+      title: 'Group One',
+      status: 'extracting',
+      maxConcurrent: 2,
+    })
+    groupsRepo.insertFeatures('p1', 'g-1', [
+      { title: 'Feature A', description: 'a' },
+    ])
+
+    const payload = collectDashboardData(db!)
+    expect(payload.projects).toHaveLength(1)
+    const proj = payload.projects[0]
+    expect(proj.projectId).toBe('p1')
+    expect(proj.loops).toEqual([])
+    expect(proj.groups).toHaveLength(1)
+    expect(proj.groups[0].group.groupId).toBe('g-1')
+    expect(proj.groups[0].features).toHaveLength(1)
+  })
+
+  test('groups from another project_id do not leak into this project', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    const groupsRepo = createFeatureGroupsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'l1' }),
+      { lastAuditResult: null },
+    )
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p2', loopName: 'l2' }),
+      { lastAuditResult: null },
+    )
+    groupsRepo.createGroup({
+      projectId: 'p2',
+      groupId: 'g-other',
+      title: 'Other Project Group',
+      status: 'running',
+    })
+
+    const payload = collectDashboardData(db!)
+    const p1 = payload.projects.find(p => p.projectId === 'p1')!
+    const p2 = payload.projects.find(p => p.projectId === 'p2')!
+    expect(p1.groups).toEqual([])
+    expect(p2.groups).toHaveLength(1)
+    expect(p2.groups[0].group.groupId).toBe('g-other')
+  })
+
+  // ─── Cycle 9: query-scoped payload (Phase 1) ──────────────────────────
+
+  test('unscoped payload reports hasPlan but omits plan content', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    const plansRepo = createPlansRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'loop-a' }),
+      { lastAuditResult: null },
+    )
+    plansRepo.writeForLoop('p1', 'loop-a', 'plan-content-1')
+
+    const payload = collectDashboardData(db!)
+    const dl = payload.projects[0].loops[0]
+    expect(dl.plan).toBeNull()
+    expect(dl.hasPlan).toBe(true)
+  })
+
+  test('scoping to a loop returns that loop\'s plan content', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    const plansRepo = createPlansRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'loop-a' }),
+      { lastAuditResult: null },
+    )
+    plansRepo.writeForLoop('p1', 'loop-a', 'plan-content-1')
+
+    const payload = collectDashboardData(db!, { projectId: 'p1', loopName: 'loop-a' })
+    const dl = payload.projects[0].loops[0]
+    expect(dl.plan).toBe('plan-content-1')
+    expect(dl.hasPlan).toBe(true)
+  })
+
+  test('a sibling loop in the scoped project reports hasPlan without content', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    const plansRepo = createPlansRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'loop-a' }),
+      { lastAuditResult: null },
+    )
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'loop-b', currentSessionId: 'session-b' }),
+      { lastAuditResult: null },
+    )
+    plansRepo.writeForLoop('p1', 'loop-a', 'plan-content-a')
+    plansRepo.writeForLoop('p1', 'loop-b', 'plan-content-b')
+
+    const scope: DashboardScope = { projectId: 'p1', loopName: 'loop-a' }
+    const payload = collectDashboardData(db!, scope)
+    const loops = payload.projects[0].loops
+    const a = loops.find(l => l.loop.loopName === 'loop-a')!
+    const b = loops.find(l => l.loop.loopName === 'loop-b')!
+    expect(a.plan).toBe('plan-content-a')
+    expect(a.hasPlan).toBe(true)
+    expect(b.plan).toBeNull()
+    expect(b.hasPlan).toBe(true)
+  })
+
+  test('sectionCount is populated while sections is empty when unscoped', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    const sectionsRepo = createSectionPlansRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'loop-a' }),
+      { lastAuditResult: null },
+    )
+    sectionsRepo.bulkInsert({
+      projectId: 'p1',
+      loopName: 'loop-a',
+      sections: [
+        { index: 0, title: 'Section A', content: 'Content A' },
+        { index: 1, title: 'Section B', content: 'Content B' },
+      ],
+    })
+
+    const unscoped = collectDashboardData(db!)
+    const unscopedDl = unscoped.projects[0].loops[0]
+    expect(unscopedDl.sections).toHaveLength(0)
+    expect(unscopedDl.sectionCount).toBe(2)
+
+    const scoped = collectDashboardData(db!, { projectId: 'p1', loopName: 'loop-a' })
+    const scopedDl = scoped.projects[0].loops[0]
+    expect(scopedDl.sections).toHaveLength(2)
+    expect(scopedDl.sectionCount).toBe(2)
+    expect(scopedDl.sections.map(s => s.title)).toEqual(['Section A', 'Section B'])
+  })
+
+  test('goal, lastAuditResult and postActionReport are null unless the loop is scoped', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'loop-a', kind: 'goal' }),
+      { lastAuditResult: 'audit-x', postActionReport: 'report-x', goal: 'goal-x' },
+    )
+
+    const unscoped = collectDashboardData(db!)
+    const unscopedDl = unscoped.projects[0].loops[0]
+    expect(unscopedDl.goal).toBeNull()
+    expect(unscopedDl.lastAuditResult).toBeNull()
+    expect(unscopedDl.postActionReport).toBeNull()
+
+    const scoped = collectDashboardData(db!, { projectId: 'p1', loopName: 'loop-a' })
+    const scopedDl = scoped.projects[0].loops[0]
+    expect(scopedDl.goal).toBe('goal-x')
+    expect(scopedDl.lastAuditResult).toBe('audit-x')
+    expect(scopedDl.postActionReport).toBe('report-x')
+  })
+
+  test('completionSummary is null unless the loop is scoped', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({
+        projectId: 'p1',
+        loopName: 'loop-a',
+        status: 'completed',
+        completedAt: 1700000500000,
+        completionSummary: 'COMPLETION BODY',
+      }),
+      { lastAuditResult: null },
+    )
+    loopsRepo.insert(
+      makeLoopRow({
+        projectId: 'p1',
+        loopName: 'loop-b',
+        currentSessionId: 'session-b',
+        status: 'completed',
+        completedAt: 1700000500000,
+        completionSummary: 'SIBLING BODY',
+      }),
+      { lastAuditResult: null },
+    )
+
+    const unscoped = collectDashboardData(db!)
+    expect(unscoped.projects[0].loops[0].loop.completionSummary).toBeNull()
+    expect(unscoped.projects[0].loops[1].loop.completionSummary).toBeNull()
+
+    const scopedSibling = collectDashboardData(db!, { projectId: 'p1', loopName: 'loop-b' })
+    const scopedSiblingLoops = scopedSibling.projects[0].loops
+    const siblingB = scopedSiblingLoops.find(dl => dl.id === 'loop-b')!
+    const siblingA = scopedSiblingLoops.find(dl => dl.id === 'loop-a')!
+    expect(siblingB.loop.completionSummary).toBe('SIBLING BODY')
+    expect(siblingA.loop.completionSummary).toBeNull()
+
+    const scoped = collectDashboardData(db!, { projectId: 'p1', loopName: 'loop-a' })
+    const scopedA = scoped.projects[0].loops.find(dl => dl.id === 'loop-a')!
+    expect(scopedA.loop.completionSummary).toBe('COMPLETION BODY')
+  })
+
+  test('amendments ship only for the scoped loop', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    const amendmentsRepo = createPlanAmendmentsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'loop-a' }),
+      { lastAuditResult: null },
+    )
+    amendmentsRepo.insert({
+      projectId: 'p1',
+      loopName: 'loop-a',
+      source: 'auditor',
+      rationale: 'trim sections',
+      appliedAtSection: 1,
+      sectionsBefore: JSON.stringify([{ index: 1, title: 'Old', content: 'c-old' }]),
+      sectionsAfter: JSON.stringify([{ index: 1, title: 'New', content: 'c-new' }]),
+    })
+
+    const unscoped = collectDashboardData(db!)
+    expect(unscoped.projects[0].loops[0].amendments).toEqual([])
+
+    const scoped = collectDashboardData(db!, { projectId: 'p1', loopName: 'loop-a' })
+    const scopedDl = scoped.projects[0].loops[0]
+    expect(scopedDl.amendments).toHaveLength(1)
+    expect(scopedDl.amendments[0].rationale).toBe('trim sections')
+    expect(scopedDl.amendments[0].sectionsBefore).toBe(JSON.stringify([{ index: 1, title: 'Old' }]))
+    expect(scopedDl.amendments[0].sectionsAfter).toBe(JSON.stringify([{ index: 1, title: 'New' }]))
+  })
+
+  test('transitions ship for every loop in the scoped project and none outside it', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    const transitionsRepo = createLoopTransitionsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'loop-a' }),
+      { lastAuditResult: null },
+    )
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'loop-c', currentSessionId: 'session-c' }),
+      { lastAuditResult: null },
+    )
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p2', loopName: 'loop-b', currentSessionId: 'session-b' }),
+      { lastAuditResult: null },
+    )
+    for (const [pid, ln] of [['p1', 'loop-a'], ['p1', 'loop-c'], ['p2', 'loop-b']] as const) {
+      transitionsRepo.insert({
+        projectId: pid,
+        loopName: ln,
+        eventType: 'phase-change',
+        transitionKind: 'next',
+        fromPhase: 'coding',
+        toPhase: 'audit',
+        status: null,
+        reason: 'done',
+        iteration: 1,
+        sectionIndex: null,
+      })
+    }
+
+    const unscoped = collectDashboardData(db!)
+    expect(unscoped.projects.find(p => p.projectId === 'p1')!.loops.find(l => l.id === 'loop-a')!.transitions).toEqual([])
+    expect(unscoped.projects.find(p => p.projectId === 'p1')!.loops.find(l => l.id === 'loop-c')!.transitions).toEqual([])
+    expect(unscoped.projects.find(p => p.projectId === 'p2')!.loops[0].transitions).toEqual([])
+
+    const scoped = collectDashboardData(db!, { projectId: 'p1', loopName: 'loop-a' })
+    const p1 = scoped.projects.find(p => p.projectId === 'p1')!
+    expect(p1.loops.find(l => l.id === 'loop-a')!.transitions).toHaveLength(1)
+    expect(p1.loops.find(l => l.id === 'loop-c')!.transitions).toHaveLength(1)
+    expect(scoped.projects.find(p => p.projectId === 'p2')!.loops[0].transitions).toEqual([])
+  })
+
+  test('bugCount is always populated while findings rows and usage ship only for the scoped project', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    const findingsRepo = createReviewFindingsRepo(db!)
+    const usageRepo = createLoopSessionUsageRepo(db!)
+    const loops = [['p1', 'loop-a'], ['p1', 'loop-c'], ['p2', 'loop-b']] as const
+    for (const [pid, ln] of loops) {
+      loopsRepo.insert(
+        makeLoopRow({ projectId: pid, loopName: ln, currentSessionId: `session-${ln}` }),
+        { lastAuditResult: null },
+      )
+      findingsRepo.write({ projectId: pid, loopName: ln, file: 'src/main.ts', line: 10, severity: 'bug', description: 'b' })
+      findingsRepo.write({ projectId: pid, loopName: ln, file: 'src/main.ts', line: 20, severity: 'warning', description: 'w' })
+      usageRepo.upsertSessionUsage({
+        projectId: pid,
+        loopName: ln,
+        sessionId: `session-${ln}`,
+        role: 'code',
+        model: 'claude-sonnet-4-20250514',
+        cost: 0.01,
+        inputTokens: 100,
+        outputTokens: 50,
+        reasoningTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        messageCount: 3,
+        capturedAt: Date.now(),
+      })
+    }
+
+    const unscoped = collectDashboardData(db!)
+    for (const project of unscoped.projects) {
+      for (const dl of project.loops) {
+        expect(dl.findings).toEqual([])
+        expect(dl.usage).toBeNull()
+        expect(dl.bugCount).toBe(1)
+      }
+    }
+
+    const scoped = collectDashboardData(db!, { projectId: 'p1', loopName: 'loop-a' })
+    // Every loop of the scoped project ships rows, not just the scoped loop.
+    for (const dl of scoped.projects.find(p => p.projectId === 'p1')!.loops) {
+      expect(dl.findings).toHaveLength(2)
+      expect(dl.bugCount).toBe(1)
+      expect(dl.usage!.totalCost).toBe(0.01)
+    }
+
+    const outOfScope = scoped.projects.find(p => p.projectId === 'p2')!.loops[0]
+    expect(outOfScope.findings).toEqual([])
+    expect(outOfScope.usage).toBeNull()
+    expect(outOfScope.bugCount).toBe(1)
+  })
+
+  test('a scope naming a project that does not exist behaves like no scope', () => {
+    const loopsRepo = createLoopsRepo(db!)
+    const plansRepo = createPlansRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'loop-a' }),
+      { lastAuditResult: 'audit-x', postActionReport: 'report-x', goal: 'goal-x' },
+    )
+    plansRepo.writeForLoop('p1', 'loop-a', 'plan-content-a')
+
+    const scope: DashboardScope = { projectId: 'nope', loopName: 'nope' }
+    const payload = collectDashboardData(db!, scope)
+    expect(payload.projects).toHaveLength(1)
+    const dl = payload.projects[0].loops[0]
+    expect(dl.plan).toBeNull()
+    expect(dl.hasPlan).toBe(true)
+    expect(dl.goal).toBeNull()
+    expect(dl.lastAuditResult).toBeNull()
+    expect(dl.postActionReport).toBeNull()
+    expect(dl.sections).toEqual([])
+    expect(dl.findings).toEqual([])
+    expect(dl.usage).toBeNull()
+    expect(dl.transitions).toEqual([])
+    expect(dl.amendments).toEqual([])
   })
 })

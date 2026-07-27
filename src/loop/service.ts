@@ -23,12 +23,11 @@ import { parseSectionSummary as _parseSectionSummary } from './section-summary'
 import { terminationStatusFor, terminationReasonToString, type TerminationReason } from './termination'
 import { generateUniqueName } from './name-uniqueness'
 import { bumpRecurrence, findingRecurrenceKey } from './finding-recurrence'
+import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 
 export const MAX_RETRIES = 3
 const STALL_TIMEOUT_MS = 60_000
 const MAX_CONSECUTIVE_STALLS = 5
-/** Hard cap on the total number of sections a loop may have after amendment. */
-export const MAX_TOTAL_SECTIONS = 24
 
 export type LoopChangeReason =
   | 'insert' | 'delete' | 'terminate'
@@ -48,6 +47,12 @@ export interface LoopService {
   deleteState(name: string): void
   registerLoopSession(sessionId: string, loopName: string): void
   resolveLoopName(sessionId: string): string | null
+  /**
+   * The loop this session is currently driving, or null. `resolveLoopName`
+   * matches terminated loops too, so every "is this session inside a running
+   * loop" check must go through here instead of testing loop-row existence.
+   */
+  resolveActiveLoopForSession(sessionId: string): LoopState | null
   buildContinuationPrompt(state: LoopState, auditFindings?: string, outstandingBugs?: ReviewFindingRow[]): string
   buildAuditPrompt(state: LoopState): string
   listActive(): LoopState[]
@@ -223,6 +228,12 @@ export function createLoopService(
 
   function resolveLoopName(sessionId: string): string | null {
     return loopsRepo.getBySessionId(projectId, sessionId)?.loopName ?? null
+  }
+
+  function resolveActiveLoopForSession(sessionId: string): LoopState | null {
+    const loopName = resolveLoopName(sessionId)
+    const state = loopName ? getActiveState(loopName) : null
+    return state?.sessionId === sessionId ? state : null
   }
 
   function replaceSession(name: string, opts: { newSessionId: string; phase: LoopState['phase']; iteration?: number; resetError?: boolean; auditCount?: number; lastAuditResult?: string | null; executorSessionId?: string | null }): void {
@@ -813,6 +824,7 @@ export function createLoopService(
     deleteState,
     registerLoopSession,
     resolveLoopName,
+    resolveActiveLoopForSession,
     setStatus,
     buildContinuationPrompt,
     buildAuditPrompt,

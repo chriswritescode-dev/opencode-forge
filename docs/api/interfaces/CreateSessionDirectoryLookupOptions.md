@@ -6,7 +6,7 @@
 
 # Interface: CreateSessionDirectoryLookupOptions
 
-Defined in: [index.ts:128](https://github.com/chriswritescode-dev/opencode-forge/blob/a221960b2db97da192fa8ae878f660ac7cfa0d90/src/index.ts#L128)
+Defined in: [index.ts:129](https://github.com/chriswritescode-dev/opencode-forge/blob/e558f4d5bbe13223fcc02388824eb728b08e9520/src/index.ts#L129)
 
 ## Properties
 
@@ -14,7 +14,7 @@ Defined in: [index.ts:128](https://github.com/chriswritescode-dev/opencode-forge
 
 > **client**: `ForgeClient`
 
-Defined in: [index.ts:129](https://github.com/chriswritescode-dev/opencode-forge/blob/a221960b2db97da192fa8ae878f660ac7cfa0d90/src/index.ts#L129)
+Defined in: [index.ts:130](https://github.com/chriswritescode-dev/opencode-forge/blob/e558f4d5bbe13223fcc02388824eb728b08e9520/src/index.ts#L130)
 
 ***
 
@@ -22,7 +22,7 @@ Defined in: [index.ts:129](https://github.com/chriswritescode-dev/opencode-forge
 
 > **directory**: `string`
 
-Defined in: [index.ts:130](https://github.com/chriswritescode-dev/opencode-forge/blob/a221960b2db97da192fa8ae878f660ac7cfa0d90/src/index.ts#L130)
+Defined in: [index.ts:131](https://github.com/chriswritescode-dev/opencode-forge/blob/e558f4d5bbe13223fcc02388824eb728b08e9520/src/index.ts#L131)
 
 ***
 
@@ -30,4 +30,4 @@ Defined in: [index.ts:130](https://github.com/chriswritescode-dev/opencode-forge
 
 > **loop**: `Loop`
 
-Defined in: [index.ts:131](https://github.com/chriswritescode-dev/opencode-forge/blob/a221960b2db97da192fa8ae878f660ac7cfa0d90/src/index.ts#L131)
+Defined in: [index.ts:132](https://github.com/chriswritescode-dev/opencode-forge/blob/e558f4d5bbe13223fcc02388824eb728b08e9520/src/index.ts#L132)

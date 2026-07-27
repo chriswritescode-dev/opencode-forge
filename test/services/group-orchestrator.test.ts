@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { createFeatureGroupsRepo } from '../../src/storage/repos/feature-groups-repo'
+import { createPlansRepo } from '../../src/storage/repos/plans-repo'
 import {
   createGroupOrchestrator,
   mapLoopStateToOutcome,
@@ -403,6 +404,45 @@ describe('GroupOrchestrator', () => {
 
     // No loop should have been launched for failed feature
     expect(ctx.effects.launchLoop).toHaveBeenCalledTimes(0)
+  })
+
+  test('onArchitectIdle advances when capturePlan falls back to a stored plans row', async () => {
+    // Simulate the new capturePlan fallback in src/index.ts: the marked-plan
+    // scan returns not-found, but a stored plans row exists for the architect
+    // session, so capturePlan returns captured:true and the feature advances
+    // rather than being classified as a failure.
+    ctx.db.run(`
+      CREATE TABLE IF NOT EXISTS plans (
+        project_id   TEXT NOT NULL,
+        loop_name    TEXT,
+        session_id   TEXT,
+        content      TEXT NOT NULL,
+        updated_at   INTEGER NOT NULL,
+        CHECK (loop_name IS NOT NULL OR session_id IS NOT NULL),
+        CHECK (NOT (loop_name IS NOT NULL AND session_id IS NOT NULL)),
+        UNIQUE (project_id, loop_name),
+        UNIQUE (project_id, session_id)
+      )
+    `)
+    const plansRepo = createPlansRepo(ctx.db)
+    plansRepo.writeForSession(PROJECT_ID, 'arch-session-0', '# Tool-authored plan')
+
+    ctx.effects.capturePlan.mockImplementation(async (sessionId: string) => ({
+      captured: plansRepo.getForSession(PROJECT_ID, sessionId) != null,
+    }))
+
+    const result = await ctx.orchestrator.startGroup({
+      title: 'Stored Plan Fallback',
+      features: makeFeatures(1),
+    })
+
+    await ctx.orchestrator.onArchitectIdle('arch-session-0')
+
+    const features = ctx.repo.listFeatures(PROJECT_ID, result.groupId)
+    expect(features[0].stage).toBe('running')
+    expect(ctx.effects.capturePlan).toHaveBeenCalledWith('arch-session-0')
+    expect(ctx.effects.classifyArchitectFailure).not.toHaveBeenCalled()
+    expect(ctx.effects.launchLoop).toHaveBeenCalledTimes(1)
   })
 
   // Phase 8: premature-idle guard test goes here (currently removed for Phase 7)

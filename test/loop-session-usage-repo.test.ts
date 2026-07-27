@@ -265,6 +265,124 @@ describe('LoopSessionUsageRepo', () => {
       expect(agg?.totalCost).toBe(0.03)
       expect(agg?.totalMessageCount).toBe(15)
     })
+
+    test('aggregates by role across sessions using the same model', () => {
+      const row1 = createUsageRow({ sessionId: 'session-1', model: 'shared-model', role: 'code', cost: 2, messageCount: 6 })
+      const row2 = createUsageRow({ sessionId: 'session-2', model: 'shared-model', role: 'auditor', cost: 1, messageCount: 2 })
+      const row3 = createUsageRow({ sessionId: 'session-3', model: 'shared-model', role: 'unknown', cost: 0.5, messageCount: 1 })
+
+      repo.upsertSessionUsage(row1)
+      repo.upsertSessionUsage(row2)
+      repo.upsertSessionUsage(row3)
+
+      const agg = repo.getAggregate(projectId, loopName)
+      // Each role gets the default token breakdown from createUsageRow, plus the
+      // role-specific cost and messageCount overrides.
+      expect(agg?.byRole.code).toEqual({
+        cost: 2,
+        inputTokens: 1000,
+        outputTokens: 500,
+        reasoningTokens: 100,
+        cacheReadTokens: 200,
+        cacheWriteTokens: 300,
+        messageCount: 6,
+      })
+      expect(agg?.byRole.auditor).toEqual({
+        cost: 1,
+        inputTokens: 1000,
+        outputTokens: 500,
+        reasoningTokens: 100,
+        cacheReadTokens: 200,
+        cacheWriteTokens: 300,
+        messageCount: 2,
+      })
+      expect(agg?.byRole.unknown).toEqual({
+        cost: 0.5,
+        inputTokens: 1000,
+        outputTokens: 500,
+        reasoningTokens: 100,
+        cacheReadTokens: 200,
+        cacheWriteTokens: 300,
+        messageCount: 1,
+      })
+    })
+
+    test('byRole carries the full token breakdown per role', () => {
+      repo.upsertSessionUsage([
+        createUsageRow({
+          sessionId: 'session-code',
+          model: 'model-a',
+          role: 'code',
+          cost: 0.10,
+          inputTokens: 4000,
+          outputTokens: 2000,
+          reasoningTokens: 400,
+          cacheReadTokens: 150,
+          cacheWriteTokens: 250,
+          messageCount: 7,
+        }),
+        createUsageRow({
+          sessionId: 'session-auditor',
+          model: 'model-b',
+          role: 'auditor',
+          cost: 0.05,
+          inputTokens: 8000,
+          outputTokens: 1000,
+          reasoningTokens: 600,
+          cacheReadTokens: 300,
+          cacheWriteTokens: 50,
+          messageCount: 3,
+        }),
+      ])
+
+      const agg = repo.getAggregate(projectId, loopName)
+      expect(agg?.byRole.code?.inputTokens).toBe(4000)
+      expect(agg?.byRole.code?.outputTokens).toBe(2000)
+      expect(agg?.byRole.code?.reasoningTokens).toBe(400)
+      expect(agg?.byRole.code?.cacheReadTokens).toBe(150)
+      expect(agg?.byRole.code?.cacheWriteTokens).toBe(250)
+      expect(agg?.byRole.auditor?.inputTokens).toBe(8000)
+      expect(agg?.byRole.auditor?.outputTokens).toBe(1000)
+      expect(agg?.byRole.auditor?.reasoningTokens).toBe(600)
+      expect(agg?.byRole.auditor?.cacheReadTokens).toBe(300)
+      expect(agg?.byRole.auditor?.cacheWriteTokens).toBe(50)
+    })
+
+    test('byRole token sums reconcile with the aggregate totals', () => {
+      repo.upsertSessionUsage([
+        createUsageRow({
+          sessionId: 'session-code',
+          model: 'model-a',
+          role: 'code',
+          inputTokens: 4000,
+          outputTokens: 2000,
+          reasoningTokens: 400,
+          cacheReadTokens: 150,
+          cacheWriteTokens: 250,
+          messageCount: 7,
+        }),
+        createUsageRow({
+          sessionId: 'session-auditor',
+          model: 'model-b',
+          role: 'auditor',
+          inputTokens: 8000,
+          outputTokens: 1000,
+          reasoningTokens: 600,
+          cacheReadTokens: 300,
+          cacheWriteTokens: 50,
+          messageCount: 3,
+        }),
+      ])
+
+      const agg = repo.getAggregate(projectId, loopName)
+      const byRole = Object.values(agg!.byRole)
+      expect(byRole.reduce((s, r) => s + r.inputTokens, 0)).toBe(agg!.totalInputTokens)
+      expect(byRole.reduce((s, r) => s + r.outputTokens, 0)).toBe(agg!.totalOutputTokens)
+      expect(byRole.reduce((s, r) => s + r.reasoningTokens, 0)).toBe(agg!.totalReasoningTokens)
+      expect(byRole.reduce((s, r) => s + r.cacheReadTokens, 0)).toBe(agg!.totalCacheReadTokens)
+      expect(byRole.reduce((s, r) => s + r.cacheWriteTokens, 0)).toBe(agg!.totalCacheWriteTokens)
+      expect(byRole.reduce((s, r) => s + r.messageCount, 0)).toBe(agg!.totalMessageCount)
+    })
   })
 
   describe('listSessionUsage', () => {

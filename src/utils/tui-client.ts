@@ -16,7 +16,7 @@ import { type ForgeLoopExtra } from '../services/execution'
 import { buildLoopPermissionRuleset } from '../constants/loop'
 import { getForgeWorkspaceLoopName, removeExistingForgeLoopWorkspaces, getWorktreeProjectPreconditionError } from '../workspace/forge-worktree'
 import { classifyWorkspaceCreateThrow } from '../workspace/workspace-create-error'
-import { fetchLoopsList } from './tui-loop-store'
+import { fetchLoopsList, fetchStoredSessionPlan } from './tui-loop-store'
 import { decomposeDeterministically } from '../services/deterministic-decomposer'
 import { buildSectionInitialPromptText } from '../loop/prompts'
 import { extractPlanExecutionMetadata, sanitizeLoopName } from './plan-execution'
@@ -97,10 +97,15 @@ function nextAvailableLoopName(baseName: string, names: string[]): string {
   return candidate
 }
 
-export async function reserveTuiLoopName(client: ForgeClient, projectId: string | null, baseName: string): Promise<string> {
+export async function reserveTuiLoopName(
+  client: ForgeClient,
+  projectId: string | null,
+  baseName: string,
+  dbPath?: string,
+): Promise<string> {
   const names = new Set<string>()
   if (projectId) {
-    for (const loop of fetchLoopsList(projectId)) {
+    for (const loop of fetchLoopsList(projectId, dbPath)) {
       names.add(loop.name)
     }
   }
@@ -230,7 +235,7 @@ async function waitForWorkspacePluginSettle(workspaceId: string): Promise<void> 
 }
 
 function buildTuiLoopInitialPrompt(planText: string): string {
-  const sections = decomposeDeterministically(planText, { maxSections: 12 })
+  const sections = decomposeDeterministically(planText)
   const firstSection = sections[0]
   if (!firstSection) return planText
 
@@ -271,6 +276,8 @@ export interface LaunchTuiLoopOptions {
   onLaunched?: (sessionId: string, workspaceId: string) => Promise<void>
   /** Poll interval for the workspace-connected wait. Remote launches widen this to avoid hammering the server over the network. Default 100ms. */
   connectPollIntervalMs?: number
+  /** Override path to the forge SQLite database used for local loop/plan reads. When omitted, the default data dir is used. */
+  dbPath?: string
   debug?: (message: string) => void
 }
 
@@ -287,7 +294,7 @@ export async function launchTuiLoop(
 
   const loopName = opts.loopNameReserved
     ? opts.requestedLoopName
-    : await reserveTuiLoopName(opts.client, opts.projectId, opts.requestedLoopName)
+    : await reserveTuiLoopName(opts.client, opts.projectId, opts.requestedLoopName, opts.dbPath)
   debug(`launchTuiLoop: inline plan (planText.length=${opts.plan.length}) hostSession=${opts.hostSessionId ?? 'none'} loop=${loopName}`)
   const createdAt = Date.now()
   const forgeLoop: ForgeLoopExtra = {
@@ -404,6 +411,7 @@ export async function connectForgeProject(
   api: TuiPluginApi,
   directory?: string,
   allowExternalDirectories?: string[],
+  dbPath?: string,
 ): Promise<ForgeProjectClient | null> {
   tuiDebug(`connect start directory=${directory ?? 'none'}`)
 
@@ -499,6 +507,7 @@ export async function connectForgeProject(
           auditorVariant: req.auditorVariant,
           hostSessionId: sessionId || undefined,
           allowDirectories: allowExternalDirectories,
+          dbPath,
           onLaunched: (sid, wid) => selectTuiSession(api, client, sid, wid),
           debug: tuiDebug,
         })
@@ -534,6 +543,13 @@ export async function connectForgeProject(
       return selectTuiSession(api, client, sessionId, workspaceId)
     },
     loadLatestPlan(sessionId) {
+      // Storage is the plan of record for execute-plan and the approval hook, so
+      // the dialog must show exactly what would execute. The message scan
+      // remains as a fallback for sessions whose marked plan was never captured.
+      // `dbPath` honors a configured PluginConfig.dataDir so tool-authored plans
+      // stored outside the default data dir still resolve here.
+      const stored = projectId ? fetchStoredSessionPlan(projectId, sessionId, dbPath) : null
+      if (stored) return Promise.resolve(stored)
       return fetchLatestPlanForSession(client, sessionId, directory)
     },
     async loadExecutionContext() {

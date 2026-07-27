@@ -6,6 +6,8 @@ import {
   modelLabelFromMessage,
   summarizeAssistantUsage,
   mergeUsageSummaries,
+  mergeRoleUsage,
+  USAGE_ROLE_ORDER,
   type TokenBreakdown,
   type ModelUsage,
   type LoopUsageSummary,
@@ -368,5 +370,108 @@ describe('mergeUsageSummaries', () => {
 
     const merged = mergeUsageSummaries(summary1, summary2)
     expect(merged.perModel.map((m) => m.model)).toEqual(['a-model', 'z-model'])
+  })
+
+  test('summarizeAssistantUsage populates a single perRole entry from the attribution role', () => {
+    const messages = [
+      { info: { role: 'assistant', cost: 0.01, tokens: { input: 100, output: 50, reasoning: 10, cache: { read: 5, write: 2 } } } },
+      { info: { role: 'assistant', cost: 0.02, tokens: { input: 200, output: 100, reasoning: 20, cache: { read: 10, write: 4 } } } },
+    ]
+
+    const summary = summarizeAssistantUsage(messages, { role: 'auditor' })
+    expect(summary.perRole).toHaveLength(1)
+    expect(summary.perRole![0]).toEqual({
+      role: 'auditor',
+      cost: 0.03,
+      tokens: { input: 300, output: 150, reasoning: 30, cacheRead: 15, cacheWrite: 6 },
+      messageCount: 2,
+    })
+  })
+
+  test('summarizeAssistantUsage returns an empty perRole when no attribution is supplied', () => {
+    const messages = [
+      { info: { role: 'assistant', cost: 0.01, tokens: { input: 100, output: 50, reasoning: 10, cache: { read: 5, write: 2 } } } },
+    ]
+
+    const summary = summarizeAssistantUsage(messages)
+    expect(summary.perRole).toEqual([])
+  })
+
+  test('mergeUsageSummaries sums perRole per role and orders code, auditor, unknown', () => {
+    const codeSummary: LoopUsageSummary = {
+      totalCost: 0.01,
+      totalTokens: { input: 100, output: 50, reasoning: 10, cacheRead: 5, cacheWrite: 2 },
+      perModel: [],
+      perRole: [{ role: 'code', cost: 0.01, tokens: { input: 100, output: 50, reasoning: 10, cacheRead: 5, cacheWrite: 2 }, messageCount: 1 }],
+    }
+    const auditorSummary: LoopUsageSummary = {
+      totalCost: 0.02,
+      totalTokens: { input: 200, output: 100, reasoning: 20, cacheRead: 10, cacheWrite: 4 },
+      perModel: [],
+      perRole: [{ role: 'auditor', cost: 0.02, tokens: { input: 200, output: 100, reasoning: 20, cacheRead: 10, cacheWrite: 4 }, messageCount: 1 }],
+    }
+    const unknownSummary: LoopUsageSummary = {
+      totalCost: 0.005,
+      totalTokens: { input: 50, output: 25, reasoning: 5, cacheRead: 2, cacheWrite: 1 },
+      perModel: [],
+      perRole: [{ role: 'unknown', cost: 0.005, tokens: { input: 50, output: 25, reasoning: 5, cacheRead: 2, cacheWrite: 1 }, messageCount: 1 }],
+    }
+
+    // Feed in reverse order to confirm output is normalized.
+    const merged = mergeUsageSummaries(unknownSummary, auditorSummary, codeSummary)
+    expect(merged.perRole?.map(r => r.role)).toEqual([...USAGE_ROLE_ORDER])
+    const code = merged.perRole?.find(r => r.role === 'code')!
+    expect(code.cost).toBe(0.01)
+    expect(code.messageCount).toBe(1)
+    expect(code.tokens).toEqual({ input: 100, output: 50, reasoning: 10, cacheRead: 5, cacheWrite: 2 })
+  })
+
+  test('mergeUsageSummaries merges same role across summaries', () => {
+    const a: LoopUsageSummary = {
+      totalCost: 0.01,
+      totalTokens: { input: 100, output: 50, reasoning: 10, cacheRead: 5, cacheWrite: 2 },
+      perModel: [],
+      perRole: [{ role: 'code', cost: 0.01, tokens: { input: 100, output: 50, reasoning: 10, cacheRead: 5, cacheWrite: 2 }, messageCount: 1 }],
+    }
+    const b: LoopUsageSummary = {
+      totalCost: 0.02,
+      totalTokens: { input: 200, output: 100, reasoning: 20, cacheRead: 10, cacheWrite: 4 },
+      perModel: [],
+      perRole: [{ role: 'code', cost: 0.02, tokens: { input: 200, output: 100, reasoning: 20, cacheRead: 10, cacheWrite: 4 }, messageCount: 2 }],
+    }
+    const merged = mergeUsageSummaries(a, b)
+    expect(merged.perRole).toHaveLength(1)
+    expect(merged.perRole![0]).toEqual({
+      role: 'code',
+      cost: 0.03,
+      tokens: { input: 300, output: 150, reasoning: 30, cacheRead: 15, cacheWrite: 6 },
+      messageCount: 3,
+    })
+  })
+
+  test('mergeUsageSummaries tolerates summaries without perRole', () => {
+    const withoutPerRole: LoopUsageSummary = {
+      totalCost: 0.01,
+      totalTokens: { input: 100, output: 50, reasoning: 10, cacheRead: 5, cacheWrite: 2 },
+      perModel: [],
+    }
+    const withPerRole: LoopUsageSummary = {
+      totalCost: 0.02,
+      totalTokens: { input: 200, output: 100, reasoning: 20, cacheRead: 10, cacheWrite: 4 },
+      perModel: [],
+      perRole: [{ role: 'auditor', cost: 0.02, tokens: { input: 200, output: 100, reasoning: 20, cacheRead: 10, cacheWrite: 4 }, messageCount: 1 }],
+    }
+
+    const merged = mergeUsageSummaries(withoutPerRole, withPerRole)
+    expect(merged.perRole).toEqual([
+      { role: 'auditor', cost: 0.02, tokens: { input: 200, output: 100, reasoning: 20, cacheRead: 10, cacheWrite: 4 }, messageCount: 1 },
+    ])
+  })
+})
+
+describe('mergeRoleUsage', () => {
+  test('returns [] for no inputs', () => {
+    expect(mergeRoleUsage()).toEqual([])
+    expect(mergeRoleUsage(undefined, undefined)).toEqual([])
   })
 })

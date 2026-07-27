@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest'
 import { Database } from 'bun:sqlite'
 import { openForgeDatabase, closeDatabase } from '../../src/storage/database'
 import { createRequestHandler, type DashboardDeps } from '../../src/dashboard/server'
-import { createLoopsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, type LoopRow, type LoopTransitionRow, type PlanAmendmentRow } from '../../src/storage'
+import { createLoopsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createPlansRepo, createFeatureGroupsRepo, type LoopRow, type LoopTransitionRow, type PlanAmendmentRow } from '../../src/storage'
 
 function makeLoopRow(overrides?: Partial<LoopRow>): LoopRow {
   return {
@@ -83,7 +83,7 @@ describe('createRequestHandler', () => {
     })
   })
 
-  // ─── Cycle 2: /api/data returns JSON with projects and totals ────────
+  // ─── Cycle 2: /api/data returns JSON with projects ───────────────────
 
   test('GET /api/data returns 200 with application/json and no-store cache', async () => {
     const handler = createRequestHandler(makeDeps(db!))
@@ -94,10 +94,9 @@ describe('createRequestHandler', () => {
 
     const body = await res.json()
     expect(body).toHaveProperty('projects')
-    expect(body).toHaveProperty('totals')
+    expect(body).toHaveProperty('generatedAt')
     expect(Array.isArray(body.projects)).toBe(true)
-    expect(body.totals.projects).toBe(0)
-    expect(body.totals.loops).toBe(0)
+    expect(body.projects).toHaveLength(0)
   })
 
   // ─── Cycle 3: live re-query — inserting a loop changes /api/data ─────
@@ -108,7 +107,7 @@ describe('createRequestHandler', () => {
     // Verify empty before insertion
     const resBefore = await handler(new Request('http://localhost/api/data'))
     const bodyBefore = await resBefore.json()
-    expect(bodyBefore.totals.loops).toBe(0)
+    expect(bodyBefore.projects).toHaveLength(0)
 
     // Insert a loop via the same db reference
     const loopsRepo = createLoopsRepo(db!)
@@ -120,8 +119,8 @@ describe('createRequestHandler', () => {
     // Verify data now includes the new loop
     const resAfter = await handler(new Request('http://localhost/api/data'))
     const bodyAfter = await resAfter.json()
-    expect(bodyAfter.totals.loops).toBe(1)
     expect(bodyAfter.projects).toHaveLength(1)
+    expect(bodyAfter.projects[0].loops).toHaveLength(1)
     expect(bodyAfter.projects[0].projectId).toBe('p1')
     expect(bodyAfter.projects[0].loops[0].loop.loopName).toBe('newly-inserted')
   })
@@ -176,7 +175,7 @@ describe('createRequestHandler', () => {
     }
     transitionsRepo.insert(transitionInput)
 
-    const res = await handler(new Request('http://localhost/api/data'))
+    const res = await handler(new Request('http://localhost/api/data?project=p1&loop=transitioned-loop'))
     const body = await res.json()
     expect(body.projects).toHaveLength(1)
     expect(body.projects[0].loops).toHaveLength(1)
@@ -225,7 +224,7 @@ describe('createRequestHandler', () => {
       })
     }
 
-    const res = await handler(new Request('http://localhost/api/data'))
+    const res = await handler(new Request('http://localhost/api/data?project=p1&loop=capped-loop'))
     const body = await res.json()
     const transitions = body.projects[0].loops[0].transitions
     expect(transitions).toHaveLength(100)
@@ -267,7 +266,7 @@ describe('createRequestHandler', () => {
       ]),
     })
 
-    const res = await handler(new Request('http://localhost/api/data'))
+    const res = await handler(new Request('http://localhost/api/data?project=p1&loop=amended-loop'))
     const body = await res.json()
     expect(body.projects).toHaveLength(1)
     expect(body.projects[0].loops).toHaveLength(1)
@@ -303,12 +302,124 @@ describe('createRequestHandler', () => {
       { lastAuditResult: null },
     )
 
-    const res = await handler(new Request('http://localhost/api/data'))
+    const res = await handler(new Request('http://localhost/api/data?project=p1&loop=no-amendments-loop'))
     const body = await res.json()
     expect(body.projects).toHaveLength(1)
     expect(body.projects[0].loops).toHaveLength(1)
     const loopData = body.projects[0].loops[0]
     expect(Array.isArray(loopData.amendments)).toBe(true)
     expect(loopData.amendments).toHaveLength(0)
+  })
+
+  // ─── Cycle 8: feature groups surface under the right project ──────────
+
+  test('GET /api/data against a live database containing a group returns it under the right project', async () => {
+    const handler = createRequestHandler(makeDeps(db!))
+
+    const loopsRepo = createLoopsRepo(db!)
+    const groupsRepo = createFeatureGroupsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'host-loop' }),
+      { lastAuditResult: null },
+    )
+    groupsRepo.createGroup({
+      projectId: 'p1',
+      groupId: 'g-1',
+      title: 'Group One',
+      status: 'running',
+      maxConcurrent: 3,
+      prdText: 'PRD'.repeat(200),
+    })
+    groupsRepo.insertFeatures('p1', 'g-1', [
+      { title: 'Feature A', description: 'a' },
+      { title: 'Feature B', description: 'b' },
+    ])
+
+    const res = await handler(new Request('http://localhost/api/data'))
+    const body = await res.json()
+    expect(body.projects).toHaveLength(1)
+    const proj = body.projects[0]
+    expect(proj.projectId).toBe('p1')
+    expect(Array.isArray(proj.groups)).toBe(true)
+    expect(proj.groups).toHaveLength(1)
+    const g = proj.groups[0]
+    expect(g.id).toBe('g-1')
+    expect(g.group.groupId).toBe('g-1')
+    expect(g.group.title).toBe('Group One')
+    expect(g.group.prdPreview).toHaveLength(400)
+    expect(g.group).not.toHaveProperty('prdText')
+    expect(g.features).toHaveLength(2)
+    expect(g.features.map((f: { featureIndex: number }) => f.featureIndex)).toEqual([0, 1])
+  })
+
+  // ─── Cycle 9: scoped /api/data query string ───────────────────────────
+
+  test('GET /api/data?project=p1&loop=loop-a returns plan content only for that loop', async () => {
+    const handler = createRequestHandler(makeDeps(db!))
+
+    const loopsRepo = createLoopsRepo(db!)
+    const plansRepo = createPlansRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'loop-a' }),
+      { lastAuditResult: null },
+    )
+    loopsRepo.insert(
+      makeLoopRow({ projectId: 'p1', loopName: 'loop-b', currentSessionId: 'session-b' }),
+      { lastAuditResult: null },
+    )
+    plansRepo.writeForLoop('p1', 'loop-a', 'plan-content-a')
+    plansRepo.writeForLoop('p1', 'loop-b', 'plan-content-b')
+
+    const res = await handler(new Request('http://localhost/api/data?project=p1&loop=loop-a'))
+    const body = await res.json()
+    expect(body.projects).toHaveLength(1)
+    const loops = body.projects[0].loops
+    const a = loops.find((l: { loop: { loopName: string } }) => l.loop.loopName === 'loop-a')
+    const b = loops.find((l: { loop: { loopName: string } }) => l.loop.loopName === 'loop-b')
+    expect(a.plan).toBe('plan-content-a')
+    expect(a.hasPlan).toBe(true)
+    expect(b.plan).toBeNull()
+    expect(b.hasPlan).toBe(true)
+  })
+
+  test('GET /api/data scopes completionSummary to the requested loop', async () => {
+    const handler = createRequestHandler(makeDeps(db!))
+
+    const loopsRepo = createLoopsRepo(db!)
+    loopsRepo.insert(
+      makeLoopRow({
+        projectId: 'p1',
+        loopName: 'loop-a',
+        status: 'completed',
+        completedAt: 1700000500000,
+        completionSummary: 'COMPLETION A',
+      }),
+      { lastAuditResult: null },
+    )
+    loopsRepo.insert(
+      makeLoopRow({
+        projectId: 'p1',
+        loopName: 'loop-b',
+        currentSessionId: 'session-b',
+        status: 'completed',
+        completedAt: 1700000500000,
+        completionSummary: 'COMPLETION B',
+      }),
+      { lastAuditResult: null },
+    )
+
+    const unscoped = await handler(new Request('http://localhost/api/data'))
+    const unscopedBody = await unscoped.json()
+    const unscopedLoops = unscopedBody.projects[0].loops
+    expect(unscopedLoops[0].loop.completionSummary).toBeNull()
+    expect(unscopedLoops[1].loop.completionSummary).toBeNull()
+
+    const scoped = await handler(new Request('http://localhost/api/data?project=p1&loop=loop-a'))
+    const scopedBody = await scoped.json()
+    const scopedLoops = scopedBody.projects[0].loops
+    const a = scopedLoops.find((l: { loop: { loopName: string } }) => l.loop.loopName === 'loop-a')
+    const b = scopedLoops.find((l: { loop: { loopName: string } }) => l.loop.loopName === 'loop-b')
+    expect(a.loop.completionSummary).toBe('COMPLETION A')
+    expect(b.loop.completionSummary).toBeNull()
   })
 })

@@ -130,7 +130,7 @@ OpenCode Forge integrates with OpenCode through several hook points. The plugin 
 
 ### Message Transform Hooks (`src/index.ts`)
 
-- `experimental.chat.messages.transform` - Appends a `<system-reminder>` block onto the last user message in architect sessions, instructing the model to search/analyze only and to wrap the final plan with `<!-- forge-plan:start/end -->` markers. This is **message-level reinforcement** via OpenCode's transform hook, not a permission lockdown — the architect agent's `tools.exclude` config separately excludes `plan`, `plan_enter`, `plan_exit`.
+- `experimental.chat.messages.transform` - Appends a `<system-reminder>` block onto the last user message in architect sessions, instructing the model to search/analyze only and to author the final plan into storage with `plan-write`/`plan-edit`, falling back to `<!-- forge-plan:start/end -->` markers when those tools are unavailable. This is **message-level reinforcement** via OpenCode's transform hook, not a permission lockdown — the architect agent's `tools.exclude` config separately excludes `plan`, `plan_enter`, `plan_exit`.
 
 ### Tool Execution Hooks
 
@@ -154,7 +154,7 @@ A `PATCHED_SESSIONS` set deduplicates retries. Audit-only subagents use the stri
 
 ### Additional Hooks
 
-- **Plan Capture** (`src/hooks/plan-capture.ts`) - Extracts `<!-- forge-plan:start -->...end-->` markers from streaming assistant messages
+- **Plan Capture** (`src/hooks/plan-capture.ts`) - Captures the session plan of record. The primary authoring path is the `plan-write` / `plan-edit` tools, which write directly to the session-scoped `plans` row. Marker capture of `<!-- forge-plan:start -->...end-->` from assistant messages is the fallback path and runs both on streaming `message.part.updated` events and on assistant message completion (`message.updated`).
 - **Forge Session Attach** (`src/hooks/forge-session-attach.ts`) - Automatically attaches loops when new sessions are created
 - **Watchdog** (`src/hooks/watchdog.ts`) - Stall detection and recovery for loops
 
@@ -176,7 +176,7 @@ All data access goes through typed repository interfaces created via factory fun
 | Repository | Purpose | Key Types |
 |---|---|---|
 | `LoopsRepo` | CRUD for loop rows | `LoopRow`, `LoopLargeFields` |
-| `PlansRepo` | CRUD for plans | `PlanRow`, `PlansRepo` |
+| `PlansRepo` | CRUD for plans (session-scoped plan of record read by `plan-read`, the approval hook, `execute-plan`, and the TUI plan dialog) | `PlanRow`, `PlansRepo` |
 | `ReviewFindingsRepo` | CRUD for review findings | `ReviewFindingRow`, `ReviewFindingsRepo` |
 | `SectionPlansRepo` | CRUD for milestone (section) plans used in decomposed loops | `SectionPlanRow`, `SectionPlansRepo` |
 | `LoopTransitionsRepo` | Append-only loop phase-transition log | `LoopTransitionRow` |

@@ -4,8 +4,8 @@
 
 - Install with `pnpm install --frozen-lockfile`; `pnpm-lock.yaml` is canonical. Bun is still required because build, setup, and dashboard scripts run through it—do not substitute `bun install`.
 - Full source verification: `pnpm typecheck && pnpm lint && pnpm test && pnpm build`.
-- Focus a Node test with `pnpm test -- --project node test/path.test.ts`; add `-t "test name"` for one case.
-- Run dashboard DOM tests with `pnpm test -- --project dom test/dashboard/app-dom.test.ts`. The `dom` project is the only happy-dom/browser-conditions suite; all other tests use the `node` project and a `bun:sqlite` shim.
+- Focus a Node test with `pnpm test --project node test/path.test.ts`; add `-t "test name"` for one case.
+- Run dashboard DOM tests with `pnpm test --project dom test/dashboard/app-dom.test.ts`. The `dom` project is the only happy-dom/browser-conditions suite; all other tests use the `node` project and a `bun:sqlite` shim.
 - `pnpm typecheck` covers `src/`, not tests or scripts. ESLint also ignores tests and generated dashboard files, so run the relevant Vitest project after changing them.
 
 ## Runtime boundaries
@@ -21,6 +21,10 @@
 - The build does not clean `dist/`; remove stale output when deleting or renaming source modules before validating package contents.
 - Bundled prompts live in `src/prompts/`; bundled skills live in `skills/`. They sync on every plugin load, preserving user edits and never deleting files. The standalone installer handles conflicts and orphan pruning.
 - Keep the section-summary markers in `src/prompts/agents/auditor-loop-addendum.md` synchronized with the constants in `src/utils/section-summary.ts`.
+- `MAX_TOTAL_SECTIONS` in `src/constants/loop.ts` is the single section cap; the decomposer, section bootstrap, plan structure summary, TUI inline plan preview and `plan-adjust` all read it, and the architect system reminder in `src/index.ts` interpolates it. `src/prompts/agents/architect.md` is prose and repeats the number literally — update it when the cap changes.
+- `PLAN_AUTHORING_TOOL_NAMES` in `src/constants/loop.ts` is the single list of plan-authoring tools; the `code`, `auditor`, and `feature-splitter` tool-exclude lists and both permission rulesets derive their deny entries from it.
+- `LoopService.resolveActiveLoopForSession` is the only correct "is this session inside a running loop" check. `resolveLoopName` matches terminated loops too, so using it as an activity guard blocks a session forever after its loop ends.
+- `resolveForgeDbPath` in `src/utils/opencode-paths.ts` is the only place `<dataDir>/forge.db` is built; every entry point must route through it so a configured `dataDir` is honoured uniformly.
 
 ## Dashboard and storage gotchas
 

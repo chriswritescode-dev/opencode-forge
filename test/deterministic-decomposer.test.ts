@@ -1,5 +1,34 @@
 import { describe, test, expect } from 'vitest'
-import { decomposeDeterministically } from '../src/services/deterministic-decomposer'
+import { decomposeDeterministically, decomposePlanSections } from '../src/services/deterministic-decomposer'
+import { MAX_TOTAL_SECTIONS } from '../src/constants/loop'
+
+describe('decomposePlanSections', () => {
+  test('markerCount reports every unfenced marker, independent of cap and empty bodies', () => {
+    const plan30 = Array.from({ length: 30 }, () => '<!-- forge-section -->\nbody').join('\n')
+    const capped = decomposePlanSections(plan30)
+    expect(capped.markerCount).toBe(30)
+    expect(capped.sections).toHaveLength(MAX_TOTAL_SECTIONS)
+
+    // Empty bodies are skipped as sections but still counted as markers.
+    const withEmpty = ['<!-- forge-section -->', '<!-- forge-section -->', '## Phase', 'body'].join('\n')
+    const r = decomposePlanSections(withEmpty)
+    expect(r.markerCount).toBe(2)
+    expect(r.sections).toHaveLength(1)
+
+    // Fenced markers are neither counted nor split on.
+    const fenced = ['<!-- forge-section -->', '## Phase', '```ts', '<!-- forge-section -->', '```', 'body'].join('\n')
+    expect(decomposePlanSections(fenced).markerCount).toBe(1)
+
+    expect(decomposePlanSections('no markers').markerCount).toBe(0)
+  })
+
+  test('uncapped sections are the superset the capped run truncates', () => {
+    const plan30 = Array.from({ length: 30 }, (_, i) => `<!-- forge-section -->\n## Phase ${i + 1}\nbody`).join('\n')
+    const uncapped = decomposePlanSections(plan30, { maxSections: Number.MAX_SAFE_INTEGER }).sections
+    expect(uncapped).toHaveLength(30)
+    expect(uncapped.slice(0, MAX_TOTAL_SECTIONS)).toEqual(decomposeDeterministically(plan30))
+  })
+})
 
 describe('decomposeDeterministically', () => {
   test('returns empty array when no section markers found', () => {
@@ -37,10 +66,12 @@ describe('decomposeDeterministically', () => {
     expect(r).toEqual([])
   })
 
-  test('respects maxSections cap (default 12)', () => {
-    const plan = Array.from({ length: 15 }, () => '<!-- forge-section -->\nbody').join('\n')
-    expect(decomposeDeterministically(plan)).toHaveLength(12)
-    expect(decomposeDeterministically(plan, { maxSections: 3 })).toHaveLength(3)
+  test(`respects maxSections cap (default ${MAX_TOTAL_SECTIONS})`, () => {
+    const plan20 = Array.from({ length: 20 }, () => '<!-- forge-section -->\nbody').join('\n')
+    expect(decomposeDeterministically(plan20)).toHaveLength(20)
+    const plan30 = Array.from({ length: 30 }, () => '<!-- forge-section -->\nbody').join('\n')
+    expect(decomposeDeterministically(plan30)).toHaveLength(MAX_TOTAL_SECTIONS)
+    expect(decomposeDeterministically(plan30, { maxSections: 3 })).toHaveLength(3)
   })
 
   test('strips outer <!-- forge-plan:start/end --> markers', () => {

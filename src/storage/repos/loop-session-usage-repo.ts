@@ -34,6 +34,15 @@ export interface LoopUsageAggregate {
     cacheWriteTokens: number
     messageCount: number
   }>
+  byRole: Partial<Record<LoopSessionUsageRow['role'], {
+    cost: number
+    inputTokens: number
+    outputTokens: number
+    reasoningTokens: number
+    cacheReadTokens: number
+    cacheWriteTokens: number
+    messageCount: number
+  }>>
 }
 
 export interface LoopSessionUsageRepo {
@@ -58,6 +67,47 @@ interface LoopSessionUsageRowRaw {
   cache_write_tokens: number
   message_count: number
   captured_at: number
+}
+
+type UsageBucket = LoopUsageAggregate['byModel'][string]
+
+interface AggregateGroupRow {
+  role: string
+  model: string
+  cost: number
+  input_tokens: number
+  output_tokens: number
+  reasoning_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  message_count: number
+}
+
+function emptyUsageBucket(): UsageBucket {
+  return {
+    cost: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    messageCount: 0,
+  }
+}
+
+function accumulateUsageBucket<K extends string>(
+  buckets: Partial<Record<K, UsageBucket>>,
+  key: K,
+  row: AggregateGroupRow,
+): void {
+  const bucket = (buckets[key] ??= emptyUsageBucket())
+  bucket.cost += row.cost
+  bucket.inputTokens += row.input_tokens
+  bucket.outputTokens += row.output_tokens
+  bucket.reasoningTokens += row.reasoning_tokens
+  bucket.cacheReadTokens += row.cache_read_tokens
+  bucket.cacheWriteTokens += row.cache_write_tokens
+  bucket.messageCount += row.message_count
 }
 
 function mapRow(row: LoopSessionUsageRowRaw): LoopSessionUsageRow {
@@ -92,23 +142,12 @@ export function createLoopSessionUsageRepo(db: Database): LoopSessionUsageRepo {
     WHERE project_id = ? AND loop_name = ? AND session_id = ?
   `)
 
+  // One scan of idx_loop_session_usage_project_loop produces the totals, the
+  // per-model split and the per-role split; the dashboard poll calls this once
+  // per loop, so a statement per shape tripled the work for no extra data.
   const getAggregateStmt = db.prepare(`
     SELECT
-      loop_name,
-      SUM(cost) as total_cost,
-      SUM(input_tokens) as total_input_tokens,
-      SUM(output_tokens) as total_output_tokens,
-      SUM(reasoning_tokens) as total_reasoning_tokens,
-      SUM(cache_read_tokens) as total_cache_read_tokens,
-      SUM(cache_write_tokens) as total_cache_write_tokens,
-      SUM(message_count) as total_message_count
-    FROM loop_session_usage
-    WHERE project_id = ? AND loop_name = ?
-    GROUP BY loop_name
-  `)
-
-  const getByModelStmt = db.prepare(`
-    SELECT
+      role,
       model,
       SUM(cost) as cost,
       SUM(input_tokens) as input_tokens,
@@ -119,7 +158,7 @@ export function createLoopSessionUsageRepo(db: Database): LoopSessionUsageRepo {
       SUM(message_count) as message_count
     FROM loop_session_usage
     WHERE project_id = ? AND loop_name = ?
-    GROUP BY model
+    GROUP BY role, model
   `)
 
   const listSessionUsageStmt = db.prepare(`
@@ -172,54 +211,37 @@ export function createLoopSessionUsageRepo(db: Database): LoopSessionUsageRepo {
     },
 
     getAggregate(projectId: string, loopName: string): LoopUsageAggregate | null {
-      const aggregate = getAggregateStmt.get(projectId, loopName) as {
-        loop_name: string
-        total_cost: number
-        total_input_tokens: number
-        total_output_tokens: number
-        total_reasoning_tokens: number
-        total_cache_read_tokens: number
-        total_cache_write_tokens: number
-        total_message_count: number
-      } | null
+      const rows = getAggregateStmt.all(projectId, loopName) as AggregateGroupRow[]
 
-      if (!aggregate) return null
+      if (rows.length === 0) return null
 
-      const byModelRows = getByModelStmt.all(projectId, loopName) as Array<{
-        model: string
-        cost: number
-        input_tokens: number
-        output_tokens: number
-        reasoning_tokens: number
-        cache_read_tokens: number
-        cache_write_tokens: number
-        message_count: number
-      }>
-
-      const byModel: Record<string, LoopUsageAggregate['byModel'][string]> = {}
-      for (const row of byModelRows) {
-        byModel[row.model] = {
-          cost: row.cost,
-          inputTokens: row.input_tokens,
-          outputTokens: row.output_tokens,
-          reasoningTokens: row.reasoning_tokens,
-          cacheReadTokens: row.cache_read_tokens,
-          cacheWriteTokens: row.cache_write_tokens,
-          messageCount: row.message_count,
-        }
+      const aggregate: LoopUsageAggregate = {
+        loopName,
+        totalCost: 0,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalReasoningTokens: 0,
+        totalCacheReadTokens: 0,
+        totalCacheWriteTokens: 0,
+        totalMessageCount: 0,
+        byModel: {},
+        byRole: {},
       }
 
-      return {
-        loopName: aggregate.loop_name,
-        totalCost: aggregate.total_cost,
-        totalInputTokens: aggregate.total_input_tokens,
-        totalOutputTokens: aggregate.total_output_tokens,
-        totalReasoningTokens: aggregate.total_reasoning_tokens,
-        totalCacheReadTokens: aggregate.total_cache_read_tokens,
-        totalCacheWriteTokens: aggregate.total_cache_write_tokens,
-        totalMessageCount: aggregate.total_message_count,
-        byModel,
+      for (const row of rows) {
+        aggregate.totalCost += row.cost
+        aggregate.totalInputTokens += row.input_tokens
+        aggregate.totalOutputTokens += row.output_tokens
+        aggregate.totalReasoningTokens += row.reasoning_tokens
+        aggregate.totalCacheReadTokens += row.cache_read_tokens
+        aggregate.totalCacheWriteTokens += row.cache_write_tokens
+        aggregate.totalMessageCount += row.message_count
+
+        accumulateUsageBucket(aggregate.byModel, row.model, row)
+        accumulateUsageBucket(aggregate.byRole, row.role as LoopSessionUsageRow['role'], row)
       }
+
+      return aggregate
     },
 
     listSessionUsage(projectId: string, loopName: string): LoopSessionUsageRow[] {

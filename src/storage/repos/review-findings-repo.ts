@@ -23,6 +23,11 @@ export interface ReviewFindingsRepo {
   write(row: Omit<ReviewFindingRow, 'createdAt' | 'scenario' | 'sectionIndex'> & { scenario?: string | null; sectionIndex?: number | null }): WriteFindingResult
   listAll(projectId: string, sectionIndex?: number | null): ReviewFindingRow[]
   listByLoopName(projectId: string, loopName: string | null, sectionIndex?: number | null): ReviewFindingRow[]
+  /**
+   * Bug-severity finding count per loop for this project, in one scan. Keyed by
+   * the stored loop name, so findings written without a loop key on `''`.
+   */
+  bugCountsByLoop(projectId: string): Map<string, number>
   listByFile(projectId: string, file: string): ReviewFindingRow[]
   delete(projectId: string, file: string, line: number, scope?: DeleteScope): boolean
   deleteByLoopName(projectId: string, loopName: string): number
@@ -65,6 +70,13 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
     FROM review_findings
     WHERE project_id = ? AND loop_name = ?
     ORDER BY file, line
+  `)
+
+  const stmtBugCountsByLoop = db.prepare(`
+    SELECT loop_name, COUNT(*) AS cnt
+    FROM review_findings
+    WHERE project_id = ? AND severity = 'bug'
+    GROUP BY loop_name
   `)
 
   const stmtListByFile = db.prepare(`
@@ -163,6 +175,11 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
     return mapped
   }
 
+  function bugCountsByLoop(projectId: string): Map<string, number> {
+    const rows = stmtBugCountsByLoop.all(projectId) as { loop_name: string; cnt: number }[]
+    return new Map(rows.map(r => [r.loop_name, r.cnt]))
+  }
+
   function listByFile(projectId: string, file: string): ReviewFindingRow[] {
     const rows = stmtListByFile.all(projectId, file) as Array<{
       project_id: string; file: string; line: number; severity: 'bug' | 'warning';
@@ -201,6 +218,7 @@ export function createReviewFindingsRepo(db: Database): ReviewFindingsRepo {
     write,
     listAll,
     listByLoopName,
+    bugCountsByLoop,
     listByFile,
     delete: deleteFinding,
     deleteByLoopName,

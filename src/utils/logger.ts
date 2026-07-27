@@ -1,18 +1,13 @@
 import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'fs'
 import { dirname } from 'path'
 import type { LoggingConfig } from '../types'
+import { slugifyText } from './format'
 
 const PREFIX = '[OpenCodeForge]'
 const MAX_LOG_FILE_SIZE = 10 * 1024 * 1024
 
 export function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^\w\s-]/g, '')
-    .trim()
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .substring(0, 50)
+  return slugifyText(text).substring(0, 50)
 }
 
 function ensureLogDir(filePath: string): void {

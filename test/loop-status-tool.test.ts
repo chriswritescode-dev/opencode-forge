@@ -1282,6 +1282,87 @@ describe('loop-status cumulative usage', () => {
     expect(result).toContain('anthropic/claude-3-5-sonnet')
   })
 
+  test('per-role totals appear in cumulative usage for an inactive loop', async () => {
+    const { client: forgeClient } = createFakeForgeClient()
+    const logger = createLogger({ enabled: false, file: '' })
+
+    const loopsRepo = createLoopsRepo(db)
+    const plansRepo = createPlansRepo(db)
+    const reviewFindingsRepo = createReviewFindingsRepo(db)
+    const loopSessionUsageRepo = createLoopSessionUsageRepo(db)
+    const loopService = createLoopService(loopsRepo, plansRepo, reviewFindingsRepo, projectId, logger)
+
+    const worktreeDir = `${TEST_DIR}/worktree-usage-perrole-inactive`
+    mkdirSync(worktreeDir, { recursive: true })
+
+    loopService.setState(loopName, {
+      active: false,
+      sessionId: 'session-perrole',
+      loopName,
+      worktreeDir,
+      projectDir: TEST_DIR,
+      worktreeBranch: 'opencode/loop-test-perrole-inactive',
+      iteration: 2,
+      maxIterations: 5,
+      startedAt: new Date().toISOString(),
+      prompt: 'Test prompt per role inactive',
+      phase: 'coding',
+      errorCount: 0,
+      auditCount: 1,
+      status: 'completed',
+      worktree: true,
+      sandbox: false,
+      executionModel: 'test-model',
+      auditorModel: 'test-auditor',
+      workspaceId: 'ws-perrole-inactive',
+      hostSessionId: 'host-perrole-inactive',
+      currentSectionIndex: 0,
+      totalSections: 0,
+      finalAuditDone: false,
+      terminationReason: 'completed',
+      completedAt: new Date().toISOString(),
+    } as any)
+
+    loopSessionUsageRepo.upsertSessionUsage([
+      {
+        projectId, loopName, sessionId: 'session-perrole', role: 'code', model: 'anthropic/claude-3-5-sonnet',
+        cost: 0.0525, inputTokens: 5000, outputTokens: 2500, reasoningTokens: 500,
+        cacheReadTokens: 100, cacheWriteTokens: 200, messageCount: 10, capturedAt: Date.now(),
+      },
+      {
+        projectId, loopName, sessionId: 'session-perrole', role: 'auditor', model: 'anthropic/claude-3-opus',
+        cost: 0.0275, inputTokens: 3000, outputTokens: 1500, reasoningTokens: 300,
+        cacheReadTokens: 60, cacheWriteTokens: 120, messageCount: 4, capturedAt: Date.now(),
+      },
+    ])
+
+    const loopHandler = createLoopEventHandler(loopsRepo, plansRepo, reviewFindingsRepo, projectId, forgeClient, logger, () => ({}), undefined, dbPath, {}, undefined, undefined, undefined, loopSessionUsageRepo)
+    const tools = createLoopTools({
+      client: forgeClient,
+      workspaceStatusRegistry: createNoWaitWorkspaceStatusRegistry(),
+      pendingTeardowns: createPendingTeardownRegistry(),
+      directory: TEST_DIR,
+      config: {},
+      loopService,
+      loopHandler,
+      logger,
+      plansRepo,
+      loopsRepo,
+      projectId,
+      dataDir: dbPath,
+      loop: loopHandler.loop,
+      loopSessionUsageRepo,
+    } as any)
+
+    const result = await tools['loop-status'].execute({
+      name: loopName,
+    }, { sessionID: 'test-session' } as any)
+
+    expect(result).toContain('Per-role usage:')
+    expect(result).toContain('code: $0.0525')
+    expect(result).toContain('auditor: $0.0275')
+  })
+
   test('inactive loop uses persisted-only when final session is already persisted', async () => {
     const { client: forgeClient } = createFakeForgeClient({
       session: {
@@ -1546,6 +1627,9 @@ describe('loop-status cumulative usage', () => {
     expect(result).toContain('Cumulative Usage:')
     expect(result).toContain('openai/gpt-4o')
     expect(result).not.toContain('default/session model')
+    // Live usage carries an auditor-role attribution through to the per-role block.
+    expect(result).toContain('Per-role usage:')
+    expect(result).toContain('auditor: $0.0250')
   })
 })
 

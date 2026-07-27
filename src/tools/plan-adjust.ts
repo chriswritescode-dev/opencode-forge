@@ -1,6 +1,6 @@
 import { tool } from '@opencode-ai/plugin'
 import type { ToolContext } from './types'
-import { MAX_TOTAL_SECTIONS } from '../loop/service'
+import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 
 const z = tool.schema
 

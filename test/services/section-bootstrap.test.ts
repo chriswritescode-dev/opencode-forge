@@ -1,5 +1,6 @@
 import { describe, test, expect, vi } from 'vitest'
 import { applyPlanDecomposition } from '../../src/services/section-bootstrap'
+import { MAX_TOTAL_SECTIONS } from '../../src/constants/loop'
 import type { LoopsRepo } from '../../src/storage/repos/loops-repo'
 import type { SectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 
@@ -120,6 +121,66 @@ describe('applyPlanDecomposition', () => {
     // First section startedAt set
     expect(sectionPlansRepo.setStartedAt).toHaveBeenCalledTimes(1)
     expect(sectionPlansRepo.setStartedAt).toHaveBeenCalledWith(PROJECT_ID, LOOP_NAME, 0, expect.any(Number))
+  })
+
+  test('20-section plan sets total_sections=20 and inserts 20 section_plans rows', () => {
+    const loopsRepo = buildSpyLoopsRepo()
+    const sectionPlansRepo = buildSpySectionPlansRepo()
+
+    const planText = Array.from({ length: 20 }, (_, i) =>
+      [
+        '<!-- forge-section -->',
+        `## Phase ${i + 1}`,
+        '',
+        `Body ${i + 1}.`,
+      ].join('\n'),
+    ).join('\n')
+
+    const result = applyPlanDecomposition({
+      projectId: PROJECT_ID,
+      loopName: LOOP_NAME,
+      planText,
+      loopsRepo,
+      sectionPlansRepo,
+    })
+
+    expect(result).toEqual({ totalSections: 20 })
+
+    expect(sectionPlansRepo.bulkInsert).toHaveBeenCalledTimes(1)
+    const bulkInsertArgs = vi.mocked(sectionPlansRepo.bulkInsert).mock.calls[0][0]
+    expect(bulkInsertArgs.sections).toHaveLength(20)
+    expect(bulkInsertArgs.sections[0].title).toBe('Phase 1')
+    expect(bulkInsertArgs.sections[19].title).toBe('Phase 20')
+
+    expect(loopsRepo.setTotalSections).toHaveBeenCalledTimes(1)
+    expect(loopsRepo.setTotalSections).toHaveBeenCalledWith(PROJECT_ID, LOOP_NAME, 20)
+  })
+
+  test('30-section plan is capped at MAX_TOTAL_SECTIONS', () => {
+    const loopsRepo = buildSpyLoopsRepo()
+    const sectionPlansRepo = buildSpySectionPlansRepo()
+
+    const planText = Array.from({ length: 30 }, (_, i) =>
+      [
+        '<!-- forge-section -->',
+        `## Phase ${i + 1}`,
+        '',
+        `Body ${i + 1}.`,
+      ].join('\n'),
+    ).join('\n')
+
+    const result = applyPlanDecomposition({
+      projectId: PROJECT_ID,
+      loopName: LOOP_NAME,
+      planText,
+      loopsRepo,
+      sectionPlansRepo,
+    })
+
+    expect(result).toEqual({ totalSections: MAX_TOTAL_SECTIONS })
+    const bulkInsertArgs = vi.mocked(sectionPlansRepo.bulkInsert).mock.calls[0][0]
+    expect(bulkInsertArgs.sections).toHaveLength(MAX_TOTAL_SECTIONS)
+    expect(loopsRepo.setTotalSections).toHaveBeenCalledWith(PROJECT_ID, LOOP_NAME, MAX_TOTAL_SECTIONS)
   })
 
   test('no-marker plan: returns 0, does not persist sections', () => {

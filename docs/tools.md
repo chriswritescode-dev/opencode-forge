@@ -9,6 +9,8 @@ See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](c
 | Tool | Purpose | Source |
 |---|---|---|
 | `plan-read` | Read the current session or loop plan, or list/search recent project plans. | [`src/tools/plan-kv.ts`](../src/tools/plan-kv.ts) |
+| `plan-write` | Create, overwrite, or append the stored session plan. | [`src/tools/plan-authoring.ts`](../src/tools/plan-authoring.ts) |
+| `plan-edit` | Edit the stored session plan by exact string replacement. | [`src/tools/plan-authoring.ts`](../src/tools/plan-authoring.ts) |
 | `section-read` | Read a section plan and status for the active loop session. | [`src/tools/section-read.ts`](../src/tools/section-read.ts) |
 | `plan-adjust` | Revise the section under audit and/or replace the remaining (not yet started) sections of the active loop plan; auditor-only, logged as a plan amendment. | [`src/tools/plan-adjust.ts`](../src/tools/plan-adjust.ts) |
 | `review-write` | Store a review finding. | [`src/tools/review.ts`](../src/tools/review.ts) |
@@ -36,6 +38,33 @@ Arguments:
 | `loop_name` | Optional loop name to read a loop-scoped plan directly. |
 | `session_id` | Explicit session ID to read from. |
 | `recent` | List or search recent project-scoped plans. |
+
+### `plan-write`
+
+Creates, overwrites, or appends the plan stored for the current session — the plan of record read by `plan-read`, the approval hook, `execute-plan`, and the TUI plan dialog. Author long plans incrementally with `append` instead of emitting the whole plan in chat. Outer `<!-- forge-plan:start -->` / `<!-- forge-plan:end -->` markers are optional and stripped. Available to architect and architect-auto sessions; denied in code, auditor, auditor-loop, and feature-splitter sessions, and inside loop/audit sessions.
+
+Denied when the session owns a running loop: a running loop's plan is amended only with `plan-adjust` during a section audit. On success the tool persists the plan through the shared session-scoped write path and returns a structure report: a `Plan stored: N lines, M chars.` line, the detected `Loop Name:` when present, the numbered `Sections (N):` the decomposer would emit, and a `Warnings:` block when any apply.
+
+Arguments:
+
+| Argument | Description |
+|---|---|
+| `content` | Plan markdown. Use `<!-- forge-section -->` markers before each `## Phase` heading. Outer plan markers are optional and stripped. |
+| `append` | Append to the existing stored plan instead of replacing it. Two newlines are inserted between the existing content and the new fragment. Creates the plan when none exists. |
+
+### `plan-edit`
+
+Edits the stored session plan by exact string replacement, the same way the Edit tool edits a file. Use `plan-read` to inspect the current text first; do not include `plan-read`'s `N:` line-number prefixes (with trailing space) in `oldString`. Subject to the same availability and running-loop guard as `plan-write`. On success the tool rewrites the plan through the shared session-scoped write path and returns a `Replaced N occurrence(s).` line followed by a structure report.
+
+Arguments:
+
+| Argument | Description |
+|---|---|
+| `oldString` | Exact text to replace, including indentation. Must match exactly once unless `replaceAll` is true. |
+| `newString` | Replacement text. Must differ from `oldString`. |
+| `replaceAll` | Replace every occurrence instead of requiring a unique match. |
+
+`plan-write` and `plan-edit` author the plan before execution; `plan-adjust` amends an already-running sectioned loop's plan during a section audit and is auditor-only.
 
 ## Section Tools
 

@@ -9,7 +9,7 @@ See also: [Tools](tools.md), [Configuration](configuration.md), [Loop System](lo
 | Agent | Mode | Description |
 |---|---|---|
 | `code` | `all` | Primary implementation agent. |
-| `architect` | `primary` | Read-only planning agent. Produces marked plans for approval and execution. |
+| `architect` | `primary` | Read-only planning agent. Authors the stored plan with `plan-write`/`plan-edit` for approval and execution; marked plans in chat are still captured. |
 | `auditor` | `subagent` | Read-only code review agent for convention-aware reviews. |
 | `auditor-loop` | `primary`, hidden | Internal auditor used by loop audit sessions. |
 
@@ -27,6 +27,8 @@ Excluded tools:
 - `multiedit`
 - `plan`
 - `plan_exit`
+- `plan-write`
+- `plan-edit`
 - `execute-plan`
 - `execute-goal`
 - `loop-cancel`
