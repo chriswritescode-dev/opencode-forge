@@ -13,7 +13,7 @@ import { deriveExecutionPreferencesFromWorkspaces } from './tui-execution-prefer
 import { parseModelString } from './model-fallback'
 import { listConnectedWorkspaces } from './workspace-listing'
 import { type ForgeLoopExtra } from '../services/execution'
-import { buildLoopPermissionRuleset, MAX_TOTAL_SECTIONS } from '../constants/loop'
+import { buildLoopPermissionRuleset } from '../constants/loop'
 import { getForgeWorkspaceLoopName, removeExistingForgeLoopWorkspaces, getWorktreeProjectPreconditionError } from '../workspace/forge-worktree'
 import { classifyWorkspaceCreateThrow } from '../workspace/workspace-create-error'
 import { fetchLoopsList, fetchStoredSessionPlan } from './tui-loop-store'
@@ -235,7 +235,7 @@ async function waitForWorkspacePluginSettle(workspaceId: string): Promise<void> 
 }
 
 function buildTuiLoopInitialPrompt(planText: string): string {
-  const sections = decomposeDeterministically(planText, { maxSections: MAX_TOTAL_SECTIONS })
+  const sections = decomposeDeterministically(planText)
   const firstSection = sections[0]
   if (!firstSection) return planText
 

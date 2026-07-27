@@ -174,6 +174,7 @@ export function renderDashboardHtml(): string {
   .loop-picker-option-current .loop-picker-option-name { color: var(--link); font-weight: 600; }
   .loop-picker-option-when { color: var(--fg-2); font-family: var(--mono); font-size: 0.72rem; white-space: nowrap; }
   .loop-picker-empty { padding: 6px 8px; color: var(--fg-2); font-size: 0.8rem; }
+  .loop-picker-cap { padding: 5px 8px; font-size: 0.76rem; color: var(--fg-dim); border-top: 1px solid var(--divider); }
   .breadcrumb-path {
     margin-left: auto; color: var(--fg-2); font-family: var(--mono);
     font-size: 0.78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -365,6 +366,11 @@ export function renderDashboardHtml(): string {
   .markdown-content a:hover { text-decoration: underline; }
   .markdown-content img { max-width: 100%; border-radius: 4px; }
   .loop-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  .loop-table-wrap { display: flex; flex-direction: column; gap: 6px; }
+  .list-cap-notice { display: flex; align-items: center; gap: 8px; padding: 6px 4px; font-size: 0.78rem; color: var(--fg-dim); }
+  .list-cap-text { color: var(--fg-dim); }
+  .list-cap-show-all { padding: 2px 8px; font: inherit; color: var(--fg-0); background: var(--panel); border: 1px solid var(--divider); border-radius: var(--r-1); cursor: pointer; }
+  .list-cap-show-all:hover { border-color: var(--fg-0); }
   .loop-table th { text-align: left; font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.05em;
     color: var(--cancelled); font-weight: 600; padding: 6px 10px; border-bottom: 1px solid var(--divider); white-space: nowrap; }
   .loop-table td { padding: 7px 10px; border-bottom: 1px solid var(--surface); vertical-align: middle; }

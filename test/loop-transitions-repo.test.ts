@@ -154,6 +154,41 @@ describe('LoopTransitionsRepo', () => {
     })
   })
 
+  describe('listForProject', () => {
+    test('buckets each loop of the project, keeping the newest rows ascending', () => {
+      const otherLoop = 'other-loop'
+      const otherProject = 'other-project'
+      db.run(`INSERT INTO loops (project_id, loop_name) VALUES (?, ?)`, [projectId, otherLoop])
+      db.run(`INSERT INTO loops (project_id, loop_name) VALUES (?, ?)`, [otherProject, loopName])
+      for (let i = 0; i < 5; i++) {
+        repo.insert(baseRow({ iteration: i }))
+        repo.insert(baseRow({ loopName: otherLoop, iteration: i * 10 }))
+        repo.insert(baseRow({ projectId: otherProject, iteration: i }))
+      }
+
+      const byLoop = repo.listForProject(projectId, 3)
+
+      expect([...byLoop.keys()].sort()).toEqual([loopName, otherLoop].sort())
+      // Newest-3 per loop, returned oldest-to-newest — same window as listForLoop.
+      expect(byLoop.get(loopName)!.map(r => r.iteration)).toEqual([2, 3, 4])
+      expect(byLoop.get(otherLoop)!.map(r => r.iteration)).toEqual([20, 30, 40])
+      expect(byLoop.get(loopName)!.map(r => r.iteration)).toEqual(repo.listForLoop(projectId, loopName, 3).map(r => r.iteration))
+      // Other projects never leak into the bucket.
+      for (const rows of byLoop.values()) {
+        expect(rows.every(r => r.projectId === projectId)).toBe(true)
+      }
+    })
+
+    test('omits loops with no transitions and returns an empty map for an unknown project', () => {
+      db.run(`INSERT INTO loops (project_id, loop_name) VALUES (?, ?)`, [projectId, 'silent-loop'])
+      repo.insert(baseRow())
+
+      const byLoop = repo.listForProject(projectId, 100)
+      expect([...byLoop.keys()]).toEqual([loopName])
+      expect(repo.listForProject('nope', 100).size).toBe(0)
+    })
+  })
+
   describe('FK cascade on loop delete', () => {
     test('deleting the loop row cascades to loop_transitions', () => {
       repo.insert(baseRow({ eventType: 'a', iteration: 0 }))

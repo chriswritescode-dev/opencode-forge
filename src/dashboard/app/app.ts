@@ -1,10 +1,9 @@
-import { createSignal, createMemo, createEffect, onMount, onCleanup, untrack } from 'solid-js'
+import { createSignal, createMemo, createEffect, onMount, onCleanup, untrack, on, batch } from 'solid-js'
 import { createStore, reconcile } from 'solid-js/store'
 import html from 'solid-js/html'
 import type { DashboardPayload, DashboardProject, DashboardLoop, DashboardGroup } from './types'
-import type { DashboardRoute, SortMode } from './helpers'
-import { parseDashboardHash, buildDashboardHash, syncHash, dataHash, loopMatchesFilters, buildRepoLabels, sortLoops, tabsForLoop } from './helpers'
-import type { LoopTab } from './helpers'
+import type { DashboardRoute, SortMode, RepoSection, LoopTab } from './helpers'
+import { parseDashboardHash, buildDashboardHash, syncHash, dataHash, loopMatchesFilters, buildRepoLabels, repoRawPath, repoLabel, loopActivityAt, sortLoops, tabsForLoop, sameList, fmtTime } from './helpers'
 import {
   FilterBar,
   Timestamp,
@@ -32,7 +31,26 @@ export function App() {
     projects: [],
   })
   const [loaded, setLoaded] = createSignal(false)
-  const [route, setRoute] = createSignal<DashboardRoute>(parseDashboardHash(''))
+  const initialRoute = parseDashboardHash(typeof location !== 'undefined' ? location.hash : '')
+  const [projectId, setProjectId] = createSignal<string | null>(initialRoute.projectId)
+  const [section, setSection] = createSignal<RepoSection>(initialRoute.section)
+  const [loopName, setLoopName] = createSignal<string | null>(initialRoute.loopName)
+  const [tab, setTab] = createSignal<LoopTab>(initialRoute.tab)
+  const [groupId, setGroupId] = createSignal<string | null>(initialRoute.groupId)
+  const [statuses, setStatuses] = createSignal<string[]>(initialRoute.statuses, { equals: sameList })
+  const [query, setQuery] = createSignal(initialRoute.query)
+  // Rebuilt only for the hash-serialisation boundary and the scope key; the
+  // derived memos below read the individual fields so a tab change no longer
+  // invalidates the filter/match pass.
+  const route = createMemo<DashboardRoute>(() => ({
+    projectId: projectId(),
+    section: section(),
+    loopName: loopName(),
+    tab: tab(),
+    groupId: groupId(),
+    statuses: statuses(),
+    query: query(),
+  }))
   const [loadError, setLoadError] = createSignal<string | null>(null)
   const [sortMode, setSortMode] = createSignal<SortMode>('recent')
   const [externalNav, setExternalNav] = createSignal(0)
@@ -44,10 +62,40 @@ export function App() {
 
   // ── Data fetching ───────────────────────────────────────────────────────
 
+  const scopedDataUrl = (): string => {
+    const r = untrack(route)
+    const params = new URLSearchParams()
+    if (r.projectId) params.set('project', r.projectId)
+    if (r.loopName) params.set('loop', r.loopName)
+    const qs = params.toString()
+    return qs ? '/api/data?' + qs : '/api/data'
+  }
+
+  // Request coordination: every issued load() bumps the generation counter and
+  // records the scoped URL it was issued for. A response is accepted only if
+  // its generation still matches the latest issued request, so a late response
+  // from a superseded scope (a navigation mid-flight, or two rapid scope
+  // changes) can never clobber the current scope's data. While a request is in
+  // flight for the current scoped URL, subsequent calls (the 5s interval poll)
+  // are coalesced rather than bumping the generation — otherwise a slow
+  // /api/data response would be permanently invalidated by every tick and
+  // never render. A genuine scope change still issues a fresh request
+  // immediately because its URL differs from the in-flight URL. The hash check
+  // still dedups identical payloads.
+  let loadGen = 0
+  const inFlight = { url: null as string | null, gen: 0 }
+
   const load = async () => {
+    const url = scopedDataUrl()
+    if (inFlight.url === url) return // coalesce overlapping same-scope polls
+    const gen = ++loadGen
+    inFlight.url = url
+    inFlight.gen = gen
     try {
-      const res = await fetch('/api/data', { cache: 'no-store' })
+      const res = await fetch(url, { cache: 'no-store' })
+      if (gen !== loadGen) return
       const json: DashboardPayload = await res.json()
+      if (gen !== loadGen) return
       const hash = dataHash(json)
       if (hash !== lastDataHashRef.current) {
         lastDataHashRef.current = hash
@@ -65,21 +113,45 @@ export function App() {
       }
       setNow(Date.now())
     } catch (err: unknown) {
+      if (gen !== loadGen) return
       const msg = err instanceof Error ? err.message : String(err)
       setLoadError('Failed to load dashboard data: ' + msg)
+    } finally {
+      if (inFlight.gen === gen) {
+        inFlight.url = null
+        inFlight.gen = 0
+      }
     }
   }
 
   // ── Navigation ──────────────────────────────────────────────────────────
 
+  const applyRoute = (next: DashboardRoute) => {
+    batch(() => {
+      setProjectId(next.projectId)
+      setSection(next.section)
+      setLoopName(next.loopName)
+      setTab(next.tab)
+      setGroupId(next.groupId)
+      setStatuses(next.statuses)
+      setQuery(next.query)
+    })
+  }
+
   const navigate = (patch: Partial<DashboardRoute>) => {
-    setRoute(r => {
-      const next: DashboardRoute = { ...r, ...patch }
-      if (patch.projectId !== undefined && patch.projectId !== r.projectId) {
-        next.statuses = []
-        next.query = ''
+    batch(() => {
+      const projectChanged = patch.projectId !== undefined && patch.projectId !== projectId()
+      if (patch.projectId !== undefined) setProjectId(patch.projectId)
+      if (patch.section !== undefined) setSection(patch.section)
+      if (patch.loopName !== undefined) setLoopName(patch.loopName)
+      if (patch.tab !== undefined) setTab(patch.tab)
+      if (patch.groupId !== undefined) setGroupId(patch.groupId)
+      if (patch.statuses !== undefined) setStatuses(patch.statuses)
+      if (patch.query !== undefined) setQuery(patch.query)
+      if (projectChanged) {
+        setStatuses([])
+        setQuery('')
       }
-      return next
     })
   }
 
@@ -94,7 +166,7 @@ export function App() {
   // ── Event handlers ──────────────────────────────────────────────────────
 
   const toggleStatus = (key: string) => {
-    const next = new Set(route().statuses)
+    const next = new Set(statuses())
     if (next.has(key)) next.delete(key)
     else next.add(key)
     navigate({ statuses: [...next] })
@@ -110,23 +182,20 @@ export function App() {
 
   // ── Derived memos ───────────────────────────────────────────────────────
 
-  const activeStatusSet = createMemo(() => new Set(route().statuses))
+  const activeStatusSet = createMemo(() => new Set(statuses()))
 
-  const repoLabels = createMemo(() =>
-    buildRepoLabels(state.projects.map(p => p.projectDir || p.projectId || '')),
-  )
+  const repoLabels = createMemo(() => buildRepoLabels(state.projects.map(repoRawPath)))
 
   const matchedByProject = createMemo<MatchedEntry[]>(() => {
     if (!loaded() || state.projects.length === 0) return []
     const statuses = activeStatusSet()
-    const search = route().query
+    const search = query()
     const labels = repoLabels()
     const result: MatchedEntry[] = []
     const q = search.trim().toLowerCase()
     for (const proj of state.projects) {
       const matched: DashboardLoop[] = []
-      const rawPath = proj.projectDir || proj.projectId || ''
-      const label = labels.get(rawPath) ?? rawPath
+      const label = repoLabel(labels, proj)
       for (const dashLoop of proj.loops) {
         if (loopMatchesFilters(dashLoop.loop, statuses, search, label)) {
           matched.push(dashLoop)
@@ -142,32 +211,33 @@ export function App() {
     return result
   })
 
-  const atRepoIndex = createMemo(() => route().projectId === null)
+  const atRepoIndex = createMemo(() => projectId() === null)
 
-  const atGroupsSection = createMemo(() => route().section === 'groups')
-  const atLoopsSection = createMemo(() => route().section === 'loops')
-  const atFindingsSection = createMemo(() => route().section === 'findings')
-  const atPlansSection = createMemo(() => route().section === 'plans')
+  const atGroupsSection = createMemo(() => section() === 'groups')
+  const atLoopsSection = createMemo(() => section() === 'loops')
+  const atFindingsSection = createMemo(() => section() === 'findings')
+  const atPlansSection = createMemo(() => section() === 'plans')
 
   const selectedEntry = createMemo<MatchedEntry | null>(() => {
     const entries = matchedByProject()
-    const pid = route().projectId
+    const pid = projectId()
     if (!pid) return null
     return entries.find(e => e.proj.projectId === pid) ?? null
   })
 
-  const activeLoop = createMemo<DashboardLoop | null>(() => {
-    const r = route()
-    if (!r.projectId || !r.loopName) return null
-    const proj = selectedRepoProject()
-    if (!proj) return null
-    return proj.loops.find(l => l.loop.loopName === r.loopName) ?? null
-  })
-
   const selectedRepoProject = createMemo<DashboardProject | null>(() => {
-    const pid = route().projectId
+    const pid = projectId()
     if (!pid) return null
     return state.projects.find(p => p.projectId === pid) ?? null
+  })
+
+  const activeLoop = createMemo<DashboardLoop | null>(() => {
+    const pid = projectId()
+    const name = loopName()
+    if (!pid || !name) return null
+    const proj = selectedRepoProject()
+    if (!proj) return null
+    return proj.loops.find(l => l.loop.loopName === name) ?? null
   })
 
   const sectionCounts = createMemo(() => {
@@ -178,7 +248,7 @@ export function App() {
     let plans = 0
     for (const dl of proj.loops) {
       findings += dl.findings.length
-      if (dl.plan) plans++
+      if (dl.hasPlan) plans++
     }
     return { loops: proj.loops.length, groups, findings, plans }
   })
@@ -187,12 +257,15 @@ export function App() {
     const proj = selectedRepoProject()
     if (!proj) return []
     return proj.loops
-      .map(dl => ({ name: dl.loop.loopName, when: dl.loop.completedAt || dl.loop.startedAt || 0 }))
+      .map(dl => {
+        const when = loopActivityAt(dl.loop)
+        return { name: dl.loop.loopName, when, whenLabel: fmtTime(when) }
+      })
       .sort((a, b) => (b.when - a.when) || a.name.localeCompare(b.name))
   })
 
   const currentLoopIndex = createMemo(() => {
-    const name = route().loopName
+    const name = loopName()
     if (!name) return -1
     return repoLoopOptions().findIndex(o => o.name === name)
   })
@@ -202,12 +275,27 @@ export function App() {
     if (i < 0) return null
     const options = repoLoopOptions()
     if (options.length <= 1) return null
+    // The equality option below preserves the breadcrumb DOM when only the
+    // neighbour identities change. The callbacks therefore cannot close over
+    // `i`/`options` — a retained node must read the current index and option
+    // set at click time so a poll that re-orders neighbours navigates to the
+    // current adjacent loop, not the stale one captured at memo run.
     return {
       index: i,
       total: options.length,
-      onPrev: () => { if (i > 0) navigate({ loopName: options[i - 1].name }) },
-      onNext: () => { if (i < options.length - 1) navigate({ loopName: options[i + 1].name }) },
+      onPrev: () => {
+        const cur = currentLoopIndex()
+        const opts = repoLoopOptions()
+        if (cur > 0) navigate({ loopName: opts[cur - 1].name })
+      },
+      onNext: () => {
+        const cur = currentLoopIndex()
+        const opts = repoLoopOptions()
+        if (cur < opts.length - 1) navigate({ loopName: opts[cur + 1].name })
+      },
     }
+  }, null, {
+    equals: (a, b) => a === b || (!!a && !!b && a.index === b.index && a.total === b.total),
   })
 
   const selectedRepoCounts = createMemo(() => {
@@ -232,16 +320,16 @@ export function App() {
   // only the loop's fields update in place via the reactive reads inside it.
 
   const breadcrumbView = createMemo(() => {
-    const r = route()
-    if (!r.projectId) return ''
+    const name = loopName()
+    if (!projectId()) return ''
     const proj = selectedRepoProject()
     if (!proj) return ''
-    const rawPath = proj.projectDir || proj.projectId || ''
-    const label = repoLabels().get(rawPath) ?? rawPath
+    const rawPath = repoRawPath(proj)
+    const label = repoLabel(repoLabels(), proj)
     return untrack(() => Breadcrumb({
       repoLabel: label,
       projectDir: rawPath,
-      loopName: r.loopName,
+      loopName: name,
       loops: repoLoopOptions,
       loopNav,
       onSelectLoop: (name: string) => navigate({ loopName: name }),
@@ -251,18 +339,18 @@ export function App() {
   })
 
   const sectionNavView = createMemo(() => {
-    const r = route()
-    if (!r.projectId || r.loopName) return ''
+    const pid = projectId()
+    const name = loopName()
+    if (!pid || name) return ''
     return SectionNav({
-      section: r.section,
+      section: section(),
       counts: sectionCounts(),
       onNavigate: (section) => navigate({ section, loopName: null, groupId: null }),
     }) as Node
   })
 
   const filterBarVisible = createMemo(() => {
-    const r = route()
-    return r.projectId !== null && r.loopName === null && r.section === 'loops'
+    return projectId() !== null && loopName() === null && section() === 'loops'
   })
 
   const filterBarView = createMemo<Node | string>(() => {
@@ -270,7 +358,7 @@ export function App() {
     return untrack(() => FilterBar({
       counts: selectedRepoCounts,
       statuses: activeStatusSet,
-      query: () => route().query,
+      query,
       sortMode,
       onToggleStatus: toggleStatus,
       onChangeQuery: handleChangeQuery,
@@ -286,23 +374,24 @@ export function App() {
       ? (LoopDetail({
           dashLoop: loop,
           now,
-          routeTab: () => route().tab,
+          routeTab: tab,
           onSelectTab: selectTab,
         }) as Node)
       : ''
   })
 
+  const visibleLoops = createMemo<DashboardLoop[]>(() => {
+    const e = selectedEntry()
+    return e ? sortLoops(e.loops, sortMode()) : []
+  }, [], { equals: sameList })
+
   const listView = createMemo<Node | string>(() => {
     if (!atLoopsSection()) return ''
     if (activeLoop()) return ''
-    const r = route()
-    if (!r.projectId) return ''
+    if (!projectId()) return ''
     return html`<div class="repo-loop-pane">
       ${LoopTable({
-        loops: () => {
-          const e = selectedEntry()
-          return e ? sortLoops(e.loops, sortMode()) : []
-        },
+        loops: visibleLoops,
         now,
         onOpen: (name: string) => openLoop(name),
       })}
@@ -311,11 +400,10 @@ export function App() {
   })
 
   const selectedGroup = createMemo<DashboardGroup | null>(() => {
-    const r = route()
-    if (r.section !== 'groups' || !r.groupId) return null
+    if (section() !== 'groups' || !groupId()) return null
     const proj = selectedRepoProject()
     if (!proj) return null
-    return proj.groups.find(g => g.group.groupId === r.groupId) ?? null
+    return proj.groups.find(g => g.group.groupId === groupId()) ?? null
   })
 
   const repoLoopNames = createMemo(() => {
@@ -326,13 +414,13 @@ export function App() {
 
   const groupsView = createMemo<Node | string>(() => {
     if (!atGroupsSection()) return ''
-    const r = route()
-    if (!r.projectId) return ''
-    if (r.groupId) {
+    const pid = projectId()
+    if (!pid) return ''
+    if (groupId()) {
       return GroupDetail({
         group: selectedGroup,
         loopNames: repoLoopNames,
-        projectId: () => route().projectId,
+        projectId: () => projectId(),
         onBack: () => navigate({ groupId: null }),
         onOpenLoop: openLoop,
       }) as Node
@@ -350,19 +438,19 @@ export function App() {
 
   const findingsView = createMemo<Node | string>(() => {
     if (!atFindingsSection()) return ''
-    const r = route()
-    if (!r.projectId) return ''
+    const pid = projectId()
+    if (!pid) return ''
     return FindingsPanel({
       loops: repoAllLoops,
-      projectId: () => route().projectId,
+      projectId: () => projectId(),
       onOpenLoop: openLoop,
     }) as Node
   })
 
   const plansView = createMemo<Node | string>(() => {
     if (!atPlansSection()) return ''
-    const r = route()
-    if (!r.projectId) return ''
+    const pid = projectId()
+    if (!pid) return ''
     return PlansPanel({
       loops: repoAllLoops,
       onOpenLoop: openLoop,
@@ -373,33 +461,39 @@ export function App() {
 
   createEffect(() => {
     if (!loaded()) return
-    const r = route()
-    if (r.projectId === null) return
-    const exists = state.projects.some(p => p.projectId === r.projectId)
+    const pid = projectId()
+    if (pid === null) return
+    const exists = state.projects.some(p => p.projectId === pid)
     if (!exists) {
-      setRoute(prev => ({ ...prev, projectId: null, loopName: null, section: 'loops', statuses: [], query: '' }))
+      setProjectId(null)
+      setLoopName(null)
+      setSection('loops')
+      setStatuses([])
+      setQuery('')
     }
   })
 
   createEffect(() => {
-    const r = route()
-    if (!r.projectId || !r.loopName) return
+    const pid = projectId()
+    const name = loopName()
+    if (!pid || !name) return
     const proj = selectedRepoProject()
     if (!proj) return
-    const exists = proj.loops.some(l => l.loop.loopName === r.loopName)
+    const exists = proj.loops.some(l => l.loop.loopName === name)
     if (!exists) {
-      setRoute(prev => ({ ...prev, loopName: null }))
+      setLoopName(null)
     }
   })
 
   createEffect(() => {
-    const r = route()
-    if (!r.projectId || !r.loopName || r.tab === 'overview') return
+    const name = loopName()
+    const t = tab()
+    if (!projectId() || !name || t === 'overview') return
     const loop = activeLoop()
     if (!loop) return
     const tabs = tabsForLoop(loop)
-    if (!tabs.includes(r.tab)) {
-      setRoute(prev => ({ ...prev, tab: 'overview' }))
+    if (!tabs.includes(t)) {
+      setTab('overview')
     }
   })
 
@@ -408,12 +502,26 @@ export function App() {
     syncHash(buildDashboardHash(route()), suppressHashChangeRef)
   })
 
+  // A scope change means the server owes us different detail; poll immediately
+  // rather than waiting up to 5s. The previous detail stays rendered until the
+  // response lands, so reconcile swaps content in place and the keep-mounted
+  // node identity contract is preserved. `on(..., { defer: true })` runs the
+  // effect only on subsequent scopeKey changes, never on first execution, so
+  // the initial mount issues exactly one request (via onMount's load()).
+  const scopeKey = createMemo(() => (projectId() ?? '') + '\u0000' + (loopName() ?? ''))
+  createEffect(on(scopeKey, () => {
+    void load()
+  }, { defer: true }))
+
   // ── Lifecycle ───────────────────────────────────────────────────────────
 
   onMount(() => {
-    setRoute(parseDashboardHash(location.hash))
+    // Route was already adopted from `location.hash` at signal setup. Syncing
+    // here again is a no-op for scope (and thus for the deferred scope effect),
+    // so the explicit load() below is the one and only initial fetch.
+    applyRoute(parseDashboardHash(location.hash))
 
-    // Initial load + poll
+    // Initial load + background poll.
     load()
     const id = setInterval(() => {
       load()
@@ -425,7 +533,7 @@ export function App() {
         suppressHashChangeRef.current = false
         return
       }
-      setRoute(parseDashboardHash(location.hash))
+      applyRoute(parseDashboardHash(location.hash))
       setExternalNav(n => n + 1)
     }
     window.addEventListener('hashchange', onHashChange)

@@ -3,6 +3,7 @@ import { mkdirSync, existsSync } from 'fs'
 import { openSqliteWithIntegrityGuard } from './sqlite-open'
 import { migrations } from './migrations'
 import { sweepExpiredLoops } from './sweep'
+import { resolveForgeDbPath } from '../utils/opencode-paths'
 
 // Path resolvers live in a sqlite-free module so lightweight consumers (e.g. permission
 // rulesets) can import them without pulling in the storage layer. Re-exported here to keep
@@ -12,6 +13,7 @@ export {
   resolveDataDir,
   resolveOpencodeToolOutputDir,
   resolveLogPath,
+  resolveForgeDbPath,
 } from '../utils/opencode-paths'
 
 const FORGE_PRAGMAS = [
@@ -89,7 +91,7 @@ export function initializeDatabase(dataDir: string, options?: ForgeDatabaseOptio
     mkdirSync(dataDir, { recursive: true })
   }
 
-  const dbPath = `${dataDir}/forge.db`
+  const dbPath = resolveForgeDbPath(dataDir)
   const key = cacheKey(dbPath, options)
   const cached = dbCache.get(key)
   if (cached) {

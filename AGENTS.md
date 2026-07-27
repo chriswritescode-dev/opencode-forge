@@ -23,6 +23,8 @@
 - Keep the section-summary markers in `src/prompts/agents/auditor-loop-addendum.md` synchronized with the constants in `src/utils/section-summary.ts`.
 - `MAX_TOTAL_SECTIONS` in `src/constants/loop.ts` is the single section cap; the decomposer, section bootstrap, plan structure summary, TUI inline plan preview and `plan-adjust` all read it, and the architect system reminder in `src/index.ts` interpolates it. `src/prompts/agents/architect.md` is prose and repeats the number literally — update it when the cap changes.
 - `PLAN_AUTHORING_TOOL_NAMES` in `src/constants/loop.ts` is the single list of plan-authoring tools; the `code`, `auditor`, and `feature-splitter` tool-exclude lists and both permission rulesets derive their deny entries from it.
+- `LoopService.resolveActiveLoopForSession` is the only correct "is this session inside a running loop" check. `resolveLoopName` matches terminated loops too, so using it as an activity guard blocks a session forever after its loop ends.
+- `resolveForgeDbPath` in `src/utils/opencode-paths.ts` is the only place `<dataDir>/forge.db` is built; every entry point must route through it so a configured `dataDir` is honoured uniformly.
 
 ## Dashboard and storage gotchas
 

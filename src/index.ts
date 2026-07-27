@@ -38,6 +38,7 @@ import { parseModelString } from './utils/model-fallback'
 import { parseFeatureList } from './utils/feature-list-parser'
 import { classifyArchitectOutput } from './utils/architect-auto-output'
 import { resolveSessionPlanOfRecord } from './services/plan-capture'
+import { PLAN_CAPTURE_MESSAGE_LIMIT } from './utils/marked-plan-parser'
 import { createForgeExecutionService, type ForgeExecutionRequestContext } from './services/execution'
 
 export interface CreateParentSessionLookupOptions {
@@ -498,7 +499,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 
     // Returns the newest assistant text part across a session's messages, or null if none.
     async function findLatestAssistantText(sessionId: string): Promise<string | null> {
-      const messages = await forgeClient.session.messages({ sessionID: sessionId, directory, limit: 20 })
+      const messages = await forgeClient.session.messages({ sessionID: sessionId, directory, limit: PLAN_CAPTURE_MESSAGE_LIMIT })
       const msgs = (messages ?? []) as Array<{ info: { role?: string }; parts: Array<{ type: string; text?: string }> }>
       for (let i = msgs.length - 1; i >= 0; i--) {
         const msg = msgs[i]

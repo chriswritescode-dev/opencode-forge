@@ -3,6 +3,7 @@ import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from '@opencode-ai/plug
 import { createEffect, createMemo, createSignal, Show, untrack } from 'solid-js'
 import { VERSION } from './version'
 import { loadPluginConfig, resolveBundledContainerDir } from './setup'
+import { resolveForgeDbPath } from './storage'
 import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
 import { createExecutionContextCache } from './utils/tui-execution-context-cache'
 import type { PluginConfig } from './types'
@@ -13,7 +14,6 @@ import { ExecutePlanPanel, type ExecutePlanPanelProps } from './tui/execute-plan
 import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/session-follow'
 import { openInBrowser, startDashboardServer, type DashboardServerHandle } from './dashboard/launch'
 import { normalizePastedPlanText } from './utils/marked-plan-parser'
-import { join } from 'path'
 
 type TuiKeybinds = {
   executePlan: string
@@ -256,8 +256,8 @@ const tui: TuiPlugin = async (api) => {
   const directory = api.state.path.directory
   // Every TUI reader of the forge database resolves it here so a configured
   // `dataDir` cannot leave the dashboard and the execute-plan dialog pointed at
-  // different databases. `undefined` keeps each consumer's own default.
-  const forgeDbPath = pluginConfig.dataDir ? join(pluginConfig.dataDir, 'forge.db') : undefined
+  // different databases.
+  const forgeDbPath = resolveForgeDbPath(pluginConfig.dataDir)
   const opts: TuiOptions = {
     sidebar: tuiConfig?.sidebar ?? true,
     showVersion: tuiConfig?.showVersion ?? true,

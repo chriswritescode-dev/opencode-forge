@@ -2,7 +2,7 @@ import type { ParsedSection } from '../utils/section-capture'
 import { computeFenceMask } from '../utils/markdown-fences'
 import { MAX_TOTAL_SECTIONS } from '../constants/loop'
 
-export const SECTION_MARKER_REGEX = /^<!--\s*forge-section\s*-->$/
+const SECTION_MARKER_REGEX = /^<!--\s*forge-section\s*-->$/
 const LEGACY_SECTION_PAIR_REGEX = /^<!--\s*forge-section:(?:start|end)\s*-->$/
 const STOP_HEADINGS = ['## Verification', '## Decisions', '## Conventions', '## Key Context']
 const STRUCTURAL_TITLES = new Set(['verification', 'decisions', 'conventions', 'key context', 'objective', 'loop name'])
@@ -16,7 +16,7 @@ interface SectionMarkerScan {
 /**
  * The canonical section-marker scan: strips the plan wrapper and legacy paired
  * markers, then locates every unfenced `<!-- forge-section -->` line. Both
- * `decomposeDeterministically` and `countSectionMarkers` read it so a reported
+ * `decomposeDeterministically` and `decomposePlanSections` read it so a reported
  * marker count can never disagree with what the decomposer splits on.
  */
 function scanSectionMarkers(planText: string): SectionMarkerScan {

@@ -1,5 +1,5 @@
 import html from 'solid-js/html'
-import { createMemo, createSignal, createEffect, onCleanup, untrack } from 'solid-js'
+import { createMemo, createSignal, createEffect, getOwner, runWithOwner, onCleanup, untrack } from 'solid-js'
 import type { DashboardLoop, DashboardProject, DashboardGroup } from './types'
 import type { GroupFeatureRow } from '../../storage'
 import type { RepoSection, SortMode } from './helpers'
@@ -29,6 +29,14 @@ import {
   summarizePhaseTotals,
   computeTimelineEvents,
   buildDashboardHash,
+  capList,
+  repoRawPath,
+  repoLabel,
+  loopActivityAt,
+  ALL_TABS,
+  MAX_RENDERED_LOOP_ROWS,
+  MAX_RENDERED_FINDING_ROWS,
+  MAX_RENDERED_PICKER_OPTIONS,
 } from './helpers'
 import type { LoopTab, PhaseSpan } from './helpers'
 import { formatDuration } from '../../utils/duration'
@@ -136,8 +144,8 @@ export function RepoMenu(props: {
   const items = createMemo(() =>
     props.entries().map((entry: MatchedEntry) => {
       const hasRunning = entry.loops.some(dl => dl.loop.status === 'running')
-      const rawPath = entry.proj.projectDir || entry.proj.projectId || ''
-      const label = props.labels().get(rawPath) ?? rawPath
+      const rawPath = repoRawPath(entry.proj)
+      const label = repoLabel(props.labels(), entry.proj)
       return html`<div class="repo-menu-item" onclick=${() => props.onSelect(entry.proj.projectId)}>
         ${hasRunning ? html`<span class="repo-menu-running"></span>` : ''}
         <span class="repo-menu-name" title=${rawPath}>${label}</span>
@@ -164,13 +172,12 @@ function deriveRepoIndex(entries: MatchedEntry[], labels: Map<string, string>): 
   const runningCards: RunningCard[] = []
   const recent: RecentRow[] = []
   for (const entry of entries) {
-    const rawPath = entry.proj.projectDir || entry.proj.projectId || ''
-    const label = labels.get(rawPath) ?? rawPath
+    const label = repoLabel(labels, entry.proj)
     for (const dl of entry.loops) {
       loopCount++
-      for (const f of dl.findings) if (f.severity === 'bug') bugCount++
+      bugCount += dl.bugCount
       const status = dl.loop.status
-      const when = dl.loop.completedAt || dl.loop.startedAt || 0
+      const when = loopActivityAt(dl.loop)
       if (status === 'running') {
         runningCount++
         runningCards.push({ projectId: entry.proj.projectId, label, loopName: dl.loop.loopName, phase: dl.loop.phase || '' })
@@ -226,7 +233,7 @@ export function RepoIndexPane(props: {
   </div>`
 }
 
-export type LoopOption = { name: string; when: number }
+export type LoopOption = { name: string; when: number; whenLabel: string }
 
 export type LoopNav = { index: number; total: number; onPrev: () => void; onNext: () => void }
 
@@ -245,10 +252,12 @@ function LoopPicker(props: {
     return q ? all.filter(o => o.name.toLowerCase().indexOf(q) !== -1) : all
   })
 
+  const view = createMemo(() => capList(matches(), MAX_RENDERED_PICKER_OPTIONS, false))
+
   const openMenu = () => {
     if (open()) return
     setQuery('')
-    const idx = props.loops().findIndex(o => o.name === props.loopName)
+    const idx = view().rows.findIndex(o => o.name === props.loopName)
     setActive(idx < 0 ? 0 : idx)
     setOpen(true)
   }
@@ -268,16 +277,19 @@ function LoopPicker(props: {
     style=${() => (open() ? 'display:block' : 'display:none')}
     onmousedown=${(e: MouseEvent) => e.preventDefault()}
   >
-    ${() => matches().map((o, i) => html`<div
+    ${() => view().rows.map((o, i) => html`<div
       class=${() => 'loop-picker-option'
         + (i === active() ? ' loop-picker-option-active' : '')
         + (o.name === props.loopName ? ' loop-picker-option-current' : '')}
       onclick=${() => commit(o.name)}
     >
       <span class="loop-picker-option-name" title=${o.name}>${o.name}</span>
-      <span class="loop-picker-option-when">${fmtTime(o.when)}</span>
+      <span class="loop-picker-option-when">${o.whenLabel}</span>
     </div>`)}
-    ${() => (matches().length === 0 ? html`<div class="loop-picker-empty">No matching loops</div>` : '')}
+    ${() => (view().total === 0 ? html`<div class="loop-picker-empty">No matching loops</div>` : '')}
+    ${() => (view().capped
+      ? html`<div class="loop-picker-cap">${() => 'Showing ' + view().rows.length + ' of ' + view().total + ' — type to filter'}</div>`
+      : '')}
   </div>` as HTMLElement
 
   const scrollActiveIntoView = () => {
@@ -292,7 +304,7 @@ function LoopPicker(props: {
         openMenu()
         return
       }
-      const total = matches().length
+      const total = view().rows.length
       if (total === 0) return
       const delta = e.key === 'ArrowDown' ? 1 : -1
       setActive(i => (i + delta + total) % total)
@@ -301,7 +313,7 @@ function LoopPicker(props: {
     }
     if (e.key === 'Enter') {
       e.preventDefault()
-      const target = matches()[active()]
+      const target = view().rows[active()]
       if (target) commit(target.name)
       return
     }
@@ -406,6 +418,15 @@ export function SectionNav(props: {
 
 // ── LoopTable ─────────────────────────────────────────────────────────────
 
+function ListCapNotice(props: { shown: () => number; total: () => number; noun: string; onShowAll?: () => void }) {
+  return html`<div class="list-cap-notice">
+    <span class="list-cap-text">${() => 'Showing ' + props.shown() + ' of ' + props.total() + ' ' + props.noun}</span>
+    ${props.onShowAll
+      ? html`<button class="list-cap-show-all" onclick=${props.onShowAll}>Show all</button>`
+      : ''}
+  </div>`
+}
+
 function MiniMeter(props: { current: () => number; total: () => number }) {
   const pct = () => clampPercent(props.current(), props.total())
   return html`<span class="lt-meter-cell">
@@ -459,15 +480,22 @@ function loopPhaseState(
 }
 
 export function LoopTable(props: { loops: () => DashboardLoop[]; now: () => number; onOpen: (name: string) => void }) {
-  return html`<table class="loop-table">
-    <thead><tr>
-      <th>Status</th><th>Loop</th><th>Phase</th><th>Phase span</th><th>Iter</th><th>Sections</th>
-      <th>Findings</th><th>Cost</th><th>Duration</th><th>Updated</th>
-    </tr></thead>
-    <tbody>
-      ${() => props.loops().map((dl: DashboardLoop) => LoopTableRow({ dashLoop: dl, now: props.now, onOpen: props.onOpen }))}
-    </tbody>
-  </table>`
+  const [showAll, setShowAll] = createSignal(false)
+  const view = createMemo(() => capList(props.loops(), MAX_RENDERED_LOOP_ROWS, showAll()))
+  return html`<div class="loop-table-wrap">
+    <table class="loop-table">
+      <thead><tr>
+        <th>Status</th><th>Loop</th><th>Phase</th><th>Phase span</th><th>Iter</th><th>Sections</th>
+        <th>Findings</th><th>Cost</th><th>Duration</th><th>Updated</th>
+      </tr></thead>
+      <tbody>
+        ${() => view().rows.map((dl: DashboardLoop) => LoopTableRow({ dashLoop: dl, now: props.now, onOpen: props.onOpen }))}
+      </tbody>
+    </table>
+    ${() => (view().capped
+      ? ListCapNotice({ shown: () => view().rows.length, total: () => view().total, noun: 'loops', onShowAll: () => setShowAll(true) })
+      : '')}
+  </div>`
 }
 
 function LoopTableRow(props: { dashLoop: DashboardLoop; now: () => number; onOpen: (name: string) => void }) {
@@ -495,7 +523,7 @@ function LoopTableRow(props: { dashLoop: DashboardLoop; now: () => number; onOpe
     }}</td>
     <td class="lt-cost">${() => (dl().usage ? formatUsageCost(dl().usage!.totalCost) : html`<span class="dim">—</span>`)}</td>
     <td class="lt-duration">${() => dl().duration || ''}</td>
-    <td class="lt-updated">${() => fmtTime(lp().completedAt || lp().startedAt)}</td>
+    <td class="lt-updated">${() => fmtTime(loopActivityAt(lp()))}</td>
   </tr>`
 }
 // ── MarkdownSection ───────────────────────────────────────────────────────
@@ -792,7 +820,7 @@ function LoopUsage(props: {
           <div class="usage-model-track">
             <div class="usage-model-fill" style=${() => 'width:' + r.pct + '%'}></div>
           </div>
-          <div class="usage-model-meta">${() => r.messageCount + ' msg'}</div>
+          <div class="usage-model-meta">${() => r.messageCount + ' msg · ' + formatTokenCount(r.tokens) + ' tok'}</div>
         </div>`)}
       </div>
     </div>
@@ -920,8 +948,6 @@ function AmendmentsPanel(props: {
     </div>
   </div>`
 }
-
-const ALL_TABS: LoopTab[] = ['overview', 'timeline', 'sections', 'findings', 'plan', 'usage']
 
 const TAB_LABELS: Record<LoopTab, string> = {
   overview: 'Overview',
@@ -1122,7 +1148,7 @@ function FindingsTabBody(props: { dashLoop: DashboardLoop }) {
 
 function PlanTabBody(props: { dashLoop: DashboardLoop }) {
   const dl = () => props.dashLoop
-  const hasPlan = createMemo(() => !!dl().plan)
+  const hasPlan = createMemo(() => dl().hasPlan)
   const hasAmendments = createMemo(() => !!dl().amendments && dl().amendments.length > 0)
   return html`<div class="plan-tab">
     ${() => (hasPlan()
@@ -1144,6 +1170,28 @@ function UsageTabBody(props: { dashLoop: DashboardLoop }) {
   </div>`
 }
 
+function buildTabBody(props: {
+  tab: LoopTab
+  dashLoop: DashboardLoop
+  split: () => Split
+  now: () => number
+}): Node {
+  switch (props.tab) {
+    case 'overview': return OverviewTabBody({ dashLoop: props.dashLoop, split: props.split, now: props.now }) as Node
+    case 'timeline': return TimelineTabBody({ dashLoop: props.dashLoop, now: props.now }) as Node
+    case 'sections': return SectionsTabBody({ dashLoop: props.dashLoop }) as Node
+    case 'findings': return FindingsTabBody({ dashLoop: props.dashLoop }) as Node
+    case 'plan': return PlanTabBody({ dashLoop: props.dashLoop }) as Node
+    case 'usage': return UsageTabBody({ dashLoop: props.dashLoop }) as Node
+  }
+}
+
+// Tab bodies are built lazily on first activation but never torn down: opening
+// a loop no longer parses every tab's markdown or builds the machine graph up
+// front, while a tab that has been opened keeps its DOM (scroll, collapse, and
+// resize state) for the lifetime of the selected loop. `runWithOwner` is
+// required — building inside the effect's own computation would attach the
+// subtree's memos to an owner that is disposed on the effect's next run.
 function TabBody(props: {
   tab: LoopTab
   dashLoop: DashboardLoop
@@ -1153,19 +1201,16 @@ function TabBody(props: {
   activeTab: () => LoopTab
 }) {
   const visible = createMemo(() => props.tabs().includes(props.tab) && props.activeTab() === props.tab)
-  const body = (() => {
-    switch (props.tab) {
-      case 'overview': return OverviewTabBody({ dashLoop: props.dashLoop, split: props.split, now: props.now })
-      case 'timeline': return TimelineTabBody({ dashLoop: props.dashLoop, now: props.now })
-      case 'sections': return SectionsTabBody({ dashLoop: props.dashLoop })
-      case 'findings': return FindingsTabBody({ dashLoop: props.dashLoop })
-      case 'plan': return PlanTabBody({ dashLoop: props.dashLoop })
-      case 'usage': return UsageTabBody({ dashLoop: props.dashLoop })
-    }
-  })()
-  return html`<div class="tab-body" data-tab="${props.tab}" style=${() => visible() ? 'display:block' : 'display:none'}>
-    ${body}
-  </div>`
+  const owner = getOwner()
+  const host = html`<div class="tab-body" data-tab="${props.tab}" style=${() => visible() ? 'display:block' : 'display:none'}></div>` as HTMLElement
+  let built = false
+  createEffect(() => {
+    if (!visible() || built) return
+    built = true
+    const node = runWithOwner(owner, () => buildTabBody(props))
+    if (node) host.appendChild(node)
+  })
+  return host
 }
 
 function LoopDetailTabs(props: {
@@ -1223,9 +1268,9 @@ function groupFeaturesMeter(features: GroupFeatureRow[]): { completed: number; t
   return { completed, total }
 }
 
-function groupRowClass(status: string): string {
+function groupStatusClass(base: 'group-row' | 'group-header', status: string): string {
   const terminal = TERMINAL_GROUP_STATUSES.has(status)
-  return 'group-row' + (terminal ? ' group-row-terminal' : ' group-row-active')
+  return base + (terminal ? ` ${base}-terminal` : ` ${base}-active`)
 }
 
 export function GroupsPanel(props: {
@@ -1241,7 +1286,7 @@ export function GroupsPanel(props: {
         ${groups.map(g => {
           const gr = g.group
           const meter = createMemo(() => groupFeaturesMeter(g.features))
-          return html`<div class=${() => groupRowClass(gr.status)} data-group-status=${() => gr.status} onclick=${() => props.onOpen(gr.groupId)}>
+          return html`<div class=${() => groupStatusClass('group-row', gr.status)} data-group-status=${() => gr.status} onclick=${() => props.onOpen(gr.groupId)}>
             <span class=${() => statusClass(gr.status)}>${() => gr.status}</span>
             <span class="group-row-title">${() => gr.title}</span>
             ${MiniMeter({ current: () => meter().completed, total: () => meter().total })}
@@ -1255,11 +1300,6 @@ export function GroupsPanel(props: {
       </div>`
     }}
   </div>`
-}
-
-function groupHeaderClass(status: string): string {
-  const terminal = TERMINAL_GROUP_STATUSES.has(status)
-  return 'group-header' + (terminal ? ' group-header-terminal' : ' group-header-active')
 }
 
 export function GroupDetail(props: {
@@ -1279,7 +1319,7 @@ export function GroupDetail(props: {
       // Single root element: solid-js/html generates invalid code for a
       // template whose top level is a fragment of sibling roots.
       return html`<div class="group-detail-body">
-        <div class=${() => groupHeaderClass(gr.status)} data-group-status=${() => gr.status}>
+        <div class=${() => groupStatusClass('group-header', gr.status)} data-group-status=${() => gr.status}>
           <div class="group-header-top">
             <span class=${() => statusClass(gr.status)}>${() => gr.status}</span>
             <h3 class="group-header-title">${() => gr.title}</h3>
@@ -1313,18 +1353,23 @@ export function GroupDetail(props: {
   </div>`
 }
 
-function findingsGroupsForLoops(loops: DashboardLoop[]): Array<{ loopName: string; rows: DashboardLoop['findings'] }> {
-  const order: string[] = []
-  const map = new Map<string, DashboardLoop['findings']>()
+function findingsGroupsForLoops(
+  loops: DashboardLoop[],
+  max: number,
+  showAll: boolean,
+): { groups: Array<{ loopName: string; rows: DashboardLoop['findings'] }>; total: number; capped: boolean } {
+  const groups: Array<{ loopName: string; rows: DashboardLoop['findings'] }> = []
+  let total = 0
+  let budget = showAll ? Infinity : max
   for (const dl of loops) {
     if (dl.findings.length === 0) continue
-    if (!map.has(dl.loop.loopName)) {
-      map.set(dl.loop.loopName, [])
-      order.push(dl.loop.loopName)
-    }
-    map.get(dl.loop.loopName)!.push(...dl.findings)
+    total += dl.findings.length
+    if (budget <= 0) continue
+    const take = Math.min(budget, dl.findings.length)
+    groups.push({ loopName: dl.loop.loopName, rows: dl.findings.slice(0, take) })
+    budget -= take
   }
-  return order.map(name => ({ loopName: name, rows: map.get(name)! }))
+  return { groups, total, capped: !showAll && total > max }
 }
 
 export function FindingsPanel(props: {
@@ -1332,12 +1377,15 @@ export function FindingsPanel(props: {
   projectId: () => string | null
   onOpenLoop: (loopName: string) => void
 }) {
-  const groups = createMemo(() => findingsGroupsForLoops(props.loops()))
-  const total = createMemo(() => groups().reduce((acc, g) => acc + g.rows.length, 0))
+  const [showAll, setShowAll] = createSignal(false)
+  const groups = createMemo(() => findingsGroupsForLoops(props.loops(), MAX_RENDERED_FINDING_ROWS, showAll()))
   return html`<div class="findings-panel">
-    <h4>Findings <span class="findings-panel-count">${() => total()}</span></h4>
+    <h4>Findings <span class="findings-panel-count">${() => groups().total}</span></h4>
+    ${() => (groups().capped
+      ? ListCapNotice({ shown: () => groups().groups.reduce((acc, g) => acc + g.rows.length, 0), total: () => groups().total, noun: 'findings', onShowAll: () => setShowAll(true) })
+      : '')}
     ${() => {
-      const gs = groups()
+      const gs = groups().groups
       if (gs.length === 0) return html`<div class="tab-empty">No findings recorded for this repo.</div>`
       return html`<div class="findings-panel-list">
         ${gs.map(g => html`<div class="findings-loop-block" data-loop=${() => g.loopName}>
@@ -1356,11 +1404,16 @@ export function PlansPanel(props: {
   loops: () => DashboardLoop[]
   onOpenLoop: (loopName: string) => void
 }) {
-  const planLoops = createMemo(() => props.loops().filter(dl => !!dl.plan))
+  const [showAll, setShowAll] = createSignal(false)
+  const planLoops = createMemo(() => props.loops().filter(dl => dl.hasPlan))
+  const view = createMemo(() => capList(planLoops(), MAX_RENDERED_LOOP_ROWS, showAll()))
   return html`<div class="plans-panel">
-    <h4>Plans <span class="plans-panel-count">${() => planLoops().length}</span></h4>
+    <h4>Plans <span class="plans-panel-count">${() => view().total}</span></h4>
+    ${() => (view().capped
+      ? ListCapNotice({ shown: () => view().rows.length, total: () => view().total, noun: 'plans', onShowAll: () => setShowAll(true) })
+      : '')}
     ${() => {
-      const list = planLoops()
+      const list = view().rows
       if (list.length === 0) return html`<div class="tab-empty">No plans recorded for this repo.</div>`
       return html`<div class="plans-list">
         ${list.map(dl => html`<div class="plan-row" onclick=${() => props.onOpenLoop(dl.loop.loopName)}>

@@ -19,6 +19,12 @@ export interface LoopTransitionRow {
 export interface LoopTransitionsRepo {
   insert(row: Omit<LoopTransitionRow, 'id' | 'createdAt'>): void
   listForLoop(projectId: string, loopName: string, limit?: number): LoopTransitionRow[]
+  /**
+   * Newest-N-then-ascending per loop for the whole project, in one scan; loops
+   * with no transitions are absent from the map. Same window semantics as
+   * `listForLoop`, without the per-loop query.
+   */
+  listForProject(projectId: string, perLoopLimit: number): Map<string, LoopTransitionRow[]>
 }
 
 export function createLoopTransitionsRepo(db: Database, _logger?: Logger): LoopTransitionsRepo {
@@ -47,6 +53,20 @@ export function createLoopTransitionsRepo(db: Database, _logger?: Logger): LoopT
       LIMIT ?
     )
     ORDER BY id ASC
+  `)
+
+  const stmtListForProject = db.prepare(`
+    SELECT id, project_id, loop_name, event_type, transition_kind, from_phase, to_phase,
+           status, reason, iteration, section_index, created_at
+    FROM (
+      SELECT id, project_id, loop_name, event_type, transition_kind, from_phase, to_phase,
+             status, reason, iteration, section_index, created_at,
+             ROW_NUMBER() OVER (PARTITION BY loop_name ORDER BY id DESC) AS rn
+      FROM loop_transitions
+      WHERE project_id = ?
+    )
+    WHERE rn <= ?
+    ORDER BY loop_name ASC, id ASC
   `)
 
   function mapRow(row: Record<string, unknown>): LoopTransitionRow {
@@ -86,6 +106,18 @@ export function createLoopTransitionsRepo(db: Database, _logger?: Logger): LoopT
     listForLoop(projectId, loopName, limit = 1000) {
       const rows = stmtList.all(projectId, loopName, limit) as Array<Record<string, unknown>>
       return rows.map(mapRow)
+    },
+
+    listForProject(projectId, perLoopLimit) {
+      const rows = stmtListForProject.all(projectId, perLoopLimit) as Array<Record<string, unknown>>
+      const byLoop = new Map<string, LoopTransitionRow[]>()
+      for (const raw of rows) {
+        const row = mapRow(raw)
+        const bucket = byLoop.get(row.loopName)
+        if (bucket) bucket.push(row)
+        else byLoop.set(row.loopName, [row])
+      }
+      return byLoop
     },
   }
 }

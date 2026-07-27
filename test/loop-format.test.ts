@@ -1,7 +1,8 @@
 import { describe, test, expect } from 'vitest'
-import { formatTokens, formatSessionOutput, formatAuditResult, formatUsageSummary } from '../src/utils/loop-format'
+import { formatTokens, formatSessionOutput, formatAuditResult, formatUsageSummary, formatCumulativeUsage, aggregateToUsageSummary } from '../src/utils/loop-format'
 import type { LoopSessionOutput } from '../src/loop/session-output'
 import type { LoopUsageSummary } from '../src/loop/token-usage'
+import type { LoopUsageAggregate } from '../src/storage/repos/loop-session-usage-repo'
 
 describe('formatTokens', () => {
   test('numbers less than 1000 returned as string', () => {
@@ -336,5 +337,132 @@ describe('formatUsageSummary', () => {
     const lines = formatUsageSummary(summary)
     expect(lines[0]).toContain('$0.0000')
     expect(lines[0]).toContain('0 in')
+  })
+})
+
+describe('aggregateToUsageSummary', () => {
+  function makeAggregate(overrides: Partial<LoopUsageAggregate> = {}): LoopUsageAggregate {
+    return {
+      loopName: 'loop',
+      totalCost: 0.05,
+      totalInputTokens: 5000,
+      totalOutputTokens: 2500,
+      totalReasoningTokens: 500,
+      totalCacheReadTokens: 100,
+      totalCacheWriteTokens: 200,
+      totalMessageCount: 10,
+      byModel: {
+        'model-a': { cost: 0.03, inputTokens: 3000, outputTokens: 1500, reasoningTokens: 300, cacheReadTokens: 60, cacheWriteTokens: 120, messageCount: 6 },
+        'model-b': { cost: 0.02, inputTokens: 2000, outputTokens: 1000, reasoningTokens: 200, cacheReadTokens: 40, cacheWriteTokens: 80, messageCount: 4 },
+      },
+      byRole: {
+        code: { cost: 0.04, inputTokens: 4000, outputTokens: 2000, reasoningTokens: 400, cacheReadTokens: 80, cacheWriteTokens: 160, messageCount: 8 },
+        auditor: { cost: 0.01, inputTokens: 1000, outputTokens: 500, reasoningTokens: 100, cacheReadTokens: 20, cacheWriteTokens: 40, messageCount: 2 },
+      },
+      ...overrides,
+    }
+  }
+
+  test('derives perRole from byRole in code, auditor, unknown order', () => {
+    const agg = makeAggregate({
+      byRole: {
+        unknown: { cost: 0.005, inputTokens: 500, outputTokens: 250, reasoningTokens: 50, cacheReadTokens: 10, cacheWriteTokens: 20, messageCount: 1 },
+        auditor: { cost: 0.01, inputTokens: 1000, outputTokens: 500, reasoningTokens: 100, cacheReadTokens: 20, cacheWriteTokens: 40, messageCount: 2 },
+        code: { cost: 0.04, inputTokens: 4000, outputTokens: 2000, reasoningTokens: 400, cacheReadTokens: 80, cacheWriteTokens: 160, messageCount: 8 },
+      },
+    })
+
+    const summary = aggregateToUsageSummary(agg)
+    expect(summary.perRole?.map(r => r.role)).toEqual(['code', 'auditor', 'unknown'])
+    const code = summary.perRole?.find(r => r.role === 'code')!
+    expect(code.cost).toBe(0.04)
+    expect(code.messageCount).toBe(8)
+    expect(code.tokens).toEqual({ input: 4000, output: 2000, reasoning: 400, cacheRead: 80, cacheWrite: 160 })
+  })
+
+  test('omits absent roles from perRole', () => {
+    const summary = aggregateToUsageSummary(makeAggregate())
+    expect(summary.perRole?.map(r => r.role)).toEqual(['code', 'auditor'])
+  })
+})
+
+describe('formatUsageSummary per-role block', () => {
+  test('appends a Per-role usage block after the per-model rows', () => {
+    const summary: LoopUsageSummary = {
+      totalCost: 0.05,
+      totalTokens: { input: 5000, output: 2500, reasoning: 500, cacheRead: 100, cacheWrite: 200 },
+      perModel: [
+        { model: 'model-a', cost: 0.03, tokens: { input: 3000, output: 1500, reasoning: 300, cacheRead: 60, cacheWrite: 120 }, messageCount: 6 },
+        { model: 'model-b', cost: 0.02, tokens: { input: 2000, output: 1000, reasoning: 200, cacheRead: 40, cacheWrite: 80 }, messageCount: 4 },
+      ],
+      perRole: [
+        { role: 'code', cost: 0.04, tokens: { input: 4000, output: 2000, reasoning: 400, cacheRead: 80, cacheWrite: 160 }, messageCount: 8 },
+        { role: 'auditor', cost: 0.01, tokens: { input: 1000, output: 500, reasoning: 100, cacheRead: 20, cacheWrite: 40 }, messageCount: 2 },
+      ],
+    }
+
+    const lines = formatUsageSummary(summary)
+    const perModelIndex = lines.indexOf('Per-model usage:')
+    const perRoleIndex = lines.indexOf('Per-role usage:')
+    expect(perRoleIndex).toBeGreaterThan(perModelIndex)
+    const roleRows = lines.slice(perRoleIndex + 1)
+    expect(roleRows[0]).toContain('code:')
+    expect(roleRows[0]).toContain('$0.0400')
+    expect(roleRows[1]).toContain('auditor:')
+    expect(roleRows[1]).toContain('$0.0100')
+    // Per-model rows must remain exactly the two model rows immediately after
+    // 'Per-model usage:'.
+    const modelRows = lines.slice(perModelIndex + 1, perRoleIndex)
+    expect(modelRows).toHaveLength(2)
+    expect(modelRows[0]).toContain('model-a:')
+    expect(modelRows[1]).toContain('model-b:')
+  })
+
+  test('omits the role block when perRole is empty', () => {
+    const summary: LoopUsageSummary = {
+      totalCost: 0.01,
+      totalTokens: { input: 100, output: 50, reasoning: 10, cacheRead: 5, cacheWrite: 2 },
+      perModel: [],
+      perRole: [],
+    }
+    expect(formatUsageSummary(summary).some(l => l.includes('Per-role usage:'))).toBe(false)
+  })
+
+  test('omits the role block when perRole is absent', () => {
+    const summary: LoopUsageSummary = {
+      totalCost: 0.01,
+      totalTokens: { input: 100, output: 50, reasoning: 10, cacheRead: 5, cacheWrite: 2 },
+      perModel: [],
+    }
+    expect(formatUsageSummary(summary).some(l => l.includes('Per-role usage:'))).toBe(false)
+  })
+})
+
+describe('formatCumulativeUsage', () => {
+  test('returns [] when there is no usage', () => {
+    expect(formatCumulativeUsage(undefined, 'p', 'loop', 'session', null)).toEqual([])
+  })
+
+  test('returns a leading blank line plus heading when there is usage', () => {
+    const repo = {
+      getAggregate: () => ({
+        loopName: 'loop',
+        totalCost: 0.05,
+        totalInputTokens: 5000,
+        totalOutputTokens: 2500,
+        totalReasoningTokens: 500,
+        totalCacheReadTokens: 100,
+        totalCacheWriteTokens: 200,
+        totalMessageCount: 10,
+        byModel: { 'model-a': { cost: 0.05, inputTokens: 5000, outputTokens: 2500, reasoningTokens: 500, cacheReadTokens: 100, cacheWriteTokens: 200, messageCount: 10 } },
+        byRole: { code: { cost: 0.05, inputTokens: 5000, outputTokens: 2500, reasoningTokens: 500, cacheReadTokens: 100, cacheWriteTokens: 200, messageCount: 10 } },
+      }),
+      hasSession: () => true,
+    } as any
+    const lines = formatCumulativeUsage(repo, 'p', 'loop', 'session', null)
+    expect(lines[0]).toBe('')
+    expect(lines[1]).toBe('Cumulative Usage:')
+    expect(lines.join('\n')).toContain('Total Cost: $0.0500')
+    expect(lines.join('\n')).toContain('Per-role usage:')
   })
 })

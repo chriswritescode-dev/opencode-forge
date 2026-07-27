@@ -661,6 +661,24 @@ describe('usage in worktree completion logs', () => {
     expect(result).toContain('Test plan')
   })
 
+  test('formatWorktreeCompletionEntry includes the per-role usage block', () => {
+    const usage: LoopUsageSummary = {
+      ...sampleUsage,
+      perRole: [
+        { role: 'code', cost: 0.0800, tokens: { input: 800, output: 400, reasoning: 150, cacheRead: 80, cacheWrite: 40 }, messageCount: 5 },
+        { role: 'auditor', cost: 0.0434, tokens: { input: 200, output: 100, reasoning: 50, cacheRead: 20, cacheWrite: 10 }, messageCount: 3 },
+      ],
+    }
+    const options = {
+      projectDir: '/path/to/project',
+      loopName: 'test-loop',
+      completionTimestamp: new Date('2024-01-15T10:30:00Z'),
+      iteration: 3,
+    }
+
+    expect(formatWorktreeCompletionEntry(options, 'Test plan', usage)).toContain(formatUsageSummary(usage).slice(-3).join('\n'))
+  })
+
   test('formatWorktreeCompletionEntry omits Usage section when usage is null', () => {
     const timestamp = new Date('2024-01-15T10:30:00Z')
     const options = {

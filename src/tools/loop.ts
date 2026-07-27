@@ -486,19 +486,14 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           }
 
           // Add cumulative usage (merged persisted + live, with double-count prevention)
-          const { buildCumulativeUsage, formatUsageSummary } = await import('../utils/loop-format')
-          const cumulativeSummary = buildCumulativeUsage(
+          const { formatCumulativeUsage } = await import('../utils/loop-format')
+          statusLines.push(...formatCumulativeUsage(
             ctx.loopSessionUsageRepo,
             ctx.projectId,
             state.loopName,
             state.sessionId,
             sessionOutput,
-          )
-          if (cumulativeSummary) {
-            statusLines.push('')
-            statusLines.push('Cumulative Usage:')
-            statusLines.push(...formatUsageSummary(cumulativeSummary).map(l => `  ${l}`))
-          }
+          ))
 
           return statusLines.join('\n')
         }
@@ -601,19 +596,14 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
         }
 
         // Add cumulative usage (merged persisted + live, with double-count prevention)
-        const { buildCumulativeUsage, formatUsageSummary } = await import('../utils/loop-format')
-        const cumulativeSummary = buildCumulativeUsage(
+        const { formatCumulativeUsage } = await import('../utils/loop-format')
+        statusLines.push(...formatCumulativeUsage(
           ctx.loopSessionUsageRepo,
           ctx.projectId,
           state.loopName,
           state.sessionId,
           sessionOutput,
-        )
-        if (cumulativeSummary) {
-          statusLines.push('')
-          statusLines.push('Cumulative Usage:')
-          statusLines.push(...formatUsageSummary(cumulativeSummary).map(l => `  ${l}`))
-        }
+        ))
 
         statusLines.push(
           '',
