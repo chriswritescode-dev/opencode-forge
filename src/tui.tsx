@@ -13,6 +13,7 @@ import { connectForgeProject, type ForgeProjectClient } from './utils/tui-client
 import { ExecutePlanPanel, type ExecutePlanPanelProps } from './tui/execute-plan-panel'
 import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/session-follow'
 import { openInBrowser, startDashboardServer, type DashboardServerHandle } from './dashboard/launch'
+import { describeDashboardBinding } from './dashboard/config'
 import { normalizePastedPlanText } from './utils/marked-plan-parser'
 
 type TuiKeybinds = {
@@ -270,13 +271,15 @@ const tui: TuiPlugin = async (api) => {
   api.lifecycle.onDispose(detachSessionFollower)
 
   // Dashboard command. Registered independently of the sidebar option so it is
-  // available even when the sidebar is disabled. The HTTP server is started
-  // in-process on first use and reused on subsequent invocations.
+  // available even when the sidebar is disabled. The bind host/port come from
+  // `dashboard.*` in the plugin config (resolved via `startDashboardServer`),
+  // and the HTTP server is started in-process on first use and reused on
+  // subsequent invocations.
   let dashboardServer: DashboardServerHandle | null = null
   const runOpenDashboard = () => {
     if (!dashboardServer) {
       try {
-        dashboardServer = startDashboardServer({ dbPath: forgeDbPath })
+        dashboardServer = startDashboardServer({ dbPath: forgeDbPath, config: pluginConfig })
       } catch (err) {
         api.ui.toast({
           message: err instanceof Error ? err.message : 'Failed to start dashboard',
@@ -286,13 +289,17 @@ const tui: TuiPlugin = async (api) => {
         return
       }
     }
-    const opened = openInBrowser(dashboardServer.url)
+    const notice = describeDashboardBinding(dashboardServer)
+    const opened = openInBrowser(dashboardServer.localUrl)
+    const lines = [
+      opened ? `Forge dashboard: ${notice.url}` : `Forge dashboard running at ${notice.url}`,
+    ]
+    if (notice.localUrl) lines.push(`Local: ${notice.localUrl}`)
+    if (notice.warning) lines.push(notice.warning)
     api.ui.toast({
-      message: opened
-        ? `Forge dashboard: ${dashboardServer.url}`
-        : `Forge dashboard running at ${dashboardServer.url}`,
-      variant: 'info',
-      duration: 5000,
+      message: lines.join('\n'),
+      variant: notice.warning ? 'warning' : 'info',
+      duration: notice.warning ? 10_000 : 5000,
     })
   }
 

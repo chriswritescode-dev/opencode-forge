@@ -158,6 +158,9 @@ describe('bundled sample config', () => {
     expect(parsed.sandbox).toBeDefined()
     expect(parsed.tui).toBeDefined()
     expect(parsed.completedLoopTtlMs).toBeDefined()
+    expect(parsed.dashboard).toBeDefined()
+    expect(parsed.dashboard?.host).toBe('localhost')
+    expect(parsed.dashboard?.port).toBe(4747)
   })
 
   test('bundled config compaction includes maxContextTokens', () => {

@@ -69,7 +69,7 @@ The server plugin provides the core hooks, tools, agents, plan storage, loop orc
 
 ## Dashboard
 
-Forge includes a read-only observability Dashboard — a standalone Bun HTTP server (`src/dashboard/`) that serves a SolidJS single-page app at `GET /` and JSON state at `GET /api/data`. Launch it from the TUI command palette (`Open dashboard`) or via `pnpm dashboard`. The dashboard **never mutates** loop, workspace, or storage state.
+Forge includes a read-only observability Dashboard — a standalone Bun HTTP server (`src/dashboard/`) that serves a SolidJS single-page app at `GET /` and JSON state at `GET /api/data`. Launch it from the TUI command palette (`Open dashboard`) or via `pnpm dashboard`. The dashboard **never mutates** loop, workspace, or storage state. By default it binds loopback only. Set `dashboard.host` / `dashboard.port` in `forge-config.jsonc` (or pass `--host` / `--port` to `pnpm dashboard`) to expose it on a LAN or VPN — see [Configuration](_media/configuration.md#dashboard). The dashboard has **no authentication**, so a non-loopback bind must be protected at the network layer.
 
 ### Views
 
@@ -128,7 +128,7 @@ The auditor agent is a read-only subagent that cannot edit source files or execu
 
 **Tool restrictions:** The auditor cannot use file-editing tools, planning tools, or loop-management tools. See [Auditor restrictions](_media/agents-and-commands.md#auditor-restrictions).
 
-The architect agent operates as a read-only planner with message-level reinforcement via the `experimental.chat.messages.transform` hook. Final plans are authored straight into SQL storage with the `plan-write` and `plan-edit` tools, which return a structure report the architect uses to fix warnings before asking for approval. A plan emitted in the assistant response between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers is still auto-captured into the same row, so marker-only architect prompts keep working. After user approval via the question tool, execution is dispatched programmatically — no additional LLM calls are needed. The user can view and edit the stored plan from the sidebar or command palette before or during execution. 
+The architect agent operates as a read-only planner with message-level reinforcement via the `experimental.chat.messages.transform` hook. Final plans are authored straight into SQL storage with the `plan-write` and `plan-edit` tools, which return a structure report the architect uses to fix warnings before asking for approval. A plan emitted in the assistant response between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers is still auto-captured into the same row, so marker-only architect prompts keep working. After user approval via the question tool, execution is dispatched programmatically for New session and Execute here modes — no additional LLM calls are needed. Loop mode remains an exception: the architect must invoke `execute-plan`. The user can view and edit the stored plan from the sidebar or command palette before or during execution. 
 
 ## Tools
 
@@ -145,8 +145,8 @@ Loops always run in an isolated git worktree; Docker sandbox is used automatical
 
 | Tool | Description |
 |------|-------------|
-| `execute-plan` | Execute a plan using an iterative development loop in an isolated git worktree, or `mode: new-session` to launch it in a fresh standalone session. Args: `title` required; `plan`, `loopName`, `hostSessionId`, `mode` optional. |
-| `execute-goal` | Execute a free-text goal in rotating dedicated code and auditor sessions inside an isolated git worktree. Args: `goal` required; `title`, `loopName`, `maxIterations`, `hostSessionId` optional. |
+| `execute-plan` | Execute a plan using an iterative development loop in an isolated git worktree, or `mode: new-session` to launch it in a fresh standalone session. Args: `title` required; `plan`, `loopName`, `mode` optional. |
+| `execute-goal` | Execute a free-text goal in rotating dedicated code and auditor sessions inside an isolated git worktree. Args: `goal` required; `title`, `loopName`, `maxIterations` optional. |
 | `loop-cancel` | Cancel an active loop by worktree name |
 | `loop-status` | List active/recent loops or get detailed status by worktree name, including cumulative token usage when available. Supports `restart=true` to restart any non-completed loop (`running`, `cancelled`, `errored`, `stalled`). Completed loops are history-only and cannot be restarted. |
 
@@ -327,7 +327,7 @@ Plan with a smart model, execute with a fast model. The architect agent research
 
 ### How Plans Work
 
-The architect is read-only and authors the plan into SQL storage for the current session with `plan-write`, appending further phases with `plan-write { append: true }` and revising with `plan-edit`. Every write returns a structure report — line/character counts, the detected `Loop Name:`, the sections the decomposer would emit, and warnings — so structural problems surface before approval. If those tools are unavailable, a plan emitted once between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers is auto-captured into the same row.
+The architect is read-only and authors the plan into SQL storage for the current session with `plan-write`, appending further phases with `plan-write { append: true }` and revising with `plan-edit`. Every write returns a structure report — line/character counts, the detected `Loop Name:`, the sections the decomposer would emit, and warnings — so structural problems surface before approval. When no stored plan was written, a plan emitted once between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers is auto-captured into the same row.
 
 The stored plan is the source of truth for execution: `execute-plan`, the approval hook, and the TUI dialog all read it, and a marker-free assistant message can never replay an older chat plan over a newer tool-authored one. Programmatic access is via the `plan-read` tool.
 

@@ -16,6 +16,7 @@ See also: [Tools](tools.md), [Agents and Slash Commands](agents-and-commands.md)
 | `auditorVariant` | `""` | Default reasoning/thinking variant for the auditor model. Independent — does not inherit `executionVariant`. |
 | `agents` | unset | Per-agent overrides keyed by display name, currently supporting `temperature`. |
 | `remotes` | unset | Remote opencode servers available as loop launch targets in the TUI execution dialog. See [Remotes](#remotes). |
+| `dashboard` | unset | Dashboard HTTP server bind host and port. Defaults to loopback only. See [Dashboard](#dashboard). |
 
 ## Logging
 
@@ -144,6 +145,36 @@ Without the sandbox, a host-side server works too (Chrome runs on the host and c
 | `tui.showVersion` | `true` | Show the Forge version in the sidebar title. |
 | `tui.keybinds.executePlan` | `"<leader>f"` | Open the execution dialog. Avoid `<leader>e`, which conflicts with opencode's built-in `editor_open`. |
 | `tui.keybinds.dashboard` | `""` | Optional keybind for opening the dashboard. Empty registers the command without a default binding. |
+
+## Dashboard
+
+`dashboard` controls the bind address of the read-only observability dashboard, served by both `pnpm dashboard` and the TUI `Open dashboard` command. The default binds loopback only, so the dashboard is reachable exclusively from the machine running Forge.
+
+| Option | Default | Description |
+|---|---:|---|
+| `dashboard.host` | `"localhost"` | Bind hostname or IP. Use `"0.0.0.0"` to listen on all interfaces so the dashboard is reachable over a LAN or VPN. Blank falls back to the default. |
+| `dashboard.port` | `4747` | Base bind port. Consecutive ports (`port`..`port+9`) are tried when the port is busy. `0` lets the OS pick an ephemeral port. Invalid values fall back to the default. |
+
+> **The dashboard has no authentication.** Binding a non-loopback address exposes every loop plan, goal, audit result, finding, and session cost to anyone who can reach the port. Restrict access at the network layer with a firewall, a private LAN, or a VPN. Forge prints a warning whenever the bind is not loopback.
+
+When bound to a wildcard host (`0.0.0.0` / `::`), the advertised URL uses the machine's primary non-internal IPv4 address so it can be typed on another device; the TUI still opens `http://localhost:<port>` locally and shows both URLs in its toast.
+
+`pnpm dashboard` accepts `--host`, `--port`, and `--db` flags, which override the corresponding config values (precedence: CLI flag > `dashboard.*` config > default):
+
+```bash
+pnpm dashboard --host 0.0.0.0 --port 4747
+```
+
+Example:
+
+```jsonc
+{
+  "dashboard": {
+    "host": "0.0.0.0",
+    "port": 4747
+  }
+}
+```
 
 ## Remotes
 
