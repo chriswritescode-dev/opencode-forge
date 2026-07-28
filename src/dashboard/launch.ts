@@ -3,19 +3,15 @@ import { existsSync } from 'fs'
 import { platform } from 'os'
 import { resolveForgeDbPath } from '../storage/database'
 import type { PluginConfig } from '../types'
-import { buildDashboardUrls, resolveDashboardConfig } from './config'
+import { buildDashboardUrls, resolveDashboardConfig, type DashboardUrls } from './config'
 import { createRequestHandler } from './server'
 
-export interface DashboardServerHandle {
-  /** URL to advertise. The machine's LAN address when bound to a wildcard host. */
-  url: string
-  /** URL reachable from this machine's loopback. Equals `url` unless bound to a wildcard. */
-  localUrl: string
+export interface DashboardServerHandle extends DashboardUrls {
   /** The host actually passed to `Bun.serve`. */
   host: string
   port: number
-  /** True when the bind is reachable beyond loopback. */
-  exposed: boolean
+  /** Bind values that were present but unusable; surfaces render these verbatim. */
+  warnings: string[]
   stop: () => void
 }
 
@@ -25,10 +21,10 @@ export interface StartDashboardOptions {
   /** Explicit base port override (e.g. a CLI flag). Wins over `config.dashboard.port`. */
   port?: number
   dbPath?: string
-  /** `PluginConfig.dataDir`, used when no explicit `dbPath`/`FORGE_DB` is given. */
+  /** Overrides `config.dataDir` when no explicit `dbPath`/`FORGE_DB` is given. */
   dataDir?: string
   maxAttempts?: number
-  /** Loaded plugin config; supplies `dashboard.host`/`dashboard.port` defaults. */
+  /** Loaded plugin config; supplies `dataDir` and `dashboard.host`/`dashboard.port`. */
   config?: PluginConfig
 }
 
@@ -55,14 +51,14 @@ function isAddrInUse(err: unknown): boolean {
  * connection; calling `stop` releases both.
  */
 export function startDashboardServer(options: StartDashboardOptions = {}): DashboardServerHandle {
-  const dbPath = resolveDashboardDbPath(options.dbPath, options.dataDir)
+  const dbPath = resolveDashboardDbPath(options.dbPath, options.dataDir ?? options.config?.dataDir)
   if (!existsSync(dbPath)) {
     throw new Error(
       `Forge database not found at ${dbPath}. Run a loop first or pass a database path.`
     )
   }
 
-  const { host, port: basePort } = resolveDashboardConfig(options.config, {
+  const { host, port: basePort, warnings } = resolveDashboardConfig(options.config, {
     host: options.host,
     port: options.port,
   })
@@ -85,6 +81,7 @@ export function startDashboardServer(options: StartDashboardOptions = {}): Dashb
         ...buildDashboardUrls(host, boundPort),
         host,
         port: boundPort,
+        warnings,
         stop: () => {
           server.stop()
           closeAll()

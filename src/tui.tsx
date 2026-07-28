@@ -291,15 +291,21 @@ const tui: TuiPlugin = async (api) => {
     }
     const notice = describeDashboardBinding(dashboardServer)
     const opened = openInBrowser(dashboardServer.localUrl)
-    const lines = [
-      opened ? `Forge dashboard: ${notice.url}` : `Forge dashboard running at ${notice.url}`,
+    const details = [
+      ...(notice.localUrl ? [`Local: ${notice.localUrl}`] : []),
+      ...dashboardServer.warnings,
+      ...(notice.warning ? [notice.warning] : []),
     ]
-    if (notice.localUrl) lines.push(`Local: ${notice.localUrl}`)
-    if (notice.warning) lines.push(notice.warning)
+    const alert = Boolean(notice.warning) || dashboardServer.warnings.length > 0
     api.ui.toast({
-      message: lines.join('\n'),
-      variant: notice.warning ? 'warning' : 'info',
-      duration: notice.warning ? 10_000 : 5000,
+      title: `Forge dashboard: ${notice.url}`,
+      message: details.length > 0
+        ? details.join('\n')
+        : opened
+          ? 'Opened in your browser.'
+          : 'Could not open a browser automatically; open the URL manually.',
+      variant: alert ? 'warning' : 'info',
+      duration: alert ? 10_000 : 5000,
     })
   }
 

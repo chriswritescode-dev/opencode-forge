@@ -26,6 +26,9 @@ describe('resolveDashboardDbPath', () => {
   })
 })
 
+/** Port the mocked `Bun.serve` reports for an ephemeral (`port: 0`) request, mirroring an OS assignment. */
+const OS_ASSIGNED_PORT = 51234
+
 describe('startDashboardServer', () => {
   let dbPath: string
   let handle: DashboardServerHandle | null = null
@@ -42,7 +45,7 @@ describe('startDashboardServer', () => {
       serve: (opts: { hostname?: string; port?: number; fetch: (req: Request) => Response | Promise<Response> }) => {
         capturedHostname = opts.hostname
         capturedFetch = opts.fetch
-        return { port: opts.port || 4747, stop: vi.fn() }
+        return { port: opts.port === 0 ? OS_ASSIGNED_PORT : opts.port, stop: vi.fn() }
       },
     })
   })
@@ -94,7 +97,13 @@ describe('startDashboardServer', () => {
     handle = startDashboardServer({ dbPath, host: '0.0.0.0', port: 0 })
     expect(capturedHostname).toBe('0.0.0.0')
     expect(handle.exposed).toBe(true)
-    expect(handle.localUrl).toBe('http://localhost:4747')
+    expect(handle.localUrl).toBe(`http://localhost:${OS_ASSIGNED_PORT}`)
+  })
+
+  test('port 0 reports the OS-assigned port, not the requested 0', () => {
+    handle = startDashboardServer({ dbPath, port: 0 })
+    expect(handle.port).toBe(OS_ASSIGNED_PORT)
+    expect(handle.url).toBe(`http://localhost:${OS_ASSIGNED_PORT}`)
   })
 
   test('config supplies host and port', () => {
@@ -115,9 +124,44 @@ describe('startDashboardServer', () => {
     expect(handle.exposed).toBe(false)
   })
 
-  test('invalid config port falls back to the default', () => {
+  test('invalid config port falls back to the default and is reported on the handle', () => {
     handle = startDashboardServer({ dbPath, config: { dashboard: { port: -1 } } })
     expect(handle.port).toBe(4747)
+    expect(handle.warnings).toEqual([
+      'Ignoring dashboard.port -1: expected an integer between 0 and 65535.',
+    ])
+  })
+
+  test('a usable bind reports no warnings', () => {
+    handle = startDashboardServer({ dbPath })
+    expect(handle.warnings).toEqual([])
+  })
+
+  test('config.dataDir resolves the database when no dbPath or dataDir option is given', () => {
+    const originalForgeDb = process.env.FORGE_DB
+    delete process.env.FORGE_DB
+    try {
+      expect(() => startDashboardServer({ config: { dataDir: '/tmp/forge-config-datadir' } })).toThrow(
+        /\/tmp\/forge-config-datadir\/forge\.db/
+      )
+    } finally {
+      if (originalForgeDb !== undefined) process.env.FORGE_DB = originalForgeDb
+    }
+  })
+
+  test('an explicit dataDir option wins over config.dataDir', () => {
+    const originalForgeDb = process.env.FORGE_DB
+    delete process.env.FORGE_DB
+    try {
+      expect(() =>
+        startDashboardServer({
+          dataDir: '/tmp/forge-option-datadir',
+          config: { dataDir: '/tmp/forge-config-datadir' },
+        })
+      ).toThrow(/\/tmp\/forge-option-datadir\/forge\.db/)
+    } finally {
+      if (originalForgeDb !== undefined) process.env.FORGE_DB = originalForgeDb
+    }
   })
 
   test('concrete non-loopback host is flagged exposed with no separate local url', () => {

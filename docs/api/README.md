@@ -69,7 +69,7 @@ The server plugin provides the core hooks, tools, agents, plan storage, loop orc
 
 ## Dashboard
 
-Forge includes a read-only observability Dashboard — a standalone Bun HTTP server (`src/dashboard/`) that serves a SolidJS single-page app at `GET /` and JSON state at `GET /api/data`. Launch it from the TUI command palette (`Open dashboard`) or via `pnpm dashboard`. The dashboard **never mutates** loop, workspace, or storage state. By default it binds loopback only. Set `dashboard.host` / `dashboard.port` in `forge-config.jsonc` (or pass `--host` / `--port` to `pnpm dashboard`) to expose it on a LAN or VPN — see [Configuration](_media/configuration.md#dashboard). The dashboard has **no authentication**, so a non-loopback bind must be protected at the network layer.
+Forge includes a read-only observability Dashboard — a standalone Bun HTTP server (`src/dashboard/`) that serves a SolidJS single-page app at `GET /` and JSON state at `GET /api/data`. Launch it from the TUI command palette (`Open dashboard`) or via `pnpm dashboard`. The dashboard **never mutates** loop, workspace, or storage state. By default it binds loopback only. Set `dashboard.host` / `dashboard.port` in `forge-config.jsonc` to expose it on a LAN or VPN — see [Configuration](_media/configuration.md#dashboard). The dashboard has **no authentication**, so a non-loopback bind must be protected at the network layer.
 
 ### Views
 

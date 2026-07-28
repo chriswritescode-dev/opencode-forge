@@ -67,4 +67,10 @@ describe('parseDashboardCliArgs', () => {
       port: 2,
     })
   })
+
+  test('a value containing = is preserved in full', () => {
+    expect(parseDashboardCliArgs(['bun', 's', '--db=/tmp/a=b/forge.db'])).toEqual({
+      dbPath: '/tmp/a=b/forge.db',
+    })
+  })
 })

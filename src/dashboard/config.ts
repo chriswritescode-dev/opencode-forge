@@ -1,4 +1,4 @@
-import { networkInterfaces } from 'os'
+import { networkInterfaces, type NetworkInterfaceInfo } from 'os'
 import type { PluginConfig } from '../types'
 
 /** Default dashboard bind host. Loopback-only, preserving pre-config behavior. */
@@ -15,11 +15,56 @@ export interface DashboardBindOverrides {
 export interface ResolvedDashboardConfig {
   host: string
   port: number
+  /**
+   * Human-readable notes about candidates that were present but unusable.
+   * Every launch surface renders these, so a silently-dropped `dashboard.port`
+   * is reported identically by the CLI and the TUI.
+   */
+  warnings: string[]
 }
 
 /** `0` is allowed and means "let the OS pick an ephemeral port". */
-export function isValidDashboardPort(value: unknown): value is number {
+function isValidDashboardPort(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 65535
+}
+
+function describeValue(value: unknown): string {
+  return typeof value === 'string' ? JSON.stringify(value) : String(value)
+}
+
+interface BindCandidate<T> {
+  /** How the value is named to the operator, e.g. `dashboard.port`. */
+  label: string
+  value: T | undefined
+}
+
+function pickHost(candidates: BindCandidate<string>[], warnings: string[]): string | undefined {
+  for (const { label, value } of candidates) {
+    if (value === undefined) continue
+    if (typeof value !== 'string') {
+      warnings.push(
+        `Ignoring ${label} ${describeValue(value)}: expected a hostname or IP string.`
+      )
+      continue
+    }
+    const trimmed = value.trim()
+    if (trimmed.length > 0) return trimmed
+  }
+  return undefined
+}
+
+function pickPort(candidates: BindCandidate<number>[], warnings: string[]): number | undefined {
+  for (const { label, value } of candidates) {
+    if (value === undefined) continue
+    if (!isValidDashboardPort(value)) {
+      warnings.push(
+        `Ignoring ${label} ${describeValue(value)}: expected an integer between 0 and 65535.`
+      )
+      continue
+    }
+    return value
+  }
+  return undefined
 }
 
 /**
@@ -27,53 +72,97 @@ export function isValidDashboardPort(value: unknown): value is number {
  * surface (TUI command, `pnpm dashboard`) routes through here so a configured
  * host/port cannot be honoured by one entry point and ignored by another.
  * Precedence: explicit override > `dashboard.*` config > built-in default.
- * Blank/whitespace hosts and invalid ports are skipped, falling through to the
- * next candidate.
+ * Blank/whitespace hosts fall through silently because a blank value is a
+ * documented way to request the default; unusable values fall through with a
+ * warning so they are never dropped without a trace.
  */
 export function resolveDashboardConfig(
   config?: PluginConfig,
   overrides: DashboardBindOverrides = {},
 ): ResolvedDashboardConfig {
+  const warnings: string[] = []
   const host =
-    [overrides.host, config?.dashboard?.host]
-      .map((candidate) => (typeof candidate === 'string' ? candidate.trim() : ''))
-      .find((candidate) => candidate.length > 0) ?? DEFAULT_DASHBOARD_HOST
+    pickHost(
+      [
+        { label: 'host override', value: overrides.host },
+        { label: 'dashboard.host', value: config?.dashboard?.host },
+      ],
+      warnings
+    ) ?? DEFAULT_DASHBOARD_HOST
   const port =
-    [overrides.port, config?.dashboard?.port].find(isValidDashboardPort) ?? DEFAULT_DASHBOARD_PORT
-  return { host, port }
+    pickPort(
+      [
+        { label: 'port override', value: overrides.port },
+        { label: 'dashboard.port', value: config?.dashboard?.port },
+      ],
+      warnings
+    ) ?? DEFAULT_DASHBOARD_PORT
+  return { host, port, warnings }
 }
 
-/** Hosts that mean "all interfaces" to `Bun.serve`. */
-const WILDCARD_HOSTS = new Set(['0.0.0.0', '::', '*', ''])
+/**
+ * Hosts that bind every interface. Verified against Bun: `''` binds loopback
+ * only and `'*'` fails to bind at all, so neither belongs here.
+ */
+const WILDCARD_HOSTS = new Set(['0.0.0.0', '::'])
 const NAMED_LOOPBACK_HOSTS = new Set(['localhost', '::1'])
 
-export function isWildcardHost(host: string): boolean {
+function isWildcardHost(host: string): boolean {
   return WILDCARD_HOSTS.has(host.trim().toLowerCase())
 }
 
 /** True when the host is only reachable from the machine itself. */
-export function isLoopbackHost(host: string): boolean {
+function isLoopbackHost(host: string): boolean {
   const normalized = host.trim().toLowerCase()
   if (NAMED_LOOPBACK_HOSTS.has(normalized)) return true
   return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(normalized)
 }
 
 /**
- * First non-internal, non-link-local IPv4 address of this machine, or `null`
- * when the machine has no LAN address. Used to advertise a reachable URL when
- * the dashboard binds a wildcard address.
+ * Interface-name prefixes for virtual, tunnel, and container adapters. These are
+ * deprioritised rather than excluded: for a VPN-only setup the tunnel address is
+ * the sole reachable one.
  */
-export function resolvePrimaryLanIpv4(): string | null {
-  for (const addresses of Object.values(networkInterfaces())) {
+const VIRTUAL_INTERFACE_PREFIXES = [
+  'utun', 'tun', 'tap', 'docker', 'br-', 'bridge', 'veth', 'vmnet', 'vboxnet', 'awdl', 'llw',
+]
+
+function isRfc1918Ipv4(address: string): boolean {
+  const [a, b] = address.split('.').map(Number)
+  if (a === 10) return true
+  if (a === 172 && b >= 16 && b <= 31) return true
+  return a === 192 && b === 168
+}
+
+/**
+ * Best-guess LAN IPv4 address of this machine, or `null` when it has none.
+ * Used to advertise a reachable URL for a wildcard bind.
+ *
+ * Candidates are ranked physical-private > physical-public > virtual-private >
+ * virtual-public and tie-broken by interface name, so a machine with several
+ * addresses always advertises the same one instead of whichever the OS listed
+ * first. Interface naming is a heuristic and cannot be authoritative: an
+ * operator whose correct address is not chosen should set `dashboard.host`
+ * explicitly.
+ */
+export function resolvePrimaryLanIpv4(
+  interfaces: Record<string, NetworkInterfaceInfo[] | undefined> = networkInterfaces()
+): string | null {
+  let best: { score: number; name: string; address: string } | null = null
+  for (const [name, addresses] of Object.entries(interfaces)) {
     for (const address of addresses ?? []) {
       const family = String(address.family)
       if (family !== 'IPv4' && family !== '4') continue
       if (address.internal) continue
       if (address.address.startsWith('169.254.')) continue
-      return address.address
+      const virtual = VIRTUAL_INTERFACE_PREFIXES.some((prefix) => name.startsWith(prefix))
+      const score = (virtual ? 0 : 2) + (isRfc1918Ipv4(address.address) ? 1 : 0)
+      if (!best || score > best.score || (score === best.score && name < best.name)) {
+        best = { score, name, address: address.address }
+      }
     }
   }
-  return null
+  return best?.address ?? null
 }
 
 function formatHostForUrl(host: string): string {
@@ -81,8 +170,11 @@ function formatHostForUrl(host: string): string {
 }
 
 export interface DashboardUrls {
+  /** URL to advertise. The machine's LAN address when bound to a wildcard host. */
   url: string
+  /** URL reachable from this machine's loopback. Equals `url` unless bound to a wildcard. */
   localUrl: string
+  /** True when the bind is reachable beyond loopback. */
   exposed: boolean
 }
 
@@ -96,6 +188,8 @@ export function buildDashboardUrls(
   port: number,
   lanIpResolver: () => string | null = resolvePrimaryLanIpv4,
 ): DashboardUrls {
+  // Always literal `localhost`: this is the loopback URL for display, not the
+  // configured bind host, so it must not follow DEFAULT_DASHBOARD_HOST.
   const localUrl = `http://localhost:${port}`
   if (isWildcardHost(host)) {
     const lanIp = lanIpResolver()
@@ -131,9 +225,7 @@ export interface DashboardBindingNotice {
  * Decides what a launch surface should communicate about a bind. Surfaces only
  * format these fields; the decision of what to show lives here.
  */
-export function describeDashboardBinding(
-  binding: { url: string; localUrl: string; exposed: boolean },
-): DashboardBindingNotice {
+export function describeDashboardBinding(binding: DashboardUrls): DashboardBindingNotice {
   return {
     url: binding.url,
     ...(binding.localUrl !== binding.url ? { localUrl: binding.localUrl } : {}),

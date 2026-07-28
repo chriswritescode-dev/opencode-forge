@@ -803,5 +803,5 @@ const pluginModule = {
 }
 
 export default pluginModule
-export type { PluginConfig, CompactionConfig } from './types'
+export type { PluginConfig, CompactionConfig, DashboardConfig } from './types'
 export { VERSION } from './version'

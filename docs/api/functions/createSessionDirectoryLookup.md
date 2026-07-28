@@ -8,7 +8,7 @@
 
 > **createSessionDirectoryLookup**(`__namedParameters`): (`sessionId`) => `Promise`\<`string` \| `null`\>
 
-Defined in: [index.ts:135](https://github.com/chriswritescode-dev/opencode-forge/blob/01335e2b80ea22458844eeefc0db99bb749b1be5/src/index.ts#L135)
+Defined in: [index.ts:135](https://github.com/chriswritescode-dev/opencode-forge/blob/4598160fde562c418f76ec2c53a00e01bdb20300/src/index.ts#L135)
 
 ## Parameters
 
