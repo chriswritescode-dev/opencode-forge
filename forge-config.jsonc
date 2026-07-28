@@ -122,6 +122,18 @@
     }
   },
 
+  // Dashboard HTTP server bind address (`pnpm dashboard` and the TUI "Open dashboard" command).
+  // Defaults to loopback only. Use "0.0.0.0" to listen on all interfaces so the dashboard is
+  // reachable from other devices on a LAN or VPN.
+  // WARNING: the dashboard has NO authentication. A non-loopback bind exposes every loop plan,
+  // goal, audit result, finding, and cost to anyone who can reach the port. Restrict access with
+  // a firewall or VPN.
+  // Consecutive ports (port..port+9) are tried when the configured port is busy.
+  "dashboard": {
+    "host": "localhost",
+    "port": 4747
+  },
+
   // TTL in ms for completed/cancelled loops before cleanup. Default: 604800000 (7 days)
   "completedLoopTtlMs": 604800000
 

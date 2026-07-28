@@ -1,41 +1,25 @@
 #!/usr/bin/env bun
+import { parseDashboardCliArgs } from '../src/dashboard/cli-args'
+import { describeDashboardBinding } from '../src/dashboard/config'
 import { startDashboardServer } from '../src/dashboard/launch'
 import { loadPluginConfig } from '../src/setup'
 
-interface Args {
-  port?: number
-  dbPath?: string
-}
-
-function parseArgs(argv: string[]): Args {
-  const args: Args = {}
-
-  for (let i = 2; i < argv.length; i++) {
-    const arg = argv[i]
-    if (arg === '--port' && i + 1 < argv.length) {
-      args.port = Number.parseInt(argv[++i], 10)
-    } else if (arg === '--db' && i + 1 < argv.length) {
-      args.dbPath = argv[++i]
-    } else if (arg.startsWith('--port=')) {
-      args.port = Number.parseInt(arg.split('=')[1], 10)
-    } else if (arg.startsWith('--db=')) {
-      args.dbPath = arg.split('=')[1]
-    }
-  }
-
-  return args
-}
-
 function main(): void {
-  const args = parseArgs(process.argv)
+  const args = parseDashboardCliArgs(process.argv)
+  const config = loadPluginConfig()
 
   try {
     const handle = startDashboardServer({
+      host: args.host,
       port: args.port,
       dbPath: args.dbPath,
-      dataDir: loadPluginConfig().dataDir,
+      config,
     })
-    console.log(`Forge dashboard running: ${handle.url}`)
+    for (const warning of handle.warnings) console.warn(warning)
+    const notice = describeDashboardBinding(handle)
+    console.log(`Forge dashboard running: ${notice.url}`)
+    if (notice.localUrl) console.log(`Local: ${notice.localUrl}`)
+    if (notice.warning) console.warn(notice.warning)
     const shutdown = () => {
       handle.stop()
       process.exit(0)

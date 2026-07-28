@@ -22,6 +22,7 @@ import { existsSync, rmSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { spawnSync } from 'child_process'
+import { readFlagValue } from '../src/utils/cli-flags'
 
 interface Args {
   loopName: string
@@ -31,14 +32,16 @@ interface Args {
 
 function parseArgs(): Args {
   const [, , ...rest] = process.argv
+  const projectDir = readFlagValue(rest, 'project-dir')
+  const dryRun = rest.includes('--dry-run')
   let loopName: string | null = null
-  let projectDir: string | undefined
-  let dryRun = false
 
-  for (const arg of rest) {
-    if (arg === '--dry-run') dryRun = true
-    else if (arg.startsWith('--project-dir=')) projectDir = arg.split('=')[1]
-    else if (!loopName) loopName = arg
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i]
+    // Skip a bare value flag together with the token it consumes, so a path
+    // passed as `--project-dir /path` is never mistaken for the loop name.
+    if (arg === '--project-dir') i++
+    else if (!arg.startsWith('--') && !loopName) loopName = arg
   }
 
   if (!loopName) {
