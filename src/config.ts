@@ -15,6 +15,8 @@ function buildPluginCommands(promptsDir?: string): Record<string, PluginCommand>
       template: loadPrompt(['commands','execute-plan.md'], promptsDir) },
     'execute-goal': { description: 'Execute a goal in a dedicated session inside an isolated Forge worktree loop', agent: 'code', subtask: false,
       template: loadPrompt(['commands','execute-goal.md'], promptsDir) },
+    goal: { description: 'Research a goal, ask clarifying questions, and author a goal brief for launching from the Forge dialog', agent: 'goal', subtask: false,
+      template: loadPrompt(['commands','goal.md'], promptsDir) },
     'launch-group': { description: 'Decompose a request into features and launch them as parallel planning + development loops', agent: 'code', subtask: false,
       template: loadPrompt(['commands','launch-group.md'], promptsDir) },
     'loop-status': { description: 'Check status of all active loops', agent: 'code', subtask: false,

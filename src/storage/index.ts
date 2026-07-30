@@ -23,3 +23,6 @@ export type { PlanRow } from './repos/plans-repo'
 
 export { createFeatureGroupsRepo } from './repos/feature-groups-repo'
 export type { FeatureGroupRow, GroupFeatureRow } from './repos/feature-groups-repo'
+
+export { createGoalBriefsRepo } from './repos/goal-briefs-repo'
+export type { GoalBriefRow } from './repos/goal-briefs-repo'

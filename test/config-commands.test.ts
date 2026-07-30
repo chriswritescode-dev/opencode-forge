@@ -44,6 +44,14 @@ describe('createConfigHandler commands', () => {
     expect(executeGoal.agent).toBe('code')
     expect(executeGoal.subtask).toBe(false)
 
+    const goal = commands.goal
+    expect(goal).toBeDefined()
+    expect(goal.template).toContain('$ARGUMENTS')
+    expect(goal.template).toContain('goal-write')
+    expect(goal.template).toContain('## Acceptance Criteria')
+    expect(goal.agent).toBe('goal')
+    expect(goal.subtask).toBe(false)
+
     const launchGroup = commands['launch-group']
     expect(launchGroup).toBeDefined()
     expect(launchGroup.template).toContain('launch-group')

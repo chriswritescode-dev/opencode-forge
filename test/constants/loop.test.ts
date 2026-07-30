@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories, MAX_TOTAL_SECTIONS, PLAN_AUTHORING_TOOL_NAMES } from '../../src/constants/loop'
+import { buildLoopPermissionRuleset, buildAuditSessionPermissionRuleset, resolveLoopAllowedDirectories, MAX_TOTAL_SECTIONS, PLAN_AUTHORING_TOOL_NAMES, GOAL_AUTHORING_TOOL_NAMES, SPEC_AUTHORING_TOOL_NAMES } from '../../src/constants/loop'
 import { resolveOpencodeToolOutputDir, DEFAULT_FORGE_TMP_DIR } from '../../src/utils/opencode-paths'
 
 const TOOL_OUTPUT_DIR = resolveOpencodeToolOutputDir()
@@ -20,6 +20,19 @@ describe('PLAN_AUTHORING_TOOL_NAMES', () => {
   })
 })
 
+describe('GOAL_AUTHORING_TOOL_NAMES', () => {
+  it('is the single list of goal-authoring tools', () => {
+    expect(GOAL_AUTHORING_TOOL_NAMES).toEqual(['goal-write'])
+  })
+})
+
+describe('SPEC_AUTHORING_TOOL_NAMES', () => {
+  it('is the plan-authoring list plus the goal-authoring list, in order', () => {
+    expect(SPEC_AUTHORING_TOOL_NAMES).toEqual(['plan-write', 'plan-edit', 'goal-write'])
+    expect(SPEC_AUTHORING_TOOL_NAMES.slice(0, PLAN_AUTHORING_TOOL_NAMES.length)).toEqual([...PLAN_AUTHORING_TOOL_NAMES])
+  })
+})
+
 describe('buildLoopPermissionRuleset', () => {
   it('emits the full loop ruleset in order (no shell-specific rules)', () => {
     const rules = buildLoopPermissionRuleset()
@@ -34,6 +47,7 @@ describe('buildLoopPermissionRuleset', () => {
       { permission: 'plan_exit', pattern: '*', action: 'deny' },
       { permission: 'plan-write', pattern: '*', action: 'deny' },
       { permission: 'plan-edit', pattern: '*', action: 'deny' },
+      { permission: 'goal-write', pattern: '*', action: 'deny' },
       { permission: 'execute-plan', pattern: '*', action: 'deny' },
       { permission: 'execute-goal', pattern: '*', action: 'deny' },
       { permission: 'question', pattern: '*', action: 'deny' },
@@ -50,6 +64,13 @@ describe('buildLoopPermissionRuleset', () => {
     const auditRules = buildAuditSessionPermissionRuleset()
     expect(loopRules).toContainEqual({ permission: 'execute-goal', pattern: '*', action: 'deny' })
     expect(auditRules).toContainEqual({ permission: 'execute-goal', pattern: '*', action: 'deny' })
+  })
+
+  it('denies goal-write in both loop and audit rulesets so no artifact is authored from inside a running session', () => {
+    const loopRules = buildLoopPermissionRuleset()
+    const auditRules = buildAuditSessionPermissionRuleset()
+    expect(loopRules).toContainEqual({ permission: 'goal-write', pattern: '*', action: 'deny' })
+    expect(auditRules).toContainEqual({ permission: 'goal-write', pattern: '*', action: 'deny' })
   })
 
   it('emits no sh or bash permission rules (native bash is covered by the blanket allow)', () => {

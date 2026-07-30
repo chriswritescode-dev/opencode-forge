@@ -36,6 +36,7 @@ import { loopBranchExists } from '../workspace/forge-naming'
 import { getWorktreeProjectPreconditionError } from '../workspace/forge-worktree'
 import { resolveHostSessionDirectory } from '../utils/resolve-project-root'
 import { resolvePostActionConfig, type ResolvedPostActionConfig } from '../loop/post-action-config'
+import { resolveLoopLaunchPolicy } from '../utils/loop-helpers'
 
 /**
  * A freshly created + warped loop session can transiently report "Session not
@@ -90,14 +91,42 @@ export interface ForgeLoopExtra {
   auditorModel?: string
   executionVariant?: string
   auditorVariant?: string
-  planSource: 'stored' | 'inline'
+  kind?: 'plan' | 'goal'
+  goal?: string
+  planSource?: 'stored' | 'inline'
   planText?: string
   initialPromptOwner?: 'server' | 'tui'
   pendingAttachStartedAt?: number
+  /**
+   * Maximum loop iterations as resolved at launch time by
+   * {@link resolveLoopLaunchPolicy}. Stamped on the envelope by the TUI/remote
+   * launch path so the attach hook honors the same policy without needing to
+   * re-resolve it from config (the attach hook's config view is the server's,
+   * which is consistent, but the envelope is the authority for what the
+   * launcher promised; absent stamp falls back to the server's policy).
+   */
+  maxIterations?: number
   /** Whether the loop runs sandboxed. Written by the attach hook and remote launches; read on re-attach. */
   sandboxEnabled?: boolean
   /** Docker container name when the loop runs sandboxed. */
   sandboxContainer?: string
+}
+
+export type ForgeLoopExtraSpec =
+  | { ok: true; kind: 'plan'; planText: string }
+  | { ok: true; kind: 'goal'; goal: string }
+  | { ok: false; error: string }
+
+export function resolveForgeLoopExtraSpec(
+  cfg: Partial<ForgeLoopExtra> | undefined,
+): ForgeLoopExtraSpec {
+  if (cfg?.kind === 'goal') {
+    if (typeof cfg.goal !== 'string' || cfg.goal.trim().length === 0) {
+      return { ok: false, error: 'forgeLoop.kind is "goal" but forgeLoop.goal is missing or blank' }
+    }
+    return { ok: true, kind: 'goal', goal: cfg.goal.trim() }
+  }
+  return { ok: true, kind: 'plan', planText: cfg?.planText ?? '' }
 }
 
 export interface AttachLoopInput {
@@ -794,6 +823,7 @@ export async function attachLoopToSession(
             agent: 'code',
             ...workspaceParam,
             ...(model ? { model } : {}),
+            ...(executionVariant && (model != null || loopModel == null) ? { variant: executionVariant } : {}),
           })
           return {}
         } catch (err) {
@@ -1099,8 +1129,9 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const resolvedExecutionVariant = command.executionVariant ?? deps.config.executionVariant
     const resolvedAuditorVariant = command.auditorVariant ?? deps.config.auditorVariant
     
-    // Resolve max iterations
-    const maxIterations = command.maxIterations ?? deps.config.loop?.defaultMaxIterations ?? 0
+    // Resolve max iterations from the shared launch policy so the tool and
+    // TUI/remote launch surfaces cannot diverge.
+    const maxIterations = command.maxIterations ?? resolveLoopLaunchPolicy(deps.config).maxIterations
     
     // Track created resources for rollback
     let createdSessionId: string | null = null
@@ -1346,7 +1377,7 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
     const baseName = command.loopName?.trim() ? slugify(command.loopName) : slugify(title)
     const uniqueLoopName = deps.loop.generateUniqueLoopName(baseName)
 
-    const maxIterations = command.maxIterations ?? deps.config.loop?.defaultMaxIterations ?? 0
+    const maxIterations = command.maxIterations ?? resolveLoopLaunchPolicy(deps.config).maxIterations
     const resolvedExecutionModel = deps.config.executionModel
     const resolvedAuditorModel = deps.config.auditorModel
     const resolvedExecutionVariant = deps.config.executionVariant
@@ -2060,7 +2091,10 @@ export function createForgeExecutionService(deps: ForgeExecutionServiceDeps): Fo
             directory: stoppedState.worktreeDir,
             parts: [{ type: 'text' as const, text: promptText }],
             agent: promptAgent,
-            ...(model ? { model, ...(restartVariant ? { variant: restartVariant } : {}) } : {}),
+            ...(model ? { model } : {}),
+            ...(restartVariant && (model != null || loopModel == null)
+              ? { variant: restartVariant }
+              : {}),
             ...workspaceParam,
           })
           return {}

@@ -8,6 +8,7 @@ import type { LoopsRepo } from '../storage/repos/loops-repo'
 import type { SectionPlansRepo } from '../storage/repos/section-plans-repo'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
 import type { FeatureGroupsRepo } from '../storage/repos/feature-groups-repo'
+import type { GoalBriefsRepo } from '../storage/repos/goal-briefs-repo'
 import type { GroupOrchestrator } from '../services/group-orchestrator'
 import type { Loop } from '../loop'
 import type { ForgeClient } from '../client/port'
@@ -40,6 +41,7 @@ export interface ToolContext {
   sandboxManager: ReturnType<typeof createSandboxManager> | null
   /** Plans repo for plan storage. */
   plansRepo: PlansRepo
+  goalBriefsRepo: GoalBriefsRepo
   /** Review findings repo for review findings storage. */
   reviewFindingsRepo: ReviewFindingsRepo
   /** Loops repo for loop storage. */

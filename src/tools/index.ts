@@ -2,6 +2,7 @@ import { tool } from '@opencode-ai/plugin'
 import { createReviewTools } from './review'
 import { createPlanTools } from './plan-kv'
 import { createPlanAuthoringTools } from './plan-authoring'
+import { createGoalAuthoringTools } from './goal-authoring'
 import { createLoopTools } from './loop'
 import { createGroupTools } from './group'
 import { createSectionReadTool } from './section-read'
@@ -21,6 +22,7 @@ export function createTools(ctx: ToolContext): Record<string, ReturnType<typeof 
     ...createReviewTools(ctx),
     ...createPlanTools(ctx),
     ...createPlanAuthoringTools(ctx),
+    ...createGoalAuthoringTools(ctx),
     ...createLoopTools(ctx),
     ...createGroupTools(ctx),
     'section-read': createSectionReadTool(ctx),

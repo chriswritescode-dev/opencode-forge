@@ -6,6 +6,9 @@ import {
   extractLoopNames,
   sanitizeLoopName,
   PLAN_EXECUTION_LABELS,
+  GOAL_EXECUTION_LABELS,
+  listLaunchModesForSpecKind,
+  getLaunchModeDescription,
 } from '../src/utils/plan-execution'
 
 describe('Plan Execution Utilities', () => {
@@ -22,6 +25,41 @@ describe('Plan Execution Utilities', () => {
       expect(PLAN_EXECUTION_LABELS[0]).toBe('New session')
       expect(PLAN_EXECUTION_LABELS[1]).toBe('Execute here')
       expect(PLAN_EXECUTION_LABELS[2]).toBe('Loop')
+    })
+  })
+
+  describe('GOAL_EXECUTION_LABELS', () => {
+    test('Contains only the Loop label', () => {
+      expect(GOAL_EXECUTION_LABELS).toEqual(['Loop'])
+    })
+  })
+
+  describe('listLaunchModesForSpecKind', () => {
+    test('returns all three plan labels in canonical order', () => {
+      expect(listLaunchModesForSpecKind('plan')).toEqual(['New session', 'Execute here', 'Loop'])
+    })
+
+    test('returns exactly Loop for goal kind', () => {
+      expect(listLaunchModesForSpecKind('goal')).toEqual(['Loop'])
+      expect(listLaunchModesForSpecKind('goal')).toHaveLength(1)
+    })
+  })
+
+  describe('getLaunchModeDescription', () => {
+    test('returns byte-identical descriptions for all three plan labels', () => {
+      expect(getLaunchModeDescription('plan', 'New session')).toBe('Create a new session and send the plan to the code agent')
+      expect(getLaunchModeDescription('plan', 'Execute here')).toBe('Execute the plan in the current session using the code agent')
+      expect(getLaunchModeDescription('plan', 'Loop')).toBe('Execute using iterative development loop in an isolated git worktree (Docker sandbox used automatically when available)')
+    })
+
+    test('returns the goal-specific Loop description', () => {
+      expect(getLaunchModeDescription('goal', 'Loop')).toBe('Execute the goal brief using an iterative development loop in an isolated git worktree')
+    })
+
+    test('returns empty string for unknown labels', () => {
+      expect(getLaunchModeDescription('plan', 'Unknown')).toBe('')
+      expect(getLaunchModeDescription('goal', 'New session')).toBe('')
+      expect(getLaunchModeDescription('goal', 'Execute here')).toBe('')
     })
   })
 

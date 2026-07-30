@@ -63,13 +63,13 @@ The codebase is organized into these module groups under `src/`:
 
 | Module | Purpose | Key Files |
 |--------|---------|-----------|
-| `agents/` | AI agent definitions (code, architect, auditor + auditor-loop variant) | `index.ts`, `code.ts`, `architect.ts`, `auditor.ts` |
+| `agents/` | AI agent definitions (code, architect, goal, auditor + auditor-loop variant) | `index.ts`, `code.ts`, `architect.ts`, `goal.ts`, `auditor.ts` |
 | `hooks/` | Plugin event/lifecycle hooks (session, loop events, plan capture, plan approval, watchdog, sandbox, forge-session-attach, loop-permission, host-side-effects) | `index.ts`, `session.ts`, `loop.ts`, `plan-capture.ts`, `plan-approval.ts`, `watchdog.ts`, `sandbox-tools.ts`, `forge-session-attach.ts`, `loop-permission.ts`, `host-side-effects.ts` |
 | `loop/` | Core loop state machine and runtime | `runtime.ts`, `service.ts`, `state.ts`, `transitions.ts`, `prompts.ts`, `restartability.ts`, `in-flight-guard.ts`, `token-usage.ts`, `name-uniqueness.ts` |
 | `services/` | Higher-level orchestration services | `execution.ts`, `session-loop-resolver.ts`, `deterministic-decomposer.ts`, `plan-capture.ts`, `worktree-log.ts` |
 | `sandbox/` | Docker sandbox management | `docker.ts`, `manager.ts`, `context.ts`, `reconcile.ts` |
 | `storage/` | SQLite persistence layer (repos + migrations) | `database.ts`, `repos/*.ts`, `migrations/*.sql` |
-| `tools/` | Plugin tools callable by AI agents | `loop.ts`, `review.ts`, `plan-kv.ts`, `section-read.ts` |
+| `tools/` | Plugin tools callable by AI agents | `loop.ts`, `review.ts`, `plan-kv.ts`, `plan-authoring.ts`, `goal-authoring.ts`, `section-read.ts` |
 | `workspace/` | Git worktree / workspace management | `forge-adapter.ts`, `forge-worktree.ts`, `pending-teardown.ts`, `classify-stale.ts`, `remove-with-context.ts`, `sweep-stale.ts` |
 | `utils/` | Shared utility modules (~25 files) | `logger.ts`, `lru-cache.ts`, `model-fallback.ts`, etc. |
 | `tui/` | TUI-specific components | `execute-plan-panel.tsx` |
@@ -167,7 +167,7 @@ OpenCode Forge uses `bun:sqlite` for all data persistence. The storage layer is 
 - `initializeDatabase(dataDir, options)` - Creates SQLite DB in the data directory
 - `closeDatabase()` - Closes database connections on shutdown
 - `resolveDataDir()` - Resolves platform-appropriate data directory (`~/.local/share/opencode/forge`)
-- Migrations are registered explicitly in execution order (ids 100-143; not every id ships a SQL file) and tracked in a `migrations` table
+- Migrations are registered explicitly in execution order (ids 100-144; not every id ships a SQL file) and tracked in a `migrations` table
 
 ### Repository Pattern
 
@@ -177,6 +177,7 @@ All data access goes through typed repository interfaces created via factory fun
 |---|---|---|
 | `LoopsRepo` | CRUD for loop rows | `LoopRow`, `LoopLargeFields` |
 | `PlansRepo` | CRUD for plans (session-scoped plan of record read by `plan-read`, the approval hook, `execute-plan`, and the TUI plan dialog) | `PlanRow`, `PlansRepo` |
+| `GoalBriefsRepo` | CRUD for session-scoped goal briefs authored before goal-loop launch | `GoalBriefRow`, `GoalBriefsRepo` |
 | `ReviewFindingsRepo` | CRUD for review findings | `ReviewFindingRow`, `ReviewFindingsRepo` |
 | `SectionPlansRepo` | CRUD for milestone (section) plans used in decomposed loops | `SectionPlanRow`, `SectionPlansRepo` |
 | `LoopTransitionsRepo` | Append-only loop phase-transition log | `LoopTransitionRow` |

@@ -88,7 +88,7 @@ describe('Load Plans inline plan is sent as inline even when host session exists
       {
         mode: 'loop',
         title: 'My Plan',
-        plan: '# My Plan\n\nFresh content',
+        spec: { kind: 'plan', text: '# My Plan\n\nFresh content', updatedAt: 0 },
         executionModel: undefined,
         auditorModel: undefined,
       },
@@ -131,7 +131,7 @@ describe('Load Plans inline plan is sent as inline even when host session exists
       {
         mode: 'loop',
         title: 'My Plan',
-        plan,
+        spec: { kind: 'plan', text: plan, updatedAt: 0 },
         executionModel: undefined,
         auditorModel: undefined,
       },
@@ -151,7 +151,7 @@ describe('Load Plans inline plan is sent as inline even when host session exists
     await client!.plan.execute(SESSION_ID, {
       mode: 'loop',
       title: 'My Plan',
-      plan: '# My Plan\n\nFresh content',
+      spec: { kind: 'plan', text: '# My Plan\n\nFresh content', updatedAt: 0 },
       executionModel: undefined,
       auditorModel: undefined,
     })

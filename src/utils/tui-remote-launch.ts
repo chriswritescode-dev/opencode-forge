@@ -4,6 +4,7 @@ import { createRemoteForgeClient, type RemoteClientOptions } from '../client/sdk
 import type { ForgeClient } from '../client/port'
 import type { PluginConfig } from '../types'
 import { reserveTuiLoopName, launchTuiLoop } from './tui-client'
+import type { SessionLaunchSpec } from './session-launch-spec'
 
 export interface RemoteLoopRequest {
   remoteName: string
@@ -16,7 +17,7 @@ export interface RemoteLoopRequest {
   localProjectId: string
   title: string
   loopName: string
-  plan: string
+  spec: SessionLaunchSpec
   executionModel?: string
   auditorModel?: string
   executionVariant?: string
@@ -39,6 +40,8 @@ export async function executeRemoteLoop(
   req: RemoteLoopRequest,
   deps: RemoteLaunchDeps,
 ): Promise<RemoteLaunchResult> {
+  if (req.spec.kind === 'goal') return { error: 'Remote targets support plans only' }
+
   const debug = deps.debug ?? (() => {})
   const git = deps.git ?? defaultGitService
   const createClient = deps.createClient ?? createRemoteForgeClient
@@ -136,7 +139,7 @@ export async function executeRemoteLoop(
     loopNameReserved: true,
     connectPollIntervalMs: 500,
     title: req.title,
-    plan: req.plan,
+    spec: req.spec,
     executionModel: req.executionModel,
     auditorModel: req.auditorModel,
     executionVariant: req.executionVariant,
@@ -149,6 +152,7 @@ export async function executeRemoteLoop(
     forgeLoopOverrides: {
       sandboxEnabled: remote.sandbox,
     },
+    pluginConfig: deps.config,
     debug,
   })
 

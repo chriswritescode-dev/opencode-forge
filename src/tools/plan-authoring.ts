@@ -1,27 +1,11 @@
 import { tool } from '@opencode-ai/plugin'
 import type { ToolContext } from './types'
+import { assertWritableSession } from './session-write-guard'
 import { normalizePastedPlanText } from '../utils/marked-plan-parser'
 import { writeSessionPlanContent } from '../services/plan-capture'
 import { formatPlanStructureSummary, summarizePlanStructure } from '../utils/plan-structure'
 
 const z = tool.schema
-
-/**
- * Returns an error message when the session is currently driving a running
- * loop, else null. The stored plan for a running loop is amended only via
- * `plan-adjust` during a section audit, so direct authoring from inside such a
- * session is blocked. Sessions whose loop has already terminated stay writable.
- */
-function assertWritableSession(ctx: ToolContext, sessionID: string): string | null {
-  const state = ctx.loop.service.resolveActiveLoopForSession(sessionID)
-  if (state) {
-    return (
-      `Cannot modify the plan from an active loop session (loop: ${state.loopName}). ` +
-      `The stored plan for a running loop is amended with plan-adjust during a section audit.`
-    )
-  }
-  return null
-}
 
 /**
  * Wraps `normalizePastedPlanText` and maps its reasons to user-facing messages
@@ -75,7 +59,10 @@ export function createPlanAuthoringTools(ctx: ToolContext): Record<string, Retur
           ),
       },
       execute: async (args, context) => {
-        const guard = assertWritableSession(ctx, context.sessionID)
+        const guard = assertWritableSession(ctx, context.sessionID, {
+          artifactLabel: 'plan',
+          amendGuidance: 'The stored plan for a running loop is amended with plan-adjust during a section audit.',
+        })
         if (guard) return guard
 
         const normalized = normalizeFragment(args.content)
@@ -111,7 +98,10 @@ export function createPlanAuthoringTools(ctx: ToolContext): Record<string, Retur
           .describe('Replace every occurrence instead of requiring a unique match.'),
       },
       execute: async (args, context) => {
-        const guard = assertWritableSession(ctx, context.sessionID)
+        const guard = assertWritableSession(ctx, context.sessionID, {
+          artifactLabel: 'plan',
+          amendGuidance: 'The stored plan for a running loop is amended with plan-adjust during a section audit.',
+        })
         if (guard) return guard
 
         const existing = ctx.plansRepo.getForSession(ctx.projectId, context.sessionID)

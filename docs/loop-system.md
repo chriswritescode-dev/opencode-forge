@@ -294,7 +294,10 @@ Cancellation:
 
 ## Goal Loops
 
-A **goal loop** (`kind: 'goal'`) is a lightweight alternative to a plan loop for work that does not need a structured plan. It is started by the `/execute-goal <prompt>` slash command (or the `execute-goal` tool) with free-text goal text.
+A **goal loop** (`kind: 'goal'`) is a lightweight alternative to a plan loop for work that does not need a structured plan. Forge exposes two launch paths:
+
+- **`/execute-goal` (or the `execute-goal` tool)** — immediate. Free-text goal input is passed straight to a managed goal loop with config-default models. No stored artifact is authored first; the goal text lives only in `loop_large_fields.goal` after launch.
+- **`/goal`** — interactive. The `goal` agent reconnoiters the codebase, clarifies scope inline, and authors a structured **goal brief** with the `goal-write` tool, persisted to a session-scoped `goal_briefs` row. The brief is then handed to the Forge execution dialog, which lets the user pick execution and auditor models before launching a goal loop.
 
 ### Lifecycle differences from plan loops
 
@@ -320,14 +323,18 @@ Goal loops are fully visible to `loop-status`, cancellable with `loop-cancel`, a
 
 ### Differences from `execute-plan` and `launch-group`
 
-| Aspect | `execute-plan` (loop) | `execute-goal` | `launch-group` |
-|---|---|---|---|
-| Input | Structured plan (persisted in `plans`) | Free-text goal | PRD / pre-split feature list |
-| Sections / milestones | Yes (decomposed) | No | Per feature (each feature is its own loop) |
-| Executor session | Fresh session per iteration | Fresh dedicated session per coding pass | Fresh session per feature loop |
-| Final audit | Yes (after all sections) | No | Per feature loop |
-| Post-completion action | Yes (when configured) | Never | Per feature loop |
-| Slash command | `/execute-plan` | `/execute-goal` | None (agent-invoked) |
+| Aspect | `execute-plan` (loop) | `execute-goal` | `/goal` brief → goal loop | `launch-group` |
+|---|---|---|---|---|
+| Input | Structured plan (persisted in `plans`) | Free-text goal | Structured goal brief (persisted in `goal_briefs`) | PRD / pre-split feature list |
+| Sections / milestones | Yes (decomposed) | No | No | Per feature (each feature is its own loop) |
+| Executor session | Fresh session per iteration | Fresh dedicated session per coding pass | Fresh dedicated session per coding pass | Fresh session per feature loop |
+| Final audit | Yes (after all sections) | No | No | Per feature loop |
+| Post-completion action | Yes (when configured) | Never | Never | Per feature loop |
+| Stored artifact | `plans` row | None (goal only in `loop_large_fields.goal`) | `goal_briefs` row pre-launch; `loop_large_fields.goal` after launch | Per-feature `plans` rows |
+| Model selection | Execution dialog (executor + auditor) | Config defaults | Execution dialog (executor + auditor) | Execution dialog per feature |
+| Slash command | `/execute-plan` | `/execute-goal` | `/goal` | None (agent-invoked) |
+
+The brief's `## Acceptance Criteria` section becomes the frozen spec re-read by `buildGoalAuditPrompt` on every audit pass: once a brief-backed goal loop launches, the brief text is copied into `loop_large_fields.goal` and the auditor compares the worktree against that exact text on every pass. That is why briefs are preferred over bare `/execute-goal` goals for any work spanning multiple iterations — the structured acceptance criteria give the auditor a stable, reviewable contract instead of a one-line free-text prompt.
 
 ## Tool Restrictions
 

@@ -399,5 +399,14 @@ export const migrations: Migration[] = [
       db.run(loadSql('143_create_plan_amendments.sql'))
     },
   },
+  {
+    id: '144',
+    description: 'Create goal_briefs table for session-scoped goal brief authoring',
+    apply: (db: Database) => {
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='goal_briefs'").all()
+      if (tables.length > 0) return
+      db.run(loadSql('144_create_goal_briefs.sql'))
+    },
+  },
 
 ]

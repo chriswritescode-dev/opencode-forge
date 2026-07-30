@@ -24,6 +24,16 @@ export interface ClassifyForgeWorkspaceOptions {
   pendingAttachGraceMs?: number
 }
 
+function isWithinPendingAttachGrace(
+  startedAt: unknown,
+  options: ClassifyForgeWorkspaceOptions,
+): boolean | null {
+  if (typeof startedAt !== 'number' || !Number.isFinite(startedAt)) return null
+  const nowMs = options.nowMs ?? Date.now()
+  const graceMs = options.pendingAttachGraceMs ?? PENDING_ATTACH_GRACE_MS
+  return nowMs - startedAt <= graceMs
+}
+
 export function isPendingAttachWorkspace(
   entry: ForgeWorkspaceEntry,
   options: ClassifyForgeWorkspaceOptions = {},
@@ -34,24 +44,27 @@ export function isPendingAttachWorkspace(
   const metadata = forgeLoop as { initialPromptOwner?: unknown; pendingAttachStartedAt?: unknown }
   if (metadata.initialPromptOwner !== 'tui') return false
 
-  const startedAt = metadata.pendingAttachStartedAt
-  if (typeof startedAt !== 'number' || !Number.isFinite(startedAt)) return false
+  return isWithinPendingAttachGrace(metadata.pendingAttachStartedAt, options) === true
+}
 
-  const nowMs = options.nowMs ?? Date.now()
-  const graceMs = options.pendingAttachGraceMs ?? PENDING_ATTACH_GRACE_MS
-  return nowMs - startedAt <= graceMs
+export function isGoalPendingAttachExpired(
+  entry: ForgeWorkspaceEntry,
+  options: ClassifyForgeWorkspaceOptions = {},
+): boolean {
+  const forgeLoop = entry.extra?.forgeLoop
+  if (!forgeLoop || typeof forgeLoop !== 'object') return false
+
+  const metadata = forgeLoop as { kind?: unknown; initialPromptOwner?: unknown; pendingAttachStartedAt?: unknown }
+  if (metadata.kind !== 'goal' || metadata.initialPromptOwner !== 'server') return false
+
+  return isWithinPendingAttachGrace(metadata.pendingAttachStartedAt, options) === false
 }
 
 function isPendingStartWorkspace(
   entry: ForgeWorkspaceEntry,
   options: ClassifyForgeWorkspaceOptions = {},
 ): boolean {
-  const startedAt = entry.extra?.workspaceCreatedAt
-  if (typeof startedAt !== 'number' || !Number.isFinite(startedAt)) return false
-
-  const nowMs = options.nowMs ?? Date.now()
-  const graceMs = options.pendingAttachGraceMs ?? PENDING_ATTACH_GRACE_MS
-  return nowMs - startedAt <= graceMs
+  return isWithinPendingAttachGrace(entry.extra?.workspaceCreatedAt, options) === true
 }
 
 /**

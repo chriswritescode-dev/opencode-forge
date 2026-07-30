@@ -59,6 +59,23 @@ describe('loadPrompt', () => {
     expect(prompt).toContain('**Verification**')
   })
 
+  test('goal agent prompt contains the four required brief headings and goal-write', () => {
+    const prompt = loadPrompt(['agents', 'goal.md'])
+    expect(prompt).toContain('## Goal')
+    expect(prompt).toContain('## Context')
+    expect(prompt).toContain('## Constraints')
+    expect(prompt).toContain('## Acceptance Criteria')
+    expect(prompt).toContain('goal-write')
+    expect(prompt).toContain('question')
+    expect(prompt).not.toContain('<!-- forge-section -->')
+  })
+
+  test('goal command prompt contains $ARGUMENTS and goal-write', () => {
+    const prompt = loadPrompt(['commands', 'goal.md'])
+    expect(prompt).toContain('$ARGUMENTS')
+    expect(prompt).toContain('goal-write')
+  })
+
   test('buildAgents with custom promptsDir uses the custom prompt', () => {
     const tmpDir = join(import.meta.dirname, '..', '..', '.forge', 'tmp', 'test-build-agents')
     mkdirSync(join(tmpDir, 'agents'), { recursive: true })

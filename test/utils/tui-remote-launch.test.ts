@@ -107,6 +107,28 @@ beforeEach(() => {
 })
 
 describe('executeRemoteLoop', () => {
+  test('rejects goal briefs before remote discovery or git operations', async () => {
+    const git = happyGit()
+    const createClient = vi.fn()
+
+    const result = await executeRemoteLoop(
+      {
+        remoteName: 'server1',
+        localDirectory: LOCAL_DIR,
+        localProjectId: LOCAL_PROJECT_ID,
+        title: 'Test Goal',
+        loopName: 'test-goal',
+        spec: { kind: 'goal', text: '## Goal\nDo work.', updatedAt: 0 },
+      },
+      { config: happyConfig(), git, createClient: createClient as any },
+    )
+
+    expect(result).toEqual({ error: 'Remote targets support plans only' })
+    expect(createClient).not.toHaveBeenCalled()
+    expect(git.isInsideWorkTree).not.toHaveBeenCalled()
+    expect(git.push).not.toHaveBeenCalled()
+  })
+
   // ── Happy path ──────────────────────────────────────────────────────────
 
   test('happy path: clean local repo pushes and launches remote loop', async () => {
@@ -123,7 +145,7 @@ describe('executeRemoteLoop', () => {
         localProjectId: LOCAL_PROJECT_ID,
         title: 'Test Plan',
         loopName: 'test-loop',
-        plan: '# Test Plan\n\nDo work.',
+        spec: { kind: 'plan', text: '# Test Plan\n\nDo work.', updatedAt: 0 },
       },
       { config, git, createClient: createClient as any, onWarning, debug },
     )
@@ -202,7 +224,7 @@ describe('executeRemoteLoop', () => {
         localProjectId: LOCAL_PROJECT_ID,
         title: 'Test',
         loopName: 'loop',
-        plan: 'plan',
+        spec: { kind: 'plan', text: 'plan', updatedAt: 0 },
       },
       { config, git, createClient: createClient as any },
     )
@@ -234,7 +256,7 @@ describe('executeRemoteLoop', () => {
         localProjectId: LOCAL_PROJECT_ID,
         title: 'Test',
         loopName: 'loop',
-        plan: 'plan',
+        spec: { kind: 'plan', text: 'plan', updatedAt: 0 },
       },
       { config, git, createClient: createClient as any },
     )
@@ -270,7 +292,7 @@ describe('executeRemoteLoop', () => {
         localProjectId: LOCAL_PROJECT_ID,
         title: 'Test',
         loopName: 'loop',
-        plan: 'plan',
+        spec: { kind: 'plan', text: 'plan', updatedAt: 0 },
       },
       { config, git, createClient: createClient as any },
     )
@@ -306,7 +328,7 @@ describe('executeRemoteLoop', () => {
         localProjectId: LOCAL_PROJECT_ID,
         title: 'Test',
         loopName: 'loop',
-        plan: 'plan',
+        spec: { kind: 'plan', text: 'plan', updatedAt: 0 },
       },
       { config, git, createClient: createClient as any },
     )
@@ -352,7 +374,7 @@ describe('executeRemoteLoop', () => {
         localProjectId: LOCAL_PROJECT_ID,
         title: 'Test',
         loopName: 'loop',
-        plan: 'plan',
+        spec: { kind: 'plan', text: 'plan', updatedAt: 0 },
       },
       { config, git, createClient: createClient as any },
     )
@@ -381,7 +403,7 @@ describe('executeRemoteLoop', () => {
         localProjectId: '',
         title: 'Test',
         loopName: 'loop',
-        plan: 'plan',
+        spec: { kind: 'plan', text: 'plan', updatedAt: 0 },
       },
       { config, git, createClient: createClient as any },
     )
@@ -421,7 +443,7 @@ describe('executeRemoteLoop', () => {
         localProjectId: LOCAL_PROJECT_ID,
         title: 'Test',
         loopName: 'loop',
-        plan: 'plan',
+        spec: { kind: 'plan', text: 'plan', updatedAt: 0 },
       },
       { config, git, createClient: createClient as any },
     )
@@ -458,7 +480,7 @@ describe('executeRemoteLoop', () => {
         localProjectId: LOCAL_PROJECT_ID,
         title: 'Test Plan',
         loopName: 'test-loop',
-        plan: '# Test Plan\n\nDo work.',
+        spec: { kind: 'plan', text: '# Test Plan\n\nDo work.', updatedAt: 0 },
       },
       { config, git, createClient: createClient as any, onWarning },
     )
@@ -506,7 +528,7 @@ describe('executeRemoteLoop', () => {
         localProjectId: LOCAL_PROJECT_ID,
         title: 'Test Plan',
         loopName: 'test-loop',
-        plan: '# Test Plan\n\nDo work.',
+        spec: { kind: 'plan', text: '# Test Plan\n\nDo work.', updatedAt: 0 },
       },
       { config, git, createClient: createClient as any },
     )

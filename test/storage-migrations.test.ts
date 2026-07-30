@@ -1123,3 +1123,44 @@ test('migration 141 is idempotent on re-opened databases', () => {
 
   db2.close()
 })
+
+test('migration 144 creates goal_briefs table on fresh databases', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='goal_briefs'").all() as Array<{ name: string }>
+  expect(tables.some((t) => t.name === 'goal_briefs')).toBe(true)
+
+  const cols = db.prepare('PRAGMA table_info(goal_briefs)').all() as Array<{ name: string; pk: number; notnull: number }>
+  const colNames = cols.map((c) => c.name)
+  expect(colNames).toContain('project_id')
+  expect(colNames).toContain('session_id')
+  expect(colNames).toContain('content')
+  expect(colNames).toContain('updated_at')
+
+  const pkCols = cols.filter((c) => c.pk > 0).sort((a, b) => a.pk - b.pk)
+  expect(pkCols[0].name).toBe('project_id')
+  expect(pkCols[1].name).toBe('session_id')
+
+  const count = db.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('144') as { count: number }
+  expect(count.count).toBe(1)
+
+  db.close()
+})
+
+test('migration 144 is idempotent on re-opened databases', () => {
+  const dbPath = createTempDb()
+
+  const db1 = openForgeDatabase(dbPath)
+  db1.close()
+
+  const db2 = openForgeDatabase(dbPath)
+
+  const tables = db2.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='goal_briefs'").all() as Array<{ name: string }>
+  expect(tables.filter((t) => t.name === 'goal_briefs')).toHaveLength(1)
+
+  const count = db2.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('144') as { count: number }
+  expect(count.count).toBe(1)
+
+  db2.close()
+})

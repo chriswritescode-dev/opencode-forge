@@ -1,9 +1,10 @@
 /**
  * Shared plan execution utilities for TUI and tool-side approval.
- * 
+ *
  * This module provides canonical execution labels and title extraction
  * that both the TUI and plan-approval tool can import.
  */
+import type { SessionLaunchSpecKind } from './session-launch-spec'
 
 /**
  * Canonical execution mode labels used by both TUI and architect approval.
@@ -16,6 +17,30 @@ export const PLAN_EXECUTION_LABELS = [
 ] as const
 
 export type PlanExecutionLabel = typeof PLAN_EXECUTION_LABELS[number]
+
+export const GOAL_EXECUTION_LABELS = ['Loop'] as const
+
+export function listLaunchModesForSpecKind(kind: SessionLaunchSpecKind): readonly string[] {
+  return kind === 'goal' ? GOAL_EXECUTION_LABELS : PLAN_EXECUTION_LABELS
+}
+
+export function getLaunchModeDescription(kind: SessionLaunchSpecKind, label: string): string {
+  if (kind === 'goal') {
+    return label === 'Loop'
+      ? 'Execute the goal brief using an iterative development loop in an isolated git worktree'
+      : ''
+  }
+  switch (label) {
+    case 'New session':
+      return 'Create a new session and send the plan to the code agent'
+    case 'Execute here':
+      return 'Execute the plan in the current session using the code agent'
+    case 'Loop':
+      return 'Execute using iterative development loop in an isolated git worktree (Docker sandbox used automatically when available)'
+    default:
+      return ''
+  }
+}
 
 /**
  * Structural plan headings that should not be used as titles.
@@ -42,13 +67,13 @@ const STRUCTURAL_PLAN_HEADINGS = new Set([
  * Falls back to first line if no suitable heading exists.
  * Truncates to 60 characters with ellipsis if needed.
  */
-export function extractPlanTitle(planContent: string): string {
-  return extractPlanExecutionMetadata(planContent).title
+export function extractPlanTitle(text: string): string {
+  return extractPlanExecutionMetadata(text).title
 }
 
-function extractFallbackPlanTitle(planContent: string): string {
+function extractFallbackPlanTitle(text: string): string {
   const headings: Array<{ text: string; line: number }> = []
-  const lines = planContent.split('\n')
+  const lines = text.split('\n')
   
   for (let i = 0; i < lines.length; i++) {
     const match = lines[i].match(/^#+\s+(.+)$/)
@@ -67,7 +92,7 @@ function extractFallbackPlanTitle(planContent: string): string {
   }
   
   // Try first sentence/line under Objective
-  const objectiveMatch = planContent.match(/^#+\s+Objective\s*\n+(.+)$/im)
+  const objectiveMatch = text.match(/^#+\s+Objective\s*\n+(.+)$/im)
   if (objectiveMatch?.[1]) {
     const firstLine = objectiveMatch[1].trim().split('\n')[0]
     if (firstLine) {
@@ -76,7 +101,7 @@ function extractFallbackPlanTitle(planContent: string): string {
   }
   
   // Fall back to first non-empty non-marker line
-  const firstLine = planContent.split('\n').find(line => line.trim() && !line.trim().startsWith('---'))
+  const firstLine = text.split('\n').find(line => line.trim() && !line.trim().startsWith('---'))
   if (firstLine) {
     const trimmed = firstLine.trim()
     return truncateName(trimmed, true)
@@ -113,16 +138,16 @@ export interface PlanExecutionMetadata extends LoopNameResult {
  * - `## Loop Name: approval-main-restore`
  * - `## Loop Name\n\napproval-main-restore`
  */
-function extractLoopNameFromHeading(planContent: string): string | null {
+function extractLoopNameFromHeading(text: string): string | null {
   // Try heading with inline value: ## Loop Name: value
-  const headingInlineMatch = planContent.match(/^#+\s*Loop Name:\s*(.+)$/im)
+  const headingInlineMatch = text.match(/^#+\s*Loop Name:\s*(.+)$/im)
   if (headingInlineMatch?.[1]) {
     const name = headingInlineMatch[1].trim()
     return truncateName(name)
   }
   
   // Try heading followed by value on next line: ## Loop Name\n\nvalue
-  const headingBlockMatch = planContent.match(/^#+\s*Loop Name\s*\n+\s*([^\n#]+)/im)
+  const headingBlockMatch = text.match(/^#+\s*Loop Name\s*\n+\s*([^\n#]+)/im)
   if (headingBlockMatch?.[1]) {
     const name = headingBlockMatch[1].trim()
     return truncateName(name)
@@ -131,12 +156,12 @@ function extractLoopNameFromHeading(planContent: string): string | null {
   return null
 }
 
-export function findExplicitLoopName(planContent: string): string | null {
-  const loopNameMatch = planContent.match(/^(?:\s*(?:-\s*)?)?(?:\*\*)?Loop Name(?:\*\*)?:\s*(.+)$/m)
+export function findExplicitLoopName(text: string): string | null {
+  const loopNameMatch = text.match(/^(?:\s*(?:-\s*)?)?(?:\*\*)?Loop Name(?:\*\*)?:\s*(.+)$/m)
   if (loopNameMatch?.[1]) {
     return truncateName(loopNameMatch[1].trim())
   }
-  return extractLoopNameFromHeading(planContent)
+  return extractLoopNameFromHeading(text)
 }
 
 function truncateName(name: string, ellipsis = false): string {
@@ -164,8 +189,8 @@ function truncateName(name: string, ellipsis = false): string {
  * 
  * The result is truncated to 60 characters.
  */
-export function extractLoopName(planContent: string): string {
-  return findExplicitLoopName(planContent) ?? extractFallbackPlanTitle(planContent)
+export function extractLoopName(text: string): string {
+  return findExplicitLoopName(text) ?? extractFallbackPlanTitle(text)
 }
 
 /**
@@ -177,13 +202,13 @@ export function extractLoopName(planContent: string): string {
  * 
  * This is the preferred way to get loop naming information.
  */
-export function extractLoopNames(planContent: string): LoopNameResult {
-  const { displayName, executionName } = extractPlanExecutionMetadata(planContent)
+export function extractLoopNames(text: string): LoopNameResult {
+  const { displayName, executionName } = extractPlanExecutionMetadata(text)
   return { displayName, executionName }
 }
 
-export function extractPlanExecutionMetadata(planContent: string): PlanExecutionMetadata {
-  const displayName = extractLoopName(planContent)
+export function extractPlanExecutionMetadata(text: string): PlanExecutionMetadata {
+  const displayName = extractLoopName(text)
   const executionName = sanitizeLoopName(displayName)
   return { title: truncateName(displayName, true), displayName, executionName }
 }

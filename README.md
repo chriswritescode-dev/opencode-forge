@@ -112,7 +112,7 @@ Execution flow dialog with mode and model selection:
 
 ## Agents
 
-The plugin bundles three user-facing agents plus a hidden `auditor-loop` variant used by loop audit sessions. See [Agents and slash commands](docs/agents-and-commands.md) for the full reference.
+The plugin bundles three user-facing agents plus a hidden `auditor-loop` variant used by loop audit sessions, plus a `goal` agent for authoring goal briefs. See [Agents and slash commands](docs/agents-and-commands.md) for the full reference.
 
 | Agent | Mode | Description |
 |-------|------|-------------|
@@ -120,6 +120,7 @@ The plugin bundles three user-facing agents plus a hidden `auditor-loop` variant
 | **architect** | primary | Read-only planning agent. Researches the codebase, designs implementation plans, and caches them for user approval before execution. |
 | **auditor** | subagent | Read-only code auditor for convention-aware reviews. Invoked via Task tool to review diffs, commits, branches, or PRs against stored conventions and decisions. |
 | **auditor-loop** | primary, hidden | Internal audit agent used for loop-runner audit sessions. |
+| **goal** | primary | Read-only brief-authoring agent. Reconnoiters the codebase, clarifies scope inline, and writes the session-scoped goal brief with `goal-write` for approval and execution via the Forge execution dialog. |
 
 The auditor agent is a read-only subagent that cannot edit source files or execute plans. It is invoked by other agents via the Task tool to review code changes against stored project conventions and decisions.
 
@@ -135,6 +136,7 @@ See [Tools reference](docs/tools.md) for full arguments, section-scoping behavio
 Forge provides these tool groups:
 
 - **Plan tools** — `plan-write`, `plan-edit`, `plan-read`, `section-read`, `plan-adjust`
+- **Goal brief tools** — `goal-write`
 - **Review tools** — `review-write`, `review-read`, `review-delete`
 - **Loop tools** — `execute-plan`, `execute-goal`, `loop-cancel`, `loop-status`
 - **Sandbox shell** — `sh` when a sandbox manager is available
@@ -158,6 +160,7 @@ Loops always run in an isolated git worktree; Docker sandbox is used automatical
 | `/review-plan` | Review a completed implementation against its original plan | auditor (subtask) |
 | `/execute-plan` | Start an iterative development loop in a worktree (or a fresh session with `mode: new-session`) | code |
 | `/execute-goal` | Execute a free-text goal in dedicated worktree sessions until an audit leaves no findings | code |
+| `/goal` | Reconnoiter and author a goal brief (`goal-write`), then launch a goal loop via the Forge execution dialog | goal |
 | `/loop-status` | Check status of all active loops | code |
 | `/loop-cancel` | Cancel the active loop | code |
 

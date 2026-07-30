@@ -57,6 +57,29 @@ export function resolveLoopModel(
   return resolveLoopModelSelection(config, state, 'code').model
 }
 
+/**
+ * Loop launch policy derived from plugin config. This is the single resolution
+ * point for whether a loop may be provisioned and how many iterations it runs,
+ * consumed by the execute-plan/execute-goal tool handlers in {@link
+ * ../services/execution} and the TUI/remote launch surfaces in {@link
+ * ../utils/tui-client} / {@link ../utils/tui-remote-launch} (via the forgeLoop
+ * envelope read by the attach hook in {@link ../hooks/forge-session-attach}).
+ * Centralizing it keeps the tool and dialog launch paths from diverging.
+ */
+export interface LoopLaunchPolicy {
+  /** False only when `loop.enabled === false`; absence is treated as enabled. */
+  enabled: boolean
+  /** Mirrors `loop.defaultMaxIterations`. 0 means unbounded, matching the handlers. */
+  maxIterations: number
+}
+
+export function resolveLoopLaunchPolicy(config: PluginConfig | undefined): LoopLaunchPolicy {
+  return {
+    enabled: config?.loop?.enabled !== false,
+    maxIterations: config?.loop?.defaultMaxIterations ?? 0,
+  }
+}
+
 export function resolveLoopAuditorModel(
   config: PluginConfig,
   loopService: LoopService,

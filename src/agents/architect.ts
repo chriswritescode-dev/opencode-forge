@@ -1,5 +1,6 @@
 import type { AgentDefinition } from './types'
 import { loadPrompt } from '../prompts/loader'
+import { GOAL_AUTHORING_TOOL_NAMES } from '../constants/loop'
 
 export function buildArchitectAgent(promptsDir?: string): AgentDefinition {
   return {
@@ -12,7 +13,7 @@ export function buildArchitectAgent(promptsDir?: string): AgentDefinition {
       question: 'allow',
     },
     tools: {
-      exclude: ['plan', 'plan_enter', 'plan_exit'],
+      exclude: ['plan', 'plan_enter', 'plan_exit', ...GOAL_AUTHORING_TOOL_NAMES],
     },
     systemPrompt: loadPrompt(['agents', 'architect.md'], promptsDir),
   }

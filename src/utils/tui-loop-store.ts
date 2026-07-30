@@ -10,7 +10,9 @@ import { existsSync } from 'fs'
 import { resolveForgeDbPath } from '../storage'
 import { createLoopsRepo } from '../storage/repos/loops-repo'
 import { createPlansRepo } from '../storage/repos/plans-repo'
+import { createGoalBriefsRepo } from '../storage/repos/goal-briefs-repo'
 import { createSectionPlansRepo } from '../storage/repos/section-plans-repo'
+import type { SessionLaunchSpec } from './session-launch-spec'
 import type { LoopInfo } from './tui-models'
 
 /**
@@ -95,12 +97,37 @@ export function fetchLoopsList(projectId: string, dbPathOverride?: string): Loop
   })
 }
 
-/**
- * Reads the session-scoped stored plan for the TUI execute-plan dialog.
- * Returns null when the database, row, or content is absent.
- */
-export function fetchStoredSessionPlan(projectId: string, sessionId: string, dbPathOverride?: string): string | null {
-  return withReadOnlyForgeDb(dbPathOverride, null, (db) =>
-    createPlansRepo(db).getForSession(projectId, sessionId)?.content ?? null
-  )
+export function fetchStoredSessionLaunchSpec(
+  projectId: string,
+  sessionId: string,
+  dbPathOverride?: string,
+): SessionLaunchSpec | null {
+  return withReadOnlyForgeDb(dbPathOverride, null, (db) => {
+    const planRow = createPlansRepo(db).getForSession(projectId, sessionId)
+    const hasGoalBriefsTable = db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'goal_briefs'",
+    ).get() != null
+    const goalRow = hasGoalBriefsTable
+      ? createGoalBriefsRepo(db).getForSession(projectId, sessionId)
+      : null
+
+    const planText = planRow?.content?.trim() ? planRow.content : null
+    const goalText = goalRow?.content?.trim() ? goalRow.content : null
+
+    if (planText && goalText) {
+      const planUpdatedAt = planRow!.updatedAt
+      const goalUpdatedAt = goalRow!.updatedAt
+      if (goalUpdatedAt > planUpdatedAt) {
+        return { kind: 'goal', text: goalText, updatedAt: goalUpdatedAt }
+      }
+      return { kind: 'plan', text: planText, updatedAt: planUpdatedAt }
+    }
+    if (planText) {
+      return { kind: 'plan', text: planText, updatedAt: planRow!.updatedAt }
+    }
+    if (goalText) {
+      return { kind: 'goal', text: goalText, updatedAt: goalRow!.updatedAt }
+    }
+    return null
+  })
 }

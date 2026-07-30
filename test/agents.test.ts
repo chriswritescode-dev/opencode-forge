@@ -4,6 +4,7 @@ import { buildCodeAgent } from '../src/agents/code'
 import { buildAuditorAgent, buildAuditorLoopAgent } from '../src/agents/auditor'
 import { buildArchitectAutoAgent } from '../src/agents/architect-auto'
 import { buildFeatureSplitterAgent } from '../src/agents/feature-splitter'
+import { buildGoalAgent } from '../src/agents/goal'
 import { buildAgents } from '../src/agents'
 
 describe('Agent definitions', () => {
@@ -13,6 +14,7 @@ describe('Agent definitions', () => {
   const auditorLoopAgent = buildAuditorLoopAgent()
   const architectAutoAgent = buildArchitectAutoAgent()
   const featureSplitterAgent = buildFeatureSplitterAgent()
+  const goalAgent = buildGoalAgent()
 
   describe('metadata stability', () => {
     test('architect agent has stable metadata', () => {
@@ -166,6 +168,37 @@ describe('Agent definitions', () => {
       expect(featureSplitterAgent.tools?.exclude).toContain('plan-edit')
     })
 
+    test('goal agent has stable metadata', () => {
+      expect(goalAgent.role).toBe('goal')
+      expect(goalAgent.id).toBe('opencode-goal')
+      expect(goalAgent.displayName).toBe('goal')
+      expect(goalAgent.mode).toBe('primary')
+    })
+
+    test('goal agent excludes plan-authoring and file-mutation tools but keeps goal-write and question', () => {
+      expect(goalAgent.tools?.exclude).toBeDefined()
+      expect(goalAgent.tools?.exclude).toContain('write')
+      expect(goalAgent.tools?.exclude).toContain('edit')
+      expect(goalAgent.tools?.exclude).toContain('multiedit')
+      expect(goalAgent.tools?.exclude).toContain('apply_patch')
+      expect(goalAgent.tools?.exclude).toContain('patch')
+      expect(goalAgent.tools?.exclude).toContain('plan')
+      expect(goalAgent.tools?.exclude).toContain('plan_enter')
+      expect(goalAgent.tools?.exclude).toContain('plan_exit')
+      expect(goalAgent.tools?.exclude).toContain('plan-write')
+      expect(goalAgent.tools?.exclude).toContain('plan-edit')
+      expect(goalAgent.tools?.exclude).toContain('plan-adjust')
+      expect(goalAgent.tools?.exclude).toContain('execute-plan')
+      expect(goalAgent.tools?.exclude).toContain('execute-goal')
+      expect(goalAgent.tools?.exclude).not.toContain('question')
+      expect(goalAgent.tools?.exclude).not.toContain('goal-write')
+    })
+
+    test('goal agent allows the question tool', () => {
+      expect(goalAgent.permission).toBeDefined()
+      expect((goalAgent.permission as Record<string, string>)?.question).toBe('allow')
+    })
+
     test('architect agents retain plan-authoring tools', () => {
       expect(architectAgent.tools?.exclude).not.toContain('plan-write')
       expect(architectAgent.tools?.exclude).not.toContain('plan-edit')
@@ -180,16 +213,37 @@ describe('Agent definitions', () => {
       expect(architectAutoAgent.systemPrompt).toContain('non-trivial implementation coupling')
     })
 
-    test('buildAgents returns all 6 agent roles', () => {
+    test('buildAgents returns all 7 agent roles', () => {
       const agents = buildAgents()
       const roles = Object.keys(agents)
-      expect(roles).toHaveLength(6)
+      expect(roles).toHaveLength(7)
       expect(roles).toContain('code')
       expect(roles).toContain('architect')
       expect(roles).toContain('auditor')
       expect(roles).toContain('auditor-loop')
       expect(roles).toContain('architect-auto')
       expect(roles).toContain('feature-splitter')
+      expect(roles).toContain('goal')
+    })
+
+    test('goal-write is excluded from every non-goal agent and kept only by the goal agent', () => {
+      const agents = buildAgents()
+      for (const [role, agent] of Object.entries(agents)) {
+        const exclude = agent.tools?.exclude ?? []
+        if (role === 'goal') {
+          expect(exclude).not.toContain('goal-write')
+        } else {
+          expect(exclude).toContain('goal-write')
+        }
+      }
+    })
+
+    test('architect and architect-auto keep plan-authoring tools but deny goal-write', () => {
+      for (const agent of [architectAgent, architectAutoAgent]) {
+        expect(agent.tools?.exclude).not.toContain('plan-write')
+        expect(agent.tools?.exclude).not.toContain('plan-edit')
+        expect(agent.tools?.exclude).toContain('goal-write')
+      }
     })
   })
 

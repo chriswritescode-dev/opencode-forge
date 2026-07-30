@@ -15,6 +15,7 @@ import { attachLoopSessionFollower, getCurrentRouteSessionId } from './tui/sessi
 import { openInBrowser, startDashboardServer, type DashboardServerHandle } from './dashboard/launch'
 import { describeDashboardBinding } from './dashboard/config'
 import { normalizePastedPlanText } from './utils/marked-plan-parser'
+import type { SessionLaunchSpec } from './utils/session-launch-spec'
 
 type TuiKeybinds = {
   executePlan: string
@@ -117,7 +118,7 @@ function ExecutionDialog(props: Omit<ExecutePlanPanelProps, 'onBack' | 'onExecut
     <box flexDirection="column" paddingX={2}>
       <box flexShrink={0} paddingBottom={1} flexDirection="row" gap={1}>
         <text fg={theme().text}>
-          <b>Execute plan</b>
+          <b>{props.spec.kind === 'goal' ? 'Execute goal' : 'Execute plan'}</b>
         </text>
       </box>
 
@@ -126,7 +127,7 @@ function ExecutionDialog(props: Omit<ExecutePlanPanelProps, 'onBack' | 'onExecut
         client={props.client}
         cache={props.cache}
         pluginConfig={props.pluginConfig}
-        planContent={props.planContent}
+        spec={props.spec}
         sessionId={props.sessionId}
         initialExecutionModel={props.initialExecutionModel}
         initialAuditorModel={props.initialAuditorModel}
@@ -145,7 +146,7 @@ function ExecutionDialog(props: Omit<ExecutePlanPanelProps, 'onBack' | 'onExecut
               client={props.client}
               cache={props.cache}
               pluginConfig={props.pluginConfig}
-              planContent={props.planContent}
+              spec={props.spec}
               sessionId={props.sessionId}
               initialExecutionModel={executionModel}
               initialAuditorModel={auditorModel}
@@ -392,7 +393,7 @@ const tui: TuiPlugin = async (api) => {
     if (connectPromise) return connectPromise
 
     setConnectionStatus('connecting')
-    connectPromise = connectForgeProject(api, directory, resolveLoopAllowedDirectories(pluginConfig), forgeDbPath).then((connected) => untrack(() => {
+    connectPromise = connectForgeProject(api, directory, resolveLoopAllowedDirectories(pluginConfig), forgeDbPath, pluginConfig, true).then((connected) => untrack(() => {
       connectPromise = null
       if (disposed) return connected
 
@@ -436,7 +437,7 @@ const tui: TuiPlugin = async (api) => {
     return startClientConnection()
   }
 
-  const openExecutionDialog = (currentClient: ForgeProjectClient, sessionID: string, planContent: string) => {
+  const openExecutionDialog = (currentClient: ForgeProjectClient, sessionID: string, spec: SessionLaunchSpec) => {
     api.ui.dialog.setSize('xlarge')
     api.ui.dialog.replace(() => (
       <ExecutionDialog
@@ -444,7 +445,7 @@ const tui: TuiPlugin = async (api) => {
         client={currentClient}
         cache={executionContextCache()}
         pluginConfig={pluginConfig}
-        planContent={planContent}
+        spec={spec}
         sessionId={sessionID}
         projectDirectory={directory}
       />
@@ -472,7 +473,7 @@ const tui: TuiPlugin = async (api) => {
             return
           }
 
-          openExecutionDialog(currentClient, sessionID, normalized.planText)
+          openExecutionDialog(currentClient, sessionID, { kind: 'plan', text: normalized.planText, updatedAt: Date.now() })
         }}
         onCancel={() => api.ui.dialog.clear()}
       />
@@ -488,10 +489,10 @@ const tui: TuiPlugin = async (api) => {
     const currentClient = await ensureClient()
     if (!currentClient) return
 
-    const planText = await currentClient.loadLatestPlan(sessionID)
-    if (!planText) {
+    const spec = await currentClient.loadLaunchSpec(sessionID)
+    if (!spec) {
       api.ui.toast({
-        message: 'No plan in current session — paste one to execute',
+        message: 'No plan or goal brief in current session — paste a plan to execute',
         variant: 'info',
         duration: 4000,
       })
@@ -499,15 +500,15 @@ const tui: TuiPlugin = async (api) => {
       return
     }
 
-    openExecutionDialog(currentClient, sessionID, planText)
+    openExecutionDialog(currentClient, sessionID, spec)
   }
 
   api.keymap.registerLayer({
     commands: [
       {
         name: 'forge.plan.execute',
-        title: 'Execute plan',
-        desc: 'Open the execution dialog for the current session plan, or paste one if none is found',
+        title: 'Execute plan or goal',
+        desc: 'Open the execution dialog for the current session plan or goal brief, or paste a plan if none is found',
         category: 'Forge',
         namespace: 'palette',
         run: () => { void runExecutePlan() },

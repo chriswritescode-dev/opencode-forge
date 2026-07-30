@@ -2273,7 +2273,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
   })
 
   describe('variant dispatch', () => {
-    test('coding prompt sends executionVariant from loop state', async () => {
+    test('coding prompt sends executionVariant with the default model', async () => {
       const { client, calls } = createFakeForgeClient({
         session: {
           messages: async () => [
@@ -2281,12 +2281,13 @@ describe('stall handling terminates with stall timeout when configured cap is re
           ],
         },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = createRuntime({ client, loopConfig: { executionModel: undefined } })
 
       const state = makeState({
         phase: 'auditing',
         totalSections: 0,
         auditCount: 1,
+        executionModel: undefined,
         executionVariant: 'thinking-max',
         auditorVariant: 'audit-high',
       })
@@ -2322,7 +2323,7 @@ describe('stall handling terminates with stall timeout when configured cap is re
       expect(afterState!.executorSessionId).toBeUndefined()
     })
 
-    test('auditor prompt sends auditorVariant from loop state', async () => {
+    test('auditor prompt sends auditorVariant with the default model', async () => {
       const { client, calls } = createFakeForgeClient({
         session: {
           messages: async () => [
@@ -2330,12 +2331,17 @@ describe('stall handling terminates with stall timeout when configured cap is re
           ],
         },
       })
-      const { loop } = createRuntime({ client })
+      const { loop } = createRuntime({
+        client,
+        loopConfig: { executionModel: undefined, auditorModel: undefined },
+      })
 
       const state = makeState({
         phase: 'coding',
         totalSections: 0,
         auditCount: 0,
+        executionModel: undefined,
+        auditorModel: undefined,
         executionVariant: 'thinking-max',
         auditorVariant: 'audit-high',
       })
@@ -2355,6 +2361,76 @@ describe('stall handling terminates with stall timeout when configured cap is re
       for (const call of auditorPrompts) {
         expect((call.params as any)?.variant).toBe('audit-high')
       }
+    })
+
+    test('persistent execution-model fallback omits the stored variant', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Audit passed.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client })
+      const state = makeState({
+        phase: 'auditing',
+        totalSections: 0,
+        auditCount: 1,
+        modelFailed: true,
+        executionVariant: 'thinking-max',
+      })
+      loopService.setState(state.loopName, state)
+      reviewFindingsRepo.write({
+        projectId: PROJECT_ID,
+        loopName: state.loopName,
+        file: 'src/test.ts',
+        line: 1,
+        severity: 'bug',
+        description: 'Test bug',
+      })
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: state.sessionId,
+        },
+      })
+
+      const codePrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'code')
+      expect(codePrompts.length).toBeGreaterThan(0)
+      expect(codePrompts.every(call => !(call.params as any)?.model && !(call.params as any)?.variant)).toBe(true)
+    })
+
+    test('persistent auditor-model fallback omits the stored variant', async () => {
+      const { client, calls } = createFakeForgeClient({
+        session: {
+          messages: async () => [
+            { info: { role: 'assistant', finish: 'stop' }, parts: [{ type: 'text', text: 'Coding complete.' }] },
+          ],
+        },
+      })
+      const { loop } = createRuntime({ client })
+      const state = makeState({
+        phase: 'coding',
+        totalSections: 0,
+        auditCount: 0,
+        modelFailed: true,
+        auditorVariant: 'audit-high',
+      })
+      loopService.setState(state.loopName, state)
+
+      await loop.tick({
+        type: 'session.status',
+        properties: {
+          status: { type: 'idle' },
+          sessionID: state.sessionId,
+        },
+      })
+
+      const auditorPrompts = calls.filter(c => c.method === 'session.promptAsync' && (c.params as any)?.agent === 'auditor-loop')
+      expect(auditorPrompts.length).toBeGreaterThan(0)
+      expect(auditorPrompts.every(call => !(call.params as any)?.model && !(call.params as any)?.variant)).toBe(true)
     })
 
     test('model fallback omits variant when model is undefined', async () => {

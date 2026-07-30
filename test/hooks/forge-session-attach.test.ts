@@ -121,6 +121,89 @@ describe('createForgeSessionAttachHook', () => {
     expect(getForSessionMock).toHaveBeenCalledWith('proj_1', 'host_sess')
   })
 
+  test('maxIterations falls back to the plugin launch policy when forgeLoop.maxIterations is absent', async () => {
+    const deps = buildHookDeps({
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_forge',
+          type: 'forge',
+          directory: '/tmp/wt/forge',
+          extra: {
+            loopName: 'policy-fallback-loop',
+            projectDirectory: '/tmp/wt/forge',
+            forgeLoop: {
+              hostSessionId: 'host_sess',
+              title: 'Policy Fallback',
+              executionModel: 'prov/exec',
+              auditorModel: 'prov/aud',
+              planSource: 'stored',
+              // maxIterations intentionally omitted
+              sandboxEnabled: false,
+            },
+          },
+        },
+      ]),
+      plansRepoGetForSession: vi.fn().mockReturnValue({ content: '# Plan\n\nDo stuff.' }),
+      loopsRepoGet: vi.fn().mockReturnValue(null),
+    })
+    // Inject a server-side launch policy: defaultMaxIterations=15 must be the
+    // attach hook's fallback now that the launcher did not stamp a value.
+    ;(deps.execDeps as any).config = { loop: { defaultMaxIterations: 15 } }
+
+    const handler = createForgeSessionAttachHook(deps as any)
+
+    await handler({
+      event: {
+        type: 'session.created',
+        properties: { info: { id: 'new_sess', workspaceID: 'ws_forge' } },
+      },
+    })
+
+    expect(mockAttachLoop).toHaveBeenCalledTimes(1)
+    const [, , input] = mockAttachLoop.mock.calls[0]
+    expect(input.maxIterations).toBe(15)
+  })
+
+  test('maxIterations honours the stamped envelope value over the plugin policy', async () => {
+    const deps = buildHookDeps({
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_forge',
+          type: 'forge',
+          directory: '/tmp/wt/forge',
+          extra: {
+            loopName: 'stamped-loop',
+            projectDirectory: '/tmp/wt/forge',
+            forgeLoop: {
+              hostSessionId: 'host_sess',
+              title: 'Stamped',
+              executionModel: 'prov/exec',
+              auditorModel: 'prov/aud',
+              planSource: 'stored',
+              maxIterations: 9,
+              sandboxEnabled: false,
+            },
+          },
+        },
+      ]),
+      plansRepoGetForSession: vi.fn().mockReturnValue({ content: '# Plan\n\nDo stuff.' }),
+      loopsRepoGet: vi.fn().mockReturnValue(null),
+    })
+    ;(deps.execDeps as any).config = { loop: { defaultMaxIterations: 15 } }
+
+    const handler = createForgeSessionAttachHook(deps as any)
+
+    await handler({
+      event: {
+        type: 'session.created',
+        properties: { info: { id: 'new_sess', workspaceID: 'ws_forge' } },
+      },
+    })
+
+    const [, , input] = mockAttachLoop.mock.calls[0]
+    expect(input.maxIterations).toBe(9)
+  })
+
   test('chat.message fallback attaches TUI-created loop session without re-sending initial prompt', async () => {
     const loopsRepoGetMock = vi.fn().mockReturnValue(null)
     const deps = buildHookDeps({
@@ -1311,8 +1394,7 @@ describe('createForgeSessionAttachHook', () => {
     expect(mockAttachLoop).not.toHaveBeenCalled()
   })
 
-  test('attach hook prefers inline planText over stored plan when both are available', async () => {
-    const plansRepoGetForSession = vi.fn().mockReturnValue({ content: 'STALE_PRIOR_PLAN_TEXT' })
+  test('attach hook prefers inline planText over stored plan when both are available', async () => {    const plansRepoGetForSession = vi.fn().mockReturnValue({ content: 'STALE_PRIOR_PLAN_TEXT' })
     const deps = buildHookDeps({
       workspaceList: vi.fn().mockResolvedValue([
         {
@@ -1350,5 +1432,195 @@ describe('createForgeSessionAttachHook', () => {
     expect(input.planText).toBe('FRESH_PLAN_TEXT')
 
     expect(plansRepoGetForSession).not.toHaveBeenCalled()
+  })
+
+  test('goal-kind workspace is attached as a goal loop with executorSessionId = adopted session', async () => {
+    const deps = buildHookDeps({
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_goal',
+          type: 'forge',
+          directory: '/tmp/wt/goal',
+          extra: {
+            loopName: 'goal-loop',
+            projectDirectory: '/tmp/wt/goal',
+            forgeLoop: {
+              hostSessionId: 'host_sess',
+              title: 'Goal Loop',
+              kind: 'goal',
+              goal: 'ship the launch',
+              maxIterations: 30,
+              sandboxEnabled: false,
+            },
+          },
+        },
+      ]),
+      plansRepoGetForSession: vi.fn().mockReturnValue({ content: 'SHOULD_NOT_BE_USED' }),
+      loopsRepoGet: vi.fn().mockReturnValue(null),
+    })
+
+    const handler = createForgeSessionAttachHook(deps as any)
+
+    await handler({
+      event: {
+        type: 'session.created',
+        properties: { info: { id: 'goal_sess', workspaceID: 'ws_goal' } },
+      },
+    })
+
+    expect(mockAttachLoop).toHaveBeenCalledTimes(1)
+    const [, , input] = mockAttachLoop.mock.calls[0]
+    expect(input.kind).toBe('goal')
+    expect(input.goal).toBe('ship the launch')
+    expect(input.executorSessionId).toBe('goal_sess')
+    expect(input.planText).toBe('')
+    const plansRepo = deps.execDeps.plansRepo.getForSession as ReturnType<typeof vi.fn>
+    expect(plansRepo).not.toHaveBeenCalled()
+  })
+
+  test('goal-kind workspace with blank goal provisions nothing and removes workspace', async () => {
+    const workspaceRemove = vi.fn().mockResolvedValue(undefined)
+    const tuiPublish = vi.fn().mockResolvedValue(undefined)
+    const deps = buildHookDeps({
+      workspaceRemove,
+      tuiPublish,
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_goal_blank',
+          type: 'forge',
+          directory: '/tmp/wt/goal-blank',
+          extra: {
+            loopName: 'goal-blank-loop',
+            projectDirectory: '/tmp/wt/goal-blank',
+            forgeLoop: {
+              title: 'Goal Blank',
+              kind: 'goal',
+              goal: '   ',
+            },
+          },
+        },
+      ]),
+      loopsRepoGet: vi.fn().mockReturnValue(null),
+    })
+
+    const handler = createForgeSessionAttachHook(deps as any)
+
+    await handler({
+      event: {
+        type: 'session.created',
+        properties: { info: { id: 'goal_blank_sess', workspaceID: 'ws_goal_blank' } },
+      },
+    })
+
+    expect(mockAttachLoop).not.toHaveBeenCalled()
+    expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_goal_blank' })
+    expect(deps.execDeps.pendingTeardowns.set).toHaveBeenCalledWith(
+      'goal-blank-loop',
+      expect.objectContaining({ doRemoveWorktree: true, doCommit: false }),
+    )
+    expect(tuiPublish).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.objectContaining({
+        properties: expect.objectContaining({ variant: 'error' }),
+      }),
+    }))
+  })
+
+  test('goal-kind workspace with non-string goal provisions nothing and removes workspace without throwing', async () => {
+    const workspaceRemove = vi.fn().mockResolvedValue(undefined)
+    const tuiPublish = vi.fn().mockResolvedValue(undefined)
+    const deps = buildHookDeps({
+      workspaceRemove,
+      tuiPublish,
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_goal_malformed',
+          type: 'forge',
+          directory: '/tmp/wt/goal-malformed',
+          extra: {
+            loopName: 'goal-malformed-loop',
+            projectDirectory: '/tmp/wt/goal-malformed',
+            forgeLoop: {
+              title: 'Goal Malformed',
+              kind: 'goal',
+              goal: 42,
+            },
+          },
+        },
+      ]),
+      loopsRepoGet: vi.fn().mockReturnValue(null),
+    })
+
+    const handler = createForgeSessionAttachHook(deps as any)
+
+    await expect(handler({
+      event: {
+        type: 'session.created',
+        properties: { info: { id: 'goal_malformed_sess', workspaceID: 'ws_goal_malformed' } },
+      },
+    })).resolves.toBeUndefined()
+
+    expect(mockAttachLoop).not.toHaveBeenCalled()
+    expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_goal_malformed' })
+    expect(deps.execDeps.pendingTeardowns.set).toHaveBeenCalledWith(
+      'goal-malformed-loop',
+      expect.objectContaining({ doRemoveWorktree: true, doCommit: false }),
+    )
+    expect(tuiPublish).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.objectContaining({
+        properties: expect.objectContaining({ variant: 'error' }),
+      }),
+    }))
+  })
+
+  test('expired server-owned goal workspace with no loop row is removed and never attaches', async () => {
+    const workspaceRemove = vi.fn().mockResolvedValue(undefined)
+    const tuiPublish = vi.fn().mockResolvedValue(undefined)
+    const deps = buildHookDeps({
+      workspaceRemove,
+      tuiPublish,
+      workspaceList: vi.fn().mockResolvedValue([
+        {
+          id: 'ws_goal_expired',
+          type: 'forge',
+          directory: '/tmp/wt/goal-expired',
+          extra: {
+            loopName: 'goal-expired-loop',
+            projectDirectory: '/tmp/wt/goal-expired',
+            workspaceCreatedAt: Date.now() - (10 * 60 * 1000),
+            forgeLoop: {
+              title: 'Goal Expired',
+              kind: 'goal',
+              goal: 'ship the long-abandoned thing',
+              initialPromptOwner: 'server',
+              pendingAttachStartedAt: Date.now() - (10 * 60 * 1000),
+            },
+          },
+        },
+      ]),
+      loopsRepoGet: vi.fn().mockReturnValue(null),
+    })
+
+    const handler = createForgeSessionAttachHook(deps as any)
+
+    await handler({
+      event: {
+        type: 'session.created',
+        properties: { info: { id: 'goal_expired_sess', workspaceID: 'ws_goal_expired' } },
+      },
+    })
+
+    expect(mockAttachLoop).not.toHaveBeenCalled()
+    expect(workspaceRemove).toHaveBeenCalledWith({ id: 'ws_goal_expired' })
+    expect(deps.execDeps.pendingTeardowns.set).toHaveBeenCalledWith(
+      'goal-expired-loop',
+      expect.objectContaining({ doRemoveWorktree: true, doCommit: false }),
+    )
+    expect(tuiPublish).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.objectContaining({
+        properties: expect.objectContaining({
+          message: expect.stringContaining('attach window expired'),
+        }),
+      }),
+    }))
   })
 })

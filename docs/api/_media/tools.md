@@ -13,6 +13,7 @@ See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](c
 | `plan-edit` | Edit the stored session plan by exact string replacement. | [`src/tools/plan-authoring.ts`](../src/tools/plan-authoring.ts) |
 | `section-read` | Read a section plan and status for the active loop session. | [`src/tools/section-read.ts`](../src/tools/section-read.ts) |
 | `plan-adjust` | Revise the section under audit and/or replace the remaining (not yet started) sections of the active loop plan; auditor-only, logged as a plan amendment. | [`src/tools/plan-adjust.ts`](../src/tools/plan-adjust.ts) |
+| `goal-write` | Write the session-scoped goal brief that seeds a goal loop. | [`src/tools/goal-authoring.ts`](../src/tools/goal-authoring.ts) |
 | `review-write` | Store a review finding. | [`src/tools/review.ts`](../src/tools/review.ts) |
 | `review-read` | Read review findings. | [`src/tools/review.ts`](../src/tools/review.ts) |
 | `review-delete` | Delete a review finding. | [`src/tools/review.ts`](../src/tools/review.ts) |
@@ -65,6 +66,19 @@ Arguments:
 | `replaceAll` | Replace every occurrence instead of requiring a unique match. |
 
 `plan-write` and `plan-edit` author the plan before execution; `plan-adjust` amends an already-running sectioned loop's plan during a section audit and is auditor-only.
+
+### `goal-write`
+
+Writes the session-scoped **goal brief** that seeds a goal loop, the goal-mode counterpart of `plan-write`. Available to the `goal` agent only; denied in `code`, `auditor`, `auditor-loop`, `feature-splitter`, `architect`, and `architect-auto` sessions, and inside any running loop or audit session. Denied when the session owns a running loop, the same shared guard `plan-authoring.ts` uses.
+
+Reports missing required headings as warnings, and rejects `## Phase` headings or `<!-- forge-section -->` markers without writing. A brief with heading warnings still persists so the agent can inspect the report and correct it. Accepts `append` to grow the brief incrementally. On success the brief is persisted to the session-scoped `goal_briefs` row and the tool returns a structure report with line/character counts and warnings.
+
+Arguments:
+
+| Argument | Description |
+|---|---|
+| `content` | Goal brief markdown. Must contain the required headings; must not contain `## Phase` headings or `<!-- forge-section -->` markers. |
+| `append` | Append to the existing stored brief instead of replacing it. Two newlines are inserted between the existing content and the new fragment. Creates the brief when none exists. |
 
 ## Section Tools
 
@@ -141,7 +155,6 @@ Arguments:
 | `title` | Required short title for the session list. |
 | `plan` | Optional inline plan. If omitted, Forge reads the current session's stored plan. |
 | `loopName` | Optional loop name, slugified and uniquified. |
-| `hostSessionId` | Optional host session ID for post-completion redirect. |
 | `mode` | Execution mode. `loop` (default) runs the iterative loop in an isolated git worktree. `new-session` launches the plan in a fresh standalone session running the code agent (no worktree, no loop, not tracked by `loop-status`/`loop-cancel`). |
 
 ### `execute-goal`
@@ -156,7 +169,8 @@ Arguments:
 | `title` | Optional short title for the loop (derived from the goal when omitted). |
 | `loopName` | Optional loop name, slugified and uniquified. |
 | `maxIterations` | Optional maximum loop iterations. Defaults to the plugin config `loop.defaultMaxIterations`; `0` means unlimited (run until auditor all-clear or cancellation). |
-| `hostSessionId` | Optional host session ID for post-completion redirect; defaults to the invoking (`execute-goal`) session. |
+
+The invoking session is automatically used as the post-completion host redirect target; `execute-goal` does not expose a `hostSessionId` argument.
 
 Worktree/session behavior, auditor/finding completion rule, iteration cap, and differences from `execute-plan` and `launch-group` are documented in [Loop System → Goal Loops](loop-system.md#goal-loops).
 

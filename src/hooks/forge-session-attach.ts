@@ -1,9 +1,10 @@
 import type { Logger } from '../types'
 import type { ForgeClient } from '../client/port'
 import type { ForgeExecutionServiceDeps, ForgeLoopExtra, PlanSource } from '../services/execution'
-import { attachLoopToSession } from '../services/execution'
+import { attachLoopToSession, resolveForgeLoopExtraSpec } from '../services/execution'
+import { resolveLoopLaunchPolicy } from '../utils/loop-helpers'
 import { resolveSandboxContextForLoop, isSandboxEnabled } from '../sandbox/context'
-import { classifyForgeWorkspace, isPendingAttachWorkspace } from '../workspace/classify-stale'
+import { classifyForgeWorkspace, isPendingAttachWorkspace, isGoalPendingAttachExpired } from '../workspace/classify-stale'
 import { removeForgeWorkspaceWithContext } from '../workspace/remove-with-context'
 import { getForgeWorkspaceLoopName } from '../workspace/forge-worktree'
 
@@ -115,11 +116,29 @@ async function attachForgeSession(
     }
 
     const cfg = (ws.extra ?? {}).forgeLoop as
-      | (Partial<ForgeLoopExtra> & { maxIterations?: number })
+      | Partial<ForgeLoopExtra>
       | undefined
 
     if (cfg?.initialPromptOwner === 'tui' && sendInitialPrompt) {
       deps.logger.log(`[forge-session-attach] skip session=${sessionId} loop=${loopName} reason=tui-owned-initial-prompt`)
+      return
+    }
+
+    const spec = resolveForgeLoopExtraSpec(cfg)
+    if (!spec.ok) {
+      deps.logger.log(
+        `[forge-session-attach] skip session=${sessionId} workspace=${workspaceId} loop=${loopName} reason=invalid-forgeLoop-spec error=${spec.error}`,
+      )
+      publishAttachFailureToast(
+        deps,
+        ws.directory ?? deps.directory,
+        `Forge loop "${loopName}"`,
+        'Loop launch metadata is invalid. Re-run the launch from the TUI.',
+      )
+      await removeForgeWorkspaceWithContext(
+        { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
+        { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-invalid-spec' },
+      )
       return
     }
 
@@ -153,8 +172,8 @@ async function attachForgeSession(
     const isTerminalNameConflict =
       action.action === 'keep' &&
       action.reason === 'pending-start' &&
-      cfg?.initialPromptOwner === 'tui' &&
-      isPendingAttachWorkspace(classifyEntry)
+      ((cfg?.initialPromptOwner === 'tui' && isPendingAttachWorkspace(classifyEntry)) ||
+        (cfg?.kind === 'goal' && cfg?.initialPromptOwner === 'server'))
 
     if (action.action === 'keep' && action.reason !== 'running' && action.reason !== 'pending-attach' && !isTerminalNameConflict) {
       // bad config or wrong-project — toast and bail, do not attach
@@ -184,7 +203,11 @@ async function attachForgeSession(
         }
         return
       }
-      if (action.action === 'remove-fully' && cfg.initialPromptOwner === 'tui' && !isPendingAttachWorkspace(classifyEntry)) {
+      if (
+        action.action === 'remove-fully' &&
+        ((cfg.initialPromptOwner === 'tui' && !isPendingAttachWorkspace(classifyEntry)) ||
+          isGoalPendingAttachExpired(classifyEntry))
+      ) {
         await removeForgeWorkspaceWithContext(
           { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
           { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-expired-pending' },
@@ -241,26 +264,33 @@ async function attachForgeSession(
       ? cfg.hostSessionId
       : sessionId
 
-    const planSource: PlanSource =
-      cfg.planSource === 'inline' && cfg.planText
-        ? { kind: 'inline', planText: cfg.planText }
-        : { kind: 'stored', sessionId: resolvedHostSessionId }
-
     let planText: string
-    if (planSource.kind === 'inline') {
-      planText = planSource.planText
+    let goalInput: { kind: 'goal'; goal: string; executorSessionId: string } | { kind: 'plan' }
+    if (spec.kind === 'goal') {
+      planText = ''
+      goalInput = { kind: 'goal', goal: spec.goal, executorSessionId: sessionId }
     } else {
-      const row = deps.execDeps.plansRepo.getForSession(sessionProjectId, planSource.sessionId)
-      if (!row) {
-        deps.logger.error(`[forge-session-attach] plan not found for session=${planSource.sessionId} loop=${loopName} workspace=${workspaceId}`)
-        publishAttachFailureToast(deps, ws.directory ?? deps.directory, `Forge loop "${loopName}"`, 'No stored plan found for this loop. Re-run "Execute → Loop" from a session that has a captured plan.')
-        await removeForgeWorkspaceWithContext(
-          { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
-          { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-no-plan' },
-        )
-        return
+      goalInput = { kind: 'plan' }
+      const planSource: PlanSource =
+        cfg.planSource === 'inline' && cfg.planText
+          ? { kind: 'inline', planText: cfg.planText }
+          : { kind: 'stored', sessionId: resolvedHostSessionId }
+
+      if (planSource.kind === 'inline') {
+        planText = planSource.planText
+      } else {
+        const row = deps.execDeps.plansRepo.getForSession(sessionProjectId, planSource.sessionId)
+        if (!row) {
+          deps.logger.error(`[forge-session-attach] plan not found for session=${planSource.sessionId} loop=${loopName} workspace=${workspaceId}`)
+          publishAttachFailureToast(deps, ws.directory ?? deps.directory, `Forge loop "${loopName}"`, 'No stored plan found for this loop. Re-run "Execute → Loop" from a session that has a captured plan.')
+          await removeForgeWorkspaceWithContext(
+            { client: deps.client, pendingTeardowns: deps.execDeps.pendingTeardowns, logger: deps.logger },
+            { workspaceId, loopName, action: 'remove-fully', reasonLabel: 'attach-no-plan' },
+          )
+          return
+        }
+        planText = row.content
       }
-      planText = row.content
     }
 
     try {
@@ -281,10 +311,13 @@ async function attachForgeSession(
           auditorModel: cfg.auditorModel,
           executionVariant: cfg.executionVariant,
           auditorVariant: cfg.auditorVariant,
-          maxIterations: cfg.maxIterations ?? 50,
+          maxIterations: cfg.maxIterations ?? resolveLoopLaunchPolicy(deps.execDeps.config).maxIterations,
           sandboxEnabled: sandbox.enabled,
           sandboxContainer: sandbox.containerName,
           planText,
+          ...(goalInput.kind === 'goal'
+            ? { kind: 'goal' as const, goal: goalInput.goal, executorSessionId: goalInput.executorSessionId }
+            : {}),
           selectSession,
           selectSessionTiming: 'after-prompt',
           startWatchdog: true,

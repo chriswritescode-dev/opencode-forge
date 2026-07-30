@@ -88,6 +88,7 @@ describe('createConfigHandler', () => {
         'plan',
         'plan-edit',
         'plan-write',
+        'goal-write',
         'plan_enter',
         'plan_exit',
         'question',
@@ -96,6 +97,7 @@ describe('createConfigHandler', () => {
       ].sort())
       expect(Object.keys(architectPermission).sort()).toEqual([
         'plan',
+        'goal-write',
         'plan_enter',
         'plan_exit',
         'question',
@@ -138,10 +140,26 @@ describe('createConfigHandler', () => {
       const permission = code.permission as Record<string, string>
 
       expect(permission).toBeDefined()
-      for (const tool of ['review-write', 'review-delete', 'plan', 'plan_enter', 'plan_exit', 'plan-write', 'plan-edit']) {
+      for (const tool of ['review-write', 'review-delete', 'plan', 'plan_enter', 'plan_exit', 'plan-write', 'plan-edit', 'goal-write']) {
         expect(permission[tool]).toBe('deny')
       }
       expect(permission.loop).toBeUndefined()
+    })
+
+    test('architect agent excluded tools are mirrored to permission: deny, including goal-write', async () => {
+      const configHandler = createConfigHandler(agents)
+      const config: Record<string, unknown> = {}
+
+      await configHandler(config)
+
+      const agentConfigs = config.agent as Record<string, unknown>
+      const architect = agentConfigs.architect as Record<string, unknown>
+      const permission = architect.permission as Record<string, string>
+
+      expect(permission).toBeDefined()
+      expect(permission['goal-write']).toBe('deny')
+      expect(permission['plan-write']).toBeUndefined()
+      expect(permission['plan-edit']).toBeUndefined()
     })
 
     test('user tool override cannot flip built-in permission deny', async () => {

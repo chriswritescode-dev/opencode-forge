@@ -113,7 +113,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
       {
         mode: 'loop',
         title: 'My Cool Feature',
-        plan: '# Plan\n\nImplement feature X.',
+        spec: { kind: 'plan', text: '# Plan\n\nImplement feature X.', updatedAt: 0 },
         executionModel: 'prov/exec',
         auditorModel: 'prov/aud',
       },
@@ -153,6 +153,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
       planSource: 'inline',
       planText: '# Plan\n\nImplement feature X.',
       initialPromptOwner: 'tui',
+      maxIterations: 0,
       pendingAttachStartedAt: expect.any(Number),
     })
 
@@ -198,7 +199,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
       {
         mode: 'loop',
         title: 'My Cool Feature',
-        plan: '# Plan\n\nImplement feature X.',
+        spec: { kind: 'plan', text: '# Plan\n\nImplement feature X.', updatedAt: 0 },
       },
     )
 
@@ -225,7 +226,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
       {
         mode: 'loop',
         title: 'My Cool Feature',
-        plan: '# Plan\n\nImplement feature X.',
+        spec: { kind: 'plan', text: '# Plan\n\nImplement feature X.', updatedAt: 0 },
       },
     )
 
@@ -247,7 +248,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
       {
         mode: 'loop',
         title: 'My Cool Feature',
-        plan: '# Plan\n\nImplement feature X.',
+        spec: { kind: 'plan', text: '# Plan\n\nImplement feature X.', updatedAt: 0 },
       },
     )
 
@@ -268,7 +269,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
       {
         mode: 'loop',
         title: 'Fail Loop',
-        plan: '# Fail Plan\n\nThis will fail.',
+        spec: { kind: 'plan', text: '# Fail Plan\n\nThis will fail.', updatedAt: 0 },
       },
     )
 
@@ -290,7 +291,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
       {
         mode: 'loop',
         title: 'No Data Loop',
-        plan: '# No Data\n\nShould fail.',
+        spec: { kind: 'plan', text: '# No Data\n\nShould fail.', updatedAt: 0 },
       },
     )
 
@@ -307,7 +308,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
       {
         mode: 'loop',
         title: 'Sess Fail Loop',
-        plan: '# Session Fail.\n',
+        spec: { kind: 'plan', text: '# Session Fail.\n', updatedAt: 0 },
       },
     )
 
@@ -327,7 +328,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
       {
         mode: 'loop',
         title: 'Archived Plan Loop',
-        plan: '# Archived Plan\n\nLoaded from disk.',
+        spec: { kind: 'plan', text: '# Archived Plan\n\nLoaded from disk.', updatedAt: 0 },
         executionModel: 'prov/exec',
         auditorModel: 'prov/aud',
       },
@@ -345,6 +346,7 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
       planText: '# Archived Plan\n\nLoaded from disk.',
       hostSessionId: undefined,
       initialPromptOwner: 'tui',
+      maxIterations: 0,
       pendingAttachStartedAt: expect.any(Number),
     })
     expect(createArgs.extra.forgeLoop.hostSessionId).toBeUndefined()
@@ -359,12 +361,115 @@ describe('TUI warp flow for plan.execute mode=loop', () => {
       {
         mode: 'loop',
         title: longTitle,
-        plan: '# Long Title Test.',
+        spec: { kind: 'plan', text: '# Long Title Test.', updatedAt: 0 },
       },
     )
 
     expect(result).not.toBeNull()
     const sesCreateArgs = mockApi.client.session.create.mock.calls[0][0]
     expect(sesCreateArgs.title).toBe('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+  })
+
+  describe('goal launches', () => {
+    const GOAL_BRIEF = '## Goal\n\nShip the launch button\n\n## Context\n\nWe need a clean rollout.'
+
+    test('goal loop: workspace.create carries kind=goal, goal text, initialPromptOwner=server, and no plan fields', async () => {
+      const client = await connectForgeProject(mockApi, DIRECTORY)
+      expect(client).not.toBeNull()
+
+      const result = await client!.plan.execute(
+        SESSION_ID,
+        {
+          mode: 'loop',
+          title: 'Ship the launch button',
+          spec: { kind: 'goal', text: GOAL_BRIEF, updatedAt: 0 },
+        },
+      )
+
+      expect(result).not.toBeNull()
+      expect(result!.sessionId).toBe('sess_new')
+      expect(result!.loopName).toBe('ship-the-launch-button')
+      expect(result!.workspaceId).toBe('ws_loop')
+
+      expect(mockApi.client.session.create).toHaveBeenCalledTimes(1)
+      expect(mockApi.client.session.promptAsync).not.toHaveBeenCalled()
+
+      const createArgs = mockApi.client.experimental.workspace.create.mock.calls[0][0]
+      const forgeLoop = createArgs.extra.forgeLoop
+      expect(forgeLoop.kind).toBe('goal')
+      expect(forgeLoop.goal).toBe(GOAL_BRIEF)
+      expect(forgeLoop.initialPromptOwner).toBe('server')
+      expect(forgeLoop.planSource).toBeUndefined()
+      expect(forgeLoop.planText).toBeUndefined()
+      expect(forgeLoop.title).toBe('Ship the launch button')
+      expect(forgeLoop.hostSessionId).toBe(SESSION_ID)
+
+      expect(callOrder).toContain('route.navigate')
+      expect(mockApi.route.navigate).toHaveBeenCalledWith('session', { sessionID: 'sess_new' })
+      expect(mockApi.client.experimental.workspace.syncList).toHaveBeenCalledTimes(2)
+    })
+
+    test('goal loop reserves a unique loop name and removes stale forge workspaces for that name', async () => {
+      mockApi.client.experimental.workspace.list.mockResolvedValueOnce({
+        data: [
+          { id: 'ws_old', type: 'forge', name: 'ship-the-launch-button' },
+        ],
+      })
+
+      const client = await connectForgeProject(mockApi, DIRECTORY)
+
+      const result = await client!.plan.execute(
+        SESSION_ID,
+        {
+          mode: 'loop',
+          title: 'Ship the launch button',
+          spec: { kind: 'goal', text: GOAL_BRIEF, updatedAt: 0 },
+        },
+      )
+
+      expect(result).not.toBeNull()
+      expect(result!.loopName).toBe('ship-the-launch-button-1')
+      const createArgs = mockApi.client.experimental.workspace.create.mock.calls[0][0]
+      expect(createArgs.extra.loopName).toBe('ship-the-launch-button-1')
+      expect(createArgs.extra.forgeLoop.kind).toBe('goal')
+    })
+
+    test('goal + execute-here returns error and performs no provisioning', async () => {
+      const client = await connectForgeProject(mockApi, DIRECTORY)
+      expect(client).not.toBeNull()
+
+      const result = await client!.plan.execute(
+        SESSION_ID,
+        {
+          mode: 'execute-here',
+          title: 'Ship the launch button',
+          spec: { kind: 'goal', text: GOAL_BRIEF, updatedAt: 0 },
+        },
+      )
+
+      expect(result).toEqual({ error: 'Goal briefs can only run as a Loop' })
+      expect(mockApi.client.experimental.workspace.create).not.toHaveBeenCalled()
+      expect(mockApi.client.session.create).not.toHaveBeenCalled()
+      expect(mockApi.client.session.promptAsync).not.toHaveBeenCalled()
+    })
+
+    test('goal + new-session returns error and performs no provisioning', async () => {
+      const client = await connectForgeProject(mockApi, DIRECTORY)
+      expect(client).not.toBeNull()
+
+      const result = await client!.plan.execute(
+        SESSION_ID,
+        {
+          mode: 'new-session',
+          title: 'Ship the launch button',
+          spec: { kind: 'goal', text: GOAL_BRIEF, updatedAt: 0 },
+        },
+      )
+
+      expect(result).toEqual({ error: 'Goal briefs can only run as a Loop' })
+      expect(mockApi.client.experimental.workspace.create).not.toHaveBeenCalled()
+      expect(mockApi.client.session.create).not.toHaveBeenCalled()
+      expect(mockApi.client.session.promptAsync).not.toHaveBeenCalled()
+    })
   })
 })

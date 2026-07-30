@@ -53,7 +53,10 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
             worktreeDir: freshState.worktreeDir,
             workspaceId: freshState.workspaceId,
             prompt: promptText,
-            ...(model ? { auditorModel: model, ...(input.variant ? { auditorVariant: input.variant } : {}) } : {}),
+            ...(model ? { auditorModel: model } : {}),
+            ...(input.variant && (model != null || (auditorModel == null && !freshState.modelFailed))
+              ? { auditorVariant: input.variant }
+              : {}),
           })
           return r.ok ? {} : { error: r.error }
         },
@@ -77,7 +80,10 @@ export function createPromptDispatch(deps: PromptDispatchDeps): PromptDispatch {
             ...(freshState.workspaceId ? { workspace: freshState.workspaceId } : {}),
             agent: 'code',
             parts: [{ type: 'text' as const, text: promptText }],
-            ...(model ? { model, ...(input.variant ? { variant: input.variant } : {}) } : {}),
+            ...(model ? { model } : {}),
+            ...(input.variant && (model != null || (effectiveModel == null && !freshState.modelFailed))
+              ? { variant: input.variant }
+              : {}),
           })
           return {}
         } catch (err) {

@@ -4,7 +4,7 @@ import type { ForgeClient, SessionGetParams } from './client/port'
 import { buildAgents } from './agents'
 import { createConfigHandler } from './config'
 import { createSessionHooks, createLoopEventHandler } from './hooks'
-import { initializeDatabase, resolveDataDir, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo } from './storage'
+import { initializeDatabase, resolveDataDir, resolveOpencodeToolOutputDir, closeDatabase, createLoopsRepo, createPlansRepo, createReviewFindingsRepo, createSectionPlansRepo, createLoopSessionUsageRepo, createFeatureGroupsRepo, createLoopTransitionsRepo, createPlanAmendmentsRepo, createGoalBriefsRepo } from './storage'
 import type { LoopChangeNotifier } from './loop'
 import { loadPluginConfig, resolveBundledContainerDir, resolvePromptsDir } from './setup'
 import { resolveLogPath } from './storage'
@@ -336,6 +336,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
     const featureGroupsRepo = createFeatureGroupsRepo(db)
     const loopTransitionsRepo = createLoopTransitionsRepo(db)
     const planAmendmentsRepo = createPlanAmendmentsRepo(db)
+    const goalBriefsRepo = createGoalBriefsRepo(db)
 
     // Mark any groups left in non-terminal status (extracting/planning/running) from a
     // prior process as interrupted. Do NOT auto-resume — user must restart via group-status.
@@ -635,6 +636,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       cleanup,
       sandboxManager,
       plansRepo,
+      goalBriefsRepo,
       reviewFindingsRepo,
       loopsRepo,
       sectionPlansRepo,

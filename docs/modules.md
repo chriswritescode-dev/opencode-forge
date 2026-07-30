@@ -73,13 +73,14 @@ Defines roles and system prompts for each AI agent used in the forge pipeline.
 | `code.ts` | Code execution agent |
 | `architect.ts` | Read-only planning/design agent |
 | `auditor.ts` | Code review agent + auditor-loop variant |
+| `goal.ts` | Read-only brief-authoring agent (writes session-scoped goal briefs with `goal-write`) |
 
 ### Public API
 
 ```typescript
 buildAgents(): Record<AgentRole, AgentDefinition>
 
-type AgentRole = 'code' | 'architect' | 'auditor' | 'auditor-loop'
+type AgentRole = 'code' | 'architect' | 'auditor' | 'auditor-loop' | 'architect-auto' | 'feature-splitter' | 'goal'
 ```
 
 Source: [src/agents/index.ts](../src/agents/index.ts)
@@ -346,10 +347,11 @@ Each created via `createXxxRepo(db)` factory with project-scoped queries:
 | `PlanAmendmentsRepo` | `plan_amendments` | `PlanAmendmentRow` — append-only plan-amendment audit trail |
 | `LoopSessionUsageRepo` | `loop_session_usage` | `LoopSessionUsageRow`, `LoopUsageAggregate` |
 | `TuiPrefsRepo` | `tui_preferences` | N/A |
+| `GoalBriefsRepo` | `goal_briefs` | Session-scoped goal briefs authored with `goal-write` before launching a goal loop |
 
 ### Migrations
 
-Migrations are registered explicitly, in execution order, in the `migrations` array (ids 100–143; inline migrations are valid, so not every id ships a `.sql` file) and tracked in a `migrations` table.
+Migrations are registered explicitly, in execution order, in the `migrations` array (ids 100–144; inline migrations are valid, so not every id ships a `.sql` file) and tracked in a `migrations` table.
 
 See [storage/migrations/README.md](../src/storage/migrations/README.md) for migration details.
 
@@ -373,8 +375,9 @@ Implements tools callable by AI agents during conversations.
 | `plan-read` | `plan-kv.ts` | Retrieve plans with pagination and pattern search |
 | `section-read` | `section-read.ts` | Retrieve a specific section of a plan |
 | `plan-adjust` | `plan-adjust.ts` | Auditor-only: revise the section under audit and/or replace the remaining sections of the active loop plan (logged as a plan amendment) |
-| `execute-plan` | `loop.ts` | Execute a plan using an iterative development loop, or `mode: new-session` for a fresh standalone session. Args: `title` required; `plan`, `loopName`, `hostSessionId`, `mode` optional. |
-| `execute-goal` | `loop.ts` | Execute a non-empty goal in a dedicated session inside a managed worktree. Args: `goal` required; `title`, `loopName`, `maxIterations`, `hostSessionId` optional. |
+| `goal-write` | `goal-authoring.ts` | `goal` agent-only: validate, persist, or append the session-scoped goal brief; denied in any running loop or audit session. Returns a structure report. |
+| `execute-plan` | `loop.ts` | Execute a plan using an iterative development loop, or `mode: new-session` for a fresh standalone session. Args: `title` required; `plan`, `loopName`, `mode` optional. |
+| `execute-goal` | `loop.ts` | Execute a non-empty goal in a dedicated session inside a managed worktree. Args: `goal` required; `title`, `loopName`, `maxIterations` optional. The invoking session is the implicit post-completion host redirect target; `execute-goal` does not expose `hostSessionId`. |
 | `loop-status` | `loop.ts` | List active/recent loops, show cumulative usage for detailed status, or restart loops with `restart`/`force` arguments |
 | `loop-cancel` | `loop.ts` | Cancel an active loop by worktree name |
 
@@ -397,6 +400,7 @@ interface ToolContext {
   input: PluginInput
   sandboxManager: SandboxManager | null
   plansRepo: PlansRepo
+  goalBriefsRepo: GoalBriefsRepo
   reviewFindingsRepo: ReviewFindingsRepo
   loopsRepo: LoopsRepo
   sectionPlansRepo: SectionPlansRepo

@@ -1,8 +1,11 @@
 /** @jsxImportSource @opentui/solid */
 import type { TuiPluginApi } from '@opencode-ai/plugin/tui'
 import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
-import { PLAN_EXECUTION_LABELS } from '../utils/plan-execution'
-import { extractPlanExecutionMetadata } from '../utils/plan-execution'
+import {
+  getLaunchModeDescription,
+  listLaunchModesForSpecKind,
+} from '../utils/plan-execution'
+import { extractLaunchSpecMetadata, type SessionLaunchSpec } from '../utils/session-launch-spec'
 import { buildDialogSelectOptions, getModelDisplayLabel, getAvailableModelVariants, getVariantDisplayLabel, normalizeVariantForModel, type ModelInfo } from '../utils/tui-models'
 import { resolveExecutionDialogDefaults } from '../utils/tui-execution-preferences'
 import { type ForgeProjectClient } from '../utils/tui-client'
@@ -29,7 +32,7 @@ export interface ExecutePlanPanelProps {
   client: ForgeProjectClient
   cache: ExecutionContextCache | null
   pluginConfig: PluginConfig
-  planContent: string
+  spec: SessionLaunchSpec
   sessionId: string
   initialExecutionModel?: string
   initialAuditorModel?: string
@@ -82,7 +85,7 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   const [modelsLoaded, setModelsLoaded] = createSignal(!!initialSnapshot)
   const [busy, setBusy] = createSignal(false)
   const [loopName] = createSignal(
-    props.initialLoopName ?? extractPlanExecutionMetadata(untrack(() => props.planContent)).executionName,
+    props.initialLoopName ?? extractLaunchSpecMetadata(untrack(() => props.spec)).executionName,
   )
   const [target] = createSignal(props.initialTarget ?? 'local')
   const remoteNames = listRemoteNames(pluginConfig)
@@ -289,19 +292,6 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
     ))
   }
 
-  function getModeDescription(label: string): string {
-    switch (label) {
-      case 'New session':
-        return 'Create a new session and send the plan to the code agent'
-      case 'Execute here':
-        return 'Execute the plan in the current session using the code agent'
-      case 'Loop':
-        return 'Execute using iterative development loop in an isolated git worktree (Docker sandbox used automatically when available)'
-      default:
-        return ''
-    }
-  }
-
   /**
    * Shared tail for local and remote launches: surface errors, record recent
    * models, toast success, and notify the host. Returns false on error so
@@ -324,16 +314,19 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   }
 
   async function runExecuteMode(mode: string, execModel?: string, auditModel?: string, execVariant?: string, auditVariant?: string): Promise<void> {
-    const planText = props.planContent
-    const { title } = extractPlanExecutionMetadata(planText)
+    const spec = props.spec
+    const { title } = extractLaunchSpecMetadata(spec)
 
     const normalizedMode = mode.toLowerCase()
-    const matchedLabel = PLAN_EXECUTION_LABELS.find(
+    const matchedLabel = listLaunchModesForSpecKind(spec.kind).find(
       label => normalizedMode === label.toLowerCase() || normalizedMode.startsWith(label.toLowerCase())
     ) ?? null
 
-    // Remote target: only Loop is allowed
     if (target() !== 'local') {
+      if (spec.kind === 'goal') {
+        props.api.ui.toast({ message: 'Remote targets support plans only', variant: 'error', duration: 5000 })
+        return
+      }
       if (!isModeAllowedForTarget(target(), matchedLabel ?? '')) {
         props.api.ui.toast({ message: 'Remote target supports Loop only', variant: 'error', duration: 5000 })
         return
@@ -347,7 +340,7 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
         localProjectId: props.client.projectId,
         title,
         loopName: loopName(),
-        plan: planText,
+        spec,
         executionModel: execModel,
         auditorModel: auditModel,
         executionVariant: execVariant,
@@ -384,7 +377,7 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
       mode: apiMode,
       title,
       loopName: loopName(),
-      plan: planText,
+      spec,
       executionModel: execModel,
       auditorModel: auditModel,
       executionVariant: execVariant,
@@ -423,7 +416,7 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
   return (
     <box flexDirection="column" paddingBottom={1} gap={1} minHeight={20} maxHeight="75%">
       <box paddingBottom={1}>
-        <text fg={theme().text}><b>Configure and Run Plan</b></text>
+        <text fg={theme().text}><b>{props.spec.kind === 'goal' ? 'Configure and Run Goal' : 'Configure and Run Plan'}</b></text>
       </box>
       <select
         focused={true}
@@ -454,14 +447,14 @@ export function ExecutePlanPanel(props: ExecutePlanPanelProps) {
             description: 'Press enter to edit the loop name used when launching',
             value: 'loop-name',
           },
-          ...(hasRemotes ? [{
+          ...(hasRemotes && props.spec.kind !== 'goal' ? [{
             name: `Target: ${targetLabel()}`,
             description: 'Press enter to choose where the loop runs',
             value: 'target',
           }] : []),
-          ...PLAN_EXECUTION_LABELS.map(label => ({
+          ...listLaunchModesForSpecKind(props.spec.kind).map(label => ({
             name: label,
-            description: getModeDescription(label),
+            description: getLaunchModeDescription(props.spec.kind, label),
             value: `mode:${label}`,
           })),
         ]}

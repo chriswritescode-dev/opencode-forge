@@ -84,7 +84,7 @@ describe('plan.execute(loop) workspace.create failure', () => {
     const result = await project.plan.execute('sess-1', {
       mode: 'loop',
       title: 'Test Loop',
-      plan: '# Test\n\nLoop test plan.',
+      spec: { kind: 'plan', text: '# Test\n\nLoop test plan.', updatedAt: 0 },
     })
 
     expect(result).not.toBeNull()
@@ -110,7 +110,7 @@ describe('plan.execute(loop) workspace.create failure', () => {
     const result = await project.plan.execute('sess-1', {
       mode: 'loop',
       title: 'Empty Error Loop',
-      plan: '# Test\n\nEmpty error test.',
+      spec: { kind: 'plan', text: '# Test\n\nEmpty error test.', updatedAt: 0 },
     })
 
     if (result && 'error' in result) {
@@ -145,7 +145,7 @@ describe('plan.execute(loop) workspace.create failure', () => {
     const result = await project.plan.execute('sess-1', {
       mode: 'loop',
       title: 'PostCreate Fail',
-      plan: '# Test\n\nPost-create failure test.',
+      spec: { kind: 'plan', text: '# Test\n\nPost-create failure test.', updatedAt: 0 },
     })
 
     // Post-create failures surface the underlying cause instead of a generic null
@@ -171,7 +171,7 @@ describe('plan.execute(loop) workspace.create failure', () => {
     const result = await project.plan.execute('sess-1', {
       mode: 'loop',
       title: 'Global Project Loop',
-      plan: '# Test\n\nShould fail fast.',
+      spec: { kind: 'plan', text: '# Test\n\nShould fail fast.', updatedAt: 0 },
     })
 
     expect(result).not.toBeNull()

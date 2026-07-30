@@ -41,7 +41,7 @@ function makeDbPath(): string {
   return join(tmpdir(), `forge-tui-client-stored-plan-${randomUUID()}.db`)
 }
 
-describe('connectForgeProject.loadLatestPlan honors configured dataDir', () => {
+describe('connectForgeProject.loadLaunchSpec honors configured dataDir', () => {
   let mockApi: any
 
   beforeEach(() => {
@@ -75,8 +75,8 @@ describe('connectForgeProject.loadLatestPlan honors configured dataDir', () => {
     const client = await connectForgeProject(mockApi, DIRECTORY, [], dbPath)
     expect(client).not.toBeNull()
 
-    const plan = await client!.loadLatestPlan(SESSION_ID)
-    expect(plan).toBe('# Stored Plan\n## Phase 1\nbody')
+    const spec = await client!.loadLaunchSpec(SESSION_ID)
+    expect(spec).toEqual({ kind: 'plan', text: '# Stored Plan\n## Phase 1\nbody', updatedAt: expect.any(Number) })
 
     // Storage-first means the chat scan must not run when a stored row exists.
     expect(mockApi.client.session.messages).not.toHaveBeenCalled()
@@ -90,8 +90,8 @@ describe('connectForgeProject.loadLatestPlan honors configured dataDir', () => {
     const client = await connectForgeProject(mockApi, DIRECTORY, [], dbPath)
     expect(client).not.toBeNull()
 
-    const plan = await client!.loadLatestPlan(SESSION_ID)
-    expect(plan).toBeNull()
+    const spec = await client!.loadLaunchSpec(SESSION_ID)
+    expect(spec).toBeNull()
 
     // No stored plan → the message-scan fallback runs.
     expect(mockApi.client.session.messages).toHaveBeenCalledTimes(1)
@@ -102,16 +102,37 @@ describe('connectForgeProject.loadLatestPlan honors configured dataDir', () => {
   })
 
   test('with no dbPath override, reads from the default data dir path (still null for unknown session)', async () => {
-    // No configured dataDir → connectForgeProject receives undefined and
-    // fetchStoredSessionPlan falls back to the default path. We can't write
-    // into the real default DB from a test, so we only assert that the
-    // chat-scan fallback is reached (proving the default path was tried and
-    // missed).
     const client = await connectForgeProject(mockApi, DIRECTORY, [], undefined)
     expect(client).not.toBeNull()
 
-    const plan = await client!.loadLatestPlan(SESSION_ID)
-    expect(plan).toBeNull()
+    const spec = await client!.loadLaunchSpec(SESSION_ID)
+    expect(spec).toBeNull()
     expect(mockApi.client.session.messages).toHaveBeenCalledTimes(1)
+  })
+
+  test('chat-scan fallback wraps a discovered plan as kind: plan', async () => {
+    const dbPath = makeDbPath()
+    const db = openForgeDatabase(dbPath)
+    db.close()
+
+    mockApi.client.session.messages = vi.fn().mockResolvedValue({
+      data: [
+        {
+          info: { role: 'assistant', id: 'msg-1' },
+          parts: [
+            {
+              type: 'text',
+              text: '<!-- forge-plan:start -->\n# Scanned Plan\n## Phase 1\nbody\n<!-- forge-plan:end -->',
+            },
+          ],
+        },
+      ],
+    })
+
+    const client = await connectForgeProject(mockApi, DIRECTORY, [], dbPath)
+    expect(client).not.toBeNull()
+
+    const spec = await client!.loadLaunchSpec(SESSION_ID)
+    expect(spec).toEqual({ kind: 'plan', text: '# Scanned Plan\n## Phase 1\nbody', updatedAt: 0 })
   })
 })

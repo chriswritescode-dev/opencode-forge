@@ -685,8 +685,8 @@ describe('attachLoopToSession', () => {
     }
   })
 
-  test('attachLoopToSession persists execution and auditor variants', async () => {
-    const { deps, loopsRepo } = buildDeps()
+  test('attachLoopToSession persists variants and sends the execution variant without an explicit model', async () => {
+    const { deps, loopsRepo, promptAsyncMock } = buildDeps()
 
     const { attachLoopToSession } = await import('../../src/services/execution')
 
@@ -701,7 +701,6 @@ describe('attachLoopToSession', () => {
         displayName: 'Variant Loop',
         executionName: 'variant-loop',
         hostSessionId: 'host-variant',
-        executionModel: 'prov/exec',
         auditorModel: 'prov/aud',
         executionVariant: 'thinking-max',
         auditorVariant: 'audit-high',
@@ -728,5 +727,38 @@ describe('attachLoopToSession', () => {
     expect(row).not.toBeNull()
     expect(row!.executionVariant).toBe('thinking-max')
     expect(row!.auditorVariant).toBe('audit-high')
+
+    expect(promptAsyncMock.mock.calls[0][0]).toMatchObject({ variant: 'thinking-max' })
+    expect(promptAsyncMock.mock.calls[0][0]).not.toHaveProperty('model')
+  })
+
+  test('attachLoopToSession omits a model-specific variant when falling back to the default model', async () => {
+    const { deps, promptAsyncMock } = buildDeps()
+    promptAsyncMock.mockImplementation(async (input) => {
+      if (input.model) throw new Error('configured model failed')
+    })
+
+    const { attachLoopToSession } = await import('../../src/services/execution')
+    const result = await attachLoopToSession(
+      deps as any,
+      { surface: 'tui', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        sessionId: 'sess_variant_fallback',
+        workspaceId: 'ws_variant_fallback',
+        worktreeDir: '/tmp/wt/variant-fallback',
+        loopName: 'variant-fallback-loop',
+        displayName: 'Variant Fallback Loop',
+        executionName: 'variant-fallback-loop',
+        executionModel: 'prov/exec',
+        executionVariant: 'thinking-max',
+        maxIterations: 50,
+        sandboxEnabled: false,
+        planText: '# Variant fallback plan',
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    expect(promptAsyncMock.mock.calls.some(([input]) => input.model && input.variant === 'thinking-max')).toBe(true)
+    expect(promptAsyncMock.mock.calls.some(([input]) => !input.model && !input.variant)).toBe(true)
   })
 })

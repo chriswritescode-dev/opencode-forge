@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveLoopModel, resolveLoopAuditorModel, formatDuration, computeElapsedSeconds } from '../src/utils/loop-helpers'
+import { resolveLoopModel, resolveLoopAuditorModel, resolveLoopLaunchPolicy, formatDuration, computeElapsedSeconds } from '../src/utils/loop-helpers'
 import type { PluginConfig } from '../src/types'
 
 describe('resolveLoopModel', () => {
@@ -142,6 +142,29 @@ describe('resolveLoopAuditorModel', () => {
     expect(result).toBeUndefined()
   })
 })
+
+describe('resolveLoopLaunchPolicy', () => {
+  it('defaults to enabled=true and maxIterations=0 when config is absent', () => {
+    expect(resolveLoopLaunchPolicy(undefined)).toEqual({ enabled: true, maxIterations: 0 })
+  })
+
+  it('keeps defaults when loop config is present but unset', () => {
+    expect(resolveLoopLaunchPolicy({ loop: {} } as PluginConfig)).toEqual({ enabled: true, maxIterations: 0 })
+  })
+
+  it('reads loop.enabled === false as disabled', () => {
+    expect(resolveLoopLaunchPolicy({ loop: { enabled: false } } as PluginConfig)).toEqual({ enabled: false, maxIterations: 0 })
+  })
+
+  it('reads loop.defaultMaxIterations', () => {
+    expect(resolveLoopLaunchPolicy({ loop: { defaultMaxIterations: 15 } } as PluginConfig)).toEqual({ enabled: true, maxIterations: 15 })
+  })
+
+  it('does not treat enabled: true as disabling defaultMaxIterations', () => {
+    expect(resolveLoopLaunchPolicy({ loop: { enabled: true, defaultMaxIterations: 7 } } as PluginConfig)).toEqual({ enabled: true, maxIterations: 7 })
+  })
+})
+
 
 describe('formatDuration', () => {
   it('formats seconds-only', () => {

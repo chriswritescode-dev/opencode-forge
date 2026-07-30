@@ -14,12 +14,15 @@ import { parseModelString } from './model-fallback'
 import { listConnectedWorkspaces } from './workspace-listing'
 import { type ForgeLoopExtra } from '../services/execution'
 import { buildLoopPermissionRuleset } from '../constants/loop'
+import { resolveLoopLaunchPolicy, type LoopLaunchPolicy } from './loop-helpers'
+import type { PluginConfig } from '../types'
 import { getForgeWorkspaceLoopName, removeExistingForgeLoopWorkspaces, getWorktreeProjectPreconditionError } from '../workspace/forge-worktree'
 import { classifyWorkspaceCreateThrow } from '../workspace/workspace-create-error'
-import { fetchLoopsList, fetchStoredSessionPlan } from './tui-loop-store'
+import { fetchLoopsList, fetchStoredSessionLaunchSpec } from './tui-loop-store'
+import { extractLaunchSpecMetadata, type SessionLaunchSpec } from './session-launch-spec'
 import { decomposeDeterministically } from '../services/deterministic-decomposer'
 import { buildSectionInitialPromptText } from '../loop/prompts'
-import { extractPlanExecutionMetadata, sanitizeLoopName } from './plan-execution'
+import { sanitizeLoopName } from './plan-execution'
 import { createForgeClient } from '../client/sdk-adapter'
 import type { ForgeClient } from '../client/port'
 import { fetchLatestPlanForSession } from './plan-from-messages'
@@ -79,7 +82,7 @@ export interface ExecutePlanRequest {
   mode: ApiExecutionMode
   title: string
   loopName?: string
-  plan: string
+  spec: SessionLaunchSpec
   executionModel?: string
   auditorModel?: string
   executionVariant?: string
@@ -152,10 +155,10 @@ export interface ForgeProjectClient {
   selectSession(sessionId: string, workspaceId?: string): Promise<void>
 
   /**
-   * Read the latest marked plan from a session's chat history, or `null` when
-   * none is found. Routes through the same {@link ForgeClient} port.
+   * Read the stored plan or goal brief for a session, falling back to a marked
+   * plan in chat history, or return `null` when none is found.
    */
-  loadLatestPlan(sessionId: string): Promise<string | null>
+  loadLaunchSpec(sessionId: string): Promise<SessionLaunchSpec | null>
 
   /** Single round-trip pair: read preferences and list models. */
   loadExecutionContext(): Promise<ExecutionContext>
@@ -261,7 +264,7 @@ export interface LaunchTuiLoopOptions {
    */
   loopNameReserved?: boolean
   title: string
-  plan: string
+  spec: SessionLaunchSpec
   executionModel?: string
   auditorModel?: string
   executionVariant?: string
@@ -272,6 +275,28 @@ export interface LaunchTuiLoopOptions {
   extraWorkspaceFields?: Record<string, unknown>
   /** Merged into the forgeLoop envelope (e.g. sandboxEnabled=false for remote). */
   forgeLoopOverrides?: Partial<ForgeLoopExtra>
+  /**
+   * Plugin config used to resolve the loop launch policy (enabled flag and
+   * defaultMaxIterations). When omitted, loops are assumed enabled and
+   * defaultMaxIterations resolves to 0 (unbounded), matching the prior
+   * behaviour. The resolved maxIterations is stamped onto the forgeLoop
+   * envelope so the attach hook honours the launcher's promise instead of
+   * diverging on the server's config view.
+   */
+  pluginConfig?: PluginConfig
+  /**
+   * When true, after provisioning the workspace the launcher polls the local
+   * forge database for the loop row created by the attach hook and only
+   * reports success once it appears with a non-terminal status. Surface for
+   * local launches only: remote launches cannot observe the remote server's
+   * database, so a cross-process handshake is out of scope here and the loop
+   * row is created asynchronously in the remote plugin process.
+   */
+  awaitAttachAck?: boolean
+  /** Override the attach-acknowledgement poll timeout (ms). Default 10000. */
+  awaitAttachAckTimeoutMs?: number
+  /** Override the attach-acknowledgement poll interval (ms). Default 100. */
+  awaitAttachAckPollIntervalMs?: number
   /** Called after promptAsync succeeds; local path navigates the TUI, remote omits. */
   onLaunched?: (sessionId: string, workspaceId: string) => Promise<void>
   /** Poll interval for the workspace-connected wait. Remote launches widen this to avoid hammering the server over the network. Default 100ms. */
@@ -292,10 +317,21 @@ export async function launchTuiLoop(
     return { error: committedError }
   }
 
+  // Resolve the loop launch policy once. This is the single point that keeps
+  // the dialog and the execute-plan/execute-goal tool handlers from diverging
+  // on `loop.enabled` and `loop.defaultMaxIterations`. The attach hook reads
+  // the stamped `maxIterations` from the forgeLoop envelope (or its own
+  // server-side policy as a fallback), so the launcher's promise is honoured.
+  const policy: LoopLaunchPolicy = resolveLoopLaunchPolicy(opts.pluginConfig)
+  if (!policy.enabled) {
+    debug(`launchTuiLoop: blocked — loops disabled in plugin config`)
+    return { error: 'Loops are disabled in plugin config' }
+  }
+
   const loopName = opts.loopNameReserved
     ? opts.requestedLoopName
     : await reserveTuiLoopName(opts.client, opts.projectId, opts.requestedLoopName, opts.dbPath)
-  debug(`launchTuiLoop: inline plan (planText.length=${opts.plan.length}) hostSession=${opts.hostSessionId ?? 'none'} loop=${loopName}`)
+  debug(`launchTuiLoop: spec kind=${opts.spec.kind} text.length=${opts.spec.text.length} hostSession=${opts.hostSessionId ?? 'none'} loop=${loopName} maxIterations=${policy.maxIterations}`)
   const createdAt = Date.now()
   const forgeLoop: ForgeLoopExtra = {
     hostSessionId: opts.hostSessionId,
@@ -304,10 +340,11 @@ export async function launchTuiLoop(
     auditorModel: opts.auditorModel,
     executionVariant: opts.executionVariant,
     auditorVariant: opts.auditorVariant,
-    planSource: 'inline',
-    planText: opts.plan,
-    initialPromptOwner: 'tui',
     pendingAttachStartedAt: createdAt,
+    maxIterations: policy.maxIterations,
+    ...(opts.spec.kind === 'goal'
+      ? { kind: 'goal' as const, goal: opts.spec.text, initialPromptOwner: 'server' as const }
+      : { planSource: 'inline' as const, planText: opts.spec.text, initialPromptOwner: 'tui' as const }),
     ...opts.forgeLoopOverrides,
   }
   await removeExistingForgeLoopWorkspaces(opts.client, loopName, opts.directory, {
@@ -352,28 +389,51 @@ export async function launchTuiLoop(
       directory: workspace.directory ?? undefined,
       permission,
     })
-    const promptText = buildTuiLoopInitialPrompt(opts.plan)
 
-    const promptInput = {
-      sessionID: session.id,
-      directory: workspace.directory ?? undefined,
-      workspace: workspace.id,
-      agent: 'code' as const,
-      parts: [{ type: 'text' as const, text: promptText }],
-      ...buildPromptModelSelection(parsedModel, opts.executionVariant),
+    if (opts.spec.kind === 'plan') {
+      const promptText = buildTuiLoopInitialPrompt(opts.spec.text)
+
+      const promptInput = {
+        sessionID: session.id,
+        directory: workspace.directory ?? undefined,
+        workspace: workspace.id,
+        agent: 'code' as const,
+        parts: [{ type: 'text' as const, text: promptText }],
+        ...buildPromptModelSelection(parsedModel, opts.executionVariant),
+      }
+      try {
+        await opts.client.session.promptAsync(promptInput)
+      } catch (err) {
+        debug(`launchTuiLoop: promptAsync failed session=${session.id} workspace=${workspace.id} error=${err instanceof Error ? err.message : String(err)}`)
+        await opts.client.workspace.remove({ id: workspace.id }).catch(() => undefined)
+        return { error: `Failed to send initial loop prompt: ${err instanceof Error ? err.message : String(err)}` }
+      }
+      debug(`launchTuiLoop: promptAsync ok session=${session.id} workspace=${workspace.id}`)
     }
-    try {
-      await opts.client.session.promptAsync(promptInput)
-    } catch (err) {
-      debug(`launchTuiLoop: promptAsync failed session=${session.id} workspace=${workspace.id} error=${err instanceof Error ? err.message : String(err)}`)
-      await opts.client.workspace.remove({ id: workspace.id }).catch(() => undefined)
-      return { error: `Failed to send initial loop prompt: ${err instanceof Error ? err.message : String(err)}` }
-    }
-    debug(`launchTuiLoop: promptAsync ok session=${session.id} workspace=${workspace.id}`)
 
     await opts.onLaunched?.(session.id, workspace.id)
 
     await opts.client.workspace.syncList().catch(() => undefined)
+
+    // Local launches wait for the attach hook to acknowledge the loop row in
+    // the shared forge database before reporting success, so a workspace that
+    // never attaches (filtered session.created, attach failure, etc.) surfaces
+    // an error to the launcher instead of appearing silently launched. The
+    // remote path cannot observe the remote database, so it skips this gate.
+    if (opts.awaitAttachAck && opts.projectId && opts.dbPath) {
+      const ack = await waitForLoopRowAcknowledgement({
+        projectId: opts.projectId,
+        loopName,
+        dbPath: opts.dbPath,
+        timeoutMs: opts.awaitAttachAckTimeoutMs,
+        pollIntervalMs: opts.awaitAttachAckPollIntervalMs,
+        debug,
+      })
+      if (!ack.ok) {
+        debug(`launchTuiLoop: attach acknowledgement not observed loop=${loopName} reason=${ack.reason}`)
+        return { error: `Loop launch not confirmed by the server attach path: ${ack.reason}` }
+      }
+    }
 
     return {
       sessionId: session.id,
@@ -385,6 +445,54 @@ export async function launchTuiLoop(
     debug(`launchTuiLoop: post-create flow failed error=${err instanceof Error ? err.message : String(err)}`)
     return { error: `Loop launch failed: ${err instanceof Error ? err.message : String(err)}` }
   }
+}
+
+/**
+ * Idempotent local-launch acknowledgement: polls the shared forge database for
+ * the loop row the attach hook writes once it has wired the session into the
+ * loop runtime. Resolves once the row exists in a non-terminal status, or once
+ * the timeout elapses. Used by {@link launchTuiLoop} when the launcher opts in
+ * via `awaitAttachAck`. Remote launches cannot observe the remote database
+ * through this surface and therefore do not call it.
+ */
+async function waitForLoopRowAcknowledgement(input: {
+  projectId: string
+  loopName: string
+  dbPath: string
+  timeoutMs?: number
+  pollIntervalMs?: number
+  debug: (message: string) => void
+}): Promise<{ ok: true } | { ok: false; reason: string }> {
+  // Env overrides mirror the `FORGE_TUI_WORKSPACE_SETTLE_MS` pattern so tests
+  // can shrink the wait without adding launch-surface option plumbing.
+  const envTimeout = Number(process.env.FORGE_TUI_ATTACH_ACK_TIMEOUT_MS)
+  const envPoll = Number(process.env.FORGE_TUI_ATTACH_ACK_POLL_MS)
+  const timeoutMs = input.timeoutMs
+    ?? (Number.isFinite(envTimeout) && envTimeout >= 0 ? envTimeout : 10_000)
+  const pollIntervalMs = input.pollIntervalMs
+    ?? (Number.isFinite(envPoll) && envPoll >= 0 ? envPoll : 100)
+  const deadline = Date.now() + timeoutMs
+  do {
+    const loops = fetchLoopsList(input.projectId, input.dbPath)
+    const row = loops.find((l) => l.name === input.loopName)
+    if (row) {
+      if (row.active) {
+        input.debug(`waitForLoopRowAcknowledgement: ok loop=${input.loopName} status=running`)
+        return { ok: true }
+      }
+      // A row that exists but is not running means the attach hook wired the
+      // session and then failed/terminated it. Surface that rather than
+      // waiting out the timeout; the launcher would otherwise report a
+      // success that the server already rolled back.
+      input.debug(`waitForLoopRowAcknowledgement: terminal loop=${input.loopName} phase=${row.phase}${row.terminationReason ? ` reason=${row.terminationReason}` : ''}`)
+      return { ok: false, reason: row.terminationReason
+        ? `loop row not running (${row.phase}: ${row.terminationReason})`
+        : `loop row not running (${row.phase})` }
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, pollIntervalMs))
+  } while (Date.now() < deadline)
+  input.debug(`waitForLoopRowAcknowledgement: timeout loop=${input.loopName}`)
+  return { ok: false, reason: `loop row not observed within ${timeoutMs}ms` }
 }
 
 export async function selectTuiSession(api: TuiPluginApi, client: ForgeClient, sessionId: string, workspaceId?: string): Promise<void> {
@@ -412,6 +520,14 @@ export async function connectForgeProject(
   directory?: string,
   allowExternalDirectories?: string[],
   dbPath?: string,
+  /**
+   * Plugin config used by the local launch path to resolve the loop launch
+   * policy and to wait for attach acknowledgement. Tests omit it to preserve
+   * the prior "stamp nothing / no acknowledgement" behaviour; production
+   * passes the loaded config and opts into attach acknowledgement.
+   */
+  pluginConfig?: PluginConfig,
+  awaitAttachAck?: boolean,
 ): Promise<ForgeProjectClient | null> {
   tuiDebug(`connect start directory=${directory ?? 'none'}`)
 
@@ -455,8 +571,17 @@ export async function connectForgeProject(
     async execute(sessionId, req) {
       const parsedModel = parseModelString(req.executionModel)
 
+      const spec = req.spec
+      if (!spec) {
+        return { error: 'No plan or goal spec was provided for execution.' }
+      }
+
+      if (spec.kind === 'goal' && req.mode !== 'loop') {
+        return { error: 'Goal briefs can only run as a Loop' }
+      }
+
       if (req.mode === 'execute-here') {
-        const prompt = `The architect agent has created an implementation plan in this conversation above. You are now the code agent taking over this session. Your job is to execute the plan — edit files, run commands, create tests, and implement every phase. Do NOT just describe or summarize the changes. Actually make them.\n\nPlan reference: ${req.plan}`
+        const prompt = `The architect agent has created an implementation plan in this conversation above. You are now the code agent taking over this session. Your job is to execute the plan — edit files, run commands, create tests, and implement every phase. Do NOT just describe or summarize the changes. Actually make them.\n\nPlan reference: ${spec.text}`
 
         const modelVariant = buildPromptModelSelection(parsedModel, req.executionVariant)
         try {
@@ -485,7 +610,7 @@ export async function connectForgeProject(
             directory,
             agent: 'code',
             ...modelVariant,
-            parts: [{ type: 'text' as const, text: req.plan }],
+            parts: [{ type: 'text' as const, text: spec.text }],
           })
           return { sessionId: session.id }
         } catch {
@@ -498,9 +623,9 @@ export async function connectForgeProject(
           client,
           directory,
           projectId,
-          requestedLoopName: req.loopName ?? (req.title ? sanitizeLoopName(req.title) : extractPlanExecutionMetadata(req.plan).executionName),
+          requestedLoopName: req.loopName ?? (req.title ? sanitizeLoopName(req.title) : extractLaunchSpecMetadata(spec).executionName),
           title: req.title,
-          plan: req.plan,
+          spec,
           executionModel: req.executionModel,
           auditorModel: req.auditorModel,
           executionVariant: req.executionVariant,
@@ -508,6 +633,8 @@ export async function connectForgeProject(
           hostSessionId: sessionId || undefined,
           allowDirectories: allowExternalDirectories,
           dbPath,
+          pluginConfig,
+          awaitAttachAck,
           onLaunched: (sid, wid) => selectTuiSession(api, client, sid, wid),
           debug: tuiDebug,
         })
@@ -542,15 +669,17 @@ export async function connectForgeProject(
     selectSession(sessionId, workspaceId) {
       return selectTuiSession(api, client, sessionId, workspaceId)
     },
-    loadLatestPlan(sessionId) {
+    loadLaunchSpec(sessionId) {
       // Storage is the plan of record for execute-plan and the approval hook, so
       // the dialog must show exactly what would execute. The message scan
       // remains as a fallback for sessions whose marked plan was never captured.
       // `dbPath` honors a configured PluginConfig.dataDir so tool-authored plans
       // stored outside the default data dir still resolve here.
-      const stored = projectId ? fetchStoredSessionPlan(projectId, sessionId, dbPath) : null
+      const stored = projectId ? fetchStoredSessionLaunchSpec(projectId, sessionId, dbPath) : null
       if (stored) return Promise.resolve(stored)
-      return fetchLatestPlanForSession(client, sessionId, directory)
+      return fetchLatestPlanForSession(client, sessionId, directory).then((text) =>
+        text ? { kind: 'plan', text, updatedAt: 0 } : null,
+      )
     },
     async loadExecutionContext() {
       const [sessionsResult, workspacesResult, modelsResult] = await Promise.all([
