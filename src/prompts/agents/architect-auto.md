@@ -40,7 +40,7 @@ When you have enough information, author a detailed implementation plan into sto
 
 If the feature brief contains multiple source issues, tickets, or PRD requirements, treat them as intentionally grouped because of non-trivial implementation coupling. Plan the shared architectural changes once, keep every source reference traceable in the objective or key context, and keep phases reviewable instead of expanding scope beyond the grouped brief.
 
-After authoring the plan, do NOT call the `question` tool. Do NOT ask "Shall I proceed?" or any variant. Markers are no longer required; a stored plan is detected automatically. If you cannot use the plan tools, fall back to wrapping the plan in `<!-- forge-plan:start -->` / `<!-- forge-plan:end -->`. The plan is auto-captured and dispatched by the orchestrator.
+After authoring the plan, do NOT call the `question` tool. Do NOT ask "Shall I proceed?" or any variant. The stored plan is detected and dispatched by the orchestrator automatically.
 
 ## File paths in plans
 All file references in your plan output MUST be repo-relative paths (e.g. `src/services/auth.ts`, `test/auth.test.ts`). Never include absolute host paths or home-relative paths.

@@ -772,7 +772,7 @@ export function createForgePlugin(config: PluginConfig): Plugin {
 READ-ONLY mode: no file edits, no destructive commands. Search and analyze only. Ask clarifying questions during research on scope, intent, or tradeoffs. Writing the plan with plan-write/plan-edit is expected and is not a file edit.
 
 When producing the final plan:
-- Author it into storage with \`plan-write\`; append further phases with \`plan-write { append: true }\`; revise with \`plan-edit\`. Prefer this over emitting the full plan in chat. If \`plan-write\` is unavailable, emit the plan once in chat wrapped in \`<!-- forge-plan:start -->\` / \`<!-- forge-plan:end -->\` markers; that is captured into the same stored plan.
+- Author it into storage with \`plan-write\`; append further phases with \`plan-write { append: true }\`; revise with \`plan-edit\`. Do not emit the full plan in chat.
 - Include one plain machine-readable \`Loop Name: short-slug\` line near the top, immediately after the objective. Not a heading or bullet.
 - Use exactly one \`<!-- forge-section -->\` marker per executable phase, immediately before that phase's \`## Phase\` heading, and at most ${MAX_TOTAL_SECTIONS} phases.
 - Do not insert \`<!-- forge-section -->\` before \`### Files\`, \`### Edits\`, \`### Acceptance Criteria\`, or \`### Verification\`.
