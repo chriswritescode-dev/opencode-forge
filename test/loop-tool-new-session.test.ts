@@ -3,6 +3,7 @@ import { createLoopService } from '../src/loop/service'
 import { createLoopsRepo } from '../src/storage/repos/loops-repo'
 import { createPlansRepo } from '../src/storage/repos/plans-repo'
 import { createReviewFindingsRepo } from '../src/storage/repos/review-findings-repo'
+import { createGoalBriefsRepo } from '../src/storage/repos/goal-briefs-repo'
 import { createLoopTools } from '../src/tools/loop'
 import { createLogger } from '../src/utils/logger'
 import { createLoopEventHandler } from '../src/hooks/loop'
@@ -65,6 +66,7 @@ describe('loop tool mode=new-session', () => {
       logger,
       plansRepo,
       loopsRepo,
+      goalBriefsRepo: createGoalBriefsRepo(db),
       projectId,
       dataDir: dbPath,
       loop: loopHandler.loop,
@@ -234,6 +236,7 @@ describe('execute-goal tool', () => {
       logger,
       plansRepo,
       loopsRepo,
+      goalBriefsRepo: createGoalBriefsRepo(db),
       projectId,
       dataDir: dbPath,
       loop: loopHandler.loop,
@@ -242,15 +245,29 @@ describe('execute-goal tool', () => {
     return { tools, forgeClient, loopService }
   }
 
+  const BRIEF = `## Goal
+Ship the execute-goal feature end to end.
+
+## Context
+The legacy free-text launch path is being replaced by brief-backed launches.
+
+## Constraints
+No new dependencies.
+
+## Acceptance Criteria
+- the execute-goal tool launches from a stored goal brief
+`
+
   test('warns when the new session resolves to a different opencode project than the plugin scope', async () => {
     const { tools } = setupTools({
       session: {
         get: async () => ({ id: 'ses_fake_1', projectID: 'other-project' }),
       },
     } as any)
+    createGoalBriefsRepo(db).writeForSession(projectId, 'src-session', BRIEF)
 
     const result = await tools['execute-goal'].execute(
-      { goal: 'Ship it' } as any,
+      {} as any,
       { sessionID: 'src-session' } as any,
     )
 
@@ -265,9 +282,10 @@ describe('execute-goal tool', () => {
         get: async () => ({ id: 'ses_fake_1', projectID: projectId }),
       },
     } as any)
+    createGoalBriefsRepo(db).writeForSession(projectId, 'src-session', BRIEF)
 
     const result = await tools['execute-goal'].execute(
-      { goal: 'Ship it' } as any,
+      {} as any,
       { sessionID: 'src-session' } as any,
     )
 
@@ -275,25 +293,42 @@ describe('execute-goal tool', () => {
     expect(result).not.toContain('WARNING: The new session belongs to project')
   })
 
-  test('rejects a blank goal without provisioning any workspace or session', async () => {
+  test('rejects without provisioning any workspace or session when no brief is stored', async () => {
     const { tools, forgeClient } = setupTools()
 
     const result = await tools['execute-goal'].execute(
-      { goal: '   \n  ' } as any,
+      {} as any,
       { sessionID: 'src-session' } as any,
     )
 
-    expect(result).toContain('Goal text is required')
+    expect(result).toContain('No goal brief stored for this session')
     expect((forgeClient.workspace.create as any).mock.calls.length).toBe(0)
     expect((forgeClient.session.create as any).mock.calls.length).toBe(0)
     expect((forgeClient.workspace.warp as any).mock.calls.length).toBe(0)
   })
 
-  test('dispatches a managed goal loop in a new worktree session and persists goal text', async () => {
-    const { tools, forgeClient, loopService } = setupTools()
+  test('rejects without provisioning when the stored brief is missing required headings', async () => {
+    const { tools, forgeClient } = setupTools()
+    createGoalBriefsRepo(db).writeForSession(projectId, 'src-session', '## Goal\nShip it.\n')
 
     const result = await tools['execute-goal'].execute(
-      { goal: 'Ship the execute-goal feature end to end' } as any,
+      {} as any,
+      { sessionID: 'src-session' } as any,
+    )
+
+    expect(result).toContain('execute-goal refused: the stored goal brief is incomplete')
+    expect(result).toContain('Missing required section')
+    expect((forgeClient.workspace.create as any).mock.calls.length).toBe(0)
+    expect((forgeClient.session.create as any).mock.calls.length).toBe(0)
+    expect((forgeClient.workspace.warp as any).mock.calls.length).toBe(0)
+  })
+
+  test('dispatches a managed goal loop from the stored brief in a new worktree session and persists the brief as the goal', async () => {
+    const { tools, forgeClient, loopService } = setupTools()
+    createGoalBriefsRepo(db).writeForSession(projectId, 'src-session', BRIEF)
+
+    const result = await tools['execute-goal'].execute(
+      {} as any,
       { sessionID: 'src-session' } as any,
     )
 
@@ -315,7 +350,7 @@ describe('execute-goal tool', () => {
     expect(state.sessionId).toBe('ses_fake_1')
     expect(state.executorSessionId).toBe('ses_fake_1')
     expect(state.hostSessionId).toBe('src-session')
-    expect(state.goal).toBe('Ship the execute-goal feature end to end')
+    expect(state.goal).toBe(BRIEF.trim())
     expect(state.phase).toBe('coding')
     expect(state.totalSections).toBe(0)
 
@@ -324,7 +359,7 @@ describe('execute-goal tool', () => {
 
     const loopsRepo = createLoopsRepo(db)
     const large = loopsRepo.getLarge(projectId, state.loopName)
-    expect(large?.goal).toBe('Ship the execute-goal feature end to end')
+    expect(large?.goal).toBe(BRIEF.trim())
   })
 
   test('does not regress execute-plan new-session mode (still creates a fresh session)', async () => {

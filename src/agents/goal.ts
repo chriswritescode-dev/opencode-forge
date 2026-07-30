@@ -13,7 +13,7 @@ export function buildGoalAgent(promptsDir?: string): AgentDefinition {
       exclude: [
         'write', 'edit', 'multiedit', 'apply_patch', 'patch',
         'plan', 'plan_enter', 'plan_exit',
-        'execute-plan', 'execute-goal',
+        'execute-plan',
         'launch-group', 'group-status', 'group-cancel',
         'loop-cancel', 'loop-status',
         'review-write', 'review-delete',

@@ -18,7 +18,7 @@ See also: [Agents and Slash Commands](agents-and-commands.md), [Configuration](c
 | `review-read` | Read review findings. | [`src/tools/review.ts`](../src/tools/review.ts) |
 | `review-delete` | Delete a review finding. | [`src/tools/review.ts`](../src/tools/review.ts) |
 | `execute-plan` | Start an iterative development loop in an isolated git worktree, or (with `mode: new-session`) launch the plan in a fresh standalone session. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
-| `execute-goal` | Start a managed goal loop in a dedicated code session inside an isolated Forge worktree. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
+| `execute-goal` | Launch a managed goal loop from the goal brief stored for the current session (`goal-write`). | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `loop-cancel` | Cancel an active loop. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `loop-status` | List loops, inspect one loop, or restart a restartable loop. | [`src/tools/loop.ts`](../src/tools/loop.ts) |
 | `launch-group` | Launch a group of features (from a PRD or a pre-split list), each planned and run as its own loop, scheduled with a concurrency cap. | [`src/tools/group.ts`](../src/tools/group.ts) |
@@ -159,14 +159,15 @@ Arguments:
 
 ### `execute-goal`
 
-Starts a managed **goal loop** from free-text goal input, with no plan, decomposition, approval flow, final audit, or post-action. Forge creates a dedicated code session inside an isolated worktree and sends the goal as its initial prompt. When that coding pass goes idle, Forge replaces it with a fresh auditor session; a dirty audit then creates a fresh code session for remediation. The invoking session remains the host redirect target and is not warped into the worktree.
+Launches a managed **goal loop** from the goal brief stored for the current session (authored with `goal-write`), with no plan, decomposition, approval flow, final audit, or post-action. There is no `goal` argument — the tool reads the stored brief, refuses to launch when the brief is missing or incomplete (missing required `##` headings), and dispatches the brief as the goal. Forge creates a dedicated code session inside an isolated worktree and sends the brief as its initial prompt. When that coding pass goes idle, Forge replaces it with a fresh auditor session; a dirty audit then creates a fresh code session for remediation. The invoking session remains the host redirect target and is not warped into the worktree.
+
+The `goal` agent calls this tool directly after authoring a clean brief; the Forge execution dialog is the alternate launch surface when the user wants to pick models. `execute-goal` uses the plugin-config default execution and auditor models.
 
 Arguments:
 
 | Argument | Description |
 |---|---|
-| `goal` | Required. Non-empty free text describing the goal; the first line is used to derive a title/loop name when omitted. |
-| `title` | Optional short title for the loop (derived from the goal when omitted). |
+| `title` | Optional short title for the loop (derived from the brief's `## Goal` when omitted). |
 | `loopName` | Optional loop name, slugified and uniquified. |
 | `maxIterations` | Optional maximum loop iterations. Defaults to the plugin config `loop.defaultMaxIterations`; `0` means unlimited (run until auditor all-clear or cancellation). |
 

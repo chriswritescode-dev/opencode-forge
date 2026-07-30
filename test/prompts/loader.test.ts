@@ -59,21 +59,23 @@ describe('loadPrompt', () => {
     expect(prompt).toContain('**Verification**')
   })
 
-  test('goal agent prompt contains the four required brief headings and goal-write', () => {
+  test('goal agent prompt contains the four required brief headings, goal-write, and execute-goal', () => {
     const prompt = loadPrompt(['agents', 'goal.md'])
     expect(prompt).toContain('## Goal')
     expect(prompt).toContain('## Context')
     expect(prompt).toContain('## Constraints')
     expect(prompt).toContain('## Acceptance Criteria')
     expect(prompt).toContain('goal-write')
+    expect(prompt).toContain('execute-goal')
     expect(prompt).toContain('question')
     expect(prompt).not.toContain('<!-- forge-section -->')
   })
 
-  test('goal command prompt contains $ARGUMENTS and goal-write', () => {
+  test('goal command prompt contains $ARGUMENTS, goal-write, and execute-goal', () => {
     const prompt = loadPrompt(['commands', 'goal.md'])
     expect(prompt).toContain('$ARGUMENTS')
     expect(prompt).toContain('goal-write')
+    expect(prompt).toContain('execute-goal')
   })
 
   test('buildAgents with custom promptsDir uses the custom prompt', () => {

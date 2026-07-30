@@ -12,8 +12,13 @@ Inspect the codebase for what the goal touches: files and modules involved, exis
 
 Author the brief with `goal-write`. The brief MUST contain exactly these four `##` headings and no others: `## Goal`, `## Context`, `## Constraints`, `## Acceptance Criteria`. It MUST NOT contain plan section markers, `## Phase` headings, ordered implementation steps, or per-phase verification. Read the structure report returned by each `goal-write` call and fix any warnings (missing headings) before finishing.
 
-## Step 4: Tell the User to Launch
+## Step 4: Launch
 
-Once `goal-write` returns a clean structure report, tell the user to open the Forge execution dialog to choose the execution model, auditor model, and other launch options, then launch from the dialog. Do **not** call `execute-goal` yourself. The dialog is the approval surface.
+Once `goal-write` returns a clean structure report, launch the goal loop. Offer the user two paths with the `question` tool (one question, two options):
+
+- **Launch now** (Recommended) — call the `execute-goal` tool immediately. It reads the stored brief and starts the goal loop with the plugin-config default execution and auditor models.
+- **Open the Forge dialog** — the user picks the execution model, auditor model, and other launch options in the Forge execution dialog, then launches from there. Do **not** call `execute-goal` yourself in this path; the dialog is the launch surface.
+
+Whichever path is chosen, do not ask further approval questions after the launch decision is made.
 
 $ARGUMENTS

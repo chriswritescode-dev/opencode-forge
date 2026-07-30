@@ -10,6 +10,7 @@ import { resolveSessionPlanOfRecord } from '../services/plan-capture'
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
 import { getRestartability } from '../loop/restartability'
 import { loopBranchExists } from '../workspace/forge-naming'
+import { summarizeGoalBrief, formatGoalBriefSummary } from '../utils/goal-brief'
 
 const z = tool.schema
 
@@ -194,20 +195,25 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
     }),
 
     'execute-goal': tool({
-      description: 'Start a managed goal loop that runs in a new dedicated session: creates an isolated Forge worktree and code session, sends the goal as the initial prompt, registers the new session as the loop executor, and starts the watchdog. The invoking session remains hostSessionId and is not warped or mutated.',
+      description: 'Launch a managed goal loop from the goal brief stored for the current session with `goal-write`. Creates an isolated Forge worktree and a new dedicated code session, sends the brief as the initial prompt, registers the new session as the loop executor, and starts the watchdog. Uses plugin-config default execution/auditor models. The invoking session remains hostSessionId and is not warped or mutated.',
       args: {
-        goal: z.string().describe('The goal to execute. Non-empty free text; the first line is used to derive a title/loop name when omitted.'),
-        title: z.string().optional().describe('Short title for the loop (derived from the goal when omitted)'),
+        title: z.string().optional().describe('Short title for the loop (derived from the brief when omitted)'),
         loopName: z.string().optional().describe('Name for the loop (max 25 chars, auto-incremented if collision exists; derived from the title when omitted)'),
         maxIterations: z.number().optional().describe('Maximum loop iterations (defaults to plugin config loop.defaultMaxIterations)'),
       },
       execute: async (args, context) => {
-        const goalText = (args.goal ?? '').trim()
+        const brief = ctx.goalBriefsRepo.getForSession(ctx.projectId, context.sessionID)
+        const goalText = brief?.content?.trim() ?? ''
         if (!goalText) {
-          return 'Goal text is required. Pass a non-empty goal argument.'
+          return 'No goal brief stored for this session. Author one with the `goal-write` tool first, then call execute-goal to launch.'
         }
 
-        logger.log(`loop: starting goal loop for goal="${goalText.slice(0, 80)}"`)
+        const structure = summarizeGoalBrief(goalText)
+        if (structure.missingHeadings.length > 0 || structure.planStructureViolations.length > 0) {
+          return `execute-goal refused: the stored goal brief is incomplete.\n${formatGoalBriefSummary(structure)}\nFix the brief with another goal-write call before launching.`
+        }
+
+        logger.log(`loop: starting goal loop from stored brief (${goalText.length} chars) for session ${context.sessionID}`)
 
         const { service, execCtx } = makeService(context.sessionID)
         const result = await service.dispatch(execCtx, {
@@ -234,7 +240,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
           `Branch: ${result.data.worktreeBranch ?? 'unknown'}`,
           `Max iterations: ${maxInfo}`,
           '',
-          'A new code session has been created in the worktree with the goal as the initial prompt.',
+          'A new code session has been created in the worktree with the goal brief as the initial prompt.',
           'That session implements the goal — NOT this one. Do not edit files or attempt the goal here.',
           'Your job is done — just confirm to the user that the goal loop has been launched.',
           'The user can run loop-status or loop-cancel later if needed.',

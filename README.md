@@ -104,7 +104,7 @@ Execution flow dialog with mode and model selection:
 ## Features
 
 - **Plans** — architect authors plans directly into SQL storage with `plan-write`/`plan-edit`; marked plans emitted in chat are still auto-captured
-- **Execution** — approved-plan launch paths plus direct `/execute-goal` loops in dedicated worktree sessions; plan loops can also target a configured remote opencode server (see [Configuration](docs/configuration.md#remotes))
+- **Execution** — approved-plan launch paths plus `/goal` brief-backed goal loops in dedicated worktree sessions (launched by the `goal` agent via `execute-goal` or from the Forge execution dialog); plan loops can also target a configured remote opencode server (see [Configuration](docs/configuration.md#remotes))
 - **Loops** — iterative coding/auditing with isolated git worktree and optional Docker sandbox
 - **Review Findings** — persistent, loop-scoped review findings across loop sessions
 - **TUI** — sidebar and execution dialog
@@ -136,7 +136,7 @@ See [Tools reference](docs/tools.md) for full arguments, section-scoping behavio
 Forge provides these tool groups:
 
 - **Plan tools** — `plan-write`, `plan-edit`, `plan-read`, `section-read`, `plan-adjust`
-- **Goal brief tools** — `goal-write`
+- **Goal brief tools** — `goal-write`, `execute-goal`
 - **Review tools** — `review-write`, `review-read`, `review-delete`
 - **Loop tools** — `execute-plan`, `execute-goal`, `loop-cancel`, `loop-status`
 - **Sandbox shell** — `sh` when a sandbox manager is available
@@ -146,7 +146,7 @@ Loops always run in an isolated git worktree; Docker sandbox is used automatical
 | Tool | Description |
 |------|-------------|
 | `execute-plan` | Execute a plan using an iterative development loop in an isolated git worktree, or `mode: new-session` to launch it in a fresh standalone session. Args: `title` required; `plan`, `loopName`, `mode` optional. |
-| `execute-goal` | Execute a free-text goal in rotating dedicated code and auditor sessions inside an isolated git worktree. Args: `goal` required; `title`, `loopName`, `maxIterations` optional. |
+| `execute-goal` | Launch a goal loop from the goal brief stored for the current session (authored with `goal-write`). Args: `title`, `loopName`, `maxIterations` optional. |
 | `loop-cancel` | Cancel an active loop by worktree name |
 | `loop-status` | List active/recent loops or get detailed status by worktree name, including cumulative token usage when available. Supports `restart=true` to restart any non-completed loop (`running`, `cancelled`, `errored`, `stalled`). Completed loops are history-only and cannot be restarted. |
 
@@ -159,8 +159,7 @@ Loops always run in an isolated git worktree; Docker sandbox is used automatical
 | `/review` | Run a code review on current changes | auditor (subtask) |
 | `/review-plan` | Review a completed implementation against its original plan | auditor (subtask) |
 | `/execute-plan` | Start an iterative development loop in a worktree (or a fresh session with `mode: new-session`) | code |
-| `/execute-goal` | Execute a free-text goal in dedicated worktree sessions until an audit leaves no findings | code |
-| `/goal` | Reconnoiter and author a goal brief (`goal-write`), then launch a goal loop via the Forge execution dialog | goal |
+| `/goal` | Reconnoiter, author a goal brief (`goal-write`), and launch a goal loop — either directly via `execute-goal` or from the Forge execution dialog | goal |
 | `/loop-status` | Check status of all active loops | code |
 | `/loop-cancel` | Cancel the active loop | code |
 

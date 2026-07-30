@@ -175,7 +175,7 @@ describe('Agent definitions', () => {
       expect(goalAgent.mode).toBe('primary')
     })
 
-    test('goal agent excludes plan-authoring and file-mutation tools but keeps goal-write and question', () => {
+    test('goal agent excludes plan-authoring and file-mutation tools but keeps goal-write, execute-goal, and question', () => {
       expect(goalAgent.tools?.exclude).toBeDefined()
       expect(goalAgent.tools?.exclude).toContain('write')
       expect(goalAgent.tools?.exclude).toContain('edit')
@@ -189,7 +189,7 @@ describe('Agent definitions', () => {
       expect(goalAgent.tools?.exclude).toContain('plan-edit')
       expect(goalAgent.tools?.exclude).toContain('plan-adjust')
       expect(goalAgent.tools?.exclude).toContain('execute-plan')
-      expect(goalAgent.tools?.exclude).toContain('execute-goal')
+      expect(goalAgent.tools?.exclude).not.toContain('execute-goal')
       expect(goalAgent.tools?.exclude).not.toContain('question')
       expect(goalAgent.tools?.exclude).not.toContain('goal-write')
     })

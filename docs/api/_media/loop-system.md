@@ -294,15 +294,17 @@ Cancellation:
 
 ## Goal Loops
 
-A **goal loop** (`kind: 'goal'`) is a lightweight alternative to a plan loop for work that does not need a structured plan. Forge exposes two launch paths:
+A **goal loop** (`kind: 'goal'`) is a lightweight alternative to a plan loop for work that does not need a structured plan. Every goal loop is launched from a **goal brief** authored by the `goal` agent with `goal-write` and persisted to a session-scoped `goal_briefs` row. Forge exposes two launch surfaces for that brief:
 
-- **`/execute-goal` (or the `execute-goal` tool)** — immediate. Free-text goal input is passed straight to a managed goal loop with config-default models. No stored artifact is authored first; the goal text lives only in `loop_large_fields.goal` after launch.
-- **`/goal`** — interactive. The `goal` agent reconnoiters the codebase, clarifies scope inline, and authors a structured **goal brief** with the `goal-write` tool, persisted to a session-scoped `goal_briefs` row. The brief is then handed to the Forge execution dialog, which lets the user pick execution and auditor models before launching a goal loop.
+- **`execute-goal` tool** — the `goal` agent calls it directly after authoring a clean brief. It reads the stored brief and starts a managed goal loop with the plugin-config default execution and auditor models.
+- **Forge execution dialog** — the user opens the dialog to pick the execution model, auditor model, and other launch options, then launches the brief-backed goal loop from there.
+
+Both surfaces read the same stored brief, so the auditor contract is identical regardless of which one launches the loop.
 
 ### Lifecycle differences from plan loops
 
-- **No plan, no decomposition, no approval.** The goal text is persisted in `loop_large_fields.goal` (never in the `plans` table) and is the auditor's authoritative scope. There are no sections, no `final_auditing` phase, and no `post_action` phase.
-- **Dedicated rotating sessions.** Forge creates a code session in the isolated worktree, sends the goal as its initial prompt, and leaves the invoking session unchanged as the post-completion host redirect target. As with plan loops, each completed code or audit pass is retired before the next session takes over.
+- **No plan, no decomposition, no approval.** The brief text is persisted in `loop_large_fields.goal` (never in the `plans` table) and is the auditor's authoritative scope. There are no sections, no `final_auditing` phase, and no `post_action` phase.
+- **Dedicated rotating sessions.** Forge creates a code session in the isolated worktree, sends the brief as its initial prompt, and leaves the invoking session unchanged as the post-completion host redirect target. As with plan loops, each completed code or audit pass is retired before the next session takes over.
 - **Idle-driven audits.** When the executor goes idle, the loop runner starts a fresh `auditor-loop` session against the worktree (same as plan loops). The auditor verifies both goal completion and code correctness, and may block termination with `severity: "bug"` findings (using the stable pseudo-path `GOAL` with `line: 1` when no source location applies for an unmet part of the goal).
 - **Dirty audits create a fresh code session.** When findings remain, Forge creates and selects a new code session in the worktree and sends a continuation prompt containing the goal and outstanding findings. That session goes idle to trigger the next audit.
 - **Clean audits terminate immediately.** When a completed auditor pass leaves zero outstanding review findings (any severity), the loop terminates with `completed` — no final audit, no post-completion action.
@@ -319,22 +321,22 @@ A goal loop completes only after the auditor has run at least once and leaves no
 
 Goal loops are fully visible to `loop-status`, cancellable with `loop-cancel`, and restartable with `loop-status ... restart=true`. Restart preserves the goal kind and goal text, skips plan decomposition, and resumes from a fresh session.
 
-`execute-goal` is added to the same loop/audit denial lists as `execute-plan`, `launch-group`, and the group tools, so an active executor or auditor session cannot recursively start another goal loop. Auditors exclude `execute-goal` from their tools.
+`execute-goal` is added to the same loop/audit denial lists as `execute-plan`, `launch-group`, and the group tools, so an active executor or auditor session cannot recursively start another goal loop. Auditors exclude `execute-goal` from their tools. The `goal` agent runs in the user's briefing session (not a loop session), so it is the one surface allowed to call `execute-goal`.
 
 ### Differences from `execute-plan` and `launch-group`
 
-| Aspect | `execute-plan` (loop) | `execute-goal` | `/goal` brief → goal loop | `launch-group` |
-|---|---|---|---|---|
-| Input | Structured plan (persisted in `plans`) | Free-text goal | Structured goal brief (persisted in `goal_briefs`) | PRD / pre-split feature list |
-| Sections / milestones | Yes (decomposed) | No | No | Per feature (each feature is its own loop) |
-| Executor session | Fresh session per iteration | Fresh dedicated session per coding pass | Fresh dedicated session per coding pass | Fresh session per feature loop |
-| Final audit | Yes (after all sections) | No | No | Per feature loop |
-| Post-completion action | Yes (when configured) | Never | Never | Per feature loop |
-| Stored artifact | `plans` row | None (goal only in `loop_large_fields.goal`) | `goal_briefs` row pre-launch; `loop_large_fields.goal` after launch | Per-feature `plans` rows |
-| Model selection | Execution dialog (executor + auditor) | Config defaults | Execution dialog (executor + auditor) | Execution dialog per feature |
-| Slash command | `/execute-plan` | `/execute-goal` | `/goal` | None (agent-invoked) |
+| Aspect | `execute-plan` (loop) | `/goal` brief → goal loop | `launch-group` |
+|---|---|---|---|
+| Input | Structured plan (persisted in `plans`) | Structured goal brief (persisted in `goal_briefs`) | PRD / pre-split feature list |
+| Sections / milestones | Yes (decomposed) | No | Per feature (each feature is its own loop) |
+| Executor session | Fresh session per iteration | Fresh dedicated session per coding pass | Fresh session per feature loop |
+| Final audit | Yes (after all sections) | No | Per feature loop |
+| Post-completion action | Yes (when configured) | Never | Per feature loop |
+| Stored artifact | `plans` row | `goal_briefs` row pre-launch; `loop_large_fields.goal` after launch | Per-feature `plans` rows |
+| Model selection | Execution dialog (executor + auditor) | `execute-goal` tool (config defaults) or execution dialog | Execution dialog per feature |
+| Slash command | `/execute-plan` | `/goal` | None (agent-invoked) |
 
-The brief's `## Acceptance Criteria` section becomes the frozen spec re-read by `buildGoalAuditPrompt` on every audit pass: once a brief-backed goal loop launches, the brief text is copied into `loop_large_fields.goal` and the auditor compares the worktree against that exact text on every pass. That is why briefs are preferred over bare `/execute-goal` goals for any work spanning multiple iterations — the structured acceptance criteria give the auditor a stable, reviewable contract instead of a one-line free-text prompt.
+The brief's `## Acceptance Criteria` section becomes the frozen spec re-read by `buildGoalAuditPrompt` on every audit pass: once a brief-backed goal loop launches, the brief text is copied into `loop_large_fields.goal` and the auditor compares the worktree against that exact text on every pass. The structured acceptance criteria give the auditor a stable, reviewable contract instead of a one-line free-text prompt.
 
 ## Tool Restrictions
 

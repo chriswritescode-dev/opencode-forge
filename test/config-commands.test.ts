@@ -31,19 +31,6 @@ describe('createConfigHandler commands', () => {
     expect(executePlan.agent).toBe('code')
     expect(executePlan.subtask).toBe(false)
 
-    const executeGoal = commands['execute-goal']
-    expect(executeGoal).toBeDefined()
-    expect(executeGoal.template).toContain('$ARGUMENTS')
-    expect(executeGoal.template).toContain('execute-goal')
-    expect(executeGoal.template).toContain('new dedicated code session')
-    expect(executeGoal.template).toContain('surrounding conversation')
-    expect(executeGoal.template).toContain('self-contained implementation request')
-    expect(executeGoal.template).toContain('does not inherit this conversation')
-    expect(executeGoal.template).toContain('scope is ambiguous')
-    expect(executeGoal.template).toContain('`question` tool')
-    expect(executeGoal.agent).toBe('code')
-    expect(executeGoal.subtask).toBe(false)
-
     const goal = commands.goal
     expect(goal).toBeDefined()
     expect(goal.template).toContain('$ARGUMENTS')
