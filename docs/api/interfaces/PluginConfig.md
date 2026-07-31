@@ -6,7 +6,7 @@
 
 # Interface: PluginConfig
 
-Defined in: [types.ts:230](https://github.com/chriswritescode-dev/opencode-forge/blob/4598160fde562c418f76ec2c53a00e01bdb20300/src/types.ts#L230)
+Defined in: [types.ts:230](https://github.com/chriswritescode-dev/opencode-forge/blob/38879e2bc68410e9a5393f2d5a51dfb71d7d90f1/src/types.ts#L230)
 
 Complete plugin configuration for opencode-forge.
 
@@ -16,7 +16,7 @@ Complete plugin configuration for opencode-forge.
 
 > `optional` **agents?**: `Record`\<`string`, `AgentOverrideConfig`\>
 
-Defined in: [types.ts:260](https://github.com/chriswritescode-dev/opencode-forge/blob/4598160fde562c418f76ec2c53a00e01bdb20300/src/types.ts#L260)
+Defined in: [types.ts:260](https://github.com/chriswritescode-dev/opencode-forge/blob/38879e2bc68410e9a5393f2d5a51dfb71d7d90f1/src/types.ts#L260)
 
 Per-agent configuration overrides.
 
@@ -26,7 +26,7 @@ Per-agent configuration overrides.
 
 > `optional` **auditorModel?**: `string`
 
-Defined in: [types.ts:242](https://github.com/chriswritescode-dev/opencode-forge/blob/4598160fde562c418f76ec2c53a00e01bdb20300/src/types.ts#L242)
+Defined in: [types.ts:242](https://github.com/chriswritescode-dev/opencode-forge/blob/38879e2bc68410e9a5393f2d5a51dfb71d7d90f1/src/types.ts#L242)
 
 Model to use for code auditing.
 
@@ -36,7 +36,7 @@ Model to use for code auditing.
 
 > `optional` **auditorVariant?**: `string`
 
-Defined in: [types.ts:246](https://github.com/chriswritescode-dev/opencode-forge/blob/4598160fde562c418f76ec2c53a00e01bdb20300/src/types.ts#L246)
+Defined in: [types.ts:246](https://github.com/chriswritescode-dev/opencode-forge/blob/38879e2bc68410e9a5393f2d5a51dfb71d7d90f1/src/types.ts#L246)
 
 Default reasoning/thinking variant for the auditor model.
 
@@ -46,7 +46,7 @@ Default reasoning/thinking variant for the auditor model.
 
 > `optional` **compaction?**: [`CompactionConfig`](CompactionConfig.md)
 
-Defined in: [types.ts:236](https://github.com/chriswritescode-dev/opencode-forge/blob/4598160fde562c418f76ec2c53a00e01bdb20300/src/types.ts#L236)
+Defined in: [types.ts:236](https://github.com/chriswritescode-dev/opencode-forge/blob/38879e2bc68410e9a5393f2d5a51dfb71d7d90f1/src/types.ts#L236)
 
 Compaction behavior configuration.
 
@@ -56,7 +56,7 @@ Compaction behavior configuration.
 
 > `optional` **completedLoopTtlMs?**: `number`
 
-Defined in: [types.ts:254](https://github.com/chriswritescode-dev/opencode-forge/blob/4598160fde562c418f76ec2c53a00e01bdb20300/src/types.ts#L254)
+Defined in: [types.ts:254](https://github.com/chriswritescode-dev/opencode-forge/blob/38879e2bc68410e9a5393f2d5a51dfb71d7d90f1/src/types.ts#L254)
 
 TTL for completed/cancelled/errored/stalled loops before sweep. Default 7 days.
 
@@ -66,7 +66,7 @@ TTL for completed/cancelled/errored/stalled loops before sweep. Default 7 days.
 
 > `optional` **dashboard?**: [`DashboardConfig`](DashboardConfig.md)
 
-Defined in: [types.ts:258](https://github.com/chriswritescode-dev/opencode-forge/blob/4598160fde562c418f76ec2c53a00e01bdb20300/src/types.ts#L258)
+Defined in: [types.ts:258](https://github.com/chriswritescode-dev/opencode-forge/blob/38879e2bc68410e9a5393f2d5a51dfb71d7d90f1/src/types.ts#L258)
 
 Dashboard HTTP server bind configuration.
 
@@ -76,7 +76,7 @@ Dashboard HTTP server bind configuration.
 
 > `optional` **dataDir?**: `string`
 
-Defined in: [types.ts:232](https://github.com/chriswritescode-dev/opencode-forge/blob/4598160fde562c418f76ec2c53a00e01bdb20300/src/types.ts#L232)
+Defined in: [types.ts:232](https://github.com/chriswritescode-dev/opencode-forge/blob/38879e2bc68410e9a5393f2d5a51dfb71d7d90f1/src/types.ts#L232)
 
 Custom data directory for plugin storage. Defaults to platform data dir.
 
@@ -86,7 +86,7 @@ Custom data directory for plugin storage. Defaults to platform data dir.
 
 > `optional` **executionModel?**: `string`
 
-Defined in: [types.ts:240](https://github.com/chriswritescode-dev/opencode-forge/blob/4598160fde562c418f76ec2c53a00e01bdb20300/src/types.ts#L240)
+Defined in: [types.ts:240](https://github.com/chriswritescode-dev/opencode-forge/blob/38879e2bc68410e9a5393f2d5a51dfb71d7d90f1/src/types.ts#L240)
 
 Model to use for code execution.
 
@@ -96,7 +96,7 @@ Model to use for code execution.
 
 > `optional` **executionVariant?**: `string`
 
-Defined in: [types.ts:244](https://github.com/chriswritescode-dev/opencode-forge/blob/4598160fde562c418f76ec2c53a00e01bdb20300/src/types.ts#L244)
+Defined in: [types.ts:244](https://github.com/chriswritescode-dev/opencode-forge/blob/38879e2bc68410e9a5393f2d5a51dfb71d7d90f1/src/types.ts#L244)
 
 Default reasoning/thinking variant for the execution model.
 
@@ -106,7 +106,7 @@ Default reasoning/thinking variant for the execution model.
 
 > `optional` **groupLaunch?**: `GroupLaunchConfig`
 
-Defined in: [types.ts:250](https://github.com/chriswritescode-dev/opencode-forge/blob/4598160fde562c418f76ec2c53a00e01bdb20300/src/types.ts#L250)
+Defined in: [types.ts:250](https://github.com/chriswritescode-dev/opencode-forge/blob/38879e2bc68410e9a5393f2d5a51dfb71d7d90f1/src/types.ts#L250)
 
 Group launch configuration.
 
@@ -116,7 +116,7 @@ Group launch configuration.
 
 > `optional` **logging?**: `LoggingConfig`
 
-Defined in: [types.ts:234](https://github.com/chriswritescode-dev/opencode-forge/blob/4598160fde562c418f76ec2c53a00e01bdb20300/src/types.ts#L234)
+Defined in: [types.ts:234](https://github.com/chriswritescode-dev/opencode-forge/blob/38879e2bc68410e9a5393f2d5a51dfb71d7d90f1/src/types.ts#L234)
 
 Logging configuration.
 
@@ -126,7 +126,7 @@ Logging configuration.
 
 > `optional` **loop?**: `LoopConfig`
 
-Defined in: [types.ts:248](https://github.com/chriswritescode-dev/opencode-forge/blob/4598160fde562c418f76ec2c53a00e01bdb20300/src/types.ts#L248)
+Defined in: [types.ts:248](https://github.com/chriswritescode-dev/opencode-forge/blob/38879e2bc68410e9a5393f2d5a51dfb71d7d90f1/src/types.ts#L248)
 
 Loop behavior configuration.
 
@@ -136,7 +136,7 @@ Loop behavior configuration.
 
 > `optional` **messagesTransform?**: `MessagesTransformConfig`
 
-Defined in: [types.ts:238](https://github.com/chriswritescode-dev/opencode-forge/blob/4598160fde562c418f76ec2c53a00e01bdb20300/src/types.ts#L238)
+Defined in: [types.ts:238](https://github.com/chriswritescode-dev/opencode-forge/blob/38879e2bc68410e9a5393f2d5a51dfb71d7d90f1/src/types.ts#L238)
 
 Message transformation for architect agent.
 
@@ -146,7 +146,7 @@ Message transformation for architect agent.
 
 > `optional` **remotes?**: `RemoteServerConfig`[]
 
-Defined in: [types.ts:252](https://github.com/chriswritescode-dev/opencode-forge/blob/4598160fde562c418f76ec2c53a00e01bdb20300/src/types.ts#L252)
+Defined in: [types.ts:252](https://github.com/chriswritescode-dev/opencode-forge/blob/38879e2bc68410e9a5393f2d5a51dfb71d7d90f1/src/types.ts#L252)
 
 Remote opencode servers available as loop launch targets.
 
@@ -156,7 +156,7 @@ Remote opencode servers available as loop launch targets.
 
 > `optional` **sandbox?**: `SandboxConfig`
 
-Defined in: [types.ts:262](https://github.com/chriswritescode-dev/opencode-forge/blob/4598160fde562c418f76ec2c53a00e01bdb20300/src/types.ts#L262)
+Defined in: [types.ts:262](https://github.com/chriswritescode-dev/opencode-forge/blob/38879e2bc68410e9a5393f2d5a51dfb71d7d90f1/src/types.ts#L262)
 
 Sandbox execution configuration.
 
@@ -166,6 +166,6 @@ Sandbox execution configuration.
 
 > `optional` **tui?**: `TuiConfig`
 
-Defined in: [types.ts:256](https://github.com/chriswritescode-dev/opencode-forge/blob/4598160fde562c418f76ec2c53a00e01bdb20300/src/types.ts#L256)
+Defined in: [types.ts:256](https://github.com/chriswritescode-dev/opencode-forge/blob/38879e2bc68410e9a5393f2d5a51dfb71d7d90f1/src/types.ts#L256)
 
 TUI display configuration.

@@ -41,15 +41,15 @@ Arguments:
 
 ### `plan-write`
 
-Creates, overwrites, or appends the plan stored for the current session — the plan of record read by `plan-read`, the approval hook, `execute-plan`, and the TUI plan dialog. Author long plans incrementally with `append` instead of emitting the whole plan in chat. Outer `<!-- forge-plan:start -->` / `<!-- forge-plan:end -->` markers are optional and stripped. Available to architect and architect-auto sessions; denied in code, auditor, auditor-loop, and feature-splitter sessions, and inside loop/audit sessions.
+Creates, overwrites, or appends the plan stored for the current session — the plan of record read by `plan-read`, the approval hook, `execute-plan`, and the TUI plan dialog. Use `append` for manageable groups of phases in long plans instead of emitting the plan in chat. Available to architect and architect-auto sessions; denied in code, auditor, auditor-loop, and feature-splitter sessions, and inside loop/audit sessions.
 
-Denied when the session owns a running loop: a running loop's plan is amended only with `plan-adjust` during a section audit. On success the tool persists the plan through the shared session-scoped write path and returns a structure report: a `Plan stored: N lines, M chars.` line, the detected `Loop Name:` when present, the numbered `Sections (N):` the decomposer would emit, and a `Warnings:` block when any apply.
+Denied when the session owns a running loop: a running loop's plan is amended only with `plan-adjust` during a section audit. On success the tool persists the plan through the shared session-scoped write path and returns a structure report: a `Plan stored: N lines, M chars.` line, the detected `Loop Name:` when present, decomposed sections, and a `Warnings:` block when any structural requirement is unmet. Append reports show only the latest section to avoid repeating the full accumulated outline.
 
 Arguments:
 
 | Argument | Description |
 |---|---|
-| `content` | Plan markdown. Use `<!-- forge-section -->` markers before each `## Phase` heading. Outer plan markers are optional and stripped. |
+| `content` | Stored plan markdown. Use `<!-- forge-section -->` markers before each `## Phase` heading. |
 | `append` | Append to the existing stored plan instead of replacing it. Two newlines are inserted between the existing content and the new fragment. Creates the plan when none exists. |
 
 ### `plan-edit`
@@ -184,7 +184,7 @@ Completed loops are history-only and cannot be restarted. See [Loop System](loop
 
 ## Group Tools
 
-Group tools orchestrate parallel feature extraction: a PRD or other broad work source is split into implementation-coherent features by the `feature-splitter` agent, each feature is planned by the `architect-auto` agent, and each plan runs as its own loop. The launch command and splitter prefer small independently reviewable plans, grouping source items only when they have non-trivial implementation coupling such as shared contracts, migrations, state machines, refactors, or unavoidable sequencing. A scheduler advances features while respecting a per-group concurrency cap. Group tools are agent-invoked only (no slash commands) and are denied inside loop/audit sessions.
+Group tools orchestrate parallel feature extraction: a PRD or other broad work source is split into implementation-coherent features by the `feature-splitter` agent, each feature is planned by the `architect-auto` agent, and each warning-free plan runs as its own loop. Structurally incomplete stored plans fail after planning, and queued plans are revalidated immediately before launch. The autonomous architect cannot invoke execution, loop, or group tools directly. The launch command and splitter prefer small independently reviewable plans, grouping source items only when they have non-trivial implementation coupling such as shared contracts, migrations, state machines, refactors, or unavoidable sequencing. A scheduler advances features while respecting a per-group concurrency cap. Group tools are agent-invoked only (no slash commands) and are denied inside loop/audit sessions.
 
 ### `launch-group`
 

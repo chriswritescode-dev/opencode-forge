@@ -103,7 +103,7 @@ Execution flow dialog with mode and model selection:
 
 ## Features
 
-- **Plans** — architect authors plans directly into SQL storage with `plan-write`/`plan-edit`; marked plans emitted in chat are still auto-captured
+- **Plans** — architect authors validated plans directly into SQL storage with `plan-write`/`plan-edit`
 - **Execution** — approved-plan launch paths plus direct `/execute-goal` loops in dedicated worktree sessions; plan loops can also target a configured remote opencode server (see [Configuration](docs/configuration.md#remotes))
 - **Loops** — iterative coding/auditing with isolated git worktree and optional Docker sandbox
 - **Review Findings** — persistent, loop-scoped review findings across loop sessions
@@ -112,7 +112,7 @@ Execution flow dialog with mode and model selection:
 
 ## Agents
 
-The plugin bundles three user-facing agents plus a hidden `auditor-loop` variant used by loop audit sessions. See [Agents and slash commands](docs/agents-and-commands.md) for the full reference.
+The plugin bundles three user-facing agents plus hidden `auditor-loop`, `architect-auto`, and `feature-splitter` agents for loop audits and grouped execution. See [Agents and slash commands](docs/agents-and-commands.md) for the full reference.
 
 | Agent | Mode | Description |
 |-------|------|-------------|
@@ -120,12 +120,14 @@ The plugin bundles three user-facing agents plus a hidden `auditor-loop` variant
 | **architect** | primary | Read-only planning agent. Researches the codebase, designs implementation plans, and caches them for user approval before execution. |
 | **auditor** | subagent | Read-only code auditor for convention-aware reviews. Invoked via Task tool to review diffs, commits, branches, or PRs against stored conventions and decisions. |
 | **auditor-loop** | primary, hidden | Internal audit agent used for loop-runner audit sessions. |
+| **architect-auto** | primary, hidden | Autonomous planner used by grouped execution. |
+| **feature-splitter** | primary, hidden | Splits broad grouped work into implementation-coherent features. |
 
 The auditor agent is a read-only subagent that cannot edit source files or execute plans. It is invoked by other agents via the Task tool to review code changes against stored project conventions and decisions.
 
 **Tool restrictions:** The auditor cannot use file-editing tools, planning tools, or loop-management tools. See [Auditor restrictions](docs/agents-and-commands.md#auditor-restrictions).
 
-The architect agent operates as a read-only planner with message-level reinforcement via the `experimental.chat.messages.transform` hook. Final plans are authored straight into SQL storage with the `plan-write` and `plan-edit` tools, which return a structure report the architect uses to fix warnings before asking for approval. A plan emitted in the assistant response between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers is still auto-captured into the same row, so marker-only architect prompts keep working. After user approval via the question tool, execution is dispatched programmatically for New session and Execute here modes — no additional LLM calls are needed. Loop mode remains an exception: the architect must invoke `execute-plan`. The user can view and edit the stored plan from the sidebar or command palette before or during execution. 
+The architect agents deny file-mutating tools and task delegation while retaining Bash for read-only inspection and project checks. Final plans are authored straight into SQL storage with `plan-write` and `plan-edit`, and every write returns structural warnings for missing objectives, non-canonical loop names, malformed phases, missing or empty required sections, section limits, and unsafe paths. Grouped execution launches an `architect-auto` plan only when this validation is warning-free; the autonomous architect cannot invoke execution tools directly. After interactive approval, execution is dispatched programmatically for New session and Execute here modes; Loop mode remains an exception where the interactive architect invokes `execute-plan`.
 
 
 ## Tools
@@ -223,7 +225,7 @@ The sidebar shows Forge's connection status and version. Captured plans live on 
 
 ### Execution Dialog
 
-Open the dialog from the command palette as `Execute plan` (default keybind `<leader>f`). The plan is sourced from the stored plan for the current session, so the dialog shows exactly what `execute-plan` would run. When no stored row exists, the most recent architect message is scanned for a marked `<!-- forge-plan:start --> ... <!-- forge-plan:end -->` block as a fallback. If neither is present, the dialog will not open and you'll see a toast asking the architect to produce a plan first.
+Open the dialog from the command palette as `Execute plan` (default keybind `<leader>f`). The plan is sourced from the stored plan for the current session, so the dialog shows exactly what `execute-plan` would run. Legacy chat capture remains available for backward compatibility when no stored row exists; new plans should always be authored with `plan-write`. If no plan can be resolved, the dialog will not open and you'll see a toast asking the architect to produce one first.
 
 The dialog provides full control over execution parameters:
 
@@ -325,7 +327,7 @@ Plan with a smart model, execute with a fast model. The architect agent research
 
 ### How Plans Work
 
-The architect is read-only and authors the plan into SQL storage for the current session with `plan-write`, appending further phases with `plan-write { append: true }` and revising with `plan-edit`. Every write returns a structure report — line/character counts, the detected `Loop Name:`, the sections the decomposer would emit, and warnings — so structural problems surface before approval. When no stored plan was written, a plan emitted once between `<!-- forge-plan:start -->` and `<!-- forge-plan:end -->` markers is auto-captured into the same row.
+The architect is read-only and authors the plan into SQL storage for the current session with `plan-write`, using `append: true` for long plans and `plan-edit` for revisions. Every write returns a structure report with line and character counts, the detected `Loop Name:`, decomposed phases, and actionable warnings. A warning-free plan has an Objective, canonical loop name, correctly placed phase markers, every required phase subsection, trailing Decisions/Conventions/Key Context blocks, no section-cap overflow, and no detected host-absolute paths.
 
 The stored plan is the source of truth for execution: `execute-plan`, the approval hook, and the TUI dialog all read it, and a marker-free assistant message can never replay an older chat plan over a newer tool-authored one. Programmatic access is via the `plan-read` tool.
 
@@ -377,7 +379,7 @@ Model and variant selection follows this priority order:
 
 ### Troubleshooting
 
-- **No plan found** — Ensure the architect called `plan-write`, or that its response wrapped the plan in `<!-- forge-plan:start -->` / `<!-- forge-plan:end -->` markers; a plan emitted in chat without those markers is not captured.
+- **No plan found** — Ensure the architect called `plan-write` in the current session and completed the stored plan.
 - **TUI shows no plan** — Plans are session-scoped on the server; switch to the session where the architect produced the plan.
 - **Need logs** — Set `logging.enabled` to `true`, and optionally `logging.debug` for verbose output.
 

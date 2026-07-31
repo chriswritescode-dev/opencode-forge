@@ -86,12 +86,11 @@ describe('Agent definitions', () => {
 
     test('architect prompt requires TDD-aware behavior-first planning', () => {
       const prompt = architectAgent.systemPrompt
-      expect(prompt).toContain('# TDD-aware planning')
-      expect(prompt).toContain('use the `tdd` skill before finalizing the plan')
+      expect(prompt).toContain('use the `tdd` skill before finalizing')
       expect(prompt).toContain('behavior-first verification through public interfaces')
-      expect(prompt).toContain('vertical tracer-bullet phases')
-      expect(prompt).toContain('Do not plan horizontal slices')
-      expect(prompt).toContain('name the exact test file')
+      expect(prompt).toContain('vertical phases')
+      expect(prompt).toContain('targeted failing test')
+      expect(prompt).toContain('Do not default to a separate horizontal test-only phase')
     })
 
     test('auditor-loop agent has stable metadata and primary mode', () => {
@@ -143,6 +142,9 @@ describe('Agent definitions', () => {
       expect(architectAutoAgent.tools?.exclude).toContain('plan_enter')
       expect(architectAutoAgent.tools?.exclude).toContain('plan_exit')
       expect(architectAutoAgent.tools?.exclude).toContain('question')
+      expect(architectAutoAgent.tools?.exclude).toContain('execute-plan')
+      expect(architectAutoAgent.tools?.exclude).toContain('execute-goal')
+      expect(architectAutoAgent.tools?.exclude).toContain('launch-group')
     })
 
     test('feature-splitter agent has stable metadata', () => {
@@ -207,11 +209,10 @@ describe('Agent definitions', () => {
       expect(prompt).toContain('### Edits')
       expect(prompt).toContain('### Acceptance Criteria')
       expect(prompt).toContain('### Verification')
-      // New explicit rules
       expect(prompt).toContain('exactly one')
       expect(prompt).toContain('immediately before')
       expect(prompt).toContain('## Phase')
-      expect(prompt).toContain('Never place')
+      expect(prompt).toContain('and nowhere else')
     })
 
     test('architect.systemPrompt prohibits markers before subsection headings', () => {
@@ -224,6 +225,67 @@ describe('Agent definitions', () => {
     test('architect.systemPrompt does not duplicate marker self-check (moved to reminder)', () => {
       const prompt = architectAgent.systemPrompt
       expect(prompt).not.toContain('Critical marker self-check before approval')
+    })
+
+    test('architect.systemPrompt defines the stored-plan workflow and verification boundary', () => {
+      const prompt = architectAgent.systemPrompt
+      for (const contract of [
+        'source-backed',
+        'material ambiguity',
+        'success criteria',
+        'scope boundaries',
+        'brief chat summary',
+        '`plan-read`',
+        '`plan-write`',
+        '`plan-edit`',
+        'plan-write { append: true }',
+        'at most 24 executable phases',
+        'repository-mandated full check',
+        'final report is warning-free',
+      ]) {
+        expect(prompt).toContain(contract)
+      }
+      expect(prompt).toContain('repo-relative paths')
+      expect(prompt).toContain('Avoid manual checks and external-service dependencies unless the task explicitly requires them')
+      expect(prompt).not.toContain('Do NOT use `pnpm build`')
+      expect(prompt).not.toContain('marked plan')
+      expect(prompt).not.toContain('<!-- forge-plan:start -->')
+      expect(prompt).not.toContain('<!-- forge-plan:end -->')
+    })
+
+    test('architect.systemPrompt preserves exact approval choices and loop dispatch', () => {
+      const prompt = architectAgent.systemPrompt
+      expect(prompt).toContain('"New session", "Execute here", and "Loop"')
+      expect(prompt).toContain('call `execute-plan` with a short `title`')
+      expect(prompt).toContain('uses the stored plan automatically')
+    })
+
+    test('architect-auto.systemPrompt keeps autonomous plan contracts aligned', () => {
+      const prompt = architectAutoAgent.systemPrompt
+      for (const contract of [
+        'Never call the `question` tool',
+        'non-trivial implementation coupling',
+        '<!-- forge-plan:none -->',
+        'at most 24 executable phases',
+        'repo-relative paths',
+        'repository-mandated full check',
+        'plan-write { append: true }',
+        '### Files',
+        '### Edits',
+        '### Acceptance Criteria',
+        '### Verification',
+        '## Decisions',
+        '## Conventions',
+        '## Key Context',
+        'Write the complete plan before ending',
+        'final report is warning-free',
+      ]) {
+        expect(prompt).toContain(contract)
+      }
+      expect(prompt).not.toContain('marked plan')
+      expect(prompt).not.toContain('<!-- forge-plan:start -->')
+      expect(prompt).not.toContain('<!-- forge-plan:end -->')
+      expect(prompt).not.toContain('Do NOT use `pnpm build`')
     })
   })
 

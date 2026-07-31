@@ -9,11 +9,17 @@ See also: [Tools](tools.md), [Configuration](configuration.md), [Loop System](lo
 | Agent | Mode | Description |
 |---|---|---|
 | `code` | `all` | Primary implementation agent. |
-| `architect` | `primary` | Read-only planning agent. Authors the stored plan with `plan-write`/`plan-edit` for approval and execution; marked plans in chat are still captured. |
+| `architect` | `primary` | Read-only planning agent. Authors and validates the stored plan with `plan-write`/`plan-edit` before approval. |
 | `auditor` | `subagent` | Read-only code review agent for convention-aware reviews. |
 | `auditor-loop` | `primary`, hidden | Internal auditor used by loop audit sessions. |
+| `architect-auto` | `primary`, hidden | Autonomous grouped-execution planner; only warning-free stored plans launch. |
+| `feature-splitter` | `primary`, hidden | Splits broad work into implementation-coherent feature briefs. |
 
-Source: [`src/agents/index.ts`](../src/agents/index.ts), [`src/agents/auditor.ts`](../src/agents/auditor.ts).
+Source: [`src/agents/index.ts`](../src/agents/index.ts), [`src/agents/architect.ts`](../src/agents/architect.ts), [`src/agents/auditor.ts`](../src/agents/auditor.ts).
+
+## Architect restrictions
+
+The architect agents cannot use `apply_patch`, `edit`, `write`, `multiedit`, `patch`, or `task`. They retain direct read/search tools, Bash for read-only inspection and project checks, and `plan-read`, `plan-write`, and `plan-edit`; only the interactive architect can call `question` and `execute-plan`. The autonomous architect cannot invoke execution, loop, or group tools directly.
 
 ## Auditor restrictions
 

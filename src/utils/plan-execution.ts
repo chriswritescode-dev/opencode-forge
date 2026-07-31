@@ -1,3 +1,5 @@
+import { computeFenceMask } from './markdown-fences'
+
 /**
  * Shared plan execution utilities for TUI and tool-side approval.
  * 
@@ -14,6 +16,8 @@ export const PLAN_EXECUTION_LABELS = [
   'Execute here',
   'Loop',
 ] as const
+
+export const MAX_LOOP_NAME_LENGTH = 60
 
 export type PlanExecutionLabel = typeof PLAN_EXECUTION_LABELS[number]
 
@@ -107,6 +111,21 @@ export interface PlanExecutionMetadata extends LoopNameResult {
   title: string
 }
 
+function withoutFencedContent(planContent: string): string {
+  const lines = planContent.split('\n')
+  const fenceMask = computeFenceMask(lines)
+  return lines.map((line, index) => fenceMask[index] ? '' : line).join('\n')
+}
+
+export function findCanonicalLoopNameDeclarations(planContent: string): string[] {
+  const declarations: string[] = []
+  for (const line of withoutFencedContent(planContent).split('\n')) {
+    const match = line.match(/^Loop Name:\s*([a-z0-9]+(?:-[a-z0-9]+)*)\s*$/)
+    if (match?.[1]) declarations.push(match[1])
+  }
+  return declarations
+}
+
 /**
  * Extracts loop name from heading-style field.
  * Handles:
@@ -132,16 +151,22 @@ function extractLoopNameFromHeading(planContent: string): string | null {
 }
 
 export function findExplicitLoopName(planContent: string): string | null {
-  const loopNameMatch = planContent.match(/^(?:\s*(?:-\s*)?)?(?:\*\*)?Loop Name(?:\*\*)?:\s*(.+)$/m)
+  const unfencedContent = withoutFencedContent(planContent)
+  const canonicalLoopName = findCanonicalLoopNameDeclarations(planContent)[0]
+  if (canonicalLoopName) return truncateName(canonicalLoopName)
+
+  const loopNameMatch = unfencedContent.match(/^(?:\s*(?:-\s*)?)?(?:\*\*)?Loop Name(?:\*\*)?:\s*(.+)$/m)
   if (loopNameMatch?.[1]) {
     return truncateName(loopNameMatch[1].trim())
   }
-  return extractLoopNameFromHeading(planContent)
+  return extractLoopNameFromHeading(unfencedContent)
 }
 
 function truncateName(name: string, ellipsis = false): string {
-  if (name.length <= 60) return name
-  return ellipsis ? `${name.substring(0, 57)}...` : name.substring(0, 60)
+  if (name.length <= MAX_LOOP_NAME_LENGTH) return name
+  return ellipsis
+    ? `${name.substring(0, MAX_LOOP_NAME_LENGTH - 3)}...`
+    : name.substring(0, MAX_LOOP_NAME_LENGTH)
 }
 
 /**
@@ -197,5 +222,5 @@ export function sanitizeLoopName(name: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .substring(0, 60) || 'loop'
+    .substring(0, MAX_LOOP_NAME_LENGTH) || 'loop'
 }
