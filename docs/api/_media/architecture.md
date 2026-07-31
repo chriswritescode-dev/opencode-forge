@@ -130,7 +130,7 @@ OpenCode Forge integrates with OpenCode through several hook points. The plugin 
 
 ### Message Transform Hooks (`src/index.ts`)
 
-- `experimental.chat.messages.transform` - Appends a `<system-reminder>` block onto the last user message in architect sessions, instructing the model to search/analyze only and to author the final plan into storage with `plan-write`/`plan-edit`, falling back to `<!-- forge-plan:start/end -->` markers when those tools are unavailable. This is **message-level reinforcement** via OpenCode's transform hook, not a permission lockdown — the architect agent's `tools.exclude` config separately excludes `plan`, `plan_enter`, `plan_exit`.
+- `experimental.chat.messages.transform` - Appends a compact `<system-reminder>` to the last user message in interactive architect sessions, reinforcing stored-plan completion, warning-free structure, and canonical approval dispatch. Agent permissions separately deny filesystem mutation tools and `task` while retaining Bash for read-only inspection plus `plan-read`, `plan-write`, and `plan-edit`; the autonomous architect also cannot invoke execution, loop, or group tools.
 
 ### Tool Execution Hooks
 

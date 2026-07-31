@@ -368,8 +368,8 @@ Implements tools callable by AI agents during conversations.
 | `review-write` | `review.ts` | Store a code review finding (file, line, severity, description) |
 | `review-read` | `review.ts` | Retrieve review findings, filter by file or regex pattern |
 | `review-delete` | `review.ts` | Delete a review finding by file and line |
-| `plan-write` | `plan-authoring.ts` | Architect-only: create, overwrite, or append the stored session plan; returns a structure report. Denied while the session owns a running loop. |
-| `plan-edit` | `plan-authoring.ts` | Architect-only: edit the stored session plan by exact string replacement (`oldString`/`newString`/`replaceAll`); returns a structure report. |
+| `plan-write` | `plan-authoring.ts` | Architect agents create, overwrite, or append the stored session plan; returns a structure report. Denied while the session owns a running loop. |
+| `plan-edit` | `plan-authoring.ts` | Architect agents edit the stored session plan by exact string replacement (`oldString`/`newString`/`replaceAll`); returns a structure report. |
 | `plan-read` | `plan-kv.ts` | Retrieve plans with pagination and pattern search |
 | `section-read` | `section-read.ts` | Retrieve a specific section of a plan |
 | `plan-adjust` | `plan-adjust.ts` | Auditor-only: revise the section under audit and/or replace the remaining sections of the active loop plan (logged as a plan amendment) |

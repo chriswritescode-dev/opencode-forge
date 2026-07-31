@@ -1,4 +1,5 @@
 import { extractMarkedPlan } from './marked-plan-parser'
+import { summarizePlanStructure } from './plan-structure'
 
 export const PLAN_NONE_MARKER = '<!-- forge-plan:none -->'
 
@@ -6,6 +7,16 @@ export type ArchitectAutoOutput =
   | { kind: 'plan'; planText: string }
   | { kind: 'insufficient'; reason: string }
   | { kind: 'none' }
+
+export type ArchitectPlanReadiness =
+  | { ready: true }
+  | { ready: false; reason: string }
+
+export function inspectArchitectPlanReadiness(planText: string): ArchitectPlanReadiness {
+  const warnings = summarizePlanStructure(planText).warnings
+  if (warnings.length === 0) return { ready: true }
+  return { ready: false, reason: `Stored plan is incomplete:\n- ${warnings.join('\n- ')}` }
+}
 
 /**
  * Classify an architect's output based on the presence of plan markers

@@ -9,8 +9,8 @@ export type PermissionRule = { permission: string; pattern: string; action: 'all
 export const MAX_TOTAL_SECTIONS = 24
 
 /**
- * Tools that author the session-scoped plan of record. Only the architect may
- * call them, so every agent tool-exclude list and permission ruleset denies
+ * Tools that author the session-scoped plan of record. Architect agents may
+ * call them; implementation, audit, splitter, and loop permission rules deny
  * this one list rather than repeating the names.
  */
 export const PLAN_AUTHORING_TOOL_NAMES = ['plan-write', 'plan-edit'] as const

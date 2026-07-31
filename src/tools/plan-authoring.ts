@@ -46,26 +46,32 @@ function normalizeFragment(content: string): { ok: true; text: string } | { ok: 
  * Writes the plan text through the shared session-scoped write path and
  * returns a structural report (counts + warnings) for the architect.
  */
-function writeAndReport(ctx: ToolContext, sessionID: string, planText: string, prefix?: string): string {
+function writeAndReport(
+  ctx: ToolContext,
+  sessionID: string,
+  planText: string,
+  prefix?: string,
+  sectionDetail?: 'all' | 'latest',
+): string {
   const result = writeSessionPlanContent(
     { plansRepo: ctx.plansRepo, projectId: ctx.projectId, directory: ctx.directory, logger: ctx.logger },
     sessionID,
     planText,
   )
-  return `${prefix ?? ''}${formatPlanStructureSummary(summarizePlanStructure(result.planText))}`
+  return `${prefix ?? ''}${formatPlanStructureSummary(summarizePlanStructure(result.planText), { sectionDetail })}`
 }
 
 export function createPlanAuthoringTools(ctx: ToolContext): Record<string, ReturnType<typeof tool>> {
   return {
     'plan-write': tool({
       description:
-        'Create, overwrite, or append to the implementation plan stored for the current session. This is the plan of record used by execute-plan and by the plan approval flow. Author long plans incrementally with append instead of emitting the whole plan in chat. Outer <!-- forge-plan:start --> / <!-- forge-plan:end --> markers are optional and are stripped.',
+        'Create, overwrite, or append to the implementation plan stored for the current session. This is the plan of record used by execute-plan and by the plan approval flow. Author long plans incrementally with append instead of emitting the whole plan in chat.',
       args: {
         content: z
           .string()
           .min(1)
           .describe(
-            'Plan markdown. Use <!-- forge-section --> markers before each ## Phase heading. Outer plan markers are optional and stripped.',
+            'Stored plan markdown. Use <!-- forge-section --> markers before each ## Phase heading.',
           ),
         append: z
           .boolean()
@@ -92,7 +98,7 @@ export function createPlanAuthoringTools(ctx: ToolContext): Record<string, Retur
         ctx.logger.log(
           `plan-write: ${args.append ? 'appended to' : 'wrote'} plan for session ${context.sessionID} (${next.length} chars)`,
         )
-        return writeAndReport(ctx, context.sessionID, next)
+        return writeAndReport(ctx, context.sessionID, next, undefined, args.append ? 'latest' : 'all')
       },
     }),
 

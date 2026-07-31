@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   PLAN_NONE_MARKER,
   classifyArchitectOutput,
+  inspectArchitectPlanReadiness,
 } from '../../src/utils/architect-auto-output'
 import { PLAN_START_MARKER, PLAN_END_MARKER } from '../../src/utils/marked-plan-parser'
 
@@ -80,5 +81,71 @@ describe('classifyArchitectOutput', () => {
 
     const result = classifyArchitectOutput(text)
     expect(result).toEqual({ kind: 'plan', planText: 'the plan content' })
+  })
+})
+
+describe('inspectArchitectPlanReadiness', () => {
+  it('accepts a complete canonical stored plan', () => {
+    const plan = [
+      '# Objective',
+      'Implement the behavior.',
+      'Loop Name: complete-plan',
+      '<!-- forge-section -->',
+      '## Phase 1: Implement behavior',
+      '### Files',
+      '- src/example.ts',
+      '### Edits',
+      '- Implement the behavior.',
+      '### Acceptance Criteria',
+      '- The behavior works.',
+      '### Verification',
+      '- `pnpm typecheck`',
+      '## Decisions',
+      '- None.',
+      '## Conventions',
+      '- Follow repository conventions.',
+      '## Key Context',
+      '- None.',
+    ].join('\n\n')
+
+    expect(inspectArchitectPlanReadiness(plan)).toEqual({ ready: true })
+  })
+
+  it('rejects a partial stored plan with actionable structural reasons', () => {
+    const result = inspectArchitectPlanReadiness([
+      '# Objective',
+      'Implement the behavior.',
+      'Loop Name: partial-plan',
+      '<!-- forge-section -->',
+      '## Phase 1: Implement behavior',
+    ].join('\n\n'))
+
+    expect(result.ready).toBe(false)
+    if (result.ready) return
+    expect(result.reason).toContain('Stored plan is incomplete:')
+    expect(result.reason).toContain('Section 1 is missing required headings')
+    expect(result.reason).toContain('Plan is missing trailing headings')
+  })
+
+  it('rejects a heading-only skeleton', () => {
+    const result = inspectArchitectPlanReadiness([
+      '# Objective',
+      'Loop Name: empty-plan',
+      '<!-- forge-section -->',
+      '## Phase 1: Empty skeleton',
+      '### Files',
+      '### Edits',
+      '### Acceptance Criteria',
+      '### Verification',
+      '## Decisions',
+      '## Conventions',
+      '## Key Context',
+    ].join('\n\n'))
+
+    expect(result.ready).toBe(false)
+    if (result.ready) return
+    expect(result.reason).toContain('Objective must include non-empty content')
+    expect(result.reason).toContain('has empty required headings')
+    expect(result.reason).toContain('has empty trailing headings')
   })
 })

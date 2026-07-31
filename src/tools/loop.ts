@@ -78,7 +78,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
       args: {
         plan: z.string().optional().describe('The full implementation plan. If omitted, reads from the session plan store.'),
         title: z.string().describe('Short title for the session (shown in session list)'),
-        loopName: z.string().optional().describe('Name for the loop (max 25 chars, auto-incremented if collision exists)'),
+        loopName: z.string().optional().describe('Short name for the loop (auto-incremented if collision exists)'),
         mode: z.enum(['loop', 'new-session']).optional().default('loop')
           .describe("Execution mode. 'loop' (default) runs an iterative loop in an isolated git worktree. 'new-session' launches the plan in a fresh standalone session running the code agent (no worktree, no loop)."),
       },
@@ -98,7 +98,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             context.sessionID
           )
           if (!resolved) {
-            return 'No plan found. Author it with the plan-write tool, wrap the final plan in <!-- forge-plan:start --> and <!-- forge-plan:end --> markers, or pass it directly as the plan argument.'
+            return 'No plan found. Author it with the plan-write tool or pass it directly as the plan argument.'
           }
           source = { kind: 'stored', sessionId: context.sessionID }
         } else {
@@ -198,7 +198,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
       args: {
         goal: z.string().describe('The goal to execute. Non-empty free text; the first line is used to derive a title/loop name when omitted.'),
         title: z.string().optional().describe('Short title for the loop (derived from the goal when omitted)'),
-        loopName: z.string().optional().describe('Name for the loop (max 25 chars, auto-incremented if collision exists; derived from the title when omitted)'),
+        loopName: z.string().optional().describe('Short name for the loop (auto-incremented if collision exists; derived from the title when omitted)'),
         maxIterations: z.number().optional().describe('Maximum loop iterations (defaults to plugin config loop.defaultMaxIterations)'),
       },
       execute: async (args, context) => {

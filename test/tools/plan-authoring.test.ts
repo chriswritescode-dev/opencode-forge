@@ -173,6 +173,8 @@ ${body}
     )
 
     expect(result).toContain('Plan stored:')
+    expect(result).toContain('Sections (2); latest: 2. Phase 2')
+    expect(result).not.toContain('1. Phase 1')
     const row = plansRepo.getForSession('test-project', 'sess-1')
     expect(row!.content).toBe(`${existing}\n\n${fragment.trim()}`)
   })

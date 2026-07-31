@@ -24,4 +24,19 @@ describe('computeFenceMask', () => {
     const lines = ['intro', '```', 'more', 'stuff']
     expect(computeFenceMask(lines)).toEqual([false, true, true, true])
   })
+
+  test('supports tilde fences', () => {
+    const lines = ['~~~md', 'Loop Name: example-plan', '~~~', 'after']
+    expect(computeFenceMask(lines)).toEqual([true, true, false, false])
+  })
+
+  test('a four-backtick fence is not closed by three backticks', () => {
+    const lines = ['````md', '```', 'inside', '````', 'after']
+    expect(computeFenceMask(lines)).toEqual([true, true, true, false, false])
+  })
+
+  test('a different fence delimiter does not close the block', () => {
+    const lines = ['```md', '~~~', 'inside', '```', 'after']
+    expect(computeFenceMask(lines)).toEqual([true, true, true, false, false])
+  })
 })

@@ -96,6 +96,13 @@ describe('createForgePlugin', () => {
     expect(hooks.tool?.['plan-read']).toBeDefined()
     expect(hooks.tool?.['plan-edit']).toBeDefined()
     expect(hooks.tool?.['plan-write']).toBeDefined()
+    const planWrite = hooks.tool?.['plan-write']
+    const contentDescription = (planWrite?.args.content as { description?: string } | undefined)?.description ?? ''
+    const planWriteDescriptions = `${planWrite?.description ?? ''} ${contentDescription}`
+    expect(planWriteDescriptions).toContain('stored for the current session')
+    expect(planWriteDescriptions).not.toContain('forge-plan:start')
+    expect(planWriteDescriptions).not.toContain('forge-plan:end')
+    expect(planWriteDescriptions).not.toContain('Outer plan markers')
     expect(hooks.tool?.['review-read']).toBeDefined()
     expect(hooks.tool?.['review-write']).toBeDefined()
     // Ast-grep tools should NOT be registered
@@ -657,12 +664,16 @@ describe('messages.transform hook', () => {
     })
     const text = userMsg.parts[1].text as string
     expect(text).toContain('system-reminder')
-    expect(text).toContain('READ-ONLY mode')
-    // New explicit rules
-    expect(text).toContain('exactly one')
-    expect(text).toContain('## Phase')
-    expect(text).toContain('Do not insert')
-    expect(text).toContain('### Files')
+    expect(text).toContain('READ-ONLY filesystem mode')
+    expect(text).toContain('complete stored plan')
+    expect(text).toContain('at most 24 phases')
+    expect(text).toContain('fix every structure-report warning')
+    expect(text).toContain('exactly "New session", "Execute here", "Loop"')
+    expect(text).toContain('call `execute-plan` with a short title')
+    expect(text).not.toContain('<!-- forge-section -->')
+    expect(text).not.toContain('<!-- forge-plan:start -->')
+    expect(text).not.toContain('<!-- forge-plan:end -->')
+    expect(text).not.toContain('### Files')
   })
 
   test('does NOT inject for non-architect agents', async () => {

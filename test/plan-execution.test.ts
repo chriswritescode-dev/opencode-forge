@@ -4,6 +4,7 @@ import {
   extractPlanExecutionMetadata,
   extractLoopName,
   extractLoopNames,
+  findCanonicalLoopNameDeclarations,
   sanitizeLoopName,
   PLAN_EXECUTION_LABELS,
 } from '../src/utils/plan-execution'
@@ -160,6 +161,12 @@ describe('Plan Execution Utilities', () => {
     test('Falls back to title when no loop name in any format exists', () => {
       const plan = '# My Fallback Title\n\nSome content without loop name field'
       expect(extractLoopName(plan)).toBe('My Fallback Title')
+    })
+
+    test('ignores loop-name declarations inside fenced examples', () => {
+      const plan = '# Real Plan\n\n```md\nLoop Name: example-plan\n```\n\nContent'
+      expect(findCanonicalLoopNameDeclarations(plan)).toEqual([])
+      expect(extractLoopName(plan)).toBe('Real Plan')
     })
   })
 

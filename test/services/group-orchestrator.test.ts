@@ -13,6 +13,7 @@ import {
 } from '../../src/services/group-orchestrator'
 import type { Logger } from '../../src/types'
 import type { ParsedFeature } from '../../src/utils/feature-list-parser'
+import { inspectArchitectPlanReadiness } from '../../src/utils/architect-auto-output'
 
 /** External-control promise — resolve/reject from test code. */
 function deferred<T>() {
@@ -118,6 +119,30 @@ function makeFeatures(count: number) {
     title: `Feature ${i}`,
     description: `Description for feature ${i}`,
   }))
+}
+
+function makeCompletePlan(): string {
+  return [
+    '# Objective',
+    'Implement the behavior.',
+    'Loop Name: group-plan',
+    '<!-- forge-section -->',
+    '## Phase 1: Implement behavior',
+    '### Files',
+    '- src/example.ts',
+    '### Edits',
+    '- Implement the behavior.',
+    '### Acceptance Criteria',
+    '- The behavior works.',
+    '### Verification',
+    '- `pnpm typecheck`',
+    '## Decisions',
+    '- None.',
+    '## Conventions',
+    '- Follow repository conventions.',
+    '## Key Context',
+    '- None.',
+  ].join('\n\n')
 }
 
 describe('GroupOrchestrator', () => {
@@ -406,11 +431,7 @@ describe('GroupOrchestrator', () => {
     expect(ctx.effects.launchLoop).toHaveBeenCalledTimes(0)
   })
 
-  test('onArchitectIdle advances when capturePlan falls back to a stored plans row', async () => {
-    // Simulate the new capturePlan fallback in src/index.ts: the marked-plan
-    // scan returns not-found, but a stored plans row exists for the architect
-    // session, so capturePlan returns captured:true and the feature advances
-    // rather than being classified as a failure.
+  test('onArchitectIdle advances when capturePlan finds a ready stored plan', async () => {
     ctx.db.run(`
       CREATE TABLE IF NOT EXISTS plans (
         project_id   TEXT NOT NULL,
@@ -425,11 +446,12 @@ describe('GroupOrchestrator', () => {
       )
     `)
     const plansRepo = createPlansRepo(ctx.db)
-    plansRepo.writeForSession(PROJECT_ID, 'arch-session-0', '# Tool-authored plan')
+    plansRepo.writeForSession(PROJECT_ID, 'arch-session-0', makeCompletePlan())
 
-    ctx.effects.capturePlan.mockImplementation(async (sessionId: string) => ({
-      captured: plansRepo.getForSession(PROJECT_ID, sessionId) != null,
-    }))
+    ctx.effects.capturePlan.mockImplementation(async (sessionId: string) => {
+      const plan = plansRepo.getForSession(PROJECT_ID, sessionId)
+      return { captured: plan ? inspectArchitectPlanReadiness(plan.content).ready : false }
+    })
 
     const result = await ctx.orchestrator.startGroup({
       title: 'Stored Plan Fallback',
@@ -443,6 +465,83 @@ describe('GroupOrchestrator', () => {
     expect(ctx.effects.capturePlan).toHaveBeenCalledWith('arch-session-0')
     expect(ctx.effects.classifyArchitectFailure).not.toHaveBeenCalled()
     expect(ctx.effects.launchLoop).toHaveBeenCalledTimes(1)
+  })
+
+  test('onArchitectIdle rejects a partial stored plan before loop launch', async () => {
+    ctx.db.run(`
+      CREATE TABLE IF NOT EXISTS plans (
+        project_id   TEXT NOT NULL,
+        loop_name    TEXT,
+        session_id   TEXT,
+        content      TEXT NOT NULL,
+        updated_at   INTEGER NOT NULL,
+        CHECK (loop_name IS NOT NULL OR session_id IS NOT NULL),
+        CHECK (NOT (loop_name IS NOT NULL AND session_id IS NOT NULL)),
+        UNIQUE (project_id, loop_name),
+        UNIQUE (project_id, session_id)
+      )
+    `)
+    const plansRepo = createPlansRepo(ctx.db)
+    plansRepo.writeForSession(PROJECT_ID, 'arch-session-0', '# Objective\n\nPartial plan')
+    ctx.effects.capturePlan.mockImplementation(async (sessionId: string) => {
+      const plan = plansRepo.getForSession(PROJECT_ID, sessionId)
+      return { captured: plan ? inspectArchitectPlanReadiness(plan.content).ready : false }
+    })
+    ctx.effects.classifyArchitectFailure.mockImplementation(async (sessionId: string) => {
+      const plan = plansRepo.getForSession(PROJECT_ID, sessionId)
+      const readiness = plan ? inspectArchitectPlanReadiness(plan.content) : null
+      return { reason: readiness && !readiness.ready ? readiness.reason : 'Architect failed to produce a valid plan' }
+    })
+
+    const result = await ctx.orchestrator.startGroup({
+      title: 'Partial Stored Plan',
+      features: makeFeatures(1),
+    })
+    await ctx.orchestrator.onArchitectIdle('arch-session-0')
+
+    const feature = ctx.repo.listFeatures(PROJECT_ID, result.groupId)[0]
+    expect(feature.stage).toBe('failed')
+    expect(feature.error).toContain('Stored plan is incomplete')
+    expect(ctx.effects.launchLoop).not.toHaveBeenCalled()
+  })
+
+  test('queued feature is revalidated immediately before loop launch', async () => {
+    const plans = new Map<string, string>([
+      ['arch-session-0', makeCompletePlan()],
+      ['arch-session-1', makeCompletePlan()],
+    ])
+    ctx.effects.capturePlan.mockImplementation(async (sessionId: string) => ({
+      captured: inspectArchitectPlanReadiness(plans.get(sessionId) ?? '').ready,
+    }))
+    ctx.effects.launchLoop.mockImplementation(async ({ architectSessionId, loopName }) => {
+      const readiness = inspectArchitectPlanReadiness(plans.get(architectSessionId) ?? '')
+      return readiness.ready
+        ? { ok: true as const, loopName }
+        : { ok: false as const, error: readiness.reason }
+    })
+    const queueOrchestrator = createGroupOrchestrator({
+      projectId: PROJECT_ID,
+      repo: ctx.repo,
+      effects: ctx.effects,
+      cap: () => 1,
+      logger: mockLogger,
+    })
+
+    const result = await queueOrchestrator.startGroup({
+      title: 'Queued Plan Revalidation',
+      features: makeFeatures(2),
+    })
+    await queueOrchestrator.onArchitectIdle('arch-session-0')
+    await queueOrchestrator.onArchitectIdle('arch-session-1')
+
+    const runningFeature = ctx.repo.listFeatures(PROJECT_ID, result.groupId)[0]
+    plans.set('arch-session-1', '# Objective\n\nPartial replacement')
+    await queueOrchestrator.onLoopTerminated(runningFeature.loopName!)
+
+    const queuedFeature = ctx.repo.listFeatures(PROJECT_ID, result.groupId)[1]
+    expect(queuedFeature.stage).toBe('failed')
+    expect(queuedFeature.error).toContain('Stored plan is incomplete')
+    expect(ctx.effects.launchLoop).toHaveBeenCalledTimes(2)
   })
 
   // Phase 8: premature-idle guard test goes here (currently removed for Phase 7)

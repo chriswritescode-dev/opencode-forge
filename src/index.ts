@@ -36,10 +36,11 @@ import { createGroupOrchestratorEventHook } from './hooks/group-orchestrator'
 import { createGroupOrchestrator, mapLoopStateToOutcome, type GroupOrchestrator, type GroupEffects } from './services/group-orchestrator'
 import { parseModelString } from './utils/model-fallback'
 import { parseFeatureList } from './utils/feature-list-parser'
-import { classifyArchitectOutput } from './utils/architect-auto-output'
+import { classifyArchitectOutput, inspectArchitectPlanReadiness } from './utils/architect-auto-output'
 import { resolveSessionPlanOfRecord } from './services/plan-capture'
 import { PLAN_CAPTURE_MESSAGE_LIMIT } from './utils/marked-plan-parser'
 import { createForgeExecutionService, type ForgeExecutionRequestContext } from './services/execution'
+import { PLAN_EXECUTION_LABELS } from './utils/plan-execution'
 
 export interface CreateParentSessionLookupOptions {
   client: ForgeClient
@@ -511,6 +512,11 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       return null
     }
 
+    function inspectStoredArchitectPlan(sessionId: string) {
+      const plan = plansRepo.getForSession(projectId, sessionId)
+      return plan ? inspectArchitectPlanReadiness(plan.content) : null
+    }
+
     // Execution service for group-launched loops. Built once and reused across launch/cancel
     // (stateless dispatch) so the dependency wiring lives in a single place.
     const groupExecService = createForgeExecutionService({
@@ -556,10 +562,20 @@ export function createForgePlugin(config: PluginConfig): Plugin {
           directory,
           logger,
         }, sessionId)
-        return { captured }
+        if (!captured) return { captured: false }
+
+        const readiness = inspectStoredArchitectPlan(sessionId)
+        if (!readiness?.ready) {
+          logger.log(`group-orchestrator: architect ${sessionId} stored an incomplete plan: ${readiness?.reason ?? 'plan row missing after capture'}`)
+          return { captured: false }
+        }
+        return { captured: true }
       },
 
       async classifyArchitectFailure(sessionId) {
+        const readiness = inspectStoredArchitectPlan(sessionId)
+        if (readiness && !readiness.ready) return { reason: readiness.reason }
+
         const text = await findLatestAssistantText(sessionId)
         if (text === null) return { reason: 'No assistant response found' }
         const classified = classifyArchitectOutput(text)
@@ -570,6 +586,14 @@ export function createForgePlugin(config: PluginConfig): Plugin {
       },
 
       async launchLoop({ architectSessionId, loopName }) {
+        const readiness = inspectStoredArchitectPlan(architectSessionId)
+        if (!readiness?.ready) {
+          return {
+            ok: false,
+            error: readiness?.reason ?? 'Stored plan not found before launch',
+          }
+        }
+
         const execCtx: ForgeExecutionRequestContext = {
           surface: 'tool',
           projectId,
@@ -769,17 +793,9 @@ export function createForgePlugin(config: PluginConfig): Plugin {
         userMessage.parts.push({
           type: 'text',
           text: `<system-reminder>
-READ-ONLY mode: no file edits, no destructive commands. Search and analyze only. Ask clarifying questions during research on scope, intent, or tradeoffs. Writing the plan with plan-write/plan-edit is expected and is not a file edit.
-
-When producing the final plan:
-- Author it into storage with \`plan-write\`; append further phases with \`plan-write { append: true }\`; revise with \`plan-edit\`. Do not emit the full plan in chat.
-- Include one plain machine-readable \`Loop Name: short-slug\` line near the top, immediately after the objective. Not a heading or bullet.
-- Use exactly one \`<!-- forge-section -->\` marker per executable phase, immediately before that phase's \`## Phase\` heading, and at most ${MAX_TOTAL_SECTIONS} phases.
-- Do not insert \`<!-- forge-section -->\` before \`### Files\`, \`### Edits\`, \`### Acceptance Criteria\`, or \`### Verification\`.
-- Shared \`## Decisions\` / \`## Conventions\` / \`## Key Context\` blocks go after all sections (no preceding marker).
-- Read the structure report returned by every plan write and fix warnings before asking for approval.
-- Then call the \`question\` tool with options: "New session", "Execute here", "Loop".
-- If the user selects "Loop", launch it with the \`execute-plan\` tool (the stored plan is used automatically); do not re-run the question tool.
+READ-ONLY filesystem mode: search and analyze only; plan-write and plan-edit may update plan storage.
+Before approval, finalize the complete stored plan with at most ${MAX_TOTAL_SECTIONS} phases and fix every structure-report warning.
+Then call the \`question\` tool with exactly ${PLAN_EXECUTION_LABELS.map((label) => `"${label}"`).join(', ')}. If "Loop" is selected, call \`execute-plan\` with a short title; it uses the stored plan automatically. Do not ask again.
 </system-reminder>`,
           synthetic: true,
         })

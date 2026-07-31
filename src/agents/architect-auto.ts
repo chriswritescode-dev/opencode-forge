@@ -1,5 +1,6 @@
 import type { AgentDefinition } from './types'
 import { loadPrompt } from '../prompts/loader'
+import { ARCHITECT_TOOL_EXCLUDES } from './architect'
 
 export function buildArchitectAutoAgent(promptsDir?: string): AgentDefinition {
   return {
@@ -9,7 +10,17 @@ export function buildArchitectAutoAgent(promptsDir?: string): AgentDefinition {
     mode: 'primary',
     hidden: true,
     tools: {
-      exclude: ['plan', 'plan_enter', 'plan_exit', 'question'],
+      exclude: [
+        ...ARCHITECT_TOOL_EXCLUDES,
+        'question',
+        'execute-plan',
+        'execute-goal',
+        'launch-group',
+        'group-status',
+        'group-cancel',
+        'loop-status',
+        'loop-cancel',
+      ],
     },
     systemPrompt: loadPrompt(['agents', 'architect-auto.md'], promptsDir),
   }
