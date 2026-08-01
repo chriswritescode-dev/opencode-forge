@@ -1,6 +1,6 @@
 import { describe, test, expect, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync } from 'fs'
-import { join, resolve } from 'path'
+import { join, resolve, relative } from 'path'
 import { tmpdir } from 'os'
 import { resolveCustomMounts } from '../../src/sandbox/manager'
 import type { SandboxMountConfig } from '../../src/types'
@@ -135,5 +135,19 @@ describe('resolveCustomMounts', () => {
     expect(result).toHaveLength(1)
     expect(logger.log).toHaveBeenCalledTimes(1)
     expect(logger.log.mock.calls[0][0]).toContain('missing host path')
+  })
+
+  test('relative host path that exists in cwd is skipped', () => {
+    const dir = withTempDir()
+    const rel = relative(process.cwd(), dir)
+    const logger = createMockLogger()
+    const raw: SandboxMountConfig[] = [
+      { host: rel },
+    ]
+    const result = resolveCustomMounts(raw, new Set(['/workspace']), logger)
+    expect(result).toEqual([])
+    expect(logger.log).toHaveBeenCalledTimes(1)
+    expect(logger.log.mock.calls[0][0]).toContain('host path must be absolute')
+    expect(logger.log.mock.calls[0][0]).toContain(rel)
   })
 })

@@ -7,6 +7,10 @@ interface SandboxExecutionDeps {
   envFile?: string
 }
 
+function quoteShellArg(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`
+}
+
 /**
  * Execute a glob pattern search inside a sandbox container.
  * Mounts are at identical host paths, so returned paths are emitted verbatim.
@@ -19,8 +23,7 @@ export async function executeSandboxGlob(
   const { runtime, containerName, hostDir, envFile } = sandbox
   const path = searchPath || hostDir
 
-  const safePattern = pattern.replace(/'/g, "'\\''")
-  const cmd = `rg --files --glob '${safePattern}' '${path}' 2>/dev/null | head -100`
+  const cmd = `rg --files --glob ${quoteShellArg(pattern)} ${quoteShellArg(path)} 2>/dev/null | head -100`
 
   try {
     const result = await runtime.exec(containerName, cmd, { timeout: 30000, envFile, cwd: hostDir })
@@ -57,13 +60,11 @@ export async function executeSandboxGrep(
   const { runtime, containerName, hostDir, envFile } = sandbox
   const searchPath = options?.path || hostDir
 
-  const safePattern = pattern.replace(/'/g, "'\\''")
-  let cmd = `rg -nH --hidden --no-messages --field-match-separator='|' --regexp '${safePattern}'`
+  let cmd = `rg -nH --hidden --no-messages --field-match-separator='|' --regexp ${quoteShellArg(pattern)}`
   if (options?.include) {
-    const safeInclude = options.include.replace(/'/g, "'\\''")
-    cmd += ` --glob '${safeInclude}'`
+    cmd += ` --glob ${quoteShellArg(options.include)}`
   }
-  cmd += ` '${searchPath}' 2>/dev/null | head -100`
+  cmd += ` ${quoteShellArg(searchPath)} 2>/dev/null | head -100`
 
   try {
     const result = await runtime.exec(containerName, cmd, { timeout: 30000, envFile, cwd: hostDir })

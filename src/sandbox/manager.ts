@@ -1,7 +1,7 @@
 import type { SandboxRuntime, SandboxWorkspace } from './sbx'
 import { describeSbxUnavailable, type SbxAvailability } from './sbx'
 import type { Logger, SandboxResources, SandboxMountConfig } from '../types'
-import { resolve, join, posix as posixPath } from 'path'
+import { resolve, join, isAbsolute, posix as posixPath } from 'path'
 import { mkdirSync, existsSync, writeFileSync, chmodSync, rmSync } from 'fs'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import { isSameOrDescendantPath, type SandboxMount } from './path'
@@ -69,6 +69,10 @@ export function resolveCustomMounts(
     const host = entry?.host?.trim()
     if (!host) {
       logger.log(`Sandbox: skipping custom mount with missing host path: ${JSON.stringify(entry)}`)
+      continue
+    }
+    if (!isAbsolute(host)) {
+      logger.log(`Sandbox: skipping custom mount; host path must be absolute: ${host}`)
       continue
     }
     const hostDir = resolve(host)
