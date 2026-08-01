@@ -14,6 +14,7 @@ See also: [Tools](tools.md), [Agents and Slash Commands](agents-and-commands.md)
 | `auditorModel` | `""` | Fallback model override for auditor sessions. Format: `provider/model`. |
 | `executionVariant` | `""` | Default reasoning/thinking variant for the execution model (e.g. `high`, `max`). |
 | `auditorVariant` | `""` | Default reasoning/thinking variant for the auditor model. Independent — does not inherit `executionVariant`. |
+| `auditorFallbackModels` | `[]` | Ordered fallback auditor models tried when the current auditor model hits a provider usage/auth limit mid-loop. Entries use `provider/model` format and are tried in order; variants are NOT inherited. Applies only to `auditing`/`final_auditing`. The fallback index resets to `0` on loop restart. Empty/omitted means a limited auditor terminates the loop. |
 | `agents` | unset | Per-agent overrides keyed by display name, currently supporting `temperature`. |
 | `remotes` | unset | Remote opencode servers available as loop launch targets in the TUI execution dialog. See [Remotes](#remotes). |
 | `dashboard` | unset | Dashboard HTTP server bind host and port. Defaults to loopback only. See [Dashboard](#dashboard). |
@@ -101,33 +102,8 @@ The written file is added to the worktree's git exclude so it never appears in `
 
 Notes:
 - The written file is ephemeral. Forge deletes its own `opencode.jsonc` before any teardown commit (and the whole worktree is removed on completion), so it can never land in loop history — even if the git-exclude write failed. A repository-tracked `opencode.jsonc` is never deleted (forge did not write it). Because the file is removed at teardown, a restarted loop is rewritten from the current `loop.worktreeOpencodeConfig`, so edits take effect on the next run.
-- MCP servers declared here run as **host** processes from the worktree directory. When [Sandbox](sandbox.md) is enabled, only `bash`/`glob`/`grep` execute inside the container; the MCP commands themselves are not container-isolated. To run an MCP server *inside* the loop's sandbox container, use the placeholder below with a `docker exec -i` command.
+- MCP servers declared here run as **host** processes from the worktree directory. When [Sandbox](sandbox.md) is enabled, only `bash`/`glob`/`grep` execute inside the sandbox; the MCP commands themselves are not sandbox-isolated. To run an MCP server *inside* the loop's sandbox, use the placeholder below with an `sbx exec -i` command.
 - The string `{{FORGE_SANDBOX_CONTAINER}}` in any config value is replaced with the loop's sandbox container name (`forge-<loop>`) when the file is written. For loops without a sandbox, `mcp` entries referencing the placeholder are dropped instead, so the same config works with and without the sandbox.
-
-Example — Chrome DevTools MCP running inside the loop's sandbox container (Chromium and `chrome-devtools-mcp` ship preinstalled in the sandbox image; see [Sandbox › Browser Testing](sandbox.md#browser-testing)):
-
-```jsonc
-{
-  "loop": {
-    "worktreeOpencodeConfig": {
-      "mcp": {
-        "chrome-devtools": {
-          "type": "local",
-          "command": [
-            "docker", "exec", "-i", "{{FORGE_SANDBOX_CONTAINER}}",
-            "chrome-devtools-mcp", "--headless", "--isolated",
-            "--executablePath=/usr/bin/chromium",
-            "--chromeArg=--no-sandbox", "--chromeArg=--disable-dev-shm-usage"
-          ],
-          "enabled": true
-        }
-      }
-    }
-  }
-}
-```
-
-Without the sandbox, a host-side server works too (Chrome runs on the host and cannot reach in-container dev servers): `"command": ["npx", "chrome-devtools-mcp@latest", "--isolated"]`.
 
 ## Group Launch
 
@@ -195,7 +171,7 @@ Example:
 | `remotes[].password` | unset | Basic-auth password (`OPENCODE_SERVER_PASSWORD` on the remote). Omit when the remote runs without auth. Stored in plaintext in this config file. |
 | `remotes[].username` | `"opencode"` | Basic-auth username (`OPENCODE_SERVER_USERNAME` default). |
 | `remotes[].gitRemote` | `"origin"` | Git remote name, configured on **both** machines' clones, used for code sync. |
-| `remotes[].sandbox` | `true` | Whether the remote loop runs sandboxed. Must mirror the remote server's actual `sandbox.enabled`/Docker capability — see below. |
+| `remotes[].sandbox` | `true` | Whether the remote loop runs sandboxed. Must mirror the remote server's actual `sandbox.enabled`/sbx capability — see below. |
 
 Example:
 
@@ -233,18 +209,15 @@ See [Sandbox](sandbox.md) for detailed behavior and security notes.
 
 | Option | Default | Description |
 |---|---:|---|
-| `sandbox.enabled` | `true` | Enable sandboxed execution when Docker is available. |
-| `sandbox.mode` | `"docker"` | Sandbox mode. Docker is currently the only supported mode. |
-| `sandbox.image` | `"oc-forge-sandbox:latest"` | Docker image for sandbox containers. |
-| `sandbox.resources.memory` | `"8g"` | Container memory limit. |
-| `sandbox.resources.memorySwap` | unset | Optional memory+swap limit. No default is applied. |
-| `sandbox.resources.cpus` | `"4"` | CPU count. |
-| `sandbox.resources.shmSize` | `"1g"` | Shared memory size. |
-| `sandbox.mountProjectReadonly` | `true` | Mount the source project read-only. |
-| `sandbox.projectMountPath` | `"/project"` | Container path for the read-only source project mount. |
-| `sandbox.mounts` | `[]` | Additional custom bind mounts. |
-| `sandbox.network.hostGateway` | `true` | Enable `host.docker.internal` gateway. |
-| `sandbox.network.env` | `[]` | Host environment variables to pass into the container via temp env file. |
+| `sandbox.enabled` | `true` | Enable sandboxed execution when the `sbx` daemon is available. |
+| `sandbox.mode` | `"sbx"` | Sandbox mode. `sbx` is currently the only supported mode. |
+| `sandbox.image` | `"oc-forge-sandbox:latest"` | sbx template tag used for sandboxed execution. |
+| `sandbox.resources.memory` | `"8g"` | Sandbox memory limit (`sbx create --memory`). |
+| `sandbox.resources.cpus` | `"4"` | CPU count (`sbx create --cpus`; integer-only). |
+| `sandbox.mountProjectReadonly` | `true` | Mount the source project read-only at its identical host path. |
+| `sandbox.mounts` | `[]` | Additional host directories to mount at their identical host path. |
+| `sandbox.network.allow` | `[]` | Hosts the sandbox may reach (deny-by-default proxy). |
+| `sandbox.network.env` | `[]` | Host environment variables to pass into each sandbox command via the env file. |
 
 ## Bundled Assets & Installer
 

@@ -214,4 +214,4 @@ Requires exactly one of `prd` or `features`.
 
 ## Sandbox Shell
 
-Sandbox loops use opencode's native `bash` tool; Forge routes the underlying shell into the loop container via a generated shell shim and the `shell.env` hook. See [Sandbox](sandbox.md#shell-routing).
+Sandbox loops use opencode's native `bash` tool; Forge routes the underlying shell into the loop sandbox via a generated shell shim and the `shell.env` hook. See [Sandbox](sandbox.md#shell-routing).

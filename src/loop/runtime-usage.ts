@@ -3,6 +3,7 @@ import type { Logger, PluginConfig } from '../types'
 import type { LoopSessionUsageRepo } from '../storage/repos/loop-session-usage-repo'
 import type { LoopState } from './state'
 import { summarizeAssistantUsage, type UsageAttribution, type AssistantMessageInfo } from './token-usage'
+import { resolveUsageFallbackModelLabel } from '../utils/loop-helpers'
 
 export interface UsageCaptureDeps {
   client: ForgeClient
@@ -28,24 +29,10 @@ export function createUsageCapture(deps: UsageCaptureDeps): UsageCapture {
 
   /**
    * Determine the fallback model for a session based on phase and loop state.
-   * For code sessions: state.executionModel > config.executionModel
-   * For audit/final-audit sessions: state.auditorModel > state.executionModel > config.auditorModel > config.executionModel
+   * Delegates to the shared chain-aware label resolution.
    */
   function getFallbackModelForSession(state: LoopState, phase: LoopState['phase']): string | undefined {
-    const config = getConfig()
-    if (phase === 'auditing' || phase === 'final_auditing') {
-      return (
-        state.auditorModel ??
-        state.executionModel ??
-        config.auditorModel ??
-        config.executionModel
-      )
-    }
-    // Code session
-    return (
-      state.executionModel ??
-      config.executionModel
-    )
+    return resolveUsageFallbackModelLabel(getConfig(), state, phase)
   }
 
   /**

@@ -73,6 +73,7 @@ describe('review section scoping', () => {
         auditor_variant      TEXT,
         loop_kind            TEXT NOT NULL DEFAULT 'plan',
         executor_session_id  TEXT,
+        auditor_fallback_index INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (project_id, loop_name)
       )
     `)

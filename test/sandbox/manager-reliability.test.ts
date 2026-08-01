@@ -1,160 +1,150 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createSandboxManager, type SandboxManagerConfig } from '../../src/sandbox/manager'
-import type { DockerService } from '../../src/sandbox/docker'
-import type { Logger } from '../../src/types'
+import { createMockSandboxRuntime, createMockLogger } from '../helpers/sandbox-mocks'
 
 describe('SandboxManager.ensureRunning', () => {
-  let mockDocker: Partial<DockerService>
-  let mockLogger: Partial<Logger>
+  let mockRuntime: ReturnType<typeof createMockSandboxRuntime>
+  let mockLogger: ReturnType<typeof createMockLogger>
 
   beforeEach(() => {
     vi.useFakeTimers()
-    mockDocker = {
-      checkDocker: vi.fn(async () => true),
-      imageExists: vi.fn(async () => true),
-      containerName: (worktreeName: string) => `forge-${worktreeName}`,
-      isRunning: vi.fn(async () => false),
-      createContainer: vi.fn(async () => {}),
-      removeContainer: vi.fn(async () => {}),
-      listContainersByPrefix: vi.fn(async () => []),
-    }
-    mockLogger = {
-      log: vi.fn(),
-      error: vi.fn(),
-      debug: vi.fn(),
-    }
+    mockRuntime = createMockSandboxRuntime()
+    mockRuntime.isRunning = vi.fn(async () => false)
+    mockRuntime.createSandbox = vi.fn(async () => {})
+    mockRuntime.removeSandbox = vi.fn(async () => {})
+    mockLogger = createMockLogger()
   })
 
   afterEach(() => {
     vi.useRealTimers()
   })
 
-  it('creates a new container when no active sandbox exists', async () => {
+  it('creates a new sandbox when no active sandbox exists', async () => {
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
-    const manager = createSandboxManager(mockDocker as DockerService, config, mockLogger as Logger)
+    const manager = createSandboxManager(mockRuntime, config, mockLogger)
 
     const name = await manager.ensureRunning('test-wt', '/tmp/project')
 
     expect(name).toBe('forge-test-wt')
-    expect(mockDocker.createContainer).toHaveBeenCalledTimes(1)
+    expect(mockRuntime.createSandbox).toHaveBeenCalledTimes(1)
   })
 
-  it('reuses a running container without calling start', async () => {
+  it('reuses a running sandbox without calling start', async () => {
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
-    const manager = createSandboxManager(mockDocker as DockerService, config, mockLogger as Logger)
+    const manager = createSandboxManager(mockRuntime, config, mockLogger)
 
     // First call creates
-    mockDocker.isRunning = vi.fn(async () => false)
+    mockRuntime.isRunning = vi.fn(async () => false)
     await manager.ensureRunning('test-wt', '/tmp/project')
-    const createCountAfterFirst = (mockDocker.createContainer as ReturnType<typeof vi.fn>).mock.calls.length
+    const createCountAfterFirst = (mockRuntime.createSandbox as ReturnType<typeof vi.fn>).mock.calls.length
 
-    // Second call: container is now in map and Docker reports it running
-    mockDocker.isRunning = vi.fn(async () => true)
+    // Second call: sandbox is now in map and runtime reports it running
+    mockRuntime.isRunning = vi.fn(async () => true)
     const name = await manager.ensureRunning('test-wt', '/tmp/project')
 
     expect(name).toBe('forge-test-wt')
-    // createContainer should not have been called again
-    expect(mockDocker.createContainer).toHaveBeenCalledTimes(createCountAfterFirst)
+    // createSandbox should not have been called again
+    expect(mockRuntime.createSandbox).toHaveBeenCalledTimes(createCountAfterFirst)
   })
 
   it('skips isRunning when called within 2s TTL', async () => {
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
-    const manager = createSandboxManager(mockDocker as DockerService, config, mockLogger as Logger)
+    const manager = createSandboxManager(mockRuntime, config, mockLogger)
 
-    // First call creates the container
-    mockDocker.isRunning = vi.fn(async () => false)
+    // First call creates the sandbox
+    mockRuntime.isRunning = vi.fn(async () => false)
     await manager.ensureRunning('test-wt', '/tmp/project')
 
     // Second call within TTL — should not call isRunning
-    const isRunningBefore = (mockDocker.isRunning as ReturnType<typeof vi.fn>).mock.calls.length
+    const isRunningBefore = (mockRuntime.isRunning as ReturnType<typeof vi.fn>).mock.calls.length
     const name = await manager.ensureRunning('test-wt', '/tmp/project')
-    const isRunningAfter = (mockDocker.isRunning as ReturnType<typeof vi.fn>).mock.calls.length
+    const isRunningAfter = (mockRuntime.isRunning as ReturnType<typeof vi.fn>).mock.calls.length
 
     expect(name).toBe('forge-test-wt')
     expect(isRunningAfter - isRunningBefore).toBe(0)
-    expect(mockDocker.createContainer).toHaveBeenCalledTimes(1)
+    expect(mockRuntime.createSandbox).toHaveBeenCalledTimes(1)
   })
 
-  it('recreates container when it dies between calls', async () => {
+  it('recreates sandbox when it dies between calls', async () => {
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
-    const manager = createSandboxManager(mockDocker as DockerService, config, mockLogger as Logger)
+    const manager = createSandboxManager(mockRuntime, config, mockLogger)
 
     // First call creates
-    mockDocker.isRunning = vi.fn(async () => false)
+    mockRuntime.isRunning = vi.fn(async () => false)
     await manager.ensureRunning('test-wt', '/tmp/project')
 
     // Advance beyond TTL so next call performs a real liveness check
     vi.advanceTimersByTime(3_000)
 
-    // Container is now dead
-    mockDocker.isRunning = vi.fn(async () => false)
+    // Sandbox is now dead
+    mockRuntime.isRunning = vi.fn(async () => false)
     const name = await manager.ensureRunning('test-wt', '/tmp/project')
 
     expect(name).toBe('forge-test-wt')
-    // createContainer should have been called again since container died
-    expect(mockDocker.createContainer).toHaveBeenCalledTimes(2)
+    // createSandbox should have been called again since sandbox died
+    expect(mockRuntime.createSandbox).toHaveBeenCalledTimes(2)
   })
 
-  it('removes dead container from Docker before recreating to avoid name conflict', async () => {
+  it('removes dead sandbox before recreating to avoid name conflict', async () => {
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
-    const manager = createSandboxManager(mockDocker as DockerService, config, mockLogger as Logger)
+    const manager = createSandboxManager(mockRuntime, config, mockLogger)
 
-    // First call creates the container
-    mockDocker.isRunning = vi.fn(async () => false)
+    // First call creates the sandbox
+    mockRuntime.isRunning = vi.fn(async () => false)
     await manager.ensureRunning('test-wt', '/tmp/project')
 
     // Advance beyond TTL
     vi.advanceTimersByTime(3_000)
 
-    // Container died but still exists in Docker (isRunning returns false)
-    mockDocker.isRunning = vi.fn(async () => false)
+    // Sandbox died but still exists in runtime (isRunning returns false)
+    mockRuntime.isRunning = vi.fn(async () => false)
     const name = await manager.ensureRunning('test-wt', '/tmp/project')
 
     expect(name).toBe('forge-test-wt')
-    // Must remove the stopped container to avoid name conflict on docker run --name
-    expect(mockDocker.removeContainer).toHaveBeenCalledWith('forge-test-wt')
-    // Must create a new container after removing the old one
-    expect(mockDocker.createContainer).toHaveBeenCalledTimes(2)
+    // Must remove the stopped sandbox to avoid name conflict
+    expect(mockRuntime.removeSandbox).toHaveBeenCalledWith('forge-test-wt')
+    // Must create a new sandbox after removing the old one
+    expect(mockRuntime.createSandbox).toHaveBeenCalledTimes(2)
   })
 
-  it('restore delegates to ensureRunning and recreates dead container', async () => {
+  it('restore delegates to ensureRunning and recreates dead sandbox', async () => {
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
-    const manager = createSandboxManager(mockDocker as DockerService, config, mockLogger as Logger)
+    const manager = createSandboxManager(mockRuntime, config, mockLogger)
 
     // No active entry (simulates process restart or stale map cleanup)
     expect(manager.isActive('test-wt')).toBe(false)
 
-    // Container exists in Docker but is stopped
-    mockDocker.isRunning = vi.fn(async () => false)
+    // Sandbox exists in runtime but is stopped
+    mockRuntime.isRunning = vi.fn(async () => false)
 
     await manager.restore('test-wt', '/tmp/project', new Date().toISOString())
 
-    // Must have removed the stopped container to avoid name conflict
-    expect(mockDocker.removeContainer).toHaveBeenCalledWith('forge-test-wt')
-    // Must have created a new container
-    expect(mockDocker.createContainer).toHaveBeenCalledTimes(1)
+    // Must have removed the stopped sandbox to avoid name conflict
+    expect(mockRuntime.removeSandbox).toHaveBeenCalledWith('forge-test-wt')
+    // Must have created a new sandbox
+    expect(mockRuntime.createSandbox).toHaveBeenCalledTimes(1)
     // Map should now have the active entry
     expect(manager.isActive('test-wt')).toBe(true)
   })
 
-  it('reuses a running container when no active map entry exists (process restart scenario)', async () => {
+  it('reuses a running sandbox when no active map entry exists (process restart scenario)', async () => {
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
-    const manager = createSandboxManager(mockDocker as DockerService, config, mockLogger as Logger)
+    const manager = createSandboxManager(mockRuntime, config, mockLogger)
 
     // No active entry (simulates process restart or stale map cleanup)
     expect(manager.isActive('test-wt')).toBe(false)
 
-    // Docker still has a running container
-    mockDocker.isRunning = vi.fn(async () => true)
+    // Runtime still has a running sandbox
+    mockRuntime.isRunning = vi.fn(async () => true)
 
     const name = await manager.ensureRunning('test-wt', '/tmp/project')
 
     expect(name).toBe('forge-test-wt')
-    // Must NOT create a new container
-    expect(mockDocker.createContainer).not.toHaveBeenCalled()
-    // Must NOT remove the existing running container
-    expect(mockDocker.removeContainer).not.toHaveBeenCalled()
-    // Map must be populated with the existing container
+    // Must NOT create a new sandbox
+    expect(mockRuntime.createSandbox).not.toHaveBeenCalled()
+    // Must NOT remove the existing running sandbox
+    expect(mockRuntime.removeSandbox).not.toHaveBeenCalled()
+    // Map must be populated with the existing sandbox
     const active = manager.getActive('test-wt')
     expect(active).not.toBeNull()
     expect(active!.containerName).toBe('forge-test-wt')
@@ -162,25 +152,25 @@ describe('SandboxManager.ensureRunning', () => {
     expect(active!.mounts.length).toBeGreaterThanOrEqual(1)
   })
 
-  it('repopulates mounts for a running container after TTL expires', async () => {
+  it('repopulates mounts for a running sandbox after TTL expires', async () => {
     const config: SandboxManagerConfig = { image: 'oc-forge-sandbox:latest' }
-    const manager = createSandboxManager(mockDocker as DockerService, config, mockLogger as Logger)
+    const manager = createSandboxManager(mockRuntime, config, mockLogger)
 
     // First call creates
-    mockDocker.isRunning = vi.fn(async () => false)
+    mockRuntime.isRunning = vi.fn(async () => false)
     await manager.ensureRunning('test-wt', '/tmp/project')
 
     // Advance beyond TTL
     vi.advanceTimersByTime(3_000)
 
-    // Container is still running — should repopulate mounts
-    mockDocker.isRunning = vi.fn(async () => true)
+    // Sandbox is still running — should repopulate mounts
+    mockRuntime.isRunning = vi.fn(async () => true)
     const name = await manager.ensureRunning('test-wt', '/tmp/project')
 
     expect(name).toBe('forge-test-wt')
     // isRunning called once (TTL expired)
-    expect(mockDocker.isRunning).toHaveBeenCalledTimes(1)
-    // createContainer should NOT have been called again
-    expect(mockDocker.createContainer).toHaveBeenCalledTimes(1)
+    expect(mockRuntime.isRunning).toHaveBeenCalledTimes(1)
+    // createSandbox should NOT have been called again
+    expect(mockRuntime.createSandbox).toHaveBeenCalledTimes(1)
   })
 })

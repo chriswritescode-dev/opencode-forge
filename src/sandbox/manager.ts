@@ -1,7 +1,8 @@
-import type { DockerService } from './docker'
+import type { SandboxRuntime, SandboxWorkspace } from './sbx'
+import { describeSbxUnavailable, type SbxAvailability } from './sbx'
 import type { Logger, SandboxResources, SandboxMountConfig } from '../types'
-import { join, resolve, posix as posixPath } from 'path'
-import { mkdirSync, writeFileSync, rmSync, chmodSync, existsSync } from 'fs'
+import { resolve, join, isAbsolute, posix as posixPath } from 'path'
+import { mkdirSync, existsSync, writeFileSync, chmodSync, rmSync } from 'fs'
 import { defaultGitService, type GitService } from '../utils/git-service'
 import { isSameOrDescendantPath, type SandboxMount } from './path'
 
@@ -11,10 +12,8 @@ export interface SandboxManagerConfig {
   resources?: SandboxResources
   sourceProjectDir?: string
   mountProjectReadonly?: boolean
-  projectMountPath?: string
   customMounts?: SandboxMountConfig[]
   buildContextDir?: string
-  network?: { hostGateway?: boolean; env?: string[] }
   /**
    * Host path of opencode's tool-output (truncation) directory. When set and present, it is
    * bind-mounted read-only at the identical container path so the agent's in-container tools
@@ -27,12 +26,17 @@ export interface SandboxManagerConfig {
    * unchanged inside the container and match the host (worktree-only) view.
    */
   tmpDir?: string
+  /**
+   * Network policy for the sbx proxy. `env` lists host environment variable names to pass through
+   * into the sandbox on every exec (written to a per-sandbox env file under `<dataDir>/sandbox-env/`).
+   * `allow` lists egress hosts to permit on the sbx network proxy's default-deny policy.
+   */
+  network?: { env?: string[]; allow?: string[] }
 }
 
-const DEFAULT_RESOURCES: Required<Pick<SandboxResources, 'memory' | 'cpus' | 'shmSize'>> = {
+const DEFAULT_RESOURCES: Required<Pick<SandboxResources, 'memory' | 'cpus'>> = {
   memory: '8g',
   cpus: '4',
-  shmSize: '1g',
 }
 
 function normalizeContainerPath(path: string): string {
@@ -55,27 +59,20 @@ function findContainerPathCollision(container: string, used: ReadonlySet<string>
 
 export function resolveCustomMounts(
   raw: SandboxMountConfig[] | undefined,
-  reservedContainerPaths: ReadonlySet<string>,
+  reservedHostPaths: ReadonlySet<string>,
   logger: Logger,
 ): SandboxMount[] {
   if (!raw || raw.length === 0) return []
   const resolved: SandboxMount[] = []
-  const used = new Set<string>(reservedContainerPaths)
+  const used = new Set<string>(reservedHostPaths)
   for (const entry of raw) {
     const host = entry?.host?.trim()
-    const container = entry?.container?.trim()
-    if (!host || !container) {
-      logger.log(`Sandbox: skipping custom mount with missing host/container path: ${JSON.stringify(entry)}`)
+    if (!host) {
+      logger.log(`Sandbox: skipping custom mount with missing host path: ${JSON.stringify(entry)}`)
       continue
     }
-    if (!posixPath.isAbsolute(container)) {
-      logger.log(`Sandbox: skipping custom mount; container path must be absolute: ${container}`)
-      continue
-    }
-    const containerDir = normalizeContainerPath(container)
-    const collision = findContainerPathCollision(containerDir, used)
-    if (collision) {
-      logger.log(`Sandbox: skipping custom mount; container path already in use: ${containerDir} conflicts with ${collision}`)
+    if (!isAbsolute(host)) {
+      logger.log(`Sandbox: skipping custom mount; host path must be absolute: ${host}`)
       continue
     }
     const hostDir = resolve(host)
@@ -83,8 +80,13 @@ export function resolveCustomMounts(
       logger.log(`Sandbox: skipping custom mount; host path does not exist: ${hostDir}`)
       continue
     }
-    used.add(containerDir)
-    resolved.push({ hostDir, containerDir, readOnly: entry.readonly !== false })
+    const collision = findContainerPathCollision(hostDir, used)
+    if (collision) {
+      logger.log(`Sandbox: skipping custom mount; host path already in use: ${hostDir} conflicts with ${collision}`)
+      continue
+    }
+    used.add(hostDir)
+    resolved.push({ hostDir, containerDir: hostDir, readOnly: entry.readonly !== false })
   }
   return resolved
 }
@@ -97,10 +99,11 @@ export interface ActiveSandbox {
   projectDir: string
   startedAt: string
   mounts: SandboxMount[]
+  envFile?: string
 }
 
 export interface SandboxManager {
-  docker: DockerService
+  runtime: SandboxRuntime
   start(worktreeName: string, projectDir: string, startedAt?: string): Promise<{ containerName: string }>
   stop(worktreeName: string): Promise<void>
   getActive(worktreeName: string): ActiveSandbox | null
@@ -112,98 +115,138 @@ export interface SandboxManager {
   ensureRunning(worktreeName: string, projectDir: string, startedAt?: string): Promise<string>
 }
 
+/**
+ * Maps the resolved mount plan to `sbx create` workspaces. `sbx` rejects overlapping
+ * workspace paths, so any mount whose hostDir overlaps (in either direction) an earlier
+ * accepted hostDir is dropped (with a log). First accepted wins, so callers must pass mounts
+ * in priority order (worktree → git dirs → read-only project → tool-output → temp → custom).
+ */
+export function buildSandboxWorkspaces(mounts: SandboxMount[], logger: Logger): SandboxWorkspace[] {
+  const accepted: string[] = []
+  const workspaces: SandboxWorkspace[] = []
+  for (const mount of mounts) {
+    const overlap = accepted.some((hostDir) => containerPathsOverlap(mount.hostDir, hostDir))
+    if (overlap) {
+      logger.log(`Sandbox: dropping workspace ${mount.hostDir} because it overlaps an already-mounted host dir`)
+      continue
+    }
+    accepted.push(mount.hostDir)
+    workspaces.push({ hostDir: mount.hostDir, readOnly: mount.readOnly })
+  }
+  return workspaces
+}
+
 export function createSandboxManager(
-  docker: DockerService,
+  runtime: SandboxRuntime,
   config: SandboxManagerConfig,
   logger: Logger,
   git: GitService = defaultGitService,
 ): SandboxManager {
   const activeSandboxes = new Map<string, ActiveSandbox>()
   const lastLivenessCheck = new Map<string, number>()
-  const gitMountCache = new Map<string, string[]>()
-  let dockerAvailableCache: { value: boolean; at: number } | null = null
+  const gitMountCache = new Map<string, SandboxMount[]>()
+  let runtimeAvailableCache: { value: SbxAvailability; at: number } | null = null
   let imageReady = false
+  let allowListApplied = false
 
-  async function ensureDockerAvailable(): Promise<void> {
+  async function ensureRuntimeAvailable(): Promise<void> {
     const now = Date.now()
-    if (dockerAvailableCache && (now - dockerAvailableCache.at) < DOCKER_AVAILABLE_TTL) {
-      if (!dockerAvailableCache.value) {
-        throw new Error('Docker is not available. Please ensure Docker is running.')
+    if (runtimeAvailableCache && (now - runtimeAvailableCache.at) < DOCKER_AVAILABLE_TTL) {
+      if (!runtimeAvailableCache.value.available) {
+        throw new Error(describeSbxUnavailable(runtimeAvailableCache.value))
       }
       return
     }
-    const available = await docker.checkDocker()
-    dockerAvailableCache = { value: available, at: now }
-    if (!available) {
-      throw new Error('Docker is not available. Please ensure Docker is running.')
+    const result = await runtime.checkAvailable()
+    runtimeAvailableCache = { value: result, at: now }
+    if (!result.available) {
+      throw new Error(describeSbxUnavailable(result))
     }
   }
 
-  async function ensureImage(): Promise<void> {
+  async function ensureTemplate(): Promise<void> {
     if (imageReady) return
-    const exists = await docker.imageExists(config.image)
+    const exists = await runtime.templateExists(config.image)
     if (!exists) {
       const buildHint = config.buildContextDir
-        ? `  docker build -t ${config.image} "${config.buildContextDir}"`
-        : `  docker build -t ${config.image} <build-context-dir>`
+        ? `  docker build -t ${config.image} "${config.buildContextDir}" && docker save ${config.image} -o <tar> && sbx template load <tar>`
+        : `  docker build -t ${config.image} <build-context-dir> && docker save ${config.image} -o <tar> && sbx template load <tar>`
       throw new Error(
-        `Docker image "${config.image}" not found. Build it first:\n` +
-        `${buildHint}\n\n` +
+        `Sandbox template "${config.image}" not found. Build and load it first:\n${buildHint}\n\n` +
         `To disable the sandbox, set "sandbox": { "enabled": false } in your forge config.`
       )
     }
     imageReady = true
   }
 
-  function buildMountPlan(projectDir: string): { mounts: SandboxMount[]; gitMounts: string[] } {
+  function buildMountPlan(projectDir: string): { mounts: SandboxMount[] } {
     const absolute = resolve(projectDir)
-    const mounts: SandboxMount[] = [
-      { hostDir: absolute, containerDir: '/workspace' },
-    ]
-    // Also mount the worktree at its identical host path so the shell shim can `docker exec
-    // -w "$PWD"` without any host↔container path translation, and command output references
-    // host paths directly.
-    if (absolute !== '/workspace') {
-      mounts.push({ hostDir: absolute, containerDir: absolute })
-    }
+    // `sbx` mounts every workspace at its identical host path (there is no separate
+    // `/workspace` container path), so the primary worktree mount is hostDir == containerDir.
+    const worktreeMount: SandboxMount = { hostDir: absolute, containerDir: absolute }
+
+    const gitMounts = detectGitMount(absolute)
+    // Outer/common dir first so it survives the overlap drop and keeps the whole git metadata
+    // region writable (the nested worktree git dir is swallowed by its common dir).
+    const orderedGitMounts = [...gitMounts].sort((a, b) => a.hostDir.length - b.hostDir.length)
+
     const sourceProjectDir = config.sourceProjectDir
-    const projectMountPath = config.projectMountPath ?? '/project'
     const hasProjectMount = config.mountProjectReadonly !== false
       && !!sourceProjectDir
       && resolve(sourceProjectDir) !== absolute
-    if (hasProjectMount) {
-      mounts.push({
-        hostDir: resolve(sourceProjectDir!),
-        containerDir: projectMountPath,
-        readOnly: true,
-      })
-    }
+    const projectMount: SandboxMount | undefined = hasProjectMount
+      ? { hostDir: resolve(sourceProjectDir!), containerDir: resolve(sourceProjectDir!), readOnly: true }
+      : undefined
+
     const toolOutputMount = resolveToolOutputMount(absolute)
-    if (toolOutputMount) mounts.push(toolOutputMount)
     const tmpMount = resolveTempMount(absolute)
-    if (tmpMount) mounts.push(tmpMount)
-    const gitMounts = detectGitMount(absolute)
-    const reserved = new Set<string>(['/workspace'])
-    for (const m of mounts.slice(1)) reserved.add(m.containerDir)
-    for (const g of gitMounts) reserved.add(g.slice(g.lastIndexOf(':') + 1))
-    mounts.push(...resolveCustomMounts(config.customMounts, reserved, logger))
-    return { mounts, gitMounts }
+
+    const reserved = new Set<string>([worktreeMount.containerDir, ...orderedGitMounts.map((m) => m.containerDir)])
+    if (projectMount) reserved.add(projectMount.containerDir)
+    if (toolOutputMount) reserved.add(toolOutputMount.containerDir)
+    if (tmpMount) reserved.add(tmpMount.containerDir)
+    const customMounts = resolveCustomMounts(config.customMounts, reserved, logger)
+
+    // Priority order is load-bearing: worktree first, then git dirs (outer/common dir first so
+    // it survives the overlap drop and keeps the whole git metadata region writable), then the
+    // read-only project mount, then tool-output/temp/custom. Because the first accepted mount
+    // wins, the read-only project workspace (an ancestor of the git dirs) is dropped with a log
+    // rather than swallowing the writable git workspaces. Never resolve the conflict by making
+    // the project workspace read-write — that would let a sandboxed agent modify the user's
+    // main checkout.
+    const candidates: SandboxMount[] = [
+      worktreeMount,
+      ...orderedGitMounts,
+      ...(projectMount ? [projectMount] : []),
+      ...(toolOutputMount ? [toolOutputMount] : []),
+      ...(tmpMount ? [tmpMount] : []),
+      ...customMounts,
+    ]
+
+    const mounts: SandboxMount[] = []
+    const accepted = new Set<string>()
+    for (const mount of candidates) {
+      const overlap = [...accepted].some((hostDir) => containerPathsOverlap(mount.hostDir, hostDir))
+      if (overlap) {
+        logger.log(`Sandbox: dropping workspace ${mount.hostDir} because it overlaps an already-mounted host dir`)
+        continue
+      }
+      accepted.add(mount.hostDir)
+      mounts.push(mount)
+    }
+
+    return { mounts }
   }
 
   function resolveToolOutputMount(workspaceDir: string): SandboxMount | undefined {
     const dir = config.toolOutputDir
     if (!dir) return undefined
     const resolved = resolve(dir)
-    // Docker rejects read-only bind mounts whose host source does not exist.
     if (!existsSync(resolved)) {
       logger.log(`Sandbox: skipping tool-output mount; directory does not exist: ${resolved}`)
       return undefined
     }
-    // Skip when it is already covered by the writable workspace mount to avoid a redundant
-    // (and conflicting read-only) overlay of the same path.
     if (resolved === workspaceDir || resolved.startsWith(workspaceDir + '/')) return undefined
-    // Mount at the identical container path so absolute host references resolve unchanged inside
-    // the container (toContainerPath/rewriteOutput become no-ops for these paths).
     return { hostDir: resolved, containerDir: resolved, readOnly: true }
   }
 
@@ -211,21 +254,17 @@ export function createSandboxManager(
     const dir = config.tmpDir
     if (!dir) return undefined
     const resolved = resolve(dir)
-    // The temp dir is a writable scratch space, so create it if missing rather than skipping the
-    // mount (Docker rejects bind mounts whose host source does not exist).
     try {
       mkdirSync(resolved, { recursive: true })
     } catch (err) {
       logger.log(`Sandbox: skipping temp mount; could not create ${resolved}: ${err instanceof Error ? err.message : String(err)}`)
       return undefined
     }
-    // Skip when already covered by the writable workspace mount to avoid a redundant overlay.
     if (resolved === workspaceDir || resolved.startsWith(workspaceDir + '/')) return undefined
-    // Identical container path (read-write) so absolute temp paths match host↔container.
     return { hostDir: resolved, containerDir: resolved, readOnly: false }
   }
 
-  function detectGitMount(projectDir: string): string[] {
+  function detectGitMount(projectDir: string): SandboxMount[] {
     const cached = gitMountCache.get(projectDir)
     if (cached) return cached
 
@@ -236,26 +275,21 @@ export function createSandboxManager(
       return []
     }
 
-    const mounts = new Set<string>()
+    const paths = new Set<string>()
     const resolvedGitDir = resolve(projectDir, gitDirResult.stdout.trim())
     const resolvedCommonDir = resolve(projectDir, commonDirResult.stdout.trim())
 
     if (!resolvedGitDir.startsWith(projectDir + '/')) {
-      mounts.add(`${resolvedGitDir}:${resolvedGitDir}`)
+      paths.add(resolvedGitDir)
     }
 
     if (!resolvedCommonDir.startsWith(projectDir + '/')) {
-      mounts.add(`${resolvedCommonDir}:${resolvedCommonDir}`)
+      paths.add(resolvedCommonDir)
     }
 
-    const result = [...mounts]
+    const result = [...paths].map((hostDir) => ({ hostDir, containerDir: hostDir, readOnly: false }))
     gitMountCache.set(projectDir, result)
     return result
-  }
-
-  function buildAddHosts(): string[] | undefined {
-    if (config.network?.hostGateway === false) return []
-    return ['host.docker.internal:host-gateway']
   }
 
   function writeEnvPassthroughFile(containerName: string): string | undefined {
@@ -281,115 +315,81 @@ export function createSandboxManager(
     return filePath
   }
 
-  async function start(worktreeName: string, projectDir: string, startedAt?: string): Promise<{ containerName: string }> {
-    await ensureDockerAvailable()
-    await ensureImage()
+  /**
+   * Applies the configured egress allowlist to the sbx network proxy. Policy rules are global to
+   * sbx, not per sandbox, so they are applied at most once per manager instance. A host that
+   * fails to allow is logged but never throws: an unusable rule must not block a loop that does
+   * not need that host.
+   */
+  async function applyNetworkAllowList(): Promise<void> {
+    if (allowListApplied) return
+    allowListApplied = true
+    for (const host of config.network?.allow ?? []) {
+      const trimmed = host.trim()
+      if (!trimmed) continue
+      const ok = await runtime.allowNetworkHost(trimmed)
+      if (!ok) {
+        logger.log(`Sandbox: failed to allow network host "${trimmed}"`)
+      }
+    }
+  }
 
-    const containerName = docker.containerName(worktreeName)
+  async function start(worktreeName: string, projectDir: string, startedAt?: string): Promise<{ containerName: string }> {
+    await ensureRuntimeAvailable()
+    await ensureTemplate()
+    await applyNetworkAllowList()
+
+    const containerName = runtime.sandboxContainerName(worktreeName)
 
     const absoluteProjectDir = resolve(projectDir)
-    const running = await docker.isRunning(containerName)
+    const running = await runtime.isRunning(containerName)
     if (running) {
-      logger.log(`Sandbox container ${containerName} already running`)
+      logger.log(`Sandbox ${containerName} already running`)
       activeSandboxes.set(worktreeName, {
         containerName,
         projectDir: absoluteProjectDir,
         startedAt: startedAt ?? new Date().toISOString(),
         mounts: buildMountPlan(projectDir).mounts,
+        envFile: writeEnvPassthroughFile(containerName),
       })
       return { containerName }
     }
 
-    const { mounts, gitMounts } = buildMountPlan(absoluteProjectDir)
-    const extraMounts = [...gitMounts]
-    for (const mount of mounts.slice(1)) {
-      extraMounts.push(mount.readOnly ? `${mount.hostDir}:${mount.containerDir}:ro` : `${mount.hostDir}:${mount.containerDir}`)
-    }
-    if (extraMounts.length > 0) {
-      logger.log(`Sandbox: mounting extra volumes: ${extraMounts.join(', ')}`)
-    }
+    const { mounts } = buildMountPlan(absoluteProjectDir)
+    const workspaces = buildSandboxWorkspaces(mounts, logger)
     const resources: SandboxResources = {
       memory: config.resources?.memory ?? DEFAULT_RESOURCES.memory,
       cpus: config.resources?.cpus ?? DEFAULT_RESOURCES.cpus,
-      shmSize: config.resources?.shmSize ?? DEFAULT_RESOURCES.shmSize,
-      ...(config.resources?.memorySwap ? { memorySwap: config.resources.memorySwap } : {}),
     }
-    const addHosts = buildAddHosts()
-    const envFile = writeEnvPassthroughFile(containerName)
-    // Every sandbox runs Docker-in-Docker: a nested, isolated dockerd so loops can build and
-    // run containers (e.g. end-to-end tests). The nested daemon requires root, so the container
-    // runs as root (no --user mapping); on Docker Desktop bind-mount file ownership still maps
-    // back to the host user.
-    logger.log(`Creating sandbox container ${containerName} for ${absoluteProjectDir} (memory=${resources.memory} cpus=${resources.cpus} shmSize=${resources.shmSize}${resources.memorySwap ? ` memorySwap=${resources.memorySwap}` : ''} dind=on)`)
-    try {
-      await docker.createContainer(containerName, absoluteProjectDir, config.image, { extraMounts, resources, addHosts, dockerInDocker: true, ...(envFile ? { envFile } : {}) })
-    } finally {
-      if (envFile) {
-        rmSync(envFile, { force: true })
-      }
-    }
+    logger.log(`Creating sandbox ${containerName} for ${absoluteProjectDir} (memory=${resources.memory} cpus=${resources.cpus})`)
+    await runtime.createSandbox(containerName, workspaces, { template: config.image, resources })
 
     const active: ActiveSandbox = {
       containerName,
       projectDir: absoluteProjectDir,
       startedAt: startedAt ?? new Date().toISOString(),
       mounts,
+      envFile: writeEnvPassthroughFile(containerName),
     }
 
     activeSandboxes.set(worktreeName, active)
-    logger.log(`Sandbox container ${containerName} started`)
-
-    await verifyDockerSocketReachable(containerName)
+    logger.log(`Sandbox ${containerName} started`)
 
     return { containerName }
   }
 
-  /**
-   * Confirms the in-container exec user (host UID:GID via `docker exec --user`, not root) can reach
-   * the nested Docker daemon socket, so loops running Docker-based e2e tests don't silently see
-   * "permission denied / no daemon". The entrypoint guarantees socket access post-readiness; this
-   * polls until that takes effect and surfaces a clear, actionable error if it never does.
-   *
-   * Best-effort and non-fatal: the nested daemon is not required by every loop, so an unreachable
-   * daemon is logged rather than thrown (which would break non-Docker loops). Any unexpected
-   * exec failure (e.g. a partial DockerService) aborts verification quietly.
-   */
-  async function verifyDockerSocketReachable(containerName: string): Promise<void> {
-    const MAX_TRIES = 30
-    let lastDetail = ''
-    for (let i = 0; i < MAX_TRIES; i++) {
-      let result: { stdout: string; stderr: string; exitCode: number }
-      try {
-        result = await docker.exec(containerName, 'docker version --format "{{.Server.Version}}"', { timeout: 5000 })
-      } catch (err) {
-        logger.debug?.(`Sandbox: skipping docker socket verification for ${containerName}: ${err instanceof Error ? err.message : String(err)}`)
-        return
-      }
-      if (result.exitCode === 0) {
-        logger.log(`Sandbox: nested Docker daemon reachable by exec user in ${containerName} (server ${result.stdout.trim()})`)
-        return
-      }
-      lastDetail = (result.stderr || result.stdout).trim()
-      await new Promise((r) => setTimeout(r, 1000))
-    }
-    logger.error(
-      `Sandbox: nested Docker daemon not reachable by the in-container exec user in ${containerName} after ${MAX_TRIES}s. ` +
-      `Docker-based tests (e.g. e2e) will fail. Last error: ${lastDetail || '(none)'}. ` +
-      `Check 'docker exec ${containerName} cat /var/log/dockerd.log' and the socket group ('ls -l /var/run/docker.sock').`
-    )
-  }
-
   async function stop(worktreeName: string): Promise<void> {
     const active = activeSandboxes.get(worktreeName)
-    const containerName = active?.containerName || docker.containerName(worktreeName)
+    const containerName = active?.containerName || runtime.sandboxContainerName(worktreeName)
 
     try {
-      await docker.removeContainer(containerName)
-      logger.log(`Sandbox container ${containerName} removed`)
+      await runtime.removeSandbox(containerName)
+      logger.log(`Sandbox ${containerName} removed`)
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err)
-      logger.log(`Sandbox container ${containerName} removal: ${errMsg}`)
+      logger.log(`Sandbox ${containerName} removal: ${errMsg}`)
     } finally {
+      if (active?.envFile) rmSync(active.envFile, { force: true })
       activeSandboxes.delete(worktreeName)
     }
   }
@@ -407,44 +407,43 @@ export function createSandboxManager(
     if (!active) {
       return false
     }
-    
+
     const containerName = active.containerName
-    const running = await docker.isRunning(containerName)
-    
+    const running = await runtime.isRunning(containerName)
+
     if (!running) {
-      // Container is not running in Docker - remove stale map entry
-      logger.log(`Sandbox: container ${containerName} not found in Docker, removing stale map entry for ${worktreeName}`)
+      logger.log(`Sandbox: sandbox ${containerName} not found as running, removing stale map entry for ${worktreeName}`)
       activeSandboxes.delete(worktreeName)
       return false
     }
-    
+
     return true
   }
 
   async function isLiveByName(worktreeName: string): Promise<boolean> {
-    const containerName = docker.containerName(worktreeName)
-    return docker.isRunning(containerName)
+    const containerName = runtime.sandboxContainerName(worktreeName)
+    return runtime.isRunning(containerName)
   }
 
   async function cleanupOrphans(preserveWorktrees?: string[]): Promise<number> {
-    const containers = await docker.listContainersByPrefix('forge-')
+    const sandboxes = await runtime.listSandboxesByPrefix('forge-')
     let removed = 0
 
     const preserveSet = preserveWorktrees
-      ? new Set(preserveWorktrees.map((wt) => docker.containerName(wt)))
+      ? new Set(preserveWorktrees.map((wt) => runtime.sandboxContainerName(wt)))
       : new Set<string>()
 
-    for (const name of containers) {
+    for (const name of sandboxes) {
       if (preserveSet.has(name)) {
         continue
       }
       try {
-        await docker.removeContainer(name)
+        await runtime.removeSandbox(name)
         removed++
-        logger.log(`Removed orphaned sandbox container: ${name}`)
+        logger.log(`Removed orphaned sandbox: ${name}`)
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err)
-        logger.error(`Failed to remove orphaned sandbox container ${name}: ${errMsg}`)
+        logger.error(`Failed to remove orphaned sandbox ${name}: ${errMsg}`)
       }
     }
 
@@ -470,37 +469,33 @@ export function createSandboxManager(
     const lastCheck = lastLivenessCheck.get(worktreeName)
     const now = Date.now()
 
-    // Cache hit: active entry and liveness checked within TTL
     if (active && lastCheck !== undefined && (now - lastCheck) < LIVENESS_CHECK_TTL) {
       return active.containerName
     }
 
     if (active) {
-      const running = await docker.isRunning(active.containerName)
+      const running = await runtime.isRunning(active.containerName)
       if (running) {
-        // Repopulate mounts in case config changed, then update cache
         activeSandboxes.set(worktreeName, {
           ...active,
           projectDir: resolve(projectDir),
           mounts: buildMountPlan(projectDir).mounts,
+          envFile: writeEnvPassthroughFile(active.containerName),
         })
         lastLivenessCheck.set(worktreeName, Date.now())
         return active.containerName
       }
-      // Container is dead — remove stale entry and Docker container before recreating
-      logger.log(`Sandbox: container ${active.containerName} is not running, recreating for ${worktreeName}`)
+      logger.log(`Sandbox: sandbox ${active.containerName} is not running, recreating for ${worktreeName}`)
       activeSandboxes.delete(worktreeName)
-      await docker.removeContainer(active.containerName)
+      await runtime.removeSandbox(active.containerName)
 
       const result = await start(worktreeName, projectDir, startedAt)
       lastLivenessCheck.set(worktreeName, Date.now())
       return result.containerName
     }
 
-    // No active entry — check if the container is still alive in Docker (e.g. after process
-    // restart or isLive cleanup). If running, repopulate the map; otherwise clean up and create.
-    const containerName = docker.containerName(worktreeName)
-    const running = await docker.isRunning(containerName)
+    const containerName = runtime.sandboxContainerName(worktreeName)
+    const running = await runtime.isRunning(containerName)
     if (running) {
       const absoluteProjectDir = resolve(projectDir)
       const { mounts } = buildMountPlan(projectDir)
@@ -509,14 +504,14 @@ export function createSandboxManager(
         projectDir: absoluteProjectDir,
         startedAt: startedAt ?? new Date().toISOString(),
         mounts,
+        envFile: writeEnvPassthroughFile(containerName),
       }
       activeSandboxes.set(worktreeName, activeEntry)
       lastLivenessCheck.set(worktreeName, Date.now())
       return containerName
     }
 
-    // Stopped container exists — remove it to avoid name conflict on create
-    await docker.removeContainer(containerName)
+    await runtime.removeSandbox(containerName)
 
     const runningResult = await start(worktreeName, projectDir, startedAt)
     lastLivenessCheck.set(worktreeName, Date.now())
@@ -524,7 +519,7 @@ export function createSandboxManager(
   }
 
   return {
-    docker,
+    runtime,
     start,
     stop,
     getActive,

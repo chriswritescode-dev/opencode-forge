@@ -19,7 +19,7 @@ src/
 ├── hooks/                   # Plugin event/lifecycle hooks
 ├── loop/                    # Core loop state machine & runtime
 ├── services/                # Business logic services
-├── sandbox/                 # Docker sandbox management
+├── sandbox/                 # sbx sandbox management
 ├── storage/                 # SQLite persistence layer
 ├── tools/                   # Plugin tools callable by AI agents
 ├── tui/                     # TUI-specific components
@@ -268,35 +268,39 @@ Source: [src/services/execution.ts](../src/services/execution.ts)
 
 ---
 
-## `sandbox/` — Docker Sandboxing
+## `sandbox/` — sbx Sandboxing
 
-Manages Docker containers for isolated loop execution.
+Drives the `sbx` CLI to provision isolated sandboxes for loop execution.
 
 ### Files
 
 | File | Purpose |
 |------|---------|
-| `docker.ts` | `DockerService` API client (exec, build, create, remove containers) |
+| `sbx.ts` | `SandboxRuntime` facade over the `sbx` CLI (create/exec/remove/list, availability probe) |
+| `process.ts` | Child-process runner (`runCommand`) shared by the sandbox helpers |
+| `template.ts` | Template build/save/load helper (`docker build`/`docker save`/`sbx template load`) |
+| `config-warnings.ts` | Warnings for legacy Docker-era sandbox config keys |
 | `manager.ts` | `SandboxManager` lifecycle management (start/stop/getActive/isLive) |
 | `reconcile.ts` | Sandbox reconciliation with loop states |
 | `context.ts` | `SandboxContext`, `isSandboxEnabled()` |
 | `path.ts` | Sandbox path utilities |
-| `exec-fs.ts` | Filesystem operations through Docker |
+| `exec-fs.ts` | Filesystem operations through `sbx exec` |
 
-### DockerService Interface
+### SandboxRuntime Interface
 
 ```typescript
-interface DockerService {
-  checkDocker(): Promise<boolean>
-  imageExists(image: string): Promise<boolean>
-  buildImage(image: string, dockerfile: string): Promise<void>
-  createContainer(image: string, opts: ContainerOpts): Promise<string>
-  removeContainer(name: string): Promise<void>
-  exec(container: string, cmd: string[], opts?: ExecOpts): Promise<string>
-  execPipe(container: string, cmd: string[], opts?: ExecOpts): Promise<{ stdout: string; exitCode: number }>
-  isRunning(container: string): Promise<boolean>
-  containerName(worktreeName: string): string
-  listContainersByPrefix(prefix: string): Promise<string[]>
+interface SandboxRuntime {
+  checkAvailable(): Promise<SbxAvailability>
+  templateExists(ref: string): Promise<boolean>
+  loadTemplate(tarPath: string): Promise<void>
+  createSandbox(name: string, workspaces: SandboxWorkspace[], opts?: CreateSandboxOpts): Promise<void>
+  removeSandbox(name: string): Promise<void>
+  exec(name: string, command: string, opts?: SandboxExecOpts): Promise<CommandResult>
+  execPipe(name: string, command: string, stdin: string, opts?: ...): Promise<CommandResult>
+  isRunning(name: string): Promise<boolean>
+  sandboxContainerName(worktreeName: string): string
+  listSandboxesByPrefix(prefix: string): Promise<string[]>
+  allowNetworkHost(host: string): Promise<boolean>
 }
 ```
 
@@ -306,16 +310,16 @@ interface DockerService {
 interface SandboxManager {
   start(loopName: string, worktreeDir: string): Promise<void>
   stop(loopName: string): Promise<void>
-  getActive(): Map<string, { container: string; worktreeDir: string }>
+  getActive(): Map<string, { sandbox: string; worktreeDir: string }>
   isActive(loopName: string): boolean
-  isLive(containerName: string): Promise<boolean>
+  isLive(sandboxName: string): Promise<boolean>
   isLiveByName(loopName: string): Promise<boolean>
   cleanupOrphans(preserveNames: Set<string>): Promise<number>
   restore(loopName: string): Promise<void>
 }
 ```
 
-Source: [src/sandbox/docker.ts](../src/sandbox/docker.ts), [src/sandbox/manager.ts](../src/sandbox/manager.ts)
+Source: [src/sandbox/sbx.ts](../src/sandbox/sbx.ts), [src/sandbox/manager.ts](../src/sandbox/manager.ts)
 
 ---
 
@@ -471,10 +475,10 @@ Every major component uses a factory function pattern with dependency injection:
 createForgePlugin(config)         // Server plugin
 createLoop(deps)                  // Loop runtime
 createLoopService(...)            // State management
-createSandboxManager(docker, config, logger) // Sandbox
+createSandboxManager(config, logger) // Sandbox
 createTools(ctx)                  // Tool registry
 createForgeWorkspaceAdapter(deps) // Workspace
-createDockerService(logger, opts?) // Docker (opts.execUser = host UID:GID for `docker exec --user`)
+createSbxRuntime(logger)          // Sandbox
 createLogger(config)              // Logging
 ```
 

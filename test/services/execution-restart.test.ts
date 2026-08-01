@@ -16,6 +16,7 @@ import type { ReviewFindingsRepo } from '../../src/storage/repos/review-findings
 import type { SectionPlansRepo } from '../../src/storage/repos/section-plans-repo'
 import type { LoopTransitionsRepo } from '../../src/storage/repos/loop-transitions-repo'
 import type { LoopService } from '../../src/loop/service'
+import { buildAuditorModelChain, nextAuditorFallbackIndex, auditorModelChoiceAt } from '../../src/utils/loop-helpers'
 const Database = require('better-sqlite3')
 import { setupLoopsTestDb } from '../helpers/loops-test-db'
 import { createFakeForgeClient } from '../helpers/fake-client'
@@ -116,6 +117,8 @@ describe('handleLoopRestart from stall_timeout', () => {
     active: boolean
     worktree: boolean
     workspaceId: string | null
+    auditorModel: string | null
+    auditorVariant: string | null
   }> = {}) {
     const defaults = {
       loopName: 'test-loop',
@@ -128,6 +131,8 @@ describe('handleLoopRestart from stall_timeout', () => {
       active: false,
       worktree: false,
       workspaceId: null as string | null,
+      auditorModel: null as string | null,
+      auditorVariant: null as string | null,
     }
     const opts = { ...defaults, ...overrides }
     loopsRepo.insert({
@@ -145,9 +150,9 @@ describe('handleLoopRestart from stall_timeout', () => {
       errorCount: 0,
       phase: opts.phase as any,
       executionModel: null,
-      auditorModel: null,
+      auditorModel: opts.auditorModel,
       executionVariant: null,
-      auditorVariant: null,
+      auditorVariant: opts.auditorVariant,
       kind: 'plan',
       modelFailed: false,
       sandbox: false,
@@ -620,6 +625,131 @@ describe('handleLoopRestart from stall_timeout', () => {
 
     expect(buildFinalAuditPromptSpy).toHaveBeenCalledTimes(1)
     expect(buildSectionInitialPromptSpy).not.toHaveBeenCalled()
+  })
+
+  test('restart with unset state.auditorModel uses config.auditorModel and the persisted auditor variant', async () => {
+    insertLoop({
+      loopName: 'final-audit-model-loop',
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      currentSectionIndex: 5,
+      iteration: 6,
+      totalSections: 5,
+      phase: 'final_auditing',
+      // state.auditorModel is deliberately unset (null); auditorVariant is preserved.
+      auditorModel: null,
+      auditorVariant: 'high',
+    })
+
+    sectionPlansRepo.bulkInsert({
+      projectId: PROJECT_ID,
+      loopName: 'final-audit-model-loop',
+      sections: [
+        { index: 0, title: 'A', content: 'a' },
+        { index: 1, title: 'B', content: 'b' },
+        { index: 2, title: 'C', content: 'c' },
+        { index: 3, title: 'D', content: 'd' },
+        { index: 4, title: 'E', content: 'e' },
+      ],
+    })
+    for (let i = 0; i < 5; i++) {
+      sectionPlansRepo.setStatus(PROJECT_ID, 'final-audit-model-loop', i, 'completed')
+    }
+
+    const noopFn = () => {}
+    const mockLoopService: Partial<LoopService> = {
+      listActive: () => loopService.listActive(),
+      listRecent: () => loopService.listRecent(),
+      getActiveState: (name) => loopService.getActiveState(name),
+      getAnyState: (name) => loopService.getAnyState(name),
+      registerLoopSession: noopFn,
+      setState: (name, state) => loopService.setState(name, state),
+      deleteState: (name) => loopService.deleteState(name),
+      setPhase: noopFn,
+      buildSectionInitialPrompt: () => 'section prompt',
+      buildFinalAuditPrompt: () => 'audit prompt',
+      recordTransition: (name, entry) => loopService.recordTransition(name, entry),
+      recordTerminalTransition: (name, entry) => loopService.recordTerminalTransition(name, entry),
+      restoreState: (name, state) => loopService.restoreState(name, state),
+      getOutstandingFindings: (name, severity) => loopService.getOutstandingFindings(name, severity),
+      generateUniqueLoopName: () => 'final-audit-model-loop',
+    }
+
+    const { client } = createFakeForgeClient({
+      session: {
+        create: async () => ({ id: 'new-sess-model' }),
+        get: async () => ({}),
+        promptAsync: async () => {},
+        abort: async () => {},
+        delete: async () => {},
+        messages: async () => [],
+        status: async () => ({}),
+      },
+      workspace: { list: async () => [], remove: async () => {} },
+      tui: { publish: async () => {}, selectSession: async () => {} },
+    })
+
+    const mockLoopHandler = {
+      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      startWatchdog: noopFn,
+      clearLoopTimers: noopFn,
+    }
+
+    const { createForgeExecutionService } = await import('../../src/services/execution')
+
+    const service = createForgeExecutionService({
+      projectId: PROJECT_ID,
+      directory: '/tmp/test',
+      config: {
+        loop: { enabled: true },
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+      },
+      logger: mockLogger,
+      dataDir: '/tmp',
+
+      plansRepo,
+      loopsRepo,
+      loop: {
+          service: mockLoopService,
+          listActive: (...args: any[]) => (mockLoopService.listActive as any)(...args),
+          listRecent: (...args: any[]) => (mockLoopService.listRecent as any)(...args),
+          setPhase: (...args: any[]) => (mockLoopService.setPhase as any)(...args),
+          generateUniqueLoopName: (...args: any[]) => (mockLoopService.generateUniqueLoopName as any)(...args),
+          registerSessionReverseIndex: () => {},
+          unregisterSessionReverseIndex: () => {},
+        } as any,
+      loopHandler: mockLoopHandler as any,
+      sectionPlansRepo,
+      workspaceStatusRegistry: mockWorkspaceStatusRegistry as any,
+      client,
+      pendingTeardowns: mockPendingTeardowns as any,
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      {
+        type: 'loop.restart' as const,
+        selector: { kind: 'exact' as const, name: 'final-audit-model-loop' },
+      },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    // Prompts with the configured auditor model (state.auditorModel unset) and the
+    // persisted auditor variant, as the auditor-loop agent.
+    const promptCall = (client.session.promptAsync as any).mock.calls[0][0]
+    expect(promptCall.agent).toBe('auditor-loop')
+    expect(promptCall.model).toEqual({ providerID: 'prov', modelID: 'aud' })
+    expect(promptCall.variant).toBe('high')
+
+    // Persisted fallback index is reset to 0 on restart, and the resolved
+    // primary auditor model is persisted so later centralized chain resolution
+    // still returns config.auditorModel (not the execution model).
+    const newState = loopService.getActiveState('final-audit-model-loop')!
+    expect(newState.auditorFallbackIndex).toBe(0)
+    expect(newState.auditorModel).toBe('prov/aud')
   })
 
   test('restart from stall_timeout re-enters post_action when persisted phase is post_action and postAction is configured', async () => {
@@ -1511,7 +1641,7 @@ describe('handleLoopRestart restartability rules', () => {
     }, { lastAuditResult: null, goal: opts.goal })
   }
 
-  async function createMockService(opts?: { sandboxManager?: unknown; terminate?: (name: string, reason: any) => Promise<boolean> }) {
+  async function createMockService(opts?: { sandboxManager?: unknown; terminate?: (name: string, reason: any) => Promise<boolean>; config?: Record<string, any>; handleAuditorProviderLimit?: (name: string, message: string) => Promise<boolean>; runExclusive?: (name: string, fn: () => Promise<any>) => Promise<any> }) {
     const noopFn = () => {}
     const mockLoopService: Partial<LoopService> = {
       listActive: () => loopService.listActive(),
@@ -1554,9 +1684,35 @@ describe('handleLoopRestart restartability rules', () => {
     })
 
     const mockLoopHandler = {
-      runExclusive: async <T>(name: string, fn: () => Promise<T>) => fn(),
+      runExclusive: opts?.runExclusive ?? (async <T>(name: string, fn: () => Promise<T>) => fn()),
       startWatchdog: noopFn,
       clearLoopTimers: noopFn,
+    }
+
+    // Default auditor-limit handler mimicking the runtime choke point so the
+    // restart path's routing to it can be exercised without a full runtime. Uses
+    // the real shared chain helpers and the real compare-and-swap advance.
+    const defaultHandleAuditorProviderLimit = async (name: string, message: string): Promise<boolean> => {
+      const state = loopService.getActiveState(name)
+      if (!state?.active || (state.phase !== 'auditing' && state.phase !== 'final_auditing')) return false
+      const cfg = {
+        executionModel: 'prov/exec',
+        auditorModel: 'prov/aud',
+        auditorFallbackModels: opts?.config?.auditorFallbackModels,
+      }
+      const chain = buildAuditorModelChain(cfg, state)
+      const next = nextAuditorFallbackIndex(chain, state.auditorFallbackIndex ?? 0)
+      if (next === null) return false
+      const committed = loopService.advanceAuditorFallbackIndex(name, state.auditorFallbackIndex ?? 0, next)
+      if (committed === null) return true
+      const choice = auditorModelChoiceAt(chain, committed)
+      await client.session.promptAsync({
+        sessionID: state.sessionId,
+        parts: [{ type: 'text', text: 'audit prompt' }],
+        agent: 'auditor-loop',
+        ...(choice.model ? { model: choice.model } : {}),
+      })
+      return true
     }
 
     const mockWorkspaceStatusRegistry = {
@@ -1589,6 +1745,7 @@ describe('handleLoopRestart restartability rules', () => {
         loop: { enabled: true },
         executionModel: 'prov/exec',
         auditorModel: 'prov/aud',
+        ...(opts?.config ?? {}),
       },
       logger: mockLogger,
       dataDir: '/tmp',
@@ -1604,6 +1761,7 @@ describe('handleLoopRestart restartability rules', () => {
           registerSessionReverseIndex: () => {},
           unregisterSessionReverseIndex: () => {},
           terminate: opts?.terminate ?? defaultTerminate,
+          handleAuditorProviderLimit: opts?.handleAuditorProviderLimit ?? defaultHandleAuditorProviderLimit,
         } as any,
       loopHandler: mockLoopHandler as any,
       sectionPlansRepo,
@@ -1816,7 +1974,7 @@ describe('handleLoopRestart restartability rules', () => {
     const sandboxStartSpy = vi.fn().mockResolvedValue({ containerName: 'forge-sandbox' })
     const sandboxManager = {
       start: sandboxStartSpy,
-      docker: { containerName: () => 'forge-sandbox' },
+      runtime: { sandboxContainerName: () => 'forge-sandbox' },
     }
 
     const { service, client } = await createMockService({ sandboxManager })
@@ -2001,6 +2159,343 @@ describe('handleLoopRestart restartability rules', () => {
 
     // New session was NOT rolled back (state was terminated, not reverted)
     expect(newState?.sessionId).toBe('new-session-restart')
+  })
+
+  test('final-audit restart prompt limit with a configured fallback advances the chain and re-dispatches instead of terminating', async () => {
+    const loopName = 'final-audit-fallback-restart-loop'
+    insertLoop({
+      loopName,
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'final_auditing',
+    })
+
+    const terminateSpy = vi.fn(async () => true)
+    const { service, client } = await createMockService({
+      terminate: terminateSpy,
+      config: { auditorFallbackModels: ['prov/fb'] },
+    })
+
+    // The restarted final-audit prompt is directly rejected on a provider limit;
+    // the fallback re-dispatch on prov/fb succeeds.
+    ;(client.session.promptAsync as any).mockImplementation(async (params: any) => {
+      if (params?.model?.providerID === 'prov' && params?.model?.modelID === 'fb') {
+        return
+      }
+      throw { name: 'APIError', data: { message: 'You have reached your usage limit', statusCode: 429 } }
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName } },
+    )
+
+    // The fallback absorbed the limit: the restart reports success and does NOT
+    // terminate, and the chain advanced to index 1 with a re-dispatch on prov/fb.
+    expect(result.ok).toBe(true)
+    expect(terminateSpy).not.toHaveBeenCalled()
+
+    const newState = loopService.getAnyState(loopName)
+    expect(newState).not.toBeNull()
+    expect(newState?.active).toBe(true)
+    expect(newState?.phase).toBe('final_auditing')
+    expect(newState?.auditorFallbackIndex).toBe(1)
+
+    const fallbackPrompt = (client.session.promptAsync as any).mock.calls.find(
+      (c: any[]) => c[0]?.agent === 'auditor-loop' && c[0]?.model?.providerID === 'prov' && c[0]?.model?.modelID === 'fb',
+    )
+    expect(fallbackPrompt).toBeDefined()
+  })
+
+  test('restart auditor fallback holds the per-loop lock so a concurrent abort lifecycle event is deferred (abort-emits-before-resolving regression)', async () => {
+    // Regression guard: the deferred final-audit restart fallback
+    // (deps.loop.handleAuditorProviderLimit) must run inside the per-loop
+    // `runExclusive` lock, exactly like the in-loop tick handlers. The runtime's
+    // resendAuditPromptWithAuditorModel aborts the session and that abort emits
+    // its AbortError BEFORE the abort promise resolves (the internal-abort marker
+    // is set only after the abort settles). If the fallback ran unlocked, the
+    // tick's session.error abort branch would process the AbortError immediately,
+    // see no marker, and rotate the loop back to coding while the fallback still
+    // re-dispatches a stale final-audit prompt. Holding the lock queues that
+    // event behind the fallback so the marker and replacement prompt are
+    // established first, and the AbortError is consumed as an internal abort.
+    const loopName = 'final-audit-abort-race-regression'
+    insertLoop({
+      loopName,
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'final_auditing',
+    })
+
+    const mutex = createNonReentrantMutex()
+    const internalAbortMarkerEstablished = { value: false }
+    let abortErrorRotatedToCoding = false
+    let abortErrorProcessedAfterMarker = false
+    let abortErrorSettled = false
+
+    // Mimic the runtime's resendAuditPromptWithAuditorModel racing the tick's
+    // session.error abort branch: the abort fires its AbortError handler before
+    // the internal-abort marker is established. With the fix, the fallback holds
+    // the per-loop lock, so the handler is queued behind it and observes the
+    // marker once established. Without the lock it runs immediately, sees no
+    // marker, and would rotate the loop back to coding.
+    const handleAuditorProviderLimit = async (): Promise<boolean> => {
+      void (async () => {
+        await mutex.acquire()
+        try {
+          if (internalAbortMarkerEstablished.value) abortErrorProcessedAfterMarker = true
+          else abortErrorRotatedToCoding = true
+        } finally {
+          mutex.release()
+          abortErrorSettled = true
+        }
+      })()
+      // The abort settles and its AbortError fires BEFORE the marker is set.
+      await new Promise((r) => setTimeout(r, 30))
+      internalAbortMarkerEstablished.value = true
+      return true
+    }
+
+    const { service, client } = await createMockService({
+      handleAuditorProviderLimit,
+      runExclusive: async (name, fn) => {
+        await mutex.acquire()
+        try {
+          return await fn()
+        } finally {
+          mutex.release()
+        }
+      },
+    })
+
+    // The restarted final-audit prompt is directly rejected on a provider limit,
+    // routing to the deferred fallback.
+    ;(client.session.promptAsync as any).mockImplementation(async (params: any) => {
+      throw { name: 'APIError', data: { message: 'You have reached your usage limit', statusCode: 429 } }
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName } },
+    )
+
+    expect(result.ok).toBe(true)
+
+    // Wait for the AbortError handler (blocked behind the fallback lock) to settle.
+    for (let i = 0; i < 50 && !abortErrorSettled; i++) {
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    expect(abortErrorSettled).toBe(true)
+    // The AbortError was deferred until the internal-abort marker was
+    // established, so it was consumed as an internal fallback abort and did NOT
+    // rotate the loop back to coding.
+    expect(abortErrorRotatedToCoding).toBe(false)
+    expect(abortErrorProcessedAfterMarker).toBe(true)
+
+    // The loop stayed active in the auditor phase (not rotated to coding).
+    const newState = loopService.getAnyState(loopName)
+    expect(newState?.active).toBe(true)
+    expect(newState?.phase).toBe('final_auditing')
+  })
+
+  test('final-audit restart prompt limit with no configured fallback still terminates', async () => {
+    const loopName = 'final-audit-no-fallback-restart-loop'
+    insertLoop({
+      loopName,
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'final_auditing',
+    })
+
+    const terminateSpy = vi.fn(async (name: string, reason: any) => {
+      const state = loopService.getActiveState(name)
+      if (!state?.active) return false
+      loopService.terminate(name, {
+        status: 'errored',
+        reason: reason.kind === 'provider_limit' ? `provider_limit: ${reason.message}` : reason.kind,
+        completedAt: Date.now(),
+      })
+      return true
+    })
+    const { service, client } = await createMockService({ terminate: terminateSpy })
+
+    ;(client.session.promptAsync as any).mockImplementation(async (params: any) => {
+      throw { name: 'APIError', data: { message: 'You have reached your usage limit', statusCode: 429 } }
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName } },
+    )
+
+    expect(result.ok).toBe(false)
+    expect(terminateSpy).toHaveBeenCalledOnce()
+    const [terminatedName, reason] = terminateSpy.mock.calls[0]
+    expect(terminatedName).toBe(loopName)
+    expect(reason).toEqual({ kind: 'provider_limit', message: expect.stringContaining('usage limit') })
+
+    const newState = loopService.getAnyState(loopName)
+    expect(newState?.status).toBe('errored')
+    expect(newState?.terminationReason).toContain('provider_limit')
+    expect(newState?.auditorFallbackIndex).toBe(0)
+  })
+
+  test('concurrent direct rejection and lifecycle notification: one advance, one fallback prompt, no termination', async () => {
+    // A final_auditing restart prompt can both reject directly on a provider
+    // limit AND have its companion lifecycle notification (session.error /
+    // session.status: retry) advance the fallback chain. The lifecycle handler
+    // advances the index and re-dispatches the audit on the fallback model;
+    // the deferred direct-rejection handler must then recognize the failure as
+    // already handled and absorb instead of terminating the recovered loop.
+    const loopName = 'final-audit-restart-race-coalesce'
+    insertLoop({
+      loopName,
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'final_auditing',
+    })
+
+    const terminateSpy = vi.fn(async () => true)
+    let deferredHandlerCalls = 0
+    const { service, client } = await createMockService({
+      terminate: terminateSpy,
+      config: { auditorFallbackModels: ['prov/fb'] },
+      // Simulates the runtime lifecycle handler once the chain is already at its
+      // last fallback. With the deferred-path pre-check this is never reached
+      // (the concurrent lifecycle already handled the failure); without the fix
+      // it returns false and the deferred path terminates the recovered loop.
+      handleAuditorProviderLimit: async () => {
+        deferredHandlerCalls++
+        return false
+      },
+    })
+
+    ;(client.session.promptAsync as any).mockImplementation(async (params: any) => {
+      if (params?.model?.providerID === 'prov' && params?.model?.modelID === 'fb') {
+        return
+      }
+      // The primary restart prompt is rejected on a provider limit, and its
+      // companion lifecycle notification has ALREADY advanced the chain to the
+      // last fallback and re-dispatched the audit on it.
+      const state = loopService.getActiveState(loopName)
+      const committed = loopService.advanceAuditorFallbackIndex(loopName, state?.auditorFallbackIndex ?? 0, 1)
+      await client.session.promptAsync({
+        sessionID: state?.sessionId ?? '',
+        parts: [{ type: 'text', text: 'audit prompt' }],
+        agent: 'auditor-loop',
+        model: { providerID: 'prov', modelID: 'fb' },
+      })
+      throw { name: 'APIError', data: { message: 'You have reached your usage limit', statusCode: 429 } }
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName } },
+    )
+
+    // The deferred path recognized the failure as already handled and absorbed:
+    // no re-handling, no termination, restart reports success.
+    expect(result.ok).toBe(true)
+    expect(terminateSpy).not.toHaveBeenCalled()
+    expect(deferredHandlerCalls).toBe(0)
+
+    const newState = loopService.getAnyState(loopName)
+    expect(newState?.active).toBe(true)
+    expect(newState?.phase).toBe('final_auditing')
+    expect(newState?.auditorFallbackIndex).toBe(1)
+
+    // Exactly one fallback prompt on the fallback model.
+    const fallbackPrompts = (client.session.promptAsync as any).mock.calls.filter(
+      (c: any[]) => c[0]?.agent === 'auditor-loop' && c[0]?.model?.providerID === 'prov' && c[0]?.model?.modelID === 'fb',
+    )
+    expect(fallbackPrompts).toHaveLength(1)
+  })
+
+  test('deferred restart handler rechecks the fallback index inside the lock when a queued lifecycle handler advanced first', async () => {
+    // A final_auditing restart prompt can be observed by two detection paths:
+    // the deferred direct-rejection handler and a queued runtime lifecycle
+    // handler (session.error / session.status: retry), both of which call
+    // runExclusive. If the lifecycle handler acquires the lock first (queued
+    // behind the original restart lock), it advances the fallback chain and
+    // re-dispatches the audit on the fallback model. The deferred handler must
+    // then re-read the index INSIDE its own runExclusive acquisition and absorb
+    // rather than terminate. Reading the index before acquiring the lock would
+    // see 0 and, once it held the lock with the chain exhausted, terminate a
+    // loop that already recovered.
+    const loopName = 'final-audit-restart-queued-lifecycle-race'
+    insertLoop({
+      loopName,
+      status: 'stalled',
+      terminationReason: 'stall_timeout',
+      phase: 'final_auditing',
+    })
+
+    const terminateSpy = vi.fn(async () => true)
+    let deferredHandlerCalls = 0
+    let lifecycleAdvanced = false
+    let runExclusiveCalls = 0
+    const { service, client } = await createMockService({
+      terminate: terminateSpy,
+      config: { auditorFallbackModels: ['prov/fb'] },
+      // The deferred restart handler's own handleAuditorProviderLimit must NOT
+      // run: once the queued lifecycle handler has advanced the chain to its
+      // last entry, it would see the chain exhausted and return false,
+      // terminating the recovered loop. The in-lock recheck absorbs instead.
+      handleAuditorProviderLimit: async () => {
+        deferredHandlerCalls++
+        return false
+      },
+      runExclusive: async (name, fn) => {
+        runExclusiveCalls++
+        // The first acquisition is the original restart lock. On the deferred
+        // handler's later acquisition, simulate the queued lifecycle handler
+        // that grabbed the lock first: it advances the fallback chain and
+        // re-dispatches the audit on the fallback model BEFORE the deferred
+        // handler's callback runs its recheck.
+        if (runExclusiveCalls > 1 && !lifecycleAdvanced) {
+          lifecycleAdvanced = true
+          const state = loopService.getActiveState(name)
+          loopService.advanceAuditorFallbackIndex(name, state?.auditorFallbackIndex ?? 0, 1)
+          await client.session.promptAsync({
+            sessionID: state?.sessionId ?? '',
+            parts: [{ type: 'text', text: 'audit prompt' }],
+            agent: 'auditor-loop',
+            model: { providerID: 'prov', modelID: 'fb' },
+          })
+        }
+        return fn()
+      },
+    })
+
+    ;(client.session.promptAsync as any).mockImplementation(async (params: any) => {
+      if (params?.model?.providerID === 'prov' && params?.model?.modelID === 'fb') {
+        return
+      }
+      throw { name: 'APIError', data: { message: 'You have reached your usage limit', statusCode: 429 } }
+    })
+
+    const result = await service.dispatch(
+      { surface: 'api', projectId: PROJECT_ID, directory: '/tmp/test' },
+      { type: 'loop.restart' as const, selector: { kind: 'exact' as const, name: loopName } },
+    )
+
+    // The deferred path re-read the index inside the lock, saw the chain already
+    // advanced by the queued lifecycle handler, and absorbed: no termination, no
+    // re-handling, restart reports success.
+    expect(result.ok).toBe(true)
+    expect(terminateSpy).not.toHaveBeenCalled()
+    expect(deferredHandlerCalls).toBe(0)
+
+    const newState = loopService.getAnyState(loopName)
+    expect(newState?.active).toBe(true)
+    expect(newState?.phase).toBe('final_auditing')
+    expect(newState?.auditorFallbackIndex).toBe(1)
+
+    // Exactly one fallback prompt on the fallback model (the queued lifecycle's).
+    const fallbackPrompts = (client.session.promptAsync as any).mock.calls.filter(
+      (c: any[]) => c[0]?.agent === 'auditor-loop' && c[0]?.model?.providerID === 'prov' && c[0]?.model?.modelID === 'fb',
+    )
+    expect(fallbackPrompts).toHaveLength(1)
   })
 
   test('restart prompt failure with non-provider-limit error still rolls back', async () => {

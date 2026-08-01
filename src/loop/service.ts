@@ -34,7 +34,7 @@ export type LoopChangeReason =
   | 'rotate' | 'phase' | 'iteration'
   | 'status' | 'session'
   | 'sandbox' | 'workspace' | 'audit-result' | 'post-action-report'
-  | 'model-failed' | 'error' | 'sections-adjusted'
+  | 'model-failed' | 'error' | 'sections-adjusted' | 'auditor-fallback'
 
 export type LoopChangeNotifier = (reason: LoopChangeReason, loopName: string, hint?: { projectDir?: string; worktreeDir?: string }) => void
 
@@ -70,6 +70,8 @@ export interface LoopService {
   getPlanText(loopName: string, sessionId: string): string | null
   incrementError(name: string): number
   resetError(name: string): void
+  /** Compare-and-swap advance of the auditor fallback index; returns the new index on success or null when the loop is absent/non-running/index mismatch. */
+  advanceAuditorFallbackIndex(name: string, fromIndex: number, toIndex: number): number | null
   setPhase(name: string, phase: LoopState['phase']): void
   setPhaseAndResetError(name: string, phase: LoopState['phase']): void
   setModelFailed(name: string, failed: boolean): void
@@ -406,6 +408,15 @@ export function createLoopService(
     const state = getAnyState(name)
     loopsRepo.resetError(projectId, name)
     notifyLoopChange('error', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
+  }
+
+  function advanceAuditorFallbackIndex(name: string, fromIndex: number, toIndex: number): number | null {
+    const state = getAnyState(name)
+    const result = loopsRepo.advanceAuditorFallbackIndex(projectId, name, fromIndex, toIndex)
+    if (result !== null) {
+      notifyLoopChange('auditor-fallback', name, state ? { projectDir: state.projectDir, worktreeDir: state.worktreeDir } : undefined)
+    }
+    return result
   }
 
   function setPhase(name: string, phase: LoopState['phase']): void {
@@ -843,6 +854,7 @@ export function createLoopService(
     getPlanText,
     incrementError,
     resetError,
+    advanceAuditorFallbackIndex,
     setPhase,
     setPhaseAndResetError,
     setModelFailed,

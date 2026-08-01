@@ -7,7 +7,10 @@ import { resolveForgeDbPath } from './storage'
 import type { ExecutionContextCache } from './utils/tui-execution-context-cache'
 import { createExecutionContextCache } from './utils/tui-execution-context-cache'
 import type { PluginConfig } from './types'
-import { createDockerService } from './sandbox/docker'
+import { createSbxRuntime } from './sandbox/sbx'
+import { buildAndLoadSandboxTemplate } from './sandbox/template'
+import { runCommand } from './sandbox/process'
+import { tmpdir } from 'os'
 import { resolveLoopAllowedDirectories } from './constants/loop'
 import { connectForgeProject, type ForgeProjectClient } from './utils/tui-client'
 import { ExecutePlanPanel, type ExecutePlanPanelProps } from './tui/execute-plan-panel'
@@ -175,23 +178,24 @@ function SandboxBuildDialog(props: {
 
   const doBuild = async () => {
     props.api.ui.dialog.clear()
-    props.api.ui.toast({ message: `Building sandbox image ${props.image}...`, variant: 'info', duration: 5000 })
+    props.api.ui.toast({ message: `Building sandbox template ${props.image}...`, variant: 'info', duration: 5000 })
 
     const logger = { log: () => {}, error: () => {}, debug: () => {} }
-    const docker = createDockerService(logger)
 
     try {
-      await docker.buildImage(props.buildContextDir, props.image)
+      await buildAndLoadSandboxTemplate(props.buildContextDir, props.image, {
+        runCommand,
+        loadTemplate: (tar) => createSbxRuntime(logger).loadTemplate(tar),
+        logger,
+        tmpDir: tmpdir(),
+      })
       props.api.ui.toast({
-        message: `Sandbox image ${props.image} built successfully`,
+        message: `Sandbox template ${props.image} built and loaded successfully`,
         variant: 'success',
         duration: 5000,
       })
     } catch (err) {
-      const rawMessage = err instanceof Error ? err.message : String(err)
-      const message = rawMessage.includes('spawn docker ENOENT')
-        ? 'Docker CLI not found. Is Docker installed and running?'
-        : rawMessage.split('\n').filter(Boolean).at(-1)?.trim() || rawMessage.slice(0, 200)
+      const message = err instanceof Error ? err.message : String(err)
       props.api.ui.toast({ message, variant: 'error', duration: 10_000 })
     }
   }
@@ -200,13 +204,13 @@ function SandboxBuildDialog(props: {
     <box flexDirection="column" paddingX={2}>
       <box flexShrink={0} paddingBottom={1} flexDirection="row" gap={1}>
         <text fg={theme().text}>
-          <b>Build sandbox Docker image</b>
+          <b>Build sandbox template</b>
         </text>
       </box>
 
       <box paddingBottom={1}>
         <text fg={theme().textMuted}>
-          This will build the sandbox image from the bundled Dockerfile.
+          This builds the sandbox image with Docker, then loads it into sbx.
         </text>
       </box>
       <box paddingBottom={1}>
@@ -342,8 +346,8 @@ const tui: TuiPlugin = async (api) => {
       },
       {
         name: 'forge.sandbox.buildImage',
-        title: 'Build sandbox image',
-        desc: 'Build the Docker sandbox image from the bundled Dockerfile',
+        title: 'Build sandbox template',
+        desc: 'Build the sandbox template image and load it into sbx',
         category: 'Forge',
         namespace: 'palette',
         run: () => { runBuildSandboxImage() },

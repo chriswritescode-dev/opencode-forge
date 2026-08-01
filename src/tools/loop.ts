@@ -4,7 +4,7 @@ import type { ToolContext } from './types'
 import { slugify } from '../utils/logger'
 import { formatSessionOutput, formatAuditResult, formatCompletionSummary, formatPostActionReport } from '../utils/loop-format'
 import { fetchSessionOutput, type LoopSessionOutput, MAX_RETRIES } from '../loop'
-import { formatDuration, computeElapsedSeconds } from '../utils/loop-helpers'
+import { formatDuration, computeElapsedSeconds, resolveUsageFallbackModelLabel } from '../utils/loop-helpers'
 import { buildStartLoopCommand, createForgeExecutionService, type ForgeExecutionRequestContext, type PlanSource } from '../services/execution'
 import { resolveSessionPlanOfRecord } from '../services/plan-capture'
 import { formatLoopSessionTitle, formatPlanSessionTitle } from '../utils/session-titles'
@@ -455,9 +455,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
             state.worktreeDir,
             logger,
             {
-              fallbackModel: state.phase === 'auditing' || state.phase === 'final_auditing'
-                ? (state.auditorModel ?? state.executionModel ?? config.executionModel)
-                : (state.executionModel ?? config.executionModel),
+              fallbackModel: resolveUsageFallbackModelLabel(config, state, state.phase),
               role: state.phase === 'auditing' || state.phase === 'final_auditing' ? 'auditor' : 'code',
             },
           ) : null
@@ -557,9 +555,7 @@ export function createLoopTools(ctx: ToolContext): Record<string, ReturnType<typ
               state.worktreeDir,
               logger,
               {
-                fallbackModel: state.phase === 'auditing' || state.phase === 'final_auditing'
-                  ? (state.auditorModel ?? state.executionModel ?? config.auditorModel ?? config.executionModel)
-                  : (state.executionModel ?? config.executionModel),
+                fallbackModel: resolveUsageFallbackModelLabel(config, state, state.phase),
                 role: state.phase === 'auditing' || state.phase === 'final_auditing' ? 'auditor' : 'code',
               },
             )

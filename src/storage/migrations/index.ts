@@ -399,5 +399,14 @@ export const migrations: Migration[] = [
       db.run(loadSql('143_create_plan_amendments.sql'))
     },
   },
+  {
+    id: '144',
+    description: 'Add auditor_fallback_index to loops for the auditor model fallback chain',
+    apply: (db: Database) => {
+      const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+      if (cols.some((c) => c.name === 'auditor_fallback_index')) return
+      db.run('ALTER TABLE loops ADD COLUMN auditor_fallback_index INTEGER NOT NULL DEFAULT 0')
+    },
+  },
 
 ]

@@ -53,6 +53,7 @@ describe('LoopsRepo', () => {
       auditor_variant      TEXT,
       loop_kind            TEXT NOT NULL DEFAULT 'plan',
       executor_session_id  TEXT,
+      auditor_fallback_index INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (project_id, loop_name)
       )
     `)
@@ -439,6 +440,70 @@ describe('LoopsRepo', () => {
     })
   })
 
+  describe('auditorFallbackIndex', () => {
+    test('a freshly inserted row reads back auditorFallbackIndex === 0', () => {
+      repo.insert(testRow, testLarge)
+      const retrieved = repo.get(testRow.projectId, testRow.loopName)
+      expect(retrieved!.auditorFallbackIndex).toBe(0)
+    })
+
+    test('advance persists via CAS and a second stale call returns null', () => {
+      repo.insert(testRow, testLarge)
+
+      // First advance wins: 0 -> 1 and persists.
+      const first = repo.advanceAuditorFallbackIndex(testRow.projectId, testRow.loopName, 0, 1)
+      expect(first).toBe(1)
+      expect(repo.get(testRow.projectId, testRow.loopName)!.auditorFallbackIndex).toBe(1)
+
+      // A second call still expecting fromIndex 0 must not match (value is now 1).
+      const second = repo.advanceAuditorFallbackIndex(testRow.projectId, testRow.loopName, 0, 2)
+      expect(second).toBeNull()
+      expect(repo.get(testRow.projectId, testRow.loopName)!.auditorFallbackIndex).toBe(1)
+
+      // Advancing from the current value works.
+      const third = repo.advanceAuditorFallbackIndex(testRow.projectId, testRow.loopName, 1, 2)
+      expect(third).toBe(2)
+    })
+
+    test('advance against a non-running row returns null', () => {
+      const row: LoopRow = { ...testRow, status: 'completed', completedAt: Date.now() }
+      repo.insert(row, testLarge)
+
+      const result = repo.advanceAuditorFallbackIndex(row.projectId, row.loopName, 0, 1)
+      expect(result).toBeNull()
+      expect(repo.get(row.projectId, row.loopName)!.auditorFallbackIndex).toBe(0)
+    })
+
+    test('advance against a missing row returns null', () => {
+      const result = repo.advanceAuditorFallbackIndex(testRow.projectId, 'no-such-loop', 0, 1)
+      expect(result).toBeNull()
+    })
+
+    test('restart resets auditor_fallback_index to 0', () => {
+      repo.insert(testRow, testLarge)
+      repo.advanceAuditorFallbackIndex(testRow.projectId, testRow.loopName, 0, 1)
+      expect(repo.get(testRow.projectId, testRow.loopName)!.auditorFallbackIndex).toBe(1)
+
+      repo.restart(testRow.projectId, testRow.loopName, {
+        sessionId: 'restart-session',
+        phase: 'coding',
+        iteration: 0,
+        auditCount: 0,
+        sandbox: false,
+        sandboxContainer: null,
+        workspaceId: null,
+        auditorModel: null,
+        currentSectionIndex: 0,
+        totalSections: 0,
+        finalAuditDone: false,
+        startedAt: Date.now(),
+        executorSessionId: null,
+      })
+
+      expect(repo.get(testRow.projectId, testRow.loopName)!.auditorFallbackIndex).toBe(0)
+    })
+  })
+
   describe('setLastAuditResult', () => {
     test('should set last audit result', () => {
       repo.insert(testRow, testLarge)
@@ -472,6 +537,7 @@ describe('LoopsRepo', () => {
         sandbox: false,
         sandboxContainer: null,
         workspaceId: null,
+        auditorModel: null,
         currentSectionIndex: 0,
         totalSections: 0,
         finalAuditDone: false,
@@ -574,6 +640,7 @@ describe('LoopsRepo', () => {
         sandbox: false,
         sandboxContainer: null,
         workspaceId: null,
+        auditorModel: null,
         currentSectionIndex: 0,
         totalSections: 0,
         finalAuditDone: false,

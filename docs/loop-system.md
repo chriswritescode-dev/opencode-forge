@@ -76,11 +76,12 @@ interface LoopState {
   completedAt?: string               // ISO timestamp
   worktree?: boolean                 // Whether using worktree isolation
   modelFailed?: boolean              // Whether model error occurred
-  sandbox?: boolean                  // Whether using Docker sandbox
-  sandboxContainer?: string          // Container name if sandboxed
+  sandbox?: boolean                  // Whether using sbx sandbox
+  sandboxContainer?: string          // Sandbox name if sandboxed
   completionSummary?: string         // Summary of loop completion
   executionModel?: string            // Model used for execution
   auditorModel?: string              // Model used for auditing
+  auditorFallbackIndex?: number      // Index into the auditor model fallback chain
   workspaceId?: string               // OpenCode workspace ID
   hostSessionId?: string             // Host session ID for post-completion redirect
   currentSectionIndex: number
@@ -172,7 +173,7 @@ Outstanding `severity: 'bug'` findings block loop completion — the loop termin
 
 ## Worktree Isolation
 
-Loops always run in an isolated git worktree. Sandbox is optional: when Docker is available and `sandbox.mode = 'docker'` is configured, a sandbox container is provisioned automatically; otherwise the loop runs in worktree-only mode.
+Loops always run in an isolated git worktree. Sandbox is optional: when the `sbx` daemon is available and `sandbox.mode = 'sbx'` is configured, a sandbox is provisioned automatically; otherwise the loop runs in worktree-only mode.
 
 Worktree loops require a repository with at least one commit. If OpenCode started before the initial commit, it resolves the project as `global`; create the commit, restart OpenCode, and retry. Forge rejects `execute-plan` loop mode, `execute-goal`, local or remote TUI loop launch, and feature-group launch/restart before creating workspaces, sessions, or group state when this precondition is not met.
 
@@ -199,12 +200,12 @@ Benefits of worktree isolation:
 
 ## Sandbox Integration
 
-Sandbox is optional. When Docker is available and configured, a sandbox container is provisioned automatically; otherwise loops run in worktree-only mode.
+Sandbox is optional. When the `sbx` daemon is available and configured, a sandbox is provisioned automatically; otherwise loops run in worktree-only mode.
 
-1. Container created with worktree mounted at `/workspace`
-2. `bash`, `glob`, `grep` tools redirect into container
+1. Sandbox created with the worktree mounted at its identical host path
+2. `bash`, `glob`, `grep` tools redirect into the sandbox
 3. `read`/`write`/`edit` operate on host filesystem
-4. Container stopped and removed on loop completion
+4. Sandbox stopped and removed on loop completion
 
 See [sandbox documentation](architecture.md#sandbox-system) for details.
 
@@ -279,7 +280,7 @@ Loops can be cancelled via:
 Cancellation:
 1. Marks loop as inactive
 2. Sets `terminationReason` to `'cancelled'`
-3. Stops sandbox container if applicable
+3. Stops sandbox if applicable
 4. Optionally cleans up worktree (if `cleanupWorktree: true`)
 
 ## Error Handling

@@ -29,6 +29,8 @@ interface LoopStateBase {
   hostSessionId?: string
   /** Goal-loop coding session binding. Undefined for plan loops and while a goal loop is auditing. */
   executorSessionId?: string
+  /** Index into the auditor model fallback chain; 0 is the preferred model. */
+  auditorFallbackIndex?: number
   currentSectionIndex: number
   totalSections: number
   finalAuditDone: boolean
@@ -90,6 +92,7 @@ export function loopRowToState(row: LoopRow, large?: LoopLargeFields | null): Lo
     workspaceId: row.workspaceId ?? undefined,
     hostSessionId: row.hostSessionId ?? undefined,
     executorSessionId: row.executorSessionId ?? undefined,
+    auditorFallbackIndex: row.auditorFallbackIndex ?? 0,
     currentSectionIndex: row.currentSectionIndex,
     totalSections: row.totalSections,
     finalAuditDone: row.finalAuditDone === 1,
@@ -149,6 +152,7 @@ export function loopStateToRow(state: LoopState, projectId: string): Omit<LoopRo
     workspaceId: state.workspaceId ?? null,
     hostSessionId: state.hostSessionId ?? null,
     executorSessionId: state.executorSessionId ?? null,
+    auditorFallbackIndex: state.auditorFallbackIndex ?? 0,
     currentSectionIndex: state.currentSectionIndex,
     totalSections: state.totalSections,
     finalAuditDone: state.finalAuditDone ? 1 : 0,

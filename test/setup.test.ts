@@ -57,7 +57,7 @@ describe('loadPluginConfig', () => {
 
     const sandboxConfig = {
       sandbox: {
-        mode: 'docker',
+        mode: 'sbx',
         image: 'custom-image:latest',
       },
     }
@@ -65,7 +65,7 @@ describe('loadPluginConfig', () => {
     writeFileSync(configPath, JSON.stringify(sandboxConfig))
 
     const config = loadPluginConfig()
-    expect(config.sandbox?.mode).toBe('docker')
+    expect(config.sandbox?.mode).toBe('sbx')
     expect(config.sandbox?.image).toBe('custom-image:latest')
   })
 })
@@ -264,7 +264,7 @@ describe('bundled sample config', () => {
 
     expect(parsed.sandbox).toBeDefined()
     expect(parsed.sandbox?.enabled).toBe(true)
-    expect(parsed.sandbox?.mode).toBe('docker')
+    expect(parsed.sandbox?.mode).toBe('sbx')
   })
 
   test('JSONC parsing preserves worktreeLogging config', () => {

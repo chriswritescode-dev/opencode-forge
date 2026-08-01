@@ -44,9 +44,9 @@ describe('isSandboxConfigEnabled', () => {
 
 describe('resolveSandboxContextForLoop', () => {
   it('returns the active sandbox context', async () => {
-    const mounts: SandboxMount[] = [{ hostDir: '/worktree', containerDir: '/workspace' }]
+    const mounts: SandboxMount[] = [{ hostDir: '/worktree', containerDir: '/worktree' }]
     const manager = {
-      docker: {} as never,
+      runtime: {} as never,
       restore: vi.fn(),
       ensureRunning: vi.fn().mockResolvedValue('forge-loop'),
       getActive: vi.fn().mockReturnValue({ containerName: 'forge-loop', projectDir: '/worktree', mounts }),
@@ -59,14 +59,14 @@ describe('resolveSandboxContextForLoop', () => {
       worktreeDir: '/worktree',
     })
 
-    expect(context).toEqual({ docker: manager.docker, containerName: 'forge-loop', hostDir: '/worktree', mounts })
+    expect(context).toEqual({ runtime: manager.runtime, containerName: 'forge-loop', hostDir: '/worktree', mounts })
     expect(manager.ensureRunning).toHaveBeenCalledWith('loop', '/worktree')
   })
 
   it('returns null without calling ensureRunning when no worktreeDir', async () => {
-    const mounts: SandboxMount[] = [{ hostDir: '/worktree', containerDir: '/workspace' }]
+    const mounts: SandboxMount[] = [{ hostDir: '/worktree', containerDir: '/worktree' }]
     const manager = {
-      docker: {} as never,
+      runtime: {} as never,
       restore: vi.fn(),
       ensureRunning: vi.fn(),
       getActive: vi.fn().mockReturnValue({ containerName: 'forge-loop', projectDir: '/worktree', mounts }),
@@ -78,14 +78,14 @@ describe('resolveSandboxContextForLoop', () => {
       sandbox: true,
     })
 
-    expect(context).toEqual({ docker: manager.docker, containerName: 'forge-loop', hostDir: '/worktree', mounts })
+    expect(context).toEqual({ runtime: manager.runtime, containerName: 'forge-loop', hostDir: '/worktree', mounts })
     expect(manager.ensureRunning).not.toHaveBeenCalled()
   })
 
   it('returns null after ensureRunning failure unless configured to throw', async () => {
     const logger = { log: vi.fn() }
     const manager = {
-      docker: {} as never,
+      runtime: {} as never,
       restore: vi.fn(),
       ensureRunning: vi.fn().mockRejectedValue(new Error('docker unavailable')),
       getActive: vi.fn().mockReturnValue(null),

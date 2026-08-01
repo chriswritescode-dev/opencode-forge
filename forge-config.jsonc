@@ -34,6 +34,11 @@
   // Default variant for the auditor model (independent; does not inherit executionVariant)
   "auditorVariant": "",
 
+  // Ordered auditor fallback models used when the current auditor model hits a provider
+  // usage/auth limit mid-loop. Tried in order; variants are NOT inherited. Empty/omitted
+  // means a limited auditor terminates the loop as before.
+  // "auditorFallbackModels": ["provider/model-b", "provider/model-c"],
+
   // Iterative development loop settings
   "loop": {
     "enabled": true,
@@ -79,34 +84,28 @@
     "maxConcurrentLoops": 3
   },
 
-  // Sandbox configuration. Sandbox is optional; when Docker is unavailable, loops run in worktree-only mode.
-  // Currently only Docker is supported; additional modes may be added later.
-  // Set "enabled": false to force worktree-only mode even when Docker is available.
+  // Sandbox configuration. Sandbox is optional: loops always run in an isolated git worktree, and
+  // when the sbx CLI and daemon are available a sandbox is provisioned automatically. Set
+  // "enabled": false to force worktree-only mode even when the sbx daemon is running.
   "sandbox": {
     "enabled": true,
-    "mode": "docker",
+    "mode": "sbx",
     "image": "oc-forge-sandbox:latest"
-    // Mount the source project directory as a read-only volume. Defaults to true.
+    // Mount the source project directory read-only at its identical host path. Defaults to true.
     // "mountProjectReadonly": true,
-    // Container path for the read-only project mount. Defaults to '/project'.
-    // "projectMountPath": "/project",
-    // Network access configuration (host gateway, env passthrough).
+    // Network access configuration. The sbx proxy is deny-by-default: host loopback is
+    // unreachable, and outbound access is allowed only for hosts listed in "allow".
     // "network": {
-    //   // Enable host.docker.internal gateway. Defaults to true.
-    //   "hostGateway": true,
-    //   // Environment variable names to pass through from host process into the container.
+    //   // Hosts the sandbox may reach. Defaults to none (deny-by-default).
+    //   "allow": ["registry.npmjs.org"],
+    //   // Host environment variable names passed into each sandbox exec via the env file.
     //   "env": ["MY_VAR"]
     // },
-    // Every sandbox runs Docker-in-Docker by default: a nested, isolated Docker daemon inside
-    // each container so loops can build and run containers (e.g. end-to-end tests). Each loop
-    // gets its own daemon and storage, and the container runs as root (required by the nested
-    // daemon); privileges are confined to the Docker host VM/daemon, not the host OS.
-    // Additional host directories to bind-mount into the sandbox container.
-    // Each entry requires absolute host + container paths; "readonly" defaults to true (read-only).
-    // Set "readonly": false to grant the container read-write access to the host directory.
+    // Additional host directories to bind-mount into the sandbox at their identical host path.
+    // "readonly" defaults to true (read-only); set false to grant the sandbox read-write access.
     // "mounts": [
-    //   { "host": "/abs/host/reference", "container": "/reference" },
-    //   { "host": "/abs/host/cache", "container": "/cache", "readonly": false }
+    //   { "host": "/abs/host/reference" },
+    //   { "host": "/abs/host/cache", "readonly": false }
     // ]
   },
 

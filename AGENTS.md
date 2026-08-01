@@ -25,6 +25,15 @@
 - `PLAN_AUTHORING_TOOL_NAMES` in `src/constants/loop.ts` is the single list of plan-authoring tools; the `code`, `auditor`, and `feature-splitter` tool-exclude lists and both permission rulesets derive their deny entries from it.
 - `LoopService.resolveActiveLoopForSession` is the only correct "is this session inside a running loop" check. `resolveLoopName` matches terminated loops too, so using it as an activity guard blocks a session forever after its loop ends.
 - `resolveForgeDbPath` in `src/utils/opencode-paths.ts` is the only place `<dataDir>/forge.db` is built; every entry point must route through it so a configured `dataDir` is honoured uniformly.
+- `buildAuditorModelChain`/`resolveLoopAuditorChoice` in `src/utils/loop-helpers.ts` are the only auditor model/variant resolution point (the chain index lives in `loops.auditor_fallback_index`), and `handleAuditorProviderLimit` in `src/loop/runtime.ts` is the only place that decides whether an auditor provider limit falls back or terminates.
+
+## Sandbox single sources
+
+- `src/sandbox/sbx.ts` is the only module that invokes the `sbx` CLI; every sandbox path must route through its `SandboxRuntime` facade rather than spawning `sbx` directly.
+- `src/sandbox/process.ts` is the only child-process spawner in `src/sandbox/`; all sandbox shell execution goes through `runCommand`.
+- `describeSbxUnavailable` in `src/sandbox/sbx.ts` is the only source of sbx-unavailable remediation text.
+- `container/Dockerfile` must derive from `docker.io/docker/sandbox-templates:shell-docker` and must not declare `ENTRYPOINT`, `CMD`, or `WORKDIR`.
+- `SHIM_ENV_CONTAINER` must stay `FORGE_SANDBOX_CONTAINER` because it is coupled to the public `{{FORGE_SANDBOX_CONTAINER}}` placeholder.
 
 ## Dashboard and storage gotchas
 

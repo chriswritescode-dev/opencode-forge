@@ -39,7 +39,7 @@ export function resolveBundledConfigPath(): string {
   return join(resolvePluginDir(), '..', 'forge-config.jsonc')
 }
 
-/** Bundled Docker sandbox context shipped with the package. */
+/** Bundled sandbox template context shipped with the package. */
 export function resolveBundledContainerDir(): string {
   return join(resolvePluginDir(), '..', 'container')
 }

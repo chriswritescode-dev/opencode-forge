@@ -1123,3 +1123,44 @@ test('migration 141 is idempotent on re-opened databases', () => {
 
   db2.close()
 })
+
+test('migration 144 adds auditor_fallback_index to loops and is idempotent', () => {
+  const dbPath = createTempDb()
+  const db = openForgeDatabase(dbPath)
+
+  const cols = db.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string; notnull: number }>
+  const fallbackCol = cols.find((c) => c.name === 'auditor_fallback_index')
+  expect(fallbackCol).toBeDefined()
+  // NOT NULL with default 0 so legacy rows hydrate at index 0.
+  expect(fallbackCol!.notnull).toBe(1)
+
+  // Existing inserted rows default to 0.
+  db.prepare(`
+    INSERT INTO loops (project_id, loop_name, status, current_session_id, worktree, worktree_dir, project_dir, max_iterations, iteration, audit_count, error_count, phase, started_at)
+    VALUES ('proj-1', 'loop-a', 'running', 'sess-1', 0, '/tmp/wt', '/tmp/proj', 5, 0, 0, 0, 'coding', 1)
+  `).run()
+  const row = db.prepare("SELECT auditor_fallback_index FROM loops WHERE project_id = 'proj-1' AND loop_name = 'loop-a'").get() as { auditor_fallback_index: number }
+  expect(row.auditor_fallback_index).toBe(0)
+
+  const count = db.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('144') as { count: number }
+  expect(count.count).toBe(1)
+
+  db.close()
+})
+
+test('migration 144 is idempotent on re-opened databases', () => {
+  const dbPath = createTempDb()
+
+  const db1 = openForgeDatabase(dbPath)
+  db1.close()
+
+  const db2 = openForgeDatabase(dbPath)
+
+  const cols = db2.prepare('PRAGMA table_info(loops)').all() as Array<{ name: string }>
+  expect(cols.filter((c) => c.name === 'auditor_fallback_index').length).toBe(1)
+
+  const count = db2.prepare('SELECT COUNT(*) as count FROM migrations WHERE id = ?').get('144') as { count: number }
+  expect(count.count).toBe(1)
+
+  db2.close()
+})

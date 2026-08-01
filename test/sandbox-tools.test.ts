@@ -5,7 +5,7 @@ import type { SandboxContext } from '../src/sandbox/context'
 import type { SandboxMount } from '../src/sandbox/path'
 
 interface MockSandboxContext {
-  docker: {
+  runtime: {
     exec: (container: string, cmd: string, opts?: { timeout?: number; cwd?: string }) => Promise<{ stdout: string; stderr: string; exitCode: number }>
   }
   containerName: string
@@ -18,7 +18,7 @@ interface MockDeps {
 }
 
 describe('sandbox tool hooks', () => {
-  let mockDocker: MockSandboxContext['docker']
+  let mockRuntime: MockSandboxContext['runtime']
   let mockLogger: Logger
   let beforeHook: ReturnType<typeof createSandboxToolBeforeHook>
   let afterHook: ReturnType<typeof createSandboxToolAfterHook>
@@ -29,18 +29,18 @@ describe('sandbox tool hooks', () => {
   const TEST_CONTAINER_NAME = 'test-container'
 
   beforeEach(() => {
-    mockDocker = {
+    mockRuntime = {
       exec: async (_container, cmd, _opts) => {
         if (cmd.includes('rg --files')) {
           return {
-            stdout: `/workspace/src/file.ts\n/workspace/src/another.ts`,
+            stdout: `${TEST_HOST_DIR}/src/file.ts\n${TEST_HOST_DIR}/src/another.ts`,
             stderr: '',
             exitCode: 0,
           }
         }
         if (cmd.includes('rg -nH')) {
           return {
-            stdout: `/workspace/src/file.ts|10|console.log('hello')`,
+            stdout: `${TEST_HOST_DIR}/src/file.ts|10|console.log('hello')`,
             stderr: '',
             exitCode: 0,
           }
@@ -62,7 +62,7 @@ describe('sandbox tool hooks', () => {
     const mounts: SandboxMount[] = [{ hostDir: TEST_HOST_DIR, containerDir: '/workspace' }]
 
     const sandboxContext: SandboxContext = {
-      docker: mockDocker,
+      runtime: mockRuntime,
       containerName: TEST_CONTAINER_NAME,
       hostDir: TEST_HOST_DIR,
       mounts,
@@ -114,7 +114,7 @@ describe('sandbox tool hooks', () => {
   })
 
   describe('sandboxed glob', () => {
-    test('glob executes inside Docker with host→container path mapping', async () => {
+    test('glob executes against the worktree host path', async () => {
       const input = {
         tool: 'glob',
         sessionID: TEST_SESSION_ID,
@@ -132,7 +132,7 @@ describe('sandbox tool hooks', () => {
       expect(output.args).toBeDefined()
     })
 
-    test('glob output is rewritten from container paths to host paths', async () => {
+    test('glob emits file paths verbatim from the host search root', async () => {
       const input = {
         tool: 'glob',
         sessionID: TEST_SESSION_ID,
@@ -151,14 +151,69 @@ describe('sandbox tool hooks', () => {
       await beforeHook(input as never, output as never)
       await afterHook({ ...input, args: output.args } as never, output as never)
 
-      expect(output.output).toContain(TEST_HOST_DIR)
+      expect(output.output).toContain(`${TEST_HOST_DIR}/src/file.ts`)
       expect(output.output).toContain('file.ts')
       expect(output.output).not.toContain('/workspace/src/file.ts')
+    })
+
+    test('glob defaults the search root to the worktree host directory', async () => {
+      let executedCmd = ''
+      const runtime = {
+        exec: async (_container: string, cmd: string) => {
+          executedCmd = cmd
+          return { stdout: '', stderr: '', exitCode: 0 }
+        },
+      }
+      const sandboxContext: SandboxContext = {
+        runtime: runtime as never,
+        containerName: TEST_CONTAINER_NAME,
+        hostDir: TEST_HOST_DIR,
+        mounts: [{ hostDir: TEST_HOST_DIR, containerDir: TEST_HOST_DIR }],
+      }
+      const hook = createSandboxToolBeforeHook({
+        resolveSandboxForSession: async () => sandboxContext,
+        logger: mockLogger,
+      })
+
+      await hook(
+        { tool: 'glob', sessionID: TEST_SESSION_ID, callID: 'glob-default-root' } as never,
+        { args: { pattern: '*.ts' } } as never,
+      )
+
+      expect(executedCmd).toMatch(/rg --files/)
+      expect(executedCmd).toContain(TEST_HOST_DIR)
+    })
+
+    test('glob anchors relative search paths to the worktree host directory', async () => {
+      let execCwd: string | undefined
+      const runtime = {
+        exec: async (_container: string, _cmd: string, opts?: { cwd?: string }) => {
+          execCwd = opts?.cwd
+          return { stdout: '', stderr: '', exitCode: 0 }
+        },
+      }
+      const sandboxContext: SandboxContext = {
+        runtime: runtime as never,
+        containerName: TEST_CONTAINER_NAME,
+        hostDir: TEST_HOST_DIR,
+        mounts: [{ hostDir: TEST_HOST_DIR, containerDir: TEST_HOST_DIR }],
+      }
+      const hook = createSandboxToolBeforeHook({
+        resolveSandboxForSession: async () => sandboxContext,
+        logger: mockLogger,
+      })
+
+      await hook(
+        { tool: 'glob', sessionID: TEST_SESSION_ID, callID: 'glob-relative-path' } as never,
+        { args: { pattern: '*.ts', path: 'src' } } as never,
+      )
+
+      expect(execCwd).toBe(TEST_HOST_DIR)
     })
   })
 
   describe('sandboxed grep', () => {
-    test('grep executes inside Docker with rewritten file paths', async () => {
+    test('grep executes against the worktree host path', async () => {
       const input = {
         tool: 'grep',
         sessionID: TEST_SESSION_ID,
@@ -292,13 +347,40 @@ describe('sandbox tool hooks', () => {
 
       expect(output.output).toContain('Found')
     })
+
+    test('grep anchors relative search paths to the worktree host directory', async () => {
+      let execCwd: string | undefined
+      const runtime = {
+        exec: async (_container: string, _cmd: string, opts?: { cwd?: string }) => {
+          execCwd = opts?.cwd
+          return { stdout: '', stderr: '', exitCode: 0 }
+        },
+      }
+      const sandboxContext: SandboxContext = {
+        runtime: runtime as never,
+        containerName: TEST_CONTAINER_NAME,
+        hostDir: TEST_HOST_DIR,
+        mounts: [{ hostDir: TEST_HOST_DIR, containerDir: TEST_HOST_DIR }],
+      }
+      const hook = createSandboxToolBeforeHook({
+        resolveSandboxForSession: async () => sandboxContext,
+        logger: mockLogger,
+      })
+
+      await hook(
+        { tool: 'grep', sessionID: TEST_SESSION_ID, callID: 'grep-relative-path' } as never,
+        { args: { pattern: 'console.log', path: 'src' } } as never,
+      )
+
+      expect(execCwd).toBe(TEST_HOST_DIR)
+    })
   })
 
   describe('bash passthrough', () => {
     test('hook ignores bash tool entirely (handled by plugin tool override)', async () => {
       const hook = createSandboxToolBeforeHook({
         resolveSandboxForSession: async () => ({
-          docker: mockDocker,
+          runtime: mockRuntime,
           containerName: 'test-container',
           hostDir: '/tmp/host',
           mounts: [{ hostDir: '/tmp/host', containerDir: '/workspace' }],
